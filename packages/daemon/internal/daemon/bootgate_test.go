@@ -281,7 +281,8 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 // yes-* step prints interface 1 for pi-legion, and 1 for pi-envoy except the steps that test a
 // missing or mismatched pi-envoy, whatever the release's own number is, on purpose: the gate
 // compares the number pi-legion speaks with the one pi-envoy publishes, never either with a
-// release.
+// release. A step that hangs adds a line to `hung` just before it hangs, once it has counted its
+// attempt and said all it says, and gateUnder's gate cuts it off there (endWhenHung).
 type fakeOmp struct {
 	dir, path, prefix string
 }
@@ -329,8 +330,8 @@ no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 silent) exit 0 ;;
 denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
 denied-then-killed) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; kill -KILL $$ ;;
-hang) exec sleep 30 ;;
-no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; exec sleep 30 ;;
+hang) echo "$n" >>"$dir/hung"; exec sleep 30 ;;
+no-then-hang) echo LEGION_PLUGIN_LOADED=no >&2; echo "$n" >>"$dir/hung"; exec sleep 30 ;;
 esac
 `
 	path := filepath.Join(dir, "omp")
@@ -372,9 +373,8 @@ func (f fakeOmp) read(t *testing.T, name string) string {
 // gateUnder is a gate over a pane environment whose HOME holds a pi-legion manifest declaring
 // legion (raw JSON) and a pi-envoy manifest beside it, each installed as `omp plugin install`
 // installs it — the profile's package directory a link to the unpacked plugin — run through f with
-// f's launch prefix, and a log that records what it said. Its attempt budget is long enough for the
-// fake to answer on a loaded box — a budget that expires before the fake has counted its attempt
-// would shift its plan — and short enough that a hang costs little.
+// f's launch prefix, and a log that records what it said. Its attempts run under fakeBudget, and
+// an attempt whose fake hangs is cut off where the fake hangs (endWhenHung).
 func gateUnder(t *testing.T, f fakeOmp, legion string) (pluginGate, *bytes.Buffer) {
 	t.Helper()
 	home := t.TempDir()
@@ -394,11 +394,44 @@ func gateUnder(t *testing.T, f fakeOmp, legion string) (pluginGate, *bytes.Buffe
 		workDir:    t.TempDir(),
 		invocation: f.path,
 		prefix:     []string{f.prefix},
-		timeout:    1500 * time.Millisecond,
+		timeout:    fakeBudget,
+		expire:     endWhenHung(f.dir),
 		retry:      bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond},
 		contract:   3,
 		log:        slog.New(slog.NewTextHandler(&logged, nil)),
 	}, &logged
+}
+
+// fakeBudget is the attempt budget of a gate over a fake Oh My Pi (gateUnder, imageGateUnder). A
+// fake starts a dozen processes before it answers, which a loaded machine can stretch past any
+// short budget, and a gate whose budget cut a fake off would ask it again: an answer asked for
+// twice, or a plan shifted by a step. So the budget is one no fake that exits on its own meets,
+// and a fake that hangs is cut off where it hangs (endWhenHung), as the budget cuts off a hung Oh
+// My Pi, so no test waits the budget out.
+const fakeBudget = time.Minute
+
+// endWhenHung is the expire of a gate over a fake Oh My Pi whose directory is dir: it cuts each
+// attempt off once the fake has added a line to dir/hung, which a step that hangs adds once it has
+// counted its attempt and said all it says, and at fakeBudget where the fake never hangs. The gate
+// runs one attempt at a time, so a line past those the file held when the attempt began is that
+// attempt's own.
+func endWhenHung(dir string) func(context.Context) (context.Context, context.CancelFunc) {
+	hung := filepath.Join(dir, "hung")
+	lines := func() int {
+		raw, _ := os.ReadFile(hung)
+		return strings.Count(string(raw), "\n")
+	}
+	return func(ctx context.Context) (context.Context, context.CancelFunc) {
+		before := lines()
+		attempt, cancel := context.WithTimeout(ctx, fakeBudget)
+		go func() {
+			for attempt.Err() == nil && lines() == before {
+				time.Sleep(5 * time.Millisecond)
+			}
+			cancel()
+		}()
+		return attempt, cancel
+	}
 }
 
 const (
@@ -544,14 +577,13 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 // the lingering child as a transient non-answer) fails fast with this test's own message, instead
 // of retrying until go test's own timeout ends the run; and the child must still be running when
 // the gate returns, so a gate that waited for it to close the pipe fails here too. With one
-// attempt, a budget kill fails the test, so the budget is wide: it only has to outlast the fake's
+// attempt, a budget kill fails the test, which gateUnder's budget keeps out of reach of the fake's
 // own exit on a loaded box. An exit inside the budget whose pipe is held past it is
 // TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
 func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutputPipe(t *testing.T) {
 	f := newFakeOmp(t, "yes-then-linger")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.retry.Attempts = 1
-	gate.timeout = 10 * time.Second
 	t.Cleanup(func() { killPIDFile(t, filepath.Join(f.dir, "lingering.pid")) })
 
 	if err := gate.verify(context.Background()); err != nil {
@@ -829,7 +861,8 @@ func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
 func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 	f := newFakeOmp(t, "hang")
 	gate, _ := gateUnder(t, f, contractCurrent)
-	gate.timeout = time.Minute
+	// The probe hangs until the daemon stops it: nothing cuts it off where it hangs.
+	gate.expire = nil
 	ctx, cancel := context.WithCancel(context.Background())
 	// The cancellation this test is about is one that lands on a probe in flight, so it waits for
 	// the probe to be running rather than for a span: a fixed delay on a loaded machine fires

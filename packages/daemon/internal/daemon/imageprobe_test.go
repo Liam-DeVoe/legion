@@ -62,7 +62,7 @@ agents:available) echo LEGION_OMP_AGENTS=available >&2; exit 0 ;;
 agents:missing) echo LEGION_OMP_AGENTS=missing >&2; exit 0 ;;
 agents:silent) exit 0 ;;
 agents:available-then-die) echo LEGION_OMP_AGENTS=available >&2; echo "database is locked" >&2; exit 1 ;;
-agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; exec sleep 30 ;;
+agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; echo "$n" >>"$dir/hung"; exec sleep 30 ;;
 load:yes) printf "$legion$with_envoy" >&2; exit 0 ;;
 load:no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 load:elsewhere) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$dir/elsewhere/pi-legion/dist/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
@@ -78,7 +78,9 @@ session:accepts) exit 0 ;;
 session:dies) echo "database is locked" >&2; exit 1 ;;
 session:killed) echo "database is locked" >&2; kill -KILL $$ ;;
 *:denied) echo "secrets: ANTHROPIC_API_KEY was denied" >&2; exit 3 ;;
-*:hang) exec sleep 30 ;;
+# A step that hangs adds a line to hung just before it hangs, and imageGateUnder's gate cuts it off
+# there (endWhenHung).
+*:hang) echo "$n" >>"$dir/hung"; exec sleep 30 ;;
 esac
 echo "fake omp: no step $step for $kind" >&2; exit 65
 `
@@ -145,8 +147,8 @@ func imageEnv(home string) map[string]string {
 }
 
 // imageGateUnder is the image probe's gate over the image's HOME, loading the image's plugin roots
-// as a pod does, run through f, with budgets that cost the suite little: attempts bounds the retry
-// (0 for none).
+// as a pod does, run through f, under gateUnder's budgets: fakeBudget, and an attempt whose fake
+// hangs cut off where the fake hangs (endWhenHung). attempts bounds the retry (0 for none).
 func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (pluginGate, *bytes.Buffer) {
 	t.Helper()
 	var logged bytes.Buffer
@@ -157,7 +159,8 @@ func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (plug
 		envoyPluginRoot: envoyRootOf(home),
 		workDir:         t.TempDir(),
 		invocation:      f.path,
-		timeout:         1500 * time.Millisecond,
+		timeout:         fakeBudget,
+		expire:          endWhenHung(f.dir),
 		retry:           bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond, Attempts: attempts},
 		contract:        3,
 		log:             slog.New(slog.NewTextHandler(&logged, nil)),
@@ -467,7 +470,7 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 		kind                  string
 	}{
 		{"pi.agents cut off every time", []string{"hang"}, []string{"refuses"},
-			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after 1.5s"}, "agents"},
+			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after " + fakeBudget.String()}, "agents"},
 		{"Oh My Pi dying before the resolver every time", []string{"available"}, []string{"dies"},
 			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "exited 1 without naming OMP_SESSION_STORAGE", "database is locked"}, "session"},
 		// A signal's death has no status: read as one, it was `exited -1 without naming …`.
