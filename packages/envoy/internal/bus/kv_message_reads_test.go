@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A client that asked for stream message reads (WithStreamMessageReads) reads and creates keys of
@@ -187,12 +188,14 @@ func TestABoundCreateOnAClientWithStreamMessageReadsSendsNoDirectGet(t *testing.
 
 // markerGets is the JetStream context a stream-message-reads handle reads through, its last
 // message gets (GetLastMsg, the read of a delete marker in Create) taken over by the row: each fails
-// at once with nats.ErrTimeout (fail), or is held until the context it was given ends. A get given
-// no context fails at once too, and the row reads which context each get was given (given).
+// at once with nats.ErrTimeout (fail), or is held until the context it was given ends, or the row
+// ends (released). A get given no context fails at once too, and the row reads which context each
+// get was given (given).
 type markerGets struct {
 	nats.JetStreamContext
-	fail bool
-	mu   sync.Mutex
+	fail     bool
+	released chan struct{}
+	mu       sync.Mutex
 	// gets counts the last message gets; given is the context the last one was given, nil for none.
 	gets  int
 	given context.Context
@@ -212,8 +215,12 @@ func (g *markerGets) GetLastMsg(_, _ string, opts ...nats.JSOpt) (*nats.RawStrea
 	if g.fail || given == nil {
 		return nil, nats.ErrTimeout
 	}
-	<-given.Done()
-	return nil, given.Err()
+	select {
+	case <-given.Done():
+		return nil, given.Err()
+	case <-g.released:
+		return nil, nats.ErrTimeout
+	}
 }
 
 // read is the number of last message gets made and the context the last was given.
@@ -224,14 +231,16 @@ func (g *markerGets) read() (int, context.Context) {
 }
 
 // markerGetsOn replaces the JetStream context the reads of kv, a handle on a client with stream
-// message reads, go through with markerGets, and returns it.
+// message reads, go through with markerGets, and returns it. A get still held when the row ends
+// is released then.
 func markerGetsOn(t *testing.T, kv *KeyValue, fail bool) *markerGets {
 	t.Helper()
 	reads, ok := kv.legacy.(streamMessageReads)
 	if !ok {
 		t.Fatalf("the handle's legacy handle is %T, not stream message reads", kv.legacy)
 	}
-	gets := &markerGets{JetStreamContext: reads.js, fail: fail}
+	gets := &markerGets{JetStreamContext: reads.js, fail: fail, released: make(chan struct{})}
+	t.Cleanup(func() { close(gets.released) })
 	reads.js = gets
 	kv.legacy = reads
 	return gets
@@ -285,6 +294,40 @@ func TestABoundCreatesMarkerReadTakesTheCallersContext(t *testing.T) {
 	}
 	if !errors.Is(err, nats.ErrKeyExists) || !IsCASConflict(err) {
 		t.Fatalf("a bound Create over a live value whose marker read was held = %v, want nats.ErrKeyExists", err)
+	}
+}
+
+// A bound Create's marker read ends when the caller cancels, not only at the caller's deadline:
+// over a live value the read is held until its context ends, the caller cancels it while it is
+// held, and the read's context has ended the moment the cancel returns (a context derived from the
+// caller's is cancelled with it). The Create then answers nats.ErrKeyExists, before the test
+// binary's deadline. A read whose context kept the caller's deadline but not its cancel would run
+// on until that deadline.
+func TestABoundCreatesMarkerReadEndsWhenTheCallerCancels(t *testing.T) {
+	const key = "ses_live"
+	kv := liveBucket(t, "kv_marker_read_cancel", key)
+	gets := markerGetsOn(t, &kv, false)
+	caller, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	answered := make(chan error, 1)
+	go func() {
+		_, err := kv.Within(caller).Create(key, []byte("again"))
+		answered <- err
+	}()
+	testwait.Until(t, "the bound Create's marker read to be sent", func() (int, bool) {
+		n, _ := gets.read()
+		return n, n > 0
+	})
+	cancel()
+	n, given := gets.read()
+	if n != 1 || given == nil {
+		t.Fatalf("the bound Create made %d marker reads (context %v), want one with a context, so this row holds nothing", n, given)
+	}
+	if given.Err() == nil {
+		t.Fatal("the marker read's context had not ended when the caller's cancel returned: it keeps running until its deadline after the caller gave up")
+	}
+	if err := testwait.Receive(t, "the bound Create's answer after the caller's cancel", answered); !errors.Is(err, nats.ErrKeyExists) || !IsCASConflict(err) {
+		t.Fatalf("a bound Create over a live value whose caller cancelled during its marker read = %v, want nats.ErrKeyExists", err)
 	}
 }
 
