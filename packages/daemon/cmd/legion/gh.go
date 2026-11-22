@@ -349,7 +349,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if target.command == "stack" {
 		// The image's gh-stack, with what gh would hand it: its arguments after `stack`, and
 		// GH_EXTENSION=1, which tells it gh ran it (cli/cli v2.98.0 pkg/cmd/extension/manager.go,
-		// Dispatch); and ghStackPath, so every git it starts is `legion gh-stack-git`.
+		// Dispatch); and ghStackPath, so every git it starts is the image's gh-stack git.
 		program, programArgs = ghStackBinary, args[1:]
 		set["GH_EXTENSION"], set[leakguard.RunByRealGhVar] = "1", ghStackBinary
 		set["PATH"] = strings.Join(ghStackPath, ":")
