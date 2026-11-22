@@ -585,6 +585,16 @@ reviewer_commented() {
 # reviewer_completed ISSUE: the daemon recorded the reviewer's completion of the issue's open round,
 # which names the reviewer's Dispatch handoff record (the reviewer pushes nothing).
 reviewer_completed() { daemon_state | jq -e --arg issue "$1" '(.issues[$issue].workers.reviewer.handoffRecord.id // "") != ""' >/dev/null; }
+# assert_review_round_handoff ISSUE ROUND checks the reviewer's handoff record of a changes-requested
+# round. The review ends the round whether or not the reviewer has completed
+# (workflow.Engine.reviewRound), so the issue can stand in implementing before the daemon records
+# the completion that names the record. The move into reviewing clears the reviewer's record of the
+# round before, so a record in the state is this round's. It waits for that completion
+# (reviewer_completed), then checks the record (assert_handoff_record).
+assert_review_round_handoff() {
+  until_true 600 "the daemon to record the reviewer's completion of $1's round $2, naming its handoff record" reviewer_completed "$1"
+  assert_handoff_record "$1" reviewer reviewing "$2"
+}
 # approve_as_reviewer asks the reviewer for the round's last review and waits for it to approve the
 # head on its own: the reviewer approves the code head and pushes nothing above it, its handoff
 # being a record on the Dispatch issue. The merge carries the run's retro learnings onto the smoke
