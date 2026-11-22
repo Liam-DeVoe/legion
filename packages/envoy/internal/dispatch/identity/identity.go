@@ -112,8 +112,12 @@ const signInUnavailableMessage = "the sign-in issuer cannot be reached; try agai
 
 // signInUnavailableRetryAfter is the Retry-After, in seconds, beside SIGNIN_UNAVAILABLE: the
 // Envoy listener's and the secrets broker's for an issuer that cannot be read
-// (oidc.IssuerUnavailableRetryAfter). A failed read of the issuer is not made again for some
-// seconds however many requests arrive, so a caller that comes back this soon costs it nothing.
+// (oidc.IssuerUnavailableRetryAfter). What a caller that comes back this soon costs depends on the
+// cause. A sign-in before the issuer is discovered, and IAP's key set, are read again at most once
+// per their failure spacing however many requests arrive. A lapsed membership is not spaced: each
+// request that arrives after the person's last refresh ended makes one refresh request to the
+// issuer's token endpoint, and logs one WARN line (Membership.Confirm, which joins only a refresh
+// still in flight), so a person's page retrying once a second asks the issuer once a second.
 const signInUnavailableRetryAfter = "1"
 
 // WriteError renders an Identity error, or a sign-in's, as Dispatch's JSON error response: 401
