@@ -234,4 +234,21 @@ func TestABodyNamingAPullRequestByNumberLeavesThePullRequestItsBranchsIssue(t *t
 			fmt.Sprintf("Dispatch holds #%d of acme/widgets under its old name acme/old-widgets, so #%d's body cites no GitHub issue and its branch names the issue", citedPull, citedOwn),
 			citedOwnSHA, citedTopSHA)
 	})
+	t.Run("the body names a pull request Dispatch holds by its repository's old name", func(t *testing.T) {
+		world := newCitedWorld(t, "CITEON",
+			fmt.Sprintf("https://github.com/acme/old-widgets/issues/%d renamed the helper, so this change calls it by its new name.", citedPull), citedPull)
+		// Dispatch holds #53 under acme/widgets, the new name, and #51's body names it by the old
+		// one, acme/old-widgets. The pair is seeded after, and the issue's passes and reads go
+		// through a server built after the seed. The other issue links acme/widgets#53, which the
+		// citation matches under either name, so where the cited URL's own repository was compared
+		// as it is spelled, #53 read as no pull request Dispatch holds and #51 went to the other
+		// issue by the citation.
+		world.pass(world.other, citedPRSHA)
+		world = world.renamed("CITEON", "acme/old-widgets", "acme/widgets")
+		world.pass(world.issue, citedOwnSHA)
+		world.pass(world.issue, citedTopSHA)
+		world.requireCompared(world.issue,
+			fmt.Sprintf("#%d's body names acme/old-widgets#%d, which Dispatch holds under the new name acme/widgets, so it cites no GitHub issue and its branch names the issue", citedOwn, citedPull),
+			citedOwnSHA, citedTopSHA)
+	})
 }
