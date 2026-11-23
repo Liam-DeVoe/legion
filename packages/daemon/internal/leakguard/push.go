@@ -200,9 +200,12 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 // is asked for rather than read from the tag that points to it. A lightweight tag is a ref that
 // holds a commit, and adds no record of its own; a deletion adds none either, and neither does a
 // ref the destination holds at that sha already, which the push does not move. A tag already in
-// read is not read again, and neither is what it points to. A tag whose first field is not the
-// object it points to is an error, as a commit git could not read is: git follows that first
-// field and nothing else, and a tag without it has nothing the guard could follow in its place.
+// read is not read again, and neither is what it points to. The walk stops at the first object
+// that is not a tag; that it is a commit is the same update's rev-list check (Guard.commits),
+// which refuses a blob or a tree, or a tag of one, in git's own words. A tag whose first field is
+// not the object it points to is an error, as a commit git could not read is: git follows that
+// first field and nothing else, and a tag without it has nothing the guard could follow in its
+// place.
 func (g *Guard) tagRecords(ctx context.Context, dir string, update Update, read map[string]bool, emit func(Record) error) error {
 	sha := update.LocalSHA
 	if sha == update.RemoteSHA {
@@ -250,6 +253,14 @@ type pushed struct {
 // branch merged onto an older tip of the branch) would read every commit of the default branch
 // since that tip, not only the merge and the branch's own commits. A deletion adds no commit.
 //
+// The local sha is read as `<sha>^{commit}`: every annotated tag in front of it peeled off, and
+// a commit required at the end. A ref can hold a blob or a tree, or a tag of one, and git pushes
+// that object; rev-list given it bare lists no commit and exits 0, so the push would add nothing
+// to read and pass with the object's text unread. Given ^{commit}, git refuses with exit 128
+// ("expected commit type, but the object dereferences to blob type"), which Guard.git makes an
+// error of and Guard.Push a setup failure, as for any record git could not read. The "--" ends
+// the revisions, so git names the revision it refused and says nothing of a path.
+//
 // Each commit's parents are git's own, from rev-list --parents, and not read out of the commit's
 // header by this package: git takes only the parent fields straight after the tree, in hex of
 // either case, and a count read any other way would read a merge's diff in the wrong shape.
@@ -257,7 +268,7 @@ func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]
 	if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
 		return nil, nil
 	}
-	argv := []string{"rev-list", "--reverse", "--parents", update.LocalSHA, "--not"}
+	argv := []string{"rev-list", "--reverse", "--parents", update.LocalSHA + "^{commit}", "--not"}
 	held, err := g.holds(ctx, req.Dir, update.RemoteSHA)
 	if err != nil {
 		return nil, err
@@ -269,7 +280,7 @@ func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]
 	if req.Remote != "" {
 		remotes += "=" + req.Remote
 	}
-	argv = append(argv, remotes)
+	argv = append(argv, remotes, "--")
 	out, err := g.git(ctx, req.Dir, argv...)
 	if err != nil {
 		return nil, err

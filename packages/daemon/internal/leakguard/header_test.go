@@ -1,6 +1,7 @@
 package leakguard
 
 import (
+	hexpkg "encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,12 +11,35 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
-// namedBase64 is one line of base64 that holds, as any signature's bytes can by chance, a run the
-// repository rule refuses: "+" and "/" are base64's own characters, and to the rule the edges of a
-// word. It is built out of two pieces for the reason theHost is.
+// namedBase64 is one line of base64 that holds a /-joined name the repository rule refuses: "+" and
+// "/" are base64's own characters, and to the rule the edges of a word, so a pusher can write a name
+// into a signature block that looks like its bytes. It is built out of two pieces for the reason
+// theHost is.
 const namedBase64 = "iQEzBAABCAAdFiEE+agen" + "tc/Rk9vYmFyYmF6"
+
+// realSignature is the body of a signature as gpg writes one: lines of base64 of bytes no one chose,
+// which name nothing.
+var realSignature = []string{
+	"N6J2uESZoaRNSGa/6bbtyYZZwW3iRMn1K4niXPvgrZnm+GxII6rH3eBF62kpp7nZ",
+	"22ROFC4a1MjTl4PjDKwFumg0gHZhvHe+M4U8IxcpR1uQniKMArF0M5lEE1d2t0n1",
+	"ZTGhowIaG8ArFFfqftw1yOwQUHEnlNa5xbUeBZqeRz0BybXGGIC/EAkjUlP1LUQY",
+	"UaK/iyiPQLs5HWnMh9M+CMKEgWBhKURRQc3VBcUfikaESACi/mtfJZN6SAYYH5NJ",
+	"Hoq7SnKonEaSrb8UxvlAT8YRptIhEUDLi7EpNtdqUILsjIzYwihVOYzBTNCpzIXx",
+	"fmWK21t+drWYaL4Zdw879ABvSMlV5t2WUMprSBTOVbjGS79MZ5z2I788",
+}
+
+// utf16le is ASCII text written as UTF-16LE, two bytes a character, as `git tag -F` takes it.
+func utf16le(text string) string {
+	var out strings.Builder
+	for _, c := range []byte(text) {
+		out.WriteByte(c)
+		out.WriteByte(0)
+	}
+	return out.String()
+}
 
 // namedLine is a line that starts with the deployment repository's name, so that a read that took
 // its first character off would no longer find the name. It is built out of two pieces for the
@@ -88,10 +112,10 @@ func heldRepo(t *testing.T) (fixturegit.Runner, string, string) {
 // nothing of the tag, and the commit here is one the destination holds, so each of these is the
 // whole of what the push adds. A tag that points to a tag is read down to the inner one, which the
 // push sends too, through the object its first field names, as git follows it: a second object
-// field after the tagger is text. A tag's signature is not read as text: its base64 can hold a run
-// a rule refuses by chance, and the same run in the message is refused, as it is in an armoured
-// block of the message before the signature, which git reads as message. A lightweight tag is a
-// ref that holds the commit, and adds nothing; nor does a tag the destination holds at the ref.
+// field after the tagger is text. A tag's signature is read like the rest of its message, every
+// line of it: a name written into its base64 is refused, and a real signature names nothing. A
+// message written in UTF-16 is read with its NUL bytes taken out. A lightweight tag is a ref that
+// holds the commit, and adds nothing; nor does a tag the destination holds at the ref.
 func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 	fixture, repo, held := heldRepo(t)
 	// tag makes an annotated tag of target named name, with message, under env, and answers it.
@@ -157,10 +181,23 @@ func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 			},
 		},
 		{
-			name: "a signature's bytes that read as a name",
+			name: "a /-joined repository name inside the signature's base64",
 			build: func(t *testing.T) (Update, []string) {
 				sha := madeTag(t, "signed", "a message of no interest\n"+signature(namedBase64))
-				return newRef("refs/tags/signed", sha), nil
+				return newRef("refs/tags/signed", sha), []string{"tag " + short(sha) + " message: " + repositoryClass}
+			},
+		},
+		{
+			name: "a real signature",
+			build: func(t *testing.T) (Update, []string) {
+				return newRef("refs/tags/real-signed", madeTag(t, "real-signed", "a message of no interest\n"+signature(realSignature...))), nil
+			},
+		},
+		{
+			name: "a message in UTF-16 names a host",
+			build: func(t *testing.T) (Update, []string) {
+				sha := madeTag(t, "utf16", utf16le("moved the run to "+theHost+"\n"))
+				return newRef("refs/tags/utf16", sha), []string{"tag " + short(sha) + " message: " + theClass}
 			},
 		},
 		{
@@ -237,6 +274,14 @@ func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 			},
 		},
 		{
+			// A chain of tags that ends at a commit peels to it, so rev-list's ^{commit} takes it.
+			name: "a tag of a tag that names nothing",
+			build: func(t *testing.T) (Update, []string) {
+				tag(t, "clean-inner", held, "a message of no interest")
+				return newRef("refs/tags/clean-outer", tag(t, "clean-outer", "clean-inner", "a message of no interest")), nil
+			},
+		},
+		{
 			name: "an annotated tag that names nothing",
 			build: func(t *testing.T) (Update, []string) {
 				return newRef("refs/tags/clean", tag(t, "clean", held, "a message of no interest")), nil
@@ -252,9 +297,9 @@ func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 // from: a second committer is read whole, and a parent after the committer is no parent, so the
 // commit's diff is read in the shape git's own parents call for. A merge's parents are git's
 // whatever the case of their hex. A message stored in another encoding than UTF-8 is read as git
-// shows it, whichever encoding field comes first. A signature's bytes are not read as text,
-// whether a commit's (gpgsig) or a merged tag's: the same bytes in a field git does not know are
-// refused, and a line of a signature block that is not base64 is read. Each commit here adds no
+// shows it, whichever encoding field comes first. A signature is read like any text, a commit's
+// (gpgsig) and a merged tag's alike: a name written into its base64 is refused, as are the same
+// bytes in a field git does not know, and a real signature names nothing. Each commit here adds no
 // line of a file unless its case says so, so its header and message are the whole of what it adds.
 func TestACommitsWholeHeaderIsRead(t *testing.T) {
 	fixture, repo, held := heldRepo(t)
@@ -321,9 +366,16 @@ func TestACommitsWholeHeaderIsRead(t *testing.T) {
 			},
 		},
 		{
-			name: "a merged tag's signature bytes that read as a name",
+			name: "a /-joined repository name inside a merged tag's signature",
 			build: func(t *testing.T) (Update, []string) {
-				return onMain(merged(t, "signed", fixtureTagger, "a message of no interest\n"+signature(namedBase64))), nil
+				head := merged(t, "signed", fixtureTagger, "a message of no interest\n"+signature(namedBase64))
+				return refused(head, "mergetag message", repositoryClass)
+			},
+		},
+		{
+			name: "a merged tag's real signature",
+			build: func(t *testing.T) (Update, []string) {
+				return onMain(merged(t, "real-signed", fixtureTagger, "a message of no interest\n"+signature(realSignature...))), nil
 			},
 		},
 		{
@@ -375,9 +427,15 @@ func TestACommitsWholeHeaderIsRead(t *testing.T) {
 			},
 		},
 		{
-			name: "a commit's signature bytes that read as a name",
+			name: "a /-joined repository name inside a commit's signature",
 			build: func(t *testing.T) (Update, []string) {
-				return onMain(made(t, "gpgsig "+continued(signature(namedBase64)))), nil
+				return refused(made(t, "gpgsig "+continued(signature(namedBase64))), "header", repositoryClass)
+			},
+		},
+		{
+			name: "a commit's real signature",
+			build: func(t *testing.T) (Update, []string) {
+				return onMain(made(t, "gpgsig "+continued(signature(realSignature...)))), nil
 			},
 		},
 		{
@@ -465,6 +523,60 @@ func TestACommitsWholeHeaderIsRead(t *testing.T) {
 			},
 		},
 	})
+}
+
+// A ref can hold a blob or a tree, or a tag of one, and git pushes that object, with text the
+// rules would refuse: no commit's read reaches it. Each such push is refused as a setup failure in
+// git's own words, which name the object asked for and no path, and never the object's text.
+func TestAPushOfAnObjectThatIsNotACommitIsRefused(t *testing.T) {
+	fixture, repo, _ := heldRepo(t)
+	path := filepath.Join(t.TempDir(), "note")
+	if err := os.WriteFile(path, []byte("the runner answers at "+theHost+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blob := fixture.Run(repo, "git", "hash-object", "-w", path)
+	tree := stored(t, fixture, repo, "tree", "100644 note\x00"+string(mustHex(t, blob)))
+	for _, tc := range []struct {
+		name string
+		// build answers the update that pushes the case's object, and the type it peels to.
+		build func(t *testing.T) (Update, string)
+	}{
+		{"a lightweight tag of a blob", func(t *testing.T) (Update, string) {
+			return newRef("refs/tags/raw-blob", blob), "blob"
+		}},
+		{"a lightweight tag of a tree", func(t *testing.T) (Update, string) {
+			return newRef("refs/tags/raw-tree", tree), "tree"
+		}},
+		{"an annotated tag of a blob", func(t *testing.T) (Update, string) {
+			return newRef("refs/tags/blob-tag", storedTag(t, fixture, repo, "blob-tag", blob, fixtureTagger, "a message of no interest\n")), "blob"
+		}},
+		{"a tag of a tag of a blob", func(t *testing.T) (Update, string) {
+			inner := storedTag(t, fixture, repo, "blob-inner", blob, fixtureTagger, "a message of no interest\n")
+			return newRef("refs/tags/blob-outer", storedTag(t, fixture, repo, "blob-outer", inner, fixtureTagger, "a message of no interest\n")), "blob"
+		}},
+		{"a branch that names a blob", func(t *testing.T) (Update, string) {
+			return newRef("refs/heads/raw-blob", blob), "blob"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			update, kind := tc.build(t)
+			failed := setupFailure(t, pushOf(t, guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public), repo, update))
+			says(t, failed, update.LocalSHA+"^{commit}: expected commit type, but the object dereferences to "+kind+" type")
+			if strings.Contains(failed.Error(), theHost) {
+				t.Errorf("the setup failure %q quotes the object's text", failed.Error())
+			}
+		})
+	}
+}
+
+// mustHex is the object id hex as the bytes a tree entry holds it in.
+func mustHex(t *testing.T, hex string) []byte {
+	t.Helper()
+	id, err := hexpkg.DecodeString(hex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
 
 // A field of many lines is read in one pass over it: a merged tag of 40,000 lines, 2 MB, is read

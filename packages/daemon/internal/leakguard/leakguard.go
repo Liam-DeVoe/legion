@@ -29,11 +29,11 @@
 // detector's cost of scanning it, and one commit's or tag's header and message, whatever the
 // number and size of the push's files; what grows with the push is the list of its commits and
 // tags, about one line of an object's id each. One line is held whole, a few times over (the
-// reader's buffer, the record's text, the detector's lower-cased copy, and for a line that is not
-// UTF-8 its reading as Windows-1252, at most three times its size), however long it is: a line is
-// neither split, since a match could cross the split and pass unread, nor refused for its length,
-// which would refuse pushes the rules pass. A push of a 73 MB line took 416 MiB; a hook the kernel
-// stops for its memory refuses the push.
+// reader's buffer, the record's text, the detector's lower-cased copy, and for a line that holds
+// NUL bytes or is not UTF-8 its readings without them and as Windows-1252, each at most three
+// times its size), however long it is: a line is neither split, since a match could cross the
+// split and pass unread, nor refused for its length, which would refuse pushes the rules pass. A
+// push of a 73 MB line took 416 MiB; a hook the kernel stops for its memory refuses the push.
 //
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two

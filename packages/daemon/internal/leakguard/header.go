@@ -1,9 +1,6 @@
 package leakguard
 
-import (
-	"slices"
-	"strings"
-)
+import "strings"
 
 // objectLinks is what one object's header says beside its records: the object a tag points to,
 // which can be a tag the push sends too, and whether a commit names an encoding other than UTF-8,
@@ -26,9 +23,10 @@ type objectLinks struct {
 // the whole of a signed tag the merge was made from, which the push carries inside the commit, so
 // it is read as a tag of its own under "<label> mergetag". Then the message is one record.
 //
-// A signature's base64 is not read, since a rule that matches a short word in any case would now
-// and then find one in it by chance: a gpgsig field's, and a tag's, whose signature runs from the
-// last line of its message that starts one to its end, as git reads it (unsigned).
+// A signature is read like any other text, a commit's gpgsig field and a tag's signature alike: its
+// armour lines name nothing, and none of this package's rules can match random base64 by chance
+// in practice (each needs six or more given letters between two non-letters), while a block a
+// pusher writes by hand can hold anything.
 //
 // The object a tag points to is the one its first field names, which is the one git follows, and
 // is empty where that field is not an object id. The object is held whole, as one commit's
@@ -55,8 +53,6 @@ func objectRecords(label, raw string, tag bool, emit func(Record) error) (object
 				return links, err
 			}
 			continue
-		case f.name == "gpgsig" || f.name == "gpgsig-sha256":
-			record = Record{Label: label + " header", Text: f.name + " " + unsigned(f.value)}
 		default:
 			if !tag && f.name == "encoding" && !utf8Name(f.value) {
 				links.otherEncoding = true
@@ -66,9 +62,6 @@ func objectRecords(label, raw string, tag bool, emit func(Record) error) (object
 		if err := emit(record); err != nil {
 			return links, err
 		}
-	}
-	if tag {
-		message = unsigned(message)
 	}
 	return links, emit(Record{Label: label + " message", Text: message})
 }
@@ -208,90 +201,6 @@ func objectID(value string) bool {
 	}
 	for _, c := range []byte(value) {
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
-			return false
-		}
-	}
-	return true
-}
-
-// signatureStarts are the lines git starts a signature with, gpg's, x509's and ssh's: the ones
-// git itself looks for in a tag's message to find its signature.
-var signatureStarts = []string{
-	"-----BEGIN PGP SIGNATURE-----",
-	"-----BEGIN PGP MESSAGE-----",
-	"-----BEGIN SIGNED MESSAGE-----",
-	"-----BEGIN SSH SIGNATURE-----",
-}
-
-// unsigned is text without the bytes of its signature. The signature is what git reads as one:
-// from the last line that starts one (signatureStarts) to the end of text. Between that line and
-// the first line after it that starts "-----END ", only three kinds of line are left out: the
-// start line where it is exactly one of signatureStarts, the END line where it is exactly the one
-// that pairs with that start (its text with BEGIN for END), and the lines of base64 alone, a blank
-// one included. Every other line is kept and read: a start or END line with anything else on it,
-// an armour header such as "Comment: …", or text a hand-made object put there. Every line after
-// that first END line is read whole, whatever its characters, a second END line among them: git
-// counts it in the signature, but `git show` prints it, and no signature's base64 stands after its
-// end. Everything before the signature is read too, an earlier block of the same shape included.
-// Text with no signature comes back as it was, uncopied.
-func unsigned(text string) string {
-	start := -1
-	for at := 0; at < len(text); {
-		if startsSignature(text[at:]) {
-			start = at
-		}
-		next := strings.IndexByte(text[at:], '\n')
-		if next < 0 {
-			break
-		}
-		at += next + 1
-	}
-	if start < 0 {
-		return text
-	}
-	lines := strings.Split(text[start:], "\n")
-	end := -1
-	for k, line := range lines {
-		if strings.HasPrefix(line, "-----END ") {
-			end = k
-			break
-		}
-	}
-	// The armour's own END line, where its start line is one of signatureStarts exactly.
-	pairedEnd := ""
-	if slices.Contains(signatureStarts, lines[0]) {
-		pairedEnd = strings.Replace(lines[0], "-----BEGIN ", "-----END ", 1)
-	}
-	var kept strings.Builder
-	kept.WriteString(text[:start])
-	for k, line := range lines {
-		armour := (k == 0 && pairedEnd != "") || (k == end && pairedEnd != "" && line == pairedEnd)
-		if k <= end && (armour || (k != 0 && k != end && base64Line(line))) {
-			continue
-		}
-		if k == len(lines)-1 && line == "" {
-			break
-		}
-		kept.WriteString(line)
-		kept.WriteByte('\n')
-	}
-	return kept.String()
-}
-
-// startsSignature is whether line starts as a signature does.
-func startsSignature(line string) bool {
-	for _, start := range signatureStarts {
-		if strings.HasPrefix(line, start) {
-			return true
-		}
-	}
-	return false
-}
-
-// base64Line is whether line holds nothing but base64's characters, its padding included.
-func base64Line(line string) bool {
-	for _, c := range []byte(line) {
-		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '+' && c != '/' && c != '=' {
 			return false
 		}
 	}
