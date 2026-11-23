@@ -51,15 +51,17 @@ func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
 // Unguarded names a write of a file with an execute bit by os.WriteFile or os.OpenFile in any file
 // that is no test file, in a test file of a package whose tests call Parallel, and in any file of a
 // test-support package, by whatever name the file imports os and however the mode is spelled, and
-// a mode it cannot evaluate. It names an open by os.WriteFile, os.OpenFile, os.Create or
-// os.CreateTemp whose file the same function gives an execute bit by os.Chmod of its path or of
-// its Name, or by the file's Chmod method, in a closure too, a use of one of those functions as a
-// value, and a dot import of os. It leaves out a mode with no execute bit, a Chmod with none or of
-// a path no open of the function names, a test file of a package whose tests do not run beside
-// each other, a write by testexec.WriteFile, another module below root, and programfile's own
-// Write. The code a deployment runs is planted in daemonish: the shapes the daemon's own program
-// files had before programfile.Write, the git helper's os.WriteFile at 0o700 and workerbin's
-// os.CreateTemp with a Chmod of the file to 0o700, and a copy that keeps a file's mode.
+// a mode it cannot read as holding no execute bit, a mask that leaves one included. It names an
+// open by os.WriteFile, os.OpenFile, os.Create or os.CreateTemp whose file the same function gives
+// an execute bit by os.Chmod of its path or of its Name, or by the file's Chmod method, in a
+// closure too, a use of one of those functions as a value, and a dot import of os. It leaves out a
+// mode with no execute bit, a mode masked so it cannot hold one (mode&^0o111, mode&0o644), a Chmod
+// with none or of a path no open of the function names, a test file of a package whose tests do
+// not run beside each other, a write by testexec.WriteFile, another module below root, and
+// programfile's own Write. The code a deployment runs is planted in daemonish: the shapes the
+// daemon's own program files had before programfile.Write, the git helper's os.WriteFile at 0o700
+// and workerbin's os.CreateTemp with a Chmod of the file to 0o700, and a copy that keeps a file's
+// mode.
 func TestUnguardedNamesEveryExecutableWriteThatMayRunBesideAFork(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -166,6 +168,13 @@ func data(dir string) {
 func copied(path string, mode os.FileMode) error { return os.WriteFile(path, nil, mode) }
 
 var create = os.CreateTemp
+
+func masked(path string, mode os.FileMode) {
+	_ = os.WriteFile(path, nil, mode&^0o111)
+	_ = os.WriteFile(path, nil, mode&0o644)
+	_ = os.WriteFile(path, nil, mode&0o755)
+	_ = os.WriteFile(path, nil, mode&^0o100)
+}
 `)
 	write("daemonish/install_test.go", `package daemonish
 
@@ -237,6 +246,7 @@ func dotted(t *testing.T) { _ = WriteFile("u", nil, 0o755) }
 		"beside/chmod_test.go:22", "beside/chmod_test.go:27", "beside/chmod_test.go:9",
 		"beside/dot_test.go:4",
 		"daemonish/install.go:17", "daemonish/install.go:27", "daemonish/install.go:29",
+		"daemonish/install.go:34", "daemonish/install.go:35",
 		"daemonish/install.go:5", "daemonish/install.go:8",
 		"fakestest/fakestest.go:5",
 	}

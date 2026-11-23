@@ -218,7 +218,8 @@ func namesOf(records []SignInRecord) string {
 
 // writeFileAtomic writes data to path by renaming a finished temporary file into place, so no
 // reader ever sees path half-written: a sign-in record is read back by the next command while
-// this one is still running.
+// this one is still running. It writes data, never a program, so perm loses any execute bit
+// (perm&^0o111), which is how testexec.Unguarded reads it as no program file.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
@@ -229,7 +230,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(perm); err != nil {
+	if err := tmp.Chmod(perm &^ 0o111); err != nil {
 		tmp.Close()
 		return err
 	}

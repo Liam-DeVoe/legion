@@ -31,15 +31,16 @@ import (
 // a call of os.WriteFile, os.OpenFile, os.Create or os.CreateTemp whose file the same top-level
 // function gives an execute bit with a Chmod: os.Chmod of the path the call names, spelled the
 // same way, os.Chmod of the Name of the variable that os.Create, os.OpenFile or os.CreateTemp
-// assigned the file to, or that variable's Chmod method. A mode the check cannot evaluate as a
-// constant is named too, since it cannot tell that the mode holds no execute bit. So is a use of
-// os.WriteFile, os.OpenFile, os.Create, os.CreateTemp or os.Chmod as a function value, whose file
-// and mode it cannot follow, and a dot import of os, whose calls it cannot tell from the file's own
-// functions. The one place left out is programfile.Write itself: the files of a package named
-// programfile that are no test files. A directory below root that holds a go.mod of its own is
-// another module, which that module's check reads, and node_modules, vendor, testdata and dot
-// directories are not Go source of the module. A root under which the walk finds no Go file is an
-// error, not a pass: the check read nothing.
+// assigned the file to, or that variable's Chmod method. A mode the check cannot read as holding
+// no execute bit is named too: one that is neither a constant nor masked by one, as perm&^0o111
+// is (withoutExecuteBit). So is a use of os.WriteFile, os.OpenFile, os.Create, os.CreateTemp or
+// os.Chmod as a function value, whose file and mode it cannot follow, and a dot import of os,
+// whose calls it cannot tell from the file's own functions. The one place left out is
+// programfile.Write itself: the files of a package named programfile that are no test files. A
+// directory below root that holds a go.mod of its own is another module, which that module's
+// check reads, and node_modules, vendor, testdata and dot directories are not Go source of the
+// module. A root under which the walk finds no Go file is an error, not a pass: the check read
+// nothing.
 //
 // The check reads each file's syntax alone, with no types, so it cannot see:
 //
@@ -274,10 +275,30 @@ func nameOf(path ast.Expr) string {
 	return ""
 }
 
-// withoutExecuteBit says whether mode is a constant that holds no execute bit.
+// withoutExecuteBit says whether mode holds no execute bit: a constant that holds none, or any
+// mode masked so that it cannot hold one, by & with a constant that holds none (perm&0o666) or
+// by &^ with a constant that holds all three (perm&^0o111). A writer whose callers choose its
+// mode says so with such a mask.
 func withoutExecuteBit(mode ast.Expr) bool {
-	value, constant := modeOf(mode)
-	return constant && value&0o111 == 0
+	if value, constant := modeOf(mode); constant {
+		return value&0o111 == 0
+	}
+	masked, ok := ast.Unparen(mode).(*ast.BinaryExpr)
+	if !ok {
+		return false
+	}
+	switch masked.Op {
+	case token.AND:
+		for _, side := range []ast.Expr{masked.X, masked.Y} {
+			if value, constant := modeOf(side); constant && value&0o111 == 0 {
+				return true
+			}
+		}
+	case token.AND_NOT:
+		value, constant := modeOf(masked.Y)
+		return constant && value&0o111 == 0o111
+	}
+	return false
 }
 
 // modeOf is the value of a file mode written as a constant: an integer literal, a conversion of
