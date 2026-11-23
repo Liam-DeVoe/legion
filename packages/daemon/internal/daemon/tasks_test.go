@@ -383,7 +383,7 @@ func newTasksRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, t
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Several tasks"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	for _, title := range titles {
 		var spec struct {
 			createdIssue
@@ -1190,7 +1190,7 @@ func newAcrossRig(t *testing.T) (*sliceFourRig, []*acrossIssue, *acrossIssue) {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Across the release"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	implementerReviewer := []claim.Role{claim.RoleImplementer, claim.RoleReviewer}
 	walks := []*acrossIssue{
 		{title: "Implementer resumes its step", steps: implementerReviewer, place: 1},

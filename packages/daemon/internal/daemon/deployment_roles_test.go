@@ -320,7 +320,7 @@ func newDeploymentRolesRig(t *testing.T, proof liveProof, dispatch *scratchDispa
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Deployment roles"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	for place, title := range titles {
 		var created struct {
 			Key               string `json:"key"`
@@ -632,7 +632,7 @@ func newSliceFourRig(t *testing.T) *sliceFourRig {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Slice four"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	const title = "Slice four issue continues"
 	var created struct {
 		Key     string `json:"key"`
