@@ -114,7 +114,7 @@ type MessageBody struct {
 	Urgency        *string `json:"urgency,omitempty"`
 	// ExpectsReply arrives as the JSON literal false, "optional" or "required" (and, until no
 	// deployment pins a plugin build old enough to write it, the old string "none"), so it is
-	// read raw and parsed by ParseExpectsReply rather than decoded as one Go type.
+	// read raw and parsed by ParseExpectsAsSpoken rather than decoded as one Go type.
 	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
 	ExpiresAt    *int64          `json:"expires_at,omitempty"`
 }
@@ -161,10 +161,11 @@ type PublishRequest struct {
 // listener's answer reads as.
 type SendResponse struct {
 	Envelope
-	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
-	// (the listener's expectsReplyAnswer). It shadows the embedded envelope's own field: of two
-	// fields sharing one JSON name encoding/json writes the shallower, so these bytes are what
-	// the answer carries and every SendResponse the listener builds fills them.
+	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke, as
+	// the listener's validateMessageBody read it (ParseExpectsAsSpoken). It shadows the embedded
+	// envelope's own field: of two fields sharing one JSON name encoding/json writes the
+	// shallower, so this value is what the answer carries, and every SendResponse the listener
+	// builds fills it.
 	ExpectsReply ExpectsAsSpoken `json:"expects_reply,omitzero"`
 	Recipient    string          `json:"recipient"`
 	// RecipientState is the state the recipient's record puts it in at the moment the send was
