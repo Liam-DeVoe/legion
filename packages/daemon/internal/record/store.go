@@ -771,9 +771,11 @@ const pullRequestColumns = `issue, ` + pullRequestPlan + `, repo, number, branch
 	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward`
 
 // pullRequestPlan is the tasks of the plan of a pull_requests row's issue at the issue's
-// generation, each as its id, its branch and its state, in task id order, as one JSON array: the
-// facts StoredPlan.TaskOfBranch reads a row's task from. An issue with no plan rows there reads [].
-const pullRequestPlan = `(select coalesce(json_agg(json_build_object('task', t.task, 'branch', t.branch, 'state', t.state) order by t.task), '[]')
+// generation, each as its id, its branch, its state and its place, in task id order, as one JSON
+// array: the facts StoredPlan.TaskOfBranch reads a row's task from. An issue with no plan rows
+// there reads [].
+const pullRequestPlan = `(select coalesce(json_agg(json_build_object('task', t.task, 'branch', t.branch, 'state', t.state,
+	'place', json_build_object('kind', t.running_kind, 'position', t.position)) order by t.task), '[]')
 	from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation where t.issue = pull_requests.issue)`
 
 func (s *Postgres) PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error) {
@@ -3233,6 +3235,23 @@ func (s *Postgres) TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string
 		and (payload->>'generation')::bigint = $3 and payload->>'task' = $4)`,
 		issue, string(OutboxKindTaskBranch), int64(generation), task).Scan(&queued); err != nil {
 		return false, fmt.Errorf("read whether the branch row of task %s of %s at generation %d is still queued: %w", task, issue, generation, err)
+	}
+	return queued, nil
+}
+
+// StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
+// step_stop (workflow's stopTask), queued before the row before — due, running or backing off — so
+// the process of the step a stopped task ran may not be stopped yet. A row of the lifecycle lane
+// runs once its own turn comes, and a row that backs off holds none of its issue's later rows back
+// (outboxInOrder), so this is the read for a row that must run after such a stop: the removal of a
+// removed task's working copy (TaskCopyRemove), which the process of the task's step may still be
+// working in. A stop queued after before holds it back from nothing.
+func (s *Postgres) StepStopQueued(ctx context.Context, tx pgx.Tx, issue string, before int64) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2
+		and payload->>'op' = 'step_stop' and id < $3)`,
+		issue, string(OutboxKindSupervise), before).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether a step stop of %s queued before row %d is still in the outbox: %w", issue, before, err)
 	}
 	return queued, nil
 }

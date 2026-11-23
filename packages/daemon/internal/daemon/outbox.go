@@ -940,6 +940,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.releaseIssue(ctx, row, value)
 	case record.WorkspaceRemove:
 		return r.removeWorkspace(ctx, row, value)
+	case record.TaskCopyRemove:
+		return r.removeTaskCopy(ctx, row, value)
 	case record.RoleMessage:
 		return r.roleMessage(ctx, row, value)
 	case record.GatedStepsPublish:
@@ -4796,12 +4798,14 @@ func (r *outbox) joinCannotEnd(ctx context.Context, row record.OutboxRow, issue 
 	return fmt.Errorf("%s%s: %w", taskJoinToldPrefix, words, missing.err)
 }
 
-// removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The
-// removal belongs to the tree whose linger queued it and to that linger's root generation: an issue
-// adopted into another tree since (workflow.Engine.Adopt) works in its new tree, and a tree
-// re-admitted since runs in the workspace again, so either row finishes without acting. A row
-// queued by an earlier release names no tree and is fenced by its linger alone, against the
-// issue's current tree.
+// removeWorkspace removes the workspace of the row's issue once its tree's linger expired: the
+// working copy of each task of the issue beside the issue's own (workspace.TaskCopies), whichever
+// generation made it, then the issue's own, since nothing of the issue runs in any of them once
+// the close has retired every claim. The removal belongs to the tree whose linger queued it and to
+// that linger's root generation: an issue adopted into another tree since (workflow.Engine.Adopt)
+// works in its new tree, and a tree re-admitted since runs in the workspace again, so either row
+// finishes without acting. A row queued by an earlier release names no tree and is fenced by its
+// linger alone, against the issue's current tree.
 func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payload record.WorkspaceRemove) error {
 	if r.supervisor == nil {
 		return errors.New("workspace removal has no claim supervisor")
@@ -4860,9 +4864,115 @@ func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payl
 	defer issueTurn.Unlock()
 	store, releaseStore := r.provisions.stores.take(working.Clone)
 	defer releaseStore()
+	copies, err := workspace.TaskCopies(working)
+	if err != nil {
+		return fmt.Errorf("remove workspace for %s: %w", row.Issue, err)
+	}
+	for _, taskCopy := range copies {
+		if err := r.remove(ctx, taskCopy, store); err != nil {
+			return fmt.Errorf("remove the working copy %s of a task of %s: %w", taskCopy.Dir, row.Issue, err)
+		}
+	}
 	if err := r.remove(ctx, working, store); err != nil {
 		return fmt.Errorf("remove workspace for %s: %w", row.Issue, err)
 	}
+	return nil
+}
+
+// removeTaskCopy removes the working copy of a task that a later version of the plan of the row's
+// issue removed (record.TaskCopyRemove): the jj workspace on the task's branch beside the issue's
+// own working copy on the daemon's host (workspace.Name, workspace.Location), and nothing else.
+// Five fences come first.
+//
+// A runtime that provisions each claim's workspace in its pod made the copy on the issue's pod
+// disk, which the daemon does not reach: the row finishes without acting, as removeWorkspace does,
+// and the copy goes with that disk, which the restore of a released pod's work does not carry to
+// the next pod (savedWorkspaceBundle).
+//
+// A task of the plan the issue runs now that holds the branch (record.PlanTask.BranchOf) works in
+// that copy. The record gives a task's name once in all the issue's generations
+// (record.Store.AssignTaskBranch), but a record of a release before gave a later generation's
+// tasks the names an earlier one gave, so the row reads the plan, and finishes without acting where
+// a task holds the branch.
+//
+// The process of the removed task's step may still work in the copy: the row waits while a
+// step_stop row queued before it, the stop of that step (workflow's stopTask), is still in the
+// outbox (record.Store.StepStopQueued), since a lifecycle row that backs off holds none of its
+// issue's later rows back. It waits too while a claim of the issue that is not retired holds a
+// pending delivery on the branch (supervise.Delivery.Branch): its turn works in the copy, and its
+// send adopts the copy, which makes it again where it is gone.
+//
+// The removal takes the issue's turn, then the clone's store lock, which a pane's shim takes
+// across processes while it makes a task's working copy (workspace.CloneLock), as removeWorkspace
+// takes them. A copy that is not there is removed as nothing (workspace.Remove).
+func (r *outbox) removeTaskCopy(ctx context.Context, row record.OutboxRow, payload record.TaskCopyRemove) error {
+	if r.supervisor == nil {
+		return errors.New("the removal of a task's working copy has no claim supervisor")
+	}
+	if r.podsProvision() {
+		r.log.Info("outbox removal of a task's working copy on a pod's disk, which the daemon does not reach; finished without acting",
+			"row", row.ID, "issue", row.Issue, "task", payload.Task, "branch", payload.Branch)
+		return nil
+	}
+	issue, err := r.issue(ctx, row.Issue)
+	if err != nil {
+		return err
+	}
+	var stored *record.StoredPlan
+	var stopping bool
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		if stored, err = r.records.Plan(ctx, tx, issue.Key, issue.Generation); err != nil {
+			return err
+		}
+		stopping, err = r.records.StepStopQueued(ctx, tx, issue.Key, row.ID)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the plan of %s for the removal of task %s's working copy: %w", issue.Key, payload.Task, err)
+	}
+	if stored != nil {
+		if at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.BranchOf(issue.Key) == payload.Branch }); at >= 0 {
+			r.log.Info("outbox removal of a task's working copy whose branch a task of the plan holds; finished without acting", "row", row.ID,
+				"issue", issue.Key, "task", payload.Task, "branch", payload.Branch, "holder", stored.Tasks[at].Task, "generation", issue.Generation)
+			return nil
+		}
+	}
+	if stopping {
+		return wait.Errorf("the removal of task %s's working copy of %s waits for the stop of the step a stopped task ran, which is still queued", payload.Task, issue.Key)
+	}
+	for _, machine := range r.claimsOfIssue(row.Issue) {
+		if held := machine.Claim(); held.State != supervise.StateRetired && held.Pending != nil && held.Pending.Branch == payload.Branch {
+			return wait.Errorf("the removal of task %s's working copy of %s waits for claim %s (%s), whose delivery %s is on %s",
+				payload.Task, issue.Key, held.Token, held.State, held.Pending.ID, payload.Branch)
+		}
+	}
+	repo, err := issue.Repository()
+	if err != nil {
+		return fmt.Errorf("locate the working copy of task %s of %s: %w", payload.Task, issue.Key, err)
+	}
+	name, err := workspace.Name(payload.Branch)
+	if err != nil {
+		return fmt.Errorf("locate the working copy of task %s of %s: %w", payload.Task, issue.Key, err)
+	}
+	working, err := workspace.Location(r.stateDir, repo, row.Issue)
+	if err != nil {
+		return fmt.Errorf("locate the working copy of task %s of %s: %w", payload.Task, issue.Key, err)
+	}
+	taskCopy, err := workspace.Location(r.stateDir, repo, name)
+	if err != nil {
+		return fmt.Errorf("locate the working copy of task %s of %s: %w", payload.Task, issue.Key, err)
+	}
+	issueTurn, releaseIssue := r.provisions.issues.take(working.Dir)
+	defer releaseIssue()
+	issueTurn.Lock()
+	defer issueTurn.Unlock()
+	store, releaseStore := r.provisions.stores.take(taskCopy.Clone)
+	defer releaseStore()
+	if err := r.remove(ctx, taskCopy, store); err != nil {
+		return fmt.Errorf("remove the working copy %s of task %s of %s: %w", taskCopy.Dir, payload.Task, issue.Key, err)
+	}
+	r.log.Info("outbox removed the working copy of a task the plan removed", "row", row.ID, "issue", issue.Key, "task", payload.Task,
+		"branch", payload.Branch, "dir", taskCopy.Dir)
 	return nil
 }
 

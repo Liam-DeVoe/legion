@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -418,6 +420,49 @@ func taskLocation(issue Workspace, branch string) (Workspace, error) {
 		return Workspace{}, fmt.Errorf("branch %s is of issue %s, not of the issue whose working copy is %s", branch, key, issue.Dir)
 	}
 	return Location(stateDirOf(issue.Dir), issue.Repo, name)
+}
+
+// TaskCopies is the working copy of each task of issue's plan that the directory of workspaces
+// holds beside issue's own working copy (taskLocation), in name order: each directory whose name is
+// the issue's, a dot and a task's part of a branch (claim.BranchTask, as Name reads it), and each
+// such name with removingSuffix, the aside a Remove cut short left, which the next Remove of that
+// working copy clears first. A task's working copy and its aside are one working copy. Only that
+// one directory is read: no entry is followed, so a link or a file that bears a task's name is no
+// working copy, and neither jj nor the record is asked, so a working copy is found whichever
+// generation of the issue made it and whatever the plan holds now. A directory of workspaces that
+// is not there holds none. issue must be the working copy Location names for its issue's key, on
+// that issue's own branch; any other is refused, since a name read off anything else would answer
+// no working copy for a reason that is not that there is none.
+func TaskCopies(issue Workspace) ([]Workspace, error) {
+	if !located(issue) {
+		return nil, fmt.Errorf("the workspace %#v is not a workspace Location names", issue)
+	}
+	if key, part, ok := claim.BranchTask(issue.Bookmark); !ok || part != "" || strings.ToLower(key) != filepath.Base(issue.Dir) {
+		return nil, fmt.Errorf("the workspace %s is on %q, which is not the own branch of its issue", issue.Dir, issue.Bookmark)
+	}
+	beside := filepath.Dir(issue.Dir)
+	entries, err := os.ReadDir(beside)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the working copies beside %s: %w", issue.Dir, err)
+	}
+	prefix := filepath.Base(issue.Dir) + "."
+	var copies []Workspace
+	for _, entry := range entries {
+		name := strings.TrimSuffix(entry.Name(), removingSuffix)
+		part, ok := strings.CutPrefix(name, prefix)
+		if !ok || !entry.IsDir() {
+			continue
+		}
+		task, err := taskLocation(issue, issue.Bookmark+"."+part)
+		if err != nil || task.Dir != filepath.Join(beside, name) || slices.ContainsFunc(copies, func(w Workspace) bool { return w.Dir == task.Dir }) {
+			continue
+		}
+		copies = append(copies, task)
+	}
+	return copies, nil
 }
 
 // ProvisionTask makes the working copy of the task whose branch is branch, beside its issue's own

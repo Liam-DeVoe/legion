@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -177,8 +178,8 @@ type writtenVersion struct {
 // writeVersion stores fact's version as the version in force, the rows versionRefusal built and
 // named (given): each task it leaves as it was keeps its steps and where it stands, each task it
 // changes takes the steps its block now names, and each task it removes is deleted, with the row of
-// its pull request, which is closed where it is open (closeRemovedPullRequests). It answers what it
-// read of the version before.
+// its pull request, which is closed where it is open (closeRemovedPullRequests), and its working
+// copy is queued for removal (removeTaskCopies). It answers what it read of the version before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
 	version, tasks, steps := given.version, given.tasks, given.steps
 	var removed []string
@@ -197,6 +198,9 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	if len(removed) > 0 {
 		if given.recorded {
 			if err := e.closeRemovedPullRequests(ctx, tx, fact, removed); err != nil {
+				return writtenVersion{}, err
+			}
+			if err := e.removeTaskCopies(ctx, tx, fact, given.stored, removed); err != nil {
 				return writtenVersion{}, err
 			}
 		}
@@ -218,12 +222,13 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // the plan.`, in the version's transaction: GitHub keeps a pull request open until someone closes
 // it. A row's task is read from its branch against the plan in force (record.PullRequest.Task), so
 // the rows are read before the removed tasks go (DeleteTasks). A row left behind would be no
-// task's, and one on the issue's own branch would read as the pull request of a task that waits
-// with no branch of its own (record.StoredPlan.TasksOfBranch), and as the issue's merge where that
-// task merges; so a closed or merged row goes too. A task a later version adds back starts on a
-// branch of its own (record.Store.AssignTaskBranch), and no fact of the closed pull request finds
-// a row. It runs for a version of the issue's own generation alone (givenVersion.recorded): a row's
-// task is read at that generation, and a plan waiting at generation 0 has no task that started.
+// task's, and one on the issue's own branch would read as the pull request of the task a version
+// leaves alone, which holds that branch before its start as the one task of a plan of one
+// (record.StoredPlan.TasksOfBranch), and as the issue's merge; so a closed or merged row goes too.
+// A task a later version adds back starts on a branch of its own (record.Store.AssignTaskBranch),
+// and no fact of the closed pull request finds a row. It runs for a version of the issue's own
+// generation alone (givenVersion.recorded): a row's task is read at that generation, and a plan
+// waiting at generation 0 has no task that started.
 func (e *Engine) closeRemovedPullRequests(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, removed []string) error {
 	prs, err := e.store.TaskPullRequests(ctx, tx, fact.Issue)
 	if err != nil {
@@ -244,6 +249,33 @@ func (e *Engine) closeRemovedPullRequests(ctx context.Context, tx pgx.Tx, fact i
 		}
 		e.logOnCommit(ctx, "workflow: the pull request of a task the plan removed is deleted from the record, and closed where it was open",
 			"issue", fact.Issue, "task", pr.Task, "pullRequest", pr.Number, "branch", pr.Branch, "state", pr.State, "version", fact.Plan.Version)
+	}
+	return nil
+}
+
+// removeTaskCopies queues the removal of the working copy of each task of fact's issue that fact's
+// version removes (removed), one row for each (record.TaskCopyRemove), in the version's
+// transaction: the deletion of the task's rows (DeleteTasks) leaves the jj workspace on its branch
+// beside the issue's own working copy, and nothing else removes it, since the issue's own removal
+// takes the working copies on the daemon's host only once the issue's tree has closed (the
+// daemon's removeWorkspace). The branch is read from stored, the plan in force, before the tasks
+// go. A task that never started holds no branch and has no working copy, and the task that holds
+// the issue's own branch (record.PlanTask.BranchOf) works in the issue's own working copy, which
+// goes only with the issue: neither queues a row. A task a later version adds back takes a branch
+// of its own (record.Store.AssignTaskBranch), so no removal reaches its working copy. It runs for
+// a version of the issue's own generation alone (givenVersion.recorded), as the close of a removed
+// task's pull request does: a plan waiting at generation 0 has no task that started.
+func (e *Engine) removeTaskCopies(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, stored *record.StoredPlan, removed []string) error {
+	for _, task := range stored.Tasks {
+		branch := task.BranchOf(fact.Issue)
+		if !slices.Contains(removed, task.Task) || branch == claim.IssueBranch(fact.Issue) {
+			continue
+		}
+		if err := e.enqueue(ctx, tx, fact.Issue, record.TaskCopyRemove{Generation: fact.Generation, Task: task.Task, Branch: branch}); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: the working copy of a task the plan removed is queued for removal",
+			"issue", fact.Issue, "task", task.Task, "branch", branch, "version", fact.Plan.Version)
 	}
 	return nil
 }

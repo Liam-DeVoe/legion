@@ -2369,6 +2369,9 @@ type Store interface {
 	// RecordBranchGiven records branch among the names generation of issue gave, so no task of the
 	// issue takes it again: the branch of a pull request of an earlier run whose row is deleted.
 	RecordBranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) error
+	// BranchGiven says whether generation of issue gave branch: to a task of it, as the branch of
+	// a pull request of an earlier run, or with the run a hand-over carried.
+	BranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) (bool, error)
 	// SetJoinConflicts writes the needs of task whose merge GitHub refused as a conflict, into the
 	// branch the join of its needs is made on, in place of what the task held.
 	SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, needs []string) error
@@ -2597,6 +2600,10 @@ type Store interface {
 	// generation, whatever its lease or its next_at: the join of the task's needs at that
 	// generation has not ended.
 	TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (bool, error)
+	// StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
+	// step_stop, queued before the row before, whatever its lease or its next_at: the process of a
+	// stopped task's step may still run.
+	StepStopQueued(ctx context.Context, tx pgx.Tx, issue string, before int64) (bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)
