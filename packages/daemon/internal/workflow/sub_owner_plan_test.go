@@ -49,9 +49,9 @@ func taskIDs(tasks map[string]record.PlanTask) []string {
 // version that changes h's steps is refused with one reason, and so is a version of the agent
 // sub-owner-g, whom no task of the plan names; neither writes anything. The owner's version that
 // lacks f1, which is stopped so that only the owner's rule refuses its removal, is refused with the
-// reason that says what the owner can do instead. A version of the owner that removes the stopped
-// f with its parts is refused while the part f1 is done, with the reason of a done task, and is
-// taken once f1 is stopped too: the three rows go.
+// reason that says what the owner can do instead. Beside a, which runs, a version of the owner that
+// removes the stopped f with its parts is refused while the part f1 is done, with the reason of a
+// done task, and is taken once f1 is stopped too: the three rows go.
 //
 // The fault it catches is an owner that changes the parts of a task, or a sub-owner that changes a
 // task outside its own (its control: the rule skipped for the owner, so the owner's version that
@@ -111,7 +111,8 @@ func TestASubOwnerChangesOnlyItsParts(t *testing.T) {
 				engine := returnEngine()
 				root := stepRoot(t, pool, phase.Implementing)
 				seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
-				seedOwnedVersion(t, pool, root.Key, root.Generation, subOwned("f").at(record.TaskRunning, atParts), stepped("h", "implementer", "f"),
+				a := stepped("a", "implementer").at(record.TaskRunning, atStep(1))
+				seedOwnedVersion(t, pool, root.Key, root.Generation, a, subOwned("f").at(record.TaskRunning, atParts), stepped("h", "implementer", "a", "f"),
 					tc.f1, part("f2", "f").at(record.TaskRunning, atStep(1)))
 				stopped := []string{"f", "f2"}
 				if tc.f1.state == record.TaskRunning {
@@ -120,7 +121,7 @@ func TestASubOwnerChangesOnlyItsParts(t *testing.T) {
 				stopTasks(t, pool, root.Key, root.Generation, stopped...)
 
 				before := planStandingOf(t, pool, engine, root.Key, root.Generation)
-				result := applyFacts(t, pool, engine)("owner-version-2", laterVersion(t, root.Key, root.Generation, 2, block("h", "")))
+				result := applyFacts(t, pool, engine)("owner-version-2", laterVersion(t, root.Key, root.Generation, 2, block("a", ""), block("h", "", "a")))
 
 				if tc.f1.state == record.TaskDone {
 					assertPlanRefusal(t, pool, engine, root.Key, root.Generation, "owner-version-2", result,
@@ -128,8 +129,8 @@ func TestASubOwnerChangesOnlyItsParts(t *testing.T) {
 					return
 				}
 				mustTake(t, "the owner's version 2", result)
-				if ids := taskIDs(tasksOf(t, pool, engine, root.Key)); !slices.Equal(ids, []string{"h"}) {
-					t.Fatalf("the tasks of %s after the owner removed f = %v, want h alone: f, f1 and f2 deleted", root.Key, ids)
+				if ids := taskIDs(tasksOf(t, pool, engine, root.Key)); !slices.Equal(ids, []string{"a", "h"}) {
+					t.Fatalf("the tasks of %s after the owner removed f = %v, want a and h: f, f1 and f2 deleted", root.Key, ids)
 				}
 			})
 		}
