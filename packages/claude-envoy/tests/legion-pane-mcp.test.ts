@@ -18,6 +18,8 @@ import { PROCESS_WAIT_MS, ROW_TIMEOUT_MS } from "./reopen-server"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
+/** What the row keeps of its timeout for its `finally`: closing the client and the stand-ins. */
+const ROW_CLEANUP_MS = 10_000
 
 async function daemonFixture(name: string): Promise<Record<string, unknown>> {
   const file = resolve(import.meta.dir, "../../contracts/fixtures/daemon-api", name)
@@ -149,11 +151,16 @@ test(
     })
     // A whole server process, which a loaded machine starts and runs slowly: each wait below ends
     // on its fact, or on the server's close, which no later fact can follow, and names what it waited
-    // for with what the stand-ins saw; each request to the server takes the same hang guard
-    // (`request`) in place of the SDK's 60 s. `PROCESS_WAIT_MS` is a hang guard only, and the row's
-    // timeout is above their chain (`ROW_TIMEOUT_MS`). A fixed 20 s for the whole row decided it at
-    // a load of about 2,400, with every fact still to come.
-    const request = { timeout: PROCESS_WAIT_MS }
+    // for with what the stand-ins saw; each request to the server takes the same guard (`request`)
+    // in place of the SDK's 60 s. A wait's guard is `PROCESS_WAIT_MS`, cut to what is left of the
+    // row's own deadline (`ROW_TIMEOUT_MS`, less `ROW_CLEANUP_MS` for the `finally`), so the row's
+    // ten waits, at 120 s each, can never run past the runner's timeout: a stuck one names its step
+    // first, however long the waits before it took. A fixed 20 s for the whole row decided it at a
+    // load of about 2,400, with every fact still to come.
+    const rowDeadline = performance.now() + ROW_TIMEOUT_MS - ROW_CLEANUP_MS
+    const guard = (): number =>
+      Math.max(1, Math.min(PROCESS_WAIT_MS, Math.floor(rowDeadline - performance.now())))
+    const request = (): { timeout: number } => ({ timeout: guard() })
     let closed = false
     client.onclose = () => {
       closed = true
@@ -165,13 +172,13 @@ test(
     const observed = (): string =>
       `server closed ${closed}; daemon calls ${daemonCalls.map(({ path }) => path).join(", ") || "none"}; roles ${roles.length}; inbox lines ${inboxLines.length}; stderr:\n${stderr}`
     const until = async (fact: () => boolean, what: string): Promise<void> => {
-      await waitFor(async () => fact() || closed, what, observed, PROCESS_WAIT_MS)
+      await waitFor(async () => fact() || closed, what, observed, guard())
       if (!fact()) throw new Error(`the server closed before ${what} (${observed()})`)
     }
 
     try {
-      await client.connect(transport, request)
-      const { tools } = await client.listTools(undefined, request)
+      await client.connect(transport, request())
+      const { tools } = await client.listTools(undefined, request())
       expect(tools.map(({ name }) => name)).toEqual([
         ...envoyToolSpecs.map(({ name }) => name),
         "legion",
@@ -181,7 +188,7 @@ test(
         client.callTool(
           { name: "legion", arguments: { op: "read_record", issue: "LEGION-208" } },
           undefined,
-          request,
+          request(),
         ),
       ).rejects.toThrow("this session has no Legion claim yet")
 
@@ -194,7 +201,7 @@ test(
           arguments: { event: "UserPromptSubmit", prompt: "/rename legion" },
         },
         undefined,
-        request,
+        request(),
       )
       expect(seed.content).toEqual([{ type: "text", text: "{}" }])
       const transcript = join(configDir, "projects", "-work", `${SESSION}.jsonl`)
@@ -236,7 +243,7 @@ test(
           arguments: { event: "UserPromptSubmit", prompt: "Start implementing" },
         },
         undefined,
-        request,
+        request(),
       )
       expect(turn.content).toEqual([{ type: "text", text: "{}" }])
       await until(() => roles.length > 0, "the pane to claim its role at its first turn")
@@ -256,7 +263,7 @@ test(
       const record = await client.callTool(
         { name: "legion", arguments: { op: "read_record", issue: "LEGION-208" } },
         undefined,
-        request,
+        request(),
       )
       const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
       expect(record.content).toEqual([
@@ -266,7 +273,7 @@ test(
       const own = await client.callTool(
         { name: "legion", arguments: { op: "read_record" } },
         undefined,
-        request,
+        request(),
       )
       expect(own.content).toEqual(record.content)
 
