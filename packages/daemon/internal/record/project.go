@@ -1489,7 +1489,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		if _, waits := releasedForWait[issue.Key]; waits {
 			continue
 		}
-		if issue.Phase != phase.Admitted || issue.AwaitingPerson() || OutOfWorkflow(issue.Status) {
+		if !FirstPhaseMayStart(issue) {
 			hold(issue)
 			continue
 		}
@@ -1646,6 +1646,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			PartStarting, i+1, byKey[starting[i].Issue.Tree].Rank
 	}
 	return append(line, starting...), heldRows
+}
+
+// FirstPhaseMayStart says whether issue stands where its first phase can start: at admitted,
+// waiting on no person and in the workflow by its status. It is the first test Waiting reads of
+// each issue for the line's starting part, before the tree, the gate and the waits it may be held
+// on, so a reader that asks whether an issue can still take its first start asks it here: one
+// finished, past its first phase or out of the workflow cannot.
+func FirstPhaseMayStart(issue Issue) bool {
+	return issue.Phase == phase.Admitted && !issue.AwaitingPerson() && !OutOfWorkflow(issue.Status)
 }
 
 // WaitingIssues is the issues of a waiting line, in its order, for a reader that wants the

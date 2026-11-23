@@ -292,20 +292,44 @@ func (s *seeder) visitAt(visits []Visit) *Visit {
 	return nil
 }
 
-// issue writes iss's record as the start finds it, where it had entered the workflow.
+// issue writes iss's record as the start finds it (startRecord), where it had entered the workflow.
 func (s *seeder) issue(iss *IssueTrace) error {
+	issue, unplaced := s.startRecord(iss)
+	if unplaced != "" {
+		s.unplaced(iss.Key, "%s", unplaced)
+	}
+	if issue == nil {
+		return nil
+	}
+	if err := s.records.PutIssue(s.ctx, s.tx, *issue); err != nil {
+		return fmt.Errorf("replay: seed the record of %s: %w", iss.Key, err)
+	}
+	// The hold's beginning is the one column of the hold PutIssue keeps as stored: the move into
+	// held writes it beside the record (workflow's claimFailed).
+	if issue.Hold != nil && issue.Hold.Since != nil {
+		if err := s.records.MarkHoldBegan(s.ctx, s.tx, iss.Key, *issue.Hold.Since); err != nil {
+			return fmt.Errorf("replay: seed when the hold of %s began: %w", iss.Key, err)
+		}
+	}
+	s.placed[iss.Key] = *issue
+	return nil
+}
+
+// startRecord is iss's record as the start finds it: its phase (held, or awaiting a person, where
+// the trace holds that wait at the start), Dispatch status, rank, parent, tree, generation, hold,
+// awaiting and whether it is handed to Legion, and a lingering root's linger. Nil where it had not
+// entered the workflow, and nil with the reason where it had and its record cannot be placed.
+func (s *seeder) startRecord(iss *IssueTrace) (*record.Issue, string) {
 	entry, visits := s.run(iss)
 	if entry == nil {
-		return nil
+		return nil, ""
 	}
 	event, seq := dispatchBefore(iss, s.at)
 	switch {
 	case event == nil:
-		s.unplaced(iss.Key, "it runs in the workflow and the window holds no Dispatch event of it before %s", stamp(s.at))
-		return nil
+		return nil, fmt.Sprintf("it runs in the workflow and the window holds no Dispatch event of it before %s", stamp(s.at))
 	case iss.Repo == "":
-		s.unplaced(iss.Key, "Dispatch names no repository of it, which the daemon records every issue on")
-		return nil
+		return nil, "Dispatch names no repository of it, which the daemon records every issue on"
 	}
 	shown := event.Issue
 	issue := record.Issue{Key: iss.Key, Tree: entry.Tree, Project: s.t.Project, Title: cmp.Or(iss.Title, iss.Key), Phase: phase.Done,
@@ -343,18 +367,23 @@ func (s *seeder) issue(iss *IssueTrace) error {
 			}
 		}
 	}
-	if err := s.records.PutIssue(s.ctx, s.tx, issue); err != nil {
-		return fmt.Errorf("replay: seed the record of %s: %w", iss.Key, err)
-	}
-	// The hold's beginning is the one column of the hold PutIssue keeps as stored: the move into
-	// held writes it beside the record (workflow's claimFailed).
-	if issue.Hold != nil && issue.Hold.Since != nil {
-		if err := s.records.MarkHoldBegan(s.ctx, s.tx, iss.Key, *issue.Hold.Since); err != nil {
-			return fmt.Errorf("replay: seed when the hold of %s began: %w", iss.Key, err)
+	return &issue, ""
+}
+
+// startRecords is the record t's start state at at writes for each issue of keys that it places
+// (seeder.startRecord), by key: none for an issue that had not entered the workflow by then, or
+// whose record it cannot place.
+func startRecords(t Trace, at time.Time, keys []string) map[string]record.Issue {
+	s := seeder{t: t, at: at}
+	placed := make(map[string]record.Issue, len(keys))
+	for _, key := range keys {
+		if iss, known := t.Issues[key]; known {
+			if issue, _ := s.startRecord(iss); issue != nil {
+				placed[key] = *issue
+			}
 		}
 	}
-	s.placed[iss.Key] = issue
-	return nil
+	return placed
 }
 
 // eventAtSeq is the time of iss's event of sequence seq, or otherwise when where the window holds

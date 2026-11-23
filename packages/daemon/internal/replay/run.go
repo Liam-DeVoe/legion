@@ -613,29 +613,35 @@ func withRanks(t Trace, ranks map[string]string) Trace {
 }
 
 // firstStartRanks is the input transform of the main branch's FirstStarts, recorded (design 10.7):
-// each issue of the project that the record started in the window, by its first slot that begins
-// at or after the window's start, is shown at a rank that orders it by that first start, below
-// every rank Dispatch gave any issue of the window. A slot the issue held at the start from before
-// it is no start in the window, nor is a slot of an earlier run. The line orders the issues whose
-// first phase can start by their tree root's rank and then their own (record.Waiting), so each
-// tree's root is shown at the earliest recorded first start among the issues of its tree that have
-// not yet taken their first slot in the replay: the root itself, and each issue whose entry stood in
-// the root's tree at its first start. The replay moves the root's rank each time one of them takes
-// its first slot (firstStarts.take, driver.rerank), so a root in flight at the start ranks by its
-// first child's start, then by its next child's, and a tree's next child takes the place its own
-// recorded start gives it among every tree's work: the replay starts the issues in the order the
-// record started them, across trees, where the rule lets it (assumption 36). A tree whose recorded
-// starts are all taken shows its root at Dispatch's rank, behind every recorded start still to come,
-// as every issue the record did not start in the window is shown: a root that left the workflow
-// before the window and was set back to todo waits at its own rank behind the issues the record
-// started, as it did in the record, rather than at the head of the line with no recorded work left
-// to open; and an issue the record never started waits behind its tree's recorded starts still to
-// come, and once they are all taken behind every other tree's. One order stays out of reach: a tree
-// whose next recorded start cannot start yet ranks by it all the same, so a later issue of that tree
-// that can start goes ahead of another tree's issue that the record started before it. A recorded
-// change of a rank the replay shows changes nothing it shows (shadow.render), and the measures read
-// the true ranks from the trace. Nil where no issue started in the window or no rank sorts below the
-// window's lowest.
+// each issue of the project that the record started in the window, by its first start there
+// (firstStartIn), is shown at a rank that orders it by that first start, below every rank Dispatch
+// gave any issue of the window. A first start is the first slot of a run that had taken none: a
+// slot the issue held at the start from before it is none, nor is a later slot of a run that held
+// one at the start or took one before it, a slot of an earlier run, a slot the record gave to work
+// that came back (a return after a send-back or a conflict, a wait's end, a held phase's restart)
+// or a slot the trace infers. The line orders the issues whose first phase can start by their tree
+// root's rank and then their own (record.Waiting), so each tree's root is shown at the earliest
+// recorded first start among the issues of its tree that can still take theirs in the replay
+// (rootRank): the root itself, and each issue whose entry stood in the root's tree at its first
+// start. The replay moves the root's rank each time one of them takes its first slot
+// (firstStarts.take, driver.rerank), and each time one of them can no longer take it, or can again
+// (firstStarts.bar, driver.reviewFirstStart), so a root in flight at the start ranks by its first
+// child's start, then by its next child's, and a tree's next child takes the place its own recorded
+// start gives it among every tree's work: the replay starts the issues in the order the record
+// started them, across trees, where the rule lets it (assumption 36). An issue the replay has not
+// filed yet, or has finished, moved past its first phase or taken out of the workflow without its
+// first start, pins no tree to its rank, from the window's start on (barAtStart). A tree with no
+// recorded start left to come shows its root at Dispatch's rank, behind every recorded start still
+// to come, as every issue the record did not start in the window is shown: a root that left the
+// workflow before the window and was set back to todo waits at its own rank behind the issues the
+// record started, as it did in the record, rather than at the head of the line with no recorded
+// work left to open; and an issue the record never started waits behind its tree's recorded starts
+// still to come, and once they are all taken behind every other tree's. One order stays out of
+// reach: a tree whose next recorded start waits at admitted for what the line holds it on (a link,
+// its tree's gate) ranks by it all the same, so a later issue of that tree that can start goes
+// ahead of another tree's issue that the record started before it. A recorded change of a rank the
+// replay shows changes nothing it shows (shadow.render), and the measures read the true ranks from
+// the trace. Nil where no issue started in the window or no rank sorts below the window's lowest.
 func firstStartRanks(t Trace) *firstStarts {
 	type first struct {
 		key, tree string
@@ -658,11 +664,11 @@ func firstStartRanks(t Trace) *firstStarts {
 		if iss.Project != t.Project {
 			continue
 		}
-		at := slices.IndexFunc(iss.Slots, func(span SlotSpan) bool { return !span.Before && !span.Start.Before(t.From) })
-		if at < 0 {
+		start, began := firstStartIn(iss, t.From)
+		if !began {
 			continue
 		}
-		start, tree := iss.Slots[at].Start, key
+		tree := key
 		if entry := iss.entryAt(start); entry != nil && entry.Tree != "" {
 			tree = entry.Tree
 		}
@@ -688,7 +694,7 @@ func firstStartRanks(t Trace) *firstStarts {
 	}
 	width := len(strconv.Itoa(len(started)))
 	f := &firstStarts{own: make(map[string]string, len(started)), trees: make(map[string][]string, len(roots)),
-		tree: make(map[string]string, len(started)), taken: map[string]bool{}}
+		tree: make(map[string]string, len(started)), taken: map[string]bool{}, barred: map[string]bool{}}
 	for i, issue := range started {
 		f.own[issue.key] = fmt.Sprintf("%s%0*d", prefix, width, i+1)
 		if roots[issue.tree] {
@@ -699,13 +705,48 @@ func firstStartRanks(t Trace) *firstStarts {
 			f.trees[issue.key] = append(f.trees[issue.key], issue.key)
 		}
 	}
+	f.barAtStart(t, t.From)
 	return f
+}
+
+// firstStartIn is when iss took its first start in the window from from on: its first slot that
+// begins there and is the first slot of its run, false where it took none. The run of a slot is the
+// issue's entry at the slot's start, and a slot that had not ended by that entry is of the same
+// run: one held at the window's start, one taken before it in that run, or one held where the log
+// begins. A slot the trace infers (SlotSpan.Inferred), or held where the log begins
+// (SlotSpan.Before), is no start, nor is a slot the record gave to work that came back to an issue
+// the daemon had started (cameBack), whose earlier slot the inputs may not reach.
+func firstStartIn(iss *IssueTrace, from time.Time) (time.Time, bool) {
+	for i, span := range iss.Slots {
+		if span.Before || span.Inferred || span.Start.Before(from) || cameBack(span.Kind) {
+			continue
+		}
+		entry := iss.entryAt(span.Start)
+		if !slices.ContainsFunc(iss.Slots[:i], func(earlier SlotSpan) bool {
+			return entry == nil || earlier.End.IsZero() || earlier.End.After(entry.At)
+		}) {
+			return span.Start, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// cameBack says whether kind, the kind of entry of the waiting line a slot was given to
+// (SlotSpan.Kind), is work that came back to an issue the daemon had started: a return of its work
+// (record.LineReturning), the end of its wait on another issue (record.LineWaitingOnIssue), or a
+// person's answer to a root (record.LineAnswered).
+func cameBack(kind string) bool {
+	switch kind {
+	case record.LineReturning.String(), record.LineWaitingOnIssue.String(), record.LineAnswered.String():
+		return true
+	}
+	return false
 }
 
 // firstStarts is the main branch's FirstStarts, recorded, over one window (firstStartRanks): the
 // rank of each issue the record started in the window by its first start, the issues of each tree
-// whose earliest rank still to come its root is shown at, and which of them have taken their first
-// slot in the replay.
+// whose earliest rank still to come its root is shown at, which of them have taken their first slot
+// in the replay, and which of the others cannot take it there now.
 type firstStarts struct {
 	// own is the rank of each issue the record started in the window, by its first start.
 	own map[string]string
@@ -717,11 +758,15 @@ type firstStarts struct {
 	tree map[string]string
 	// taken is each issue of own that has taken its first slot in the replay.
 	taken map[string]bool
+	// barred is each issue of own that has not taken its first slot in the replay and cannot take
+	// it there now (driver.reviewFirstStart): the replay has not filed it, or has finished it,
+	// moved it past its first phase or taken it out of the workflow.
+	barred map[string]bool
 }
 
 // ranks is the rank each issue is shown at now in place of Dispatch's: an issue of own at its own
 // rank, and a root at the rank of its tree's next first start (rootRank), or at Dispatch's where
-// every one is taken. Nil for no first starts.
+// none is left. Nil for no first starts.
 func (f *firstStarts) ranks() map[string]string {
 	if f == nil {
 		return nil
@@ -738,25 +783,81 @@ func (f *firstStarts) ranks() map[string]string {
 }
 
 // rootRank is the rank root is shown at now: the own rank of the first issue of its tree that has
-// not taken its first slot in the replay, and false where every one has, the root then being shown
-// at Dispatch's rank.
+// not taken its first slot in the replay and can still take it there; where none can, its own rank
+// where it has not taken its own first slot, since a root that cannot start yet has no tree open
+// for a member to start in and its rank pins none; and false where neither is left, the root then
+// being shown at Dispatch's rank.
 func (f *firstStarts) rootRank(root string) (string, bool) {
 	for _, key := range f.trees[root] {
-		if !f.taken[key] {
+		if !f.taken[key] && !f.barred[key] {
 			return f.own[key], true
 		}
+	}
+	if f.pending(root) {
+		return f.own[root], true
 	}
 	return "", false
 }
 
-// take records key's first slot in the replay and answers the roots whose rank it may move: the
-// root of the tree key started in, and key itself where it roots another. It answers none for an
-// issue the record did not start in the window, and for one that has taken its first slot already.
+// keys is the issues of own in key order, none for no first starts.
+func (f *firstStarts) keys() []string {
+	if f == nil {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(f.own))
+}
+
+// barAtStart bars each issue of own whose first phase cannot start where t's start state at at
+// records it (startRecords, record.FirstPhaseMayStart): one the start state does not record yet,
+// or records finished, past its first phase or out of the workflow. The replay reads each again as
+// it goes (driver.reviewFirstStart).
+func (f *firstStarts) barAtStart(t Trace, at time.Time) {
+	keys := f.keys()
+	placed := startRecords(t, at, keys)
+	for _, key := range keys {
+		issue, recorded := placed[key]
+		f.bar(key, !recorded || !record.FirstPhaseMayStart(issue))
+	}
+}
+
+// pending says whether key is an issue of own that has not taken its first slot in the replay.
+func (f *firstStarts) pending(key string) bool {
+	if f == nil {
+		return false
+	}
+	_, started := f.own[key]
+	return started && !f.taken[key]
+}
+
+// take records key's first slot in the replay and answers the roots whose rank it may move
+// (rootsOf). It answers none for an issue the record did not start in the window, and for one that
+// has taken its first slot already.
 func (f *firstStarts) take(key string) []string {
-	if _, started := f.own[key]; !started || f.taken[key] {
+	if !f.pending(key) {
 		return nil
 	}
 	f.taken[key] = true
+	return f.rootsOf(key)
+}
+
+// bar records whether key, an issue of own that has not taken its first slot in the replay, cannot
+// take it there now, and answers the roots whose rank the change may move (rootsOf). It answers none
+// where nothing changed, and for an issue that is not pending.
+func (f *firstStarts) bar(key string, barred bool) []string {
+	if !f.pending(key) || f.barred[key] == barred {
+		return nil
+	}
+	if barred {
+		f.barred[key] = true
+	} else {
+		delete(f.barred, key)
+	}
+	return f.rootsOf(key)
+}
+
+// rootsOf is the roots whose rank key's first start counts in: the root of the tree key started in,
+// and key itself where it roots another.
+func (f *firstStarts) rootsOf(key string) []string {
 	var roots []string
 	if root, ranked := f.tree[key]; ranked {
 		roots = append(roots, root)

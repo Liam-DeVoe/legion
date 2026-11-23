@@ -159,16 +159,19 @@ reconstruction error the tool reports; these windows hold the exact one.
 - `AfterSendBack` runs `recorded`: each segment after a send-back keeps its recorded length from its
   own worker start. `Merges` runs `fitted`.
 - `FirstStarts` runs `recorded` (assumption 36): each issue the record started in the window is
-  shown in the replay's copy of Dispatch at a rank by its first slot in the window, ahead of every
-  board rank, and each tree's root at the earliest such rank among the issues of its tree that have
-  not yet taken their first slot in the replay, the root's own among them. Each time one of them
-  takes it, the replay moves the root's rank to the next, an `issue.updated` of the rank applied at
-  that instant through the copy of Dispatch and the daemon's mirror, so the next pass orders the
-  line by it. A tree whose recorded starts are all taken shows its root at its board rank, as every
-  other issue is shown, so an issue the record never started waits behind its tree's recorded
-  starts still to come, and then behind every other tree's. A recorded change of a rank the replay
-  shows moves nothing, and the measures read the board's ranks. No window here gives `FirstStarts`
-  or `Merges` a choice to make.
+  shown in the replay's copy of Dispatch at a rank by its first start in the window, ahead of every
+  board rank: the first slot of a run that had taken none, never a slot held at the window's start
+  or a return of work that came back. Each tree's root is shown at the earliest such rank among the
+  issues of its tree that can still take their first start in the replay, the root's own among
+  them: an issue the replay has not filed yet, or has finished, moved past its first phase or taken
+  out of the workflow, cannot. Each time one of them takes it, or can no longer take it, or can
+  again, the replay moves the root's rank to the earliest left, an `issue.updated` of the rank
+  applied at that instant through the copy of Dispatch and the daemon's mirror, so the next pass
+  orders the line by it. A tree with no recorded start left to take shows its root at its board
+  rank, as every other issue is shown, so an issue the record never started waits behind its tree's
+  recorded starts still to come, and then behind every other tree's. A recorded change of a rank the
+  replay shows moves nothing, and the measures read the board's ranks. No window here gives
+  `FirstStarts` or `Merges` a choice to make.
 - `NeverStarted` (assumption 8) is the work of an issue handed to Legion that the record never
   started:
   - `none`: no work. When the replay starts it, it takes its slot and its architect's start opens a

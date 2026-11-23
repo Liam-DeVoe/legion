@@ -571,6 +571,165 @@ func TestTheRecordedOrderStartsTheChildrenOfTwoTreesInTurn(t *testing.T) {
 	}
 }
 
+// returnAfterConflictWindow is a window from 10:00 to 12:00 under a cap of 1, its inputs reaching
+// back to the daemon's boot at 07:00. ACME-1, a root at rank a1, is promoted at 07:05, works 15
+// minutes in each phase to its review and reaches accepting at 08:20, where its slot goes back; at
+// 08:30 a person files ACME-2 todo under it, which the record never starts. ACME-5, a root at rank
+// a5, takes the slot at 08:20 and works to accepting at 10:20, where it gives it back. ACME-3, a root
+// at rank a0, is handed to Legion at 09:30 and waits. At 10:20 a conflict moves ACME-1 back from
+// accepting to implementing, and its work, come back, takes the free slot; its loop brings it back
+// to accepting at 11:00, where ACME-3 takes the slot ahead of ACME-2 by its rank and designs to the
+// window's end.
+func returnAfterConflictWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(1)
+	b.boot(clock(7, 0))
+	b.file(clock(7, 5), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.file(clock(7, 6), "ACME-5", filing{Title: "Rotate the warehouse keys", Status: "todo", Rank: "a5", Labels: handedToLegion})
+	b.rootThroughReview(clock(7, 5), "ACME-1")
+	b.segmentEnds(clock(8, 20), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.rootThroughReview(clock(8, 20), "ACME-5")
+	b.file(clock(8, 30), "ACME-2", filing{Title: "Write the export's header row", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "b2"})
+	b.file(clock(9, 30), "ACME-3", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a0", Labels: handedToLegion})
+	b.segmentEnds(clock(10, 20), "ACME-5", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.turnEnds(clock(10, 20), "ACME-1", claim.RoleArchitect)
+	b.moved(clock(10, 20), "ACME-1", phase.Accepting, phase.Implementing, workflow.TriggerConflict)
+	b.info(clock(10, 20), "admission gives a slot back to an issue whose work came back", "issue", "ACME-1", "phase", string(phase.Implementing))
+	b.slotTaken(clock(10, 20), "ACME-1")
+	b.turnStarts(clock(10, 20), "ACME-1", claim.RoleImplementer)
+	b.segmentEnds(clock(10, 40), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	b.segmentEnds(clock(10, 50), "ACME-1", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
+	b.segmentEnds(clock(11, 0), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.rootPromoted(clock(11, 0), "ACME-3")
+	return b.build()
+}
+
+// FirstStarts recorded ranks an issue by its first start in the window alone (design 10.7): a slot
+// the record gives to work that came back to an issue it had started is no start. The test reads
+// returnAfterConflictWindow, where ACME-1's one slot in the window is its return after a conflict
+// at 10:20, which a replay draws no conflict for (assumption 37): only ACME-3 ranks, at 01, and a
+// replay under main gives ACME-3 the slot at ACME-5's accepting at 10:20, ahead of ACME-2, whose
+// tree root ACME-1 stands at its board rank. Ranked by that return, ACME-1 stood at 01 above
+// ACME-3's 02 for the whole window, since the replay never makes the return, and ACME-2, which the
+// record never started, took the slot at 10:20 and held it with no work to the window's end.
+func TestAReturnIsNoFirstStart(t *testing.T) {
+	checkRecordedFirstStarts(t, returnAfterConflictWindow(t), map[string]string{"ACME-3": "01"}, "ACME-3 at 10:20")
+}
+
+// leftBeforeItsStartWindow is a window from 10:00 to 12:00 under a cap of 1, its inputs reaching
+// back to the daemon's boot at 07:00. ACME-1, a root at rank a1, is promoted at 07:05 and, at 07:20,
+// waits for its two children, filed in backlog at 07:10, ACME-2 (b2) and ACME-6 (b6), and gives its
+// slot back; ACME-5, a root at rank a5, takes it and works 15 minutes in each phase to its review,
+// to accepting at 10:30, where it gives it back, and to its merge at 11:15. A person releases the
+// two children to todo at 09:10. ACME-2 takes the slot at 10:30, and at 10:45 a person sets it back
+// to backlog: it leaves the workflow, and ACME-3, a root at rank a0 handed to Legion at 10:40, takes
+// the slot ahead of ACME-6 by its rank and designs to the window's end. The record never starts
+// ACME-6.
+func leftBeforeItsStartWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(1)
+	b.boot(clock(7, 0))
+	b.file(clock(7, 5), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.rootPromoted(clock(7, 5), "ACME-1")
+	b.file(clock(7, 6), "ACME-5", filing{Title: "Rotate the warehouse keys", Status: "todo", Rank: "a5", Labels: handedToLegion})
+	b.file(clock(7, 10), "ACME-2", filing{Title: "Write the export's header row", Parent: "ACME-1", Tree: "ACME-1", Status: "backlog", Rank: "b2"})
+	b.file(clock(7, 10), "ACME-6", filing{Title: "Sort the export by shelf", Parent: "ACME-1", Tree: "ACME-1", Status: "backlog", Rank: "b6"})
+	b.turnEnds(clock(7, 20), "ACME-1", claim.RoleArchitect)
+	b.registered(clock(7, 20), "ACME-1", true)
+	b.info(clock(7, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-1", "tree", "ACME-1",
+		"generation", 1, "children", 2)
+	b.slotReleased(clock(7, 20), "ACME-1")
+	b.rootThroughReview(clock(7, 20), "ACME-5")
+	b.edit(clock(9, 10), "ACME-2", setStatus("todo"))
+	b.edit(clock(9, 10), "ACME-6", setStatus("todo"))
+	b.segmentEnds(clock(10, 30), "ACME-5", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.childStarts(clock(10, 30), "ACME-2")
+	b.file(clock(10, 40), "ACME-3", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a0", Labels: handedToLegion})
+	b.segmentEnds(clock(10, 45), "ACME-5", phase.Accepting, phase.Retro, workflow.TriggerSignOff)
+	b.turnEnds(clock(10, 45), "ACME-2", claim.RolePlanner)
+	b.edit(clock(10, 45), "ACME-2", setStatus("backlog"))
+	b.leaves(clock(10, 45), "ACME-2", "backlog")
+	b.rootPromoted(clock(10, 45), "ACME-3")
+	b.segmentEnds(clock(11, 0), "ACME-5", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted)
+	b.segmentEnds(clock(11, 15), "ACME-5", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged)
+	b.leaves(clock(11, 15), "ACME-5", record.DoneStatus)
+	return b.build()
+}
+
+// FirstStarts recorded ranks a tree's root by the issues of its tree that can still take their
+// first start in the replay (design 10.7, assumption 36): one that leaves the workflow before its
+// start pins no tree. The test reads leftBeforeItsStartWindow, whose first starts rank ACME-2 01 and
+// ACME-3 02, and ACME-1 01 by ACME-2's start, and replays it under keep-past-review, where ACME-5
+// keeps its slot to its merge at 11:15: ACME-2 has not started when a person sets it back to backlog
+// at 10:45, ACME-1 then stands at its board rank, and at 11:15 the slot goes to ACME-3, by its
+// recorded start, ahead of ACME-6, which the record never started. With ACME-1 kept at ACME-2's 01
+// for the rest of the window, ACME-6 took the slot at 11:15 and held it with no work.
+func TestAnIssueThatLeavesBeforeItsStartPinsNoTree(t *testing.T) {
+	window := leftBeforeItsStartWindow(t)
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	if len(trace.Unplaced) != 0 {
+		t.Errorf("the trace could not place %+v", trace.Unplaced)
+	}
+	atStart := map[string]string{"ACME-1": "01", "ACME-2": "01", "ACME-3": "02"}
+	if got := firstStartRanks(trace).ranks(); !reflect.DeepEqual(got, atStart) {
+		t.Errorf("the recorded first starts rank %v at the window's start, want %v", got, atStart)
+	}
+	result, log := knobRun(t, window, replayedRule(t, "keep-past-review"), "main")
+	var given []string
+	for _, line := range log {
+		if line.Msg == "admission: slot taken" {
+			given = append(given, line.Issue+" at "+line.Time.UTC().Format("15:04"))
+		}
+	}
+	if want := []string{"ACME-3 at 11:15"}; !slices.Equal(given, want) {
+		t.Errorf("the replay gave the slot to %v, want %v", given, want)
+	}
+	if !slices.Contains(result.Assumptions, assumeRootRanksByNextStart) {
+		t.Errorf("the run names the assumptions %v, which lack %d, the order of first starts it ran", result.Assumptions, assumeRootRanksByNextStart)
+	}
+}
+
+// A first start is the first slot of a run that had taken none (firstStartIn). The test reads one
+// issue's slots against the window's start at 10:00 in each shape a slot can take: a first slot
+// after the start ranks; a return the record names, a slot taken again after one held at the start,
+// one taken again after one before the start in the same run, and an inferred slot do not; and the
+// first slot of a run entered after an earlier run's slot does.
+func TestOnlyTheFirstSlotOfARunIsAFirstStart(t *testing.T) {
+	entry := func(at time.Time) Entry { return Entry{At: at, Tree: "ACME-1", Generation: 1} }
+	returning, waited := record.LineReturning.String(), record.LineWaitingOnIssue.String()
+	for _, c := range []struct {
+		name    string
+		entries []Entry
+		slots   []SlotSpan
+		want    time.Time
+	}{
+		{"a first slot", []Entry{entry(clock(9, 0))}, []SlotSpan{{Start: clock(10, 30), Kind: record.LineFirstPhase.String()}}, clock(10, 30)},
+		{"a return the record names", []Entry{entry(clock(9, 0))}, []SlotSpan{{Start: clock(10, 30), Kind: returning}}, time.Time{}},
+		{"a wait's end the record names", []Entry{entry(clock(9, 0))}, []SlotSpan{{Start: clock(10, 30), Kind: waited}}, time.Time{}},
+		{"a slot after one held at the start", []Entry{entry(clock(9, 0))},
+			[]SlotSpan{{Start: clock(9, 30), End: clock(10, 10)}, {Start: clock(10, 30)}}, time.Time{}},
+		{"a slot after one before the start", []Entry{entry(clock(9, 0))},
+			[]SlotSpan{{Start: clock(9, 10), End: clock(9, 20)}, {Start: clock(10, 30)}}, time.Time{}},
+		{"a slot held where the log begins, taken again", []Entry{entry(clock(7, 0))},
+			[]SlotSpan{{Start: clock(7, 0), End: clock(10, 10), Before: true}, {Start: clock(10, 30)}}, time.Time{}},
+		{"an inferred slot", []Entry{entry(clock(9, 0))}, []SlotSpan{{Start: clock(10, 30), Inferred: true}}, time.Time{}},
+		{"the first slot of a later run", []Entry{entry(clock(9, 0)), entry(clock(10, 20))},
+			[]SlotSpan{{Start: clock(9, 10), End: clock(10, 10)}, {Start: clock(10, 30)}}, clock(10, 30)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, began := firstStartIn(&IssueTrace{Key: "ACME-1", Entries: c.entries, Slots: c.slots}, clock(10, 0))
+			if began != !c.want.IsZero() || !got.Equal(c.want) {
+				t.Errorf("the first start is %s (%v), want %s", stamp(got), began, stamp(c.want))
+			}
+		})
+	}
+}
+
 // neverStartedWindow is a window recorded under keep-past-review with an issue the record never
 // started. The cap is 1. ACME-1, a root, holds the slot from 09:00 past its review to its merge at
 // 11:00, 15 minutes in each phase; ACME-2 then holds it from 11:00 with the same work, in

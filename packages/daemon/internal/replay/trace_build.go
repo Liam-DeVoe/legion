@@ -328,14 +328,17 @@ type SlotMove struct {
 // back, or one no slot line names that the trace infers from the phase the log first shows it in.
 // Inferred is a slot no slot line names that the trace infers (assumption 34): one held from before
 // the reach (inferSlots), or one an issue that stands at the window's start in a worker's phase that
-// keeps a slot took again by a way no line shows (inferStartSlots). Reason is the path that took it
-// back where the record line says it, and ForWait a slot taken back because the issue waited on
-// another issue (a link or its children), read from the reason or from a wait the trace holds at
-// that moment: the issue then stands in the line for a slot of its own again.
+// keeps a slot took again by a way no line shows (inferStartSlots). Kind is the kind of entry of the
+// waiting line the slot was given to (record.LineKind's word), where the record says it
+// (SlotMove.Kind), and "" where no line says it. Reason is the path that took it back where the
+// record line says it, and ForWait a slot taken back because the issue waited on another issue (a
+// link or its children), read from the reason or from a wait the trace holds at that moment: the
+// issue then stands in the line for a slot of its own again.
 type SlotSpan struct {
 	Start, End time.Time
 	Before     bool
 	Inferred   bool
+	Kind       string
 	Reason     record.SlotTakenReason
 	ForWait    bool
 }
@@ -659,6 +662,7 @@ func readTrace(w Window, ran *record.SlotRule) (Trace, []LogLine, []readEvent, e
 		backKind:    map[string]string{},
 		treeEntered: map[string]bool{},
 		named:       map[entryRef]bool{},
+		parked:      map[string]uint64{},
 		sessions:    map[string][]RecordedSession{},
 	}
 	for _, msg := range w.Lines {
@@ -751,10 +755,13 @@ type traceBuilder struct {
 	children map[string][]string
 	// treeEntered is each issue whose first entry was into a live tree as a child, at the tree's
 	// generation (maybeEnter), and named each entry whose generation a line of the daemon named
-	// (generationIs): once every line is read, the first entry of each such child takes its tree
-	// root's generation as the lines leave it (childGenerations).
+	// (generationIs, maybeEnter after parked): once every line is read, the first entry of each
+	// such child takes its tree root's generation as the lines leave it (childGenerations).
 	treeEntered map[string]bool
 	named       map[entryRef]bool
+	// parked is the generation an adoption into a live tree parked each issue at, standing in no
+	// run (adopted), until the todo that runs it again enters it (maybeEnter).
+	parked map[string]uint64
 	// sessions is each session the events show running a claim, by the claim's issue, in the order
 	// of their first events (sessionSeen); finish gives each issue of the trace its own.
 	sessions map[string][]RecordedSession
@@ -1008,7 +1015,8 @@ func (b *traceBuilder) childFiled(iss *IssueTrace, event DispatchEvent) {
 // own: a child filed under a tree the daemon re-admitted stands at the tree's generation from its
 // entry, which the moves the record makes of it are made at. The root's generation is read again
 // once every line is read (childGenerations), since a line naming it may come after the child's
-// entry.
+// entry. An issue an adoption parked (joined) enters at the generation after the one the adoption
+// gave it, which the daemon named.
 func (b *traceBuilder) maybeEnter(iss *IssueTrace, event DispatchEvent) {
 	if iss.Project != b.t.Project || iss.openVisit() != nil || event.Issue.Status != "todo" {
 		return
@@ -1027,8 +1035,28 @@ func (b *traceBuilder) maybeEnter(iss *IssueTrace, event DispatchEvent) {
 		generation = max(root.Generation(), 1)
 		b.treeEntered[iss.Key] = true
 	}
+	parked, adopted := b.parked[iss.Key]
+	if adopted {
+		generation = parked + 1
+		delete(b.parked, iss.Key)
+	}
 	iss.Entries = append(iss.Entries, Entry{At: event.At, Tree: tree, Generation: generation, Reopen: len(iss.Entries) > 0})
 	iss.Visits = append(iss.Visits, Visit{Phase: phase.Admitted, Enter: event.At})
+	if adopted {
+		b.named[entryRef{issue: iss.Key, index: len(iss.Entries) - 1}] = true
+	}
+}
+
+// joined reads a root's adoption into a live tree (RootJoined): the adoption writes the issue's
+// record at its next generation, the one the line names (workflow's moveIntoTree). A record not at
+// todo, as a root that left the workflow is, is parked there as a child at done, standing in no run,
+// and the todo that runs it again, the release's own write, opens the generation after it
+// (ReenterChild), which its entry stands at (maybeEnter). A root the trace holds in a run, a queued
+// root at todo, is read no further here: it keeps the entry its todo made.
+func (b *traceBuilder) joined(l RootJoined) {
+	if iss := b.issue(l.Issue); iss.openVisit() == nil && l.Generation > 0 {
+		b.parked[l.Issue] = l.Generation
+	}
 }
 
 // firstBootStage is the boot stage a booting daemon writes before it opens its store (BootStage):
@@ -1074,6 +1102,8 @@ func (b *traceBuilder) onLine(line LogLine) {
 		b.backKind[l.Issue] = record.LineReturning.String()
 	case SlotBackWaitEnded:
 		b.backKind[l.Issue] = record.LineWaitingOnIssue.String()
+	case RootJoined:
+		b.joined(l)
 	case WaitsOnIssues:
 		// The per-pass wait lines are left: a link wait is built from the issue's and its
 		// blockers' events, which every window holds whole.
@@ -1628,9 +1658,9 @@ func (b *traceBuilder) spans() {
 		case move.Given && holding:
 			b.unplaced(UnplacedSlot, move.Issue, move.At, "%s takes a slot at %s while it holds one", move.Issue, stamp(move.At))
 			iss.Slots[n-1].End = move.At
-			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At})
+			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At, Kind: move.Kind})
 		case move.Given:
-			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At})
+			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At, Kind: move.Kind})
 		case holding:
 			iss.Slots[n-1].End, iss.Slots[n-1].Reason = move.At, move.Reason
 		default:

@@ -200,6 +200,77 @@ func TestAChildFiledInTheWindowMovesAtItsTreesGeneration(t *testing.T) {
 	}, refused)
 }
 
+// adoptedRootWindow is a window from 10:00 to 12:00 under a cap of 1, its inputs reaching back to
+// the daemon's boot at 07:00. ACME-4, a root, holds the slot from its promotion at 07:05 while its
+// architect designs its tree. ACME-6, a root handed to Legion at 07:10, waits for the slot, and a
+// person sets it back to backlog at 09:00: it leaves the workflow, and its tree lingers. At 10:05
+// ACME-4's architect makes ACME-6 a child of ACME-4, and at 10:06 releases it into its tree
+// (release_children): the daemon adopts it at its second generation, parked at done since its
+// record stands in backlog, and the release's own write of its todo a second later runs it again at
+// its third. At 10:10 the architect registers ACME-4's design: the root waits for its open child and
+// gives its slot back, and ACME-6 takes it and starts planning; it moves to implementing at 11:00
+// and to testing at 11:30.
+func adoptedRootWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(1)
+	b.boot(clock(7, 0))
+	b.file(clock(7, 5), "ACME-4", filing{Title: "Export the widget list", Status: "todo", Rank: "a4", Labels: handedToLegion})
+	b.rootPromoted(clock(7, 5), "ACME-4")
+	b.file(clock(7, 10), "ACME-6", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a6", Labels: handedToLegion})
+	b.edit(clock(9, 0), "ACME-6", setStatus("backlog"))
+	b.leaves(clock(9, 0), "ACME-6", "backlog")
+	architect := eventActor{Kind: "session", ID: string(b.token("ACME-4", claim.RoleArchitect))}
+	b.changed(clock(10, 5), "ACME-6", architect, func(issue *builtIssue) { issue.Parent = "ACME-4" })
+	adopted := b.issue("ACME-6")
+	adopted.tree, adopted.generation = "ACME-4", adopted.generation+1
+	b.info(clock(10, 6), "workflow: a queued root joined a live tree", "issue", "ACME-6", "tree", "ACME-4", "generation", adopted.generation)
+	b.daemonWrites(clock(10, 6).Add(time.Second), "ACME-6", "todo")
+	adopted.generation++
+	b.turnEnds(clock(10, 10), "ACME-4", claim.RoleArchitect)
+	b.registered(clock(10, 10), "ACME-4", true)
+	b.info(clock(10, 10), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-4", "tree", "ACME-4",
+		"generation", b.generation("ACME-4"), "children", 1)
+	b.slotReleased(clock(10, 10), "ACME-4")
+	b.childStarts(clock(10, 10), "ACME-6")
+	b.segmentEnds(clock(11, 0), "ACME-6", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.segmentEnds(clock(11, 30), "ACME-6", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	return b.build()
+}
+
+// A root an adoption parks enters its tree's run at the generation after the one the adoption
+// gave it: the daemon writes the adopted record at its next generation, the one the line of the
+// adoption names, parked at done where it does not stand at todo (workflow's moveIntoTree), and the
+// release's own todo then runs it again at the next (ReenterChild). The replay's daemon does the
+// same with ACME-6 of adoptedRootWindow. The trace counted the todo's entry from the issue's run
+// before the adoption instead, one generation short, so each recorded move of it was refused
+// ("ACME-6 stands at generation 3, and the recorded move of planning by planner_completed is
+// generation 2's"), and it held its slot in planning with no turn. The trace holds ACME-6's entry at
+// its third generation, and a replay under main makes each of its recorded moves and refuses none.
+func TestAnAdoptedRootMovesAtTheGenerationAfterItsAdoption(t *testing.T) {
+	window := adoptedRootWindow(t)
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	if len(trace.Unplaced) != 0 {
+		t.Errorf("the trace could not place %+v", trace.Unplaced)
+	}
+	entries := trace.Issues["ACME-6"].Entries
+	if n := len(entries); n != 2 || entries[1].Tree != "ACME-4" || entries[1].Generation != 3 || !entries[1].At.Equal(clock(10, 6).Add(time.Second)) {
+		t.Errorf("ACME-6's entries are %s; want a second into ACME-4's tree at 10:06:01, at generation 3", describeReading(entries))
+	}
+
+	moved, refused := replayMoves(t, window)
+	checkMoves(t, moved, map[string][]fixtureMove{
+		"ACME-6": {
+			{From: phase.Admitted, To: phase.Planning, Trigger: workflow.TriggerGateOpened},
+			{From: phase.Planning, To: phase.Implementing, Trigger: workflow.TriggerPlannerCompleted},
+			{From: phase.Implementing, To: phase.Testing, Trigger: workflow.TriggerImplementationReady},
+		},
+	}, refused)
+}
+
 // slotTakenWithNoLineWindow is a window from 10:00 to 12:00, its inputs reaching back to the
 // daemon's boot at 08:00, under a cap of three. ACME-1, ACME-2 and ACME-4, roots, take the three
 // slots at their promotions; ACME-3, a root handed to Legion at 08:35, waits for one. ACME-4 moves

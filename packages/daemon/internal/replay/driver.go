@@ -372,7 +372,8 @@ func (r replayRepositories) ResolveRepository(resolved string) (workflow.Resolut
 }
 
 // apply applies fact as source's eventID through the chain, on the simulated clock, and reads
-// what the daemon's lines say it did.
+// what the daemon's lines say it did, and whether the issue fact names can still take the first
+// start the record shows (reviewFirstStart): the fact may have filed it, or set it back to todo.
 func (d *driver) apply(source, eventID string, fact intake.Fact) (intake.Result, error) {
 	began := time.Now()
 	d.released = false
@@ -384,6 +385,11 @@ func (d *driver) apply(source, eventID string, fact intake.Fact) (intake.Result,
 	}
 	if err := d.observe(); err != nil {
 		return result, err
+	}
+	if key, named := intake.IssueOf(fact); named {
+		if err := d.reviewFirstStart(key); err != nil {
+			return result, err
+		}
 	}
 	if d.cfg.afterFact != nil {
 		if err := d.cfg.afterFact(d.ctx, d.pool, d.shadow); err != nil {
@@ -406,8 +412,9 @@ func (d *driver) factID(kind string, parts ...any) string {
 // observe reads the daemon's lines the last fact wrote: the moves that open a segment no start
 // opens and the leaves that apply a held sign-off again, the slots that put an issue in flight,
 // the children waits that place the events that ended them, the moves and the merger's asks a
-// conflict that waits for merging follows (waitMoves, mergerMergesForward), and what the run's
-// assumptions are named from.
+// conflict that waits for merging follows (waitMoves, mergerMergesForward), the first slots and the
+// moves and leaves that move a root's rank under the recorded order of first starts (take,
+// reviewFirstStart), and what the run's assumptions are named from.
 func (d *driver) observe() error {
 	for _, line := range d.tap.take() {
 		key := line.str("issue")
@@ -438,6 +445,9 @@ func (d *driver) observe() error {
 			if err := d.waitMoves(key, to); err != nil {
 				return err
 			}
+			if err := d.reviewFirstStart(key); err != nil {
+				return err
+			}
 		case leftWorkflowLine:
 			delete(d.inFlight, key)
 			delete(d.started, key)
@@ -451,13 +461,17 @@ func (d *driver) observe() error {
 						run: func() error { return d.signOff(waiting) }})
 				}
 			}
+			if err := d.reviewFirstStart(key); err != nil {
+				return err
+			}
 		case slotTakenLine:
 			d.used[9] = true
 			d.inFlight[key] = true
-			if _, ok := d.started[key]; !ok {
+			// Only the first slot of the run the issue stands in is a first start: a slot taken
+			// again in a run, after a return or a wait's end, starts nothing (firstStartIn).
+			_, again := d.started[key]
+			if !again {
 				d.started[key] = d.clock.Instant()
-			}
-			if d.firstStarts != nil {
 				for _, root := range d.firstStarts.take(key) {
 					d.rerank(root)
 				}
@@ -509,12 +523,12 @@ func (d *driver) recorded(key string) (*record.Issue, error) {
 }
 
 // rerank queues the move of root's rank to the one its tree's next recorded first start gives it
-// (firstStarts.rootRank), at the instant of the first slot that moved it, as a person's change of a
-// rank on the board reaches the daemon: the move in the replay's copy of Dispatch and the
-// issue.updated of the rank it makes there (shadow.rankWrite), then that event applied through the
-// decoder, the preparation's stand-in and the chain (applyEcho), so the daemon's mirror and its
-// next pass read the new rank. Where the rank does not move, as at a later issue's first slot
-// ahead of an earlier one's, nothing is written.
+// (firstStarts.rootRank), at the instant of the first slot, move or fact that moved it, as a
+// person's change of a rank on the board reaches the daemon: the move in the replay's copy of
+// Dispatch and the issue.updated of the rank it makes there (shadow.rankWrite), then that event
+// applied through the decoder, the preparation's stand-in and the chain (applyEcho), so the
+// daemon's mirror and its next pass read the new rank. Where the rank does not move, as at a later
+// issue's first slot ahead of an earlier one's, nothing is written.
 func (d *driver) rerank(root string) {
 	at := d.clock.Instant()
 	var written []byte
@@ -533,6 +547,26 @@ func (d *driver) rerank(root string) {
 			}
 			return d.applyEcho(root, written)
 		}})
+}
+
+// reviewFirstStart reads again whether key, an issue whose recorded first start the replay has
+// still to make (firstStarts.pending), can make it now: whether the replay's daemon records it where
+// its first phase can start, by the first test the waiting line reads of each issue of its starting
+// part (record.FirstPhaseMayStart). An issue the replay has not filed yet, or has finished, moved
+// past its first phase or taken out of the workflow cannot, and pins no tree's rank to its own; one
+// filed or set back to todo since can again. Each root whose rank the answer may move is reranked.
+func (d *driver) reviewFirstStart(key string) error {
+	if !d.firstStarts.pending(key) {
+		return nil
+	}
+	issue, err := d.recorded(key)
+	if err != nil {
+		return err
+	}
+	for _, root := range d.firstStarts.bar(key, issue == nil || !record.FirstPhaseMayStart(*issue)) {
+		d.rerank(root)
+	}
+	return nil
 }
 
 // run replays the window: the start state at its start, the replay's copy of Dispatch brought to

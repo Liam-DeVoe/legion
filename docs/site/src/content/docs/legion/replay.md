@@ -303,6 +303,8 @@ Most Dispatch events that the daemon's own session wrote are its outbox's status
 The daemon's API also writes statuses under that session for an agent, and no outbox row writes these: a move to backlog, icebox or triage, a move from one of those or from done to todo that adds no `legion` label, and the controller's todo on a root whose phase is held.
 The controller's `set_status`, an architect's `release_children` and `rerun_child` and, in releases that have it, an architect's `park_child` write such moves, and the replay enters each one as recorded.
 The replay knows the controller's todo on a held root by the record's release of that hold, whose reason names a todo.
+An architect's `release_children` of a root that has left the workflow first adopts the root into the architect's tree, at the generation that the line `workflow: a queued root joined a live tree` names, and parks it at done there, because its status is not todo.
+The release's todo then runs the root again at the next generation, so the replay makes the root's recorded moves at that generation, as the record's daemon made them.
 An event that a worker's session wrote inside a work segment of that worker's role on that worker's issue enters at its offset in that segment, so it moves with that work.
 The record names that session by an id under the title `Legion <role> · <KEY>`, which names the role and the issue of the claim that the session runs.
 Where a window's events name a worker's session by its claim token instead, the replay reads the claim from that token.
@@ -875,21 +877,25 @@ The tool offers the main branch and the 7 branches that change one knob, each at
 A run's directory names its branch as `<branch>@<f>`, for example `main@1.2`.
 Under the rule that made the record, both values of `timing` and of `answer` give the record's times, because every anchor falls at its recorded time.
 
-Under `firstStarts=recorded`, the first start of an issue is the first slot that it took in the window.
-A slot that the issue held at the window's start, or a slot of an earlier run, is not a first start.
+Under `firstStarts=recorded`, the first start of an issue is the first slot in the window of a run that had taken no slot before it.
+A slot that the issue held at the window's start is not a first start, nor is a later slot of a run that held a slot at the window's start or took one before it.
+A slot that the record gives to work that came back to a started issue is not a first start either: a return after a send-back or a conflict, the end of a wait, or the restart of a held phase.
+Nor is a slot that the trace infers (assumption 34).
 Each issue that the record started in the window takes a rank in the order of these first starts, ahead of every rank on the board.
 The line orders issues by the rank of their tree's root first.
-So the root of a tree takes the rank of the earliest recorded first start among the issues of its tree that have not yet taken their first slot in the replay, the root's own first start among them.
-Each time one of these issues takes its first slot, the replay moves the root's rank to the next of them.
-The move reaches the daemon as a change of the root's rank in the replay's copy of Dispatch, at the moment of that slot, through the daemon's mirror, so the daemon's next pass orders the line by it.
+So the root of a tree takes the rank of the earliest recorded first start among the issues of its tree that can still take their first start in the replay, the root's own first start among them.
+An issue can still take its first start while the replay's daemon records it where its first phase can start: at admitted, waiting on no person, and in the workflow by its status.
+An issue that the replay has not filed yet cannot, and neither can an issue that the replay has finished, moved past its first phase, or taken out of the workflow without its first start.
+Each time one of these issues takes its first slot, cannot take it any longer, or can take it again, the replay moves the root's rank to the earliest of those still to come.
+The move reaches the daemon as a change of the root's rank in the replay's copy of Dispatch, at the moment of that slot or that change, through the daemon's mirror, so the daemon's next pass orders the line by it.
 No measure counts that change.
 For example, a root that holds its slot at the window's start takes the rank of its first child that starts, and then the rank of its next child.
 So the next child of a tree waits where its own recorded start puts it among the work of every tree, and the replay starts the children of different trees in the order in which the record started them (assumption 36).
-A tree whose recorded starts are all taken shows its root at its board rank.
+A tree in which no issue can still take its recorded first start shows its root at its board rank, unless the root has not yet taken its own first slot, in which case the root keeps the rank of its own first start, since a tree whose root has not started has no member that can start.
 Each other issue keeps its board rank, and waits after the ranked issues.
 So an issue that the record never started waits behind the recorded starts of its tree that are still to come, and then behind those of every other tree.
 A change of a rank in the record does not move these ranks, and the measures read the board's ranks.
-One order stays out of reach: while the next recorded start of a tree cannot start yet, its root still ranks by it, so a later issue of that tree that can start goes ahead of another tree's issue that the record started before it.
+One order stays out of reach: while the next recorded start of a tree waits at admitted for something that holds it there, such as a link or the tree's design gate, its root still ranks by it, so a later issue of that tree that can start goes ahead of another tree's issue that the record started before it.
 
 ## The states of a slot holder
 
@@ -2040,22 +2046,26 @@ Replay a window that ends later on the same lines.
 For each conflict that the first window kept, read whether its loop came back, and how long it ran.
 Compare the share of those stretches that the later window's model gives a conflict with the share that the first window kept.
 
-### Assumption 36: Under the recorded order of first starts, a tree's root ranks at the earliest recorded first start among the issues of its tree that have not yet taken their first slot
+### Assumption 36: Under the recorded order of first starts, a tree's root ranks at the earliest recorded first start among the issues of its tree that can still take their first start in the replay
 
 The tool's own.
 It is a choice of how the main branch makes its ranks under `firstStarts=recorded`, not a fault of the record.
 The line orders the issues whose first phase can start by the rank of their tree's root first, and by their own rank second.
 So the rank of a root decides where each child of its tree waits among the work of every other tree.
-The replay moves the rank of a root each time an issue of its tree takes its first slot, to the next recorded first start of the tree ([The branches](#the-branches)).
+Only the first slot of a run is a first start, so a slot that the record gives to work that came back takes no rank, such as a return after a conflict.
+The replay moves the rank of a root each time an issue of its tree takes its first slot, to the next recorded first start of the tree that can still be taken ([The branches](#the-branches)).
+It moves the rank too where an issue of the tree can no longer take its first start in the replay, because the replay finished it, moved it past its first phase or took it out of the workflow first, and where such an issue can take it again, because the replay filed it or set it back to todo.
+So a start that the replay cannot make holds no root at the rank of that start.
 The next child of a tree then takes the place that its own recorded start gives it among the work of every tree.
 So the branch starts children in the order in which the record started them, ahead of a root's later work where the record did so.
 The branches under `firstStarts=rank` keep the board's ranks, and show how much the choice moves the result.
 
-**Evidence in a recorded window.** _A root that keeps one rank for the whole window._
-In a replay of one deployment's recorded window under the rule that its daemon ran, each root kept the rank of its tree's earliest first start for the whole window.
+**Evidence in a recorded window.** _A root held at a start that the replay does not make._
+In a replay of one deployment's recorded window under the rule that its daemon ran, each root first kept the rank of its tree's earliest first start for the whole window.
 The replay then gave a slot to a child that the record started much later, ahead of the issues of other trees that the record started earlier, which waited.
-Children that the record never started, in trees whose roots started early in the window, took slots and held them with no work while issues that the record started waited.
-The replay's moves then came far earlier or far later than the record's.
+Once the replay moved a root's rank at each first slot of its tree, a few roots still kept an early rank for the whole window.
+Their first slot in the window was a return after a conflict or after the end of a wait, and the replay never made the return, since it moves no issue back for a conflict past the review (assumption 37).
+Children that the record never started, in the trees of those roots, took slots and held them with no work while issues that the record started waited, so the replay gave fewer slots and finished fewer issues than the record on the window's last days.
 
 **If it is wrong.**
 If the record's daemon started the children of different trees in their order for reasons that the replay does not carry, such as the board's ranks of the moment or a hold, the replay moves the measures so for a rule other than the one that made the record.
@@ -2071,7 +2081,7 @@ If the record's daemon started the children of different trees in their order fo
 - Other delays: Unknown.
   The order changes which issues wait on others, not how long a loop or a wait takes.
 
-- Slots: Down for the slot-hours with no worker in a turn under `neverStarted=none`, because an issue that the record never started waits behind the recorded starts, where a line ordered by the board could start it sooner, to hold its slot with no turn.
+- Slots: Down for the slot-hours with no worker in a turn under `neverStarted=none`, because an issue that the record never started waits behind every recorded start that can still be taken in the replay, where a line ordered by the board could start it sooner, to hold its slot with no turn.
 
 **The reading that would test it.** _The two orders side by side, and the board at each start._
 `validate` and `compare` give `main` and `main+firstStarts=rank` side by side.
