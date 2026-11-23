@@ -10,7 +10,7 @@ import (
 // A StandInDeadline ends as the context.WithTimeout or context.WithTimeoutCause it stands in for
 // ends, for every end it can have: its deadline passing, its cancel, and its parent's end. Each row
 // ends a real one and a stand-in the same way, then reads both, and a context derived from each
-// with context.WithTimeoutCause, as a command's own limit derives from a probe's deadline, through
+// with context.WithTimeoutCause, as a command's own limit derives from an attempt's budget, through
 // Err and context.Cause: the two reads code tells one end from another by.
 func TestAStandInDeadlineEndsAsTheDeadlineItStandsInFor(t *testing.T) {
 	type key struct{}

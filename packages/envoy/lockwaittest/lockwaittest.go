@@ -1,8 +1,9 @@
-// Package lockwaittest is how a Go test of this repository reads that a PostgreSQL backend waits
-// on a lock: Waiting, a condition on a row of pg_stat_activity, and WaitingOn, the same for one
-// kind of lock. It is the one place that read is spelled: Envoy's internal/textcheck fails on the
-// predicate written out in any other Go file of the three modules, and on a lock wait read from a
-// wait event.
+// Package lockwaittest spells the read a Go test of this repository makes to learn that a
+// PostgreSQL backend waits on a lock: Waiting, a condition on a row of pg_stat_activity, and
+// WaitingOn, the same for one kind of lock. Envoy's internal/textcheck fails on this predicate
+// written out in another Go file of the three modules, in the forms docs/testing.md lists, and on
+// a lock wait read from a wait event. Reads of one lock or of the waiters behind one backend are
+// other reads, and the check leaves them alone.
 //
 // A backend waits on a lock for as long as pg_locks holds an ungranted request of its pid. The
 // request is queued when the backend asks and stays until the lock is granted or the wait is

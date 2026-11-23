@@ -7,11 +7,11 @@ import (
 )
 
 // StandInDeadline is a context that stands in, in a test, for one a deadline ends — the
-// context.WithTimeout or context.WithTimeoutCause that production code runs a command, an attempt
-// or a whole probe under — where the test decides the moment its deadline passes: a fact of the
-// run under test, such as a stand-in's first act, rather than a time a loaded machine can reach
-// before that run has started. It ends as the real one does, so code that tells one end from
-// another reads the same answer from both:
+// context.WithTimeout or context.WithTimeoutCause that production code runs a command or an
+// attempt under — where the test decides the moment its deadline passes: a fact of the run under
+// test, such as the end of the process group a probe attempt started, rather than a time a loaded
+// machine can reach before that run has started. It ends as the real one does, so code that tells
+// one end from another reads the same answer from both:
 //
 //   - pass ends it as its deadline passing does: its Err is context.DeadlineExceeded, and
 //     context.Cause reads cause, of it and of every context derived from it (context.DeadlineExceeded

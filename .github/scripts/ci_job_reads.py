@@ -1014,15 +1014,15 @@ RULES = {
                 "infra, a directory holding a go.mod of its own (:94), and :161 parses every .go file it finds, test files included")
         for g in envoy_go_files_but_infra()],
     f"{ENVOY}/internal/textcheck/lock_wait_reads_test.go": [
-        *[Read(g, "internal/textcheck/lock_wait_reads_test.go:57 calls lockWaitReads on ../.. (lockWaitRoots, :20), whose "
-                  "walk (:161) passes over node_modules, vendor, testdata and dot directories (:170) and infra, a "
-                  "directory holding a go.mod of its own (:172-173), and :180 reads every .go file it finds, test files included")
+        *[Read(g, "internal/textcheck/lock_wait_reads_test.go:58 calls lockWaitReads on ../.. (lockWaitRoots, :20), whose "
+                  "walk (:165) passes over node_modules, vendor, testdata and dot directories (:174) and infra, a "
+                  "directory holding a go.mod of its own (:176-177), and :184 reads every .go file it finds, test files included")
           for g in envoy_go_files_but_infra()],
         *reads(
-            (f"{INFRA}/**/*.go", "internal/textcheck/lock_wait_reads_test.go:57 calls lockWaitReads on ../../infra "
-                                 "(lockWaitRoots, :20), whose walk at :161 reads every .go file under packages/envoy/infra (:180)"),
-            (f"{DAEMON}/**/*.go", "internal/textcheck/lock_wait_reads_test.go:57 calls lockWaitReads on ../../../daemon "
-                                  "(lockWaitRoots, :20), whose walk at :161 reads every .go file under packages/daemon (:180)"))],
+            (f"{INFRA}/**/*.go", "internal/textcheck/lock_wait_reads_test.go:58 calls lockWaitReads on ../../infra "
+                                 "(lockWaitRoots, :20), whose walk at :165 reads every .go file under packages/envoy/infra (:184)"),
+            (f"{DAEMON}/**/*.go", "internal/textcheck/lock_wait_reads_test.go:58 calls lockWaitReads on ../../../daemon "
+                                  "(lockWaitRoots, :20), whose walk at :165 reads every .go file under packages/daemon (:184)"))],
     f"{ENVOY}/internal/textcheck/visible_markdown_copy_test.go": reads(
         (f"{DAEMON}/internal/textcheck/visible_markdown_test.go", "internal/textcheck/visible_markdown_copy_test.go:50 os.ReadFile (readGoTokens, called with daemonVisibleMarkdown :14, ../../../daemon/internal/textcheck/visible_markdown_test.go, at :21)")),
     # The listener's Go clients held to its wire package: wirecheck.Check type-checks them over
