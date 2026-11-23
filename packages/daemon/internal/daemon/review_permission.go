@@ -242,7 +242,7 @@ func (w *workflowRuntime) readPermission(ctx context.Context, repository ghrepo.
 			return false, nil
 		case refused.Status == http.StatusForbidden:
 			w.log.Error("workflow: GitHub refuses the review App's installation a review author's repository permission, so the review decides nothing; while the installation may not read the repository's collaborators, no review but the review App's decides a round",
-				"app", appauth.Review, "bot", lease.Identity.Name, "installation_owner", repository.Owner(), "repo", repository.String(), "login", shown, "status", refused.Status, "body", refused.Body)
+				"app", appauth.Review, "bot", githubrest.ShownLogin(lease.Identity.Name), "installation_owner", repository.Owner(), "repo", repository.String(), "login", shown, "status", refused.Status, "body", refused.Body)
 			return false, nil
 		case refused.Status == http.StatusUnauthorized:
 			return false, w.tokenRefused(repository, lease, fmt.Errorf("read %s's permission on %s: %w", shown, repository.String(), err))

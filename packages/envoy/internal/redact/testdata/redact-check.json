@@ -6114,6 +6114,20 @@
       }
     },
     {
+      "id": "daemon-answer-words-permission-bot",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/daemon",
+      "test": "TestAPermissionReadGitHubRefusesLogsTheAppsBotOnlyInItsShape",
+      "production": "daemon workflowRuntime.readPermission: the review App's bot, which its lease names as an App read answered it, logged only as a login GitHub allows (githubrest.ShownLogin), never as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/daemon.workflowRuntime).readPermission",
+      "capture": "daemon.answer-words/permission-bot",
+      "mutation": {
+        "file": "packages/daemon/internal/daemon/review_permission.go",
+        "preimage": "\"bot\", githubrest.ShownLogin(lease.Identity.Name)",
+        "replacement": "\"bot\", lease.Identity.Name"
+      }
+    },
+    {
       "id": "daemon-answer-words-permission-control",
       "requirement": "r4-unchanged",
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
