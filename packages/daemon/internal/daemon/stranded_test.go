@@ -562,7 +562,7 @@ func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 		defer tx.Rollback(ctx)
 		view := &source{
 			store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap,
-			startedAt: time.Now(), deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+			startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 			reports: func() map[claim.Token]capabilities.Report { return nil },
 		}
 		state, _, err := view.State(ctx, tx)
