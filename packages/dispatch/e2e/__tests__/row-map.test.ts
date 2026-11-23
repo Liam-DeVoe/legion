@@ -65,7 +65,8 @@ test(
 test(
   "a row with a note carries it in the map, and is not called unchanged",
   async () => {
-    const { stdout } = await generation;
+    const { code, named, stderr, stdout } = await generation;
+    expect(code, `the generation ${named} exited ${code}:\n${stderr}`).toBe(0);
     const lines = stdout.split("\n").filter((line) => line.startsWith("| `e2e/"));
     expect(lines.length, "the map's moved table is empty").toBeGreaterThan(0);
     for (const [key, note] of Object.entries(movedRowNotes)) {

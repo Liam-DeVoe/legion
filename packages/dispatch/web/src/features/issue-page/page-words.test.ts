@@ -282,6 +282,53 @@ test("every glyph token has an accessible name", () => {
   expect(GLYPH_NAMES[GLYPH_TOKENS.authors.agent]).toBe("Written by an agent");
 });
 
+/** A line for each key of `table` that `named` does not hold, and for each name of `named` that
+ *  `table` does not hold as a key. `path` is the path of `table`, and each line starts with the
+ *  path of its key. */
+function keyOffenders(path: string, table: object, named: readonly string[]): readonly string[] {
+  const keys = new Set(Object.keys(table));
+  const names = new Set(named);
+  return [
+    ...[...keys]
+      .filter((key) => !names.has(key))
+      .map((key) => `${path}.${key} is a key the shape does not name`),
+    ...[...names].filter((name) => !keys.has(name)).map((name) => `${path}.${name} is missing`),
+  ];
+}
+
+// The `satisfies` of `GLYPH_TOKENS` reads the joined table. It checks that each key is there.
+// It does not check that no other key is there. This case refuses an extra key, and also an
+// extra key that a part's file adds.
+test("every glyph token key is one the page's own tables name, and no other", () => {
+  const states: Readonly<Partial<Record<string, object>>> = GLYPH_TOKENS.states;
+  const stateWords: Readonly<Record<string, object>> = NODE_STATE_WORDS;
+  const offenders = [
+    ...keyOffenders("GLYPH_TOKENS", GLYPH_TOKENS, [
+      "authors",
+      "no_check",
+      "states",
+      "statements",
+      "types",
+    ]),
+    ...keyOffenders("GLYPH_TOKENS.types", GLYPH_TOKENS.types, NODE_TYPES),
+    ...keyOffenders("GLYPH_TOKENS.authors", GLYPH_TOKENS.authors, Object.keys(AUTHOR_KIND_WORDS)),
+    ...keyOffenders(
+      "GLYPH_TOKENS.statements",
+      GLYPH_TOKENS.statements,
+      Object.keys(VERIFICATION_WORDS.states)
+    ),
+    ...keyOffenders("GLYPH_TOKENS.states", states, Object.keys(stateWords)),
+    // A type that `states` does not hold is missing in the line above. Its states add no line.
+    ...Object.entries(stateWords).flatMap(([type, words]) => {
+      const tokens = states[type];
+      return tokens === undefined
+        ? []
+        : keyOffenders(`GLYPH_TOKENS.states.${type}`, tokens, Object.keys(words));
+    }),
+  ];
+  expect(offenders).toEqual([]);
+});
+
 /** The sentences of `phrase`: each run up to a full stop, a question mark or an exclamation. */
 function sentencesIn(phrase: string): readonly string[] {
   return phrase.split(/(?<=[.!?])\s+/u).filter((sentence) => /\p{L}/u.test(sentence));
@@ -767,16 +814,13 @@ test("the join adds each file's keys after the table's own, nested as the table 
 
   // `add` names only the tables of `TABLE_NAMES`. A table that a part's file declares is not one
   // of them, so a new key for that table goes in that part's file.
-  const lensWords = {
+  const acceptsPartWords = (_words: PartWords): void => {};
+  acceptsPartWords({
     // @ts-expect-error `LENS_WORDS` is not a table of `TABLE_NAMES`.
     add: { LENS_WORDS: { title: "Lens" } },
     unasked: [],
     answers: [],
-  } satisfies PartWords;
-  const tableNames: readonly string[] = TABLE_NAMES;
-  expect(Object.keys(lensWords.add).filter((name) => !tableNames.includes(name))).toEqual([
-    "LENS_WORDS",
-  ]);
+  });
 });
 
 // A part's file that the join does not read fails here. So does a part that has no file.
