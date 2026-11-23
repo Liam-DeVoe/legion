@@ -33,6 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // maxResponseBytes caps one Cognito response: both answers fit in a few KiB, so a longer one is a
@@ -68,21 +69,20 @@ func Token(ctx context.Context, cfg Config) (string, error) {
 	return signIn(ctx, cfg, client, answer)
 }
 
-// httpClient is the sign-in's only route to Cognito: dialled directly, following no redirect, and
-// reading no more than maxResponseBytes. SSL_CERT_FILE and SSL_CERT_DIR are cleared before the
-// default transport first loads the system certificate store.
+// httpClient is the sign-in's only route to Cognito: dialled directly, following no redirect
+// (redirects.Refused), and reading no more than maxResponseBytes. SSL_CERT_FILE and SSL_CERT_DIR
+// are cleared before the default transport first loads the system certificate store.
 func httpClient() (*http.Client, error) {
 	for _, variable := range []string{"SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if err := os.Unsetenv(variable); err != nil {
 			return nil, err
 		}
 	}
-	return &http.Client{
+	return redirects.Refused(&http.Client{
 		Transport: cappedTransport{&http.Transport{
 			Proxy: nil, // never HTTPS_PROXY or HTTP_PROXY
 		}},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}, nil
+	}), nil
 }
 
 // cappedTransport reads each response whole through oauth2call.ReadAnswer, at most

@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // The placeholders the recording carries (testdata/gke-metadata.json): the pool of a project named
@@ -232,13 +233,10 @@ func (g *metadataRig) get(t *testing.T, path string, headers map[string]string) 
 	return getMetadata(t, g.url, path, headers)
 }
 
-// noRedirects is a client that hands back a redirect as it is answered, since a 301 is one of the
-// endpoint's answers, which a test compares with GKE's. It keeps no connection between requests,
-// so no idle connection of the client's outlives the server a test closes.
-var noRedirects = &http.Client{
-	Transport:     &http.Transport{DisableKeepAlives: true},
-	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-}
+// noRedirects is a client that hands back a redirect as it is answered (redirects.Refused), since
+// a 301 is one of the endpoint's answers, which a test compares with GKE's. It keeps no connection
+// between requests, so no idle connection of the client's outlives the server a test closes.
+var noRedirects = redirects.Refused(&http.Client{Transport: &http.Transport{DisableKeepAlives: true}})
 
 // getMetadata asks the endpoint at base for path with headers and answers the response and its
 // body.

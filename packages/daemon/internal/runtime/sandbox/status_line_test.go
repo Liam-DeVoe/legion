@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redirects/redirectstest"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -19,10 +20,10 @@ import (
 // daemon reads it with (cacheHealthClient), under a reason phrase that quotes a credential's URL:
 // with a repository header that itself quotes it (repository), with a body that is not the
 // cache's health (body), and with a redirect whose Location carries made-up credentials in its
-// user information and its query (movedTo): naming the cache's repository and carrying a healthy
-// cache's health, to a stand-in that answers one too (redirected), and naming none, to an address
-// nothing listens at (redirect-unanswered), whose transport failure net/http names by the
-// Location. The error names the status by its code and the standard phrase
+// user information and its query (redirectstest.MovedTo): naming the cache's repository and
+// carrying a healthy cache's health, to a stand-in that answers one too (redirected), and naming
+// none, to an address nothing listens at (redirect-unanswered), whose transport failure net/http
+// names by the Location. The error names the status by its code and the standard phrase
 // (oauth2call.StatusLine) and the header as the rule reads it (oauth2call.Header), and none of
 // what the cache's stand-in wrote there; a redirect is the read's failure, whatever it carries,
 // and the stand-in it names is asked nothing. Captures sandbox.status-line/<case>.
@@ -48,8 +49,8 @@ func TestACacheHealthNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T)
 	}{
 		{"repository", workspace.CacheRepositoryHeader + ": " + oauth2calltest.Reason + "\r\n", "{}", "answered 200 OK naming the repository \"see https://issuer.example/code?access_token=\"", http.StatusOK},
 		{"body", named, "not the health", "answered 200 OK with a body that is not the cache's health", http.StatusOK},
-		{"redirected", named + movedTo(moved.Listener.Addr().String()), healthy, "/healthz answered 302 Found", http.StatusFound},
-		{"redirect-unanswered", movedTo(unanswered.Listener.Addr().String()), "", "/healthz answered 302 Found", http.StatusFound},
+		{"redirected", named + redirectstest.MovedTo(moved.Listener.Addr().String()), healthy, "/healthz answered 302 Found", http.StatusFound},
+		{"redirect-unanswered", redirectstest.MovedTo(unanswered.Listener.Addr().String()), "", "/healthz answered 302 Found", http.StatusFound},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := cacheHealthOf(context.Background(), client, oauth2calltest.StatusLineServer(t, c.status, c.header, c.body), repo)
@@ -65,10 +66,4 @@ func TestACacheHealthNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T)
 			}
 		})
 	}
-}
-
-// movedTo is a Location header line sending the read to host, carrying the made-up credentials
-// of oauth2calltest's probe in its user information and its query.
-func movedTo(host string) string {
-	return "Location: http://not-a-secret-user:not-a-secret-password@" + host + "/moved?access_token=not-a-secret-token\r\n"
 }
