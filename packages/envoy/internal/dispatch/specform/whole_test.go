@@ -135,13 +135,14 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 // last piece runs on into it, where the way out brings that piece to the bound of 25 words and one
 // past it, also where a piece runs on into the sentence of two pieces too; in a sentence written
 // twice that a run of open sentences joins, where the way out closes it at both places, and in one
-// that the way out opens at both places, so that only the text it writes joins them; and in a
-// closed sentence that the way out leaves open with no word in its last piece, before a long piece
-// that it then runs on into. Each line is one that the judge reads by its sentences, with no
-// backtick that nothing closes before a sentence (opened), which the judge refuses a backtick after
-// on purpose. Each change is read by a reading of its own, as a judgment reads one finding's ways
-// out, so the charge of a sentence (charge.Texts.Read) holds each. The text that ste-lint reads is
-// written from the line's own split (sentencesOf), not from what the judge keeps.
+// that the way out opens at both places, so that only the text it writes joins them, into a piece
+// that ste-lint refuses and neither place alone gives; and in a closed sentence that the way out
+// leaves open with no word in its last piece, before a long piece that it then runs on into. Each
+// line is one that the judge reads by its sentences, with no backtick that nothing closes before a
+// sentence (opened), which the judge refuses a backtick after on purpose. Each change is read by a
+// reading of its own, as a judgment reads one finding's ways out, so the charge of a sentence
+// (charge.Texts.Read) holds each. The text that ste-lint reads is written from the line's own split
+// (sentencesOf), not from what the judge keeps.
 func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *testing.T) {
 	verbs := []string{"checks", "verifies", "validated", "confirm", "deletes", "removed", "starts", "begin", "halted", "display"}
 	texts, ways, opened, closed, refused, afterTwo, joinedTwice := 0, 0, 0, 0, 0, 0, 0
@@ -208,16 +209,22 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 					if note != "" {
 						t.Fatalf("%q: the judge did not read %q to %q: %s", line, way.from, way.to, note)
 					}
-					var written strings.Builder
-					for _, other := range sentences {
-						span := line[other.start:other.end]
-						if ste.Strip(span) == place {
-							span = strings.ReplaceAll(span, way.from, way.to)
+					// writtenAt is the line with the way out at each place of the sentence, or at the
+					// place only (a sentence index) where only is not -1.
+					writtenAt := func(only int) string {
+						var written strings.Builder
+						for which, other := range sentences {
+							span := line[other.start:other.end]
+							if ste.Strip(span) == place && (only < 0 || which == only) {
+								span = strings.ReplaceAll(span, way.from, way.to)
+							}
+							written.WriteString(span)
 						}
-						written.WriteString(span)
+						return written.String()
 					}
-					after, _ := lintedWhole(written.String(), ste.Held{})
-					if full := noneNew(after, before); passed != full {
+					after, _ := lintedWhole(writtenAt(-1), ste.Held{})
+					full := noneNew(after, before)
+					if passed != full {
 						t.Errorf("%q: %q to %q in sentence %d: the judge says %v, and ste-lint over the written text says %v (%v, was %v)",
 							line, way.from, way.to, index, passed, full, after, before)
 					}
@@ -238,14 +245,17 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 						closed++
 					case !was && now.Open:
 						opened++
-						// The way out joins two places of the sentence that the text does not: each
-						// sentence between them is open.
-						for at := 1; at < len(places); at++ {
+						// The way out joins two places of the sentence that the text does not, each
+						// sentence between them open, and ste-lint gives a new finding of the text it
+						// writes at both, and none of the text it writes at either alone.
+						for at := 1; at < len(places) && !full; at++ {
 							run := true
 							for between := places[at-1] + 1; between < places[at]; between++ {
 								run = run && spreads[between].Open
 							}
-							if run {
+							first, _ := lintedWhole(writtenAt(places[at-1]), ste.Held{})
+							second, _ := lintedWhole(writtenAt(places[at]), ste.Held{})
+							if run && noneNew(first, before) && noneNew(second, before) {
 								openedTwice++
 								break
 							}
@@ -274,7 +284,7 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 			}
 		}
 	}
-	t.Logf("%d lines, %d changes, %d refused, %d that end a piece that ran on, %d that make one run on, %d after an open sentence of two pieces (%d that end its piece at the bound, %d of them after a piece that runs on into it, and %d one past it), %d in a sentence that a run joins at two places, %d that join two places, %d that leave no word in an open last piece before a long one",
+	t.Logf("%d lines, %d changes, %d refused, %d that end a piece that ran on, %d that make one run on, %d after an open sentence of two pieces (%d that end its piece at the bound, %d of them after a piece that runs on into it, and %d one past it), %d in a sentence that a run joins at two places, %d that join two places into a finding that neither gives alone, %d that leave no word in an open last piece before a long one",
 		texts, ways, refused, closed, opened, afterTwo, atBound, leftAfterLeft, pastBound, joinedTwice, openedTwice, emptyOpened)
 	if texts < 700 || refused == 0 || refused == ways || closed == 0 || opened == 0 || afterTwo == 0 || joinedTwice == 0 ||
 		atBound == 0 || leftAfterLeft == 0 || pastBound == 0 || openedTwice == 0 || emptyOpened == 0 {
