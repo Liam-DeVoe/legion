@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -572,34 +571,23 @@ func TestACompactionThatDoesNotWaitHoldsNoRoomLockWhileItWaitsForAConnection(t *
 	}
 	// A fold holds no connection, so the compaction's read has let its own go by the time this
 	// runs: the connections taken here are every one its write can be given.
-	occupied := make(chan []*pgxpool.Conn, 1)
+	occupied := make(chan *heldPool, 1)
 	duringCompactionFold(versioned, artifactID, func() {
-		var taken []*pgxpool.Conn
-		for range pool.Config().MaxConns {
-			conn, err := pool.Acquire(context.Background())
-			if err != nil {
-				t.Errorf("hold a compaction connection: %v", err)
-				break
-			}
-			taken = append(taken, conn)
+		taken, err := takePool(t, pool, store.CompactionPool, database.Pool)
+		if err != nil {
+			t.Error(err)
 		}
 		occupied <- taken
 	})
 
 	run := compactAside(versioned, artifactID, false)
-	var held []*pgxpool.Conn
+	var held *heldPool
 	select {
 	case held = <-occupied:
 	case <-time.After(roomWait(t)):
 		t.Fatal("the compaction never reached its fold, so its write never came to a connection")
 	}
-	release := sync.OnceFunc(func() {
-		for _, conn := range held {
-			conn.Release()
-		}
-	})
-	t.Cleanup(release)
-	if got, want := len(held), int(pool.Config().MaxConns); got != want {
+	if got, want := held.count(), int(pool.Config().MaxConns); got != want {
 		t.Fatalf("the test holds %d of the compaction pool's %d connections, want all of them", got, want)
 	}
 	// pgxpool counts an acquire that waited only once it has succeeded (Stat.EmptyAcquireCount,
@@ -627,7 +615,7 @@ func TestACompactionThatDoesNotWaitHoldsNoRoomLockWhileItWaitsForAConnection(t *
 		t.Fatalf("the compaction returned (%+v, %v) before the append landed, so it never waited for a connection", run.result, run.err)
 	}
 
-	release()
+	held.release()
 	run.await(t, "the compaction never returned once the connections it waited for were released")
 	if run.err != nil || run.result.outcome != compactCompacted {
 		t.Fatalf("the compaction = (%+v, %v), want the rows folded once it had a connection", run.result, run.err)

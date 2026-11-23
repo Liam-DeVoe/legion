@@ -448,8 +448,7 @@ func TestAnOwedSettlementWhoseWarmUpLoadRunsOutItsReadsBoundStaysOwedForTheResum
 		t.Fatal("the document's pending-settlement row is gone once its room closed, want it kept: nothing has settled the edit")
 	}
 
-	holds := make(chan heldRoomsPool, 1)
-	t.Cleanup(func() { releaseHeldRoomsPool(holds) })
+	holds := make(chan *heldPool, 1)
 	var decodes atomic.Int32
 	service.bootstrapping = func(room string, _ []byte) {
 		if room == artifactID && decodes.Add(1) == 1 {
@@ -684,21 +683,8 @@ func TestASettlementRefusedAConnectionStaysOwedAndCountsNoFailure(t *testing.T) 
 		t.Fatalf("open the settlements pool: %v", err)
 	}
 	ctx := context.Background()
-	var held []*pgxpool.Conn
-	release := func() {
-		for _, conn := range held {
-			conn.Release()
-		}
-		held = nil
-	}
-	defer release()
-	for range settlements.Stat().MaxConns() {
-		conn, err := settlements.Acquire(ctx)
-		if err != nil {
-			t.Fatalf("hold a settlements connection: %v", err)
-		}
-		held = append(held, conn)
-	}
+	held := holdPool(t, settlements, store.SettlementsPool, service.store.Pool)
+	defer held.release()
 	for attempt := range maxSettleFailures + 1 {
 		settleCurrentGeneration(t, service, artifactID)
 		owes, err := settlementPending(ctx, service.store.Pool, artifactID)
@@ -726,7 +712,7 @@ func TestASettlementRefusedAConnectionStaysOwedAndCountsNoFailure(t *testing.T) 
 		t.Fatalf("latest version = %d, want %d: no settlement refused a connection commits", latest, versions)
 	}
 
-	release()
+	held.release()
 	service.settle = 10 * time.Millisecond
 	if err := service.resumeOwedSettlements(ctx, 0); err != nil {
 		t.Fatalf("resume the owed settlement: %v", err)

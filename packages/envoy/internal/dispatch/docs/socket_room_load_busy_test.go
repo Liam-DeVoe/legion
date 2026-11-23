@@ -1,14 +1,12 @@
 package docs
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"testing"
 	"time"
 
 	gws "github.com/gorilla/websocket"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -32,32 +30,15 @@ func TestASocketWhoseRoomLoadFindsTheRoomsPoolBusyIsRefused503(t *testing.T) {
 	}
 	// The admission has read and rendered the document when this runs (admitDocument); from here
 	// until the handshake is answered, every connection of the rooms pool is held, so the room's
-	// own load meets a full pool.
-	held := make(chan []*pgxpool.Conn, 1)
+	// own load meets a full pool; the test's cleanup gives them back (takePool).
 	service.admissionRendered = func(room string) {
 		if room != artifactID {
 			return
 		}
-		var conns []*pgxpool.Conn
-		for range store.RoomsPoolSize {
-			conn, err := rooms.Acquire(context.Background())
-			if err != nil {
-				t.Errorf("hold the rooms pool: %v", err)
-				break
-			}
-			conns = append(conns, conn)
+		if _, err := takePool(t, rooms, store.RoomsPool, database.Pool); err != nil {
+			t.Error(err)
 		}
-		held <- conns
 	}
-	t.Cleanup(func() {
-		select {
-		case conns := <-held:
-			for _, conn := range conns {
-				conn.Release()
-			}
-		default:
-		}
-	})
 
 	dialer := gws.Dialer{HandshakeTimeout: 60 * time.Second}
 	start := time.Now()

@@ -8,9 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -146,32 +145,24 @@ func TestAFailedFleetReadIsNotKept(t *testing.T) {
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
 	movableClock(service)
-	held := make(chan []*pgxpool.Conn, 1)
+	held := make(chan *heldPool, 1)
 	release := func() {
 		select {
-		case conns := <-held:
-			for _, conn := range conns {
-				conn.Release()
-			}
+		case taken := <-held:
+			taken.release()
 		default:
 		}
 	}
-	t.Cleanup(release)
 	var reads atomic.Int32
 	service.beforeSocketFleetRead = func(string) {
 		if reads.Add(1) != 1 {
 			return
 		}
-		var conns []*pgxpool.Conn
-		for range database.Pool.Stat().MaxConns() {
-			conn, err := database.Pool.Acquire(context.Background())
-			if err != nil {
-				t.Errorf("hold a request-pool connection: %v", err)
-				break
-			}
-			conns = append(conns, conn)
+		taken, err := takePool(t, database.Pool, store.RequestsPool, database.Pool)
+		if err != nil {
+			t.Error(err)
 		}
-		held <- conns
+		held <- taken
 	}
 
 	refused := <-answerSocketAsync(server.URL, artifactID)

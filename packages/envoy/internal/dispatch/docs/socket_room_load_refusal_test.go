@@ -57,8 +57,7 @@ func TestARoomLoadThatFindsThePoolBusyRefusesItsSocketWithinOneBound(t *testing.
 	const bound = 2 * time.Second
 	service.store.Pool.SetAcquireBoundForTest(store.RoomsPool, bound)
 	artifactID := createDocuments(t, database, 1)[0]
-	holds := make(chan heldRoomsPool, 1)
-	t.Cleanup(func() { releaseHeldRoomsPool(holds) })
+	holds := make(chan *heldPool, 1)
 	var renders atomic.Int32
 	service.admissionRendered = func(room string) {
 		if room != artifactID || renders.Add(1) != 1 {
@@ -71,7 +70,7 @@ func TestARoomLoadThatFindsThePoolBusyRefusesItsSocketWithinOneBound(t *testing.
 	if answer.err != nil {
 		t.Fatal(answer.err)
 	}
-	var held heldRoomsPool
+	var held *heldPool
 	select {
 	case held = <-holds:
 		defer held.release()
@@ -144,8 +143,6 @@ func TestASocketWaitingOnALoadThatFindsThePoolBusyIsRefused503(t *testing.T) {
 	const bound = 2 * time.Second
 	service.store.Pool.SetAcquireBoundForTest(store.RoomsPool, bound)
 	artifactID := createDocuments(t, database, 1)[0]
-	holds := make(chan heldRoomsPool, 1)
-	t.Cleanup(func() { releaseHeldRoomsPool(holds) })
 	warmed := make(chan error, 1)
 	loadBegun := waitForRoomLoad(service, artifactID, roomWait(t))
 	var once atomic.Bool
@@ -156,7 +153,7 @@ func TestASocketWaitingOnALoadThatFindsThePoolBusyIsRefused503(t *testing.T) {
 		// The pool fills once the admission has read the document, and the warm-up's load begins
 		// before the socket offers what it read, so the socket's join finds that load under way and
 		// waits on it rather than loading the room itself.
-		holds <- takeTheRoomsPool(t, service)
+		takeTheRoomsPool(t, service)
 		go func() { warmed <- warmUpAsASettlementDoes(service, artifactID) }()
 		if err := loadBegun(); err != nil {
 			t.Error(err)
@@ -203,15 +200,13 @@ func TestASocketWhoseRequestTheServerEndsWhileItsRoomLoadsIsRefused503(t *testin
 		service.ServeHTTP(w, r.WithContext(ctx))
 	}))
 	t.Cleanup(server.Close)
-	holds := make(chan heldRoomsPool, 1)
-	t.Cleanup(func() { releaseHeldRoomsPool(holds) })
 	loadBegun := waitForRoomLoad(service, artifactID, roomWait(t))
 	var once atomic.Bool
 	service.admissionRendered = func(room string) {
 		if room != artifactID || once.Swap(true) {
 			return
 		}
-		holds <- takeTheRoomsPool(t, service)
+		takeTheRoomsPool(t, service)
 		go func() { _ = warmUpAsASettlementDoes(service, artifactID) }()
 		if err := loadBegun(); err != nil {
 			t.Error(err)
@@ -284,20 +279,11 @@ func TestALoadNoAdmissionHoldsFailsAfterOneBoundOrLoadsOnceAConnectionFrees(t *t
 	if err != nil {
 		t.Fatalf("open the rooms pool: %v", err)
 	}
-	var held []*pgxpool.Conn
-	for range rooms.Stat().MaxConns() {
-		conn, err := rooms.Acquire(context.Background())
-		if err != nil {
-			t.Fatalf("hold a rooms connection: %v", err)
-		}
-		held = append(held, conn)
-	}
-	freed := time.AfterFunc(bound/2, held[0].Release)
+	held := holdPool(t, rooms, store.RoomsPool, service.store.Pool)
+	freed := time.AfterFunc(bound/2, held.releaseOne)
 	defer func() {
 		freed.Stop()
-		for _, conn := range held[1:] {
-			conn.Release()
-		}
+		held.release()
 	}()
 	if err := warmUpAsASettlementDoes(service, artifactID); err != nil {
 		t.Fatalf("the warm-up with a rooms connection freed within the bound: %v, want the room loaded", err)
@@ -318,31 +304,15 @@ func TestASocketWhoseFleetReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) 
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]
-	held := make(chan []*pgxpool.Conn, 1)
-	t.Cleanup(func() {
-		select {
-		case conns := <-held:
-			for _, conn := range conns {
-				conn.Release()
-			}
-		default:
-		}
-	})
 	var once atomic.Bool
 	service.beforeSocketFleetRead = func(room string) {
 		if room != artifactID || once.Swap(true) {
 			return
 		}
-		var conns []*pgxpool.Conn
-		for range database.Pool.Stat().MaxConns() {
-			conn, err := database.Pool.Acquire(context.Background())
-			if err != nil {
-				t.Errorf("hold a request-pool connection: %v", err)
-				break
-			}
-			conns = append(conns, conn)
+		// Held until the test ends, whose cleanup gives them back (takePool).
+		if _, err := takePool(t, database.Pool, store.RequestsPool, database.Pool); err != nil {
+			t.Error(err)
 		}
-		held <- conns
 	}
 
 	answer := <-answerSocketAsync(server.URL, artifactID)
@@ -501,8 +471,6 @@ func TestASocketWaitingOnALoadAfterItsRoomRecordWasHandedOverIsRefused503(t *tes
 	const bound = 2 * time.Second
 	service.store.Pool.SetAcquireBoundForTest(store.RoomsPool, bound)
 	artifactID := createDocuments(t, database, 1)[0]
-	holds := make(chan heldRoomsPool, 1)
-	t.Cleanup(func() { releaseHeldRoomsPool(holds) })
 	warmed := make(chan error, 1)
 	loadBegun := waitForRoomLoad(service, artifactID, roomWait(t))
 	var once atomic.Bool
@@ -515,7 +483,7 @@ func TestASocketWaitingOnALoadAfterItsRoomRecordWasHandedOverIsRefused503(t *tes
 		if err := service.awaitRoomRecovery(context.Background(), room); err != nil {
 			t.Errorf("wait for the failed room's eviction: %v", err)
 		}
-		holds <- takeTheRoomsPool(t, service)
+		takeTheRoomsPool(t, service)
 		go func() { warmed <- warmUpAsASettlementDoes(service, artifactID) }()
 		if err := loadBegun(); err != nil {
 			t.Error(err)
@@ -563,12 +531,10 @@ func TestASocketWhoseRoomLoadRunsPastItsReadsBoundIsRefused503(t *testing.T) {
 			service.preloads.Delete(room)
 		}
 	}
-	holds := make(chan heldRoomsPool, 1)
-	t.Cleanup(func() { releaseHeldRoomsPool(holds) })
 	var decoding atomic.Bool
 	service.bootstrapping = func(room string, _ []byte) {
 		if room == artifactID && !decoding.Swap(true) {
-			holds <- takeTheRoomsPool(t, service)
+			takeTheRoomsPool(t, service)
 		}
 	}
 
@@ -630,19 +596,7 @@ func TestASocketWhoseIssueReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) 
 		t.Fatalf("a socket to a document that is not there was answered %d %q, want 404", missing.status, missing.body)
 	}
 
-	var held []*pgxpool.Conn
-	t.Cleanup(func() {
-		for _, conn := range held {
-			conn.Release()
-		}
-	})
-	for range database.Pool.Stat().MaxConns() {
-		conn, err := database.Pool.Acquire(context.Background())
-		if err != nil {
-			t.Fatalf("hold a request-pool connection: %v", err)
-		}
-		held = append(held, conn)
-	}
+	holdPool(t, database.Pool, store.RequestsPool, database.Pool)
 	answer := <-answerSocketAsync(server.URL, artifactID)
 	if answer.err != nil {
 		t.Fatal(answer.err)
@@ -919,19 +873,7 @@ func TestASocketWhoseSessionReadFindsTheRequestPoolBusyIsRefused503(t *testing.T
 		t.Fatalf("a socket that names no caller was answered %v (%v), want 401", unsigned, err)
 	}
 
-	var held []*pgxpool.Conn
-	t.Cleanup(func() {
-		for _, conn := range held {
-			conn.Release()
-		}
-	})
-	for range database.Pool.Stat().MaxConns() {
-		conn, err := database.Pool.Acquire(context.Background())
-		if err != nil {
-			t.Fatalf("hold a request-pool connection: %v", err)
-		}
-		held = append(held, conn)
-	}
+	holdPool(t, database.Pool, store.RequestsPool, database.Pool)
 	answer := <-answerSocketAsync(server.URL, artifactID)
 	if answer.err != nil {
 		t.Fatal(answer.err)
@@ -1038,19 +980,7 @@ func TestARefusedSocketsWarnLineNamesNoPerson(t *testing.T) {
 	cookie, _, _ := strings.Cut(auth.IssueSessionCookie(login, generation, testSigningKey, false), ";")
 	_, session, _ := strings.Cut(cookie, "=")
 
-	var held []*pgxpool.Conn
-	t.Cleanup(func() {
-		for _, conn := range held {
-			conn.Release()
-		}
-	})
-	for range database.Pool.Stat().MaxConns() {
-		conn, err := database.Pool.Acquire(context.Background())
-		if err != nil {
-			t.Fatalf("hold a request-pool connection: %v", err)
-		}
-		held = append(held, conn)
-	}
+	holdPool(t, database.Pool, store.RequestsPool, database.Pool)
 	dialer := gws.Dialer{HandshakeTimeout: time.Minute}
 	connection, response, err := dialer.Dial(socketURL(server.URL, artifactID), http.Header{"Cookie": []string{cookie}})
 	if connection != nil {
@@ -1076,46 +1006,18 @@ func TestARefusedSocketsWarnLineNamesNoPerson(t *testing.T) {
 	}
 }
 
-// heldRoomsPool is every connection of a service's rooms pool, taken by a hook the server runs, and
-// the moment the last of them was taken.
-type heldRoomsPool struct {
-	conns []*pgxpool.Conn
-	at    time.Time
-}
-
-func (held heldRoomsPool) release() {
-	for _, conn := range held.conns {
-		conn.Release()
-	}
-}
-
-// releaseHeldRoomsPool gives back the connections a hook took and the test never received.
-func releaseHeldRoomsPool(holds <-chan heldRoomsPool) {
-	select {
-	case held := <-holds:
-		held.release()
-	default:
-	}
-}
-
-// takeTheRoomsPool takes every connection of service's rooms pool. It runs in a hook on the server's
-// goroutine, where a failure can only be reported.
-func takeTheRoomsPool(t *testing.T, service *Service) heldRoomsPool {
+// takeTheRoomsPool takes every connection of service's rooms pool (takePool). It runs in a hook on
+// the server's goroutine, where a failure can only be reported.
+func takeTheRoomsPool(t *testing.T, service *Service) *heldPool {
 	rooms, err := service.store.Pool.Rooms()
 	if err != nil {
 		t.Errorf("open the rooms pool: %v", err)
-		return heldRoomsPool{at: time.Now()}
+		return &heldPool{at: time.Now()}
 	}
-	var held heldRoomsPool
-	for range rooms.Stat().MaxConns() {
-		conn, err := rooms.Acquire(context.Background())
-		if err != nil {
-			t.Errorf("hold a rooms connection: %v", err)
-			break
-		}
-		held.conns = append(held.conns, conn)
+	held, err := takePool(t, rooms, store.RoomsPool, service.store.Pool)
+	if err != nil {
+		t.Error(err)
 	}
-	held.at = time.Now()
 	return held
 }
 
