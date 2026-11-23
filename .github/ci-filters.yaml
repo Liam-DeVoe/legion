@@ -1531,6 +1531,15 @@ pi_legion_build:
   - 'scripts/pi-plugin-prepack.sh'
   - 'scripts/third-party-notices.ts'
   - 'scripts/e2e/lib/**'
+  # why: .github/ci-notes/ci.md#pi_legion_build-the-skills-guard-and-what-it-reads
+  - 'packages/claude-envoy/**'
+  - 'packages/envoy-client/bin/dispatch.ts'
+  - 'packages/daemon/internal/**'
+  - 'AGENTS.md'
+  - 'README.md'
+  - 'docs/kubernetes.md'
+  - 'docs/site/src/content/docs/**'
+  - 'deploy/kubernetes/daemon/controller.yaml.example'
 # why: .github/ci-notes/ci.md#dispatch_ui-the-dashboards-and-the-proof-editors-fast-checks-dispatch-ui
 dispatch_ui:
   - *ci_router
