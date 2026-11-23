@@ -1050,6 +1050,9 @@ const shdPnd = (() => {
  *  `GITHUB_ACTIONS` in any case (`shdPnd`). */
 const driverRow = test.skipIf(!shdPnd && process.env.GITHUB_ACTIONS !== "true");
 
+/** How many runs of each file `stoppedLeg` has the tool make: its `--reruns`. */
+const STOPPED_LEG_RERUNS = 2;
+
 /** Copies the tool and its preload into `directory` as a package of `files` under
  *  `e2e/__tests__`, with a `test:harness` of two workers whatever the machine's CPUs. Runs the
  *  tool there as the harness lane with two reruns, and sends the tool alone the SIGTERM the
@@ -1107,7 +1110,7 @@ async function stoppedLeg(
       "--lane",
       "harness",
       "--reruns",
-      "2",
+      String(STOPPED_LEG_RERUNS),
       "--seed",
       String(SEED),
       "--out",
@@ -1366,21 +1369,59 @@ driverRow(
   rowLimit("stoppedLeg")
 );
 
+/** How long, in milliseconds, a row of `killedRow` waits for the file it writes its pid after
+ *  before it throws. That file's one row does nothing, so the wait ends once Bun has run it. The
+ *  bound is half Bun's 60 s timeout of a row of the harness lane, which would end the waiting row
+ *  with a less plain message, and leaves the driver's 90 s `stoppedLeg` bound room for the
+ *  tool's names run after the kill. */
+const AFTER_BOUND_MS = 30_000;
+
 /** A test file of one row that writes the pid `of` gives into `pidFile`, whole, and then spins
  *  without yielding: `process.pid` for its worker, `process.ppid` for Bun's test process. Bun
  *  1.4.4 under `--parallel=2` runs a lane of one file in its test process itself, and starts
  *  workers (`bun test --test-worker`) only for two files or more (measured on 2026-11-21), so a
- *  row that kills one puts `besideIt` beside it. */
-function killedRow(pidFile: string, of: "process.pid" | "process.ppid"): string {
+ *  row that kills one puts `besideIt` beside it.
+ *
+ *  `after`, where given, is another file of the lane, by the path the progress file names it by
+ *  (`DISPATCH_UNIT_REPEAT_PROGRESS`). The row then writes the pid only once the progress file
+ *  holds `STOPPED_LEG_RERUNS` `done` lines of that file's load, so that each of its runs has
+ *  ended and the tool reads no worker as still in it, and it throws where they have not come
+ *  within `AFTER_BOUND_MS`. It reads only whole lines, those before the file's last newline, so
+ *  a line a worker is still appending is not read. */
+function killedRow(pidFile: string, of: "process.pid" | "process.ppid", after?: string): string {
   const written = `${pidFile}.writing`;
-  return (
-    'import { test } from "bun:test";\n' +
-    'import { renameSync, writeFileSync } from "node:fs";\n\n' +
-    'test("is killed", () => {\n' +
+  const kills =
     `  writeFileSync(${JSON.stringify(written)}, String(${of}));\n` +
     `  renameSync(${JSON.stringify(written)}, ${JSON.stringify(pidFile)});\n` +
     "  for (;;) {}\n" +
-    "});\n"
+    "});\n";
+  if (after === undefined) {
+    return (
+      'import { test } from "bun:test";\n' +
+      'import { renameSync, writeFileSync } from "node:fs";\n\n' +
+      'test("is killed", () => {\n' +
+      kills
+    );
+  }
+  const late = `${after} had not ended its ${STOPPED_LEG_RERUNS} runs within ${AFTER_BOUND_MS} ms`;
+  return (
+    'import { test } from "bun:test";\n' +
+    'import { readFileSync, renameSync, writeFileSync } from "node:fs";\n\n' +
+    "const ended = () => {\n" +
+    '  const lines = readFileSync(process.env.DISPATCH_UNIT_REPEAT_PROGRESS, "utf8")\n' +
+    '    .split("\\n")\n' +
+    "    .slice(0, -1)\n" +
+    "    .map((line) => JSON.parse(line));\n" +
+    `  const file = ${JSON.stringify(after)};\n` +
+    '  const load = lines.find((line) => line.event === "load" && line.file === file)?.load;\n' +
+    '  const done = lines.filter((line) => line.event === "done" && line.load === load);\n' +
+    `  return done.length >= ${STOPPED_LEG_RERUNS};\n` +
+    "};\n\n" +
+    'test("is killed", async () => {\n' +
+    `  for (const until = Date.now() + ${AFTER_BOUND_MS}; !ended(); await Bun.sleep(20)) {\n` +
+    `    if (Date.now() > until) throw new Error(${JSON.stringify(late)});\n` +
+    "  }\n" +
+    kills
   );
 }
 
@@ -1435,11 +1476,18 @@ driverRow(
     // and the report says only that: no file and no row is named, and the progress file that
     // records the row is deleted. Here the row writes its parent's pid, Bun's test process, and
     // spins; the driver sends that process a SIGKILL, and the tool no signal at all.
+    // That kill ends the worker of beside.test.ts too, and where that worker had begun a run of
+    // its file and not ended it, the report names that file as well, and truly: in CI run
+    // 45108871523 it named beside.test.ts at "after-row", its row ended and its run not. So the
+    // row writes the pid only once every run of beside.test.ts has ended (`killedRow`'s `after`).
     const directory = scratch();
     const pid = join(directory, "test-process-pid");
     const { code, report, left } = await stoppedLeg(
       directory,
-      { "killed.test.ts": killedRow(pid, "process.ppid"), "beside.test.ts": besideIt },
+      {
+        "killed.test.ts": killedRow(pid, "process.ppid", "e2e/__tests__/beside.test.ts"),
+        "beside.test.ts": besideIt,
+      },
       [pid],
       { graceMs: 120_000, namesMs: 120_000 },
       { killFrom: pid }
