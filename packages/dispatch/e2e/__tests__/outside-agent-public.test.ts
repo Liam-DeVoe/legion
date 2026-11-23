@@ -13,7 +13,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { rowLimit, runBounded } from "./bounded-subprocess";
+import { bounds, rowLimit, runBounded } from "./bounded-subprocess";
 import {
   copyLeg,
   type LegRun,
@@ -37,9 +37,15 @@ interface PublicScenario {
   /** The answers of the trades the T5 window makes, in turn, the last one repeating: true for an
    *  answered trade, false for a refusal, null for an answer the leg cannot read. */
   readonly trades: readonly (boolean | null)[];
-  /** When the relay socket the T5 window holds closes after it opens, and with which code; it
-   *  stays open where none is given. */
-  readonly holdCloseMs?: number;
+  /** The code the relay socket the T5 window holds closes with; it stays open for the whole hold
+   *  the leg asks for where none is given. It closes at the leg's first trade after the first
+   *  refused one (the first false of `trades`), which the leg makes only after it has read the
+   *  socket open at that refusal, and the stand-in answers that trade only once the socket's
+   *  process has ended and the leg's shell has reaped it, so the leg's next read finds it closed.
+   *  No time stands for either read: a close a fixed 15 s after the socket opened was outrun by a
+   *  loaded leg's trades (k5 at 0a773967, Job infra983-k5-head31e-qbkvf). Where no trade is
+   *  refused within the hold, which is the leg's T5 window (OUTSIDE_T5_SECONDS, 1200 s by
+   *  default), the socket stays open for all of it, as the leg makes no first refusal after it. */
   readonly holdCode?: number;
   /** The probe's answers by command, where they differ from an edge that refuses as it should. */
   readonly foreignSend?: Record<string, unknown>;
@@ -50,7 +56,13 @@ interface PublicScenario {
   readonly browserRows?: readonly (readonly [string, string, string])[];
 }
 
-/** The stand-in probe: answers each command the public leg runs, from scenario.json beside it. */
+/** The stand-in probe: a Bun process the leg starts for each command it runs, on the leg's own
+ *  clock, which no fake timer reaches; it answers from scenario.json beside it. Its `hold` reads
+ *  the count of trades its `trade` keeps, and that trade reads whether the hold's process is still
+ *  there, each 25 ms apart, a gap no verdict reads. The trade's wait is held to the short bound,
+ *  which ends a wait that would not end by itself: a hold ends at its first read of the count it
+ *  waits for, so the bound fires only for a hold that is stuck, and the row then fails, by name,
+ *  on the socket left open rather than hanging. */
 const standInProbe = `
 const dir = import.meta.dir;
 const scenario = JSON.parse(await Bun.file(dir + "/scenario.json").text());
@@ -58,6 +70,12 @@ const [command, ...args] = Bun.argv.slice(2);
 const self = process.env.OUTSIDE_PROBE_SESSION ?? "";
 const print = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 const refusal = (code) => ({ status: 403, code, detail: "refused" });
+const counter = dir + "/trades.count";
+const holder = dir + "/hold.pid";
+const tradesMade = async () => ((await Bun.file(counter).exists()) ? Number(await Bun.file(counter).text()) : 0);
+const ended = (pid) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+const firstRefusal = scenario.trades.indexOf(false);
+const closes = scenario.holdCode !== undefined && firstRefusal !== -1;
 switch (command) {
   case "whoami":
     print({ status: 200, code: null, detail: null, kind: "agent", owner: "outside-e2e@example.com", project: "EXAMPLE", scopes: [] });
@@ -92,22 +110,32 @@ switch (command) {
     print({ port: 1 });
     break;
   case "trade": {
-    const counter = dir + "/trades.count";
-    const done = (await Bun.file(counter).exists()) ? Number(await Bun.file(counter).text()) : 0;
+    const done = await tradesMade();
     await Bun.write(counter, String(done + 1));
+    if (closes && done === firstRefusal + 1 && (await Bun.file(holder).exists())) {
+      const pid = Number(await Bun.file(holder).text());
+      const until = Date.now() + ${bounds.short};
+      while (!ended(pid) && Date.now() < until) await Bun.sleep(25);
+    }
     const traded = scenario.trades[Math.min(done, scenario.trades.length - 1)];
     if (traded === null) print({ unknown: "the stand-in broker did not answer" });
     else print(traded ? { traded: true, expires_at: Date.now() + 300000 } : { traded: false, status: 403, detail: "refused" });
     break;
   }
-  case "hold":
+  case "hold": {
+    await Bun.write(holder, String(process.pid));
     print({ opened_at: Date.now() });
-    if (scenario.holdCloseMs === undefined) await Bun.sleep(Number(args[0]) * 1000);
-    else {
-      await Bun.sleep(scenario.holdCloseMs);
-      print({ closed_at: Date.now(), code: scenario.holdCode ?? 4401 });
+    const end = Date.now() + Number(args[0]) * 1000;
+    if (closes) {
+      while ((await tradesMade()) <= firstRefusal + 1 && Date.now() < end) await Bun.sleep(25);
+      if ((await tradesMade()) > firstRefusal + 1) {
+        print({ closed_at: Date.now(), code: scenario.holdCode });
+        break;
+      }
     }
+    await Bun.sleep(Math.max(0, end - Date.now()));
     break;
+  }
   default:
     print({ unknown: "the stand-in probe has no " + command });
     process.exit(2);
@@ -206,18 +234,17 @@ describe.skipIf(skipWithout("bash", "bun"))(
       "P6, P7 and P10 pass only on the edge's own refusals, and T5's agent part only when every later trade is refused and the socket open at the refusal closes 4401 or 4403",
       async () => {
         const [pass, crossing, early, dropped, unread] = await Promise.all([
-          publicStandInRun({ trades: [true, false, false], holdCloseMs: 15_000, holdCode: 4401 }),
+          publicStandInRun({ trades: [true, false, false], holdCode: 4401 }),
           publicStandInRun({
             trades: [true, false, true],
-            holdCloseMs: 15_000,
             holdCode: 4401,
             foreignSend: { status: 200, code: null, detail: null },
             approve: { status: 403, code: "FORBIDDEN", detail: "refused" },
             livePublish: { status: 200, code: null, detail: null },
           }),
           publicStandInRun({ trades: [false] }),
-          publicStandInRun({ trades: [true, false, false], holdCloseMs: 15_000, holdCode: 1006 }),
-          publicStandInRun({ trades: [true, false, null], holdCloseMs: 15_000, holdCode: 4401 }),
+          publicStandInRun({ trades: [true, false, false], holdCode: 1006 }),
+          publicStandInRun({ trades: [true, false, null], holdCode: 4401 }),
         ]);
         expect({ verdicts: verdictsOf(pass.stdout), stdout: pass.stdout }).toMatchObject({
           verdicts: {
@@ -279,7 +306,6 @@ describe.skipIf(skipWithout("bash", "bun"))(
       async () => {
         const run = await publicStandInRun({
           trades: [true, false, false],
-          holdCloseMs: 15_000,
           holdCode: 4401,
           browserRows: [
             ["T5-cookie", "at=100 the cookie still answered", "FAIL"],

@@ -114,12 +114,25 @@
  *   s, and under the `short` bound rows of these runs were killed at 60 s in four whole-file runs.
  *   Three times 175.0 s, rounded up to the minute, is 540 s. A run that stops before any probe, at
  *   an input it refuses, stays under `short`.
- * - `codexRun`, against 55.52 s: the slowest of 29 runs of `e2e/acceptance/outside-agent-codex.sh`
- *   against the stand-ins of `outside-agent-codex.test.ts`, its rows started one, two, three and
- *   five at once, on a dev box of 288 CPUs at a 1-minute load of about 1,100 on 2026-11-21. Under
- *   `short` those runs read 1.94 s to 55.52 s, slowed by the start of the 20 or so Bun processes
- *   each run starts and by the leg's polls. Three times 55.52 s, rounded up to the minute, is
- *   180 s. A run that stops before any Codex starts, at an input it refuses, stays under `short`.
+ * - `codexRun`, against 150.75 s: the slowest run of `e2e/acceptance/outside-agent-codex.sh`
+ *   against the stand-ins of `outside-agent-codex.test.ts` read in the shape of INFRA-983's k5
+ *   runs, the harness lane under two busy loops on a pod of 2 CPUs. It is one of the three runs a
+ *   row starts at once, "C4 fails where the session never holds the probe's message, C1 where the
+ *   edge never lists the session, …", whose unregistered run waits its 23 s list window out: the
+ *   slowest of that row's 10 runs beside the lane in Job infra983-t5hold-cr2-xx8jc at cbfa8cb7 on
+ *   2026-11-23, whose next slowest read 88.69 s; which of the three runs it was is not kept. In
+ *   the same shape the slow-menu row's run read 82.78 s, beside 56.67 s, in a `bun run test` of
+ *   Job infra983-k5-head31c-sdcrv at c16abcd8 the same day; and four runs of the harness lane
+ *   (Jobs infra983-t5hold-m1-zbtbc and infra983-t5hold-m2-8lw79 at cbfa8cb7) kept the times of
+ *   rows, not of runs, the slowest row reading 92.9 s with three runs at once. Their 124.0 s row
+ *   is left out, since it waited out twice the 30 s list window those Jobs gave every run, where
+ *   its untrusted-hooks run now has 3 s. Under the lane and eight busy loops, heavier than that
+ *   shape, runs read 134.4 s (Job infra983-t5hold-cl8-rrxjh) and 244.9 s (Job
+ *   infra983-t5hold-cr8-tbzx6); they are no readings of this rule. Earlier, 29 runs on a dev box
+ *   of 288 CPUs at a 1-minute load of about 1,100 on 2026-11-21, rows started one, two, three and
+ *   five at once, read 1.94 s to 55.52 s, slowed by the start of the 20 or so Bun processes each
+ *   run starts and by the leg's polls. Three times 150.75 s, rounded up to the minute, is 480 s.
+ *   A run that stops before any Codex starts, at an input it refuses, stays under `short`.
  * - `stoppedLeg`, against 28.24 s: the slowest of 35 drivers of the stop rows of
  *   `unit-repeat.test.ts`, each a copy of the repeat tool over a package of one or two files with
  *   its Bun, the stop, the kill or the cancel the row sends, its names runs and its count of what
@@ -133,9 +146,9 @@
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
- * run of the Codex leg after 3 minutes, a leg or the shapes script of the outside agent's
- * acceptance (`legRun`) after 4 minutes, a listing after 6 minutes, the generation after 6.5
- * minutes, a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
+ * leg or the shapes script of the outside agent's acceptance (`legRun`) after 4 minutes, a listing
+ * after 6 minutes, the generation after 6.5 minutes, a run of the Codex leg after 8 minutes, a run
+ * of the edge check after 9 minutes, and the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -179,7 +192,7 @@ export const bounds = Object.freeze({
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
   /** One run of `e2e/acceptance/outside-agent-codex.sh` against the stand-ins of its tests. */
-  codexRun: 180_000,
+  codexRun: 480_000,
   /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
    *  stop or kill the row sends, and its names runs. */
   stoppedLeg: 90_000,

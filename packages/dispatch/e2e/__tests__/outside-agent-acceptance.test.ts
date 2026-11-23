@@ -350,7 +350,11 @@ stranger=$( '${sleep}' ${base}6 >/dev/null 2>&1 & echo $! )
 background="$background $stranger"
 other=$( '${sleep}' ${base}7 >/dev/null 2>&1 & echo $! )
 background="$background $other"
-sleep 1
+# Every leaf runs before any is stopped: a subshell stopped before it starts its leaf leaves no
+# leaf to survive, so the stops wait for each leaf, not for a second a loaded box can outrun.
+for n in 1 2 3 4 5 6 7; do
+  until pgrep -f "^${sleep} ${base}$n\\$" >/dev/null; do sleep 0.05; done
+done
 stop_child "$stranger"
 reap
 sleep 1
