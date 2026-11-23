@@ -42,6 +42,9 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	if steps, declared := schema.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
 		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
 	}
+	if merges, declared := schema.Types[3].Attributes.Lookup("merges"); !declared || merges.Kind != pmdoc.BlockAttributeEnum || !slices.Equal(merges.Choices, []string{"true", "false"}) || merges.Since != 11 || merges.CreatableSince != 11 {
+		t.Fatalf("plan_task attribute merges = %+v (declared %v), want an enum of true and false read and created from version 11", merges, declared)
+	}
 	if owner, declared := schema.Types[3].Attributes.Lookup("owner"); !declared || owner.Kind != pmdoc.BlockAttributeString || owner.Since != 12 || owner.CreatableSince != 12 {
 		t.Fatalf("plan_task attribute owner = %+v (declared %v), want a string read and created from version 12", owner, declared)
 	}

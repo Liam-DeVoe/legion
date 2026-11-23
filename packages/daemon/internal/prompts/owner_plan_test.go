@@ -20,8 +20,8 @@ import (
 // unchanged block taken, each refusal names its cause and changes nothing so the same version can
 // be given again, and an issue that started its work before Legion took plans takes none. A new
 // version of `plan.md` names the token of the text it replaces, since Dispatch refuses a replacing
-// upload that names none (envoy's PRECONDITION_REQUIRED), and a parked or done child takes a new
-// plan only after its rerun, since a version for its done or left task is refused TASK_DONE
+// upload that names none (envoy's PRECONDITION_REQUIRED), and a child out of the workflow takes a
+// new plan only after its rerun, since a version for its done or left task is refused TASK_DONE
 // (workflow.planGiven): the rerun, then stop_task, then register_plan. Each is held by its terms:
 // a term alone where the term is the rule (a code, an operation, a role), and otherwise the terms
 // of the clause that states the rule, in their order. Both architect compositions share that
@@ -90,6 +90,8 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				{"later version", "waits", "stopped"},
 				{"running task", "`PLAN_REFUSED`", "task <id> is running"},
 				{"running task's block", "goes on"},
+				// ... unless it moves the base of a started task's pull request.
+				{"running or held task", "moves the branch", "`PLAN_REFUSED`", "task <id> has started on the base"},
 				// A refusal changes nothing, so the same version is given again, and an issue
 				// that started before plans takes none.
 				{"changes nothing", "given again"},
@@ -97,10 +99,15 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// Another architect's stop names it in the notice; one's own stop sends none.
 				{"`stop_task`", "`stoppedBy`"},
 				{"no notice", "200", "`stop_task`"},
+				// A task-stopped notice reaches the stopped issue's own architect, and the daemon
+				// sets back an architect's status write on its own issue (record.OwnsUnder), so
+				// that architect sends the end of that work to the architect above it rather than
+				// writing a status the daemon sets back for it to write again.
+				{"own issue's task stopped", "architect above it", "`envoy_publish`", "sets back"},
 				// A new version of plan.md names the token of the text it replaces.
 				{"`plan.md` exists", "--precondition-json", "`dispatch doc-read --issue <issue> --artifact plan.md`", "`400 PRECONDITION_REQUIRED`"},
-				// A parked or done child takes a new plan after its rerun: stop, then give it.
-				{"parked or done child", "only after `rerun_child`", "`TASK_DONE`"},
+				// A child out of the workflow takes a new plan after its rerun: stop, then give it.
+				{"child out of the workflow", "only after `rerun_child`", "`TASK_DONE`"},
 				{"after the rerun", "`stop_task`", "`register_plan`", "first step"},
 			} {
 				if !clauseHolds(composed, terms...) {

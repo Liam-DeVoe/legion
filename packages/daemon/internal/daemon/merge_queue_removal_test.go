@@ -559,7 +559,7 @@ func (r *dequeueRig) recordPullRequest(t *testing.T, issue dequeueIssue, change 
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		pr, err := r.records.PullRequest(ctx, tx, issue.key)
+		pr, err := r.records.MergePullRequest(ctx, tx, issue.key)
 		if err != nil {
 			return err
 		}

@@ -130,6 +130,12 @@
           "since": 5,
           "creatable_since": 5
         },
+        "merges": {
+          "kind": "enum",
+          "choices": ["true", "false"],
+          "since": 11,
+          "creatable_since": 11
+        },
         "owner": {
           "kind": "string",
           "since": 12,

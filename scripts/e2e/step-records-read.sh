@@ -34,8 +34,11 @@ case ${BASH_SOURCE[0]} in */*) here=${BASH_SOURCE[0]%/*} ;; *) here=. ;; esac
 read_require_dispatch
 read_dispatch steps --issue "$issue"
 
-# Each line after the header is one run, as `dispatch steps` prints it:
+# Each line after the header is one run, as `dispatch steps` prints it, except the line of a task
+# of the issue's plan, which comes before its runs and is no run:
 #   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>
+#   task <task> needs <tasks|nothing>: <place> <step> <state>, …
+#   task <task> needs are not recorded: <place> <step> <state>, …
 awk -v issue="$issue" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit status }
   NR == 1 {
@@ -45,6 +48,7 @@ awk -v issue="$issue" '
     next
   }
   NF == 0 { next }
+  $1 == "task" && $3 == "needs" { next }
   {
     if (NF != 12 || $6 != "attempt") unknown("the line is no run: " $0)
     runs++

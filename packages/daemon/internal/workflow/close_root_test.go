@@ -25,6 +25,7 @@ import (
 func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	seedRoleClaims(t, pool, "LEGION-1")
 	var logged bytes.Buffer
 	engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logged, nil)))
 	apply := func(id string, fact intake.Fact) intake.Result {
@@ -123,8 +124,8 @@ func TestAnArchitectClosesItsRootThatWaitsOnAPerson(t *testing.T) {
 }
 
 // close_root ends a tree only while its root has started no phase, and only a root: past that the
-// tree ends through its workflow or a human, and a child leaves with park_child under the park rule
-// the refusal states.
+// tree ends through its workflow or a human, and a child leaves by the status its owning architect
+// writes on it in Dispatch.
 func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

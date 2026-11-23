@@ -334,7 +334,9 @@ type stepLine struct {
 }
 
 // parseSteps reads the output of `dispatch steps --issue key`: the header `<key>: <n> steps in <m>
-// tasks`, then exactly n lines of runs.
+// tasks`, then exactly n lines of runs. The line of a task of the issue's plan, `task <task> needs
+// <tasks|nothing>: …` or `task <task> needs are not recorded: …`, which comes before that task's
+// runs, is no run and is passed over.
 func parseSteps(key, out string) (stepsPrinted, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	var printed stepsPrinted
@@ -347,6 +349,9 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 	}
 	for _, text := range lines[1:] {
 		fields := strings.Fields(text)
+		if len(fields) > 2 && fields[0] == "task" && fields[2] == "needs" {
+			continue
+		}
 		if len(fields) != 12 || fields[5] != "attempt" {
 			return printed, fmt.Errorf("the line %q is no run", text)
 		}

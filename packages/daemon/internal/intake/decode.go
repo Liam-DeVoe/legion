@@ -269,6 +269,14 @@ func (e dispatchEvent) mark() record.EventMark {
 	return record.EventMark{Seq: e.Seq, At: e.CreatedAt.UTC()}
 }
 
+// daemonActor says whether the daemon made the event: its actor is the session the daemon writes
+// every Dispatch status and message of the event's issue under (dispatch.DaemonSession). It is the
+// one statement of that rule, which the decoder (DispatchIssue.DaemonActor) and the set-back's
+// check (StatusChange.DaemonActor) both read.
+func (e dispatchEvent) daemonActor() bool {
+	return e.Actor.Kind == "session" && e.Actor.ID == dispatch.DaemonSession(e.IssueKey)
+}
+
 // decodeDispatchFact decodes one Dispatch issue event of project from its name in either form
 // (subjectforms.IssueEventKey), reporting whether the name was the old one. A name that carries
 // its key in neither form is poison (errIssueNameInNeitherForm).
@@ -364,7 +372,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			parent = *issue.Parent
 		}
 		actorSession := ""
-		daemonActor := event.Actor.Kind == "session" && event.Actor.ID == dispatch.DaemonSession(event.IssueKey)
+		daemonActor := event.daemonActor()
 		if event.Actor.Kind == "session" && !daemonActor {
 			actorSession = event.Actor.ID
 		}
@@ -685,15 +693,27 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 }
 
 // decodePullRequest decodes a pull request's lifecycle event on an issue's branch
-// (claim.BranchIssue). One on any other branch is no fact, read before anything else of the
-// event, so it is acknowledged without a transaction: the workflow records a pull request only on
-// an issue's branch (PullRequestOpened), and every later event applies only to a recorded one. A
+// (claim.BranchIssue) whose head is that branch of the event's repository itself. One on any other
+// branch is no fact, read before anything else of the event, so it is acknowledged without a
+// transaction: the workflow records a pull request only on an issue's branch that a task of the
+// issue holds (PullRequestOpened), and every later event applies only to a recorded one. A
 // repository the daemon hears whose other pull requests open and move many times a minute would
 // otherwise cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of
 // them changing nothing. Every action carries head_ref.
+//
+// One whose head is a branch of another repository - a fork's, which anyone may open and whose
+// branch may carry any name, an issue's or a task's among them - is no fact either, whatever its
+// branch: it is no issue's, and the workflow records it on no issue. The listener names the
+// repository of the head (head_repo, GitHub's head.repo.full_name), the event's own for a branch
+// of it, compared as GitHub compares names, without case; it leaves the field out once GitHub no
+// longer has the fork, and an event without it names no head of this repository.
 func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	branch, _ := rawString(raw, "head_ref")
 	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
+		return nil, nil
+	}
+	headRepo, _ := rawString(raw, "head_repo")
+	if !strings.EqualFold(headRepo, repository.String()) {
 		return nil, nil
 	}
 	number, action, ok := githubIdentity(raw)
@@ -714,8 +734,8 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 			return nil, nil
 		}
 		url, _ := rawString(raw, "url")
-		return PullRequestOpened{Repo: repo, Number: number, Branch: branch, HeadSHA: sha, Base: base, Body: body, URL: url, UpdatedAt: updatedAt,
-			Reopened: action == "reopened"}, nil
+		return PullRequestOpened{Repo: repo, Number: number, Branch: branch, HeadSHA: sha, HeadRepo: headRepo, Base: base, Body: body, URL: url,
+			UpdatedAt: updatedAt, Reopened: action == "reopened"}, nil
 	case "synchronize":
 		if sha == "" {
 			return nil, nil
@@ -776,11 +796,13 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 		CommitID: commitID, HeadSHA: headSHA, Author: author, Body: body, BodyTruncated: bodyTruncated == "true"}, unread, nil
 }
 
-// decodePush decodes a push to a branch: to an issue's branch (claim.BranchIssue) it is the Push
-// the workflow applies to the pull request it records there, and to any other branch it is a
-// BasePush, the only notice the daemon gets that a pull request's base moved. GitHub recomputes
-// whether each head on a base still merges into it when the base moves and sends no event for the
-// pull request itself, so a head the record holds as clean goes behind or dirty unheard.
+// decodePush decodes a push to a branch: to an issue's branch, or a task's (claim.BranchIssue), it
+// is the Push the workflow applies to the pull request it records there, and to any other branch it
+// is a BasePush. Each is the notice the daemon gets that a pull request's base moved: the workflow
+// applies a Push as a push to a base as well, since the pull request of a task that needs another
+// is based on that task's branch. GitHub recomputes whether each head on a base still merges into
+// it when the base moves and sends no event for the pull request itself, so a head the record holds
+// as clean goes behind or dirty unheard.
 //
 // A base push costs the daemon one transaction under the fact lock (ApplyFact), which a heard
 // repository that other automation pushes to many times a minute pays per push; the cost is paid

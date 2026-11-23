@@ -41,7 +41,8 @@ func goldenPath(name string) string {
 }
 
 // settingsFixtureFile is the maximal kubernetes legion.yaml the state golden and the settings tests
-// share: every key the loader models is set, and every value a credential, its source or its file
+// share: every key the loader models is set but `roles` and `role_types`, which
+// `internal/api/settings_test.go` pins, and every value a credential, its source or its file
 // could be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a DSN
 // password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key, each
 // provider key's store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo
@@ -197,7 +198,20 @@ state_dir: /var/lib/legion
 // reading no environment, so the resolved values are the file's and the defaults alone.
 func loadSettingsFile(t *testing.T, body string) config.Config {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "legion.yaml")
+	return loadSettingsFileWith(t, body, nil)
+}
+
+// loadSettingsFileWith is loadSettingsFile with each of files, by name, written first in the
+// directory of the legion.yaml, where a relative path the file names resolves.
+func loadSettingsFileWith(t *testing.T, body string, files map[string]string) config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	path := filepath.Join(dir, "legion.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write legion.yaml: %v", err)
 	}
@@ -244,6 +258,18 @@ func populatedState(t *testing.T) State {
 	// queued to its claim, and a turn of it confirmed that task.
 	entryQueued := time.Date(2026, 9, 22, 8, 58, 14, 0, time.UTC)
 	entryConfirmed := time.Date(2026, 9, 22, 8, 58, 51, 0, time.UTC)
+	// LEGION-207's one open production check, which the issue shows under `check` and `checks`.
+	goldenCheck := CheckView{
+		Repo:        "acme/widgets",
+		PullRequest: 1239,
+		MergeCommit: "3e9c0a7b5d2f4e8a1c6b9d0f2a4e7c5b8d1f3a60",
+		OpenedAt:    time.Date(2026, 9, 22, 8, 40, 12, 0, time.UTC),
+		Role:        string(claim.RoleImplementer),
+		Looks:       2,
+		LookOpen:    true,
+		LastWake:    &CheckWakeView{Kind: "issue.deployed", Detail: "run 38230245571 completed 2026-09-22T09:10:44Z", At: time.Date(2026, 9, 22, 9, 10, 51, 0, time.UTC)},
+		NextWakeAt:  time.Date(2026, 10, 6, 8, 40, 12, 0, time.UTC),
+	}
 	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-218's
 	// head went up minutes ago and no read of the pull request has answered for it yet, so all
 	// the daemon knows of its age is the `updated_at` GitHub gave the pull request itself;
@@ -302,8 +328,8 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			Cap:    5,
-			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219"},
+			Cap:    6,
+			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240"},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -513,6 +539,37 @@ func populatedState(t *testing.T) State {
 					Index:      0,
 					AdmittedAt: time.Date(2026, 9, 21, 18, 42, 11, 0, time.UTC),
 				},
+				// The tasks of this root's plan, each with every key a task can carry between
+				// them (internal/projection's taskView). a is the task that merges: its owner
+				// stopped it to add the tasks it now needs, so it keeps its place and its pull
+				// request, which is the issue's own, the merge's. b's reviewer approved b's own
+				// pull request, whose round waits on GitHub. c's step waits for its agent k, which
+				// runs d's first step. e is held, its owner having escalated a failed claim. The
+				// issue stands at implementing, the first phase of a running task in today's order.
+				Tasks: []TaskView{
+					{ID: "a", State: string(record.TaskStopped), Needs: []string{"b", "c", "d", "e"}, Kind: record.PlaceStep,
+						Phase: string(phase.Implementing), Branch: "legion/LEGION-208", Position: 1, Role: string(claim.RoleImplementer),
+						Agent: "implementer", StoppedReason: "its owner stopped it to add the tasks it needs",
+						PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 1247, Head: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+							State: "open", MergeState: "blocked", ReviewDecision: "changes_requested"},
+						Counts: TaskCountsView{Pass: 3, Rounds: 2}},
+					{ID: "b", State: string(record.TaskRunning), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Reviewing),
+						Branch: "legion/LEGION-208.b", Position: 2, Role: string(claim.RoleReviewer), Agent: "reviewer",
+						PullRequest: &PullRequestView{Repo: "acme/widgets", Number: 1251, Head: "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
+							State: "open", MergeState: "blocked", ReviewDecision: "approved"},
+						MergeWait: &MergeWaitView{WaitsOn: "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18", MergeState: "blocked",
+							StateReadAt: &stuckStateReadAt, HeadUpdatedAt: &waitingHeadUpdatedAt, CheckRuns: 2},
+						Counts: TaskCountsView{Pass: 1}},
+					{ID: "c", State: string(record.TaskRunning), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Implementing),
+						Branch: "legion/LEGION-208.c", Position: 1, Role: string(claim.RoleImplementer), Agent: "k",
+						Wait: string(record.StepWaitAgent), WaitsFor: &AgentStepView{Agent: "k", Task: "d", Position: 1}},
+					{ID: "d", State: string(record.TaskRunning), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Implementing),
+						Branch: "legion/LEGION-208.d", Position: 1, Role: string(claim.RoleImplementer), Agent: "k",
+						Counts: TaskCountsView{Pass: 1}},
+					{ID: "e", State: string(record.TaskHeld), Needs: []string{}, Kind: record.PlaceStep, Phase: string(phase.Implementing),
+						Branch: "legion/LEGION-208.e", Position: 1, Role: string(claim.RoleImplementer), Agent: "implementer-2",
+						HoldReason: string(record.HoldEscalated), Counts: TaskCountsView{Pass: 1}},
+				},
 			},
 			"LEGION-210": {
 				Key:           "LEGION-210",
@@ -699,6 +756,41 @@ func populatedState(t *testing.T) State {
 			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
 			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
 			// no memory group.
+			// LEGION-240 stands at step: its task runs the step of checker, a role the deployment
+			// defines, which the phase alone does not name (`stepRole`). It holds a slot and is at
+			// work (deploymentRolesContract), but its pod was built before the deployment defined
+			// the checker, so the checker's start waits for that pod's update round or its release
+			// (record.Store.StartsWaitingForPod): the issue names the checker in `startWaitsForPod`
+			// and no claim of the checker exists yet, so it carries no worker.
+			// LEGION-241 is held from that step, its checker's claim failed, so its hold names the
+			// phase it left and the role of that step, and the failed claim stays its worker, keyed
+			// by the role of the deployment, as LEGION-210's failed implementer stays its own.
+			"LEGION-240": {
+				Key:              "LEGION-240",
+				Generation:       1,
+				Phase:            phase.Step,
+				StepRole:         "checker",
+				Status:           "in_progress",
+				Tree:             "LEGION-240",
+				Repo:             "acme/widgets",
+				DefaultBranch:    "main",
+				Workers:          map[claim.Role]PhaseView{},
+				StartWaitsForPod: []string{"checker"},
+			},
+			"LEGION-241": {
+				Key:           "LEGION-241",
+				Generation:    1,
+				Phase:         phase.Held,
+				HeldFrom:      string(phase.Step),
+				StepRole:      "checker",
+				Status:        "in_progress",
+				Tree:          "LEGION-241",
+				Repo:          "acme/widgets",
+				DefaultBranch: "main",
+				Workers: map[claim.Role]PhaseView{
+					"checker": {Claim: ClaimView{Session: "ses_checker_241", State: "failed"}},
+				},
+			},
 			"LEGION-214": {
 				Key:           "LEGION-214",
 				Generation:    1,
@@ -744,18 +836,10 @@ func populatedState(t *testing.T) State {
 				// A check of this release records the project's `production_check` role, the tester;
 				// this one opened before it and keeps the implementer, which is the migrated case
 				// the release must keep working. Look 2 is open, so no agent's wake stands and the
-				// next look is the check's bound.
-				Check: &CheckView{
-					Repo:        "acme/widgets",
-					PullRequest: 1239,
-					MergeCommit: "3e9c0a7b5d2f4e8a1c6b9d0f2a4e7c5b8d1f3a60",
-					OpenedAt:    time.Date(2026, 9, 22, 8, 40, 12, 0, time.UTC),
-					Role:        string(claim.RoleImplementer),
-					Looks:       2,
-					LookOpen:    true,
-					LastWake:    &CheckWakeView{Kind: "issue.deployed", Detail: "run 38230245571 completed 2026-09-22T09:10:44Z", At: time.Date(2026, 9, 22, 9, 10, 51, 0, time.UTC)},
-					NextWakeAt:  time.Date(2026, 10, 6, 8, 40, 12, 0, time.UTC),
-				},
+				// next look is the check's bound. It is the issue's one open check, so `checks`
+				// holds it alone and `check` is it.
+				Check:  &goldenCheck,
+				Checks: []CheckView{goldenCheck},
 				// A root whose spec a person approved at the version Dispatch holds: the status
 				// that lets the tree's work past the step.
 				GatedSteps: []GatedStepView{{
@@ -893,9 +977,10 @@ func populatedState(t *testing.T) State {
 		// passes over every claim of both. The `why` of LEGION-211 and LEGION-212 is the
 		// projection's reading of this list.
 		StrandedClaims: []StrandedClaim{
-			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed"},
-			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended"},
-			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired"},
+			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed", Token: "legion-legion-legion-210-implementer"},
+			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended", Token: "legion-legion-legion-211-implementer"},
+			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired", Token: "legion-legion-legion-212-tester"},
+			{Issue: "LEGION-241", Role: "checker", State: "failed", Token: "legion-legion-legion-241-checker"},
 		},
 		// A wave going out at the pace its operator set, with one wake of each lane still held:
 		// LEGION-207's implementer, working its production check in the pod the daemon keeps,
@@ -989,7 +1074,9 @@ func populatedState(t *testing.T) State {
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
 			}},
 		},
-		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry.
+		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry
+		// but `roles` and `role_types`, which the resolved maximal file sets none of and
+		// TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret (settings_test.go) pins.
 		Settings: SettingsOf(settingsFixtureConfig(t)),
 		// The three durable consumers the daemon opens, in the order Lag answers them
 		// (intake.Consumers.Lag): the Dispatch consumer is caught up; the GitHub consumer has 412
@@ -1327,11 +1414,14 @@ func (s stubPauses) Paused() (int64, bool) { return s.paused, s.paused != 0 }
 
 // pauseRouteAnswer is what the operator's route at target answers with svc behind it (nil for a
 // daemon with no pause service), held to want and decoded strictly into into, so a key the Go type
-// does not name fails here before it reaches a fixture.
+// does not name fails here before it reaches a fixture. The server reads a record of its own: the
+// operator's spawn reads the claim of the agent on the role's step before the pause refuses it, so
+// the refusal names the claim the spawn would have reached.
 func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, want int, into any) {
 	t.Helper()
 	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet}).Handler
+	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet,
+		Pool: testStore(t).Pool(), Record: record.NewStore()}).Handler
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -1758,11 +1848,10 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "phase-retry.json", PhaseRetryResponse{})
 	golden(t, "signoff.json", SignOffResponse{})
 	golden(t, "root-close.json", EmptyResponse{})
-	golden(t, "child-park.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
 }
 
-// The two routes of the owner's plan (contract 211) each have a fixture, named for its route as
+// The two routes of the owner's plan (contract 219) each have a fixture, named for its route as
 // the routes above are. register_plan answers the plan it took, each task with the steps its block
 // names as the plan writes them (registeredPlan), and stop_task answers the empty object of a
 // fact route. `@legion/contracts` parses both, so a field the daemon adds to either is caught

@@ -391,6 +391,10 @@ export const VERIFICATION_WORDS = freeze({
   /** After the count of a check's other results, which the line opens in place (ruling 6). */
   earlier_many: "earlier results",
   earlier_one: "earlier result",
+  /** After the count of the checks the coverage read counts for a statement beyond those the
+   *  view draws with it, which serve it from an issue under this one. */
+  elsewhere_many: "more checks elsewhere",
+  elsewhere_one: "more check elsewhere",
   /** The heading over each check's latest result. */
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
@@ -1170,6 +1174,8 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
   kind: "kind",
+  /** Whether the work of a plan task merges by itself, "true" or "false". */
+  merges: "merges",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",

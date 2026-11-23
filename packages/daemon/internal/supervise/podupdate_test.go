@@ -4,7 +4,7 @@ package supervise
 // (UpdateTask) and answer ready_for_update before the process holding that claim is replaced.
 // These tests pin what the
 // machine does with the round's events: a round that opens once, records its terms once and asks
-// nothing of the machine's own — the sweep enqueues the ask to the role's Envoy topic, and the
+// nothing of the machine's own — the sweep enqueues the ask to the Envoy topic of the claim, and the
 // outbox marks it on the claim once it reached a session (PublishUpdateAsk) — a suspended claim
 // recorded in the round and not revived for it, an answer that stands through every turn after
 // it while the end of a turn answers nothing, the next task held back from the moment the worker
@@ -202,7 +202,7 @@ func (h *harness) diesIntoPod(pod string) {
 
 // A round opened over a ready claim records itself — its id, its reasons and its own clock — and
 // persists, and the machine gives the worker nothing: no task is queued and no prompt is sent. The
-// round's ask is the sweep's, published to the role's Envoy topic once the claim records the
+// round's ask is the sweep's, published to the Envoy topic of the claim once the claim records the
 // round, and the publish mark is unset until that publish reached a session (PublishUpdateAsk).
 func TestPodUpdateOpensARoundAndSendsTheWorkerNothing(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
@@ -222,7 +222,7 @@ func TestPodUpdateOpensARoundAndSendsTheWorkerNothing(t *testing.T) {
 		t.Errorf("UpdateTaskedAt = %v, want nil: the sweep has published no ask yet", c.UpdateTaskedAt)
 	}
 	if c.Pending != nil {
-		t.Errorf("pending = %+v, want no task: the round's ask is a message on the role's topic", c.Pending)
+		t.Errorf("pending = %+v, want no task: the round's ask is a message on the claim's topic", c.Pending)
 	}
 	h.wantPrompts(0)
 	if stored := h.store.load(h.token); stored.UpdateRound != testRound || stored.UpdateReasons != testReasons {
@@ -282,7 +282,7 @@ func TestPodUpdateLeavesTheTaskAWorkingClaimHolds(t *testing.T) {
 }
 
 // A suspended claim is recorded in the round and is not revived for it, whoever suspended it: the
-// ask is a message on the role's topic, a topic no live session holds is asked nothing, and the
+// ask is a message on the claim's topic, a topic no live session holds is asked nothing, and the
 // round ends at its bound whether or not the role answers (dispatch://INFRA-2981 R1).
 func TestPodUpdateRecordsTheRoundOnASuspendedClaimAndRevivesNothing(t *testing.T) {
 	for _, by := range []SuspendSource{SuspendedByDaemon, SuspendedByOperator} {
@@ -477,14 +477,86 @@ func TestPodUpdatePublishUpdateAskWaitsForNoLock(t *testing.T) {
 	h.markAsked(testRound)
 }
 
+// An ask of the round to a claim the daemon suspended publishes nothing and marks nothing
+// (dispatch://INFRA-4109 R1): the outbox's row ends at UpdateAskSuspended before the publish.
+// Such a claim runs no process and no turn in the pod, so the ask would reach no session. A
+// publish to a role with no holder is not free either: the Envoy listener raises a role wake for
+// it, and that wake would bring back a pod the daemon released. Every source but the operator's
+// is such a suspension: the daemon's, a root's exit, an idle release, and one older than its
+// source. A root's exit and a source-less suspension reach no claim through RequestSuspend, so
+// the store holds them and a restart restores them, as a boot does.
+//
+// The control is the operator's suspension, which the round still asks (dispatch://INFRA-2981
+// R5): its ask is published as before, and the claim is marked asked.
+func TestPublishUpdateAskPublishesNothingToAClaimTheDaemonSuspended(t *testing.T) {
+	suspend := func(h *harness, by SuspendSource) {
+		h.t.Helper()
+		switch by {
+		case SuspendedByOperator, SuspendedByDaemon, SuspendedByReleased:
+			h.must(RequestSuspend{Claim: h.token, By: by})
+		default:
+			h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon})
+			c := h.claim()
+			c.SuspendedBy = by
+			if err := h.store.PutClaim(h.ctx, c); err != nil {
+				h.t.Fatal(err)
+			}
+			h.restart()
+		}
+		if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != by {
+			h.t.Fatalf("the claim is %s, suspended by %q, want it suspended by %q", c.State, c.SuspendedBy, by)
+		}
+	}
+	for _, by := range []SuspendSource{SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, SuspendedByUnknown} {
+		t.Run(string(by), func(t *testing.T) {
+			h := updateHarness(t, PodUpdateContract)
+			h.reach(StateIdle)
+			suspend(h, by)
+			h.openUpdate(testRound, testReasons)
+			h.wantRound(testRound)
+
+			reached := &askPublisher{delivered: true}
+			if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskSuspended {
+				t.Fatalf("the ask to a claim suspended by %s = %v, %v; want UpdateAskSuspended", by, outcome, err)
+			}
+			if reached.calls != 0 {
+				t.Fatalf("the ask to a claim suspended by %s was published %d times, want none", by, reached.calls)
+			}
+			if c, stored := h.claim(), h.store.load(h.token); c.UpdateTaskedAt != nil || stored.UpdateTaskedAt != nil {
+				t.Fatalf("UpdateTaskedAt = %v, stored %v; want no mark: no ask reached the claim", c.UpdateTaskedAt, stored.UpdateTaskedAt)
+			}
+			h.wantState(StateSuspended)
+		})
+	}
+
+	t.Run(string(SuspendedByOperator), func(t *testing.T) {
+		h := updateHarness(t, PodUpdateContract)
+		h.reach(StateIdle)
+		suspend(h, SuspendedByOperator)
+		h.openUpdate(testRound, testReasons)
+		h.wantRound(testRound)
+
+		reached := &askPublisher{delivered: true}
+		if outcome, err := h.m.PublishUpdateAsk(h.ctx, testRound, reached.publish); err != nil || outcome != UpdateAskDelivered {
+			t.Fatalf("the ask to a claim the operator suspended = %v, %v; want it delivered", outcome, err)
+		}
+		if reached.calls != 1 {
+			t.Fatalf("the ask to a claim the operator suspended was published %d times, want once", reached.calls)
+		}
+		if stored := h.store.load(h.token); stored.UpdateTaskedAt == nil {
+			t.Fatal("stored UpdateTaskedAt = nil, want the ask marked")
+		}
+	})
+}
+
 // An ask an older daemon queued as a task for the round the claim is still in is dropped and
 // never sent (dispatch://INFRA-2981 R1: no update task is sent for a round). That daemon queued
 // it while the claim was in a turn, so the end of that turn was where that daemon sent it, and
 // this daemon restores the claim holding it. Its text can tell the worker that the end of the
 // turn answers the round, and the end of a turn is no answer, whatever contract the claim's
 // plugin declared (R9): only the worker's ready_for_update call answers a round. This daemon
-// never sends that text, and the role gets the round's Envoy ask. With no answer standing, the
-// round holds nothing back, so the next task goes at once.
+// never sends that text, and the claim gets the round's ask on its Envoy topic. With no answer
+// standing, the round holds nothing back, so the next task goes at once.
 //
 // The negative control is sendPending's drop narrowed to the rule before this one, an ask of a
 // round the claim is not in now or has left (`asks && (round != m.claim.UpdateRound ||
@@ -545,10 +617,10 @@ func TestPodUpdateTheEndOfTheTurnOfAnOlderDaemonsAskIsNoAnswer(t *testing.T) {
 // claim suspended and holding that task. While the suspension stands nothing is sent: the sweep's
 // posts of the round revive nothing and hand the task to nobody. The resume relaunches the claim,
 // and at ready the older daemon's task is dropped and never sent, though it names the round the
-// claim is still in (dispatch://INFRA-2981 R1). The role gets the round's Envoy ask instead, which
-// the sweep publishes and this machine does not. The one prompt the resume sends is the daemon's
-// own delivery of what the operator's suspension ended (dispatch://INFRA-3276 R3): the drop leaves
-// the claim holding nothing while that record tells (relaunchAfterDrop).
+// claim is still in (dispatch://INFRA-2981 R1). The claim gets the round's ask on its Envoy topic
+// instead, which the sweep publishes and this machine does not. The one prompt the resume sends is
+// the daemon's own delivery of what the operator's suspension ended (dispatch://INFRA-3276 R3): the
+// drop leaves the claim holding nothing while that record tells (relaunchAfterDrop).
 //
 // The negative control is sendPending's drop narrowed to the rule before this one, an ask of a
 // round the claim is not in now or has left (`asks && (round != m.claim.UpdateRound ||
@@ -627,7 +699,7 @@ func TestPodUpdateHoldsTheNextTaskUntilTheRoundEnds(t *testing.T) {
 // A round that replaces one the worker answered lifts the hold that answer put on the claim's next
 // task (answeredOpenRound), and the switch sends that task: the claim is ready, nothing else holds
 // the task back, and nothing else would send it before the claim's next observation. The new
-// round's ask is the sweep's, on the role's topic, so the task is the one prompt.
+// round's ask is the sweep's, on the claim's topic, so the task is the one prompt.
 func TestPodUpdateANewRoundSendsTheTaskTheAnsweredRoundHeld(t *testing.T) {
 	const task = "review the pull request"
 	h := updateHarness(t, PodUpdateContract)
@@ -844,7 +916,7 @@ func TestPodUpdateRelaunchesAStaleRegistrationAtOnce(t *testing.T) {
 }
 
 // A round opened over a claim with no registered agent records itself and sends nothing, as it
-// sends nothing to any claim: the round's ask is the sweep's, on the role's own topic.
+// sends nothing to any claim: the round's ask is the sweep's, on the claim's own topic.
 func TestPodUpdateRecordsTheRoundOnAClaimWithNoAgent(t *testing.T) {
 	for _, state := range []ClaimState{StateQueued, StateLaunching, StateShimConnected} {
 		t.Run(string(state), func(t *testing.T) {
@@ -1410,7 +1482,7 @@ func TestPodUpdateARoundDoesNotTakeTheAnswerOfTheRoundItReplaced(t *testing.T) {
 
 			// The worker's turn ends and the sweep posts the round again. The machine sends no
 			// ask of the second round: the publish mark is clear, so the sweep publishes that
-			// round's own words on the role's topic. The answer to that round is the one that
+			// round's own words on the claim's topic. The answer to that round is the one that
 			// counts.
 			h.must(StreamTurnEnd{Claim: h.token})
 			h.openUpdate(testRound, testReasons)
@@ -1836,7 +1908,7 @@ func TestPodUpdateARestartAfterAFailedDropLeavesNoQuestionArmedForTheNextTask(t 
 // of another cause here, so the answer moves the claim to working. A question left armed would
 // make the claim's next task the turn's instead — confirmed by it, never prompted, and retired by
 // its end — and the worker would never receive that task at all. The new round's own ask is the
-// sweep's, on the role's topic, so the switch leaves the publish mark clear.
+// sweep's, on the claim's topic, so the switch leaves the publish mark clear.
 func TestPodUpdateARoundThatReplacesAnotherLeavesNoQuestionArmedForTheNextTask(t *testing.T) {
 	const task = "review the pull request"
 	h := updateHarness(t, PodUpdateContract)
@@ -1877,7 +1949,7 @@ func TestPodUpdateARoundThatReplacesAnotherLeavesNoQuestionArmedForTheNextTask(t
 //
 // The third shape, an open round nobody has answered with a phase task pending, holds nothing
 // back either: the hold reads the worker's answer alone, and the round's ask is a message on the
-// role's topic rather than a task the claim holds (TestPodUpdateLeavesTheTaskAWorkingClaimHolds).
+// claim's topic rather than a task the claim holds (TestPodUpdateLeavesTheTaskAWorkingClaimHolds).
 func TestPodUpdateAnOpenRoundHoldsATaskOnlyFromAWorkerThatAnsweredIt(t *testing.T) {
 	const task = "review the pull request"
 	for _, tc := range []struct {

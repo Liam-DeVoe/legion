@@ -7,17 +7,18 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 211,
-    "caller": 211
+    "daemon": 237,
+    "caller": 237
   },
   "admission": {
-    "cap": 5,
+    "cap": 6,
     "active": [
       "LEGION-208",
       "LEGION-210",
       "LEGION-212",
       "LEGION-218",
-      "LEGION-219"
+      "LEGION-219",
+      "LEGION-240"
     ],
     "waiting": [
       "LEGION-212",
@@ -119,7 +120,25 @@
         },
         "nextWakeAt": "2026-10-06T08:40:12Z",
         "last": false
-      }
+      },
+      "checks": [
+        {
+          "repo": "acme/widgets",
+          "pullRequest": 1239,
+          "mergeCommit": "3e9c0a7b5d2f4e8a1c6b9d0f2a4e7c5b8d1f3a60",
+          "openedAt": "2026-09-22T08:40:12Z",
+          "role": "implementer",
+          "looks": 2,
+          "lookOpen": true,
+          "lastWake": {
+            "kind": "issue.deployed",
+            "detail": "run 38230245571 completed 2026-09-22T09:10:44Z",
+            "at": "2026-09-22T09:10:51Z"
+          },
+          "nextWakeAt": "2026-10-06T08:40:12Z",
+          "last": false
+        }
+      ]
     },
     "LEGION-208": {
       "key": "LEGION-208",
@@ -302,6 +321,119 @@
           "variant": "short",
           "mode": "random",
           "drawnAt": "2026-09-21T18:42:11Z"
+        }
+      ],
+      "tasks": [
+        {
+          "id": "a",
+          "state": "stopped",
+          "needs": [
+            "b",
+            "c",
+            "d",
+            "e"
+          ],
+          "kind": "step",
+          "phase": "implementing",
+          "branch": "legion/LEGION-208",
+          "position": 1,
+          "role": "implementer",
+          "agent": "implementer",
+          "stoppedReason": "its owner stopped it to add the tasks it needs",
+          "pullRequest": {
+            "repo": "acme/widgets",
+            "number": 1247,
+            "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
+            "state": "open",
+            "mergeState": "blocked",
+            "reviewDecision": "changes_requested"
+          },
+          "counts": {
+            "pass": 3,
+            "rounds": 2
+          }
+        },
+        {
+          "id": "b",
+          "state": "running",
+          "needs": [],
+          "kind": "step",
+          "phase": "reviewing",
+          "branch": "legion/LEGION-208.b",
+          "position": 2,
+          "role": "reviewer",
+          "agent": "reviewer",
+          "pullRequest": {
+            "repo": "acme/widgets",
+            "number": 1251,
+            "head": "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
+            "state": "open",
+            "mergeState": "blocked",
+            "reviewDecision": "approved"
+          },
+          "mergeWait": {
+            "waitsOn": "8e1f4c7a2d9b63e05f1a8c4d7b2e9f6a3c0d5b18",
+            "mergeState": "blocked",
+            "stateReadAt": "2026-09-22T09:16:12Z",
+            "headUpdatedAt": "2026-09-22T08:58:40Z",
+            "checkRuns": 2
+          },
+          "counts": {
+            "pass": 1,
+            "rounds": 0
+          }
+        },
+        {
+          "id": "c",
+          "state": "running",
+          "needs": [],
+          "kind": "step",
+          "phase": "implementing",
+          "branch": "legion/LEGION-208.c",
+          "position": 1,
+          "role": "implementer",
+          "agent": "k",
+          "wait": "agent",
+          "waitsFor": {
+            "agent": "k",
+            "task": "d",
+            "position": 1
+          },
+          "counts": {
+            "pass": 0,
+            "rounds": 0
+          }
+        },
+        {
+          "id": "d",
+          "state": "running",
+          "needs": [],
+          "kind": "step",
+          "phase": "implementing",
+          "branch": "legion/LEGION-208.d",
+          "position": 1,
+          "role": "implementer",
+          "agent": "k",
+          "counts": {
+            "pass": 1,
+            "rounds": 0
+          }
+        },
+        {
+          "id": "e",
+          "state": "held",
+          "needs": [],
+          "kind": "step",
+          "phase": "implementing",
+          "branch": "legion/LEGION-208.e",
+          "position": 1,
+          "role": "implementer",
+          "agent": "implementer-2",
+          "holdReason": "escalated",
+          "counts": {
+            "pass": 1,
+            "rounds": 0
+          }
         }
       ]
     },
@@ -630,6 +762,42 @@
       "givenEntry": 2,
       "treeMovedAt": "2026-09-20T16:42:58Z",
       "quietHours": 40.583888888888886
+    },
+    "LEGION-240": {
+      "key": "LEGION-240",
+      "generation": 1,
+      "phase": "step",
+      "stepRole": "checker",
+      "startWaitsForPod": [
+        "checker"
+      ],
+      "status": "in_progress",
+      "tree": "LEGION-240",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {}
+    },
+    "LEGION-241": {
+      "key": "LEGION-241",
+      "generation": 1,
+      "phase": "held",
+      "stepRole": "checker",
+      "status": "in_progress",
+      "tree": "LEGION-241",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "heldFrom": "step",
+      "workers": {
+        "checker": {
+          "claim": {
+            "session": "ses_checker_241",
+            "state": "failed",
+            "pluginContract": 0
+          },
+          "pass": 0,
+          "rounds": 0
+        }
+      }
     }
   },
   "pendingStatusWrites": [],
@@ -646,17 +814,26 @@
     {
       "issue": "LEGION-210",
       "role": "implementer",
-      "state": "failed"
+      "state": "failed",
+      "token": "legion-legion-legion-210-implementer"
     },
     {
       "issue": "LEGION-211",
       "role": "implementer",
-      "state": "suspended"
+      "state": "suspended",
+      "token": "legion-legion-legion-211-implementer"
     },
     {
       "issue": "LEGION-212",
       "role": "tester",
-      "state": "retired"
+      "state": "retired",
+      "token": "legion-legion-legion-212-tester"
+    },
+    {
+      "issue": "LEGION-241",
+      "role": "checker",
+      "state": "failed",
+      "token": "legion-legion-legion-241-checker"
     }
   ],
   "wakesWaiting": [

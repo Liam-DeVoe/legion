@@ -109,6 +109,24 @@ func TestAVersionsBlocksIndexTheMarkdownItsAnswerCarries(t *testing.T) {
 	}
 }
 
+// A plan task whose block says that its work merges keeps the attribute: the document is written,
+// and a version read lists the block with merges as its markdown wrote it, which is what a reader
+// of the plan at a version takes the attribute from.
+func TestAVersionReadListsATaskThatMerges(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createArtifactIssue(t, handler)
+	plan := createIssueDocument(t, handler, issue.Key, "plan.md", ":::plan_task{#b merges=\"true\" steps=\"implementer reviewer\"}\nB.\n:::\n")
+	answer := readVersionBlocks(t, handler, "/api/v1/artifacts/"+plan.ID+"/versions/1?blocks=true")
+	assertPlanTask(t, answer, "b", "implementer reviewer", "B.")
+	attributes := map[string]string{}
+	for _, attribute := range onlyPlanTask(t, answer).Attributes {
+		attributes[attribute.Name] = attribute.Value
+	}
+	if attributes["merges"] != "true" {
+		t.Fatalf("block b carries attributes %+v, want merges \"true\"", onlyPlanTask(t, answer).Attributes)
+	}
+}
+
 // A plan task names the role of its sub-owner in owner, and Dispatch keeps it as the block writes
 // it: a version read gives owner whole on the task that writes it and on no other. Dispatch
 // declares no part_of attribute on a plan task, so a write of one carrying it is refused as an
