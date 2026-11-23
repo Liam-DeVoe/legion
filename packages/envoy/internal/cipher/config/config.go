@@ -2137,15 +2137,59 @@ func privateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clust
 	if slices.Contains(dialAllow, net.JoinHostPort(host, port)) {
 		return nil
 	}
-	if name := strings.ToLower(strings.TrimSuffix(host, ".")); name == "localhost" || strings.HasSuffix(name, ".localhost") {
-		return fmt.Errorf("%s: the URL after its = names the host %s, which resolves to loopback, an address the airlock never dials", privateUpstreamSetting, host)
+	addr, err := privateUpstreamAddress(upstream)
+	if err != nil || !addr.IsValid() {
+		return err
 	}
-	if addr, err := netip.ParseAddr(host); err == nil {
-		if why := netaddr.DestinationRefusal(addr, clusterRanges); why != "" {
-			return fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, netaddr.Canonical(addr), why)
-		}
+	if why := netaddr.DestinationRefusal(addr, clusterRanges); why != "" {
+		return fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, addr, why)
 	}
 	return nil
+}
+
+// PrivateUpstreamAddressRules is the start's check of the private destination's address
+// (privateUpstreamDialable) as `profiles check --private-upstream` makes it, given the destination
+// and no other setting: the same rule, netaddr.DestinationRefusal, of which it reads the part
+// every broker holds whatever its cluster ranges. It refuses, in the start's words and naming the
+// setting, a URL whose host is localhost or a name under .localhost, and one whose host is an
+// address netaddr.DestinationNever names. An address outside the ranges every broker takes
+// (netaddr.DestinationPrivate) is the destination's only on a broker whose
+// BROKER_AIRLOCK_CLUSTER_RANGES hold it, a setting this reads nothing of: it answers unjudged, a
+// sentence that says the address was not judged and why, and no error. A host that is a name is
+// the dial's to check at each dial, as at the start, and answers nothing. The start's one
+// exception, BROKER_AIRLOCK_TEST_DIAL_ALLOW, is the local stack's and a production start refuses
+// it, so it is no exception here.
+func PrivateUpstreamAddressRules(upstream PrivateUpstream) (unjudged string, err error) {
+	addr, err := privateUpstreamAddress(upstream)
+	if err != nil || !addr.IsValid() {
+		return "", err
+	}
+	if why := netaddr.DestinationNever(addr); why != "" {
+		return "", fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, addr, why)
+	}
+	if !netaddr.DestinationPrivate(addr) {
+		return fmt.Sprintf("%s names %s, an address outside the private ranges, which a broker takes as the destination only inside its BROKER_AIRLOCK_CLUSTER_RANGES: the address was not judged, since this check reads no cluster ranges", privateUpstreamSetting, addr), nil
+	}
+	return "", nil
+}
+
+// privateUpstreamAddress is the part of the start's check of the destination's host that reads no
+// setting: the refusal of localhost and of a name under .localhost, with or without the root's
+// trailing dot, which resolve to loopback alone (RFC 6761, section 6.3); and the address of a URL
+// whose host is an address, as netaddr.Canonical reads it, or the zero address for no destination
+// and for a host that is a name, which is the dial's to check.
+func privateUpstreamAddress(upstream PrivateUpstream) (netip.Addr, error) {
+	if upstream.URL == nil {
+		return netip.Addr{}, nil
+	}
+	host := upstream.URL.Hostname()
+	if name := strings.ToLower(strings.TrimSuffix(host, ".")); name == "localhost" || strings.HasSuffix(name, ".localhost") {
+		return netip.Addr{}, fmt.Errorf("%s: the URL after its = names the host %s, which resolves to loopback, an address the airlock never dials", privateUpstreamSetting, host)
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return netaddr.Canonical(addr), nil
+	}
+	return netip.Addr{}, nil
 }
 
 // profilesFileSetting is BROKER_PROFILES_FILE, the file whose proxy blocks are the airlock's

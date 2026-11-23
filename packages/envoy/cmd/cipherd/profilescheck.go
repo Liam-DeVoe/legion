@@ -48,20 +48,27 @@ const removedAirlockCheckCommand = "airlock-check"
 // boot runs too, and then the boot's own check of the results profile, DISPATCH_RESULTS_TOKEN
 // (config.ResultsEntryRules), so that what this agrees to is exactly what the boot agrees to but
 // for the reads it has no setting for: each requester service against the deployment's registered
-// services (readProfiles), and the results profile's one host against the private destination
+// services (readProfiles), the results profile's one host against the private destination
 // (config.AirlockResultRules), which it checks only when --private-upstream gives it that
-// destination. A pull request that changes the deployment's profiles.json runs it, so the file a
-// reviewer is asked to read is one the broker has already agreed to serve.
+// destination, and that destination's address inside the broker's cluster ranges. A pull request
+// that changes the deployment's profiles.json runs it, so the file a reviewer is asked to read is
+// one the broker has already agreed to serve.
 //
 // --private-upstream takes the value BROKER_AIRLOCK_PRIVATE_UPSTREAM gives the broker, one
 // <host>=<url> entry read by the parser config.Load reads the setting with
 // (config.ParsePrivateUpstream), and holds the file to config.AirlockResultRules with that
 // destination and no result entries, the check the boot of a broker with that destination makes:
 // the results profile, where the file holds it, binds the destination's host, and a destination
-// needs that profile. Given empty, it is a broker given no destination. Without it, a file that
-// holds the results profile is still valid, and the report says, in one line after the line that
-// says so, which host the profile binds and that its tie to BROKER_AIRLOCK_PRIVATE_UPSTREAM was not
-// checked, since this run did not see the destination.
+// needs that profile. It holds the destination to the boot's address rule too
+// (config.PrivateUpstreamAddressRules, netaddr.DestinationRefusal): localhost and an address the
+// destination is on no broker - loopback, link-local, the metadata servers, an IPv6 form that
+// carries an IPv4 address and the rest of netaddr.DestinationNever - are refused as the boot
+// refuses them; an address outside the private ranges, which only a broker's
+// BROKER_AIRLOCK_CLUSTER_RANGES admit, is valid with one line that says it was not judged. Given
+// empty, it is a broker given no destination. Without it, a file that holds the results profile is
+// still valid, and the report says, in one line after the line that says so, which host the
+// profile binds and that its tie to BROKER_AIRLOCK_PRIVATE_UPSTREAM was not checked, since this
+// run did not see the destination.
 //
 // On a file it would serve it exits 0 and writes the report on stdout: what the file adds and
 // removes against the file --against names, or against an empty profiles file when that flag is
@@ -148,6 +155,16 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: %s: %v\n", profilesCheckName, path, err)
 		return 1
 	}
+	// The destination's address, held as the boot holds it, where this run can: an address the
+	// destination is on no broker is refused, and one only the cluster ranges could admit is said
+	// not to be judged, since this run reads no ranges.
+	var unjudged string
+	if upstreamGiven {
+		if unjudged, err = config.PrivateUpstreamAddressRules(upstream); err != nil {
+			fmt.Fprintf(stderr, "%s: --%s: %v\n", profilesCheckName, privateUpstreamFlag, err)
+			return 1
+		}
+	}
 	var old policy.Profiles
 	oldName := "an empty profiles file, so every profile reads as added"
 	if name := strings.TrimSpace(*against); name != "" {
@@ -161,6 +178,9 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 	if results := rules.Lookup(oauthwire.AirlockResultsName); results != nil && !upstreamGiven {
 		fmt.Fprintf(stdout, "%s: %s binds %s; its tie to BROKER_AIRLOCK_PRIVATE_UPSTREAM was not checked (no --%s)\n",
 			profilesCheckName, oauthwire.AirlockResultsName, results.Hosts[0], privateUpstreamFlag)
+	}
+	if unjudged != "" {
+		fmt.Fprintf(stdout, "%s: %s\n", profilesCheckName, unjudged)
 	}
 	fmt.Fprintf(stdout, "%s: compared against %s\n", profilesCheckName, oldName)
 	writeProfilesChanges(stdout, old, now)

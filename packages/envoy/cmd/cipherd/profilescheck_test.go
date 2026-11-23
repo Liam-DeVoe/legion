@@ -552,6 +552,69 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 	})
 }
 
+// TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule: --private-upstream holds the
+// destination to the address rule the boot holds it to (config.PrivateUpstreamAddressRules, the
+// part of netaddr.DestinationRefusal that reads no setting). Each destination below that the boot
+// refuses whatever its cluster ranges - loopback, localhost with and without the root's dot, the
+// metadata servers, the IPv4 broadcast and unspecified addresses, 0.0.0.0/8 and the NAT64 form of
+// the metadata server - exits 1 with one line on stderr naming BROKER_AIRLOCK_PRIVATE_UPSTREAM and
+// the rule, and no report. A public address, and a ClusterIP of a global Service range, are the
+// destination only inside a broker's BROKER_AIRLOCK_CLUSTER_RANGES, which the check reads nothing
+// of: each is valid, with one line that says the address was not judged. A private address, one
+// of 100.64.0.0/10, a unique-local one and a name are valid with no such line; a name is the
+// dial's to check, at the boot too.
+func TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule(t *testing.T) {
+	path := profilesFile(t, `{"profiles": [`+resultsProfileOf("DISPATCH_RESULTS_TOKEN", `"`+resultsBoundHost+`"`, `["Authorization"]`, `[{"method": "POST", "pathPrefix": "/api/v1/projects/"}]`, "dpop")+`]}`)
+	const notJudged = "the address was not judged, since this check reads no cluster ranges"
+	for _, row := range []struct{ url, rule string }{
+		{"http://127.0.0.1:8766", "a loopback or link-local address"},
+		{"http://[::1]:8766", "a loopback or link-local address"},
+		{"http://localhost:8766", "which resolves to loopback"},
+		{"http://localhost.:8766", "which resolves to loopback"},
+		{"http://169.254.169.254", "a loopback or link-local address"},
+		{"http://[fd20:ce::254]", "a cloud metadata server's address"},
+		{"http://255.255.255.255:8766", "the IPv4 broadcast address"},
+		{"http://0.0.0.0:8766", "an unspecified or multicast address"},
+		{"http://0.0.0.1:8766", "an address of 0.0.0.0/8"},
+		{"http://[64:ff9b::a9fe:a9fe]", "carries an IPv4 address"},
+	} {
+		t.Run("refused "+row.url, func(t *testing.T) {
+			code, stdout, stderr := runCheck(t, path, "--private-upstream", resultsBoundHost+"="+row.url)
+			if code != 1 || stdout != "" {
+				t.Fatalf("exit %d with stdout %q; want exit 1 and no report, as the boot refuses %s at start", code, stdout, row.url)
+			}
+			if !strings.Contains(stderr, "BROKER_AIRLOCK_PRIVATE_UPSTREAM") || !strings.Contains(stderr, row.rule) || strings.Count(strings.TrimRight(stderr, "\n"), "\n") != 0 {
+				t.Fatalf("the refusal reads %q; want one line naming BROKER_AIRLOCK_PRIVATE_UPSTREAM and %q", stderr, row.rule)
+			}
+		})
+	}
+	for _, row := range []struct {
+		url    string
+		judged bool
+	}{
+		{"http://8.8.8.8:8766", false},
+		{"http://203.0.113.5:8766", false},
+		{"http://34.118.224.10:8766", false},
+		{"http://10.0.0.5:8766", true},
+		{"http://100.64.1.1:8766", true},
+		{"http://[fd12:3456::5]:8766", true},
+		{"http://dispatch.dispatch.svc.cluster.local:8766", true},
+	} {
+		t.Run("valid "+row.url, func(t *testing.T) {
+			code, stdout, stderr := runCheck(t, path, "--private-upstream", resultsBoundHost+"="+row.url)
+			if code != 0 {
+				t.Fatalf("exit %d (%q); want 0", code, stderr)
+			}
+			switch said := strings.Count(stdout, notJudged+"\n"); {
+			case row.judged && said != 0:
+				t.Fatalf("the report says the address was not judged: %q", stdout)
+			case !row.judged && said != 1:
+				t.Fatalf("the report does not say once, on a line of its own, that the address was not judged: %q", stdout)
+			}
+		})
+	}
+}
+
 // TestProfilesCheckReportsWhatChangedAgainstTheOldFile is the report a reviewer reads: for a
 // profile both files hold, each value of a list added or removed and each other field as old →
 // new, a field the file leaves to the source written as the source's; and a profile removed, with

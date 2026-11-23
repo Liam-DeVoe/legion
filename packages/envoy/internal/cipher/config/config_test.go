@@ -913,6 +913,48 @@ func TestAPrivateUpstreamSettingIsRefusedUnlessItIsOne(t *testing.T) {
 	}
 }
 
+// TestTheCheckOfADestinationsAddressIsTheStartsRuleWithoutTheRanges: PrivateUpstreamAddressRules,
+// the address check `profiles check --private-upstream` makes, is the start's own
+// (privateUpstreamDialable) for every cluster ranges a broker can have. Where it refuses, the start
+// refuses in the same words with no ranges and with ranges that hold every address; where it takes
+// a destination and judges it, the start takes it with both; and where it says it did not judge
+// the address, the start refuses it with no ranges and takes it with ranges that hold it, so that
+// answer is exactly the part that needs the ranges.
+func TestTheCheckOfADestinationsAddressIsTheStartsRuleWithoutTheRanges(t *testing.T) {
+	everything := []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")}
+	for _, url := range []string{
+		"http://127.0.0.1:8766", "http://[::1]:8766", "http://localhost:8766", "http://dispatch.localhost.:8766",
+		"http://169.254.169.254", "http://[fe80::1]", "http://[fd20:ce::254]", "http://[fd00:ec2::254]",
+		"http://255.255.255.255:8766", "http://0.0.0.0:8766", "http://0.0.0.1:8766", "http://224.0.0.1",
+		"http://[64:ff9b::a9fe:a9fe]", "http://[2002:a9fe:a9fe::1]", "http://[::7f00:1]:8766", "http://[2001:0:a9fe:a9fe::1]",
+		"http://[64:ff9b:1::a9fe:a9fe]", "http://[64:ff9b::a00:5]:8766",
+		"http://8.8.8.8:8766", "http://203.0.113.5:8766", "http://34.118.224.10:8766", "http://[2001:4860:4860::8888]",
+		"http://10.0.0.5:8766", "https://10.0.0.5", "http://100.64.1.1:8766", "http://[fd12:3456::5]:8766",
+		"http://dispatch.dispatch.svc.cluster.local:8766",
+	} {
+		upstream, err := ParsePrivateUpstream("dispatch.test=" + url)
+		if err != nil {
+			t.Fatalf("ParsePrivateUpstream(%s): %v", url, err)
+		}
+		unjudged, checked := PrivateUpstreamAddressRules(upstream)
+		bare, wide := privateUpstreamDialable(upstream, nil, nil), privateUpstreamDialable(upstream, nil, everything)
+		switch {
+		case checked != nil:
+			if bare == nil || wide == nil || bare.Error() != checked.Error() || wide.Error() != checked.Error() {
+				t.Errorf("%s: the check refuses it (%v); the start, with no ranges and with every address as a range, answers %v and %v; want the same refusal", url, checked, bare, wide)
+			}
+		case unjudged != "":
+			if !strings.Contains(unjudged, "BROKER_AIRLOCK_CLUSTER_RANGES") || bare == nil || wide != nil {
+				t.Errorf("%s: the check says %q; the start answers %v with no ranges and %v with every address as a range; want a refusal and none", url, unjudged, bare, wide)
+			}
+		default:
+			if bare != nil || wide != nil {
+				t.Errorf("%s: the check takes it and judges it; the start answers %v and %v; want it taken with any ranges", url, bare, wide)
+			}
+		}
+	}
+}
+
 // privateEntry is the proxy block the private destination's host is bound by: the profile
 // DISPATCH_RESULTS_TOKEN's (resultsEntry), bound to dispatch.test.
 func privateEntry() proxyrules.SecretRule {
