@@ -284,6 +284,22 @@ check "with the status the harness gives a claimed entry" "$(is "$(< "$HARNESS_P
 run_wait
 export HARNESS_POOL_SLOTS=2
 
+echo "case: a running harness whose entry another caller claimed as lost and then left is still ended"
+fresh abandoned
+export HARNESS_POOL_SLOTS=1
+"$pool" start left bash -c "touch '$m/left-started'; until [[ -e '$m/never' ]]; do sleep 0.05; done"
+check "the first harness started" "$(appears "$m/left-started")"
+check "it published its session" "$(appears "$HARNESS_POOL_DIR/000.session")"
+# A claim whose maker died before it ended the session: the claim is there, and nothing killed.
+mkdir "$HARNESS_POOL_DIR/000.lost"
+"$pool" start after-left bash -c "touch '$m/after-left-started'"
+read -r recorder _ < "$HARNESS_POOL_DIR/000.pid"
+kill -KILL "$recorder"
+check "the next harness still gets the slot" "$(appears "$m/after-left-started")"
+check "and the first's session is ended" "$(session_gone "$(< "$HARNESS_POOL_DIR/000.session")")"
+run_wait
+export HARNESS_POOL_SLOTS=2
+
 echo "case: an entry's pid that names another process is not its recorder"
 fresh reused
 "$pool" start ended-early bash -c 'exit 0'

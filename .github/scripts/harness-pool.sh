@@ -97,17 +97,25 @@ alive() {
 }
 
 # lost_running <base>: for an entry whose recorder is gone without a status, true while any
-# process of its harness's session is still there. The first to find the entry lost claims it
-# (mkdir, which one caller alone wins) and ends that session. The harness publishes its session
-# itself and then looks for the claim before it runs (see run), so whichever of the two comes
-# first, no harness runs on past a claim: a harness on a core no slot counts would let one more
-# run than the slots. Forks only for a lost entry.
+# process of its harness's session is still there. It claims the entry as lost (`.lost`), ends
+# its session, and once the session is empty marks the entry gone, after which it forks no more
+# for it. The harness publishes its session itself and then looks for the claim before it runs
+# (see run), so whichever of the two comes first, no harness runs on past a claim: a harness on a
+# core no slot counts would let one more run than the slots. Every caller kills, not the first
+# alone, so a caller that dies after the claim leaves the kill to the next.
 lost_running() {
-  [[ -e $1.exit ]] && return 1
-  if mkdir "$1.lost" 2> /dev/null && [[ -e $1.session ]]; then
-    pkill -KILL -s "$(< "$1.session")" 2> /dev/null || true
+  [[ -e $1.exit || -e $1.gone ]] && return 1
+  mkdir "$1.lost" 2> /dev/null || true
+  if [[ -e $1.session ]]; then
+    local session
+    session=$(< "$1.session")
+    pkill -KILL -s "$session" 2> /dev/null || true
+    if pgrep -s "$session" > /dev/null; then
+      return 0
+    fi
   fi
-  [[ -e $1.session ]] && pgrep -s "$(< "$1.session")" > /dev/null
+  : > "$1.gone"
+  return 1
 }
 
 # count [<base>]: sets `running` to the number of harnesses that hold a slot (started and not
