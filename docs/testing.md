@@ -562,21 +562,31 @@ closes it, and the kernel refuses to exec a file any process holds open for writ
 running beside it (`t.Parallel`) forks each time it starts a command, so once `internal/daemon`'s
 tests ran beside each other a gate test failed so under load
 (`TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid/refuses`, one run in 660).
-`testexec.WriteFile` (`packages/envoy/testexec`, which every module reaches) is `os.WriteFile`
-holding `syscall.ForkLock` for reading while the file is open, which every fork of a Go process
-takes for writing, so no fork falls inside the write.
+The code a deployment runs meets the same fault: the daemon starts git, gh and tmux from many
+goroutines, and the program files it writes (the one-shot git credential helper, the launcher
+scripts of `workerbin`, the leak check a pod's launcher installs and runs) were refused so beside
+eight forking goroutines, 13 to 28 runs in 300 to 450.
+`programfile.Write` (`packages/envoy/programfile`, which every module reaches) is the one writer
+of such a file: it holds `syscall.ForkLock` for reading from the open to the close, which every
+fork of a Go process takes for writing, so no fork falls inside the write.
+`testexec.WriteFile` is `os.WriteFile`'s shape for a test, and writes with `programfile.Write`.
+A test of a place that writes such a file starts `testexec.ForkBeside` and runs the file as soon
+as it is written, many times; it fails on a run refused with `ETXTBSY`. Run such a test on a Linux
+kernel: gVisor has not refused such an exec at every version.
 
-Two kinds of package write such a file with `testexec.WriteFile`: a package whose tests call
-`Parallel`, in its test files, and a test-support package (a package whose name begins or ends
-with `test`), in every file, since tests of any package call it. Each module's
-`internal/textcheck` names, by `testexec.Unguarded`, each place in those files that opens a file
-by `os.WriteFile`, `os.OpenFile` or `os.Create` and gives it an execute bit, in the open's own
-mode or by a `Chmod` of the same file in the same function. The comment on `Unguarded` lists what
-it cannot see. A package whose tests run one at a time can still write such a file with
-`os.WriteFile`. Its test binary runs one test at a time, and a fork in another process copies
-none of its descriptors, so only a goroutine of the running test can fork while the file is open.
-Once its tests call `Parallel`, the check names its writes. A test that starts a command from
-another goroutine while it writes such a file writes it with `testexec.WriteFile` wherever it is.
+Three kinds of file write such a file with `programfile.Write`, or with `testexec.WriteFile` in a
+test: every file that is no test file (the code a deployment runs, and a test-support package, a
+package whose name begins or ends with `test`), the test files of a package whose tests call
+`Parallel`, and the test files of a test-support package. Each module's `internal/textcheck`
+names, by `testexec.Unguarded`, each place in those files that opens a file by `os.WriteFile`,
+`os.OpenFile`, `os.Create` or `os.CreateTemp` and gives it an execute bit, in the open's own mode
+or by a `Chmod` of the same file in the same function, and refuses a walk that read no Go file.
+The comment on `Unguarded` lists what it cannot see, such as a file another program writes. A
+package whose tests run one at a time can still write such a file with `os.WriteFile` in its
+tests. Its test binary runs one test at a time, and a fork in another process copies none of its
+descriptors, so only a goroutine of the running test can fork while the file is open. Once its
+tests call `Parallel`, the check names its writes. A test that starts a command from another
+goroutine while it writes such a file writes it with `testexec.WriteFile` wherever it is.
 
 ## A Go test that opens a NATS client
 

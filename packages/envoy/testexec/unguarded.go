@@ -1,6 +1,7 @@
 package testexec
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -15,34 +16,41 @@ import (
 )
 
 // Unguarded names, as a root-relative path and line ("dir/file.go:12"), sorted, each place under
-// root that opens a file for writing by package os rather than by WriteFile and gives it an
-// execute bit, where a test may run it while another goroutine of its process forks:
+// root that opens a file for writing by package os rather than by programfile.Write and gives it
+// an execute bit, where the file may run while another goroutine of its process forks:
 //
-//   - in a test file (_test.go) of a package whose tests run beside each other, which is a package
-//     one of whose test files calls Parallel, on a test or a subtest;
-//   - in any file of a test-support package, which is a package whose name begins or ends with
-//     "test" (clitest, testbin, capabilitiestest): tests of any package call it.
+//   - in any file that is no test file (_test.go): the code a deployment runs, whose processes
+//     start commands from many goroutines, and a test-support package, which is a package whose
+//     name begins or ends with "test" (clitest, testbin, capabilitiestest), whose functions tests
+//     of any package call;
+//   - in a test file of a package whose tests run beside each other, which is a package one of
+//     whose test files calls Parallel, on a test or a subtest, and in a test file of a test-support
+//     package.
 //
 // Such a place is a call of os.WriteFile or os.OpenFile whose mode has an execute bit. It is also
-// a call of os.WriteFile, os.OpenFile or os.Create whose file the same top-level function gives an
-// execute bit with a Chmod: os.Chmod of the path the call names, spelled the same way, or the
-// Chmod method of the variable that os.Create or os.OpenFile assigned the file to. A mode the
-// check cannot evaluate as a constant is named too, since it cannot tell that the mode holds no
-// execute bit. So is a use of os.WriteFile, os.OpenFile, os.Create or os.Chmod as a function
-// value, whose file and mode it cannot follow, and a dot import of os, whose calls it cannot tell
-// from the file's own functions. This package's own WriteFile is the one place left out. A
-// directory below root that holds a go.mod of its own is another module, which that module's
-// check reads, and node_modules, vendor, testdata and dot directories are not Go source of the
-// module.
+// a call of os.WriteFile, os.OpenFile, os.Create or os.CreateTemp whose file the same top-level
+// function gives an execute bit with a Chmod: os.Chmod of the path the call names, spelled the
+// same way, os.Chmod of the Name of the variable that os.Create, os.OpenFile or os.CreateTemp
+// assigned the file to, or that variable's Chmod method. A mode the check cannot evaluate as a
+// constant is named too, since it cannot tell that the mode holds no execute bit. So is a use of
+// os.WriteFile, os.OpenFile, os.Create, os.CreateTemp or os.Chmod as a function value, whose file
+// and mode it cannot follow, and a dot import of os, whose calls it cannot tell from the file's own
+// functions. The one place left out is programfile.Write itself: the files of a package named
+// programfile that are no test files. A directory below root that holds a go.mod of its own is
+// another module, which that module's check reads, and node_modules, vendor, testdata and dot
+// directories are not Go source of the module. A root under which the walk finds no Go file is an
+// error, not a pass: the check read nothing.
 //
 // The check reads each file's syntax alone, with no types, so it cannot see:
 //
 //   - a Chmod in another function than the open, or of the same path spelled another way, as a
 //     variable that holds the filepath.Join the open spelled out;
-//   - a file opened by any function but os's three (io/ioutil.WriteFile, syscall.Open, a helper of
-//     a package that is neither of the two kinds above) or written by a command such as cp;
-//   - a test-support package whose name does not begin or end with "test": it is read as any other
-//     package is, its test files when they call Parallel and no other file.
+//   - a file opened by any function but os's four (io/ioutil.WriteFile, syscall.Open, unix.Openat,
+//     a helper of another package) or written by another program, such as cp, go build or an
+//     archive a command unpacks;
+//   - a test file of a package whose tests run one at a time, and is not a test-support package:
+//     its test binary runs one test at a time, so only that test's own goroutines can fork beside
+//     its write.
 func Unguarded(root string) ([]string, error) {
 	dirs := map[string][]string{}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -69,6 +77,9 @@ func Unguarded(root string) ([]string, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if len(dirs) == 0 {
+		return nil, fmt.Errorf("no Go file under %s: the check read nothing", root)
 	}
 	var offences []string
 	for _, paths := range dirs {
@@ -99,12 +110,12 @@ func unguardedInPackage(root string, paths []string) ([]string, error) {
 		}
 		name := file.Name.Name
 		support = support || strings.HasPrefix(name, "test") || strings.HasSuffix(name, "test")
-		self = self || name == "testexec"
+		self = self || name == "programfile"
 	}
 	var offences []string
 	for _, path := range paths {
 		test := strings.HasSuffix(path, "_test.go")
-		if self && !test || !(test && parallel || support) {
+		if self && !test || test && !parallel && !support {
 			continue
 		}
 		relative, err := filepath.Rel(root, path)
@@ -136,7 +147,7 @@ func callsParallel(file *ast.File) bool {
 // osWriters are the functions of package os that open a file for writing, and os.Chmod, which can
 // give a written file an execute bit. A use of one as a value is named, since the check cannot
 // follow the file or the mode it is then called with.
-var osWriters = map[string]bool{"WriteFile": true, "OpenFile": true, "Create": true, "Chmod": true}
+var osWriters = map[string]bool{"WriteFile": true, "OpenFile": true, "Create": true, "CreateTemp": true, "Chmod": true}
 
 // executableWrites are the lines of file that open a file for writing by package os, by whatever
 // name the file imports it, and give it an execute bit or a mode that is no constant (Unguarded
@@ -194,7 +205,7 @@ func executableOpens(declaration ast.Decl, osFunc func(ast.Expr) string, called 
 		call, isCall := value.(*ast.CallExpr)
 		name, isName := target.(*ast.Ident)
 		if isCall && isName && name.Name != "_" {
-			if function := osFunc(call.Fun); function == "Create" || function == "OpenFile" {
+			if function := osFunc(call.Fun); function == "Create" || function == "OpenFile" || function == "CreateTemp" {
 				byHandle[name.Name] = append(byHandle[name.Name], call)
 			}
 		}
@@ -237,11 +248,30 @@ func executableOpens(declaration ast.Decl, osFunc func(ast.Expr) string, called 
 	for _, chmod := range chmods {
 		if osFunc(chmod.Fun) == "Chmod" {
 			opens = append(opens, byPath[types.ExprString(chmod.Args[0])]...)
+			if handle := nameOf(chmod.Args[0]); handle != "" {
+				opens = append(opens, byHandle[handle]...)
+			}
 		} else if handle, ok := chmod.Fun.(*ast.SelectorExpr).X.(*ast.Ident); ok {
 			opens = append(opens, byHandle[handle.Name]...)
 		}
 	}
 	return opens
+}
+
+// nameOf is the variable a path is the Name of, as in os.Chmod(file.Name(), 0o755), or "".
+func nameOf(path ast.Expr) string {
+	call, ok := path.(*ast.CallExpr)
+	if !ok || len(call.Args) != 0 {
+		return ""
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Name" {
+		return ""
+	}
+	if handle, ok := selector.X.(*ast.Ident); ok {
+		return handle.Name
+	}
+	return ""
 }
 
 // withoutExecuteBit says whether mode is a constant that holds no execute bit.

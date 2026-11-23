@@ -48,16 +48,19 @@ func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
 	}
 }
 
-// Unguarded names a write of a file with an execute bit by os.WriteFile or os.OpenFile in a test
-// file of a package whose tests call Parallel, and in any file of a test-support package, by
-// whatever name the file imports os and however the mode is spelled, and a mode it cannot
-// evaluate. It names an open by os.WriteFile, os.OpenFile or os.Create whose file the same
-// function gives an execute bit by os.Chmod or by the file's Chmod method, in a closure too, a use
-// of one of those functions as a value, and a dot import of os. It leaves out a mode with no
-// execute bit, a Chmod with none or of a path no open of the function names, a package whose tests
-// do not run beside each other, a write by WriteFile, another module below root, and this
-// package's own WriteFile.
-func TestUnguardedNamesEveryExecutableWriteATestMayRunBesideAFork(t *testing.T) {
+// Unguarded names a write of a file with an execute bit by os.WriteFile or os.OpenFile in any file
+// that is no test file, in a test file of a package whose tests call Parallel, and in any file of a
+// test-support package, by whatever name the file imports os and however the mode is spelled, and
+// a mode it cannot evaluate. It names an open by os.WriteFile, os.OpenFile, os.Create or
+// os.CreateTemp whose file the same function gives an execute bit by os.Chmod of its path or of
+// its Name, or by the file's Chmod method, in a closure too, a use of one of those functions as a
+// value, and a dot import of os. It leaves out a mode with no execute bit, a Chmod with none or of
+// a path no open of the function names, a test file of a package whose tests do not run beside
+// each other, a write by testexec.WriteFile, another module below root, and programfile's own
+// Write. The code a deployment runs is planted in daemonish: the shapes the daemon's own program
+// files had before programfile.Write, the git helper's os.WriteFile at 0o700 and workerbin's
+// os.CreateTemp with a Chmod of the file to 0o700, and a copy that keeps a file's mode.
+func TestUnguardedNamesEveryExecutableWriteThatMayRunBesideAFork(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	write := func(path, body string) {
@@ -122,11 +125,56 @@ import "os"
 
 func Fake() { _ = os.WriteFile("k", nil, 0o755) }
 `)
-	write("testexec/testexec.go", `package testexec
+	write("programfile/programfile.go", `package programfile
 
 import "os"
 
-func WriteFile(name string, data []byte, perm os.FileMode) error { return os.WriteFile(name, data, perm) }
+func Write(name string, flag int, perm os.FileMode) error {
+	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|flag, perm)
+	if err != nil {
+		return err
+	}
+	return file.Close()
+}
+`)
+	write("daemonish/install.go", `package daemonish
+
+import "os"
+
+func helper(dir string) error { return os.WriteFile(dir+"/helper", []byte("#!/bin/sh\n"), 0o700) }
+
+func script(dir string) error {
+	temporary, err := os.CreateTemp(dir, ".script-")
+	if err != nil {
+		return err
+	}
+	_ = temporary.Chmod(0o700)
+	return temporary.Close()
+}
+
+func named(dir string) {
+	temporary, _ := os.CreateTemp(dir, ".named-")
+	_ = os.Chmod(temporary.Name(), 0o755)
+}
+
+func data(dir string) {
+	temporary, _ := os.CreateTemp(dir, ".data-")
+	_ = temporary.Chmod(0o600)
+	_ = os.WriteFile(dir+"/data", nil, 0o644)
+}
+
+func copied(path string, mode os.FileMode) error { return os.WriteFile(path, nil, mode) }
+
+var create = os.CreateTemp
+`)
+	write("daemonish/install_test.go", `package daemonish
+
+import (
+	"os"
+	"testing"
+)
+
+func TestAlone(t *testing.T) { _ = os.WriteFile("v", nil, 0o755) }
 `)
 	write("other/go.mod", "module other\n")
 	write("other/other_test.go", `package other
@@ -187,9 +235,38 @@ func dotted(t *testing.T) { _ = WriteFile("u", nil, 0o755) }
 		"beside/a_test.go:17", "beside/a_test.go:20", "beside/b_test.go:11",
 		"beside/chmod_test.go:11", "beside/chmod_test.go:13", "beside/chmod_test.go:15",
 		"beside/chmod_test.go:22", "beside/chmod_test.go:27", "beside/chmod_test.go:9",
-		"beside/dot_test.go:4", "fakestest/fakestest.go:5",
+		"beside/dot_test.go:4",
+		"daemonish/install.go:17", "daemonish/install.go:27", "daemonish/install.go:29",
+		"daemonish/install.go:5", "daemonish/install.go:8",
+		"fakestest/fakestest.go:5",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Unguarded named\n\t%s\nwant\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+}
+
+// Unguarded refuses a root under which it finds no Go file of the module: an empty directory, one
+// holding only files of other kinds, and one whose only Go files are another module's. A walk that
+// read nothing would otherwise answer what a walk that found nothing answers.
+func TestUnguardedRefusesARootItReadsNoGoFileUnder(t *testing.T) {
+	t.Parallel()
+	empty := t.TempDir()
+	prose := t.TempDir()
+	if err := os.WriteFile(filepath.Join(prose, "README.md"), []byte("# not Go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nested := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(nested, "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"go.mod": "module other\n", "other.go": "package other\n"} {
+		if err := os.WriteFile(filepath.Join(nested, "other", name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, root := range []string{empty, prose, nested, filepath.Join(empty, "missing")} {
+		if got, err := Unguarded(root); err == nil {
+			t.Errorf("Unguarded(%s) = %q and no error, want it refused: it read no Go file", root, got)
+		}
 	}
 }
