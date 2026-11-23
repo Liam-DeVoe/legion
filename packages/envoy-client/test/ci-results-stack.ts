@@ -427,7 +427,10 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     const stands = path.join(bin, "dev-proxy-stands");
 
     // The cluster's issuer: Dispatch's own token at the brokers, rewritten before it lapses, and
-    // the brokers' sign-in client, which a broker requires and nothing here signs in at.
+    // the brokers' sign-in client, which a broker requires and nothing here signs in at. Its one
+    // registered callback is the broker's approval page on loopback, at any port, as
+    // scripts/dev-broker.sh registers it (dev-oidc-issuer's --code-flow takes the callback since
+    // main's #5185).
     const accountToken = path.join(work, "dispatch-account-token");
     const signInSecret = path.join(work, "signin-client-secret");
     writeFileSync(signInSecret, randomBytes(32).toString("hex"), { mode: 0o600 });
@@ -438,7 +441,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
         "--token",
         `${CLUSTER_AUDIENCE}=${DISPATCH_ACCOUNT}=${accountToken}`,
         "--code-flow",
-        `${SIGNIN_CLIENT}=${signInSecret}`,
+        `${SIGNIN_CLIENT}=${signInSecret}=http://127.0.0.1/signin/callback`,
       ],
       { PATH: SHELL_PATH, HOME: work },
       issuerLog
