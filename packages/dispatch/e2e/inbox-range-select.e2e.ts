@@ -671,16 +671,22 @@ test("a shift-click selects no text and keeps the focus on its checkbox", async 
       `the shift-clicked checkbox holds the focus; the focus is on ${await describeFocus(page)}`
     ).toBe(true);
 
-    // A drag across one row's text still selects it: the third row's quoted words.
-    // The count of eleven above waited for the list's rows, and nothing moves this card before
-    // the drag.
+    // A drag across one row's text still selects it, and only it: the third row's quoted words.
+    // The shift-click scrolled the eleventh row into view, so the words stand above the window:
+    // a drag must start where the pointer can reach them, as Firefox finds nothing to select
+    // outside the window and Chromium selects everything from the page's top.
+    await words.scrollIntoViewIfNeeded();
+    // The count of eleven above waited for the list's rows, and nothing moves this card between
+    // the scroll and the drag.
     const box = await words.boundingBox();
     if (box === null) throw new Error("the row's quoted words are not drawn");
     await page.mouse.move(box.x + 1, box.y + box.height / 2);
     await page.mouse.down();
     await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 5 });
     await page.mouse.up();
-    expect(await selectedText()).toMatch(/Mirror root/);
+    expect(await selectedText(), "the text a drag across the row's words selects").toBe(
+      (await words.textContent()) ?? ""
+    );
   } finally {
     await alice.close();
   }
