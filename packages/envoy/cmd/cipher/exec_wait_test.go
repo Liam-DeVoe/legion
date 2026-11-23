@@ -53,13 +53,12 @@ type waitRead struct {
 	granted           bool
 }
 
-// waitMark is a moment of the fake's: when it came, the time the stall meter had counted this
-// process held up by then, and how long the client's main thread, the one thread that carries
-// its steps (backoffHook), had waited to run by then (clientStepThreadDelay), so a span between
-// two marks can be cleared of both processes' hold-ups.
+// waitMark is a moment of the fake's: when it came, and how long the client's main thread, the
+// one thread that carries its steps (backoffHook), had waited to run by then
+// (clientStepThreadDelay), so a span between two marks can be cleared of both processes'
+// hold-ups (requireClientStep).
 type waitMark struct {
 	at     time.Time
-	held   time.Duration
 	client time.Duration
 }
 
@@ -155,7 +154,7 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 // once runWaiting has named the client, which a request of the client's can only precede by the
 // time runWaiting takes to name it after starting it.
 func (b *waitBroker) mark(r *http.Request) waitMark {
-	m := waitMark{at: time.Now(), held: b.meter.heldUp()}
+	m := waitMark{at: time.Now()}
 	select {
 	case pid := <-b.client:
 		b.client <- pid
@@ -192,21 +191,24 @@ func clientStepThreadDelay(pid int) time.Duration {
 }
 
 // requireClientStep fails t where the client, another process, took from from to to, two of the
-// fake's marks, longer than slack beyond the time either process was held up meanwhile: this
-// process by its stall meter, the client by the run delay of the thread that carries its steps
-// (clientStepThreadDelay). It answers how long the step took. what names the step for the
-// failure's text.
-func requireClientStep(t *testing.T, what string, from, to waitMark, slack time.Duration) time.Duration {
+// fake's marks, longer than slack beyond the time either process was held up on the step's own
+// path: this process only where its hold-ups fell on the taking of either mark (the stall meter's
+// heldAround), since a hold-up of this process while it only waited delays no step of the
+// client, and the client by the run delay of the thread that carries its steps
+// (clientStepThreadDelay). Clearing the step of all this process was held up across it would
+// clear a client's own delay on a machine that holds this process up while the client runs. It
+// answers how long the step took. what names the step for the failure's text. b.mu is held.
+func (b *waitBroker) requireClientStep(t *testing.T, what string, from, to waitMark, slack time.Duration) time.Duration {
 	t.Helper()
 	took := to.at.Sub(from.at)
-	held := to.held - from.held
+	held := min(took, b.meter.heldAround(from.at)+b.meter.heldAround(to.at))
 	starved := to.client - from.client
 	late := took - held - starved
 	if late > slack {
-		t.Fatalf("%s took %s; this process was held up %s of that and the client's step thread starved %s, so the client was %s late on its own, more than %s",
+		t.Fatalf("%s took %s; this process was held up %s on the fake's two marks and the client's step thread starved %s, so the client was %s late on its own, more than %s",
 			what, took.Round(time.Millisecond), held.Round(time.Millisecond), starved.Round(time.Millisecond), late.Round(time.Millisecond), slack)
 	}
-	t.Logf("on time: %s took %s, %s held up here, the client's step thread starved %s, %s late on its own (slack %s)",
+	t.Logf("on time: %s took %s, %s held up here on the fake's two marks, the client's step thread starved %s, %s late on its own (slack %s)",
 		what, took.Round(time.Millisecond), held.Round(time.Millisecond), starved.Round(time.Millisecond), late.Round(time.Millisecond), slack)
 	return took
 }
@@ -234,7 +236,7 @@ func (b *waitBroker) requireReleaseFromTheGrantedRead(t *testing.T) waitRead {
 	if !last.granted {
 		t.Fatalf("the last status read answered pending (waits %q); want the release to follow the read that answered granted", b.waits())
 	}
-	requireClientStep(t, "the release after the read that answered granted", last.answered, b.release, lateSlack)
+	b.requireClientStep(t, "the release after the read that answered granted", last.answered, b.release, lateSlack)
 	return last
 }
 
@@ -409,7 +411,7 @@ func TestExecLearnsOfAGrantAfterAFullHold(t *testing.T) {
 	if len(b.reads) != 2 || b.reads[0].wait != full || b.reads[0].granted {
 		t.Fatalf("the broker served status reads with waits %q; want 2, the first asking %s, the whole wait, and answered pending", b.waits(), full)
 	}
-	requireClientStep(t, "the read after the full hold", b.reads[0].answered, b.reads[1].reached, lateSlack)
+	b.requireClientStep(t, "the read after the full hold", b.reads[0].answered, b.reads[1].reached, lateSlack)
 	b.requireReleaseFromTheGrantedRead(t)
 }
 
