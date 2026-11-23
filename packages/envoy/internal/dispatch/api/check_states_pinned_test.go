@@ -127,3 +127,74 @@ func TestAMembershipAnswerIsAboutTheStoredRevisionsHoweverGitHubMovesBetweenRead
 		}
 	}
 }
+
+// TestAMembershipAnswerReadWhileTheBaseStandsElsewhereDecidesNothing is the re-reader's story of
+// a base that moves and returns, in the shape the read now has: the tester recorded k1 passing at
+// H1, and Dispatch stores #70 at H2 onto base revision A. GitHub's #70 stands onto base revision
+// B, whose commits name H1 where A's leave it out ("inside"), or leave H1 out where A's name it
+// ("outside"), when the settle's first read reaches GitHub, and then stays at B or returns to A
+// for the reads after it. No answer about B may decide H1, so the settle leaves H1 a candidate
+// and keeps the obligation that asked for the read; once GitHub stands at A for good, the next
+// settle decides H1 as A's commits say: yes at H1 where they name it, nothing where they do not.
+func TestAMembershipAnswerReadWhileTheBaseStandsElsewhereDecidesNothing(t *testing.T) {
+	const baseA = "cafe000000000000000000000000000000000000"
+	const baseB = "beef000000000000000000000000000000000000"
+	for _, inside := range []bool{false, true} {
+		for _, returns := range []bool{false, true} {
+			name := "outside"
+			if inside {
+				name = "inside"
+			}
+			if returns {
+				name += "/base returns to the stored A"
+			} else {
+				name += "/base stays at B"
+			}
+			t.Run(name, func(t *testing.T) {
+				rig := newCheckStatesRig(t, checkStatesTwoChecks)
+				eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
+				storeBaseRevision(t, rig, 70, eachHeadH2, baseA)
+				if got := candidatesOf(t, rig); len(got) != 1 || got[eachHeadH1] {
+					t.Fatalf("#70 holds the former heads %v, want H1 unverified: this test holds nothing", got)
+				}
+				atB, atA := []string{eachHeadH2}, []string{eachHeadH1, eachHeadH2}
+				if inside {
+					atB, atA = atA, atB
+				}
+				rig.github.setRange(baseB, eachHeadH2, atB...)
+				rig.github.setRange(baseA, eachHeadH2, atA...)
+				rig.github.setPull(70, eachHeadH2, "main", baseB)
+				var mu sync.Mutex
+				reads := 0
+				rig.github.onRead(func(string) {
+					mu.Lock()
+					reads++
+					first := reads == 1
+					mu.Unlock()
+					if !first && returns {
+						rig.github.setPull(70, eachHeadH2, "main", baseA)
+					}
+				})
+				settleOwed(t, rig)
+				rig.github.onRead(nil)
+				if got := candidatesOf(t, rig); len(got) != 1 || got[eachHeadH1] {
+					t.Fatalf("#70 holds the former heads %v after a settle whose first read found the base at B, want H1 unverified still: an answer about B decides nothing", got)
+				}
+				if marks := fenceMarksOf(t, rig, rig.issue); len(marks) == 0 {
+					t.Fatalf("%s keeps no mark a handoff waits for after the answer about B, want the obligation kept", rig.issue)
+				}
+
+				rig.github.setPull(70, eachHeadH2, "main", baseA)
+				settleEveryMark(t, rig)
+				verified, held := candidatesOf(t, rig)[eachHeadH1]
+				state := stateAt(t, rig, rig.issue, eachHeadH1, "k1")
+				if !inside && (!verified || state != model.PassStandsYes) {
+					t.Fatalf("once GitHub stands at A, whose commits name H1, H1 is held=%v verified=%v and k1 is published %q there, want a former head with k1 yes", held, verified, state)
+				}
+				if inside && (held || state != "") {
+					t.Fatalf("once GitHub stands at A, whose commits leave H1 out, H1 is held=%v verified=%v and k1 is published %q there, want it gone with nothing published", held, verified, state)
+				}
+			})
+		}
+	}
+}

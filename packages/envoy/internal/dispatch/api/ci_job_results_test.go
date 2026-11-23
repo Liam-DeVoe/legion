@@ -124,10 +124,10 @@ type ciJobGitHub struct {
 // pullCommitsListed is the most commits GitHub lists for one pull request, however many it has.
 const pullCommitsListed = 250
 
-// ciJobPull is GitHub's answer for one pull request: its head commit, its base branch and the
-// commit the base branch is at (base.sha).
+// ciJobPull is GitHub's answer for one pull request: its head commit, its base branch, the commit
+// the base branch is at (base.sha) and its title.
 type ciJobPull struct {
-	head, base, baseSHA string
+	head, base, baseSHA, title string
 }
 
 // ciJobBaseSHA is the commit the base branch of a pull request the fake GitHub answers is at,
@@ -152,6 +152,15 @@ func (g *ciJobGitHub) setPull(number int, head, base, baseSHA string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.pulls[number] = ciJobPull{head: head, base: base, baseSHA: baseSHA}
+}
+
+// setPullTitle has GitHub answer title as pull request number's title, where it stands now.
+func (g *ciJobGitHub) setPullTitle(number int, title string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	pull, _ := g.pullOf(number)
+	pull.title = title
+	g.pulls[number] = pull
 }
 
 // setCompare has GitHub answer answer for the comparison of base and head.
@@ -529,9 +538,10 @@ func (g *ciJobGitHub) serve(t *testing.T) string {
 		}
 		repo := r.PathValue("owner") + "/" + r.PathValue("repo")
 		body, _ := json.Marshal(map[string]any{
-			"number": number, "state": "open",
-			"head": map[string]any{"sha": pull.head, "ref": "legion/work", "repo": map[string]any{"full_name": repo}},
-			"base": map[string]any{"ref": pull.base, "sha": pull.baseSHA},
+			"number": number, "state": "open", "title": pull.title,
+			"html_url": fmt.Sprintf("https://github.com/%s/pull/%d", repo, number),
+			"head":     map[string]any{"sha": pull.head, "ref": "legion/work", "repo": map[string]any{"full_name": repo}},
+			"base":     map[string]any{"ref": pull.base, "sha": pull.baseSHA},
 		})
 		_, _ = w.Write(body)
 	})
