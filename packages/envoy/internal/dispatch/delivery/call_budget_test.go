@@ -4,7 +4,8 @@ import (
 	"sync"
 	"testing"
 	"testing/synctest"
-	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent: a read that does not fit while another
@@ -12,7 +13,8 @@ import (
 // not fit once nothing is in flight gives up at once rather than waiting forever. The budget does
 // no I/O, so the test runs in a synctest bubble: synctest.Wait returns once every read has
 // answered or blocks in reserve, and what has answered is then read from its channel. A read that
-// must wait is read an hour on the bubble's clock later (idleAnHour), past any bound of its own.
+// must wait is read an hour on the bubble's clock later (testwait.IdleAnHour), past any bound of
+// its own.
 func TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		budget := newCallBudget(10)
@@ -21,7 +23,7 @@ func TestACallBudgetWaitsForAReservationThenGivesUpOnceSpent(t *testing.T) {
 		}
 		second := make(chan bool, 1)
 		go func() { second <- budget.reserve(6) }()
-		idleAnHour()
+		testwait.IdleAnHour()
 		select {
 		case got := <-second:
 			t.Fatalf("the second reservation answered %v while the first held 6 of 10; want it to wait", got)
@@ -87,8 +89,9 @@ func TestConcurrentReadsNeverOverspendACallBudget(t *testing.T) {
 		}
 
 		// The first three to ask fit (18 of 20). Nothing settles until the gate opens, so every
-		// other read is waiting on a reservation and none may answer: once every read has answered
-		// or blocks, exactly three answers are there, and none more an hour on (idleAnHour).
+		// other read is waiting on a reservation and none may answer: once every read has
+		// answered or blocks, exactly three answers are there, and none more an hour on
+		// (testwait.IdleAnHour).
 		synctest.Wait()
 		held := allowance / cost
 		for i := range held {
@@ -101,7 +104,7 @@ func TestConcurrentReadsNeverOverspendACallBudget(t *testing.T) {
 				t.Fatalf("only %d of %d reservations answered before any settled", i, held)
 			}
 		}
-		idleAnHour()
+		testwait.IdleAnHour()
 		select {
 		case granted := <-answered:
 			t.Fatalf("a reservation answered %v while %d reads held %d of %d calls; want it to wait", granted, held, held*cost, allowance)
@@ -126,15 +129,4 @@ func TestConcurrentReadsNeverOverspendACallBudget(t *testing.T) {
 			t.Fatalf("spent %d calls; want 16, never more than %d", budget.spent, allowance)
 		}
 	})
-}
-
-// idleAnHour returns once every other goroutine of the test's synctest bubble is blocked, an hour
-// on the bubble's clock after it was called. That clock moves only once every goroutine in the
-// bubble is durably blocked, and synctest.Wait returns before it moves, so an absence read after
-// synctest.Wait alone is read at the bubble's first moment: work that a timer of its own lets go
-// early, a wait with a bound of its own, has not gone yet and passes. The hour costs nothing, and
-// every shorter timer fires inside it, so such work has gone by the read.
-func idleAnHour() {
-	synctest.Wait()
-	time.Sleep(time.Hour)
 }

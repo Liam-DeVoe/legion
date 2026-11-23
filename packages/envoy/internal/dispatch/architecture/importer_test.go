@@ -825,13 +825,11 @@ func TestTheFlightCounterWaitsForEveryFlightAndThenRefusesMore(t *testing.T) {
 			close(stopped)
 		}()
 		// stop is blocked on the outstanding flight, which is the state the counter holds: every
-		// goroutine of this test is then blocked, which synctest.Wait reports, and a stop that
-		// returned early would have closed stopped before it. synctest.Wait returns before the
-		// bubble's clock moves, which it does only once every goroutine is blocked, so the read
-		// waits an hour on that clock after it, which costs nothing: a stop that a timer of its
-		// own lets return has returned by then.
-		synctest.Wait()
-		time.Sleep(time.Hour)
+		// goroutine of this test is then blocked, which testwait.IdleAnHour waits for, and a stop
+		// that returned early would have closed stopped before it. The read is an hour on the
+		// bubble's clock later, which costs nothing: a stop that a timer of its own lets return
+		// has returned by then.
+		testwait.IdleAnHour()
 		select {
 		case <-stopped:
 			t.Fatal("stop returned while a flight was still outstanding")

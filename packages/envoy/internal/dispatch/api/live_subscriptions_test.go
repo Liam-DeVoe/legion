@@ -540,26 +540,15 @@ func sendWaitInBackground(stream *liveSubscriptionStream, ctx context.Context) <
 
 // requireNoReturn fails when SendWait, with no room in the queue, has returned once every goroutine
 // of the test's synctest bubble is blocked an hour on: SendWait's goroutine is then waiting for
-// room for good (idleAnHour).
+// room for good (testwait.IdleAnHour).
 func requireNoReturn(t *testing.T, returned <-chan error) {
 	t.Helper()
-	idleAnHour()
+	testwait.IdleAnHour()
 	select {
 	case err := <-returned:
 		t.Fatalf("SendWait returned %v with no room in the queue", err)
 	default:
 	}
-}
-
-// idleAnHour returns once every other goroutine of the test's synctest bubble is blocked, an hour
-// on the bubble's clock after it was called. That clock moves only once every goroutine in the
-// bubble is durably blocked, and synctest.Wait returns before it moves, so an absence read after
-// synctest.Wait alone is read at the bubble's first moment: work that a timer of its own lets go
-// early, a wait with a bound of its own, has not gone yet and passes. The hour costs nothing, and
-// every shorter timer fires inside it, so such work has gone by the read.
-func idleAnHour() {
-	synctest.Wait()
-	time.Sleep(time.Hour)
 }
 
 // awaitReturn answers what SendWait returned, failing when it has not returned once every goroutine

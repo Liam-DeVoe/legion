@@ -280,7 +280,8 @@ func TestTheBackgroundWaitWaitsForARunningKeyedHandler(t *testing.T) {
 // backgroundWork's wait returns only once nothing runs, however work starts and ends around it:
 // work that starts while it waits, which a sync.WaitGroup forbids, is waited for too. The work is
 // in-process alone, so the bubble's synctest.Wait says when the waiter has gone as far as it can,
-// and an hour on the bubble's clock after it (idleAnHour) says it holds past any bound of its own.
+// and an hour on the bubble's clock after it (testwait.IdleAnHour) says it holds past any bound of
+// its own.
 func TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var work backgroundWork
@@ -293,7 +294,7 @@ func TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits(t *testing.T) {
 		}()
 		work.start()
 		work.done()
-		idleAnHour()
+		testwait.IdleAnHour()
 		select {
 		case <-waited:
 			t.Fatal("the wait returned with work still running")

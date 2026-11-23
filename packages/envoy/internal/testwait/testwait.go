@@ -55,10 +55,10 @@
 // A wait proves that something happened. That something did not happen needs a proof of its own,
 // taken from the first of these that reaches the code: read the state that would make it happen;
 // under testing/synctest, where the code does no real network I/O, call synctest.Wait and then
-// read; or wait for the effect of a later action (send a marker after the thing, wait for the
-// marker's effect, then read). Only when none of the three reaches the code does a test hold a
-// span, through Span or Quiet, whose why says which of them does not reach it and why. They refuse
-// an empty why.
+// read (IdleAnHour, where a timer of the code's own may let it act late); or wait for the effect
+// of a later action (send a marker after the thing, wait for the marker's effect, then read). Only
+// when none of the three reaches the code does a test hold a span, through Span or Quiet, whose
+// why says which of them does not reach it and why. They refuse an empty why.
 package testwait
 
 import (
