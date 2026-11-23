@@ -175,6 +175,9 @@ export function usePaneSelection({
    *  browser's `history.go` lands a frame or more later, so until it does the address still
    *  names the row the reader closed: read as a new address, it would select that row again. */
   const leaving = useRef<string | undefined>(undefined);
+  /** Whether the list has answered at all: `showing` runs only once the Inbox's read has landed,
+   *  so from then on an empty `listedRows` is a list that holds nothing, not one still loading. */
+  const listAnswered = useRef(false);
 
   const select = (id: string | undefined, mode: SelectMode = "replace"): void => {
     // Below the column's width, nothing selected on an entry `open` pushed over the list's own
@@ -306,6 +309,7 @@ export function usePaneSelection({
 
   const showing = (listed: readonly PlacedRow[]): InboxListRow | undefined => {
     listedRows.current = listed;
+    listAnswered.current = true;
     const visible = presented.current;
     // Read here, where the rows stand as the reader sees them, and held while a snooze of the
     // selected row is out: that write folds its row into `Later` on the pick, so a read taken
@@ -361,8 +365,19 @@ export function usePaneSelection({
       return;
     }
     // A list that holds nothing - still loading, failed, or genuinely empty - answers no
-    // address: `?item=` is left unread until there are rows to read it against.
+    // address: `?item=` is left unread until there are rows to read it against. Below the
+    // column's width, once the list has answered and holds nothing, the row the address names
+    // cannot be shown: the view gives way to the list, so the address names nothing gone and the
+    // page's own keys work again - unless the view is keeping a question for an unsent answer.
     if (listedRows.current.length === 0) {
+      if (
+        !columns &&
+        listAnswered.current &&
+        filter.item !== undefined &&
+        paneSubject.current?.kept !== true
+      ) {
+        select(undefined);
+      }
       return;
     }
     const visible = presented.current;
@@ -393,7 +408,9 @@ export function usePaneSelection({
     const next = nextAfterSelected();
     const first = visible[0];
     if (visible.some((placed) => rowId(placed.row) === next)) {
-      select(next);
+      // The column handing on a row it picked by itself is still the column's own pick, so the
+      // narrow widths do not read the next row as one the reader opened either.
+      select(next, entry.inboxDefaultPick === true ? "auto" : "replace");
       return;
     }
     if (columns && first !== undefined) {

@@ -21,6 +21,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
+import { peekTrigger } from "./inbox-drawer";
 import {
   assigneeFilter,
   assigneeOptions,
@@ -1744,37 +1745,53 @@ for (const refusal of [
         })
       );
       await page.goto("/");
-      // The box that holds this question's Snooze, and so its refusal: the head of the pane its
-      // row opens, beside the list from 1280 px and in place of it below.
-      const controls = await askControls(page, ask.id);
-      await expect(controls).toBeVisible();
-      await controls.getByLabel(`Snooze ${issue.key}`).selectOption("tomorrow");
+      // The two boxes that hold this question's Snooze, and so its refusal: the head of the pane
+      // its row opens on the Inbox page, beside the list from 1280 px and in place of it below,
+      // and the drawer card's Actions group, bounded to the card (`max-w-full`), at every width.
+      const legs: { box: () => Promise<Locator>; name: string }[] = [
+        { box: () => askControls(page, ask.id), name: "the Inbox page's view" },
+        {
+          box: async () => {
+            await page.goto(`/issues/${issue.key}`);
+            await peekTrigger(page).click();
+            return page
+              .getByRole("dialog", { name: "Inbox" })
+              .locator(`[data-inbox-row="${ask.id}"]`);
+          },
+          name: "the drawer's card",
+        },
+      ];
+      for (const leg of legs) {
+        const controls = await leg.box();
+        await expect(controls, leg.name).toBeVisible();
+        await controls.getByLabel(`Snooze ${issue.key}`).selectOption("tomorrow");
 
-      const retry = controls.getByRole("button", { name: "Retry" });
-      await expect(retry).toBeVisible();
-      await expect(retry).toBeInViewport();
-      // The document never grows past the viewport: no sideways scroll to reach the refusal.
-      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
-        viewport
-      );
-      // The refusal never draws over the issue key. Where it lands is that box's own business:
-      // beside the key when it is wide enough (desktop, since a no-margin route gives the
-      // Inbox the whole width) and on the line below when it is not (a phone). Asserting
-      // "below" pinned one of those two layouts and went red on the other.
-      const key = await controls.locator("[data-inbox-owner]").first().boundingBox();
-      // The refusal itself, not its Retry: the alert is the wide thing, and measuring the
-      // narrow control inside it checked something the assertion does not claim.
-      const alert = await controls.getByRole("alert").boundingBox();
-      expect(key).not.toBeNull();
-      expect(alert).not.toBeNull();
-      const overlaps =
-        key !== null &&
-        alert !== null &&
-        alert.x < key.x + key.width &&
-        alert.x + alert.width > key.x &&
-        alert.y < key.y + key.height &&
-        alert.y + alert.height > key.y;
-      expect(overlaps).toBe(false);
+        const retry = controls.getByRole("button", { name: "Retry" });
+        await expect(retry, leg.name).toBeVisible();
+        await expect(retry, leg.name).toBeInViewport();
+        // The document never grows past the viewport: no sideways scroll to reach the refusal.
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth),
+          leg.name
+        ).toBeLessThanOrEqual(viewport);
+        // The refusal never draws over the issue key. Where it lands is that box's own business:
+        // beside the key when it is wide enough and on the line below when it is not. Asserting
+        // "below" pinned one of those two layouts and went red on the other.
+        const key = await controls.locator("[data-inbox-owner]").first().boundingBox();
+        // The refusal itself, not its Retry: the alert is the wide thing, and measuring the
+        // narrow control inside it checked something the assertion does not claim.
+        const alert = await controls.getByRole("alert").boundingBox();
+        expect(key, leg.name).not.toBeNull();
+        expect(alert, leg.name).not.toBeNull();
+        const overlaps =
+          key !== null &&
+          alert !== null &&
+          alert.x < key.x + key.width &&
+          alert.x + alert.width > key.x &&
+          alert.y < key.y + key.height &&
+          alert.y + alert.height > key.y;
+        expect(overlaps, leg.name).toBe(false);
+      }
     } finally {
       await alice.close();
     }

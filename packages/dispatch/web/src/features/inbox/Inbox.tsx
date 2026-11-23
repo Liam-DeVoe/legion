@@ -134,6 +134,21 @@ const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
  *  short row below 1280 px opens that row's view and lands there. */
 const SNOOZE_SELECTOR = "[data-inbox-snooze]";
 
+/** Where the reading view below 1280 px takes the reader once it has drawn: the element `find`
+ *  names in the view, or null while the view has not drawn it, and what `act` does there. */
+interface Landing {
+  act: (element: HTMLElement) => void;
+  find: (view: HTMLElement) => HTMLElement | null;
+}
+const focusOn = (element: HTMLElement): void => element.focus({ preventScroll: true });
+const pressOn = (element: HTMLElement): void => element.click();
+const inView =
+  (selector: string) =>
+  (view: HTMLElement): HTMLElement | null =>
+    view.querySelector<HTMLElement>(selector);
+/** A row opened by a click or Enter lands on the view's scroller. */
+const SCROLLER_LANDING: Landing = { act: focusOn, find: inView(PANE_SCROLLER_SELECTOR) };
+
 /** The "Add a note or answer in your own words" disclosure an `AskCard` folds its answer box
  *  behind in its compact variant - the card a decision block hosts, which is what the reading
  *  column shows for a question written as one - while it is still shut. The card carries the
@@ -993,16 +1008,24 @@ export function Inbox({
   /** Below 1280 px on the page: whether a row's reading view stands in the list's place. The
    *  list is the level out of it, so Escape and the view's own Inbox control go back there. */
   const reading = paneShown && !columns;
-  /** Where in the reading view the reader's last pick below 1280 px still has to put the
-   *  focus, by selector, or null once it has: the row they picked is hidden with the list, so the
-   *  first commit whose view has drawn that element hands the focus to it (the layout effect
-   *  below). The view's scroller for a click or Enter, where the next Enter reaches the answer
-   *  box as it does beside the list; its head's Snooze for `h`. */
-  const focusReadingView = useRef<string | null>(null);
-  /** The reader's own pick of a row - its click, Enter or `h` on it below 1280 px. */
-  const openRow = (id: string, focus: string = PANE_SCROLLER_SELECTOR) => {
-    if (!columns) focusReadingView.current = focus;
+  /** Where in the reading view the reader's last pick below 1280 px still has to land, or null
+   *  once it has: the row they picked is hidden with the list, so the first commit whose view has
+   *  drawn that element hands the reader to it (the layout effect below). The view's scroller for
+   *  a click or Enter, where the next Enter reaches the answer box as it does beside the list;
+   *  its head's Snooze for `h`; its head's copy control for `y`; the card's option for `1`-`9`. */
+  const focusReadingView = useRef<Landing | null>(null);
+  /** The reader's own pick of a row - its click, Enter, `h`, `y` or `1`-`9` on it below 1280 px. */
+  const openRow = (id: string, landing: Landing = SCROLLER_LANDING) => {
+    if (!columns) focusReadingView.current = landing;
     paneSelection.open(id);
+  };
+  /** Below 1280 px with no row open, the focused short row's id when it is a question whose card
+   *  offers options to pick: what `1`-`9` open and pick in. */
+  const focusedAskWithOptions = (): string | undefined => {
+    const row = handRow();
+    return row?.kind === "ask" && row.ask.kind !== "approval" && (row.ask.options?.length ?? 0) > 0
+      ? row.ask.id
+      : undefined;
   };
   // The refetch a recorded answer triggers returns the list the optimistic removal already
   // produced, so it re-renders nothing on its own; release explicitly. The reader's own answer
@@ -1313,10 +1336,34 @@ export function Inbox({
       keys: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
       label: `Select option 1–9 of the ${acted} ask`,
       run: (event) => {
+        const index = Number(event.key) - 1;
+        // Below 1280 px with no row open the focused short row draws no options: its view does,
+        // so the key opens the row and picks the option there once the card is drawn, and lands
+        // on the view's scroller where the card has fewer options than the key.
+        if (pane && !paneShown) {
+          const id = focusedAskWithOptions();
+          if (id === undefined) return;
+          openRow(id, {
+            act: (element) =>
+              element.matches(PANE_SCROLLER_SELECTOR) ? focusOn(element) : pressOn(element),
+            find: (view) => {
+              const card = view.querySelector(`[data-ask-card="${CSS.escape(id)}"]`);
+              if (card === null) return null;
+              return (
+                card.querySelectorAll<HTMLElement>("[data-ask-option]")[index] ??
+                view.querySelector<HTMLElement>(PANE_SCROLLER_SELECTOR)
+              );
+            },
+          });
+          return;
+        }
         const options = answerHand()?.querySelectorAll<HTMLElement>("[data-ask-option]");
-        options?.[Number(event.key) - 1]?.click();
+        options?.[index]?.click();
       },
-      when: () => inAnswerHand("[data-ask-option]") !== null,
+      when: () =>
+        pane && !paneShown
+          ? focusedAskWithOptions() !== undefined
+          : inAnswerHand("[data-ask-option]") !== null,
     },
     {
       id: "open",
@@ -1329,10 +1376,19 @@ export function Inbox({
       id: "copy-ref",
       keys: "y",
       // An Agent row has no reference of its own - its thread is a message to a session - so
-      // it draws no copy control and this stands down on it.
+      // it draws no copy control and this stands down on it. Below 1280 px an ask's short row
+      // draws none either: its view's head does, so the key opens the row and copies there.
       label: `Copy the ${acted} row's reference`,
-      run: () => inHand(COPY_REF_SELECTOR)?.click(),
-      when: () => inHand(COPY_REF_SELECTOR) !== null,
+      run: () => {
+        const id = focusedRow()?.dataset.inboxRow;
+        if (pane && !paneShown && inHand(COPY_REF_SELECTOR) === null && id !== undefined) {
+          openRow(id, { act: pressOn, find: inView(COPY_REF_SELECTOR) });
+          return;
+        }
+        inHand(COPY_REF_SELECTOR)?.click();
+      },
+      when: () =>
+        inHand(COPY_REF_SELECTOR) !== null || (pane && !paneShown && handRow()?.kind === "ask"),
     },
     {
       id: "back",
@@ -1467,7 +1523,7 @@ export function Inbox({
         // lands there.
         if (pane && !paneShown) {
           const id = focusedRow()?.dataset.inboxRow;
-          if (id !== undefined) openRow(id, SNOOZE_SELECTOR);
+          if (id !== undefined) openRow(id, { act: focusOn, find: inView(SNOOZE_SELECTOR) });
           return;
         }
         // The short row carries no Snooze of its own: the reading column's head does, for the
@@ -1559,10 +1615,10 @@ export function Inbox({
         focusReadingView.current = null;
         return true;
       }
-      const element = view.querySelector<HTMLElement>(target);
+      const element = target.find(view);
       if (element === null) return false;
       focusReadingView.current = null;
-      element.focus({ preventScroll: true });
+      target.act(element);
       return true;
     };
     if (land()) return;

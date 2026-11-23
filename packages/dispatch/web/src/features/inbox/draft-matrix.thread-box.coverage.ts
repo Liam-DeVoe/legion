@@ -380,6 +380,10 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("Inbox | - | form | (pane && !paneShown) ? …", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | if (pane && !paneShown) return …", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | (reading) ? …", { reason: REASONS[13] }),
+  ...answers(
+    "Inbox | - | form | if (pane && !paneShown && inHand(COPY_REF_SELECTOR) === null && id !== undefined) return …",
+    { reason: REASONS[13] }
+  ),
   ...answers("Inbox | - | form | (id === undefined) ? …", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | (paneSelection.id === undefined) ? …", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | if (box === null && paneShown) return …", { reason: REASONS[13] }),
@@ -405,6 +409,10 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("usePaneSelection | - | form | if (selectedId !== undefined)", {
     reason: REASONS[13],
   }),
+  ...answers(
+    "usePaneSelection | - | form | if (!columns && listAnswered.current && filter.item !== undefined && paneSubject.current?.kept !== true)",
+    { reason: REASONS[13] }
+  ),
   ...answers(
     "usePaneSelection | - | form | if (!columns && entry.inboxDefaultPick === true) return …",
     { reason: REASONS[13] }

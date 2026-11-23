@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 import { nextOffsetPage } from "../../api/queries";
 import type { MyAnswerRow } from "../../api/types";
+import { CappedGroup } from "../../components/CappedGroup";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, Pill } from "../../components/Pill";
@@ -48,6 +49,16 @@ function ChangeAnswerCard({ askId }: { askId: string }): ReactNode {
   return <AskCard ask={thread.data.ask} initialThread={thread.data} mode="change" />;
 }
 
+/**
+ * One answer or reply of the reader's, in four named groups in this order:
+ *
+ * - **Meta**: when it was written, the issue or document the ask belongs to, and "Changed since"
+ *   on an answer the reader has since replaced. Wraps as whole entries.
+ * - **Question**: the ask's question, two lines at most, the whole of it in its title.
+ * - **Answer**: the options picked, as chips that wrap their own words (`options`, a data group
+ *   capped at ten with a "+N" for the rest), then the text written, or the reply.
+ * - **Actions**: Open, and Change answer on a current answer that can be changed.
+ */
 function AnswerRow({
   changing,
   onChange,
@@ -88,7 +99,7 @@ function AnswerRow({
             // One chip per option picked. An option's label can be a whole sentence, so a chip is
             // never wider than the row: its words wrap inside it, an unbroken run breaking
             // anywhere, where a label pill keeps its words on one line.
-            <div className="flex flex-wrap gap-1.5" data-answer-options="">
+            <CappedGroup className="flex flex-wrap gap-1.5" label="options" name="options">
               {(row.answer.selected ?? []).map((label) => (
                 <Pill className="max-w-full" key={label} tone="selected-label">
                   <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
@@ -96,7 +107,7 @@ function AnswerRow({
                   </span>
                 </Pill>
               ))}
-            </div>
+            </CappedGroup>
           )}
           {row.answer.text === null || row.answer.text === "" ? null : (
             <div className="mt-1">
