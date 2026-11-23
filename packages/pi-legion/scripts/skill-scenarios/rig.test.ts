@@ -5,13 +5,13 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
-import { directoryWithout, PLAIN_WORD_REFUSES } from "@legion/pi-shared/test/test-paths";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
@@ -30,14 +30,27 @@ const withoutDocker = skipWithout("docker");
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
 const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
-// The suite's work directory. Its path is plain, `[A-Za-z0-9/._-]` alone (PLAIN_WORD_REFUSES,
-// test-paths.ts), since rig.sh and the model route installers it runs take no other: rig.sh
-// splits SKILL_SCENARIOS_JUDGE_ENV on blanks by design (cmd_judge_omp) and refuses a key file
-// whose path is not plain (judge_keys), and the installers refuse a `--dest` or `--key-dir` that
-// is not (scripts/e2e/lib/install-key-file-model-route.sh, install-model-gateway.sh). Its second
-// base is /tmp, not this package's .cache: rig.sh refuses a SKILL_SCENARIOS_WORK inside the
-// checkout, and one with a `.omp` in it or above it, which a checkout in the operator's HOME has.
-const work = directoryWithout(PLAIN_WORD_REFUSES, [tmpdir(), "/tmp"], "skill-scenarios-rig-");
+/**
+ * The directory this file's work directory goes in: memoryRoot, so /dev/shm where the machine has
+ * a tmpfs there, unless its real path holds a character other than letters, digits and `/._-`, and
+ * then /tmp. A plain path, because the model route installers and judge-omp write the path of each
+ * key command, and of the key file, into a profile as one plain `!command` word, and refuse any
+ * other character in it (install-model-gateway.sh and install-key-file-model-route.sh at `--dest`,
+ * rig.sh's judge_keys at the key file): under a TMPDIR with a space or a quote in its name, every
+ * row that installs a route failed on that refusal. A tmpfs, because the file's afterAll removes
+ * the whole directory under the file's 60 s: on the disk TMPDIR names, that removal of about 1,600
+ * entries took 70 to 90 s at a five-minute load of about 2,200, and failed the file with "a
+ * beforeEach/afterEach hook timed out" after every row had passed. `need` is about sixteen times
+ * the 1.8 MiB a run held there at its largest (1,392 entries).
+ */
+const memory = memoryRoot({ need: 32 * 1024 * 1024 });
+const workRoot = /^[A-Za-z0-9/._-]+$/.test(realpathSync(memory)) ? memory : "/tmp";
+if (workRoot !== memory) {
+  console.error(
+    `rig.test.ts: ${memory} holds a character a plain \`!command\` word cannot, so the work directory is under /tmp`
+  );
+}
+const work = temporaryDirectory("skill-scenarios-rig", { root: workRoot });
 const operatorHome = path.join(work, "operator-home");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
 // read it would list this directory. It is staged in a hook, below the one the reservation
@@ -327,32 +340,74 @@ describe("a setup that fails after install_model_route", () => {
     expect(existsSync(path.join(kept, "profiles/probe/ready"))).toBe(true);
   });
 
+  /** judge_profiles and its helpers, called on the checkout $1 and the work directory $2. A row
+   * puts an install_model_route definition before it. */
+  const judgeProfiles = [
+    "set -euo pipefail",
+    ...["fail", "on_exit", "drop_unready_keys", "judge_profiles"].map(fn),
+    "checkout_commit() { printf 'fixture parents=base\\n'; }",
+    "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
+  ].join("\n");
+
   // Catches: a judge-profile build that fails at its second profile and keeps the first one's key
   // command.
   test("judge_profiles removes both profiles' model-key and marks nothing ready", () => {
     const work = freshDir("judge-route-work");
-    const co = checkout();
+    // The bare profile's route cannot be installed, after the ste profile's is.
     const script = [
-      "set -euo pipefail",
-      ...["fail", "on_exit", "drop_unready_keys", "install_model_route", "judge_profiles"].map(fn),
-      "checkout_commit() { printf 'fixture parents=base\\n'; }",
-      "root=$1; work=$2; judge_model=fixture; judge_thinking=high; judge_profiles",
+      fn("install_model_route").replace("install_model_route()", "installed_route()"),
+      'install_model_route() { [ "$2" != judge-bare ] || { echo "no route for bare" >&2; return 1; }; installed_route "$@"; }',
+      judgeProfiles,
     ].join("\n");
-    // The bare profile's home cannot be made, after the ste profile's route is installed.
-    appendFileSync(
-      path.join(co, "scripts/e2e/lib/omp-home.sh"),
-      'make_omp_home() { [ "$(basename "$(dirname "$1")")" != bare ] || { echo "no home for bare" >&2; return 1; }; mkdir -p "$1/.omp"; }\n'
-    );
-    const failed = bash(script, [co, work], routeEnv());
+    const failed = bash(script, [checkout(), work], routeEnv());
     expect(failed.code).toBe(1);
-    expect(failed.stderr).toContain("make_omp_home failed for the judge's bare profile");
+    expect(failed.stderr).toContain("the judge's model route (key-file) could not be installed");
     const dir = path.join(work, "judge-profiles");
+    expect(readFileSync(path.join(dir, "bare/install.log"), "utf8")).toBe("no route for bare\n");
     expect(existsSync(path.join(dir, "ste/home/.omp/profiles/judge-ste/agent/models.yml"))).toBe(
       true
     );
     expect(existsSync(path.join(dir, "ste/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "bare/model-key"))).toBe(false);
     expect(existsSync(path.join(dir, "ready"))).toBe(false);
+  });
+
+  // Catches: a judge profile that needs jj. No Oh My Pi and no jj runs under a judge's HOME on this
+  // host, yet a home made by make_omp_home read the operator's jj config, so judge-omp failed on a
+  // machine with no jj on PATH ("make_omp_home failed for the judge's ste profile"). Here the
+  // checkout's omp-home.sh is the real one, and the only jj on PATH records its call and fails.
+  test("judge_profiles builds both profiles and runs no jj", () => {
+    const work = freshDir("judge-nojj-work");
+    const co = checkout();
+    cpSync(
+      path.join(root, "scripts/e2e/lib/omp-home.sh"),
+      path.join(co, "scripts/e2e/lib/omp-home.sh")
+    );
+    const bin = freshDir("judge-nojj-bin");
+    const calls = path.join(bin, "jj-calls");
+    writeFileSync(
+      path.join(bin, "jj"),
+      `#!/bin/sh\necho "$*" >>'${calls}'\necho "jj: not on this machine" >&2\nexit 127\n`,
+      { mode: 0o755 }
+    );
+    const built = bash(`${fn("install_model_route")}\n${judgeProfiles}`, [co, work], {
+      ...routeEnv(),
+      PATH: `${bin}:${childEnv.PATH}`,
+    });
+    expect({ code: built.code, stderr: built.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(existsSync(calls)).toBe(false);
+    const dir = path.join(work, "judge-profiles");
+    for (const kind of ["ste", "bare"]) {
+      expect(
+        existsSync(path.join(dir, `${kind}/home/.omp/profiles/judge-${kind}/agent/models.yml`))
+      ).toBe(true);
+    }
+    expect(
+      existsSync(
+        path.join(dir, "ste/home/.omp/profiles/judge-ste/agent/skills/asd-ste100/SKILL.md")
+      )
+    ).toBe(true);
+    expect(existsSync(path.join(dir, "ready"))).toBe(true);
   });
 });
 
