@@ -987,3 +987,13 @@ test("a worker's first step reads the issue, its task and the handoffs, and no o
     ["skills/legion-worker/SKILL.md"]
   );
 });
+
+// A fresh agent that read only the sentence above still read a list of open items before it acted,
+// because one of its items named the agent's role: it took the item for work, not for a decision.
+// So the worker skill names that list and says the agent reads it not at all.
+test("a worker reads no list of open items, even one with an item for its role", () => {
+  countedOncePerFile(
+    "Read no list of open items of the issue, even one with an item for your role. What your architect wants of you comes in your task or a message.",
+    ["skills/legion-worker/SKILL.md"]
+  );
+});
