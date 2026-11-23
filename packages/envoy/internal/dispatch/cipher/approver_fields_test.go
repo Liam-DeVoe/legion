@@ -15,13 +15,15 @@ import (
 // passed, so a broker that starts or stops saying approver_fields true is followed within the
 // window and not before. A read that fails is an error, never an answer, even after a read that
 // said true, and is not remembered; so is a settings answer that is not a JSON object or whose
-// approver_fields is not a boolean, and a caller whose context ends before the read answers. Each
-// step names the reads it expects, so a window that never lapses, or one that lapses early, fails
-// here.
+// approver_fields is not the literal true or false (null included), and a caller whose context ends
+// before the read answers. Each step names the reads it expects, so a window that never lapses, or
+// one that lapses early, fails here.
 //
 // Controls: fresh answering every remembered read as fresh (its window never lapsing) fails the
 // first flip: the broker says true, and the client goes on answering the false it read first.
 // TakesApproverFields answering a failed read as false, with no error, fails the failed-read step.
+// readApproverFields reading approver_fields with json.Unmarshal into a bool fails the null step,
+// since that reads null as false with no error.
 func TestTakesApproverFieldsFollowsTheBrokerWithinItsWindow(t *testing.T) {
 	var (
 		mu      sync.Mutex
@@ -103,6 +105,8 @@ func TestTakesApproverFieldsFollowsTheBrokerWithinItsWindow(t *testing.T) {
 	unread(4*ApproverFieldsTTL, 8, "a 200 that is null")
 	answer(`{"approver_fields":"yes"}`, http.StatusOK)
 	unread(4*ApproverFieldsTTL, 9, "an approver_fields that is no boolean")
+	answer(`{"approver_fields":null}`, http.StatusOK)
+	unread(4*ApproverFieldsTTL, 10, "an approver_fields that is null")
 
 	// A caller whose context ends before the read answers is answered an error, and the read goes
 	// on: the next caller joins it, or finds what it remembered, and is answered the broker's true
@@ -126,7 +130,7 @@ func TestTakesApproverFieldsFollowsTheBrokerWithinItsWindow(t *testing.T) {
 	if got, err := client.TakesApproverFields(ctx); err != nil || !got {
 		t.Fatalf("the next caller, after the ended caller's read was let answer, was answered %t, %v; want the broker's true", got, err)
 	}
-	if got := readCount(); got != 10 {
-		t.Fatalf("the next caller made the broker's settings be read %d times in all, want 10: it joins the read left running, or finds what that read remembered", got)
+	if got := readCount(); got != 11 {
+		t.Fatalf("the next caller made the broker's settings be read %d times in all, want 11: it joins the read left running, or finds what that read remembered", got)
 	}
 }

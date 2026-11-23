@@ -512,11 +512,11 @@ func (a *approverFields) keep(takes bool) {
 // INVALID_DECISION.
 //
 // Any other read is an error, never an answer: a transport failure, a non-2xx answer, a settings
-// answer that is not a JSON object or whose approver_fields is not a boolean, Dispatch's own token
-// it cannot read (an *AccountTokenError), and ctx ending first. An approve then relays nothing
-// (api.approveCredentialRecord), since leaving the fields out of an approve to a broker that takes
-// them would leave its account and generation checks to that broker's 50-second fallback, and
-// sending them to one that does not would be refused.
+// answer that is not a JSON object or whose approver_fields is not the literal true or false (null
+// included), Dispatch's own token it cannot read (an *AccountTokenError), and ctx ending first. An
+// approve then relays nothing (api.approveCredentialRecord), since leaving the fields out of an
+// approve to a broker that takes them would leave its account and generation checks to that
+// broker's 50-second fallback, and sending them to one that does not would be refused.
 //
 // The read runs on ctx with its cancellation dropped, bounded by the call's own window
 // (defaultTimeout), as ServesDeviceGrant's does: the answer is every waiting caller's. A caller
@@ -550,7 +550,8 @@ func (c *Client) TakesApproverFields(ctx context.Context) (bool, error) {
 
 // readApproverFields reads the broker's settings and answers their approver_fields: false for a
 // settings object that names none, and an error for an answer that is not a JSON object or whose
-// approver_fields is not a boolean.
+// approver_fields is not the literal true or false (null included, which json.Unmarshal would read
+// into a bool as false with no error).
 func (c *Client) readApproverFields(ctx context.Context) (bool, error) {
 	body, err := c.do(ctx, http.MethodGet, settingsPath, nil)
 	if err != nil {
@@ -567,9 +568,12 @@ func (c *Client) readApproverFields(ctx context.Context) (bool, error) {
 	if !named {
 		return false, nil
 	}
-	var takes bool
-	if err := json.Unmarshal(raw, &takes); err != nil {
-		return false, fmt.Errorf("agent-secrets: read %s: approver_fields is not a boolean: %w", settingsPath, err)
+	switch string(bytes.TrimSpace(raw)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("agent-secrets: read %s: approver_fields is %s, not true or false", settingsPath, raw)
 	}
-	return takes, nil
 }
