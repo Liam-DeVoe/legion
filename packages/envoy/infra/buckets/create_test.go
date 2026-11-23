@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"slices"
@@ -172,11 +173,14 @@ func TestACreateOfABucketThereAtOtherCopiesNamesThem(t *testing.T) {
 
 // A bucket there at the copies asked for with another configuration than its own refuses the run,
 // exit 1, naming each difference: another history and maximum age at once, each named; another
-// storage; and the discard policy and direct get of a bucket nats.go made before nats-server 2.7.2
-// and 2.9. The bucket is left as it is. The session bucket's maximum age is the one exception: the
-// listeners set it from ENVOY_SESSION_MAX_AGE on the running bucket, so another age there is its
-// own and the bucket is present. No proof runs. At b20f45e30a create with no proof flag was a usage
-// error, exit 2, naming no field.
+// storage; the discard policy and direct get of a bucket nats.go made before nats-server 2.7.2
+// and 2.9; a subject beside the bucket's own; a stream it sources; a republish of its subjects;
+// and a mirror of another stream in place of its subjects. The bucket is left as it is. The session
+// bucket's maximum age is the one exception: the listeners set it from ENVOY_SESSION_MAX_AGE on the
+// running bucket, so another age there is its own and the bucket is present. No proof runs. At
+// b20f45e30a create with no proof flag was a usage error, exit 2, naming no field; at 6e52228ad6
+// the subjects, source, republish and mirror rows were present, exit 0, since the comparison left
+// those four out.
 func TestACreateOfABucketThereWithAnotherConfigurationNamesIt(t *testing.T) {
 	t.Setenv(bus.ReplicasEnvVar, "")
 	for _, c := range []struct {
@@ -186,15 +190,35 @@ func TestACreateOfABucketThereWithAnotherConfigurationNamesIt(t *testing.T) {
 		update func(*natsgo.StreamConfig)
 		code   int
 		says   []string
+		// stream, when set, makes the bucket's stream in place of nats.go's create of the bucket.
+		stream func(natsgo.JetStreamContext, string) error
 	}{
 		{"another history and max age", bus.KnownSessionBucket, func(config *natsgo.KeyValueConfig) { config.History, config.TTL = 2, time.Hour }, nil,
-			1, []string{"history 2, want 1", fmt.Sprintf("max age 1h0m0s, want %s", bus.KnownSessionBucketMaxAge)}},
+			1, []string{"history 2, want 1", fmt.Sprintf("max age 1h0m0s, want %s", bus.KnownSessionBucketMaxAge)}, nil},
 		{"another storage", bus.CIStateBucket, func(config *natsgo.KeyValueConfig) { config.Storage = natsgo.MemoryStorage }, nil,
-			1, []string{"storage Memory, want File"}},
+			1, []string{"storage Memory, want File"}, nil},
 		{"an old discard policy and no direct get", bus.InterestBucket, nil, func(config *natsgo.StreamConfig) { config.Discard, config.AllowDirect = natsgo.DiscardOld, false },
-			1, []string{"discard policy DiscardOld, want DiscardNew", "direct get false, want true"}},
+			1, []string{"discard policy DiscardOld, want DiscardNew", "direct get false, want true"}, nil},
 		{"the session bucket at the age ENVOY_SESSION_MAX_AGE set", bus.SessionBucket, func(config *natsgo.KeyValueConfig) { config.TTL = 2 * time.Hour }, nil,
-			0, []string{bus.SessionBucket + " present at 1 copies"}},
+			0, []string{bus.SessionBucket + " present at 1 copies"}, nil},
+		{"a subject beside its own", bus.RoleClaimBucket, nil, func(config *natsgo.StreamConfig) { config.Subjects = append(config.Subjects, "envoy_extra.>") },
+			1, []string{"subjects $KV." + bus.RoleClaimBucket + ".>,envoy_extra.>, want $KV." + bus.RoleClaimBucket + ".>"}, nil},
+		{"a stream it sources", bus.KnownSessionBucket, nil, func(config *natsgo.StreamConfig) { config.Sources = []*natsgo.StreamSource{{Name: "envoy_origin"}} },
+			1, []string{"sources envoy_origin, want none"}, nil},
+		{"a republish of its subjects", bus.CIStateBucket, nil, func(config *natsgo.StreamConfig) {
+			config.RePublish = &natsgo.RePublish{Source: "$KV." + bus.CIStateBucket + ".>", Destination: "envoy_republished.>"}
+		}, 1, []string{"republish $KV." + bus.CIStateBucket + ".> to envoy_republished.>, want none"}, nil},
+		{"a mirror in place of its subjects", bus.InterestBucket, nil, nil,
+			1, []string{"mirror envoy_origin, want none", "subjects none, want $KV." + bus.InterestBucket + ".>"},
+			func(js natsgo.JetStreamContext, bucket string) error {
+				if _, err := js.AddStream(&natsgo.StreamConfig{Name: "envoy_origin", Subjects: []string{"envoy_origin.>"}}); err != nil {
+					return err
+				}
+				stream, _ := bus.CopiedBucketStreamConfig(bucket, 1, "2.15.1")
+				stream.Subjects, stream.Mirror = nil, &natsgo.StreamSource{Name: "envoy_origin"}
+				_, err := js.AddStream(&stream)
+				return err
+			}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			uri, js := server(t)
@@ -202,7 +226,11 @@ func TestACreateOfABucketThereWithAnotherConfigurationNamesIt(t *testing.T) {
 			if c.change != nil {
 				c.change(&config)
 			}
-			if _, err := js.CreateKeyValue(&config); err != nil {
+			if c.stream != nil {
+				if err := c.stream(js, c.bucket); err != nil {
+					t.Fatalf("make the bucket's stream: %v", err)
+				}
+			} else if _, err := js.CreateKeyValue(&config); err != nil {
 				t.Fatalf("create the bucket: %v", err)
 			}
 			if c.update != nil {
@@ -516,4 +544,112 @@ func TestTheJobsCreateRunsAsAUserSubscribingOnlyInboxes(t *testing.T) {
 	if want := bus.KnownSessionBucket + " present at 3 copies with its own configuration: left as it is\n"; code != 0 || stdout != want {
 		t.Fatalf("the Job's command again = %d, want 0 and %q\nstdout: %s\nstderr: %s", code, want, stdout, stderr)
 	}
+}
+
+// An interrupt in a create's refusal wait ends the run at once: exit 1 naming the interrupt, the
+// cause main's signal context carries, and no STREAM.CREATE reaches the hub, though the hub grants
+// the create right after the interrupt, before the wait would send it again. The gke user's grant
+// holds every subject of the known-session bucket but its create, so the run's read finds the
+// bucket absent and its create is refused; once the run says so, the run's context is cancelled
+// and the hub reloads with the whole grant. The wait is the release's, every 5 s within 180 s. At
+// 6e52228ad6 the run took no context: it slept the wait out, sent the create again, which the hub
+// then granted, and exited 0 having made the bucket.
+func TestACreateInterruptedInItsRefusalWaitCreatesNothing(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	seed, public := testnats.User(t)
+	_, watcher := testnats.User(t)
+	stream := "KV_" + bus.KnownSessionBucket
+	server, uri := testnats.StartConfig(t, gkeUsers(t, public, watcher, "$JS.API.STREAM.CREATE."+stream), []string{"-js"}, true)
+	conn, js := jetStream(t, uri)
+	requests := watchStreamRequests(t, conn)
+	t.Setenv("NATS_NKEY_SEED", seed)
+
+	ctx, interrupt := context.WithCancelCause(context.Background())
+	defer interrupt(nil)
+	stdout, stderr := &syncBuffer{}, &syncBuffer{}
+	done := make(chan int, 1)
+	go func() {
+		run, client := noProof(t)
+		done <- command(ctx, []string{"create", "--inbox-prefix", "_INBOX.", "--bucket", bus.KnownSessionBucket, "--nats", uri}, stdout, stderr, run, client)
+	}()
+	awaitText(t, stderr, "create "+stream+": refused under this user's grant")
+	interrupted := time.Now()
+	interrupt(errors.New("interrupt signal received"))
+	if err := server.Reload(t, gkeUsers(t, public, watcher)); err != nil {
+		t.Fatalf("reload with the whole grant: %v", err)
+	}
+	select {
+	case code := <-done:
+		took := time.Since(interrupted)
+		want := "envoy-infra buckets create: stopped: interrupt signal received; nothing more is created"
+		if code != 1 || !strings.Contains(stderr.String(), want) || stdout.String() != "" || took > 2*time.Second {
+			t.Fatalf("the interrupted run = %d after %s, want 1 within 2 s naming %q\nstdout: %s\nstderr: %s", code, took.Round(time.Millisecond), want, stdout, stderr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the run had not ended 30 s after the interrupt\nstderr: %s", stderr)
+	}
+	if got := requests.take(t); slices.Contains(got, "CREATE."+stream) {
+		t.Fatalf("the interrupted run sent %v, want no create", got)
+	}
+	if _, err := js.StreamInfo(stream); !errors.Is(err, natsgo.ErrStreamNotFound) {
+		t.Fatalf("the interrupted run made %s: %v", stream, err)
+	}
+}
+
+// A request refused through a whole wait is reported once: by the run's one line naming the
+// refusal on standard error, and by no line of the connection's, where the bus logs each refused
+// message at ERROR ("envoy nats async error", options' async error callback). The read of the
+// known-session bucket is refused for the whole of a 2 s wait, sent again every 100 ms, so about 20
+// times, and the run fails naming the refusal. The control is a client of the same user without
+// bus.WithPublishRefusalsUnlogged, whose one refused read the recorder holds at ERROR, so the count
+// below sees such a line where one is written. At 6e52228ad6 the run left one such line for each
+// refused send; at the release's 180 s wait, every 5 s, that is a line for each of 36 sends.
+func TestARefusalWaitLogsTheRefusalOnce(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	shortenRefusalWait(t, 2*time.Second, 100*time.Millisecond)
+	seed, public := testnats.User(t)
+	_, watcher := testnats.User(t)
+	stream := "KV_" + bus.KnownSessionBucket
+	_, uri := testnats.StartConfig(t, gkeUsers(t, public, watcher, stream, "$KV."+bus.KnownSessionBucket+"."), []string{"-js"}, true)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	logs := recordResends(t)
+	refusal := `Permissions Violation for Publish to "$JS.API.STREAM.INFO.` + stream + `"`
+	logged := func() int {
+		count := 0
+		for _, record := range logs.Records() {
+			record.Attrs(func(attr slog.Attr) bool {
+				if record.Level >= slog.LevelError && attr.Key == "error" && strings.Contains(attr.Value.String(), refusal) {
+					count++
+				}
+				return true
+			})
+		}
+		return count
+	}
+
+	code, stdout, stderr := runCreate(t, "create", "--inbox-prefix", "_INBOX.", "--bucket", bus.KnownSessionBucket, "--nats", uri)
+	if code != 1 || !strings.Contains(stderr, "envoy-infra buckets: read "+bus.KnownSessionBucket+": ") || !strings.Contains(stderr, refusal) || stdout != "" {
+		t.Fatalf("a create refused through its wait = %d, want 1 naming the refusal\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	if lines := strings.Count(stderr, "refused under this user's grant"); lines != 1 {
+		t.Errorf("the run wrote %d lines saying its read is refused, want 1\n%s", lines, stderr)
+	}
+	if lines := logged(); lines != 0 {
+		t.Fatalf("the run's connection logged %d refusals of its read at ERROR over the wait, want none", lines)
+	}
+
+	client, err := bus.Connect([]string{uri})
+	if err != nil {
+		t.Fatalf("control: connect as the gke user: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.JS().StreamInfo(stream); !errors.Is(err, bus.ErrPublishDenied) {
+		t.Fatalf("control: the read without the option = %v, want %v", err, bus.ErrPublishDenied)
+	}
+	for deadline := time.Now().Add(5 * time.Second); logged() == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("control: a client without bus.WithPublishRefusalsUnlogged logged no refusal of its read at ERROR in 5 s")
+		}
+	}
+	t.Logf("control: a client without the option logged %d refusal of its one read at ERROR", logged())
 }
