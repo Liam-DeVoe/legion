@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // releaseStart and releaseBound are the start and the bound every release of this file records.
@@ -245,6 +246,59 @@ func TestStartProjectReleaseRefusesAReleaseItCouldNotCarryOut(t *testing.T) {
 	}
 	if _, found, err := st.ReadProjectRelease(ctx, "legion"); err != nil || found {
 		t.Fatalf("ReadProjectRelease after two refusals = %t, %v; want no release", found, err)
+	}
+}
+
+// A release's start runs until one run commits (transactUntilCommitted). A run whose commit landed
+// while its reply was lost, and whose outcome the store could not say until it answered again,
+// answers nil once the store says it committed, with that run's record, take-over and stop set,
+// and its record is the project's one. The negative control is plain Transact: the start answers
+// ErrCommitOutcomeUnknown, on which its caller clears its mark beside a record that runs.
+func TestAProjectReleaseStartWhoseCommitReplyIsLostAnswersTheRunThatCommitted(t *testing.T) {
+	st := migratedStore(t)
+	token := seedProjectClaim(t, st, "legion", "LEGION-208", claim.RoleImplementer, supervise.StateWorking, "")
+	teardown := queueReleaseRow(t, st, "LEGION-210", "issue_release", `{"tree":"LEGION-208","generation":3,"treeGeneration":1}`)
+	markIdleRelease(t, st, "legion", "LEGION-210", releaseKindUnowned, teardown, teardown)
+	proxied, fault := testdb.CommitFaults(t, st.Pool().Config().ConnString())
+	faulted, err := Open(context.Background(), proxied)
+	if err != nil {
+		t.Fatalf("open the store through the fault proxy: %v", err)
+	}
+	t.Cleanup(faulted.Close)
+
+	// The proxy refuses every connection once the reply is lost, so the commit's own read of the
+	// outcome fails, and passes them again two seconds later, while the start still waits.
+	fired := fault.Cut("insert into project_releases", testdb.CutAfterCommitRefusing)
+	go func() {
+		select {
+		case <-fired:
+			time.Sleep(2 * time.Second)
+		case <-time.After(30 * time.Second):
+		}
+		fault.Refuse(false)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	release, takenOver, stop, err := faulted.StartProjectRelease(ctx, "legion", releaseStart, releaseBound)
+	testdb.Met(t, fired)
+	if err != nil {
+		t.Fatalf("the start whose commit landed and whose reply was lost = %v, want nil", err)
+	}
+	read, found, err := st.ReadProjectRelease(context.Background(), "legion")
+	if err != nil || !found || read.ID != release.ID || !read.Runs() {
+		t.Fatalf("the project's newest release = %+v, %t, %v; want the running release %d the start answered", read, found, err, release.ID)
+	}
+	var records int
+	if err := st.Pool().QueryRow(context.Background(), `select count(*) from project_releases where project = 'legion'`).Scan(&records); err != nil || records != 1 {
+		t.Fatalf("the project holds %d release records (%v), want the one of the run that committed", records, err)
+	}
+	if len(takenOver) != 1 || takenOver[0].Issue != "LEGION-210" || len(takenOver[0].Suspended) != 0 {
+		t.Fatalf("taken over %+v, want the release of LEGION-210's pod, which stopped no role", takenOver)
+	}
+	want := ProjectReleaseClaim{Token: token, Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer,
+		Session: "ses-" + string(token), State: supervise.StateWorking}
+	if len(stop) != 1 || stop[0] != want {
+		t.Fatalf("stop set = %+v, want %+v alone", stop, want)
 	}
 }
 

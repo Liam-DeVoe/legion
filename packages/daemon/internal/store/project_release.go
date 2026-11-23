@@ -121,6 +121,18 @@ type ProjectReleaseClaim struct {
 // pause commit in a line: a pause that committed first refuses this release with a
 // *ProjectPausedError before anything is written, and a pause that comes after it reads this
 // release's record and is refused (ProjectReleasingError).
+//
+// It runs until one run commits (transactUntilCommitted), as a write whose caller must know its
+// outcome does (TakeWorkspaceBundleForRestore): the caller runs the release, and arms the
+// backstops of the releases taken over, only on this answer. Each run writes and reads everything
+// again, so what it answers is the committed run's. What it still answers ErrCommitOutcomeUnknown
+// for is a run whose outcome the store has not said when ctx ends, or when the pool closes first.
+// The caller then clears its mark and runs nothing, while the record may have committed. A record
+// that did is the project's newest and Runs with no release running it: a pause is refused
+// (ProjectReleasingError) until the operator's retry runs a release whose finish leaves the newest
+// record finished; an idle release is refused (errProjectReleaseRunning) until the next boot ends
+// the record (EndProjectReleasesAtBoot), as after any project release; and the claims the idle
+// releases it took over had stopped get no backstop.
 func (s *Store) StartProjectRelease(ctx context.Context, project string, startedAt, boundAt time.Time) (ProjectRelease, []TakenOverIdleRelease, []ProjectReleaseClaim, error) {
 	if project == "" {
 		return ProjectRelease{}, nil, nil, errors.New("a project release needs its project")
@@ -134,7 +146,7 @@ func (s *Store) StartProjectRelease(ctx context.Context, project string, started
 		takenOver []TakenOverIdleRelease
 		stop      []ProjectReleaseClaim
 	)
-	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+	err := transactUntilCommitted(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		takenOver, stop = nil, nil
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err

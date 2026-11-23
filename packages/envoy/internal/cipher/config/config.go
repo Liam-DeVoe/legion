@@ -1355,10 +1355,12 @@ func AccountIssuers(setting, text string, names []string, google bool, issuers [
 	switch {
 	case google && names != nil:
 		return nil, fmt.Errorf("%s names an issuer on a Google account, got %q: Google issues that account's token, not an issuer of BROKER_K8S_OIDC_ISSUER, so name none", setting, text)
-	case google || len(issuers) == 0 && names == nil:
+	case google:
+		return nil, nil
+	case len(issuers) == 0 && names == nil:
 		return nil, nil
 	case len(issuers) == 0:
-		return nil, fmt.Errorf("%s names an issuer, got %q, but BROKER_K8S_OIDC_ISSUER is unset, so no issuer has that name: set it as <name>=<issuer URL> entries, or name none here", setting, text)
+		return nil, fmt.Errorf("%s names an issuer, got %q, but BROKER_K8S_OIDC_ISSUER is unset, so no issuer has that name: set it as <name>=<issuer URL> entries", setting, text)
 	case names == nil:
 		return []string{issuers[0].Name}, nil
 	case issuers[0].Name == "":

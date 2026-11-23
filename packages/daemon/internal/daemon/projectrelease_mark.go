@@ -118,12 +118,16 @@ func (r *projectRelease) finished() bool {
 	return r != nil && r.finishedActs.Load()
 }
 
-// unmark clears the mark of a release whose record did not commit, the one way the mark is
-// cleared before the process ends: nothing of that release ran, so nothing of the project is
-// held for it. A task a machine held back while the mark stood is sent at once (unmarked) rather
-// than at the claim's next event; a held outbox row runs at its next read, within
-// releaseHoldSpacing, a launch the launch check refused at its probe-interval retry, and the
-// periodic work at its next tick.
+// unmark clears the mark of a release whose start answered an error, the one way the mark is
+// cleared before the process ends: nothing of that release ran, so the mark holds nothing of the
+// project for it. Its record did not commit, but for one case: a commit whose outcome the store
+// had still not said when the start's context ended (store.ErrCommitOutcomeUnknown). Such a record
+// may have committed, and then, with no release running it, it refuses every pause until the
+// operator's retry runs a release whose finish leaves the newest record finished, and every idle
+// release until the next boot ends it (store.StartProjectRelease). A task a machine held back
+// while the mark stood is sent at once (unmarked) rather than at the claim's next event; a held
+// outbox row runs at its next read, within releaseHoldSpacing, a launch the launch check refused
+// at its probe-interval retry, and the periodic work at its next tick.
 func (r *projectRelease) unmark() {
 	r.hook.Store(nil)
 	r.marked.Store(false)
