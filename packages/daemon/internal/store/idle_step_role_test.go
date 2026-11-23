@@ -13,8 +13,8 @@ import (
 )
 
 // The idle view reads the role that runs the issue's step as the issue's own record reads it
-// (record.Issue.StepRole): store and record import neither each other, so the view writes the
-// record's subquery a second time (issueColumns), and this holds the two to one answer. An issue
+// (record.Issue.StepRole): the view and the record select one subquery (plansql.StepRole) over
+// their own aliases, and this holds the two to one answer. An issue
 // whose task stands at step 2 of `implementer checker` reads checker in both, one at step 1 reads
 // implementer in both, and an issue with no plan rows reads none in both.
 func TestTheIdleViewAndTheIssueReadOneRunningRole(t *testing.T) {

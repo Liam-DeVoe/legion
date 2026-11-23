@@ -14,8 +14,8 @@ import (
 )
 
 // The idle view reads the running role of an issue (pods.IdleView.PlaceRole) with the subquery the
-// issue's own read states (record.Issue.PlaceRole), written here a second time since store and
-// record import neither each other. At every place of every plan of plan.RetroAgent's table the
+// issue's own read states (record.Issue.PlaceRole), one subquery (plansql.PlaceRole) over each
+// read's alias. At every place of every plan of record.PlaceWorker's table the
 // two reads give one role: the architect where the agent at the place is the owner, the step's
 // role at a step, and the role of the retro's agent at the retro.
 func TestTheIdleViewAndTheIssueReadOnePlaceRole(t *testing.T) {
