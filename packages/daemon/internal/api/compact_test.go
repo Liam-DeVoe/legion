@@ -597,7 +597,8 @@ func TestACompactionIsRefusedForAClaimWhoseLaunchIsInFlight(t *testing.T) {
 }
 
 // A role the deployment runs on Claude Code has no Oh My Pi session to compact, and the daemon
-// knows which role runs on which harness from its own configuration (Options.Backend).
+// reads which harness a claim runs on as its launch does (Options.Backend): the role the plan of
+// the claim's issue defines runs on Oh My Pi, and every other role on what `worker_backends` names.
 func TestACompactionIsRefusedForAClaudeCodeClaim(t *testing.T) {
 	for _, door := range compactDoors() {
 		t.Run(door.name, func(t *testing.T) {

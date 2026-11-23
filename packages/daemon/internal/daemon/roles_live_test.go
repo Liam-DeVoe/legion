@@ -302,7 +302,7 @@ func (l *rolesLive) ownerListsChecker() {
 		t.Fatalf("compose the launch prompt of %s: %v", architect, err)
 	}
 	const want = "checker (testing)"
-	at := strings.Index(composed, "The roles of this deployment")
+	at := strings.Index(composed, "The roles this deployment defines")
 	if at < 0 || !strings.Contains(composed, want) {
 		t.Fatalf("the architect's launch spec of %s, composed, does not hold %q:\n%s", l.key, want, composed)
 	}

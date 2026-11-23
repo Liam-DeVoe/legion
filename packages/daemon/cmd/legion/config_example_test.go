@@ -50,18 +50,22 @@ func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
 // (config.Config.ListedModels), on one line right after the project lines: the file's `models`,
 // then each model a role of `roles` names that `models` lacks, in the file's order. It says `none`
 // where there is no such model. A deployment whose only model is a role's prints that model, the
-// list the owner is told and register_plan judges a plan by.
+// list the owner is told and register_plan judges a plan by. A model `models` names twice is
+// listed once, and the check passes, printing the loader's warning right after its OK line, as
+// boot logs it.
 func TestCheckConfigPrintsTheListedModels(t *testing.T) {
 	if !strings.Contains(shippedExampleCheckOK, defaultStepsTodayLine("WIDGETS")+modelsNoneLine) {
 		t.Fatalf("the shipped example's check prints %q, want the models line right after the project lines", shippedExampleCheckOK)
 	}
 	const checker = "roles: {checker: {type: testing, prompt_file: checker.md, model: m-two}}\n"
 	const checkerLine = "roles.checker: type testing, model m-two, App review, prompt <dir>/checker.md\n"
-	for _, tc := range []struct{ name, key, line, roles string }{
+	for _, tc := range []struct{ name, key, line, roles, warning string }{
 		{name: "two models", key: "models: [m-one, m-two]\n", line: "models: m-one, m-two\n"},
 		{name: "no key", line: modelsNoneLine},
 		{name: "a role's model alone", key: checker, line: "models: m-two\n", roles: checkerLine},
 		{name: "the key, then a role's model", key: "models: [m-one]\n" + checker, line: "models: m-one, m-two\n", roles: checkerLine},
+		{name: "a model named twice", key: "models: [m-one, m-one]\n", line: "models: m-one\n",
+			warning: "models[1] names m-one, which models[0] names already: this release lists it once, and the next release refuses it; remove it from legion.yaml\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := stageShippedExample(t, func(example string) string { return example + "\n" + tc.key })
@@ -72,6 +76,8 @@ func TestCheckConfigPrintsTheListedModels(t *testing.T) {
 			var out, errb bytes.Buffer
 			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
 			want := strings.Replace(shippedExampleCheckOK, modelsNoneLine, tc.line+strings.ReplaceAll(tc.roles, "<dir>", dir), 1)
+			ok, rest, _ := strings.Cut(want, "\n")
+			want = ok + "\n" + tc.warning + rest
 			if code != 0 || out.String() != want {
 				t.Fatalf("legion config check with %q = %d, stdout %q, stderr %q; want 0 and %q", tc.key, code, out.String(), errb.String(), want)
 			}

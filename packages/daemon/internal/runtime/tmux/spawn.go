@@ -689,10 +689,17 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 				"claim", spec.Claim, "why", err)
 		}
 	}
+	// A role the plan of the claim's issue defines takes none of the settings the deployment keys
+	// by its name (runtime.SpawnSpec.PlanRole), so its pane names none of the overlays
+	// role_config_files names for a deployment role of that name.
+	roleFiles := r.roleConfigFiles[spec.Role]
+	if spec.PlanRole {
+		roleFiles = nil
+	}
 	pairs := panePairs(spec, PaneInputs{
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
-		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
+		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: roleFiles,
 		Variants: spec.Variants, LeakCheck: leakCheck, LeakCheckManifestSHA256: r.leakCheckManifestSHA256,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
@@ -723,7 +730,8 @@ type launchGitHubCredential struct {
 // its default the first owner (runtime.GitHubCredential).
 //
 // It writes nothing: a mint is a network call, made before the launch lock, and the claim's
-// directories are written only after the refusal (writeGitHubCredential).
+// directories are written only after the refusal (writeGitHubCredential). It is one claim's one
+// ask, so it builds no walk's memo (appauth.ClaimBundle).
 func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSpec) (launchGitHubCredential, error) {
 	if r.gitHubCredential == nil {
 		return launchGitHubCredential{}, nil
@@ -739,7 +747,7 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	}
 	var bundle ghconfig.Bundle
 	if err == nil {
-		bundle, err = r.paneBundle(ctx, appauth.NewBundles(r.gitHubCredential, r.roleApps), spec.Issue, role, spec.Repository, "")
+		bundle, err = appauth.ClaimBundle(ctx, r.gitHubCredential, r.controllerCredential, spec.Issue, role, spec.Repository, "")
 	}
 	noOwner := spec.Role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner)
 	if err != nil && !noOwner {

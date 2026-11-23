@@ -74,8 +74,9 @@ func KeyOfProject(project, key string) bool {
 // so the write fails instead, and the caller's transaction rolls back.
 var ErrKeyOfAnotherProject = errors.New("the outbox row is keyed by another project's issue, whose rows only that project's daemon runs")
 
-// IsRole reports whether a claim can be on role: one of Legion's six, or a role the deployment
-// defines, a name of `^[a-z][a-z0-9-]{0,31}$`. The controller is none: its claim holds no issue.
+// IsRole reports whether a claim can be on role: one of Legion's six, a role the deployment
+// defines or a role the plan of the claim's issue defines, a name of `^[a-z][a-z0-9-]{0,31}$`. The
+// controller is none: its claim holds no issue.
 func IsRole(role Role) bool {
 	return role != RoleController && roleName.MatchString(string(role))
 }

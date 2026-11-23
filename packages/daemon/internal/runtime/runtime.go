@@ -489,10 +489,14 @@ func (k Known) Validate() error {
 // which each runtime sets itself): the claim's own issue when the project names its repository in
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
 // project does not name, for a launch with no repository, and for the controller, which works
-// neither. Backend is the harness the process runs (`worker_backends`,
-// Backends); "" is Oh My Pi (Of). Model is the model the harness runs, the `model` the settings
-// give a role of the deployment (`roles.<name>.model`); "" is the profile's own: Oh My Pi's
-// `@default` role, and no model named to Claude Code.
+// neither. Backend is the harness the process runs (`worker_backends`, or Oh My Pi for a role
+// the plan of Issue defines; Backends); "" is Oh My Pi (Of). Model is the model the harness runs,
+// the `model` the settings give a role of the deployment (`roles.<name>.model`), or the `model` a
+// role of the plan of Issue names; "" is the profile's own: Oh My Pi's
+// `@default` role, and no model named to Claude Code. PlanRole is whether Role is a role the plan
+// in force of Issue defines, which the plan's definition decides even where the deployment
+// defines a role of that name: such a launch takes none of the settings the deployment keys by
+// the role's name, so a runtime names none of the overlays `role_config_files` names for it.
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string
@@ -514,6 +518,7 @@ type SpawnSpec struct {
 	IssueTrailer      string
 	Backend           Backend
 	Model             string
+	PlanRole          bool
 }
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the

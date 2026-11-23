@@ -309,8 +309,8 @@ function stateSummary(state: LegionState): string {
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
-    // Each worker of the issue's map: Legion's six in their workflow order, then each role of the
-    // deployment (contract 221) in the map's order.
+    // Each worker of the issue's map: Legion's six in their workflow order, then each other role,
+    // of the deployment (contract 221) or of the issue's plan, in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
@@ -541,7 +541,7 @@ export function createLegionTool(deps: {
         "where it has none, and the merge where the issue has a pull request. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
-        "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
+        "(PLAN_REFUSED, which also refuses a version that changes a running task or a role its steps name: stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
         "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
@@ -717,7 +717,7 @@ export function createLegionTool(deps: {
             const role = parameters.role;
             if (typeof role !== "string" || !isStepRole(role)) {
               throw new Error(
-                `${operation} requires role ${LEGION_ROLES.join(", ")} or a role of the deployment`
+                `${operation} requires role ${LEGION_ROLES.join(", ")}, a role of the deployment or a role of the issue's plan`
               );
             }
             const { grantId } = await controllerGrant(active.sessionID);

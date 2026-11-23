@@ -3284,7 +3284,8 @@ func TestARecordedSessionIsHeldToItsHarnesssRule(t *testing.T) {
 	}
 }
 
-// Every Oh My Pi launch names the model the pod's overlay puts on the `default` role, resuming or
+// Every Oh My Pi launch whose spec names no model names the model the pod's overlay puts on the
+// `default` role (a role of the deployment or of the issue's plan with a `model` names that one), resuming or
 // not: @default is Oh My Pi's own name for that role, and without the flag a resumed session runs
 // the session file's recorded model. From Oh My Pi 18.18.6 of the fork
 // (upstream oh-my-pi #18534), a resumed launch under this role alias appends a replacement

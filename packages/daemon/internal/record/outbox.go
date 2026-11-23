@@ -877,7 +877,7 @@ type CatchUpGate struct {
 }
 
 // CatchUpIssue is one issue of the tree as a catch-up lists it. StepRole is the role that runs the
-// issue's step where it stands at step (Issue.StepRole), a role the deployment defines, which the
+// issue's step where it stands at step (Issue.StepRole), a role the deployment or the issue's plan defines, which the
 // phase alone does not name; it is absent at every other phase.
 type CatchUpIssue struct {
 	Key      string      `json:"key"`
@@ -1834,7 +1834,8 @@ func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfir
 type MergeForwardStep string
 
 const (
-	// MergeForwardAsk asks the implementer to merge the base forward onto the head and push.
+	// MergeForwardAsk asks the agent of the task's step that does its implementation work to merge
+	// the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
 	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
 	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
@@ -1860,11 +1861,13 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 
 // MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
 // one list the workflow addresses the hold and the landed by (workflow's mergeForward and
-// mergeForwardLanded) and a row is validated against (validateOutboxPayload). The hold and the
-// landed also go to a role the deployment defines, the worker of a step that runs as step, which
-// reads the head as the tester and the reviewer do.
+// mergeForwardLanded) and a row is validated against (validateOutboxPayload). The ask, the hold
+// and the landed also go to a role the deployment or the plan defines: the ask to the agent of a
+// step of the type implementation whose role has another name than implementer (workflow's
+// implementationAgent), which a role's name alone does not tell, and the hold and the landed to
+// the worker of a step that runs as step, which reads the head as the tester and the reviewer do.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
-	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsRole(role) && !claim.IsBuiltin(role) {
+	if (step == MergeForwardAsk || step == MergeForwardHold || step == MergeForwardLanded) && claim.IsRole(role) && !claim.IsBuiltin(role) {
 		return true
 	}
 	return slices.Contains(mergeForwardRoles[step], role)
@@ -2568,7 +2571,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
-			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer or the merger, each of the three also to a role the deployment or the plan defines, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		if err := namedClaim(value.Claim); err != nil {
 			return err

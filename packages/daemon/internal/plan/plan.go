@@ -19,8 +19,9 @@ import (
 )
 
 // Type is the type of work a role does. Legion records it on each step and reads it for the
-// return of a failed step's work, the commit a review step is given and the retro, and for
-// nothing else.
+// return of a failed step's work, the commit a review step is given and the retro, and, for a
+// role a plan defines, the App the role acts as (the implement App for implementation, the review
+// App for every other type or none), and for nothing else.
 type Type string
 
 // The types Legion's list starts with; a deployment adds its own in its `role_types`.
@@ -134,7 +135,8 @@ type PlanRole struct {
 }
 
 // planRoleBackend is the harness of every role a plan defines: a role of a plan runs on Oh My Pi
-// (runtime.BackendOmp's word), and no setting changes it.
+// (runtime.BackendOmp's word), and no setting changes it. It is also the harness BuiltinRoles
+// gives Legion's own roles, which the settings can change (config.Config.Deployment).
 const planRoleBackend = "omp"
 
 // Plan is one version of an owner's plan document as Legion reads it.
@@ -159,18 +161,27 @@ type Deployment struct {
 	Owner RoleDef
 }
 
-// RolesOf is the roles the steps of p can name: each role of d, then each role p defines that d
-// does not, as a RoleDef of its name, its type and its model on Oh My Pi. It is the one place that
-// answers which role a step names, and of which type, model and harness. The answer is a fresh
-// map, so a caller that changes it leaves d's roles whole.
+// RolesOf is the roles the steps of p can name, each as a RoleDef of its name, type, model and
+// harness: Legion's own roles of d (BuiltinRoles) first, then each role p defines, of its type and
+// its model on Oh My Pi, then each other role of d. A role p defines is read before a role of d of
+// its name, as the daemon reads a role the plan in force of an issue defines before the
+// deployment's role of that name for a claim of that issue (its specs.rolePromptPaths and
+// roleBackends, appauth.AppRoleFor). Validate refuses a plan that defines a role of d's name or
+// of Legion's (V2), so the order decides nothing for a version that is judged. It holds for a
+// version taken after the deployment took the name of one of its roles. RolesOf answers for a
+// version as it is judged or taken, and the daemon's readers answer for one claim. The answer is
+// a fresh map, so a caller that changes it leaves d's roles whole.
 func RolesOf(p Plan, d Deployment) map[string]RoleDef {
 	roles := make(map[string]RoleDef, len(d.Roles)+len(p.Roles))
 	for name, role := range d.Roles {
 		roles[name] = role
 	}
+	legion := BuiltinRoles()
 	for _, role := range p.Roles {
-		if _, ok := roles[role.Name]; ok {
-			continue
+		if _, deployed := roles[role.Name]; deployed {
+			if _, own := legion[role.Name]; own {
+				continue
+			}
 		}
 		roles[role.Name] = RoleDef{Name: role.Name, Type: role.Type, Model: role.Model, Backend: planRoleBackend}
 	}
@@ -183,9 +194,12 @@ type Refusal struct{ Task, Reason string }
 
 // BuiltinRoles is Legion's own roles of a step, each with its type: the planner, the implementer,
 // the tester, the reviewer and acceptance, a reading of the task's work by the owner
-// (`acceptance:owner`) or by a fresh agent of the role acceptance (`acceptance` with no key). The
-// architect, the merger and the controller are no roles of a step. The answer is a fresh map, so a
-// caller that changes it leaves the next caller's answer whole.
+// (`acceptance:owner`) or by a fresh agent of the role acceptance (`acceptance` with no key). Each
+// runs on Oh My Pi, the harness of a role the settings put on no other (config.Config.Deployment
+// gives each the harness `worker_backends` names), so a deployment a caller builds of them alone,
+// as the API's and the workflow's defaults do, judges a key of a Legion role and a role of a plan
+// as one harness. The architect, the merger and the controller are no roles of a step. The answer
+// is a fresh map, so a caller that changes it leaves the next caller's answer whole.
 func BuiltinRoles() map[string]RoleDef {
 	roles := make(map[string]RoleDef, len(builtinRoles))
 	for _, role := range builtinRoles {
@@ -197,11 +211,11 @@ func BuiltinRoles() map[string]RoleDef {
 // builtinRoles is BuiltinRoles, listed in the order of today's line. No check reads the order: a
 // task names its steps in any order (Supported).
 var builtinRoles = []RoleDef{
-	{Name: "planner", Type: TypePlanning},
-	{Name: "implementer", Type: TypeImplementation},
-	{Name: "tester", Type: TypeTesting},
-	{Name: "reviewer", Type: TypeReview},
-	{Name: "acceptance", Type: TypeReview},
+	{Name: "planner", Type: TypePlanning, Backend: planRoleBackend},
+	{Name: "implementer", Type: TypeImplementation, Backend: planRoleBackend},
+	{Name: "tester", Type: TypeTesting, Backend: planRoleBackend},
+	{Name: "reviewer", Type: TypeReview, Backend: planRoleBackend},
+	{Name: "acceptance", Type: TypeReview, Backend: planRoleBackend},
 }
 
 // LegionNames is the one list of the names that no role of a plan takes, since Legion holds each
@@ -219,7 +233,8 @@ var legionNames = []string{"architect", "planner", "implementer", "tester", "rev
 // RunsAs is the phase a step of role runs as: each of Legion's five roles of a step its own phase,
 // and every other role, one the deployment or the plan defines, the phase step, where the role
 // that works the step is the one the plan names for it. It reads the role's name and nothing
-// else, never its type: a role of the deployment whose type is review still runs as step.
+// else, never its type: a role of the deployment or of the plan whose type is review still runs
+// as step.
 func RunsAs(role string) phase.Phase {
 	switch role {
 	case "planner":

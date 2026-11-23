@@ -138,7 +138,8 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 // render holds no directory for the default owner its Secret records.
 //
 // The stand-in answers by App role and repository and by nothing else, as the daemon's own
-// function does (appauth.GitHubCredential): a bundle is that pair, which is why the walk builds
+// function does (appauth.GitHubCredential): a bundle of Legion's roles is that pair (a role that is
+// none of Legion's is held under its own name too, appauth's bundleKey), which is why the walk builds
 // one per pair and hands it to every slot that holds it (appauth.Bundles). So the implement App's
 // failure is the implementer's and the merger's, and the review App's new lease is the four
 // roles' that run as it; the controller's bundle comes from the function that answers by owner,
@@ -234,7 +235,8 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 }
 
 // One tick builds one gh bundle per App role and repository, however many of the pod's roles
-// run as that App (appauth.Bundles): a bundle is that pair and no more, and each build opens
+// run as that App (appauth.Bundles): a bundle of Legion's roles is that pair and no more (a role
+// that is none of Legion's is held under its own name too), and each build opens
 // with a live read of every page of its App's installations under a fresh JWT
 // (appauth.GitHubCredential), so a six-role issue pod asking for six cost four of those reads
 // for nothing. The memo is the tick's own: the next tick builds afresh, which is what a

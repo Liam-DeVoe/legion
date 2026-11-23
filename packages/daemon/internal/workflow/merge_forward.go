@@ -17,19 +17,20 @@ import (
 // mergeForward is the daemon's act on a confirmed conflict that R0 found a reason to act on, why
 // (dispatch://INFRA-4374 R0, R1; classify.ConflictNeedsMerge): the issue keeps the phase it stands
 // in (record.StandsAt), no phase entry starts and no supervise row is written, so an issue past
-// its review takes no admission slot for the merge, and the agent of the task's last step of the
-// type implementation before the place the issue stands at (the owner, where that step's key is
-// owner; the implementer, for a run with no plan rows) is asked, on its own topic, to merge the
-// base forward onto the head and push (record.MergeForwardAsk). Outside implementing it also tells
-// the worker of that phase, when that is the tester, the reviewer or
-// the merger, to stop writing the workspace the roles share while the merge runs
-// (record.MergeForwardHold), and the architect that owns the issue one checks-red notice whose
-// phase is the phase the issue stays in and whose reason names the head, the base, why and that
-// the issue stays in its phase; the outbox routes that notice to the owning architect, as every
-// notice of the issue but an owner-step is routed. In implementing only the ask goes: the
-// implementer's own
-// assignment and its completion stand, and the architect is told nothing, since the work the
-// conflict needs is already where the issue stands.
+// its review takes no admission slot for the merge, and the agent of the task's step that does its
+// implementation work where it stands (implementationAgent: the task's last step of the type
+// implementation before the place the issue stands at, whatever its role is called; the owner,
+// where that step's key is owner; the implementer, for a run with no plan rows) is asked, on its
+// claim's topic, to merge the base forward onto the head and push (record.MergeForwardAsk).
+// Outside implementing it also tells the worker of that phase, when that is the tester, the
+// reviewer, the merger or a role the deployment or the plan defines, to stop writing the workspace
+// the roles share while the merge runs (record.MergeForwardHold), unless that worker is the agent
+// asked, and the architect that owns the issue one checks-red notice whose phase is the phase the
+// issue stays in and whose reason names the head, the base, why and that the issue stays in its
+// phase; the outbox routes that notice to the owning architect, as every notice of the issue but an
+// owner-step is routed. In implementing only the ask goes: the implementer's own assignment and its
+// completion stand, and the architect is told nothing, since the work the conflict needs is already
+// where the issue stands.
 //
 // It asks once for each head: the record keeps the ask (record.PullRequest.MergeForward), and a
 // later confirmed read, or a move into another phase, at the head it names sends nothing. The one
@@ -58,7 +59,18 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	recipients := []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	var recipients []roleRecipient
+	asked, named, err := e.implementationAgent(ctx, tx, issue, w, at)
+	if err != nil {
+		return err
+	}
+	if named {
+		recipients = append(recipients, asked)
+	}
 	if worker := issue.RoleAt(at); at != phase.Implementing && record.MergeForwardReaches(record.MergeForwardHold, worker) {
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
 	}
@@ -67,12 +79,11 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return err
 	}
 	for _, to := range addressed {
-		role := to.role
 		step := record.MergeForwardHold
-		if role == claim.RoleImplementer {
+		if named && to.token == asked.claim {
 			step = record.MergeForwardAsk
 		}
-		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: role, Claim: to.token, Step: step, Head: pr.HeadSHA, Base: pr.Base,
+		if err := e.enqueue(ctx, tx, to.issue, record.MergeForwardMessage{Role: to.role, Claim: to.token, Step: step, Head: pr.HeadSHA, Base: pr.Base,
 			Phase: at, PullRequest: pr.Number, Why: why}); err != nil {
 			return err
 		}

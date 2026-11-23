@@ -1306,8 +1306,9 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // name can sort first and be taken; a controller works no repository, so its every directory is
 // read-only.
 //
-// The launch's roles run as two Apps and work the one repository, and a bundle is that pair and
-// nothing else, so the six roles of an issue pod are two bundles built once each (appauth.Bundles):
+// The launch's roles run as two Apps and work the one repository, and a bundle is held by its App
+// and that repository, and by its role for a role that is none of Legion's (appauth's bundleKey),
+// so the six roles of an issue pod are two bundles built once each (appauth.Bundles):
 // the launch opens with two live reads of the Apps' installations rather than six serial round
 // trips to GitHub before its first role starts.
 func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]ghconfig.Bundle, error) {
@@ -1327,7 +1328,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 		holders = map[slotKey]slotHolder{}
 	}
 	holders[slotKey{sandbox: l.name, slot: slotOf(l.spec.Claim)}] = slotHolder{token: l.spec.Claim, role: l.spec.Role, generation: l.spec.Generation}
-	memo := appauth.NewBundles(r.gitHubCredential, r.roleApps)
+	memo := appauth.NewBundles(r.gitHubCredential, r.controllerCredential, r.roleApps)
 	for i, slot := range l.roles {
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
@@ -1342,7 +1343,7 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 			}
 		}
 		if err == nil {
-			bundle, err = r.roleBundle(minting, memo, l.spec.Issue, holds, l.spec.Repository, "")
+			bundle, err = memo.Bundle(minting, l.spec.Issue, holds, l.spec.Repository, "")
 		}
 		role := slot
 		cancel()

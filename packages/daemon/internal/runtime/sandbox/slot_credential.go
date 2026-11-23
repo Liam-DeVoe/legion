@@ -11,7 +11,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -22,7 +21,7 @@ var _ runtime.SlotCredentials = (*Runtime)(nil)
 
 // WriteSlotCredential satisfies runtime.SlotCredentials: the one-slot write of the refresh
 // (writeSlotCredential) of the slot of token in its issue's live pod, minted for role's App on
-// the issue the slot's Secret records (roleBundle), so a role a plan defines holds the App of its
+// the issue the slot's Secret records (claimBundle), so a role a plan defines holds the App of its
 // type. The Secret is rewritten only where it does not hold that render already. A runtime with no
 // credential function wrote no slot any gh files, and an issue with no live pod has no slot to
 // write: the claim's next launch writes the App runtime.SlotRole answers then.
@@ -35,7 +34,7 @@ func (r *Runtime) WriteSlotCredential(ctx context.Context, token claim.Token, ro
 		return nil
 	}
 	repo, _ := fetchRepository(pod)
-	_, err := r.writeSlotCredential(ctx, pod, uid, slotOf(token), repo, appauth.NewBundles(r.gitHubCredential, r.roleApps), slotWrite{
+	_, err := r.writeSlotCredential(ctx, pod, uid, slotOf(token), repo, r.claimBundle, slotWrite{
 		role: func(context.Context, *corev1.Secret) (claim.Role, error) { return role, nil },
 	})
 	if err != nil {
@@ -76,7 +75,7 @@ func (r *Runtime) SlotHoldsCredential(ctx context.Context, token claim.Token, ro
 		return fmt.Errorf("read the slot of %s: %w", token, err)
 	}
 	repo, _ := fetchRepository(pod)
-	_, _, want, err := r.renderSlot(ctx, pod, slot, repo, appauth.NewBundles(r.gitHubCredential, r.roleApps), secret, role)
+	_, _, want, err := r.renderSlot(ctx, pod, slot, repo, r.claimBundle, secret, role)
 	if err != nil {
 		return fmt.Errorf("render the slot of %s for %s: %w", token, role, err)
 	}

@@ -207,7 +207,8 @@ func TestTheGitIdentityOfATreeRecordedBeforeAConfiguredRenameIsMintedForTheOwner
 	}
 }
 
-// A role the deployment defines commits as the bot of the App its github_app setting names, and
+// A role the deployment defines, on an issue whose plan defines no role of its name, commits as the
+// bot of the App its github_app setting names, and
 // the map the workflow reads is built from the settings' roles (deploymentApps): the checker,
 // set to implement, commits as the implement App's bot and the critic, which names review, as
 // the review App's. A role nothing defines gets no identity: the mint is refused before any

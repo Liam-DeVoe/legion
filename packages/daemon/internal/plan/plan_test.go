@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -120,14 +121,14 @@ func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {
 	}
 }
 
-// Each of Legion's own roles of a step is one of five, with the type of work it does.
+// Each of Legion's own roles of a step is one of five, with the type of work it does, on Oh My Pi.
 func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 	want := map[string]RoleDef{
-		"planner":     {Name: "planner", Type: TypePlanning},
-		"implementer": {Name: "implementer", Type: TypeImplementation},
-		"tester":      {Name: "tester", Type: TypeTesting},
-		"reviewer":    {Name: "reviewer", Type: TypeReview},
-		"acceptance":  {Name: "acceptance", Type: TypeReview},
+		"planner":     {Name: "planner", Type: TypePlanning, Backend: "omp"},
+		"implementer": {Name: "implementer", Type: TypeImplementation, Backend: "omp"},
+		"tester":      {Name: "tester", Type: TypeTesting, Backend: "omp"},
+		"reviewer":    {Name: "reviewer", Type: TypeReview, Backend: "omp"},
+		"acceptance":  {Name: "acceptance", Type: TypeReview, Backend: "omp"},
 	}
 	roles := BuiltinRoles()
 	if !reflect.DeepEqual(roles, want) {
@@ -140,8 +141,8 @@ func TestBuiltinRolesAreLegionsFiveStepRoles(t *testing.T) {
 }
 
 // How a step runs is decided by its role alone: each of Legion's five roles of a step runs as its
-// own phase, and every other role, a role of the deployment, runs as the phase step. No type is
-// read, so a role of the deployment whose type is review still runs as step.
+// own phase, and every other role, a role of the deployment or of the plan, runs as the phase step.
+// No type is read, so a role of the deployment whose type is review still runs as step.
 func TestHowAStepRunsIsItsRolesAndNeverItsType(t *testing.T) {
 	for role, want := range map[string]phase.Phase{
 		"planner": phase.Planning, "implementer": phase.Implementing, "tester": phase.Testing,
@@ -259,25 +260,31 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	}
 }
 
-// The roles a step can name are the deployment's, then the plan's own, each a role of Oh My Pi
-// with its type and its model. A role of the deployment wins over a role of the plan of one name
-// (Validate refuses that plan), and the answer is a fresh map, so the deployment's roles stay as
-// they were.
-func TestRolesOfIsTheDeploymentsRolesThenThePlans(t *testing.T) {
+// The roles a step can name are Legion's, then the plan's own, then the rest of the deployment's,
+// each role of the plan a role of Oh My Pi with its type and its model. A role of the plan is read
+// before a role of the deployment of its name, as a launch reads it for the plan's issue, and
+// Legion's own roles before both (Validate refuses a plan that takes either name). The answer is
+// a fresh map, so the deployment's roles stay as they were.
+func TestRolesOfIsLegionsRolesThenThePlansThenTheDeployments(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
-	p := oneTask("a", "implementer prober")
-	p.Roles = []PlanRole{{Name: "prober", Type: TypeTesting, Model: "m"}, {Name: "reviewer", Type: TypeTesting}}
+	d.Roles["checker"] = RoleDef{Name: "checker", Type: TypeImplementation, Model: "deployment-model", Backend: "claude"}
+	deployed := maps.Clone(d.Roles)
+	p := oneTask("a", "implementer prober checker")
+	p.Roles = []PlanRole{{Name: "prober", Type: TypeTesting, Model: "m"}, {Name: "reviewer", Type: TypeTesting}, {Name: "checker", Type: TypeTesting, Model: "plan-model"}}
 	roles := RolesOf(p, d)
 	if want := (RoleDef{Name: "prober", Type: "testing", Model: "m", Backend: "omp"}); roles["prober"] != want {
 		t.Errorf("RolesOf[prober] = %+v, want %+v", roles["prober"], want)
 	}
+	if want := (RoleDef{Name: "checker", Type: "testing", Model: "plan-model", Backend: "omp"}); roles["checker"] != want {
+		t.Errorf("RolesOf[checker] = %+v, want the plan's %+v, read before the deployment's", roles["checker"], want)
+	}
 	if got := roles["reviewer"].Type; got != TypeReview {
-		t.Errorf("RolesOf[reviewer].Type = %q, want %q: the deployment's reviewer wins over the plan's", got, TypeReview)
+		t.Errorf("RolesOf[reviewer].Type = %q, want %q: Legion's reviewer wins over the plan's", got, TypeReview)
 	}
-	if len(roles) != 6 {
-		t.Errorf("RolesOf has %d roles (%+v), want 6: Legion's five and prober", len(roles), roles)
+	if len(roles) != 7 {
+		t.Errorf("RolesOf has %d roles (%+v), want 7: Legion's five, prober and checker", len(roles), roles)
 	}
-	if !reflect.DeepEqual(d.Roles, BuiltinRoles()) {
+	if !reflect.DeepEqual(d.Roles, deployed) {
 		t.Errorf("RolesOf changed the deployment's roles: %+v", d.Roles)
 	}
 }

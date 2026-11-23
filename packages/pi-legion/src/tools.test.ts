@@ -260,7 +260,7 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "where it has none, and the merge where the issue has a pull request. Give it before the issue's " +
   "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
   "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
-  "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
+  "(PLAN_REFUSED, which also refuses a version that changes a running task or a role its steps name: stop it with stop_task first, and a plan of an issue " +
   "that started its work before Legion took plans), a version Dispatch does " +
   "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
   "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +

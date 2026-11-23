@@ -256,7 +256,8 @@ func TestTheFirstResponsiblePersonWins(t *testing.T) {
 
 // TestIssueKeyOfClaim reads a Dispatch issue key out of a Legion claim token of an issue and
 // nothing else. The token ends in its agent's name, the role of the agent's first step, which is
-// one of Legion's six or a role the deployment defines (`checker`, `code-checker`, `janitor`), so
+// one of Legion's six, a role the deployment defines or a role the issue's plan defines (`checker`,
+// `code-checker`, `janitor`), so
 // any name of the role grammar names the issue. The controller's token, a token with no name
 // after its number, the name `controller` after an issue's number, and a token whose issue part
 // is not one name no issue.
