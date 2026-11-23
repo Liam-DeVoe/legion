@@ -86,8 +86,8 @@ release under an open root gate, so the agent of its first step may already be r
 each requirement of that spec as a `requirement` block, and write the child's Verification
 document (`verification.md`) with it: one `check` block per thing that must be proved, each with
 `serves`, `surface`, `run`, `when` and `negative_control`, since a reviewer step approves only on
-this issue's own checks, your acceptance reads them, and the retro sends the issue back for one
-with no pass standing. A check carrying `ci_check` is CI's and takes no `run`
+this issue's own checks, your acceptance reads them, and the retro holds or sends the issue back
+for one with no pass standing (`skill://legion-retro`). A check carrying `ci_check` is CI's and takes no `run`
 (`skill://legion-architect/references/design-gate.md`). A child issue's spec is never gated: the
 architect above you reviews each version of this child's spec and Verification document instead
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). So do not

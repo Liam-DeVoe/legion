@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -17,8 +19,15 @@ import (
 // reviewer`, which its owner, LEGION-1's own architect, does. Its architect's slot acts as the
 // implementer; LEGION-2's architect, the owner of an issue that is not LEGION-1, and LEGION-1's
 // implementer act as nothing, and neither does a token of an issue the daemon does not record.
-// runtime.SlotRole, given that ActsAs, answers the implementer for LEGION-1's architect and the
-// role it is given for the others, each claim's stored role.
+// The owner's retro is done as the role of the task's last step of the type implementation where
+// that step is the owner's, so the slot keeps the App that opened the pull request, the one App
+// that can resolve its review threads: LEGION-4 at the retro of `implementer:owner reviewer` acts
+// as the implementer. LEGION-5 at the retro of `acceptance:owner`, a task with no such step, whose
+// retro the owner does as itself, acts as nothing; so does LEGION-6's architect at the retro of
+// `implementer reviewer`, whose implementer does the retro, and so does that implementer.
+// runtime.SlotRole, given that ActsAs, answers the role acted as for each architect that acts, and
+// the role it is given for the others, each claim's stored role. Every writer of a slot's gh files
+// of both runtimes judges the slot's App through that one function (daemon.go, kubernetes.go).
 func TestTheDaemonsActsAsIsTheOwnersStep(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -28,19 +37,32 @@ func TestTheDaemonsActsAsIsTheOwnersStep(t *testing.T) {
 		return record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key, Project: "LEGION",
 			Title: key, Phase: at, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", LastDispatchSeq: 1}
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		version := record.PlanVersion{Issue: "LEGION-1", Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-			GivenBy: mustClaimToken(t, "LEGION-1", claim.RoleArchitect), GivenAt: now}
-		task := record.PlanTask{Issue: "LEGION-1", Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
-			State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}}
-		steps := []record.PlanStep{
-			{Issue: "LEGION-1", Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "owner"},
-			{Issue: "LEGION-1", Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
+	// planned puts key at at, its one task a running at place, whose steps are words (`role` or
+	// `role:key`), each of its built-in role's type.
+	planned := func(tx pgx.Tx, key string, at phase.Phase, place record.TaskPlace, words ...string) error {
+		version := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: now}
+		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
+			State: record.TaskRunning, Place: place}
+		roles := stepplan.BuiltinRoles()
+		steps := make([]record.PlanStep, 0, len(words))
+		for i, word := range words {
+			role, agent, _ := strings.Cut(word, ":")
+			steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: role, Type: roles[role].Type, AgentKey: agent})
 		}
+		if err := records.PutIssue(ctx, tx, issue(key, at)); err != nil {
+			return err
+		}
+		return records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps)
+	}
+	retro := record.TaskPlace{Kind: record.PlaceRetro}
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		for _, put := range []error{
-			records.PutIssue(ctx, tx, issue("LEGION-1", phase.Implementing)),
+			planned(tx, "LEGION-1", phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, "implementer:owner", "reviewer"),
 			records.PutIssue(ctx, tx, issue("LEGION-2", phase.Planning)),
-			records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps),
+			planned(tx, "LEGION-4", phase.Retro, retro, "implementer:owner", "reviewer"),
+			planned(tx, "LEGION-5", phase.Retro, retro, "acceptance:owner"),
+			planned(tx, "LEGION-6", phase.Retro, retro, "implementer", "reviewer"),
 		} {
 			if put != nil {
 				return put
@@ -48,7 +70,7 @@ func TestTheDaemonsActsAsIsTheOwnersStep(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("seed LEGION-1 at its owner's implementer step and LEGION-2: %v", err)
+		t.Fatalf("seed LEGION-1 at its owner's implementer step, LEGION-2, and LEGION-4 to LEGION-6 at their retros: %v", err)
 	}
 
 	actsAs := ownerActsAs(pool, records)
@@ -63,6 +85,10 @@ func TestTheDaemonsActsAsIsTheOwnersStep(t *testing.T) {
 		{"LEGION-2's architect, the owner of another issue", mustClaimToken(t, "LEGION-2", claim.RoleArchitect), claim.RoleArchitect, "", false},
 		{"LEGION-1's implementer", mustClaimToken(t, "LEGION-1", claim.RoleImplementer), claim.RoleImplementer, "", false},
 		{"the architect of an issue the daemon does not record", mustClaimToken(t, "LEGION-3", claim.RoleArchitect), claim.RoleArchitect, "", false},
+		{"LEGION-4's architect at the retro of its own implementer step", mustClaimToken(t, "LEGION-4", claim.RoleArchitect), claim.RoleArchitect, claim.RoleImplementer, true},
+		{"LEGION-5's architect at the retro of acceptance:owner alone", mustClaimToken(t, "LEGION-5", claim.RoleArchitect), claim.RoleArchitect, "", false},
+		{"LEGION-6's architect at its implementer's retro", mustClaimToken(t, "LEGION-6", claim.RoleArchitect), claim.RoleArchitect, "", false},
+		{"LEGION-6's implementer at its own retro", mustClaimToken(t, "LEGION-6", claim.RoleImplementer), claim.RoleImplementer, "", false},
 	} {
 		role, acting, err := actsAs(ctx, tc.token)
 		if err != nil || role != tc.want || acting != tc.acting {

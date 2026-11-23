@@ -7,8 +7,9 @@ The rules behind them: [Admission and the `legion` label](https://cybermonklabs.
 ## The lists
 
 - `admission.active`: every issue holding a slot, a root or a child, at work, `held` or waiting on a person.
-  An issue in `accepting`, `retro` or `merging` (in the default steps, past its review) holds none, and neither does a started issue that waits on another issue, except three roots that keep theirs:
-  one in `awaiting_person`, one at `admitted` whose gate has never opened, and one carried from another tree.
+  An issue in `accepting`, `retro` or `merging` (in the default steps, past its review) holds none.
+  Neither does a started issue that waits on another issue, except three roots that keep theirs.
+  They are one in `awaiting_person`, one at `admitted` whose gate has never opened, and one carried from another tree.
 
 - `admission.trees`: the roots of the live trees, whether or not any issue of them holds a slot.
   Use it, not `admission.active`, for which trees run.

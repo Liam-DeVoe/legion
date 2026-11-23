@@ -63,7 +63,8 @@ So where a sentence below names a planner, the implementer and its pull request,
 On those steps the architect's one step of its own is the acceptance, whose App is the review App, the architect's own.
 So where a sentence below names the App a role acts as, it holds of those steps.
 There the implementer and the merger act as the implement App, and every other role as the review App.
-Under another plan the owner can do any step itself, told by an `owner-step` notice and reporting it with `complete_step`, a step `acceptance` with no key is a fresh agent, and a task with no pull request is done when its retro ends, with no merge, as [`owner-does-step.sh`](#owner-does-stepsh) proves.
+Under another plan the owner can do any step itself, told by an `owner-step` notice and reporting it with `complete_step`, and an issue with no pull request is done when its retro ends, with no merge, as [`owner-does-step.sh`](#owner-does-stepsh) proves.
+A step `acceptance` with no key is a fresh agent of the role `acceptance`.
 
 Each item below names a script, then what it proves.
 
@@ -2990,11 +2991,12 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   before the merger merges, since that merge can follow its assignment by seconds: the smoke main's lock is taken (`hold_smoke_main`).
   Then the merger's own merge of the head it read — the proof only reads the pull request until it merges (`await_merger_merge`) and never merges it by hand; the note names the merge commit.
-  **The merge closes tree 1 at once**, since children 3 and 4 left the workflow at their parks in `children-first-acceptance`.
-  No `workflow: a merged issue's close waits for the issues beneath it` line names tree 1, and its architect gets no `pr-merged` notice.
-  `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged`, and
+  **The merge closes tree 1 at once**, since nothing of its tree is in the workflow: children 3 and 4 were parked at `children-first-acceptance`, before the sign-off the daemon held for them, and no issue has entered the tree since, which beneath an accepted root the daemon refuses.
+  So no `workflow: a merged issue's close waits for the issues beneath it` line names tree 1, and its architect is told no `pr-merged` notice, which is that wait's own:
+  `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged`;
   Dispatch `done` within 120 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
   `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod.
+  The `pr-merged` count is read in the architect's session only where that session shows a notice delivered earlier in the run; a session that shows none fails as UNKNOWN.
   No issue of tree 1 holds an admission slot at the close: the root's row went when it reached `accepting`, its children's at their parks, and the close frees whatever is left.
   The proof sends it nothing, so the fixture tells a check task to wait for no targeted message and act on the daemon's task as written
   — this proof has no production and no deploy role, so the tester leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending` (`check_look_reported`, within 600 s of the look's start:
@@ -5416,7 +5418,7 @@ Each control runs a check over an issue it must fail on, prints `control: FAIL <
 
 | check | driven by | read back as | its control, which must fail the check |
 | :--- | :--- | :--- | :--- |
-| `owner-step` | the first issue given `implementer:owner` and its gate opened; with the pull request open on the issue's branch, the owner's `complete_step` of step 1 naming its commit and its `implement` handoff; then its `complete_step` of the retro (step 0) with the rating 4 and a reason | one `owner-step` on the owner's topic, of the role `implementer` in implementing, whose task says ` Task: a.`, ` Step 1 of 1: implementer:owner.` and the text of the task's block, and no claim of the issue launched; `200 {}` and the issue in retro; a second `owner-step`, of no role in retro, and no claim launched; `200 {}`, the issue in merging and its merger launched | `control-owner-step`: the third issue given `implementer`, whose step is a fresh implementer's: the daemon launches `…-implementer`, the owner is told no `owner-step`, and the check fails naming both |
+| `owner-step` | the first issue given `implementer:owner` and its gate opened; with the pull request open on the issue's branch, the owner's `complete_step` of step 1 naming its commit and its `implement` handoff, which the driver posts itself (an agent's `legion` tool fills the commit in); then its `complete_step` of the retro (step 0) with the rating 4 and a reason | one `owner-step` on the owner's topic, of the role `implementer` in implementing, whose task says ` Task: a.`, ` Step 1 of 1: implementer:owner.` and the text of the task's block, and no claim of the issue launched; `200 {}` and the issue in retro; a second `owner-step`, of no role in retro, and no claim launched; `200 {}`, the issue in merging and its merger launched | `control-owner-step`: the third issue given `implementer`, whose step is a fresh implementer's: the daemon launches `…-implementer`, the owner is told no `owner-step`, and the check fails naming both |
 | `tester-alone` | the second issue given `tester` and its gate opened; the tester takes its task and passes; the owner's `complete_step` of the retro with the rating 4 and a reason | the tester's task says ` Task: a.`, ` Step 1 of 1: tester.` and the text of the task's block; the issue in retro, one `owner-step` of no role in retro and no claim launched after the tester's pass; after the owner's report, no merger launched within 3 s, the issue in done, `dispatch steps --issue <KEY>` printing the header `<KEY>: 2 steps in 1 tasks`, step 1 `tester` by `…-tester` and the retro by the owner, `…-architect`, each ended `passed`, the retro's record in Dispatch's read naming the rating and its reason, and `dispatch plans --project <PROJECT>` listing the issue closed, its plan `owner (1 tasks: tester)`, `ratings 4/5` with the reason, and `failed steps 0` | the same check over the second issue while its retro runs, inside this check: it fails, the issue standing in retro; and `control-tester-alone`: the same check over the first issue, whose task has a pull request, fails on the launch of its merger |
 
 The controls a person can run make each check fail with the code changed.

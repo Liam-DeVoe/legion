@@ -1780,15 +1780,16 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // owner-step is published only while the run it tells is open, and finishes undelivered once that
 // run has ended (ownerStepRuns); one the listener takes records on its run the launch and the
 // session of the owner it reached (ownerStepTold). It waits besides until its architect's slot's
-// gh files hold the App of its step, the owner's own App among them, under either runtime: the
-// review App, which the
-// steps of the planner, the tester, the reviewer and acceptance, a role of the deployment or of the
-// plan that acts as that App, and the owner's retro act as (ownApp). The slot is written first
-// only for a step of another role's App, and the runtime judges the App it writes as it writes it
-// (WriteSlotCredential); a pod whose launcher cannot say what its gh files hold holds back no step
-// of the owner's own App (ownerSlotHolds). The end of a step the owner did queues the write of
-// its slot back to its own App, and every notice to the architect queued after that write waits
-// until it ran (slotWritePending). A role topic with no live holder refuses the publish
+// gh files hold the App of the role its step or retro is done as, the owner's own App among them,
+// under either runtime: the review App, which the steps of the planner, the tester, the reviewer
+// and acceptance, a role of the deployment or of the plan that acts as that App, and a retro the
+// owner does as itself act as (ownApp); the owner's retro of its own implementation step acts as
+// that step's App. The slot is written first only for a step or a retro of another role's App, and
+// the runtime judges the App it writes as it writes it (WriteSlotCredential); a pod whose launcher
+// cannot say what its gh files hold holds back no step of the owner's own App (ownerSlotHolds). The
+// end of a step or a retro the owner did queues the write of its slot back to its own App, and
+// every notice to the architect queued after that write waits until it ran (slotWritePending). A
+// role topic with no live holder refuses the publish
 // (notify.ErrNoHolder): while the architect's claim can hold its role again — relaunching, a root
 // the operator suspended and can resume, or the architect of a catch-up's own issue suspended
 // while that issue is in the workflow, which its
@@ -1978,8 +1979,9 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		}
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
-	// The end of a step the owner did queues the write of the owner's slot back to its own App
-	// (workflow's ownerSlotCredential), and a notice queued after it waits until that write ran.
+	// The end of a step or a retro the owner did queues the write of the owner's slot back to its
+	// own App (workflow's ownerSlotCredential), and a notice queued after it waits until that write
+	// ran.
 	// Under tmux the write changes the pane's gh files at once. Under Kubernetes it changes the
 	// slot's Secret, and the kubelet's sync of that Secret into the pod is not waited for here. So
 	// a notice of another kind can reach the owner while its gh files still hold the step's App.
@@ -1990,8 +1992,8 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	} else if pending {
 		return fmt.Errorf("%w: %s's notice row %d waits for the write of its slot back to its own App", errNoticeWaits, architect, row.ID)
 	}
-	// An owner's step is told once the owner's slot holds the App of the step's role, so the
-	// owner's gh acts as that App for the whole step (ownerSlotHolds). The owner's claim is read
+	// An owner's step or retro is told once the owner's slot holds the App of the role it is done
+	// as, so the owner's gh acts as that App for the whole of it (ownerSlotHolds). The owner's claim is read
 	// before the publish, and the publish answers the session the listener forwarded it to; which
 	// of the two the step's run records is ownerStepTold's.
 	var told supervise.Claim
@@ -2056,42 +2058,48 @@ func (r *outbox) ownerStepTold(ctx context.Context, issue string, step record.No
 
 // ownerSlotHolds is the hold of a notice owner-step, told to owner, the issue's own architect: it
 // answers true once the notice's run still runs and owner's slot holds the gh credential of the
-// App of the step the notice tells (its Role; the architect's own for the retro, whose Role is
-// ""), so the owner's gh never acts as another App in the step.
+// App of the role the notice's step or retro is done as, so the owner's gh never acts as another
+// App in it. A step is done as its own role, the notice's Role. The retro, whose Role is "", is done
+// as the role of the task's last step of the type implementation, the owner's own where it has none
+// (retroActsAs): so the owner's retro of its own implementation step acts as the App that opened
+// the pull request, the one App GitHub lets resolve its review threads.
 //
 // The run first (ownerStepRuns): a notice names the run it tells (record.Notice.OwnerStep), and a
 // run that ended — the retro over, the owner's report in, the earlier of a role's two steps — makes
 // the notice stale, and it finishes undelivered with one log line (false, nil), as a stale notice
 // of any kind does. Then the App: the role whose App the slot holds is runtime.SlotRole over the
-// daemon's ActsAs (ownerActsAs), read from the record now, and where it is not the notice's role
-// the step no longer runs either, the one test of a row that names no run.
+// daemon's ActsAs (ownerActsAs, the one rule for steps and the retro), read from the record now,
+// and where it is not the role the notice's step or retro is done as, the step no longer runs
+// either, the one test of a row that names no run, and of a run whose issue is held.
 //
 // A step whose App is the App of the owner's own role (ownApp: the review App, which the owner's
-// acceptance and retro act as, and a step of each role whose App it is, the planner, the tester and
-// the reviewer among them) needs no write: the owner's slot holds that App whenever the owner does
-// no other step, and the end of any other step writes it back before the next notice to the owner
-// publishes (slotWritePending). Each step is told once the slot's gh files hold its App:
-// the runtime brings the slot for a step of another role's App to the App it judges for the slot
-// itself, in the serialization of the slot's writes, which is the step's unless the step ended
-// since the run was read here (runtime.SlotCredentials.WriteSlotCredential), and for every step it
-// is asked whether the slot's gh files hold the step's App (SlotHoldsCredential), so the kubelet's
-// sync of a write-back is waited for too, and a step that ended in between waits and is found
-// stale at the next attempt. A wait holds the row on its backoff as a notice held for its
-// architect still (errNoticeWaits). A pod whose launcher cannot say (runtime.ErrAwaitsPodUpdate)
-// holds the row the same way for an App of another role, and holds nothing for the owner's own App,
-// which the slot of a pod built before the slot's write held from its launch. Any other failure is
-// the row's error. A runtime that holds no slots writes none and holds nothing.
+// acceptance and the retro it does as itself act as, and a step of each role whose App it is, the
+// planner, the tester and the reviewer among them) needs no write: the owner's slot holds that App
+// whenever the owner does no other step, and the end of any other step or retro writes it back
+// before the next notice to the owner publishes (slotWritePending). Each step is told once the
+// slot's gh files hold its App: the runtime brings the slot for a step of another role's App to
+// the App it judges for the slot itself, in the serialization of the slot's writes, which is the
+// step's unless the step ended since the run was read here
+// (runtime.SlotCredentials.WriteSlotCredential), and for every step it is asked whether the slot's
+// gh files hold the step's App (SlotHoldsCredential), so the kubelet's sync of a write-back is
+// waited for too, and a step that ended in between waits and is found stale at the next attempt. A
+// wait holds the row on its backoff as a notice held for its architect still (errNoticeWaits). A
+// pod whose launcher cannot say (runtime.ErrAwaitsPodUpdate) holds the row the same way for an App
+// of another role, and holds nothing for the owner's own App, which the slot of a pod built before
+// the slot's write held from its launch. Any other failure is the row's error. A runtime that holds
+// no slots writes none and holds nothing.
 func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, payload record.Notice, owner claim.Token) (bool, error) {
 	runs, err := r.ownerStepRuns(ctx, row.Issue, payload.OwnerStep)
 	if err != nil {
 		return false, err
 	}
-	step := payload.Role
-	if step == "" {
-		step = claim.RoleArchitect
-	}
-	role := step
+	step, role := payload.Role, payload.Role
 	if runs {
+		if step == "" {
+			if step, err = r.retroActsAs(ctx, row.Issue); err != nil {
+				return false, err
+			}
+		}
 		if role, err = runtime.SlotRole(ctx, ownerActsAs(r.pool, r.records), owner, claim.RoleArchitect); err != nil {
 			return false, err
 		}
@@ -2121,6 +2129,30 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 		return false, fmt.Errorf("ask whether %s's slot holds the App of %s: %w", owner, role, err)
 	}
 	return true, nil
+}
+
+// retroActsAs is the role the retro of issue's task is done as (record.RetroActsAs), read from the
+// plan rows of its run in a read-only transaction of its own: the role whose App the owner's slot
+// holds before the owner is told its retro (ownerSlotHolds). An issue the daemon does not record,
+// and a run with no plan rows, whose retro the owner does as itself, answer the architect.
+func (r *outbox) retroActsAs(ctx context.Context, issue string) (claim.Role, error) {
+	role := claim.RoleArchitect
+	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		stored, err := r.records.Issue(ctx, tx, issue)
+		if err != nil || stored == nil {
+			return err
+		}
+		steps, err := taskSteps(ctx, tx, r.records, *stored)
+		if err != nil {
+			return err
+		}
+		role = record.RetroActsAs(steps)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("read the role %s's retro is done as: %w", issue, err)
+	}
+	return role, nil
 }
 
 // ownerStepRuns is whether the run an owner-step notice names is still the open run of its place
@@ -3252,16 +3284,18 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	}
 }
 
-// slotCredential runs a supervise row slot_credential of issue, which the end of a step its owner
-// did queues (workflow's ownerSlotCredential): the write of the owner's slot back to the App of its
-// own role. The role the slot holds now is runtime.SlotRole over the daemon's ActsAs
+// slotCredential runs a supervise row slot_credential of issue, which the end of a step or a retro
+// its owner did queues (workflow's ownerSlotCredential): the write of the owner's slot back to the
+// App of its own role. The role the slot holds now is runtime.SlotRole over the daemon's ActsAs
 // (ownerActsAs), as the record stands when the row runs. Where its App is the owner's own (ownApp:
 // the owner does no step now, or one of its own App) the slot is written, once, for the App the
 // runtime judges in the serialization of the slot's writes (runtime.SlotCredentials), the owner's
 // own unless a step began since. Where another step of the owner's that needs another App runs
-// already, the row writes nothing: that step's owner-step has the runtime write the slot, which
-// judges that step's App while it runs (ownerSlotHolds), and waits for this row, so the slot is
-// written once at that end too. Notices to the owner queued after the row wait for it
+// already, or the owner's retro of its own implementation step, the row writes nothing: that step's
+// or retro's owner-step has the runtime write the slot, which judges its App while it runs
+// (ownerSlotHolds), and waits for this row, so the slot is written once at that end too, and a
+// write-back queued before the retro never undoes the App the owner is told its retro holds.
+// Notices to the owner queued after the row wait for it
 // (deliverNotice). A runtime that holds no slots has nothing to write.
 func (r *outbox) slotCredential(ctx context.Context, issue string, payload record.SuperviseRequest) error {
 	slots, ok := r.supervisor.deps.Runtime.(runtime.SlotCredentials)

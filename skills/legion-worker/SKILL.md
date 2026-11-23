@@ -5,7 +5,8 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 # Legion Phase Worker
 
-Your role prompt gives the workspace, the push, the handoff, the waits and the pod release; this skill adds the rest.
+Your role prompt gives the workspace, the push, the handoff, the waits and the pod release.
+This skill adds the rest.
 Where it disagrees with the code or a command's `--help`, follow those and tell your architect which line is wrong.
 
 ## Every phase
@@ -20,30 +21,30 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 3. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 
-4. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
-   the working copy is the next commit.
+4. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work.
+   The working copy is the next commit.
 
 5. Every role writes the one workspace, so a file can change under your check.
    Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
    Commit nothing in the copy.
-   A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after.
+   A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged before and after.
    A run whose output you did not capture can be neither confirmed nor cleared.
 
 6. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
 
 ## Stop rules
 
-- A refused completion is information, not a retry loop.
+- A refused completion is information, not a retry loop: complete again once its cause is fixed, or as its code below says.
   Quote the answer verbatim to the architect.
 
   - `HANDOFF_STALE_GENERATION` or `HANDOFF_NO_RUN`: push nothing more and end the turn without completing.
-    When the task then arrives with its work and handoff done, call `handoff_complete` again in its turn; never redo the work.
+    When the task arrives with its work and handoff done, complete again in its turn; never redo the work.
 
-  - `HANDOFF_STALE_ENTRY`: end the turn without completing; the daemon sends the new entry's task by itself.
+  - `HANDOFF_STALE_ENTRY`: end the turn without completing; the daemon sends the new entry's task itself.
     Do what it asks at the head it names, with a handoff of its own.
 
-  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; nothing was recorded.
-    Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head with a handoff that names it.
+  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for landed above your completion's head, or it names none; nothing was recorded.
+    Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head, with a handoff naming it.
 
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; do not retry that completion.
     `HANDOFF_ALREADY_RECORDED`: the first answer stands.
@@ -56,7 +57,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
   - retro on the architect's answer to a defect it reported;
 
-  - a pushing role whose second push still did not carry the pull request onto its commit.
+  - a pushing role whose second push still left the pull request off its commit.
 
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 
@@ -76,8 +77,8 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 ## Pull request and merge gate
 
-- An implementation step's agent opens the pull request with the line `Dispatch: <KEY>` in its body;
-  later steps push to that branch and edit that pull request; an issue none of whose steps opened one has none.
+- An implementation step's agent opens the pull request with the line `Dispatch: <KEY>` in its body.
+  Later steps push to that branch and edit that pull request. An issue none of whose steps opened one has none.
 
 - No deferrals where the issue has a pull request.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.
@@ -86,8 +87,8 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and, with a pull request, the merger.
   The default task has tester evidence, reviewer approval and architect acceptance.
-  With no tester step, an implementation step's evidence serves;
-  with no reviewer step, no Legion approval is awaited; the last step's pass starts retro.
+  With no tester step, an implementation step's evidence serves.
+  With no reviewer step, no Legion approval is awaited. The last step's pass starts retro.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
@@ -102,10 +103,15 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 ## Deployment instructions
 
-They override this skill, except: no deferrals;
-the base merged forward only as `skill://legion-worker/references/conflicts-and-rewrites.md#reintegrating-the-base` allows;
-an implementation step's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/results.md#what-a-result-is`);
-and the production check after the close (`skill://legion-worker/references/merge-gate.md#the-production-check-after-the-close`).
+They override this skill, except:
+
+- no deferrals
+
+- the base merged forward only as `skill://legion-worker/references/conflicts-and-rewrites.md#reintegrating-the-base` allows
+
+- an implementation step's own result for every `before_merge` check with no `ci_check` (`skill://legion-worker/references/results.md#what-a-result-is`)
+
+- the production check after the close (`skill://legion-worker/references/merge-gate.md#the-production-check-after-the-close`)
 
 ## References
 

@@ -115,10 +115,10 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		return token, err == nil
 	}
 	// Each slot holds the App of the role the runtime's ActsAs gives its claim (the step's, while
-	// the architect does a step of its own), else of the role its process was launched as, which
-	// that launch recorded on the slot's Secret, else of the step its claim does now, read from the
-	// stored claims once a tick (slotAppRole); the role is judged on the Secret each write reads
-	// (refreshGitHubCredential).
+	// the architect does a step of its own or the retro of one), else of the role its process was
+	// launched as, which that launch recorded on the slot's Secret, else of the step its claim does
+	// now, read from the stored claims once a tick (slotAppRole); the role is judged on the Secret
+	// each write reads (refreshGitHubCredential).
 	// A tick that cannot read the stored claims refreshes no slot of an issue pod, each of which
 	// keeps its last tokens until the next tick, rather than mint a slot for its name.
 	held, heldErr := r.slotHolders(ctx)
@@ -216,10 +216,10 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 //
 // That role is judged on the Secret the write reads, under its resourceVersion (slotAppRole):
 // the role the runtime's ActsAs gives the claim in the slot where it gives one (runtime.SlotRole,
-// the step's role while the architect does a step of its own), else the role the slot's process
-// was launched as, which the launch's own write of the Secret recorded (launchedRoleAnnotation),
-// and, on a Secret no launch into this pod wrote, the stored role the tick read of the claim in
-// the slot, held. A launch of a re-roled claim into the pod
+// the step's role while the architect does a step of its own or the retro of one), else the role
+// the slot's process was launched as, which the launch's own write of the Secret recorded
+// (launchedRoleAnnotation), and, on a Secret no launch into this pod wrote, the stored role the
+// tick read of the claim in the slot, held. A launch of a re-roled claim into the pod
 // writes the slot for its new role's App at once and waits for that token (writeLaunchCredential),
 // so a refresh that read the stored claims before the re-role must not write the old role's App
 // over it: the launch's write lands before this one reads the Secret, and records the role, or

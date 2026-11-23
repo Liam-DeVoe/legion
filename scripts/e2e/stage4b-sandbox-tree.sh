@@ -6491,18 +6491,27 @@ await_merger_merge "$repo" "$pr_number" --delete-branch
 handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of pull request #$pr_number"
 [ -z "$handoff_pushes" ] || fail "merged pull request #$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
 note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha' | grep -c .) commits, none changing only .legion/"
-# The merge closes tree 1 at once (closeMerged): children 3 and 4 left the workflow at their parks
-# in children-first-acceptance, so no issue beneath the root holds its close. The daemon logs no
-# wait for the issues beneath it, and so tells its architect no pr-merged notice.
+# The merge closes tree 1 on the merge itself (the comment above): closeMerged finds nothing of the
+# tree in the workflow and makes the table's move to done at once. Its wait for the issues beneath a
+# merged issue is entered only with one of them still in the workflow, and the architect's pr-merged
+# notice is that wait's own (closeMergedTelling), so neither the wait's log line
+# (internal/workflow/pullrequest.go, closeMerged) nor the notice may appear here.
 on_tree "$tree1" wait_for_phase "$tree1" "done" 900
 phase_change_logged "$tree1" merging "done" pull_request_merged ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
-merge_waits=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
-[ "$merge_waits" = 0 ] ||
-  fail "the daemon logged $tree1's merged close waiting for the issues beneath it $merge_waits times, with none of its tree in the workflow"
-merged_notices=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
-[ "$merged_notices" = 0 ] ||
-  fail "the merge that closed $tree1 told its architect pr-merged $merged_notices times, want none"
+# The log the phase change was just read from is the one the wait's line would be in, so a count of
+# 0 below is read from a log that holds tree 1's lines.
+waited=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
+[ "$waited" = 0 ] ||
+  fail "the daemon logged $tree1's merged close waiting for the issues beneath it $waited times, though $child3 and $child4 left the workflow at children-first-acceptance: $(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | tail -1)"
+# A count of pr-merged notices is only as good as the read of the session it counts in: the
+# architect's session must show the notices it was delivered earlier in the run, or a 0 says nothing.
+delivered=$(notice_deliveries "$tree1" architect "summary: ")
+[ "$delivered" -ge 1 ] ||
+  fail "UNKNOWN: $tree1's architect session shows no delivered notice at all, so it cannot show whether a pr-merged notice was sent"
+told=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
+[ "$told" = 0 ] ||
+  fail "$tree1's architect was told $told pr-merged notices, which only a close that waits for the issues beneath it sends: $(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")" | tail -1 | cut -c1-300)"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
 # No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached

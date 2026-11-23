@@ -106,3 +106,61 @@ func TestEveryEndOfAnOwnersStepGivesItsSlotItsOwnApp(t *testing.T) {
 		written(t, pool, root.Key, claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect)))
 	})
 }
+
+// The end of the owner's retro gives the owner's slot its own App back, as the end of each of its
+// steps does: on `implementer:owner reviewer` the owner's retro is done as the implementer, whose
+// step was the owner's (record.OwnerActsAs), so its slot holds the implement App through the
+// retro, and the retro's end, the move to merging, queues one more supervise slot_credential of the
+// owner's claim. It does so too where the way back of a rollback dropped the plan rows while the
+// retro ran, so the retro ends off its walk (endOffWalk). The control: on `implementer reviewer`
+// the implementer does the retro, whose end queues none, since the owner's slot was never written
+// for it.
+func TestTheEndOfTheOwnersRetroGivesItsSlotItsOwnApp(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		steps   []string
+		dropped bool
+		queued  int
+	}{
+		{name: "the owner's retro of its own implementer step", steps: []string{"implementer:owner", "reviewer"}, queued: 1},
+		{name: "the same retro, its plan rows dropped while it ran", steps: []string{"implementer:owner", "reviewer"}, dropped: true, queued: 1},
+		{name: "control: the retro of a fresh implementer", steps: []string{"implementer", "reviewer"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Admitted)
+			owner := claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect))
+			seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
+			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+			if tc.steps[0] == "implementer:owner" {
+				if result := applyFacts(t, pool, engine)("step-1", ownersReport(root.Key, owner, claim.RoleImplementer, 1, "implement-LEGION-208")); result.Refusal != nil {
+					t.Fatalf("the owner's report of step 1 was refused: %+v", result.Refusal)
+				}
+			} else {
+				move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+			}
+			assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
+			move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+			assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+			before := superviseRowsOf(t, pool, root.Key, "slot_credential")
+			if tc.dropped {
+				dropPlanRows(t, pool, root.Key)
+				rebooted(t, pool)
+			}
+			move(t, pool, engine, root.Key, TriggerRetroCompleted, record.TaskPlace{}, record.PhaseRow{})
+			if got := issueOf(t, pool, engine, root.Key); got.Phase != phase.Merging || got.Hold != nil {
+				t.Fatalf("%s stands in %s (hold %+v) after its retro, want merging", root.Key, got.Phase, got.Hold)
+			}
+			rows := superviseRowsOf(t, pool, root.Key, "slot_credential")
+			if len(rows) != len(before)+tc.queued {
+				t.Fatalf("%s's outbox holds the slot_credential rows %+v after its retro ended, %+v before it, want %d more", root.Key, rows, before, tc.queued)
+			}
+			for _, row := range rows[len(before):] {
+				if row.Claim != owner || row.Role != claim.RoleArchitect || row.Tree != root.Key || row.Generation != root.Generation {
+					t.Fatalf("the slot_credential row %+v, want one of the owner %s, the architect, in the tree %s at generation %d", row, owner, root.Key, root.Generation)
+				}
+			}
+		})
+	}
+}
