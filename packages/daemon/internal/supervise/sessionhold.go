@@ -78,15 +78,15 @@ const (
 	CheckedNothing = "it held no name to free, so no broker was asked"
 )
 
-// ErrCarryUnanswered is a release the secrets broker did not answer: the release frees nothing,
-// since nothing else can say that no grant follows a name it would free. A run again can change
-// it.
+// ErrCarryUnanswered is a release the secrets broker did not answer, or answered with an outage
+// (a 5xx, a 408 or a 429) or another refusal a retry can change: the release frees nothing, since
+// nothing else can say that no grant follows a name it would free. A run again can change it.
 var ErrCarryUnanswered = errors.New("the secrets broker did not answer which of the names it still carries")
 
 // ErrCarryRefused is a release whose question the secrets broker refused for good (a
-// PermanentError, a 4xx): the release frees nothing, and a run again answers the same until the
-// refusal is fixed, but for a broker from before the question, which answers it 404 or 405 and
-// may be one replica of several while the broker rolls.
+// PermanentError, a 4xx other than a 408 or a 429): the release frees nothing, and a run again
+// answers the same until the refusal is fixed, but for a broker from before the question, which
+// answers it 404 or 405 and may be one replica of several while the broker rolls.
 var ErrCarryRefused = errors.New("the secrets broker refused the question of which of the names it still carries")
 
 // UnlistedCarryError is an answer of the secrets broker's too long for the daemon to read whole
@@ -140,11 +140,11 @@ func (e *NamesCarriedError) Error() string {
 // it would free name an enrollment of this daemon's that is live or still carries something
 // (Enroller.Carried), and any answer refuses the whole release with a RefusedError holding a
 // NamesCarriedError, naming each enrollment and when its lease or its carry ends, or saying the
-// answer was too long to list (UnlistedCarryError); a broker that does not answer refuses it with
-// ErrCarryUnanswered, and one that refuses the question for good with ErrCarryRefused. Nothing is
-// freed in any of them. The broker's own rows answer every case a time window only estimated: a
-// revoke the daemon missed, a lease a broker outage held live, a sweep that ran late or kept
-// failing, a longer BROKER_SESSION_CARRY_SECONDS.
+// answer was too long to list (UnlistedCarryError); a broker that does not answer, or answers with
+// an outage, refuses it with ErrCarryUnanswered, and one that refuses the question for good with
+// ErrCarryRefused. Nothing is freed in any of them. The broker's own rows answer every case a
+// time window only estimated: a revoke the daemon missed, a lease a broker outage held live, a
+// sweep that ran late or kept failing, a longer BROKER_SESSION_CARRY_SECONDS.
 //
 // A daemon with no broker configured (Deps.Secrets nil) asks none, frees with no check, and says
 // so (CheckedNoBroker). That is safe only for a daemon that never enrolled a pod with a broker. A

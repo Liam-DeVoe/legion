@@ -36,12 +36,13 @@ type ReleasedName struct {
 // the one its live pod-session registration names), once the secrets broker answers that it
 // carries nothing of them. A broker that still carries some is a 409 naming each enrollment and
 // when it ends, or saying there are more than its answer lists (a supervise.RefusedError holding
-// a supervise.NamesCarriedError, which operatorFailure answers); a broker that does not answer a
-// 503 (supervise.ErrCarryUnanswered), which a run again can change; a broker that refuses the
-// question for good a 502 (supervise.ErrCarryRefused), which a run again answers the same unless
-// the broker is rolling. None frees anything, and the 502 and the 503 are logged as an operator
-// request that failed. It reaches a claim in any state, since the names it frees are of sessions
-// no process of the claim runs.
+// a supervise.NamesCarriedError, which operatorFailure answers); a broker that does not answer, or
+// answers with an outage (a 5xx, a 408 or a 429), a 503 (supervise.ErrCarryUnanswered), which a
+// run again can change; a broker that refuses the question for good (a 4xx other than a 408 or a
+// 429) a 502 (supervise.ErrCarryRefused), which a run again answers the same unless the broker is
+// rolling. None frees anything, and the 502 and the 503 are logged as an operator request that
+// failed. It reaches a claim in any state, since the names it frees are of sessions no process of
+// the claim runs.
 func (s *server) releaseNames(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)

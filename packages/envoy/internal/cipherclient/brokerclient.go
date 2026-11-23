@@ -92,8 +92,9 @@ type Token struct {
 // RefusedError is a trade the broker refused: a plain error naming what it said. Almost every
 // one is a refusal no retry can cure — an identity no entry lists, a sign-in a person revoked,
 // a token of the wrong audience — and the renewal loop stops on those rather than asking again
-// every quarter minute. The exceptions are the broker's 429, its two DPoP refusals, a pod
-// session it holds no registration for yet, and a person Dispatch holds (Permanent).
+// every quarter minute. The exceptions are an outage, a 408 or a 429 from the broker or a proxy
+// before it (oauthrefusal.Outage), its two DPoP refusals, a pod session it holds no registration
+// for yet, and a person Dispatch holds (Permanent).
 type RefusedError struct {
 	// Status is the HTTP status of the refusal.
 	Status int
@@ -399,17 +400,17 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 // the identity for good (RefusedError.Permanent), or the issuer ending the person's sign-in it
 // trades (ErrSignInEnded) — dropping the token in hand as Token does, so a Token on this client
 // after Run returns asks again rather than answering it; and it stops when onToken fails. A
-// broker that does not answer, or answers 429, either of its DPoP refusals, that it holds no
-// registration for this pod's session yet, or that Dispatch holds the person the identity names,
-// is retried, from defaultRetryWait doubling to maxRetryWait, for as long as ctx lives: an
-// outage past the token's own life is the same event as a short one, since this grant has no
-// rotation window to miss, a host whose clock NTP corrects after boot trades again on the next
-// pass rather than holding no credential until somebody restarts it, a pod whose trade reached
-// the broker before its registration did trades once that registration lands, however long it
-// takes, and a person whom Dispatch held is traded again after their next Dispatch sign-in, or
-// the next refresh that confirms them, with nothing restarted. A missing registration is logged
-// once, naming the session, and again every unregisteredLogEvery while it lasts, rather than at
-// every trade. A cancelled ctx is no error.
+// broker that does not answer, or answers with an outage (a 5xx, a 408 or a 429), either of its
+// DPoP refusals, that it holds no registration for this pod's session yet, or that Dispatch holds
+// the person the identity names, is retried, from defaultRetryWait doubling to maxRetryWait, for
+// as long as ctx lives: an outage past the token's own life is the same event as a short one,
+// since this grant has no rotation window to miss, a host whose clock NTP corrects after boot
+// trades again on the next pass rather than holding no credential until somebody restarts it, a
+// pod whose trade reached the broker before its registration did trades once that registration
+// lands, however long it takes, and a person whom Dispatch held is traded again after their next
+// Dispatch sign-in, or the next refresh that confirms them, with nothing restarted. A missing
+// registration is logged once, naming the session, and again every unregisteredLogEvery while it
+// lasts, rather than at every trade. A cancelled ctx is no error.
 func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) error) error {
 	wait := defaultRetryWait
 	// since is when the broker first refused this pod's session as unregistered, and logged when
