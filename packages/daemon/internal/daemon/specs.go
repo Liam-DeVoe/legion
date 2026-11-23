@@ -212,14 +212,24 @@ func (s specs) backendPart(c supervise.Claim, backend runtime.Backend) (string, 
 	return s.prompts.Part(info.PromptPart), nil
 }
 
+// resolveRole is c's role resolved on its issue (resolveClaimRole) over this specs' reader of a
+// plan's role, the deployment's roles and the harness worker_backends names, a refusal naming c.
+func (s specs) resolveRole(ctx context.Context, c supervise.Claim) (claimRole, error) {
+	resolved, err := resolveClaimRole(ctx, s.planRole, s.roles, s.backendFor, c.Issue, c.Role)
+	if err != nil {
+		return claimRole{}, fmt.Errorf("the role of %s: %w", c.Token, err)
+	}
+	return resolved, nil
+}
+
 // roleDefinition is the definition of a plan's role a launch of c would run now (the fingerprint
 // of resolveClaimRole's answer, runtime.SpawnSpec.RoleDefinition), "" for a role the plan of c's
 // issue does not define: what the daemon outbox's start compares with the definition the claim's
 // process was launched with (supervise.Claim.LaunchedDefinition).
 func (s specs) roleDefinition(ctx context.Context, c supervise.Claim) (string, error) {
-	resolved, err := resolveClaimRole(ctx, s.planRole, s.roles, s.backendFor, c.Issue, c.Role)
+	resolved, err := s.resolveRole(ctx, c)
 	if err != nil {
-		return "", fmt.Errorf("the role of %s: %w", c.Token, err)
+		return "", err
 	}
 	return resolved.fingerprint(), nil
 }
@@ -233,9 +243,9 @@ func (s specs) roleDefinition(ctx context.Context, c supervise.Claim) (string, e
 // prompt ends with. It is the one launch that may stamp an issue key into its commits too
 // (issueTrailer), since it is the one that works a repository.
 func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
-	resolved, err := resolveClaimRole(ctx, s.planRole, s.roles, s.backendFor, c.Issue, c.Role)
+	resolved, err := s.resolveRole(ctx, c)
 	if err != nil {
-		return runtime.SpawnSpec{}, fmt.Errorf("the role of %s: %w", c.Token, err)
+		return runtime.SpawnSpec{}, err
 	}
 	promptPaths, err := s.rolePromptPaths(c, resolved)
 	if err != nil {
@@ -538,9 +548,9 @@ func (s specs) controllerSpawnSpec(ctx context.Context, c supervise.Claim) (runt
 	if s.prompts == nil {
 		return runtime.SpawnSpec{}, errors.New("the daemon prompt bundle was not constructed at boot")
 	}
-	resolved, err := resolveClaimRole(ctx, s.planRole, s.roles, s.backendFor, c.Issue, c.Role)
+	resolved, err := s.resolveRole(ctx, c)
 	if err != nil {
-		return runtime.SpawnSpec{}, fmt.Errorf("the role of %s: %w", c.Token, err)
+		return runtime.SpawnSpec{}, err
 	}
 	paths, err := s.prompts.ControllerPromptPaths(true)
 	if err != nil {
