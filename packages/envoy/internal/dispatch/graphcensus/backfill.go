@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -131,6 +134,9 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 // are that rule's. A test runs a backfill of another rule through it.
 func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule int) (BackfillReport, error) {
 	report := BackfillReport{}
+	if err := requireBackfillIndexes(ctx, database); err != nil {
+		return report, err
+	}
 	// The cause of a fact whose row's own event cannot be found is the store's sentinel, which
 	// reads as "no event recorded this write" and is exactly true of a row written before the
 	// store existed. The run appends no event of its own: events.Broker is the one writer of
@@ -248,6 +254,51 @@ const walkedColumnsAnalysis = `analyze document_blocks (node_kind), block_refs (
 func analyzeWalkedColumns(ctx context.Context, database *store.Store) error {
 	if _, err := database.Pool.Exec(ctx, walkedColumnsAnalysis); err != nil {
 		return fmt.Errorf("analyze the columns the walks read their rows by: %w", err)
+	}
+	return nil
+}
+
+// BackfillIndexes are the indexes the backfill's reads stand on (migrations 20261119020700 to
+// 20261119021000): the two its batches probe events through for each row's event
+// (BlockRowsStatement, CommentRowsStatement), and the two its walks read one batch through in
+// their order (BlockRowsStatement, BlockRefRowsStatement). Without any one of them, each batch of
+// that read reads a whole table, and the run takes time growing with the square of the data: on a
+// seeded database of 270,539 blocks and 28,338 comments the block and comment passes took 31
+// minutes without them.
+var BackfillIndexes = []string{
+	"events_artifact_version_number",
+	"events_comment_created_id",
+	"document_blocks_naming_no_node",
+	"block_refs_naming_no_node",
+}
+
+// backfillIndexesNotUsable is the read requireBackfillIndexes makes: each of the indexes $1 names,
+// in its order, that the schema the runner made the tables in does not hold as a valid index, one
+// the planner may read. A concurrent build that failed leaves its index invalid, which the runner
+// drops and builds again only at its next run.
+const backfillIndexesNotUsable = `
+	select wanted.name
+	from unnest($1::text[]) with ordinality as wanted (name, place)
+	where not exists (
+		select 1 from pg_index i
+		where i.indexrelid = to_regclass(quote_ident(current_schema()) || '.' || quote_ident(wanted.name))
+		  and i.indisvalid)
+	order by wanted.place`
+
+// requireBackfillIndexes refuses the run, naming each, while any of BackfillIndexes is absent or
+// invalid: the run would then read a whole table for each batch, for longer the more rows the
+// deployment holds, so a refusal before it writes anything costs less than a run that may not end.
+func requireBackfillIndexes(ctx context.Context, database *store.Store) error {
+	rows, err := database.Pool.Query(ctx, backfillIndexesNotUsable, BackfillIndexes)
+	if err != nil {
+		return fmt.Errorf("read whether the indexes the backfill reads through are valid: %w", err)
+	}
+	missing, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read whether the indexes the backfill reads through are valid: %w", err)
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("refused: the index(es) %s, which this release's migrations 20261119020700 to 20261119021000 build, are absent or invalid, and without them each batch reads a whole table; let the boot's migrations build them, then run this again", strings.Join(missing, ", "))
 	}
 	return nil
 }
