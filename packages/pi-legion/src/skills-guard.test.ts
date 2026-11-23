@@ -599,9 +599,9 @@ test("the worker prompt's push step leaves out a check CI proves", () => {
 // back names that case and gives it to the architect, so the two texts say the same thing
 // (dispatch://INFRA-3204, tester round 5). The one exception is a job held back without its
 // label: a job of a called workflow whose caller is skipped never starts, so its check has no run,
-// and the implementer's label cures it (`ci-checks.md`, the same section's held-back step). Retro
-// and the architect's acceptance each name that case as a check with no pass standing, so neither
-// sends a missing label to the architect as wrong words.
+// and the implementer's label cures it (`ci-checks.md`, the same section's held-back step). Retro,
+// the tester's rule and the architect's acceptance each name that case as a check with no pass
+// standing, so none of them sends a missing label to the architect as wrong words.
 test("retro gives a ci_check that no run answers to the architect, not to the implementer", () => {
   const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
   const sentences = retro.split(/(?<=\.)\s+/);
@@ -621,7 +621,14 @@ test("retro gives a ci_check that no run answers to the architect, not to the im
   ).toBe(true);
 });
 
-test("the architect's acceptance does not correct the words of a check that names a job held back without its label", () => {
+test("a job held back without its label is a check with no pass, not wrong words, for the tester and the architect", () => {
+  const ciChecks = collapsed(path.join(staged, "legion-worker", "references", "ci-checks.md"));
+  expect(ciChecks).toContain(
+    "A `ci_check` check goes in `failures` only when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label"
+  );
+  expect(ciChecks).toContain(
+    "The check's words are right: the implementer adds the label and pushes, and each other role sends the issue back to the implementer for it"
+  );
   expect(collapsed(path.join(staged, "legion-architect", "SKILL.md"))).toContain(
     "a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label"
   );
