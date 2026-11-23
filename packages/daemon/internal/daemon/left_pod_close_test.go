@@ -419,6 +419,80 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	}
 }
 
+// turnedBeforeQuiet records a turn of the rig's planner that started forty minutes ago, before the
+// pod went quiet half an hour ago (quietPod), and answers its moment as the database holds it. The
+// pass then carries a turn start that is not zero into its close's check
+// (record.IssueWorkspaceCheck.TurnStart), so a close that dropped that moment on its way would read
+// this old turn as one since the pass and hold.
+func turnedBeforeQuiet(t *testing.T, rig *idleRig) time.Time {
+	t.Helper()
+	at := time.Now().Add(-40 * time.Minute).UTC().Truncate(time.Microsecond)
+	if _, err := rig.pool.Exec(context.Background(), `update claims set last_turn_start = $2 where issue = $1`,
+		rig.issue.Key, at); err != nil {
+		t.Fatalf("record the planner's turn before the pod went quiet: %v", err)
+	}
+	return at
+}
+
+// rowTurnStart is the turnStart the rig's queued row of kind carries, with op the row's supervise op
+// ("" for a row of another kind), and false where that row names none.
+func rowTurnStart(t *testing.T, rig *idleRig, kind, op string) (time.Time, bool) {
+	t.Helper()
+	var raw *string
+	if err := rig.pool.QueryRow(context.Background(), `select payload->>'turnStart' from outbox
+		where issue = $1 and kind = $2 and coalesce(payload->>'op', '') = $3 order by id limit 1`,
+		rig.issue.Key, kind, op).Scan(&raw); err != nil {
+		t.Fatalf("read the turn start of the %s %s row: %v", kind, op, err)
+	}
+	if raw == nil {
+		return time.Time{}, false
+	}
+	at, err := time.Parse(time.RFC3339Nano, *raw)
+	if err != nil {
+		t.Fatalf("the %s %s row's turn start %q: %v", kind, op, *raw, err)
+	}
+	return at, true
+}
+
+// checkedLeftPodClose stands the parked child whose planner an operator's resume brought back, live
+// and idle in a pod built again, its last turn started before the pod went quiet
+// (turnedBeforeQuiet), and runs one idle pass and the workspace check of the close that pass
+// queues. The check carries that turn's moment, the pass's newest turn start, and reads a
+// workspace that holds nothing origin does not hold; reading, where not nil, runs as the read
+// begins, at readAt. The rows the check queues wait: the runner's clock stands at readAt, before
+// they were queued. It answers the rig and the planner's turn start.
+func checkedLeftPodClose(t *testing.T, reading func(rig *idleRig, readAt time.Time)) (*idleRig, time.Time) {
+	t.Helper()
+	rig := newLeftPodRig(t, false)
+	parkChild(t, rig)
+	rig.drain(t)
+	leftPodGone(rig)
+	resumeAsOperator(t, rig)
+	turnAt := turnedBeforeQuiet(t, rig)
+	if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_bundle"}) {
+		t.Fatalf("the passes queued %v, want the close's workspace check alone", queued)
+	}
+	if carried, ok := rowTurnStart(t, rig, "issue_bundle", ""); !ok || !carried.Equal(turnAt) {
+		t.Fatalf("the close's check carries the turn start %v (named %t), want the planner's turn at %v: the pass's newest turn start",
+			carried, ok, turnAt)
+	}
+	readAt := time.Now().UTC().Truncate(time.Microsecond)
+	rig.runner.now = func() time.Time { return readAt }
+	rig.sup.deps.Runtime = &readClockRuntime{releaseRuntime: rig.rt, reading: func() {
+		if reading != nil {
+			reading(rig, readAt)
+		}
+	}}
+	rig.drain(t)
+	if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
+		t.Fatalf("the workspace was read through %v, want one read through the planner", read)
+	}
+	if rig.declined(t) {
+		t.Fatal("the clean read recorded a decline")
+	}
+	return rig, turnAt
+}
+
 // A close's check reads the workspace on the lifecycle lane while other lanes run, so a role can be
 // given work after the pass queued the check: a message starts a turn before the read begins, the
 // read snapshots while the turn runs, and the turn commits after that snapshot and ends before the
@@ -427,43 +501,20 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 // issue_releases.turn_start is a release's), does. The close stops no role and suspends no Sandbox
 // after a turn that started since the pass, and the next pass reads the workspace again.
 //
-// The control runs the same check with no turn since the pass, and the close stops the planner.
+// The planner's last turn started before the pod went quiet, so the pass's turn start is not zero
+// and the check carries it through its row. The control runs the same check with no turn since
+// the pass, and the close stops the planner: a check that lost the pass's turn start on the way
+// would read the planner's old turn as one since the pass and hold.
 func TestALeftPodCloseHoldsOnATurnThatEndedDuringItsRead(t *testing.T) {
-	check := func(t *testing.T, turn bool) *idleRig {
-		t.Helper()
-		rig := newLeftPodRig(t, false)
-		parkChild(t, rig)
-		rig.drain(t)
-		leftPodGone(rig)
-		resumeAsOperator(t, rig)
-		if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_bundle"}) {
-			t.Fatalf("the passes queued %v, want the close's workspace check alone", queued)
-		}
-		readAt := time.Now().UTC().Truncate(time.Microsecond)
-		rig.runner.now = func() time.Time { return readAt }
-		rig.sup.deps.Runtime = &readClockRuntime{releaseRuntime: rig.rt, reading: func() {
-			if !turn {
-				return
-			}
+	t.Run("a_turn_that_ended_during_the_read", func(t *testing.T) {
+		rig, _ := checkedLeftPodClose(t, func(rig *idleRig, readAt time.Time) {
 			// The turn started a second before the read began, after the pass, and it has
 			// ended: the claim stands idle again by the time the check decides.
 			if _, err := rig.pool.Exec(context.Background(), `update claims set last_turn_start = $2 where issue = $1`,
 				rig.issue.Key, readAt.Add(-time.Second)); err != nil {
 				t.Errorf("record the turn: %v", err)
 			}
-		}}
-		rig.drain(t)
-		if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
-			t.Fatalf("the workspace was read through %v, want one read through the planner", read)
-		}
-		if rig.declined(t) {
-			t.Fatal("the clean read recorded a decline")
-		}
-		return rig
-	}
-
-	t.Run("a_turn_that_ended_during_the_read", func(t *testing.T) {
-		rig := check(t, true)
+		})
 		if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
 			t.Fatalf("the planner = %s by %s, want it live: a turn that started after the pass may have made work the read did not see",
 				got.State, got.SuspendedBy)
@@ -476,9 +527,84 @@ func TestALeftPodCloseHoldsOnATurnThatEndedDuringItsRead(t *testing.T) {
 	})
 
 	t.Run("control:_no_turn_since_the_pass", func(t *testing.T) {
-		rig := check(t, false)
+		rig, _ := checkedLeftPodClose(t, nil)
 		if rows := rig.rows(t); !slices.Contains(rows, "supervise:suspend") || !slices.Contains(rows, "issue_suspend") {
 			t.Fatalf("rows after the check = %v, want the close's stop and its Sandbox suspension queued after a clean read with no turn since the pass", rows)
+		}
+	})
+}
+
+// The check's transaction queues the close's stops and commits, and the lane runs them after it, so
+// a role can be given work in between: a message starts a turn after the check decided and before
+// the lane runs the role's `suspend`. Such a turn may make work the check's read did not see, and
+// the suspend would end the turn and the Sandbox suspension after it would delete the disk that
+// work is on. So each `suspend` the check queues carries the pass's newest turn start
+// (record.SuperviseRequest.TurnStart), and the suspend of a claim that started a turn after it
+// finishes without acting, as a release's role stop is cancelled by a turn after its mark: the
+// planner stays live in its pod, the Sandbox suspension waits for it (store.IssueSuspension), and
+// the next pass reads the workspace again.
+//
+// The control runs the same stop with no turn since the check: the planner is suspended by the
+// daemon and the Sandbox goes, the turn start of the planner's old turn notwithstanding.
+func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
+	ctx := context.Background()
+	stopQueued := func(t *testing.T) (*idleRig, time.Time) {
+		t.Helper()
+		rig, turnAt := checkedLeftPodClose(t, nil)
+		if rows := rig.rows(t); !slices.Contains(rows, "supervise:suspend") || !slices.Contains(rows, "issue_suspend") {
+			t.Fatalf("rows after the check = %v, want the close's stop and its Sandbox suspension queued", rows)
+		}
+		if fence, ok := rowTurnStart(t, rig, "supervise", "suspend"); !ok || !fence.Equal(turnAt) {
+			t.Fatalf("the close's stop carries the turn start %v (named %t), want the check's, the planner's turn at %v", fence, ok, turnAt)
+		}
+		// From here every row the check queued is due.
+		rig.runner.now = func() time.Time { return time.Now().Add(time.Minute) }
+		return rig, turnAt
+	}
+
+	t.Run("a_turn_that_started_after_the_check", func(t *testing.T) {
+		rig, turnAt := stopQueued(t)
+		// A message reached the planner after the check's transaction committed: its turn starts,
+		// and here it has ended too, before the lane runs the stop.
+		for _, ev := range []supervise.Event{supervise.StreamTurnStart{Claim: rig.token}, supervise.StreamTurnEnd{Claim: rig.token}} {
+			if err := rig.machine.Handle(ctx, ev); err != nil {
+				t.Fatalf("handle %T for %s: %v", ev, rig.token, err)
+			}
+		}
+		rig.machine.Wait()
+		if got := rig.machine.Claim(); !got.LastTurnStart.After(turnAt) {
+			t.Fatalf("the planner's last turn started at %v, want after the check's turn start %v", got.LastTurnStart, turnAt)
+		}
+		rig.drain(t)
+		if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
+			t.Fatalf("the planner = %s by %s, want it live: its turn after the check may have made work the read did not see",
+				got.State, got.SuspendedBy)
+		}
+		if got := rig.storedClaim(t, rig.token); got.State == supervise.StateSuspended || got.Locator == nil {
+			t.Fatalf("the stored planner = %s with process %+v, want it live with the process it had", got.State, got.Locator)
+		}
+		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue"}) {
+			t.Fatalf("teardowns asked = %v, want the park's alone: the close's Sandbox suspension waits for the live planner", asked)
+		}
+		if _, suspended := rig.rt.reads(); suspended != 1 {
+			t.Fatalf("Sandbox teardowns the store authorized = %d, want the park's one", suspended)
+		}
+		if rows := rig.rows(t); slices.Contains(rows, "supervise:suspend") {
+			t.Fatalf("rows after the drain = %v, want the stop finished without acting", rows)
+		}
+	})
+
+	t.Run("control:_no_turn_since_the_check", func(t *testing.T) {
+		rig, _ := stopQueued(t)
+		rig.drain(t)
+		if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon {
+			t.Fatalf("the planner = %s by %s, want it suspended by the daemon: no turn started after the check", got.State, got.SuspendedBy)
+		}
+		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue", "SuspendIssue"}) {
+			t.Fatalf("teardowns asked = %v, want the park's and then the close's", asked)
+		}
+		if left := rig.rows(t); len(left) != 0 {
+			t.Fatalf("rows left after the close = %v, want none", left)
 		}
 	})
 }
