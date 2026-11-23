@@ -469,3 +469,78 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 		})
 	}
 }
+
+// TestALoginTheBrokerRateLimitedWaitsItsRetryAfter pins the wait after a token login answered 429:
+// the short schedule's step, or the Retry-After the answer names where it asks longer, in seconds
+// or as an HTTP date, though never longer than the long schedule's most. The broker's launcher
+// routes answer a 429 with the wait their bucket refills in (by default 30 s per source address,
+// a minute per account), and a login sent before then spends a token verification and is refused
+// again. The rows asking 30 s, a date 45 s ahead, a day and a number past int64 are the change:
+// before it, a 429 waited the short step whatever it asked. The other rows wait the step, as they
+// did: a 429 asking less than the step, naming no Retry-After, a date already past, a negative
+// number or no wait at all, and a 503 asking 30 s, since only a 429's Retry-After is read.
+func TestALoginTheBrokerRateLimitedWaitsItsRetryAfter(t *testing.T) {
+	const step = 2 * time.Second
+	withUnansweredRetry(t, step, 10*time.Second)
+	withLoginRetry(t, 30*time.Second, 5*time.Minute)
+	for _, row := range []struct {
+		name   string
+		status int
+		// retryAfter is the Retry-After the answer carries, read as it is written; "" carries none.
+		retryAfter func() string
+		// least and most bound the wait the login's log line names.
+		least, most time.Duration
+	}{
+		{"a 429 asking 30 s", http.StatusTooManyRequests, fixed("30"), 30 * time.Second, 30 * time.Second},
+		{"a 429 asking until a date 45 s ahead", http.StatusTooManyRequests, func() string {
+			// An HTTP date names whole seconds, so the wait is a little under 45 s.
+			return time.Now().Add(45 * time.Second).UTC().Format(http.TimeFormat)
+		}, 40 * time.Second, 45 * time.Second},
+		{"a 429 asking a day waits the long schedule's most", http.StatusTooManyRequests, fixed("86400"), 5 * time.Minute, 5 * time.Minute},
+		{"a 429 asking a number past int64 waits the long schedule's most", http.StatusTooManyRequests, fixed("99999999999999999999999"), 5 * time.Minute, 5 * time.Minute},
+		{"a 429 asking 1 s", http.StatusTooManyRequests, fixed("1"), step, step},
+		{"a 429 naming no Retry-After", http.StatusTooManyRequests, fixed(""), step, step},
+		{"a 429 naming a date already past", http.StatusTooManyRequests, fixed("Mon, 02 Jan 2006 15:04:05 GMT"), step, step},
+		{"a 429 naming a negative number", http.StatusTooManyRequests, fixed("-30"), step, step},
+		{"a 429 naming no wait", http.StatusTooManyRequests, fixed("soon"), step, step},
+		{"a 503 asking 30 s", http.StatusServiceUnavailable, fixed("30"), step, step},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			var sent atomic.Value
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				value := row.retryAfter()
+				sent.Store(value)
+				if value != "" {
+					w.Header().Set("Retry-After", value)
+				}
+				w.WriteHeader(row.status)
+				fmt.Fprint(w, `{"code":"RATE_LIMITED","error":"too many token logins"}`)
+			}))
+			t.Cleanup(server.Close)
+			logged := &lockedLog{}
+			client := &Client{
+				URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "token"),
+				Log: slog.New(slog.NewTextHandler(logged, &slog.HandlerOptions{ReplaceAttr: withoutTime})),
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			err := client.Start(ctx)
+			cancel() // before the row reads the log, so the loop cannot write a second line into it
+			if err == nil {
+				t.Fatal("the login succeeded, want the refusal this row drove")
+			}
+			got := strings.TrimSuffix(logged.String(), "\n")
+			head := fmt.Sprintf("level=ERROR msg=%q class=broker-unavailable schedule=short retry_in=",
+				"agent-secrets: the token login failed; retrying")
+			rest, headed := strings.CutPrefix(got, head)
+			waited, _, named := strings.Cut(rest, " error=")
+			if !headed || !named {
+				t.Fatalf("the line\n\t%s\nwants the head\n\t%s<wait> error=", got, head)
+			}
+			wait, err := time.ParseDuration(waited)
+			if err != nil || wait < row.least || wait > row.most {
+				t.Fatalf("a login answered %d with Retry-After %q waits %s before the next (%v), want %s to %s",
+					row.status, sent.Load(), waited, err, row.least, row.most)
+			}
+		})
+	}
+}
