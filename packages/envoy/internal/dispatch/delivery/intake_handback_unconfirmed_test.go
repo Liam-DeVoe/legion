@@ -470,7 +470,9 @@ func delivering(durable *heldDurable) *intakeDelivery {
 // (requireHandBackBeforeCreation). The negative control is the mark made after the admission, with
 // this hook between the two: the stop releases the hold, and the row fails at the hold's check.
 func TestAnEarlierDeliverysHandBackAdmittedBeforeItsPublishKeepsTheHoldAtTheStop(t *testing.T) {
-	t.Parallel()
+	// Serial: the stop's drain and its connected read must each answer within the intake's
+	// callWait (100 ms) for the hand-back to be admitted at all, which eight tests on four CPUs can
+	// miss without a defect.
 	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
