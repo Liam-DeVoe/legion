@@ -2250,20 +2250,24 @@ func (r *outbox) updateAskLeftRound(row record.OutboxRow, payload record.UpdateA
 // workerToken is the claim a row of role on issue acts on, and whose Envoy topic a role message of
 // the row is published to (publishToRole and publishKeptToRole, under notify.RoleTopicPrefix):
 // held, the claim the row's producer named, where it names one; otherwise the claim of the worker
-// on role's step (record.WorkerClaim) over the issue's phases rows as the record holds them when
-// the row runs. A step's agent can be the agent of a key, which works the step in the claim it
-// started on an earlier step of another role, so the role's own token would reach no agent or the
-// wrong one. issue is the row's own (record.OutboxRow.Issue), or for a pause's stop keyed by the
-// project the issue its payload names (pauseStop).
+// on role's step over the issue's phases rows as the record holds them when the row runs, read in
+// a transaction of its own (record.ReadWorkerClaim). A step's agent can be the agent of a key,
+// which works the step in the claim it started on an earlier step of another role, so the role's
+// own token would reach no agent or the wrong one. issue is the row's own (record.OutboxRow.Issue),
+// or for a pause's stop keyed by the project the issue its payload names (pauseStop).
 func (r *outbox) workerToken(ctx context.Context, issue string, role claim.Role, held claim.Token) (claim.Token, error) {
 	if held != "" {
 		return held, nil
 	}
-	rows, err := r.phaseRows(ctx, issue)
-	if err != nil {
-		return "", err
+	var token claim.Token
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		token, err = record.ReadWorkerClaim(ctx, r.records, tx, r.project, issue, role)
+		return err
+	}); err != nil {
+		return "", fmt.Errorf("the %s of %s: %w", role, issue, err)
 	}
-	return r.workerOf(issue, role, rows)
+	return token, nil
 }
 
 // workerOf is the claim of the worker on role's step of issue among rows, the issue's phases rows
@@ -4247,11 +4251,11 @@ func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload re
 // the latest pause ended, or in a project no pause has ended, keeps the bound its row was due at.
 // The pause is read as admit's readStallFloor reads it (store.OpenOrLastPauseTx), with the claim
 // of the look, in one transaction: the claim the look's start reaches, the worker on the check
-// role's step (workerOf over the issue's phases rows), since two claims of one issue can hold one
-// role — the agent of a key on a step of another role, beside that role's own claim — and the
-// other's ready says nothing of when the look's claim could take a turn. While the project is
-// paused the row is held and does not run, so a pause read open here began after the row was
-// claimed, and the row ends the look as it would have.
+// role's step (record.ReadWorkerClaim), since two claims of one issue can hold one role — the agent
+// of a key on a step of another role, beside that role's own claim — and the other's ready says
+// nothing of when the look's claim could take a turn. While the project is paused the row is held
+// and does not run, so a pause read open here began after the row was claimed, and the row ends
+// the look as it would have.
 func (r *outbox) lookBoundAfterPause(ctx context.Context, row record.OutboxRow, look int, check record.ProductionCheck) error {
 	if !check.LookOpen || check.Looks != look || check.LookWakeAt == nil {
 		return nil
@@ -4266,11 +4270,7 @@ func (r *outbox) lookBoundAfterPause(ctx context.Context, row record.OutboxRow, 
 			latest = store.Pause{}
 			return err
 		}
-		rows, err := r.records.Phases(ctx, tx, row.Issue)
-		if err != nil {
-			return err
-		}
-		token, err := r.workerOf(row.Issue, check.Role, rows)
+		token, err := record.ReadWorkerClaim(ctx, r.records, tx, r.project, row.Issue, check.Role)
 		if err != nil {
 			return err
 		}

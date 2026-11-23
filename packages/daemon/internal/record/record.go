@@ -2772,6 +2772,25 @@ func WorkerClaimOf(project, issue string, role claim.Role, entries map[PhaseRole
 	return WorkerClaim(project, issue, role, []PhaseRow{{Issue: issue, Role: role, Claim: entry.Claim, StepTask: entry.StepTask}})
 }
 
+// PhaseReader reads an issue's phases rows (Store.Phases), what ReadWorkerClaim needs of a store.
+type PhaseReader interface {
+	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
+}
+
+// ReadWorkerClaim is WorkerClaim over issue's phases rows as tx reads them: the claim of the agent
+// that works role's step of issue now, read in the caller's transaction. It is the one reader of
+// that claim for a caller that holds no rows of its own — the engine (Engine.workerClaim), the
+// open phase's worker (workflow.OpenWorker), the operator's routes (internal/api's workerToken) and
+// the outbox's executors (internal/daemon's workerToken and lookBoundAfterPause) — so each reads
+// the rows and the rule the same way.
+func ReadWorkerClaim(ctx context.Context, phases PhaseReader, tx pgx.Tx, project, issue string, role claim.Role) (claim.Token, error) {
+	rows, err := phases.Phases(ctx, tx, issue)
+	if err != nil {
+		return "", fmt.Errorf("read the phases rows of %s: %w", issue, err)
+	}
+	return WorkerClaim(project, issue, role, rows)
+}
+
 // Lingers says whether the root lingers after its close: its linger deadline is set, and
 // re-admission clears it.
 func (i Issue) Lingers() bool { return i.LingerUntil != nil }

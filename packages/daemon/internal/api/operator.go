@@ -488,27 +488,23 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(ctx, m.Claim()))
 }
 
-// workerToken is the claim of the agent that works role's step of issue now (record.WorkerClaim),
-// read from the issue's phases rows in a read-only transaction of its own, as a completion reads
+// workerToken is the claim of the agent that works role's step of issue now, read from the issue's
+// phases rows in a read-only transaction of its own (record.ReadWorkerClaim), as a completion reads
 // its position (handoffPosition): the claim the step's entry wrote on the role's row, and the
 // role's own token where that row runs no step of the plan. The operator's spawn and the
 // controller's recoveries name a claim by its issue and role, and so reach the claim that works
 // that role's step rather than a claim of the role's name that runs none. A daemon built with no
-// record holds no plan rows, so the worker of each step there is the role's own claim.
+// record cannot say which claim that is, so it refuses, as every route that reads the record does.
 func (s *server) workerToken(ctx context.Context, issue string, role claim.Role) (claim.Token, error) {
 	if s.pool == nil || s.records == nil {
-		return record.WorkerClaim(s.project, issue, role, nil)
+		return "", errors.New("record dependencies are unavailable")
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	rows, err := s.records.Phases(ctx, tx, issue)
-	if err != nil {
-		return "", err
-	}
-	token, err := record.WorkerClaim(s.project, issue, role, rows)
+	token, err := record.ReadWorkerClaim(ctx, s.records, tx, s.project, issue, role)
 	if err != nil {
 		return "", err
 	}

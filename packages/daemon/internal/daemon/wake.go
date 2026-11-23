@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -423,12 +425,11 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
 // worker of the pod's open phase, the claim the record gives the step of the open phase's role
-// (workflow.OpenRoleOf, which at step is the role of the running step, read with the issue, and
-// record.WorkerClaim), where that claim stands released serving the issue's run. That claim can be
-// a keyed agent's, whose token names another role, beside the role's own claim of an earlier
-// version of the plan, which works no step and gets none. An architect gets none — nothing of its
-// own is due, and a sub-architect woken for nothing would hold a pod open for the backstop period —
-// and neither does an issue whose phase no role works.
+// (workflow.OpenWorker, read in a transaction of its own), where that claim stands released
+// serving the issue's run. That claim can be a keyed agent's, whose token names another role,
+// beside the role's own claim of an earlier version of the plan, which works no step and gets none.
+// An architect gets none — nothing of its own is due, and a sub-architect woken for nothing would
+// hold a pod open for the backstop period — and neither does an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.
@@ -439,18 +440,18 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if r.backstop <= 0 {
 		return nil
 	}
-	role := workflow.OpenRoleOf(issue)
-	if role == "" {
+	var worker claim.Token
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		worker, err = workflow.OpenWorker(ctx, r.records, tx, r.project, issue)
+		return err
+	}); err != nil {
+		return fmt.Errorf("the open phase's worker of %s: %w", issue.Key, err)
+	}
+	if worker == "" {
 		return nil
 	}
-	rows, err := r.phaseRows(ctx, issue.Key)
-	if err != nil {
-		return err
-	}
-	worker, err := record.WorkerClaim(r.project, issue.Key, role, rows)
-	if err != nil {
-		return fmt.Errorf("the %s of %s: %w", role, issue.Key, err)
-	}
+	role := workflow.OpenRoleOf(issue)
 	released, err := r.trees.ReleasedClaimsIn(ctx, r.project, issue.Key)
 	if err != nil {
 		return err
