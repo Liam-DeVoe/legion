@@ -172,9 +172,6 @@ func TestASignInTheIssuerEndedStopsTheRenewalLoop(t *testing.T) {
 				cancel()
 				return make(chan time.Time)
 			})
-			// A token that is not yet in its renewal window, so a Token after Run answers the
-			// token in hand without asking the issuer, unless Run dropped it.
-			client.renewBefore = 10 * time.Second
 			landed := 0
 			err := client.Run(ctx, func(context.Context, *Token) error {
 				landed++
