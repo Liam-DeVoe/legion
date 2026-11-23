@@ -1323,6 +1323,7 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
       const changes = issueChanges(event);
       return (
         changes === undefined ||
+        // `ISSUE_EDGE_FIELDS`, with the title: an edit to either list finds the other.
         ["parent", "needs", "blocked_by", "duplicate_of", "filed_from", "components", "title"].some(
           (field) => changes.has(field)
         )
@@ -1891,6 +1892,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     return targets;
   }
 
+  // The same test as `isIssueWrite`, written inline: an edit to either finds the other.
   if (
     event.type === "issue.created" ||
     event.type === "issue.updated" ||
