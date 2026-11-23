@@ -1701,9 +1701,8 @@ func clearAskInvalidAttribute(node *pmdoc.Node) bool {
 // that no row indexes: resolved while another build serves (resolveUnindexedAskBlock), and none
 // of the seven attributes a version can store once the fleet is one build, as the close's sweep
 // leaves such a block (unindexedAskResolution). The block reads, so it carries no `invalid`
-// either way.
-//
-// kept for one release: roll-window-attributes
+// either way. The one-build write is R10's and stays; the roll window's branch is
+// unindexedAskResolution's and goes with it.
 func unindexedAskWrite(twoBuilds bool) func(*pmdoc.Node) bool {
 	resolve := unindexedAskResolution(twoBuilds)
 	return func(node *pmdoc.Node) bool {

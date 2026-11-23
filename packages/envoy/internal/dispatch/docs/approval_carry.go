@@ -331,6 +331,8 @@ type carryInput struct {
 // out - one citing the decisions document among other words or citing a block of it, which the
 // restore keeps (isPointerLine), or a second copy of the pointer line - stays in A. The answer is
 // a drop for one call of withoutDecisionsPartBlocks, which it walks in order.
+//
+// kept for one release: decisions-step
 func (input carryInput) pointerLinesTaken(approved bool) func(*pmdoc.Node) bool {
 	if !approved || input.pointersLeft == nil || len(*input.pointersLeft) == 0 {
 		return func(*pmdoc.Node) bool { return false }

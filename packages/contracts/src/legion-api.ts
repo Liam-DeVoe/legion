@@ -493,6 +493,7 @@ const legionDesignStep = z.enum(DESIGN_GATE_STEPS);
  * record of every contract since 55 still admits `decisions`, which this reader parses so that
  * the view's enumeration is the daemon's own (legion-api.test.ts). */
 const legionGatedStepView = z.object({
+  // kept for one release: contract-read-side
   step: z.enum(GATED_STEPS).optional(),
   artifactId: nonEmptyString.optional(),
   currentVersion: z.number().int().positive().optional(),

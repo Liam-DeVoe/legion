@@ -553,7 +553,8 @@ type issueAskStateWrites struct {
 // close's withdrawal (api's planWithdrawal) - and is written as wanted gives it. It changes
 // nothing in tree.
 //
-// kept for one release: roll-window-attributes
+// The one-build writes are R10's and stay; each branch on twoBuilds is the roll window's and goes
+// with it.
 func readIssueAskStateWrites(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -565,6 +566,7 @@ func readIssueAskStateWrites(
 ) (*issueAskStateWrites, error) {
 	found := &issueAskStateWrites{artifactID: artifactID}
 	blocks, repeats := readableAskBlocks(tree)
+	// kept for one release: roll-window-attributes
 	if markUnindexed && twoBuilds {
 		found.repeats = repeats
 	}
@@ -597,6 +599,7 @@ func readIssueAskStateWrites(
 		}
 	}
 	shown := func(ask, row model.Ask) model.Ask {
+		// kept for one release: roll-window-attributes
 		if twoBuilds || ask.State != row.State {
 			return ask
 		}
@@ -612,6 +615,7 @@ func readIssueAskStateWrites(
 		if source, copied := sources[block.id]; copied {
 			if ask, write := wanted(source.ask); write {
 				copyWrite := askReadableWrite(twoBuilds, shown(ask, source.ask), source.document)
+				// kept for one release: roll-window-attributes
 				if twoBuilds && ask.State == "answered" {
 					copyWrite = answeredCopyWrite(ask, source.document)
 				}
@@ -626,6 +630,7 @@ func readIssueAskStateWrites(
 				if !resolve(node) {
 					return false
 				}
+				// kept for one release: roll-window-attributes
 				if twoBuilds {
 					found.marked = append(found.marked, ref)
 				}

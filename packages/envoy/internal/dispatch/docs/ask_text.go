@@ -265,7 +265,8 @@ type askNodeAnswer struct {
 	state, answeredBy, answeredAt string
 	selected                      []string
 	answer                        *string
-	planned                       bool
+	// kept for one release: catch-up
+	planned bool
 }
 
 // askNodeAnswerKinds are the tuples of an ask's node askNodeAnswers reads.
@@ -351,6 +352,7 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 // state, and for an answer the person, the time, the options and the words it states on the node
 // (asks' answerFacts).
 func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
+	// kept for one release: catch-up
 	held := askNodeAnswer{state: ask.State, planned: true}
 	if ask.Answer != nil {
 		held.answeredBy = asks.AnswererOf(*ask.Answer)

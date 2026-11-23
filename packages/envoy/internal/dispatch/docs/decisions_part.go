@@ -72,6 +72,8 @@ func hasDecisionsPart(tree *pmdoc.Node) bool {
 // whether it took anything out. Every other heading stays whatever the part holds: an empty part a
 // person approved is the person's, and a write that deletes it changes what they approved. tree
 // itself, and every node it keeps, is left as it was.
+//
+// kept for one release: decisions-step
 func withoutDecisionsPartBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool, stepsHeading bool) (*pmdoc.Node, bool) {
 	start, end := decisionsPart(tree)
 	if start < 0 {
@@ -104,6 +106,8 @@ func withoutDecisionsPartBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool, s
 // withoutBlocks is a copy of tree without each block drop names, wherever it stands, and whether
 // it took one out. Each container on the way to one is a fresh node; every other node is tree's
 // own, which nothing here changes.
+//
+// kept for one release: decisions-step
 func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, bool) {
 	if tree.Type == "text" || len(tree.Children) == 0 {
 		return tree, false
@@ -140,6 +144,8 @@ func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, 
 // of that block kept, and whether it took one off: the pointers the conversion's write gave an
 // answered ask block a document held already (decisionStepCases.shaped). A block left holding no
 // pointer loses the attribute, which it held none of before that write.
+//
+// kept for one release: decisions-step
 func withoutAddedShapedPointers(tree *pmdoc.Node, added map[string][]string, decided map[string]bool) (*pmdoc.Node, bool) {
 	if len(added) == 0 {
 		return tree, false
@@ -170,6 +176,8 @@ const shapedAttribute = "shaped"
 
 // shapedPointersOf is the pointers node's `shaped` attribute holds, in their order, as a parse
 // leaves them (a list of strings) or as a write sets them (a []string).
+//
+// kept for one release: decisions-step
 func shapedPointersOf(node *pmdoc.Node) []string {
 	switch held := node.Attrs[shapedAttribute].(type) {
 	case []string:
@@ -188,6 +196,8 @@ func shapedPointersOf(node *pmdoc.Node) []string {
 
 // withShapedPointers is a copy of node, an ask block, holding pointers as its `shaped` value, and
 // no such attribute where pointers is empty. node itself is left as it was.
+//
+// kept for one release: decisions-step
 func withShapedPointers(node *pmdoc.Node, pointers []string) *pmdoc.Node {
 	shown := *node
 	shown.Attrs = maps.Clone(node.Attrs)

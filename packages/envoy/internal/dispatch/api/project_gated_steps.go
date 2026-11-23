@@ -71,6 +71,7 @@ const retiredDecisionsStep = "decisions"
 // alone is [spec], never the empty list, which would gate nothing.
 //
 // kept for one release: steps-write-admits
+// kept for one release: check-narrowings
 func gatedStepsWithout(steps []string) []string {
 	if !slices.Contains(steps, retiredDecisionsStep) {
 		return steps
