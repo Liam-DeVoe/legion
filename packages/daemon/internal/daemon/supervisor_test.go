@@ -771,12 +771,14 @@ func TestAPhaseTaskWaitsForASendInFlightOnAnotherClaimOfItsIssue(t *testing.T) {
 // while the implementer works task c's step, in its turn or with its send in flight, a phase task
 // of the issue's own working copy is adopted and sent at once, and one of c's working copy still
 // waits. A turn of a message, which adopts nothing, works no known working copy and holds them
-// all. Before, any turn of the issue held every adoption, so the reviewer of a task that holds the
-// issue's own branch waited for the whole of another task's implementation.
+// all, and so does a turn whose task a newer one replaced: the turn still works the copy of the
+// task it took, which the claim no longer holds. Before, any turn of the issue held every
+// adoption, so the reviewer of a task that holds the issue's own branch waited for the whole of
+// another task's implementation.
 //
 // The fault: a turn that holds the adoption of a working copy it does not work, which stalls a task
-// for the length of another task's step. The controls are the cases of the same working copy and
-// of the message, which must still wait.
+// for the length of another task's step. The controls are the cases of the same working copy, of
+// the message and of the replaced task, which must still wait.
 func TestAPhaseTaskWaitsOnlyForATurnInTheWorkingCopyItAdopts(t *testing.T) {
 	const taskC = "legion/LEGION-209.c"
 	for _, tc := range []struct {
@@ -785,6 +787,9 @@ func TestAPhaseTaskWaitsOnlyForATurnInTheWorkingCopyItAdopts(t *testing.T) {
 		inFlight bool
 		// message makes the implementer's task a message of no phase, which adopts nothing.
 		message bool
+		// replaced is a newer task of task e's working copy taking the place of the task whose turn
+		// the implementer is in.
+		replaced bool
 		// branch is the branch of the reviewer's task, and held whether it must wait.
 		branch string
 		held   bool
@@ -794,6 +799,7 @@ func TestAPhaseTaskWaitsOnlyForATurnInTheWorkingCopyItAdopts(t *testing.T) {
 		{name: "a turn in the same task's working copy", branch: taskC, held: true},
 		{name: "a send in flight to the same task's working copy", inFlight: true, branch: taskC, held: true},
 		{name: "a turn of a message", message: true, branch: "", held: true},
+		{name: "a turn whose task a newer one replaced", replaced: true, branch: "", held: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newIssueRig(t)
@@ -829,6 +835,16 @@ func TestAPhaseTaskWaitsOnlyForATurnInTheWorkingCopyItAdopts(t *testing.T) {
 				}
 				if view := writing.View(); view.State != supervise.StateWorking {
 					t.Fatalf("the implementer is %s after its turn started, want working", view.State)
+				}
+				if tc.replaced {
+					if err := writing.Handle(rig.ctx, supervise.RequestDeliver{Claim: implementer, Task: "implement task e", ID: "outbox:3",
+						Phase: phase.Implementing, Generation: 1, Branch: "legion/LEGION-209.e"}); err != nil {
+						t.Fatalf("deliver the implementer's newer task: %v", err)
+					}
+					writing.Wait()
+					if pending := writing.View().Pending; pending == nil || pending.ID != "outbox:3" {
+						t.Fatalf("the implementer holds %+v after the newer task, want it pending in the place of the one its turn took", pending)
+					}
 				}
 			} else if view := writing.View(); !view.SendInFlight {
 				t.Fatalf("the implementer is %s with no send in flight, want its send held at its prompt", view.State)
