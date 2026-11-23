@@ -249,11 +249,12 @@ func TestAWriteBeforeARolesFirstStepLandsOnThatStepsRow(t *testing.T) {
 }
 
 // A role that stands at two steps runs its phase at two places, and a move back to that phase
-// reaches the nearest of them before the task's place, as a failed step's work returns to the
-// nearest step of the type implementation: in `implementer:a reviewer implementer:a tester`, the
-// tester's move back to implementing reaches step 3, the implementer's step the tester tested.
-// Before, a phase that ran at two earlier places served no backward row, and the move was refused
-// as one no row serves.
+// reaches the nearest of them before the task's place, while a failed step's work returns to the
+// first step of the type implementation before it (Walk.returnTarget): in
+// `implementer:a reviewer implementer:a tester`, the tester's move back to implementing reaches
+// step 3, the implementer's step the tester tested, and a fail of the tester that names no step
+// returns to step 1. Before, a phase that ran at two earlier places served no backward row, and the
+// move was refused as one no row serves.
 func TestAMoveBackToAPhaseThatRunsTwiceReachesTheNearest(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
