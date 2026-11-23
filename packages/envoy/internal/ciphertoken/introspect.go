@@ -32,7 +32,8 @@ const maxIntrospectionBytes = 64 << 10
 // here so a reader of a Caller this package decides reads one package (internal/dispatch/api).
 const (
 	// ProjectScopeNamed means Projects is the one project an operator's entry gave the token, or
-	// none for an account entry naming none.
+	// none for an account entry that names a person and no project. A job's token, which names a
+	// service and no person, names exactly one.
 	ProjectScopeNamed = oauthwire.ProjectScopeNamed
 	// ProjectScopePerson means the token acts as its person, and Projects is what its trade
 	// asked for.
@@ -41,6 +42,10 @@ const (
 	// which holds ScopeRead and nothing else beside it (shapeOf) and which a verifier accepts
 	// only under Options.ServesReadOnly.
 	ProjectScopeNone = oauthwire.ProjectScopeNone
+	// ProjectScopePublic means the token is a job's whose entry names public: it names a service
+	// and no person, it reaches every public project, and Projects is the 0 to
+	// oauthwire.MaxProjects private projects its entry lists (shapeOf).
+	ProjectScopePublic = oauthwire.ProjectScopePublic
 )
 
 // ScopeRead is the one OAuth scope a read-only token holds, in the answer's space-separated

@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 const (
@@ -201,7 +203,11 @@ func TestAConnectionProofIsRefused(t *testing.T) {
 // sound proof. A verifier with the switch also admits a read-only token, which SessionCaller
 // refuses (TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne).
 func TestSessionCallerIsTheVerifyRule(t *testing.T) {
-	rig := newRig(t)
+	// The table holds more rows than the address bucket's burst, and each row's token is one
+	// introspection, so the bucket is wide enough for every row: a refusal here is the rule's.
+	rig := newRig(t, func(o *ciphertoken.Options) {
+		o.AddressLimit = ratelimit.Limit{Every: time.Nanosecond, Burst: 64}
+	})
 	caller := newSigner(t)
 	inactive := liveToken(caller.jkt, time.Hour)
 	inactive.Active = false
@@ -223,6 +229,19 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	namedTwoProjects.ProjectScope, namedTwoProjects.Projects = ciphertoken.ProjectScopeNamed, []string{"ACME", "OTHER"}
 	serviceWithProjects := serviceToken(caller.jkt, time.Hour)
 	serviceWithProjects.Projects = []string{"ACME"}
+	// A job's token names its service and no person, and its entry's scope and whole list: named
+	// with exactly one project, or public with 0 to 16 private projects, sorted, each once, and no
+	// OAuth scope at all. Each other shape of the two stays refused.
+	projects := make([]string, 17)
+	for i := range projects {
+		projects[i] = fmt.Sprintf("P%02d", i)
+	}
+	publicForPerson := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, "ACME")
+	publicForPerson.Person = "sjawhar"
+	publicRead := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic)
+	publicRead.Scope = ciphertoken.ScopeRead
+	publicScoped := jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic)
+	publicScoped.Scope = "person"
 	// Each row names whether Verify admits it, so a row that answers otherwise fails by name with
 	// Verify's own error, rather than as a count that names none.
 	for _, row := range []struct {
@@ -242,6 +261,16 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"named with no project, for a person", namedNoProject, true},
 		{"named with two projects", namedTwoProjects, false},
 		{"service with projects", serviceWithProjects, false},
+		{"a job's named token", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME"), true},
+		{"a job's public token naming no project", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic), true},
+		{"a job's public token naming sixteen projects", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, projects[:16]...), true},
+		{"a public token naming seventeen projects", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, projects...), false},
+		{"a public token beside a person", publicForPerson, false},
+		{"a public token holding the scope read", publicRead, false},
+		{"a public token holding an OAuth scope", publicScoped, false},
+		{"a job's named token naming no project", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed), false},
+		{"a job's named token naming two projects", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME", "OTHER"), false},
+		{"a public token whose list is not sorted", jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, "OTHER", "ACME"), false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			token := "token-" + row.name

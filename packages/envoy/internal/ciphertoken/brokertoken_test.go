@@ -177,6 +177,27 @@ func serviceToken(jkt string, life time.Duration) ciphertoken.Introspection {
 	return answer
 }
 
+// jobService is the service a job's token names: the identity its job entry lists, here a pod's
+// Kubernetes service account as the exchange spells its subject.
+const jobService = "system:serviceaccount:example-jobs:example-job"
+
+// jobToken is the answer a job's token gets: what the exchange mints from a job entry, which
+// names the entry's identity as its service and no person, the entry's project scope — named
+// with its one project, or public with its private projects — and its whole list, and no OAuth
+// scope. The projects are carried as given, so a test can hand it a list no exchange mints.
+func jobToken(jkt string, life time.Duration, scope string, projects ...string) ciphertoken.Introspection {
+	return ciphertoken.Introspection{
+		Active:       true,
+		Session:      "ses_job",
+		Service:      jobService,
+		ProjectScope: scope,
+		Projects:     projects,
+		ExpiresAt:    time.Now().Add(life).Unix(),
+		ClientID:     ciphertoken.ExchangeClientID,
+		Thumbprint:   jkt,
+	}
+}
+
 // readOnlyToken is the answer a token a read entry minted gets (BROKER_EXCHANGE_READ_ACCOUNTS):
 // the one scope read, the project scope none, the entry's service and the session it fixes, and
 // no person and no project. It is the answer the broker's own test holds an exchanged read token
@@ -342,9 +363,10 @@ func TestANamedAnswerNamingNoProjectIsAPublicSession(t *testing.T) {
 	}
 }
 
-// TestLiveRefusesAServiceAnswerWithProjects: a token that names a service and no person names no
-// project (the exchange refuses a machine's trade naming one), so an answer that does is no token
-// the exchange minted.
+// TestLiveRefusesAServiceAnswerWithProjects: a token that names a service and no person under the
+// project scope person names no project (the exchange refuses a machine's trade naming one), so an
+// answer that does is no token the exchange minted. A job's token names its service and its
+// projects under the scope named or public, which TestSessionCallerIsTheVerifyRule holds.
 func TestLiveRefusesAServiceAnswerWithProjects(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -357,8 +379,9 @@ func TestLiveRefusesAServiceAnswerWithProjects(t *testing.T) {
 	}
 }
 
-// TestCallerCarriesTheProjects: the token's list reaches the Caller whole, under either scope, as
-// the caller's own copy: a named token's one project and a person token's list alike.
+// TestCallerCarriesTheProjects: the token's list reaches the Caller whole, under each scope, as
+// the caller's own copy: a named token's one project and a person token's list alike, and a job
+// token's service beside its named project or its public list.
 func TestCallerCarriesTheProjects(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -370,6 +393,10 @@ func TestCallerCarriesTheProjects(t *testing.T) {
 	}{
 		"named":  {liveToken(caller.jkt, time.Hour), ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: ciphertoken.ProjectScopeNamed}},
 		"person": {person, ciphertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"PRIV", "PUB"}, ProjectScope: ciphertoken.ProjectScopePerson}},
+		"job-named": {jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopeNamed, "ACME"),
+			ciphertoken.Caller{Session: "ses_job", Service: jobService, Projects: []string{"ACME"}, ProjectScope: ciphertoken.ProjectScopeNamed}},
+		"job-public": {jobToken(caller.jkt, time.Hour, ciphertoken.ProjectScopePublic, "ACME", "PRIV"),
+			ciphertoken.Caller{Session: "ses_job", Service: jobService, Projects: []string{"ACME", "PRIV"}, ProjectScope: ciphertoken.ProjectScopePublic}},
 	} {
 		token := "a-" + name + "-token-with-projects"
 		rig.broker.Says(token, c.answer)
