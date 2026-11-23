@@ -2716,8 +2716,9 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // nothing, and a start the session store could not answer is charged nothing and tried again
 // (startWaitsForStore). Nor is a launch the runtime refuses because the claim's issue pod cannot
 // run it until the pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): it
-// is charged nothing, keeps its refusal as the claim's last start failure, and is tried again at
-// the probe interval for as long as that pod stands. A launch that fails stops the process it
+// is charged nothing, keeps its refusal as the claim's last start failure, and leaves the claim
+// suspended for the daemon, no launch of it tried while that pod stands, until a start resumes it
+// once another pod stands (podRefused, podStillRefuses). A launch that fails stops the process it
 // let go (stopPrevious), whichever step failed. A launch the tree lifecycle refuses (checkLaunch)
 // starts nothing and is charged nothing (relaunchRefused), and so is one whose context ended under
 // it — the daemon's stop. A runtime waits out a cluster that answers a launch's requests overloaded
