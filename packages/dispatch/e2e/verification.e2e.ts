@@ -734,7 +734,8 @@ test("a check with ci_check shows the pass its CI run concluded at the issue's o
     await expect
       .poll(
         async () =>
-          ((await fakeGithubCheckRunReads())[repository]?.[secondHead] ?? 0) - settlerReads === answers.length
+          ((await fakeGithubCheckRunReads())[repository]?.[secondHead] ?? 0) - settlerReads ===
+          answers.length
       )
       .toBe(true);
     expect(answers.length).toBeGreaterThan(0);
