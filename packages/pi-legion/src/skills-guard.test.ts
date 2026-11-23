@@ -683,7 +683,11 @@ test("an implementer and owner task is accepted on the evidence its steps give",
       /reviewer step comes before your acceptance[^.;]*approval/,
       /no tester step before your acceptance[^.;]*the implementer's evidence/,
       /steps after your acceptance in the task run, then retro/,
-      /the daemon acts once the merge comes next[^.;]*`accepting` with no step after yours/,
+      // Where every step has run the conflict waits for the merger (cybermonklabs/legion#4979);
+      // before it, the implementer is asked as in testing and reviewing.
+      /Until the task's last step has run, the daemon asks the implementer to merge the base forward/,
+      /Once every step has run, in `retro` or in `accepting` with no step after yours, the conflict waits/,
+      /once the issue enters `merging` the daemon asks the merger to merge the base forward/,
       /Where the task's reviewer step already ran, the daemon asks the reviewer to read the merge/,
       /A reviewer step after yours reviews the new head when it runs/,
       // Each sentence a reader of the acceptance showed false is gone: the last step can come after
@@ -696,6 +700,11 @@ test("an implementer and owner task is accepted on the evidence its steps give",
       // no step follows the acceptance, and only a reviewer step that already ran is asked again.
       /^(?![\s\S]*acts once the issue moves into `accepting`, `retro` or `merging`)/,
       /^(?![\s\S]*In `accepting`, `retro` or `merging`, where the task has a reviewer step)/,
+      // The words that named the default order alone: the daemon acting wherever the merge comes
+      // next, and the conflict waiting in every `accepting`, which a later tester or reviewer step
+      // makes false.
+      /^(?![\s\S]*the daemon acts once the merge comes next)/,
+      /^(?![\s\S]*Past the review the merge is the merger's: in `accepting` and `retro`)/,
     ]),
     ...lacks("legion-architect/SKILL.md", [
       /your acceptance is the task's last step[^.;]*`sign_off` starts retro/,
@@ -1038,6 +1047,14 @@ test("the skills' sentences that held only in the default steps hold for every o
     ...lacks("legion-retro/SKILL.md", [
       /Read the review \(`--phase review`\) where it has a reviewer step, at the version your `Handoff:` line names when that line names one/,
       /^(?![\s\S]*the review at the version your task's `Handoff:` line names)/,
+      // A task may have no acceptance step, so retro reads no change as accepted.
+      /the merger's: the change passed every step of its task, and the merger decides at the merge/,
+      /^(?![\s\S]*the change is accepted, and the merger decides)/,
+    ]),
+    ...lacks("legion-worker/references/merge-gate.md", [
+      // A step after the review asks the implementer, as before it; only `merging` asks the merger.
+      /`DIRTY` takes a forward merge, the implementer's before `merging` and the merger's in it/,
+      /^(?![\s\S]*the implementer's before the review and the merger's in `merging`)/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
       /a later round costs a CI pass and a review, if any\./,

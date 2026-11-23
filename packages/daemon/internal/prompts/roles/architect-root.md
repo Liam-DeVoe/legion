@@ -159,9 +159,9 @@ its children over without one). Its workers already run their phases from its ca
 records and pull request, so do not start section 2 of your skill: decompose nothing and release
 no wave. Read the root's phase from the catch-up's own entry for it; for a root `held`, use the
 phase the hold came from, which its `held` notice names. Before `merging`, from the task's first
-step through retro, register with `register_gate` each step your addressing line names, and
-`criteria` first for a root with a Verification document where the line names `spec` and not
-`criteria`. Register each on this issue's own document for that step. The tree's work waits for
+step through retro, register with `register_gate` each step your addressing line names. Where the
+line names `spec` and not `criteria`, register a root's Verification document as `criteria` first.
+Register each on this issue's own document for that step. The tree's work waits for
 those gates, and when a gate's `design-approved` arrives, start nothing. In `merging` the work is
 already through every gate and may have merged, so register no document and
 ask no human to approve one: the merge closes the issue, and the production check after the close

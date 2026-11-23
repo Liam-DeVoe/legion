@@ -184,9 +184,11 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 			summary   = "`A person approved a new version of the design of <tree>.`"
 			message   = "Request no approval for it."
 		)
-		// The moves back name planning as main's news rule does, and each step a task may lack only
-		// where the task has it, as the owner's plan reads them (TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns).
-		answers := []string{accepting, "`implementing`, or to `planning` or `testing` where its task has that step", "a `reason` that names the version and the change"}
+		// The moves back name the phase of an earlier step of the issue's task, any of them, as the
+		// owner's plan reads them (TestAMoveBackGoesToAnyEarlierStepInTheGoParts): a list of named
+		// phases holds only for the default steps, since a reviewer step before the acceptance is
+		// an earlier step too.
+		answers := []string{accepting, "to the phase of an earlier step of its task, with a `reason` that names the version and the change"}
 		duty := []string{summary, "a merged change never moves back", "whose pull request is still open", "`dispatch ask` the person on the root"}
 		r4 := []string{message, "`envoy_publish` to the role topic of the phase holder of each issue the version changes, naming the version and what changed"}
 		ruleIn(t, "go/architect-common.md", accepting, answers...)
@@ -194,11 +196,12 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 		ruleIn(t, "go/architect-common.md", message, append(slices.Clone(r4), "Under a `Design gate steps` line that reads `none`")...)
 		ruleIn(t, "roles/architect.md", accepting, answers...)
 		ruleIn(t, "roles/architect.md", message, r4...)
-		// The moves back from accepting as the architect parts named them before planning joined
-		// them: each left planning out of the phases an architect may send an issue back to. The
-		// skill's own sentence is pinned in pi-legion's skills-guard.test.ts, since no composed
-		// prompt reads the skill.
-		retired := []string{"(`implementing` or `testing`)", "`to` `implementing` or `testing`", "back to `implementing` or `testing`"}
+		// The moves back from accepting as the architect parts named them before: each named a list
+		// of phases an architect may send an issue back to, which left planning out, or, with
+		// planning, left out every other earlier step of the task. The skill's own sentence is pinned
+		// in pi-legion's skills-guard.test.ts, since no composed prompt reads the skill.
+		retired := []string{"(`implementing` or `testing`)", "`to` `implementing` or `testing`", "back to `implementing` or `testing`",
+			"`implementing`, or to `planning` or `testing` where its task has that step"}
 		for _, isRoot := range []bool{true, false} {
 			composedSays(t, composer, claim.RoleArchitect, isRoot, slices.Concat(answers, duty, r4)...)
 			text := foldWhitespace(composedText(t, composer, claim.RoleArchitect, isRoot))

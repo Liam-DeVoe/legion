@@ -928,11 +928,14 @@ func TestTheSentencesTheFifthRoundsReadersShowedFalseSayWhatTheDaemonDoes(t *tes
 }
 
 // A merge forward reads the task's own steps (workflow's mergeForwardLanded and
-// mergeForwardOnEntry, classify.MergeComesNext). The reviewer is asked to approve the new head
+// mergeForwardOnEntry, classify.MergeComesNext), joined with cybermonklabs/legion#4979's rule that
+// the merger merges the base forward in `merging`. The reviewer is asked to approve the new head
 // only where its step already ran, and a reviewer step still to come reviews that head when it
-// runs. The merge comes next in `retro`, in `merging`, and in `accepting` only where no step of the
-// task follows the acceptance. Each part is read alone, by its name. This shows the text is loaded,
-// never that an agent follows it.
+// runs. Where every step of the task has run - `retro`, and `accepting` only where no step of the
+// task follows the acceptance - a conflict waits for the merger, whatever the base requires; in
+// `accepting` where a step follows, the implementer is asked as in `testing` and `reviewing`.
+// Each part is read alone, by its name. This shows the text is loaded, never that an agent follows
+// it.
 func TestTheMergeForwardPartsReadTheTasksOwnSteps(t *testing.T) {
 	for _, tc := range []struct {
 		part       string
@@ -942,34 +945,46 @@ func TestTheMergeForwardPartsReadTheTasksOwnSteps(t *testing.T) {
 		{
 			"go/architect-common.md", func(t *testing.T) string { return goPart(t, "architect-common.md") },
 			[]string{
-				"`merge-next`: the merge comes next, since the issue stands in `retro` or `merging`, or in `accepting` with no step of its task after yours.",
-				"The daemon acts once the issue reaches a phase where the merge comes next.",
+				"The implementer is asked before `merging`, and the merger in `merging`, whose merge it is.",
+				"`merge-next`: the issue stands in `merging`.",
+				"Where every step of the task has run, in `retro` or in `accepting` with no step of its task after yours, the conflict waits for the merger whatever the base requires",
 				"Where the task's reviewer step already ran, the daemon also asks the reviewer to read the merge.",
 				"The reviewer tells you what it decided, and tells the phase's worker too where a worker holds the phase.",
 				"A reviewer step after yours reviews the new head when it runs.",
+				// The round that waits on GitHub's merge state, read at a conflicting head.
+				"an approval of a head whose conflict is confirmed then ends the round, the task's later steps go on at that head, and once the issue enters `merging` the daemon asks the merger to merge the base forward, with a `checks-red` notice.",
 			},
 			[]string{
 				"the issue stands in `accepting`, `retro` or `merging` (`merge-next`)",
 				"the daemon acts once the issue moves into `accepting`, `retro` or `merging`",
 				"In `accepting`, `retro` or `merging`, where the task has a reviewer step",
+				"The daemon acts once the issue reaches a phase where the merge comes next.",
+				"the implementer before the review, and in `merging` the merger",
+				"in `accepting` and `retro` the conflict waits for the merger",
+				// The round that waits on GitHub's merge state, as the sentence stood before.
+				"once the issue moves into `accepting`, `retro` or `merging`, the daemon asks the implementer to merge the base forward",
+				"once the issue moves past its review, into `accepting`, `retro` or `merging`",
 			},
 		},
 		{
 			"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") },
 			[]string{
-				"The merge comes next: the issue stands in `retro` or `merging`, or in `accepting` with no step of the task after it.",
+				"It acts only when the next step needs a mergeable head, which is so in four cases. The issue stands in `merging`.",
+				"Where every step of the task has run, in `retro` or in `accepting` with no step of the task after it, the merge comes next, so the conflict waits for the merger whatever the base requires.",
 				"Where the task's reviewer step already ran, the reviewer is asked as well to read the merge and approve the new head or request changes.",
 				"A reviewer step still to come reviews the new head when it runs.",
 			},
 			[]string{
 				"the issue stands in `accepting`, `retro` or `merging`;",
 				"In `accepting`, `retro` or `merging`, where the task has a reviewer step",
+				"The merge comes next: the issue stands in `retro` or `merging`",
+				"In `accepting` and `retro` the work is past its review and the merge comes next",
 			},
 		},
 		{
 			"roles/core/reviewer.md", func(t *testing.T) string { return rolePart(t, "core/reviewer.md") },
-			[]string{"when the merge lands after your step ran and no review round is open."},
-			[]string{"while the issue stands in `accepting`, `retro` or `merging`"},
+			[]string{"When a merge of the base lands after your step ran and no review round is open"},
+			[]string{"while the issue stands in `accepting`, `retro` or `merging`", "while the issue stands past its review (`accepting`, `retro` or `merging`)"},
 		},
 	} {
 		t.Run(tc.part, func(t *testing.T) {
@@ -1077,8 +1092,11 @@ func TestTheSentencesTrueOnlyInTheDefaultStepsHoldForEveryOrder(t *testing.T) {
 		},
 		{
 			"go/merger.md", func(t *testing.T) string { return goPart(t, "merger.md") },
-			[]string{"the reviewer's approval where your task has a reviewer step."},
-			[]string{"its checks and the reviewer's approval: the merge is yours"},
+			[]string{
+				"the reviewer's approval where your task has a reviewer step.",
+				"When your push lands, it tells you the old head and the new one, and, where your task has a reviewer step, asks the reviewer to read the merge and approve the new head.",
+			},
+			[]string{"its checks and the reviewer's approval: the merge is yours", "it tells you the old head and the new one and asks the reviewer to read the merge"},
 		},
 		{
 			"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") },

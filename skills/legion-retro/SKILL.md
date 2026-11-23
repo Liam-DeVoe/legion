@@ -40,7 +40,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
      Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
      Neither that run nor that finding moves the issue back.
 
-   - A `ci_check` check whose derived result is a fail is the merger's: the change is accepted, and the merger decides at the merge whether the base or the change broke it.
+   - A `ci_check` check whose derived result is a fail is the merger's: the change passed every step of its task, and the merger decides at the merge whether the base or the change broke it.
      Name it in your retro message and complete.
 
    - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite:
