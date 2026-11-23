@@ -420,7 +420,8 @@ func (r *rolePromptRuleLive) rootArchitectCarriesTheRule() {
 // about its completion — the `head` the handoff body names, the clause that carries that head to
 // the daemon, and the sentence that records the `plan` handoff with `dispatch handoff-write` and
 // then reports completion — in the planner's own command line. The root architect is held to no
-// part of it: an architect writes no handoff record, and its prompt carries no such paragraph.
+// part of it: its prompt carries no such paragraph, and an architect writes a handoff record only
+// for a step of its own plan that it does itself (architect-common.md).
 func (r *rolePromptRuleLive) plannerCarriesTheCompletionRule() {
 	r.carriesTheRule("planner", "completion-after-work rule", r.token(r.issue, claim.RolePlanner), completionAfterWorkForPlanner)
 }
