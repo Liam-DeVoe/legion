@@ -734,7 +734,9 @@ mkfifo -- "$STORE/IMPLEMENT_APP"
 app_token_refresh_seconds=1
 start_app_token_refresher "$TOKEN_DIR"
 until [ "$(wc -l <"$ARGV_LOG")" -gt "$minted" ]; do
-  [ "$SECONDS" -lt "$end" ] || { printf '%s' x 1<>"$STORE/IMPLEMENT_APP"; stop_app_token_refresher; fail "the refresher started no mint by the end of the row's waits"; }
+  # A write through 1<> frees only a reader already blocked on the FIFO; a file in its place frees
+  # a mint that starts later too, so the stop below ends.
+  [ "$SECONDS" -lt "$end" ] || { printf '%s' x 1<>"$STORE/IMPLEMENT_APP"; rm -f -- "$STORE/IMPLEMENT_APP"; printf '%s' x >"$STORE/IMPLEMENT_APP"; stop_app_token_refresher; fail "the refresher started no mint by the end of the row's waits"; }
   sleep 0.05
 done
 pid=$app_token_refresher
