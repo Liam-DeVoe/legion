@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math/rand/v2"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"unicode"
@@ -170,11 +171,13 @@ func TestRotationsJoinTheVerbsOfTexts(t *testing.T) {
 	}
 }
 
-// Held reads the texts that a text holds once (HeldOf), and its Rotations is Rotations as its
-// comment defines it, each held text read for each set of own verbs: for 20,000 sets of own verbs
-// and of 0 to 40 held texts, drawn at random from the verbs of the synonym groups, the two agree.
-// The cases hold groups that a held text uses each verb of and groups it does not (counted), so
-// both answers of the rule are read.
+// Held reads the texts that a text holds once (HeldOf), and keeps of them only the sets of verbs of
+// each group that they use, so its Rotations reads those sets and no held text again: the held
+// texts written three times over give the same Held. And its Rotations is Rotations as its comment
+// defines it, each held text read for each set of own verbs: for 20,000 sets of own verbs and of 0
+// to 40 held texts, drawn at random from the verbs of the synonym groups, the two agree. The cases
+// hold groups that a held text uses each verb of and groups it does not (counted), so both answers
+// of the rule are read.
 func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 	definition := func(own Verbs, held []Verbs) Verbs {
 		all := own
@@ -201,12 +204,16 @@ func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 			held[index] = draw(random)
 		}
 		want := definition(own, held)
-		if got := HeldOf(held).Rotations(own); got != want {
+		read := HeldOf(held)
+		if got := read.Rotations(own); got != want {
 			t.Fatalf("own %b, held %b: Held gives %b, the definition %b", own, held, got, want)
+		}
+		if again := HeldOf(slices.Concat(held, held, held)); !reflect.DeepEqual(again, read) {
+			t.Fatalf("held %b: the held texts written three times over give the Held %+v, and once %+v: want the same, a Held that keeps no held text", held, again, read)
 		}
 		if want != 0 {
 			rotated++
-		} else if (own | HeldOf(held).all).Rotated() != 0 {
+		} else if (own | read.all).Rotated() != 0 {
 			kept++
 		}
 	}
