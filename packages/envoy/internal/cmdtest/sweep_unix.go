@@ -3,6 +3,7 @@
 package cmdtest
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,10 +54,14 @@ func makeProcessDir() (dir string, release func(), err error) {
 }
 
 // removeBuildsOfEndedProcesses removes each directory of builds (processDirPrefix) in the
-// temporary directory that this user owns and whose lock no process holds (makeProcessDir): its
-// process has ended. It holds the lock while it removes the directory. A directory whose lock a
-// process holds is kept, whatever pid its name carries, as is one it cannot open or remove: it is
-// someone else's to remove, or the next run's.
+// temporary directory that this user owns, whose lock no process holds (makeProcessDir), and
+// whose name's pid runs in no process of this PID namespace: its process has ended. It holds the
+// lock while it removes the directory. A directory whose lock a process holds is kept, whatever
+// pid its name carries: its process runs, in whatever PID namespace. So is one whose pid runs
+// here, even with its lock free: a cmdtest from before the lock (main's, or a branch not yet
+// merged with it) makes its directory with no lock, and a sweep must not remove it while its
+// process builds into it. A directory it cannot open or remove is kept too: it is someone else's
+// to remove, or the next run's.
 func removeBuildsOfEndedProcesses() {
 	root := os.TempDir()
 	entries, err := os.ReadDir(root)
@@ -64,7 +69,8 @@ func removeBuildsOfEndedProcesses() {
 		return
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() || !isBuildsDirName(entry.Name()) {
+		pid, ok := processOfBuildsDir(entry.Name())
+		if !ok || !entry.IsDir() || processRuns(pid) {
 			continue
 		}
 		info, err := entry.Info()
@@ -93,17 +99,23 @@ func removeIfEnded(path string) {
 	_ = os.RemoveAll(path)
 }
 
-// isBuildsDirName reports whether name is a directory of builds' name: processDirPrefix, a pid, a
-// dash.
-func isBuildsDirName(name string) bool {
+// processOfBuildsDir is the pid a directory of builds named name was made by, and whether name is
+// such a directory's name: processDirPrefix, the pid, a dash.
+func processOfBuildsDir(name string) (int, bool) {
 	rest, ok := strings.CutPrefix(name, processDirPrefix)
 	if !ok {
-		return false
+		return 0, false
 	}
 	digits, _, ok := strings.Cut(rest, "-")
 	if !ok {
-		return false
+		return 0, false
 	}
 	pid, err := strconv.Atoi(digits)
-	return err == nil && pid > 0
+	return pid, err == nil && pid > 0
+}
+
+// processRuns reports whether a process of pid runs in this PID namespace: one of another user,
+// which may not be signalled, runs too.
+func processRuns(pid int) bool {
+	return !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
 }

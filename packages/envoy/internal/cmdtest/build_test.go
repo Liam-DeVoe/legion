@@ -227,11 +227,11 @@ func TestAFailedBuildIsBuiltAgainByTheNextTestUnderMain(t *testing.T) {
 }
 
 // TestMainRemovesTheBuildsOfEndedProcesses: before the tests, Main removes each directory of
-// builds whose lock no process holds, and keeps one whose lock a running process holds, whatever
-// pid its name carries, and a directory whose name only looks like one. otherNamespace is what a
-// process in another PID namespace sharing this temporary directory and user leaves, as each role
-// container of a Legion pod does: its name carries a pid that runs nowhere here, and its process
-// holds its lock.
+// builds whose lock no process holds and whose pid runs nowhere here, and keeps one whose lock a
+// running process holds, whatever pid its name carries, and a directory whose name only looks like
+// one. otherNamespace is what a process in another PID namespace sharing this temporary directory
+// and user leaves, as each role container of a Legion pod does: its name carries a pid that runs
+// nowhere here, and its process holds its lock.
 func TestMainRemovesTheBuildsOfEndedProcesses(t *testing.T) {
 	tmp := t.TempDir()
 	ended := exec.Command("true")
@@ -247,6 +247,9 @@ func TestMainRemovesTheBuildsOfEndedProcesses(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, "build-1"), 0o700); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if processRuns(ended.Process.Pid) {
+		t.Skipf("pid %d runs again: another process took it", ended.Process.Pid)
 	}
 	holdLock(t, otherNamespace)
 	holdLock(t, live)
@@ -266,6 +269,25 @@ func TestMainRemovesTheBuildsOfEndedProcesses(t *testing.T) {
 	}
 	if len(entries) != 3 {
 		t.Fatalf("TMPDIR holds %d entries after the process; want the three kept, its own directory removed", len(entries))
+	}
+}
+
+// TestMainKeepsAnUnlockedDirectoryOfAProcessThatRuns: a cmdtest from before the lock (main's, or a
+// branch not yet merged with it) makes its directory of builds with no lock. Main keeps such a
+// directory while its name's pid runs here, so a sweep beside that process does not remove the
+// builds it is still making.
+func TestMainKeepsAnUnlockedDirectoryOfAProcessThatRuns(t *testing.T) {
+	tmp := t.TempDir()
+	unlocked := filepath.Join(tmp, processDirPrefix+strconv.Itoa(os.Getpid())+"-nolock")
+	if err := os.MkdirAll(filepath.Join(unlocked, "build-1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	run := runBuildChild(t, "main", "TMPDIR="+tmp)
+	if run.exit != 0 {
+		t.Fatalf("the process exited %d:\n%s", run.exit, run.out)
+	}
+	if _, err := os.Stat(filepath.Join(unlocked, "build-1")); err != nil {
+		t.Fatalf("%s, unlocked and named for a pid that runs here, was removed (%v); want it kept", unlocked, err)
 	}
 }
 
