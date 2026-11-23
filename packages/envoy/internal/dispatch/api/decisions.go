@@ -144,38 +144,67 @@ func artifactMissing(err error) bool {
 // ask's block is in the spec where the spec's block index holds an ask block under its block id
 // (document_blocks, keyed as the ask is): a row that names the spec and a block it no longer
 // holds - one a reopen restored with no block to write, which a later settlement retracts - is no
-// question of it. reader is the answer's own, and each row registers its texts with it once the
+// question of it.
+//
+// That index cannot say so while the spec owes it - while the spec is among the documents the
+// coverage read names as owing their block index (queueOwedDocuments), read in the same batch: a
+// version above the bound leaves its blocks to the block-index reconciliation, so an ask block it
+// added is in no document_blocks row yet, and for a spec converted into its issue's room no row
+// says yet which fragment holds the block (refs.AskBlockDocumentSQL). Then the spec's asks are the
+// asks rows of the ask blocks its fragment holds as the text routes read it
+// (docs.API.TextWithAsks), found by the room and those block ids
+// (refs.AsksOfFragmentBlocksSQL), whether or not the index holds them: a question a person can
+// see does not drop out of the read because the index has not caught up, and no ask whose block
+// the spec no longer holds is listed from an index that is behind. Once the index states the
+// spec's version, its rows decide again. Either way one statement reads each ask once, so none
+// is listed twice. reader is the answer's own, and each row registers its texts with it once the
 // slice has stopped growing: a shaping registers a pointer into the row, and an append that moved
 // the backing array would leave the reader filling trees into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	var owed []model.OwedDocument
+	questions := []issueAskRow{}
+	batch := &pgx.Batch{}
+	queueOwedDocuments(batch, key, &owed)
+	batch.Queue(`
 		select `+askReadColumns+` `+askReadFrom+`
 		where a.issue_key = $1 and `+refs.AsksOfDocumentSQL("a", "$2::uuid")+`
 		  and exists (
 			select 1 from document_blocks d
 			where d.artifact_id = a.block_artifact_id and d.block_id = a.block_id and d.type = 'ask')
 		order by a.created_at, a.id
-	`, key, specID)
-	if err != nil {
+	`, key, specID).Query(func(rows pgx.Rows) error {
+		return scanOpenQuestions(rows, &questions)
+	})
+	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
 		return nil, err
 	}
-	questions := []issueAskRow{}
-	for rows.Next() {
-		ask, reply, err := scanAskRead(rows)
+	if slices.ContainsFunc(owed, func(document model.OwedDocument) bool { return document.ArtifactID == specID }) {
+		text, err := s.deps.Docs.TextWithAsks(ctx, specID, false)
 		if err != nil {
-			rows.Close()
+			return nil, fmt.Errorf("read the ask blocks of the spec %s, which owes its block index: %w", specID, err)
+		}
+		blocks := make([]string, 0, len(text.Asks))
+		for _, block := range text.Asks {
+			if block.BlockID != "" {
+				blocks = append(blocks, block.BlockID)
+			}
+		}
+		rows, err := s.deps.Store.Pool.Query(ctx, `
+			select `+askReadColumns+` `+askReadFrom+`
+			where a.issue_key = $1 and `+refs.AsksOfFragmentBlocksSQL("a", "$2::uuid", "$3::text[]")+`
+			order by a.created_at, a.id
+		`, key, specID, blocks)
+		if err != nil {
 			return nil, err
 		}
-		if ask.State != "open" {
-			continue
+		questions = questions[:0]
+		err = scanOpenQuestions(rows, &questions)
+		rows.Close()
+		if err != nil {
+			return nil, err
 		}
-		questions = append(questions, issueAskRow{Ask: ask, LastReply: reply})
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	asks := make([]*model.Ask, len(questions))
 	for index := range questions {
@@ -191,6 +220,21 @@ func (s *server) specOpenQuestions(
 		questions[index].shape(reader)
 	}
 	return questions, nil
+}
+
+// scanOpenQuestions appends to questions each ask rows reads (askReadColumns) that is open as its
+// node holds it, in the order rows reads them.
+func scanOpenQuestions(rows pgx.Rows, questions *[]issueAskRow) error {
+	for rows.Next() {
+		ask, reply, err := scanAskRead(rows)
+		if err != nil {
+			return err
+		}
+		if ask.State == "open" {
+			*questions = append(*questions, issueAskRow{Ask: ask, LastReply: reply})
+		}
+	}
+	return rows.Err()
 }
 
 // decisionEntry is one entry of the Decisions read's `entries`: the
