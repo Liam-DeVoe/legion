@@ -399,7 +399,7 @@ func TestNoBrokerTokenWritesTheLegionAgentRegistry(t *testing.T) {
 
 // v1RoutePatterns is how many patterns registerV1Routes registers today, each of which the walk
 // below must visit at least once.
-const v1RoutePatterns = 16
+const v1RoutePatterns = 17
 
 // R4 on a real bus, with no change to the listener's own code: a read-only token — the project
 // scope none beside the one scope read, which a read entry mints for Dispatch's read list — is
