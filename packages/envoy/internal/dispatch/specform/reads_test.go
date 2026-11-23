@@ -8,12 +8,14 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/specform/charge"
+	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
 // The tests of this package make the charge of the readings of a sentence loud (loudReads): a
@@ -80,6 +82,107 @@ func TestTheChargeOfASentenceRefusesAReadingPastItAndStopsAnOwnOneLoudly(t *test
 	}
 	if _, _, ok := quiet.Read(quietUnit, true); ok {
 		t.Errorf("with loudReads off, the charge lets reading %d for the findings that stand in the sentence, want it refused", ownReads+1)
+	}
+}
+
+// keptTexts is each place in a value of typ, named from path, that can hold text: a string or a
+// byte slice, at any depth of its struct fields, the elements of its pointers, slices and arrays,
+// the keys and values of its maps, and an interface, which can hold either. It does not walk the
+// types of package charge, which keep the judgment's texts and give them only through the charge,
+// nor the types and fields of this package that allowed names, each a type or a "type.field" whose
+// text is no sentence's; and a function's captured values are no part of its type, so it cannot
+// read them.
+func keptTexts(typ reflect.Type, path string, allowed map[string]bool, seen map[reflect.Type]bool) []string {
+	if typ.PkgPath() == chargePath || typ.PkgPath() == reflect.TypeFor[wayJudge]().PkgPath() && allowed[typ.Name()] {
+		return nil
+	}
+	switch typ.Kind() {
+	case reflect.String, reflect.Interface:
+		return []string{path + " (" + typ.String() + ")"}
+	case reflect.Slice:
+		if typ.Elem().Kind() == reflect.Uint8 {
+			return []string{path + " (" + typ.String() + ")"}
+		}
+		return keptTexts(typ.Elem(), path+"[]", allowed, seen)
+	case reflect.Pointer, reflect.Array:
+		return keptTexts(typ.Elem(), path+"[]", allowed, seen)
+	case reflect.Map:
+		return append(keptTexts(typ.Key(), path+"{key}", allowed, seen), keptTexts(typ.Elem(), path+"{}", allowed, seen)...)
+	case reflect.Struct:
+		if seen[typ] {
+			return nil
+		}
+		seen[typ] = true
+		var kept []string
+		for index := range typ.NumField() {
+			field := typ.Field(index)
+			if typ.PkgPath() != reflect.TypeFor[wayJudge]().PkgPath() || !allowed[typ.Name()+"."+field.Name] {
+				kept = append(kept, keptTexts(field.Type, path+"."+field.Name, allowed, seen)...)
+			}
+		}
+		return kept
+	}
+	return nil
+}
+
+// The judge of the ways out keeps no text of a sentence in a field of its own, so that no walk of
+// the judge reads a sentence outside its charge (charge.Texts.Read), wherever a copy would sit: from
+// the judge (wayJudge) through each field of each type that it holds (keptTexts), text stands only
+// in the key types that hold a finding's words, its ways out and their note (findingKey, wayKey,
+// wayOut, offer), the names of a rule and of a kind (Rule, Kind), what the judgment is told of the
+// system and its people (Context, wayJudge.people), and the first place of each member of a synonym
+// group (wholeText.firsts: a member's words, one for each member of rules.json at most). Controls,
+// each a type of this test that holds the judge's two types and one field more: a copy of the
+// records of the sentences, of their words, of their Spreads (whose Hits hold words) and a value of
+// any type are each named; a copy of a count or a flag of each sentence is not, as no type rule
+// can tell such a copy from what the judge keeps of the split of its text (wholeText.nth), so the
+// work table catches a walk of it where a row's shape reaches the walk.
+func TestTheJudgeKeepsNoTextOfASentenceInAField(t *testing.T) {
+	allowed := map[string]bool{"findingKey": true, "wayKey": true, "wayOut": true, "offer": true, "Rule": true, "Kind": true,
+		"Context": true, "wayJudge.people": true, "wholeText.firsts": true}
+	kept := func(typ reflect.Type) []string { return keptTexts(typ, typ.Name(), allowed, map[reflect.Type]bool{}) }
+	if got := kept(reflect.TypeFor[wayJudge]()); len(got) > 0 {
+		t.Errorf("the judge of the ways out keeps text outside the charge, which a walk of it would read past the charge: %q", got)
+	}
+	type recordsCopied struct {
+		wayJudge
+		wholeText
+		records []*sentenceAt
+	}
+	type wordsCopied struct {
+		wayJudge
+		wholeText
+		words [][]string
+	}
+	type spreadsCopied struct {
+		wayJudge
+		wholeText
+		spreads []ste.Spread
+	}
+	type anyCopied struct {
+		wayJudge
+		wholeText
+		line any
+	}
+	type flagsCopied struct {
+		wayJudge
+		wholeText
+		open []bool
+	}
+	for _, control := range []struct {
+		typ  reflect.Type
+		want string
+	}{
+		{reflect.TypeFor[recordsCopied](), "recordsCopied.records[][].span (string)"},
+		{reflect.TypeFor[wordsCopied](), "wordsCopied.words[][] (string)"},
+		{reflect.TypeFor[spreadsCopied](), "spreadsCopied.spreads[].Hits[].Match (string)"},
+		{reflect.TypeFor[anyCopied](), "anyCopied.line (interface {})"},
+		{reflect.TypeFor[flagsCopied](), ""},
+	} {
+		got := kept(control.typ)
+		if control.want == "" && len(got) > 0 || control.want != "" && !slices.Contains(got, control.want) {
+			t.Errorf("the control %s keeps text at %q, want %q named", control.typ.Name(), got, control.want)
+		}
 	}
 }
 
