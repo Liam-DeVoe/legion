@@ -44,7 +44,7 @@ const WorkRevset = `(::(working_copies() | bookmarks()) ~ ::(remote_bookmarks() 
 
 // ReadWork runs the read's two jj commands in the workspace dir with jj, through run, which runs
 // one command and answers its trimmed standard output (RunCommand under the caller's budget and
-// environment). global are jj options the caller puts before each command's own. The first command
+// environment, which for the pod's launcher holds no configuration of anyone's). The first command
 // reads the working copy's commit and whether it is empty, and it is the one jj snapshot the read
 // makes; the second is --ignore-working-copy, so both describe one state of the workspace. It
 // answers the working copy's commit, whether that commit holds a change, and every work commit
@@ -52,9 +52,9 @@ const WorkRevset = `(::(working_copies() | bookmarks()) ~ ::(remote_bookmarks() 
 // the working copy does: jj records an operation and, where files of the working copy changed, a
 // new working-copy commit and the git ref jj keeps for it (refs/jj/keep). The read changes no file
 // of the working copy, moves no bookmark and pushes nothing, and it needs no git.
-func ReadWork(run func(args ...string) (string, error), jj, dir string, global ...string) (head string, changed bool, work []string, err error) {
+func ReadWork(run func(args ...string) (string, error), jj, dir string) (head string, changed bool, work []string, err error) {
 	command := func(args ...string) []string {
-		return append(append([]string{jj}, global...), args...)
+		return append([]string{jj}, args...)
 	}
 	at, err := run(command("log", "-R", dir, "-r", "@", "--no-graph", "-T", `commit_id ++ " " ++ empty`)...)
 	if err != nil {
