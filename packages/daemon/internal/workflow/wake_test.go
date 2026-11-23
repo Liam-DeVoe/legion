@@ -504,11 +504,13 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	}
 }
 
-// R5: an architect gets no backstop. OpenPhaseRole is the one statement of "the worker of the
-// open phase" — which role a release arms a backstop for, which role a CI settlement wakes, and
-// which live claim has a phase reminder armed in it — and it answers none for a phase the
-// architect works and none for a phase no role works. Admitted and accepting are the two the
-// architect works (phase.RoleFor).
+// R5: an architect gets no backstop. OpenRoleOf is the one statement of "the worker of the open
+// phase" — which role a CI settlement wakes and which live claim has a phase reminder armed in it,
+// and, read from the phase alone (OpenPhaseRole), which role a release arms a backstop for — and it
+// answers none where the architect works the issue's place and none for a phase no role works. By
+// the phase alone (phase.RoleFor), as for an issue with no plan rows, admitted and accepting are
+// the two the architect works; with plan rows a step or a retro the owner does is the architect's
+// too, and a step acceptance with no key is the fresh agent's (record.Issue.RoleAt).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -518,7 +520,7 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "implementing", p: phase.Implementing, want: claim.RoleImplementer},
 		{name: "testing", p: phase.Testing, want: claim.RoleTester},
 		{name: "admitted is the architect's", p: phase.Admitted},
-		{name: "accepting is the architect's", p: phase.Accepting},
+		{name: "accepting, by the phase alone, is the architect's", p: phase.Accepting},
 		{name: "awaiting a person", p: phase.AwaitingPerson},
 		{name: "done", p: phase.Done},
 	} {
