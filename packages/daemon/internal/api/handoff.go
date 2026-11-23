@@ -36,10 +36,10 @@ import (
 // (intake.BehindEntryClause). The workflow refuses a record the role already named for its previous
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
 // pull request on its branch, or a merged one recorded (implementationPullRequest:
-// HANDOFF_NO_PULL_REQUEST), and for a task of a plan of several to an open one against the base
-// the plan gives the task (HANDOFF_PULL_REQUEST_BASE). A check report carries no commit and no
-// record (nothing was pushed or written) and a Verdict of pass, pending or fail; a tester's
-// completion a Verdict of pass or fail.
+// HANDOFF_NO_PULL_REQUEST), and for an issue with plan rows, a plan of one task among them, to an
+// open one against the base the plan gives the task (HANDOFF_PULL_REQUEST_BASE); an issue with no
+// plan rows reads no base. A check report carries no commit and no record (nothing was pushed or
+// written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail.
 // WakeAt is the check report's alone: on a pending it is when the checking agent asks to be woken
 // for its next look, which no other verdict and no phase completion carries (checkReport). It is a
 // pointer so that a report naming no time is told from one naming a time at all: with the field
