@@ -2317,7 +2317,9 @@ A stored task is sent as it stands, so the same migration appends ` Last reviewe
 Since the release whose owner does a step, the column also holds the commit a verdict reported at a review step no review on GitHub decides.
 Those steps are a reviewer's on an issue with no pull request, the fresh agent of `acceptance`'s, and each review step of the owner's.
 Where the owner's `sign_off` ended its `acceptance:owner`, or its `request_backward_move` ended any review step of its own, the column holds the pull request's head.
-A `complete_step` holds the head of the `review` record it reported instead, so the two differ when the head moved.
+The owner's `complete_step` at `reviewer:owner` holds the head of the `review` record it reported instead, so the two differ when the head moved.
+At a review step of a role the deployment or the plan defines, it holds the commit the owner's workspace stands on.
+At `acceptance:owner` it is applied as `sign_off` or `request_backward_move`, so it holds the pull request's head.
 A task of the role reviewer ends with both sentences, the owner's `reviewer:owner` step included.
 Each other role whose step is of the type review is told its row's commit alone, in the phase its step runs as: ` Last reviewed commit: <sha>.`.
 A typed fact, never the task's text, says that a task already ends with the two sentences: `roundNamed` on a supervise start row, and the column `pending_task_deliveries.round_named` that the same migration adds, which every delivery the earlier release wrote reads as false.

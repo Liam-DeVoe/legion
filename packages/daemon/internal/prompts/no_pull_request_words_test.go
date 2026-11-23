@@ -164,7 +164,9 @@ func TestTheGuidesSayHowAnIssueWithNoPullRequestClosesAndWhatEndsAReviewRound(t 
 func TestTheOperatorGuidesSayWhichHeadTheOwnersReviewKeepsAndWhatTheDriversProve(t *testing.T) {
 	saysAndRetires(t, repoFile, [][2]string{
 		{"docs/kubernetes.md", "Where the owner's `sign_off` ended its `acceptance:owner`, or its `request_backward_move` ended any review step of its own"},
-		{"docs/kubernetes.md", "A `complete_step` holds the head of the `review` record it reported instead"},
+		{"docs/kubernetes.md", "The owner's `complete_step` at `reviewer:owner` holds the head of the `review` record it reported instead"},
+		{"docs/kubernetes.md", "At a review step of a role the deployment or the plan defines, it holds the commit the owner's workspace stands on."},
+		{"docs/kubernetes.md", "At `acceptance:owner` it is applied as `sign_off` or `request_backward_move`, so it holds the pull request's head."},
 		{"scripts/e2e/README.md", "A step `acceptance` with no key is a fresh agent of the role `acceptance`."},
 		{"scripts/e2e/README.md", "which the driver posts itself (an agent's `legion` tool fills the commit in)"},
 	}, [][2]string{
