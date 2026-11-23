@@ -432,12 +432,16 @@ func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow, began tim
 
 // renewOnce is one tick's renewal of the row's lease. A tick that was in flight when the run ended
 // may find the row gone because its own settle finished it; that is no lost lease, so a renewal that
-// found nothing is reported only while the run is still on. Of the rows found finished while the
-// run is on, an issue_bundle row may be no lost lease either: a left pod's check finishes its own
-// row inside its run, in the transaction that records what it decided (checkLeftPodWorkspace), so
-// such a row is logged as finished, at Info. No other kind finishes itself, so any other row found
-// finished is a row another lane took after this lease lapsed, and is logged as a lost lease at
-// Warn, as a row under another lane's lease is. Each is logged once per run.
+// found nothing is reported only while the run is still on. While the run is on, a tick that finds
+// the lease no longer the row's says why, once per run:
+//   - a row another lane leases now is a lost lease, at Warn;
+//   - a row whose own effect finishes it inside its run (finishesItsOwnRow: a left pod's close
+//     check) found gone is that finish, at Info;
+//   - a status write or a notice found gone may have been deleted under its live lease by a newer
+//     write of its issue (record's DropStatusWrites, DropCatchUps), as well as finished by another
+//     lane after this lease lapsed, at Warn, and the line names both;
+//   - any other row found gone, the idle release's check included, which never finishes its own
+//     row, was finished by another lane after this lease lapsed, at Warn.
 func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
 	var held, gone bool
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -453,13 +457,30 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 	if held || renewal.ended() || !renewal.unrenewedOnce() {
 		return
 	}
-	if gone && row.Kind == record.OutboxKindIssueBundle {
-		r.log.Info("outbox row finished while its run goes on: a left pod's check finishes its own row; the run's finish or retry fences on the token",
-			"row", row.ID, "kind", row.Kind, "issue", row.Issue)
-		return
+	attrs := []any{"row", row.ID, "kind", row.Kind, "issue", row.Issue}
+	switch {
+	case !gone:
+		r.log.Warn("outbox row lease lost; the row runs on to its end and its finish or retry fences on the token", attrs...)
+	case finishesItsOwnRow(row):
+		r.log.Info("outbox row finished while its run goes on: a left pod's close check finishes its own row; the lane's finish then deletes nothing", attrs...)
+	case row.Kind == record.OutboxKindDispatchStatus || row.Kind == record.OutboxKindNotice:
+		r.log.Warn("outbox row gone while its run goes on: a newer write of its issue may have dropped it (DropStatusWrites, DropCatchUps), or another lane finished it after this lease lapsed; the run's finish or retry fences on the token", attrs...)
+	default:
+		r.log.Warn("outbox row gone while its run goes on: another lane finished it after this lease lapsed; the run's finish or retry fences on the token", attrs...)
 	}
-	r.log.Warn("outbox row lease lost; the row runs on to its end and its finish or retry fences on the token",
-		"row", row.ID, "kind", row.Kind, "issue", row.Issue)
+}
+
+// finishesItsOwnRow is whether row's own effect finishes the row inside its run: a left pod's close
+// check (record.IssueWorkspaceCheck with CloseRoles), which finishes its row in the transaction that
+// records what it decided (checkLeftPodWorkspace). The idle release's check is the same kind and
+// never does.
+func finishesItsOwnRow(row record.OutboxRow) bool {
+	if row.Kind != record.OutboxKindIssueBundle {
+		return false
+	}
+	payload, err := record.DecodeOutboxPayload(row)
+	check, ok := payload.(record.IssueWorkspaceCheck)
+	return err == nil && ok && len(check.CloseRoles) > 0
 }
 
 // warnHeld is one tick's look at the lifecycle rows of the row's issue held behind it

@@ -59,13 +59,7 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 	}
 	runLanes(t, runner, clock, unlock)
 
-	testwait.Eventually(t, "the row's read of its hand-over to wait on the test's lock", func() bool {
-		var waiting int
-		if err := pool.QueryRow(ctx, "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'").Scan(&waiting); err != nil {
-			t.Fatalf("count the backends waiting on a lock: %v", err)
-		}
-		return waiting == 1
-	})
+	awaitOneLockWaiter(t, pool, "the row's read of its hand-over to wait on the test's lock")
 	id := outboxIDs(t, pool)[0]
 	claimed := rowStateOf(t, pool, id)
 	if claimed.leaseToken == "" || claimed.leaseUntil == nil {
@@ -150,13 +144,7 @@ func TestALeaseRenewalThatFindsItsRowGoneSaysWhy(t *testing.T) {
 			tick(row)
 			close(ticked)
 		}()
-		testwait.Eventually(t, "the tick's renewal to wait on the delete's lock", func() bool {
-			var waiting int
-			if err := pool.QueryRow(ctx, "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'").Scan(&waiting); err != nil {
-				t.Fatalf("count the backends waiting on a lock: %v", err)
-			}
-			return waiting == 1
-		})
+		awaitOneLockWaiter(t, pool, "the tick's renewal to wait on the delete's lock")
 		if err := holding.Commit(ctx); err != nil {
 			t.Fatalf("commit the delete of row %d: %v", row.ID, err)
 		}

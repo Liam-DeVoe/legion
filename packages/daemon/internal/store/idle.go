@@ -634,6 +634,13 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 // the workspace and found nothing that origin does not hold, so the work the decline named is gone
 // and no rule may keep the pod for it. A decline the table does not hold is success, so a retried
 // delete finishes.
+//
+// It takes no serializer of its own. A caller that joins it to a transaction that also writes the
+// issue's lifecycle takes the lifecycle serializer (treelifecycle.Serialize) first, before this
+// delete, as every writer of the decline row does (recordDecline's callers): a delete of the row
+// ahead of the serializer would hold the row while waiting for the serializer, and a writer that
+// holds the serializer and writes the row would wait for it, a deadlock
+// (checkLeftPodWorkspace in internal/daemon).
 func (s *Store) ForgetIdleDecline(ctx context.Context, project, issue string) error {
 	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `delete from idle_release_declines where project = $1 and issue = $2`, project, issue)

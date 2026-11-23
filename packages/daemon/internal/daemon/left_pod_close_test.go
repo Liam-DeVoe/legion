@@ -543,13 +543,7 @@ func TestTwoRunsOfALeftPodCloseCheckAfterALostLeaseDoNotDeadlock(t *testing.T) {
 	}
 	ran := make(chan error, 1)
 	go func() { ran <- rig.runner.checkIssueWorkspace(context.Background(), row, check) }()
-	testwait.Eventually(t, "the run to wait on a lock the lane holds", func() bool {
-		var waiting int
-		if err := rig.pool.QueryRow(ctx, "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'").Scan(&waiting); err != nil {
-			t.Fatalf("count the backends waiting on a lock: %v", err)
-		}
-		return waiting == 1
-	})
+	awaitOneLockWaiter(t, rig.pool, "the run to wait on a lock the lane holds")
 	if _, err := lane.Exec(ctx, `update idle_release_declines set checked_at = now() where project = $1 and issue = $2`,
 		"legion", rig.issue.Key); err != nil {
 		t.Errorf("the lane's write of the decline row = %v, want it written beside the waiting run", err)
