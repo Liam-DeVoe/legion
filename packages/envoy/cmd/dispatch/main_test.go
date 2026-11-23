@@ -2285,6 +2285,25 @@ const (
 // none. So for the whole wait, and after the exit, the fill has no hold, no row and no cursor,
 // although 200 events wait for their rows.
 func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
+	aProcessTheRegistryRefusesWritesNoKeywordVersion(t, everyRun)
+}
+
+// TestAProcessTheRegistryRefusesWritesNoKeywordVersionOnTheClock is the row above in benchtime's
+// timing lane, where the refused process's exit is held to main's figure (refusedExitWithin).
+func TestAProcessTheRegistryRefusesWritesNoKeywordVersionOnTheClock(t *testing.T) {
+	timedRow(t, aProcessTheRegistryRefusesWritesNoKeywordVersion)
+}
+
+// refusedExitWithin is how long after its first refusal, read on this test's clock, the refused
+// process may still run: the registry's wait for admission, a live window and a heartbeat
+// (processes.Register), and main's 30 s past it for the process's start and exit.
+var refusedExitWithin = processes.LiveWindow + processes.HeartbeatInterval + 30*time.Second
+
+// aProcessTheRegistryRefusesWritesNoKeywordVersion is the scene of the two rows above; lane says
+// whether the exit's reading of the clock is held to refusedExitWithin (clockLane). The row every
+// run makes holds the exit to coming at all, through the shared wait, and to coming after the
+// whole wait, on the process's own log; it logs how long the exit took.
+func aProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T, lane clockLane) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	writeKeywordFillComments(t, database, 200)
@@ -2304,15 +2323,22 @@ func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
 	refused := time.Now()
 	// The test reads the database at each ask of the shared wait until the process exits, so it
 	// sees the wait's moments in which a fill could take the hold and write.
+	var exitedAfter time.Duration
 	testwait.Until(t, "the refused process to exit", func() (fmt.Stringer, bool) {
 		requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v into the wait for admission", time.Since(refused).Round(time.Millisecond)))
 		select {
 		case <-process.Exited:
+			exitedAfter = time.Since(refused)
 			return nil, true
 		default:
 			return process.Output, false
 		}
 	})
+	t.Logf("the refused process exited %v after its first refusal", exitedAfter.Round(time.Millisecond))
+	if lane == onTheClock && exitedAfter > refusedExitWithin {
+		t.Errorf("the refused process exited %v after its first refusal, want within %v:\n%s",
+			exitedAfter.Round(time.Millisecond), refusedExitWithin, process.Output.String())
+	}
 	if code := process.Cmd.ProcessState.ExitCode(); code != 1 ||
 		!process.logged(`msg="dispatch: register this server process"`, "signing key set does not match a live server process") {
 		t.Fatalf("the refused process exited %d; want 1, with the refusal of the registry logged:\n%s", code, process.Output.String())
