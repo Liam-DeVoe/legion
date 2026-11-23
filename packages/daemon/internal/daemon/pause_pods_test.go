@@ -109,10 +109,10 @@ func TestTheStuckWarningReadsTheStuckClockAndPassesOverAPausedProject(t *testing
 	woke := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	letOut := woke.Add(30 * time.Minute)
 	for _, issue := range []string{"LEGION-208", "OTHERPROJECT-5"} {
-		recordPodWake(t, w.idleStore, store.PodResume{Project: "legion", Issue: issue,
-			Role: string(claim.RoleImplementer), Kind: pods.WakeBackstop, At: woke})
 		token := claim.Token("legion-legion-" + strings.ToLower(issue) + "-implementer")
-		if _, err := w.idleStore.SetResumeClock(ctx, "legion", issue, claim.RoleImplementer, token, letOut); err != nil {
+		recordPodWake(t, w.idleStore, store.PodResume{Project: "legion", Issue: issue,
+			Role: string(claim.RoleImplementer), Claim: string(token), Kind: pods.WakeBackstop, At: woke})
+		if _, err := w.idleStore.SetResumeClock(ctx, "legion", issue, token, letOut); err != nil {
 			t.Fatalf("start the stuck clock of %s at the let-out: %v", issue, err)
 		}
 	}

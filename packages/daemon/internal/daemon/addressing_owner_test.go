@@ -119,7 +119,7 @@ func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
 	steps := []record.PlanStep{
 		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "a", Agent: "implementer"},
 		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 2, Role: "tester", Type: "testing", AgentKey: "a", Agent: "implementer"},
-		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 3, Role: "reviewer", Type: "review"},
+		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 3, Role: "reviewer", Type: "review", Agent: "reviewer"},
 	}
 	workers, err := stepWorkersOf("legion", "LEGION-209", "LEGION-208", &record.StoredPlan{Steps: map[string][]record.PlanStep{"a": steps}})
 	if err != nil {

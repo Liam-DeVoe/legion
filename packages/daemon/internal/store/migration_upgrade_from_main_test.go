@@ -124,16 +124,15 @@ import (
 // so every row an upgrade finds passes them (migration_20261117223524_test.go), and it touches no
 // outbox_kind_check.
 // The claim of each resume (20261121183336) is applied after all of these and touches no
-// outbox_kind_check: it adds pod_resumes.claim at its default, the empty string, on every row it
-// finds, so it needs no row of its own here.
+// outbox_kind_check: it adds pod_resumes.claim and names on every row it finds the claim of its
+// role, so it needs no row of its own here (migration_20261121183336_test.go).
 // The claim of each backstop (20261122072945) is applied after it and touches no
-// outbox_kind_check: it adds pod_wake_backstops.claim at its default, the empty string, on every
-// row it finds, and splits the one open backstop per role into one per claim for the rows that
-// name one, so it needs no row of its own here (migration_20261122072945_test.go).
+// outbox_kind_check: it adds pod_wake_backstops.claim, names on every row it finds the claim of its
+// role, and makes the one open backstop per role one per claim, so it needs no row of its own here
+// (migration_20261122072945_test.go).
 // One open resume per claim (20261122074350) is applied after it and touches no
-// outbox_kind_check: it keeps the one open resume per role for the resumes that name no claim and
-// holds one per claim for the rest, and closes no row, so it needs no row of its own here
-// (migration_20261122074350_test.go).
+// outbox_kind_check: it makes the one open resume per role one per claim, and closes no row, so it
+// needs no row of its own here (migration_20261122074350_test.go).
 // The claims a release suspended (20261122102933) is applied after it and touches no
 // outbox_kind_check: it rewrites a release's mark in flight as the tokens of the claims of the
 // roles it names and adds pod_releases.claims at its default, the empty string, on every row it

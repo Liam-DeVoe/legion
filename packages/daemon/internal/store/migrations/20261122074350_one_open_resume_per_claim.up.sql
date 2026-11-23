@@ -11,18 +11,13 @@
 -- that index stays because a role's step has one worker and only that worker's wake takes a
 -- resume; every claim of a role can be woken, so that was wrong.
 --
--- pod_resumes_one_open_per_claim is unique on (project, issue, claim) for an open resume that names
--- a claim, which every resume this release takes does. A resume the release before wrote names no
--- claim, the empty string 20261121183336 gave every row it found, and it is each claim of its
--- role's, as that release meant it: the index of one open resume per role is kept under its name for
--- the rows that name no claim, and the take refuses the wake of any claim of a role while such a
--- resume of the role is open (RecordPodWakeTx), as that release's one open resume per role did. The
--- reads, the stamps and the closes that name a claim reach its own resume, or such a resume of the
--- role the claim holds now, and never another claim's.
+-- pod_resumes_one_open_per_claim is unique on (project, issue, claim) for an open resume, and the
+-- index of one open resume per role goes. Every resume names a claim (20261121183336 named the
+-- role's own claim on each row the release before wrote), so the reads, the stamps and the closes
+-- that name a claim reach its own resume, and never another claim's.
 --
--- The release before names each column it reads and writes, so it writes no claim and every resume
--- it takes names none; its `on conflict do nothing` meets the index kept for those rows, as it met
--- the one index before.
+-- The release before names each column it reads and writes, and every daemon on the database
+-- moves together, so no daemon of it runs over this index.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
@@ -44,7 +39,5 @@
 -- delete from schema_version where version = 20261122074350;
 -- commit;
 drop index pod_resumes_one_open_per_role;
-create unique index pod_resumes_one_open_per_role on pod_resumes (project, issue, role)
-  where first_turn_at is null and closed_at is null and claim = '';
 create unique index pod_resumes_one_open_per_claim on pod_resumes (project, issue, claim)
-  where first_turn_at is null and closed_at is null and claim <> '';
+  where first_turn_at is null and closed_at is null;

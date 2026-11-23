@@ -33,17 +33,16 @@ const StrandedReleaseWake = 10 * time.Minute
 // state serves (api.Issue.ArchitectStalls) and reads no bound of its own.
 const ArchitectGateWake = 90 * time.Minute
 
-// ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the pod, the
-// role the wake was for and the claim it brought back, when its stuck clock started, and whether
-// a stuck pass has already said so. The daemon reads them from its own records
+// ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the pod and
+// the claim the wake brought back, when its stuck clock started, and whether a stuck pass has
+// already said so. The daemon reads them from its own records
 // (store.Store.UnfinishedPodResumesTx, which selects the resumes whose woken claim has taken no
 // first turn and passes over a paused project's) and hands them in, so this rule stays what every
 // other rule here is: a judgement over values.
 //
 // Claim is the token of the claim the wake brought back (pod_resumes.claim): two claims can hold
 // one role of an issue, the agent of a key on a step of another role beside that role's own claim,
-// and a wake of one is no wake of the other. It is "" for a wake the release before
-// 20261121183336 recorded, which stands for each claim of its role, as that release meant it.
+// and a wake of one is no wake of the other.
 //
 // ClockAt is the resume's stuck clock (pod_resumes.clock_at): the latest of the wake's own moment,
 // the moment the wake pacing let the launch out, and the moment a project's resume ended the pause
@@ -51,45 +50,22 @@ const ArchitectGateWake = 90 * time.Minute
 // or waited out a pause, is no wake the replacement pod failed to come back from.
 type ReleasedWake struct {
 	Issue   string
-	Role    string
 	Claim   claim.Token
 	ClockAt time.Time
 	Stuck   bool
 }
 
-// releasedRole is the pod and the role of a recorded wake that names no claim, which stands for
-// each claim of that role (ReleasedWake.Claim).
-type releasedRole struct{ issue, role string }
-
-// ranOutWakes is every released claim whose wake ran out of StrandedReleaseWake, as
-// strandedReleaseWakes reads the wakes: by the claim each names, and by the pod and the role of
-// each that names none.
-type ranOutWakes struct {
-	claims map[claim.Token]bool
-	roles  map[releasedRole]bool
-}
-
-// of is whether c is a claim whose wake ran out: one of its own, or one of its role that names no
-// claim.
-func (w ranOutWakes) of(c supervise.Claim) bool {
-	return w.claims[c.Token] || w.roles[releasedRole{issue: c.Issue, role: string(c.Role)}]
-}
-
-// strandedReleaseWakes is each released claim whose wake ran out of StrandedReleaseWake: the
-// wakes whose stuck clock started more than that ago, and the ones already marked stuck, which is
-// the same fact recorded. A claim with no wake is not here, and neither is one whose clock is
-// younger than the bound: the pod it is coming back as is still being built.
-func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) ranOutWakes {
-	woken := ranOutWakes{claims: map[claim.Token]bool{}, roles: map[releasedRole]bool{}}
+// strandedReleaseWakes is the token of each released claim whose wake ran out of
+// StrandedReleaseWake: the wakes whose stuck clock started more than that ago, and the ones
+// already marked stuck, which is the same fact recorded. A claim with no wake is not here, and
+// neither is one whose clock is younger than the bound: the pod it is coming back as is still
+// being built.
+func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[claim.Token]bool {
+	woken := map[claim.Token]bool{}
 	for _, wake := range wakes {
-		if !wake.Stuck && now.Sub(wake.ClockAt) <= StrandedReleaseWake {
-			continue
+		if wake.Stuck || now.Sub(wake.ClockAt) > StrandedReleaseWake {
+			woken[wake.Claim] = true
 		}
-		if wake.Claim != "" {
-			woken.claims[wake.Claim] = true
-			continue
-		}
-		woken.roles[releasedRole{issue: wake.Issue, role: wake.Role}] = true
 	}
 	return woken
 }
@@ -166,13 +142,12 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) ranOutWakes {
 //
 // A released claim — one whose idle pod the daemon released (supervise.Claim.Released) — is
 // left out of both cases while its pod is coming back: the next wake of the claim resumes it, and
-// the boot resumes no such claim. It is stranded on one fact alone, whatever its role: a wake of
-// it ran out of StrandedReleaseWake with no turn of the claim it woke (wakes, which the daemon
-// reads of its own records), a wake that names it by its token or a wake the release before
-// recorded for its role. A wake of another claim of its role is not one: two claims can hold one
-// role, and the other's wake brings back the other. That is the wake the pod never came back from,
-// and nothing in the daemon takes it again. A released claim nothing has woken is not stranded: it
-// waits for a delivery, as a released pod is meant to.
+// the boot resumes no such claim. It is stranded on one fact alone, whatever its role: a wake that
+// names it by its token ran out of StrandedReleaseWake with no turn of the claim it woke (wakes,
+// which the daemon reads of its own records). A wake of another claim of its role is not one: two
+// claims can hold one role, and the other's wake brings back the other. That is the wake the pod
+// never came back from, and nothing in the daemon takes it again. A released claim nothing has
+// woken is not stranded: it waits for a delivery, as a released pod is meant to.
 //
 // Candidates' queued starts and their claims are read through RoleRuns in bounded batches: a
 // fleet of hundreds of suspended claims makes a few snapshot queries, never one pair per claim.
@@ -241,7 +216,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// A released claim is held to R6's one fact and nothing else: it is stranded only once a
 		// wake of it has run out of StrandedReleaseWake with no turn, and then whatever its role,
 		// since the pod the wake was taken for never came back.
-		if c.Released() && !woken.of(c) {
+		if c.Released() && !woken[c.Token] {
 			continue
 		}
 		// current is the phase the start that would wake the claim names; the architect's names

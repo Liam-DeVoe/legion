@@ -130,8 +130,8 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // an update round past its bound or an idle rule would otherwise take a pod that holds the stopped
 // role's unpushed work; and, for a stop that ends after its pause ended, only where no role of the
 // pod is live then (store.IssueHasLiveRoleTx, decision 6) — and the stopped claim's own open
-// resume closed, one that names that claim or names none (store.CloseRoleOpenResumeTx, given the
-// claim's token); and either the launch it is owed — a held wake of the pause
+// resume closed, the one that names that claim (store.CloseRoleOpenResumeTx, given the claim's
+// token); and either the launch it is owed — a held wake of the pause
 // (store.PodRecords.TakePodWake with pods.WakePause, which cancels the role's own backstop)
 // with its start row (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open
 // phase serving its generation, its backstop. A start owed once the pause has ended, with no
@@ -271,7 +271,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		return made, nil
 	}
 	if first {
-		if _, err := store.CloseRoleOpenResumeTx(ctx, tx, p.token, c.Issue, c.Role, c.Token, at); err != nil {
+		if _, err := store.CloseRoleOpenResumeTx(ctx, tx, p.token, c.Issue, c.Token, at); err != nil {
 			return made, err
 		}
 	}
@@ -302,12 +302,12 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 }
 
 // wakeLetOut is supervise.Deps.WakeLetOut (decision 14): the moment the wake pacing lets a launch
-// of the claim token out becomes the stuck clock of that claim's open resume, one that names the
-// claim or names none (store.Store.SetResumeClock, which never moves a clock back), so a launch
-// that waited its turn in a long queue is not warned stuck for the wait, and another claim of the
-// same role keeps its own clock. The machine calls it inside its decision, so the write runs on a
-// goroutine of its own, as podResume's stamp does, under a hold mark of its own; a failed write is
-// logged and the clock keeps the moment it had.
+// of the claim token out becomes the stuck clock of that claim's open resume
+// (store.Store.SetResumeClock, which never moves a clock back), so a launch that waited its turn in
+// a long queue is not warned stuck for the wait, and another claim of the same role keeps its own
+// clock. The machine calls it inside its decision, so the write runs on a goroutine of its own, as
+// podResume's stamp does, under a hold mark of its own; a failed write is logged and the clock
+// keeps the moment it had.
 func (p *projectPause) wakeLetOut(token claim.Token, issue string, role claim.Role, at time.Time) {
 	if issue == "" || role == claim.RoleController {
 		return
@@ -315,7 +315,7 @@ func (p *projectPause) wakeLetOut(token claim.Token, issue string, role claim.Ro
 	go func() {
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
-		if _, err := p.store.SetResumeClock(ctx, p.token, issue, role, token, at); err != nil {
+		if _, err := p.store.SetResumeClock(ctx, p.token, issue, token, at); err != nil {
 			p.log.Warn("wake: could not start a resume's stuck clock at its launch's let-out moment",
 				"claim", token, "at", at, "error", err)
 		}

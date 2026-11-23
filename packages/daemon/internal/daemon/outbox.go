@@ -222,8 +222,8 @@ type outboxTrees interface {
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
 	TakePodWake(ctx context.Context, project, issue string, token claim.Token, role claim.Role, kind string, at time.Time, mark int64) (bool, error)
-	OpenPodResume(ctx context.Context, project, issue string, role claim.Role, token claim.Token) (id, pause int64, found bool, err error)
-	CancelPodBackstopsOf(ctx context.Context, project, issue string, token claim.Token, role claim.Role) error
+	OpenPodResume(ctx context.Context, project, issue string, token claim.Token) (id, pause int64, found bool, err error)
+	CancelPodBackstopsOf(ctx context.Context, project, issue string, token claim.Token) error
 	ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error)
 	ClaimStatesIn(ctx context.Context, project, issue string) (store.ClaimStates, error)
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
@@ -2885,7 +2885,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// on a claim this suspension now owns. Another claim's backstop stays, of its role or of
 		// another: a worker waiting on a deploy has nothing else to bring it back. The bundle stays:
 		// the issue comes back.
-		r.takeOverRelease(ctx, row.Issue, token, machine.Claim().Role)
+		r.takeOverRelease(ctx, row.Issue, token)
 		return nil
 	case "release":
 		// One role stop of an idle pod's release. Its fence is the release's own mark and nothing

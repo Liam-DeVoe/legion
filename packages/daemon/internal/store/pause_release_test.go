@@ -336,7 +336,7 @@ func heldOpenResume(t *testing.T, st *Store, role claim.Role) (int64, bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, pause, open, err := st.OpenPodResume(context.Background(), "legion", rootIssue, role, token)
+	_, pause, open, err := st.OpenPodResume(context.Background(), "legion", rootIssue, token)
 	if err != nil {
 		t.Fatalf("read the open resume of %s: %v", role, err)
 	}
@@ -357,7 +357,7 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 		t.Fatalf("take the architect's wake = %t, %v", taken, err)
 	}
 	clock := woke.Add(30 * time.Minute)
-	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleArchitect, "legion-legion-legion-208-architect", clock); err != nil {
+	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", clock); err != nil {
 		t.Fatalf("start the architect's stuck clock at its let-out: %v", err)
 	}
 	reads := func(before time.Time) (stuck, unfinished []PodResume) {
@@ -599,9 +599,13 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 		if resume.byPause {
 			held, kind = &pause.ID, pods.WakePause
 		}
-		if _, err := st.Pool().Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at, clock_at, pause_id)
-			values (0, 'legion', $1, $2, $3, $4, $5, $6)`, resume.issue, string(resume.role), kind, pausedAt.Add(time.Minute),
-			resumedAt.Add(resume.letOut), held); err != nil {
+		token, err := claim.NewToken("legion", resume.issue, resume.role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.Pool().Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, clock_at, pause_id)
+			values (0, 'legion', $1, $2, $3, $4, $5, $6, $7)`, resume.issue, string(resume.role), string(token), kind,
+			pausedAt.Add(time.Minute), resumedAt.Add(resume.letOut), held); err != nil {
 			t.Fatalf("record the resume of %s's %s: %v", resume.issue, resume.role, err)
 		}
 	}

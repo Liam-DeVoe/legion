@@ -7,18 +7,19 @@
 -- release made while the project is paused (store's stopReleasedForPause) marked a claim owed the
 -- launch a wake took for another claim of its role, and a pause's first stop of one claim closed
 -- the resume of the other (store.CloseRoleOpenResumeTx). The reads and the close now take the
--- claim: a resume is the claim's whose token it names, and a resume that names none is each claim
--- of its role's, as before.
+-- claim: a resume is the claim's whose token it names.
 --
--- Every row the table already holds takes the default, the empty string: a resume the release
--- before wrote names no claim, so it is read as each claim of its role's, which is what that
--- release meant by it. The one open resume per role stays the index's
--- (pod_resumes_one_open_per_role): a role's step has one worker, and only that worker's wake takes
--- a resume.
+-- The update below names a claim on every row the table already holds. The release before took a
+-- wake for the worker of a role, the claim whose token it builds from the role, so a resume it
+-- wrote is that claim's: claim.NewToken's `legion-<project>-<issue, lowercased>-<role>`, where
+-- pod_resumes.project is the project token. Every resume then names a claim, and the column keeps
+-- no default and refuses the empty string, so no reader meets a resume of no claim. The one open
+-- resume per role stays the index's (pod_resumes_one_open_per_role) until 20261122074350.
 --
 -- The release before this one names each column it reads and writes (RecordPodWakeTx and the
--- resume reads), so it neither reads nor writes this one, and every row it inserts takes the
--- default, which this release reads as before.
+-- resume reads), so it never reads this one, and an insert of it would fail on the column, which
+-- takes no default. Every daemon on the database moves together, and the way back below drops the
+-- column before that release starts.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
@@ -26,11 +27,15 @@
 -- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The drop and the
 -- delete of this migration's row go together: the delete is what makes the version the store
 -- reports that release's own again, and both are owed to the roll-forward, which then runs this
--- file again and adds the column at its default. What the drop costs is the claim of each resume
--- open at the rollback, which the roll-forward reads as each claim of its role's.
+-- file again, adds the column and names each resume again. What the drop costs is the claim of
+-- each resume open at the rollback that another claim of its role took, such as a key's agent on
+-- its step: the roll-forward names the role's own claim on it, whose first turn then never stamps
+-- it, and the next release of the pod closes it.
 --
 -- begin;
 -- alter table pod_resumes drop column if exists claim;
 -- delete from schema_version where version = 20261121183336;
 -- commit;
 alter table pod_resumes add column claim text not null default '';
+update pod_resumes set claim = 'legion-' || project || '-' || lower(issue) || '-' || role;
+alter table pod_resumes alter column claim drop default, add constraint pod_resumes_claim_check check (claim <> '');

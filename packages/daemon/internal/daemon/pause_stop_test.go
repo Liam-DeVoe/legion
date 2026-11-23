@@ -975,8 +975,8 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 	releasedClaim(t, sup, claim.RoleImplementer)
 	releasedClaim(t, sup, claim.RoleArchitect)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleArchitect} {
-		if _, err := pool.Exec(ctx, `insert into pod_wake_backstops (project, issue, role, due_at)
-			values ('legion', $1, $2, now() + interval '1 hour')`, pauseIssue, string(role)); err != nil {
+		if _, err := pool.Exec(ctx, `insert into pod_wake_backstops (project, issue, claim, role, due_at)
+			values ('legion', $1, $2, $3, now() + interval '1 hour')`, pauseIssue, string(mustClaimToken(t, pauseIssue, role)), string(role)); err != nil {
 			t.Fatalf("arm the %s's backstop: %v", role, err)
 		}
 	}

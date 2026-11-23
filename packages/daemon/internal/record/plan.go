@@ -147,8 +147,8 @@ type PlanStep struct {
 	Type       plan.Type
 	AgentKey   string
 	// Agent is the name of the step's agent, the last part of its claim token, which NameAgents
-	// gives before the step is written and nothing else writes. A step a release before the column
-	// wrote holds none.
+	// gives before the step is written and nothing else writes. A step of the key owner holds
+	// none (20261117213545 named every other step a release before the column wrote).
 	Agent claim.Agent
 }
 
@@ -160,17 +160,12 @@ func (s PlanStep) PlanAgent() plan.Agent {
 
 // AgentName is the name of the step's agent: the last part of its claim token, and the one reader
 // of Agent. A step of the key owner has none, since its agent is the tree's architect, whose token
-// names the tree and no name on the issue. A step a release before the column wrote holds none and
-// reads as its role: that release ran each role at most once in a task and refused every key but
-// the owner's, so its role named its agent.
+// names the tree and no name on the issue.
 func (s PlanStep) AgentName() claim.Agent {
-	switch {
-	case s.PlanAgent().Owner():
+	if s.PlanAgent().Owner() {
 		return ""
-	case s.Agent != "":
-		return s.Agent
 	}
-	return RoleName(s.Role)
+	return s.Agent
 }
 
 // StepToken is the claim token of the agent of step, a step of issue, whose tree is tree, in
