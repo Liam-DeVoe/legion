@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 const (
@@ -415,6 +416,85 @@ func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 		must(t, err)
 		if want := []PlanVersion{earlier, bySub, own}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plans of earlier owners of %s in a tree of its own = %#v, want every owner's: %#v", key, got, want)
+		}
+	})
+}
+
+// subOwnersPlans writes, for LEGION-210 in the tree of planIssue, the plans of two generations
+// whose versions in force a sub-owner gave: at generation 1 the tree's architect gave version 1
+// and the sub-owners of tasks f and g gave versions 2 and 3, and at generation 2 the architect of
+// another tree gave version 1 and the sub-owner of f version 2. It answers the issue and the two
+// versions in force.
+func subOwnersPlans(t *testing.T, st *store.Store) (issue Issue, owners, earlier PlanVersion) {
+	t.Helper()
+	ctx := context.Background()
+	const key = "LEGION-210"
+	subOwner := func(task string) claim.Token {
+		token, err := claim.AgentToken("legion", key, SubOwnerAgent(task))
+		must(t, err)
+		return token
+	}
+	issue = issueFixture(key)
+	issue.Tree = planIssue
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, recorded := range []Issue{issueFixture(planIssue), issue} {
+			must(t, NewStore().PutIssue(ctx, tx, recorded))
+		}
+		for i, giver := range []struct {
+			generation uint64
+			version    int
+			by         claim.Token
+		}{{1, 1, planOwner}, {1, 2, subOwner("f")}, {1, 3, subOwner("g")}, {2, 1, otherOwner}, {2, 2, subOwner("f")}} {
+			v, tasks, steps := ownersPlan(key, giver.generation, giver.version, giver.by, planGivenAt.Add(time.Duration(i)*time.Hour))
+			putPlan(t, tx, v, tasks, steps)
+			switch {
+			case giver.generation == 1 && giver.version == 3:
+				owners = v
+			case giver.generation == 2 && giver.version == 2:
+				earlier = v
+			}
+		}
+	})
+	return issue, owners, earlier
+}
+
+// A sub-owner's version is its owner's plan, carried to a later generation as the owner's: it is
+// judged by the latest version before it that no sub-owner gave. So the version in force of
+// generation 1, which two sub-owners gave over a version of the tree's architect, is not among the
+// plans of earlier owners, and the version in force of generation 2, which a sub-owner gave over a
+// version of another tree's architect, is.
+//
+// The fault it catches is a sub-owner's version judged as its giver's, which is no architect of the
+// tree, so the next generation's first step would drop the plan (its control: PlansOfEarlierOwners
+// judging each version by its own giver lists generation 1's version too).
+func TestASubOwnersVersionIsItsOwnersPlan(t *testing.T) {
+	st := migratedStore(t)
+	issue, _, earlier := subOwnersPlans(t, st)
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := NewStore().PlansOfEarlierOwners(context.Background(), tx, issue)
+		must(t, err)
+		if want := []PlanVersion{earlier}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the plans of earlier owners of %s = %#v, want generation 2's alone, the version over another tree's architect's: %#v", issue.Key, got, want)
+		}
+	})
+}
+
+// The newest plan an owner gave takes a sub-owner's version as its owner's: of the two
+// generations of subOwnersPlans, the newer one's version in force stands over a version of another
+// tree's architect, so the newest owner's plan is generation 1's, whose version in force two
+// sub-owners gave over the tree's architect's.
+//
+// The fault it catches is the first step of a later generation that passes over the owner's plan
+// because a sub-owner gave its last version (its control: OwnersNewestPlan judging each version by
+// its own giver answers no plan).
+func TestOwnersNewestPlanTakesASubOwnersVersion(t *testing.T) {
+	st := migratedStore(t)
+	issue, owners, _ := subOwnersPlans(t, st)
+	inTx(t, st, func(tx pgx.Tx) {
+		got, err := NewStore().OwnersNewestPlan(context.Background(), tx, issue)
+		must(t, err)
+		if got == nil || got.Version != owners {
+			t.Fatalf("the newest plan an owner of %s gave = %+v, want generation 1's, in force at version 3: %+v", issue.Key, got, owners)
 		}
 	})
 }

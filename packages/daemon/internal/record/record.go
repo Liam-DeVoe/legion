@@ -2331,10 +2331,12 @@ type Store interface {
 	// reads, so each row it writes names one stored claim.
 	IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error)
 	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
-	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
+	// an architect of issue's tree now gave (ArchitectOfTree), a sub-owner's version judged by the
+	// owner's version below it; nil where no owner gave one in force.
 	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error)
 	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
-	// architect of the issue's tree now (ArchitectOfTree): the plans its first step passes over.
+	// architect of the issue's tree now (ArchitectOfTree), a sub-owner's version judged by the
+	// owner's version below it: the plans its first step passes over.
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
 	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands,
 	// with its branch and the needs whose join conflicted, and every name from gave a task; without,

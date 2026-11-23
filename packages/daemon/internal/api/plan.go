@@ -11,11 +11,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // PlanRegisterRequest is register_plan: the owner of an issue, an architect of the issue's tree,
-// gives Legion the plan in one version of a document of the issue.
+// or the sub-owner of one of its tasks gives Legion the plan in one version of a document of the
+// issue. A sub-owner gives a version of the plan of its own issue alone, which changes only the
+// parts of its task (planOwner; the workflow's planGiven).
 type PlanRegisterRequest struct {
 	GrantID    string `json:"grantId"`
 	Issue      string `json:"issue"`
@@ -165,16 +168,22 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 		AnswerPlanRegister, PlanRegisterResponse{Plan: registeredPlan(given)})
 }
 
-// planOwner authorizes register_plan for an architect of the issue's tree, and answers the
-// generation the plan is given at. A recorded issue is its tree's architects', the root's or a
-// sub-architect's (architectOfRecord, by record.ArchitectOfTree, the rule every architect
-// operation holds it to), and its plan is given at its generation. One the daemon has not
-// recorded — a child before release_children records it — is the tree's when Dispatch's parent
-// chain reaches the tree (treeChain) and it has not entered the workflow, triage, backlog, icebox
-// or todo, and its plan is given at generation 0, where it waits for the issue's first step. These
-// reads come before the fact lock, so each refusal here is an early one: the workflow judges the
-// giver and the generation again on the record its fact reads (workflow's planGiven).
+// planOwner authorizes register_plan for an architect of the issue's tree, or for the sub-owner of
+// one of its tasks (subOwnerOfIssue), and answers the generation the plan is given at. A recorded
+// issue is its tree's architects', the root's or a sub-architect's (architectOfRecord, by
+// record.ArchitectOfTree, the rule every architect operation holds it to), and its plan is given at
+// its generation. One the daemon has not recorded — a child before release_children records it — is
+// the tree's when Dispatch's parent chain reaches the tree (treeChain) and it has not entered the
+// workflow, triage, backlog, icebox or todo, and its plan is given at generation 0, where it waits
+// for the issue's first step. These reads come before the fact lock, so each refusal here is an
+// early one: the workflow judges the giver and the generation again on the record its fact reads
+// (workflow's planGiven). The grant picks the rule (subOwnerGrant), and each rule redeems it and
+// answers its own refusals: the architect's refuses every grant but an architect's
+// ARCHITECT_REQUIRED.
 func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, uint64, bool) {
+	if s.subOwnerGrant(grantID) {
+		return s.subOwnerOfIssue(w, r, grantID, issue)
+	}
 	grant, recorded, ok := s.architectOfRecord(w, r, grantID, issue)
 	if !ok {
 		return credential.Grant{}, 0, false
@@ -202,6 +211,48 @@ func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issu
 		"%s is %s in Dispatch and the daemon holds no record of it; register_plan takes a plan for an issue the daemon has not recorded only while it is triage, backlog, icebox or todo",
 		issue, unrecorded.Status))
 	return credential.Grant{}, 0, false
+}
+
+// subOwnerGrant says whether grantID names a grant of role sub-owner (claim.RoleSubOwner) whose
+// claim is a task's sub-owner's: its agent is named for one (record.IsSubOwnerAgent). It reads the
+// grant without redeeming it (credential.Grants.Redeem writes nothing), so the rule it picks
+// redeems it once and answers an expired or revoked grant itself.
+func (s *server) subOwnerGrant(grantID string) bool {
+	held, err := s.grants.Redeem(grantID)
+	if err != nil || held.Controller || held.Role != claim.RoleSubOwner {
+		return false
+	}
+	_, agent, named := held.Claim.Cut()
+	return named && record.IsSubOwnerAgent(agent)
+}
+
+// subOwnerOfIssue authorizes register_plan for the grant of a task's sub-owner (subOwnerGrant)
+// whose claim is on issue: the token claim.AgentToken gives its agent on issue. A sub-owner's
+// grant for another issue is refused 403 SUB_OWNER_OUTSIDE_ISSUE. A sub-owner starts only once
+// its task runs, so its issue is recorded (404 ISSUE_NOT_FOUND otherwise), and its plan is given at
+// the issue's generation. Which task the agent is the sub-owner of is the workflow's to read, from
+// the plan in force in the fact's own transaction (planGiven): the agent's name does not give a long
+// task id back.
+func (s *server) subOwnerOfIssue(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, uint64, bool) {
+	grant, ok := s.redeem(w, r, grantID)
+	if !ok {
+		return credential.Grant{}, 0, false
+	}
+	_, agent, _ := grant.Claim.Cut()
+	if token, err := claim.AgentToken(s.project, issue, agent); err != nil || token != grant.Claim {
+		s.writeFailure(w, r, http.StatusForbidden, "SUB_OWNER_OUTSIDE_ISSUE", fmt.Sprintf(
+			"a sub-owner of %s gives a version of the plan of %s alone.", grant.Issue, grant.Issue))
+		return credential.Grant{}, 0, false
+	}
+	recorded, err := s.recordedIssue(r.Context(), issue)
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue record")
+		return credential.Grant{}, 0, false
+	}
+	if s.notRecorded(w, r, recorded) {
+		return credential.Grant{}, 0, false
+	}
+	return grant, recorded.Generation, true
 }
 
 // TaskStopRequest is stop_task: the owner of a recorded issue stops one task of the plan Legion
