@@ -386,13 +386,14 @@ function shellLoad(page: Page) {
     // renders the margin, behind `lazy`, only once its import has settled, and the preview
     // layer, drawn through `chunkComponent`, only once that component's own `then` on the import
     // has set its state. The count drops in a `.finally` chained after a `.catch` of that import
-    // (`web/src/features/shell/chunk-loads.ts:69-73`), which runs after React's own `then` on it,
-    // or `chunkComponent`'s; but neither `then` renders anything. A settled import wakes its
-    // boundary through `pingSuspendedRoot` or `retryTimedOutBoundary`, a state set outside React
-    // schedules its update, and each ends in `ensureRootIsScheduled`, which schedules the render
-    // - as a task of React's own scheduler, or at the earliest in a microtask queued there, behind
-    // the `.finally` the `.catch` queued before it (`react-dom-client.production.js`,
-    // `ensureRootIsScheduled` and `scheduleImmediateRootScheduleTask`). So by the time either
+    // (`renderChunk` in `web/src/features/shell/chunk-loads.ts`), which runs after React's own
+    // `then` on it, or `chunkComponent`'s; but neither `then` renders anything. A settled import
+    // wakes its boundary through `pingSuspendedRoot` or `retryTimedOutBoundary`, a state set
+    // outside React schedules its update, and each ends in `ensureRootIsScheduled`, which
+    // schedules the render - as a task of React's own scheduler, or at the earliest in a microtask
+    // queued there, behind the `.finally` the `.catch` queued before it
+    // (`react-dom-client.production.js`, `ensureRootIsScheduled` and
+    // `scheduleImmediateRootScheduleTask`). So by the time either
     // component is in a committed tree the count has dropped. Neither draws anything on most of
     // the pages these rows open - the margin is null on a route that has none (the issue page
     // `keyed-writes.e2e.ts` opens has one), and the layer is null until a card opens - so the

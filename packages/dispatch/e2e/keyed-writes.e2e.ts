@@ -1414,9 +1414,10 @@ test("a pending-writes indicator whose chunk fails to download online with no re
 // The same failure, and then the one write the indicator would show turns refused: Dispatch
 // answers the status change held at the network with its verdict, a refusal, whose Retry and
 // Discard only the indicator offers. How many writes the indicator shows does not change - it is
-// still the one - so its boundary draws it afresh on any change of the writes it shows
-// (`ChunkBoundary`'s `reset`, `web/src/features/writes/write-hosts.tsx`), not on a change of how
-// many they are, which would leave the refusal with neither for the life of the page.
+// still the one - so its boundary draws it afresh whenever which writes it shows, or where one
+// stands, changes (`ChunkBoundary`'s `reset`, `web/src/features/writes/write-hosts.tsx`), not on
+// a change of how many they are, which would leave the refusal with neither for the life of the
+// page.
 // SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
 test("a pending-writes indicator whose chunk fails to download online with no reload to follow draws again when its one write is refused", async ({
   browser,
@@ -1644,8 +1645,8 @@ test("a kept-writes list whose chunk failed to download online asks for it again
 // The same failure of the list, and then the write it shows turns refused: Dispatch answers the
 // status change held at the network with its verdict, a refusal, which only the list's Discard
 // drops while the session is lapsed. The list still shows the one write, so its boundary draws it
-// afresh on any change of the writes it shows (`ChunkBoundary`'s `reset`,
-// `web/src/features/writes/write-hosts.tsx`), not on a change of how many they are.
+// afresh whenever which writes it shows, or where one stands, changes (`ChunkBoundary`'s
+// `reset`, `web/src/features/writes/write-hosts.tsx`), not on a change of how many they are.
 // SLOW(>=2s): two cold page loads, the first only to spend the tab's reloads in its own storage.
 test("a kept-writes list whose chunk failed to download online draws again with Discard when its write is refused", async ({
   browser,

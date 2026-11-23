@@ -705,11 +705,11 @@ function AppShell({
   // drawer's Escape, kept for the window before the drawer is: a listener on the document, in the
   // bubble phase, as the drawer's is, so it answers before the keymap's own listener on the window
   // (`KeymapProvider`) - a focused outline row would otherwise take the key to leave the tree -
-  // and marks the key handled, which every binding of the keymap passes over. It passes by what
-  // the drawer passes by: an Escape already handled, one in a field (`isEditableTarget`) or in a
-  // dialog, one under an open dialog, and one that ends an input method's composition. Not a
-  // binding of the keymap, which would add a row to the list of keys (`ShortcutHelp.tsx` lists
-  // every binding, one that does not apply greyed).
+  // and marks the key handled, which every binding of the keymap passes over. It passes by much
+  // what the drawer passes by: an Escape already handled, one in a text field
+  // (`isEditableTarget`) or in a dialog, one under an open dialog, and one that ends an input
+  // method's composition. Not a binding of the keymap, which would add a row to the list of keys
+  // (`ShortcutHelp.tsx` lists every binding, one that does not apply greyed).
   const detailsWaiting = frame?.drawer.open === true && !detailsDrawn;
   useEffect(() => {
     if (!detailsWaiting) return;

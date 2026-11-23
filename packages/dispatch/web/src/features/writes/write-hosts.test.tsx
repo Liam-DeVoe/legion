@@ -77,10 +77,11 @@ test("the writes host's fetch of the kinds of write ends a take-up whose own ask
   await takeUpEndsWithTheHost();
 });
 
-// `kinds.ts` was evaluated before this take-up began, and not by the host's load: the test file
-// imports it itself, as no module of the app does, since the app loads it only through the
-// host's own load (`writeKinds`, `write-hosts.tsx`). Its evaluation ended the take-ups waiting at
-// that moment, before this one waited, so only the writes host's answered load can end this one.
+// `kinds.ts` was evaluated before this take-up began - by the first row's host load when the
+// file runs in order, or by this import when this row runs first or alone - so its evaluation
+// ended the take-ups waiting at that moment, before this one waited. This take-up's own ask is the
+// test's loader, which fails although the kinds are in, so only the writes host's answered load
+// can end it.
 // The import is a run-time one on purpose: a static import would evaluate `kinds.ts` as the file
 // loads, before the first row, which could then no longer see an evaluation end its take-up.
 test("a take-up whose own ask failed ends with the writes host's fetch also when another load brought the kinds in before it began", async () => {

@@ -364,8 +364,8 @@ const takeUpsWaiting = new Set<() => void>();
  * with no reload by hand. A take-up that begins after the kinds are in ends through its own ask,
  * answered from what is in. A writes host calls this too whenever its own load of the kinds
  * answers (`prefetchWriteKinds`), which in the app ends nothing those two have not; it ends a
- * take-up only where `kinds.ts` was evaluated outside the app's one load of it, as a test's own
- * import or a later run under `bun test --rerun-each` evaluates it. Letting the writes pressed
+ * take-up only where that take-up's own ask is not the app's load and fails after the kinds are
+ * in, as the loader a test hands `resume` does (`write-hosts.test.tsx`). Letting the writes pressed
  * meanwhile into their lines while the take-up waits would not do: a kept write taken up after a
  * newer press on its line would land after it.
  */

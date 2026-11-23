@@ -73,7 +73,7 @@ export class ChunkBoundary extends Component<ChunkBoundaryProps, { failed: boole
   componentDidUpdate({ reset }: ChunkBoundaryProps): void {
     // Only a boundary that has failed draws `children` again. One that has not draws them
     // already, and a state set for nothing would cost a render at every change of `reset`, which
-    // a list of writes changes at every change of a write it shows.
+    // a list of writes changes whenever which writes it shows, or where one stands, changes.
     if (this.state.failed && reset !== this.props.reset) this.setState({ failed: false });
   }
 

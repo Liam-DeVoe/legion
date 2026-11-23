@@ -80,11 +80,10 @@ export function loadWriteKinds(): Promise<unknown> {
  * end is never the one that counts: every load of the kinds goes through `writeKinds`, which
  * keeps the module once it has come in, so the load that brings them in evaluates `kinds.ts`,
  * whose evaluation ends every take-up waiting then, and a take-up that begins after that ends
- * through its own ask, answered from what is in (`Writes.resume`). It counts only where
- * `kinds.ts` was evaluated outside `writeKinds` - a test's own import of it, or a later run of a
- * test file under `bun test --rerun-each`, which keeps the modules the first run evaluated
- * (`write-hosts.test.tsx`) - and there it keeps the take-up's end from turning on which load
- * evaluated the module.
+ * through its own ask, answered from what is in (`Writes.resume`). It counts only where a
+ * take-up's own ask is not `writeKinds` and fails after the kinds are in - the loader a test
+ * hands `Writes.resume` (`write-hosts.test.tsx`) - and there it keeps the take-up's end from
+ * turning on which load evaluated the module.
  */
 function prefetchWriteKinds(): void {
   prefetchChunk(() => writeKinds().then(kindsRegistered));
