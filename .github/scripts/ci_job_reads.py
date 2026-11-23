@@ -42,7 +42,7 @@ inside its own file a comment names the filter, the anchor, the glob or the path
 a grep resolves. at()'s third argument, and a gate's `workflow`, is the workflow file
 that holds the job's steps, and it is the job's own called file (job_file): ci.yaml's job of
 each gated id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, which holds the
-steps, or, for the half of a split job SHARED_FILE names, the file of the other half. The one
+steps, or, for a job SHARED_FILE names, the file of the job it maps to. The one
 gate whose steps are elsewhere names its file itself: ci.yaml's docs job calls
 docs-site.yaml, whose job carries an id of its own, so that gate stays on ci.yaml, the file its
 own job id is in, and cites docs-site.yaml's build job (at_docs). The Read lists of the jobs
@@ -85,10 +85,13 @@ BUILD_TAGS = ".github/scripts/go_build_tags.py"
 # .github/scripts/check-workflow-files.sh allows it
 # (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and each job
 # of the file runs under its own caller alone (ci_filter_coverage.check_called_jobs).
+# dispatch-memory-group is no half of a split: it is a job a pull request runs, beside the memory
+# suite the merge queue runs, and it joined that job's file for the same reason.
 SHARED_FILE = {
     "tooling-checks": "test",
     "pi-legion-build": "pi-legion",
     "envoy-infra-build": "envoy-infra-go",
+    "dispatch-memory-group": "dispatch-memory",
 }
 
 
@@ -1149,9 +1152,10 @@ MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} memory ./cmd/dispatch)
 go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch"""
-# The memory-group test of INFRA-1588's c20 (ci-job-dispatch-memory-group.yaml): one untagged
-# test of ./cmd/dispatch, named by an anchored -run, which is outside the simple form, so the step
-# is pinned whole. envoy-go's unit step compiles the same package and the test skips there.
+# The memory-group test of INFRA-1588's c20 (ci-job-dispatch-memory.yaml's dispatch-memory-group
+# job, which SHARED_FILE sends there): one untagged test of ./cmd/dispatch, named by an anchored
+# -run, which is outside the simple form, so the step is pinned whole. envoy-go's unit step
+# compiles the same package and the test skips there.
 MEMORY_GROUP_STEP = "The server ends its agent before the kernel"
 MEMORY_GROUP_SCRIPT = "go test -count=1 -timeout 15m -v -run '^TestTheServerEndsTheAgentBeforeTheKernel$' ./cmd/dispatch"
 DISPATCH_MP_STEP = "Two-process tests of the Dispatch server"

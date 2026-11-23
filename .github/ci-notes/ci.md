@@ -12,6 +12,10 @@ stays with its command. `.github/ci-filters.yaml` holds patterns and names: besi
 lines, its only comments are the lines of the blocks .github/scripts/check-ci-filters.sh and
 .github/scripts/check-ts-filters.sh write. A comment of it that said which files a job reads
 was deleted, since the filter beneath it is that record.
+The two-line blocks beside the `changes` job's outputs, and those above the test-fixtures,
+broker-client and worker-image jobs, moved here too, when ci.yaml reached the 64,000 bytes
+.github/scripts/check-workflow-files.sh holds it to: the first output block to the router's
+section, which already said it, and each of the others to a section of its own.
 In the text moved here, "this file" and "this workflow" refer to `.github/workflows/ci.yaml`,
 where every one of these comments first stood, the filters' comments among them.
 
@@ -1231,6 +1235,8 @@ ubuntu-24.04, each a reason of its own machine and not of the job's code:
     own pair (ci-job-envoy-go-build.yaml says what the arm64 runner built instead);
   * envoy-go-checks, whose script tests drive this image's own `docker compose` and
     `locale-gen` and have run on no other image;
+  * dispatch-memory-group, whose test's 50 ms margin is a measurement of the architecture
+    production runs on (.github/ci-notes/ci.md#the-memory-group-test);
   * tool-fallback, which is the x86_64 half of the tool proof; tool-fallback-arm is its arm64
     half.
 Every Go cache family carries the runner's architecture in its key, as the paragraph above
@@ -1399,12 +1405,22 @@ it tests, so the step runs when either changes and skips when neither does. The 
 own filter names every one of these lists, since a step gate decides nothing in a job
 that was not selected.
 
+## The docs output
+
+Selected like any other job now that no run of this workflow is a push to main.
+docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
+
 ## Why the browser image's build carries no full-ci term
 
 The browser image's build. No `full-ci` term, and none is wanted: the image is what the
 shard and alone jobs of .github/workflows/dispatch-browser.yaml pin, so gating its build behind a label would leave a pull request that edits
 the Dockerfile writing a row whose digest the package does not hold, which the
 ci-images job then refuses.
+
+## The dispatch_ui output
+
+The dashboard's and the proof editor's fast checks: no `full-ci` term, only the dispatched
+one, so they come back on every push.
 
 ## The browser suite's two outputs, one per lane
 
@@ -1518,6 +1534,11 @@ the migration check and the build and pack of the envoy commands), split out so 
 on every push: no `full-ci` term, only the dispatched one,
 `github.event_name == 'workflow_dispatch' && 'true'`.
 
+## The text_checks output
+
+The checks whose subject is text, in a job with no database: no `full-ci` term, only the
+dispatched one, since it is one of the cheapest jobs of the file.
+
 ## The two-build job builds the previous release and runs both halves against
 
 The two-build job builds the previous release and runs both halves against it (the Go
@@ -1529,6 +1550,11 @@ gated like the other slow suites.
 The two-build job's Go step alone, behind a gate of its own (ci-job-dispatch-two-builds.yaml
 says why). The dispatch_two_builds output decides whether the job runs at all, the `full-ci` term with
 it, so this one carries only the dispatched term.
+
+## The airlock_lean output
+
+The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term, so it
+comes back on every push that selects it, as listener_server_change and broker_multiprocess do.
 
 ## Why the tool fallback proof carries no full-ci term
 
@@ -1778,9 +1804,12 @@ typechecks that ran beside these tests are the tooling-checks job's, in the same
 
 ci.yaml calls 45 unique reusable workflows, the most .github/scripts/check-workflow-files.sh
 allows it (its rule 5 keeps five below the 50 GitHub counts over every tree of nested calls),
-so a job split in two takes no file of its own for its new half. test and tooling-checks call
-ci-job-test.yaml, pi-legion and pi-legion-build call ci-job-pi-legion.yaml, and envoy-infra-go
-and envoy-infra-build call ci-job-envoy-infra-go.yaml. Such a file holds one job per caller and
+so a job split in two takes no file of its own for its new half, and neither does a new job.
+test and tooling-checks call ci-job-test.yaml, pi-legion and pi-legion-build call
+ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build call ci-job-envoy-infra-go.yaml, and
+dispatch-memory and dispatch-memory-group call ci-job-dispatch-memory.yaml: the memory-group test
+a pull request runs joined the file of the memory suite the merge queue runs, which tests the same
+package. Such a file holds one job per caller and
 takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`, each
 caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
 id. A call runs the one job named for its caller, and the other reads `skipped` under it.
@@ -1790,9 +1819,10 @@ ci.yaml jobs call holds a job named for any of its callers, each caller must hav
 named for itself, which must carry that `if:`, and must pass its own id, since a job that ran
 under a second caller would read files that caller's filter is never held to, and a caller with
 no job of its own there runs nothing its filter is held to.
-.github/scripts/ci_job_reads.py's SHARED_FILE maps each new half to the file it shares, so its
-gates find their steps there. Each half keeps a filter of its own, and both name the shared
-file, so a change to it selects both. dispatch-browser.yaml has two callers too,
+.github/scripts/ci_job_reads.py's SHARED_FILE maps each new half, and dispatch-memory-group, to
+the file it shares, so its gates find their steps there. Each of the two callers keeps a filter
+of its own, and both name the shared file, so a change to it selects both. dispatch-browser.yaml
+has two callers too,
 dispatch-browser and dispatch-browser-pr, but every job of it runs under either: it takes the
 caller's id as `job` for its artifact names, its read of its own jobs and its report, never to
 pick a job
@@ -1868,12 +1898,22 @@ GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow refe
 needs are declared here. `contents: read` is its checkout's; `actions: read` and
 `checks: write` are its last step's, the ci-ok report this call turns on.
 
+## The test-fixtures job
+
+The shared test fixtures package has no build: nothing imports it at run time, and its
+consumers read its sources through the workspace.
+
 ## Why the session message-wait suite carries a database of its own
 
 The session message-wait suite, which creates a session-store database of its own and
 refuses without one. It was a step of the test job until dispatch://INFRA-1413: the one step
 of that job that needs a database, which is why it has one here instead of a Postgres
 service on a job whose other steps would start it for nothing.
+
+## The broker-client job
+
+The secrets broker's TypeScript client, which packages/envoy-client's broker credential
+imports. It has no build: its consumers read its sources through the workspace.
 
 ## The pi-legion plugin's suite and its build
 
@@ -2154,7 +2194,7 @@ tests a second time, envoy-go's unit step having run them already, so the -run c
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
 empty or refused list fails the step instead of running -run "", which matches every test.
 
-## The memory-group test: the server ends its agent before the kernel
+## The memory-group test
 
 The test of c20 of INFRA-1588 (packages/envoy/cmd/dispatch, TestTheServerEndsTheAgentBeforeTheKernel)
 runs the Dispatch server in a Docker container whose memory limit is 8 GiB, makes the server's
@@ -2169,7 +2209,8 @@ of a public repository, which GitHub does not bill, and its one test takes minut
 tens of minutes the held-back suites take. The image the server runs in is the test's own Go
 constant (`memoryGroupImage`, a digest of .github/ci-images.yaml), which
 .github/actions/pull-test-images pulls in a step of its own, so a failed pull is told apart from a
-failed test.
+failed test. Its steps are the dispatch-memory-group job of ci-job-dispatch-memory.yaml, beside
+dispatch-memory's (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 
 ## The Dispatch server's two-process tests
 
@@ -2338,6 +2379,11 @@ The proof that no install of this repository fetches the proof editor's upstream
 the network: a frozen install runs behind a proxy that answers HTTP 504 for the hosts of the
 old `github:sjawhar/proof-sdk#<sha>` route, and the job fails when the proxy's log holds a
 single refusal. The steps, and why those hosts, are in the called file.
+
+## The worker-image job
+
+The worker image's pull-request build: worker-image.yaml builds the head and publishes its
+sha- tag only. Main's image builds are release.yaml's call of the same workflow.
 
 ## Why the worker-image job grants every scope the called workflow declares
 

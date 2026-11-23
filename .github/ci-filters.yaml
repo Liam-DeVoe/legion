@@ -2097,7 +2097,7 @@ dispatch_memory:
 dispatch_memory_group:
   - *ci_router
   - *ci_filters_data
-  - '.github/workflows/ci-job-dispatch-memory-group.yaml'
+  - '.github/workflows/ci-job-dispatch-memory.yaml'
   - '.github/actions/pull-test-images/**'
   - *go_workspace
   - *dispatch_command_tests
