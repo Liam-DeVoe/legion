@@ -2621,6 +2621,20 @@
       "production": "redact Answer.Decode: a destination that embeds a pointer a decoder is promoted through - a *RemoteText, a *time.Time, in a list's item, set by the caller or nil - or an embedded interface value of a decoder's methods, is refused before anything is decoded, where encoding/json panicked (refusal)"
     },
     {
+      "id": "answer-decode-byte-array",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestAnAnswerRefusesADestinationThatHoldsAPlainTextMember",
+      "production": "redact Answer.Decode: a destination that holds a byte array, which encoding/json fills from a JSON array of numbers that can spell the answer's text and which fmt prints as text, is refused before anything is decoded (refusal, plainText)",
+      "function": "github.com/sjawhar/envoy/internal/redact.plainText",
+      "capture": "redact.answer-plain-member/byte-array",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "case (t.Kind() != reflect.Slice && t.Kind() != reflect.Array) || t.Elem().Kind() != reflect.Uint8:",
+        "replacement": "case t.Kind() != reflect.Slice || t.Elem().Kind() != reflect.Uint8:"
+      }
+    },
+    {
       "id": "listener-build-unsubscribe",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/envoy",
@@ -9787,6 +9801,11 @@
       "source": "round 7's code-quality review of #4368 at df9ce51fa0 (finding 1)",
       "guard": "answer-decode-promoted-pointer",
       "note": "not a leak: a panic; the class, any decoder promoted through an embedded pointer (a *time.Time, an embedded interface value), is held by the same row"
+    },
+    {
+      "site": "Answer.Decode accepted a byte-array member, which encoding/json fills from a JSON array of numbers that can spell a credential the answer echoes, and which fmt prints as text",
+      "source": "the review of #4368 at df9ce51fa0, note 4",
+      "guard": "answer-decode-byte-array"
     },
     {
       "site": "daemon dispatchError: Dispatch's code taken through SendBack, so a message that quotes ISSUE_NOT_FOUND made a permanent refusal codeless and retried for ever",

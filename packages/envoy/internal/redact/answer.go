@@ -278,8 +278,8 @@ type walked struct {
 // It refuses:
 //
 //   - where encoding/json fills it, a member it fills with the answer's text as it came
-//     (plainText): a byte slice, a json.RawMessage, or an interface value the caller did not set to
-//     a non-nil pointer;
+//     (plainText): a byte slice, a byte array, a json.RawMessage, or an interface value the caller
+//     did not set to a non-nil pointer;
 //   - a box in a map's key (holdsBox of the key's type), which encoding/json fills through the
 //     key's UnmarshalText and which has no address recordBoxes could hand the record through;
 //   - a box behind an embedded field of an unexported name (unreachedBox), to which reflect gives
@@ -357,15 +357,19 @@ func refusal(v reflect.Value, json, made bool, seen map[walked]bool) string {
 }
 
 // plainText is how Decode's refusal names a value of t that encoding/json fills with the answer's
-// text as it came, or "": a byte slice, json.RawMessage among them, or an interface value.
+// text as it came, or "": a byte slice, json.RawMessage among them; a byte array, which it fills
+// from a JSON array of numbers that can spell the same text, and which fmt prints as text; or an
+// interface value.
 func plainText(t reflect.Type) string {
 	switch {
 	case t.Kind() == reflect.Interface:
 		return "an interface value"
-	case t.Kind() != reflect.Slice || t.Elem().Kind() != reflect.Uint8:
+	case (t.Kind() != reflect.Slice && t.Kind() != reflect.Array) || t.Elem().Kind() != reflect.Uint8:
 		return ""
 	case t.Name() != "":
 		return "a " + t.String()
+	case t.Kind() == reflect.Array:
+		return "a byte array"
 	}
 	return "a byte slice"
 }

@@ -284,9 +284,10 @@ func keySet(t *testing.T) string {
 }
 
 // TestAnAnswerRefusesADestinationThatHoldsAPlainTextMember: encoding/json fills a json.RawMessage
-// or a byte slice with a member's bytes as they came, and an interface value with a JSON value of
-// its own, text and all, so each keeps the answer's text with no record of the answer and prints
-// a credential the answer echoes. Decode refuses a destination that holds one at any depth it
+// or a byte slice with a member's bytes as they came, a byte array with the bytes a JSON array of
+// numbers spells, which fmt prints as text, and an interface value with a JSON value of its own,
+// text and all, so each keeps the answer's text with no record of the answer and prints a
+// credential the answer echoes. Decode refuses a destination that holds one at any depth it
 // decodes to - a struct's member, an embedded struct's, a list's item, an array's, a map's value,
 // behind a nil pointer, in an interface value the caller set to a pointer, an interface value the
 // caller set to a value (which encoding/json replaces), the destination a map or a list itself -
@@ -309,6 +310,13 @@ func TestAnAnswerRefusesADestinationThatHoldsAPlainTextMember(t *testing.T) {
 		return `{"detail":"` + base64.StdEncoding.EncodeToString([]byte("the token "+auth+" was refused")) + `"}`
 	}
 	listed := func(auth string) string { return `{"detail":[` + refusedWith(auth) + `]}` }
+	numbered := func(auth string) string {
+		var numbers []string
+		for _, b := range []byte("the token " + auth + " was refused") {
+			numbers = append(numbers, strconv.Itoa(int(b)))
+		}
+		return `{"detail":[` + strings.Join(numbers, ",") + `]}`
+	}
 	for _, c := range []struct {
 		name   string
 		answer func(auth string) string
@@ -318,6 +326,11 @@ func TestAnAnswerRefusesADestinationThatHoldsAPlainTextMember(t *testing.T) {
 		{"bytes", encoded, func() any {
 			return new(struct {
 				Detail []byte `json:"detail"`
+			})
+		}},
+		{"byte-array", numbered, func() any {
+			return new(struct {
+				Detail [64]byte `json:"detail"`
 			})
 		}},
 		{"interface", said, func() any { return new(anyDetail) }},
