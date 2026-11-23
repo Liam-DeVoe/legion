@@ -103,6 +103,16 @@
  * (`injectionFault`: a `skill-prompt` message of the skill in another form, such as one the user
  * invoked with `/skill:`, or a message that opens with the plugin's marker away from where the
  * plugin puts its block) is refused: buildArm throws InjectionRefused naming it.
+ *
+ * **Role prompts at commits** (R8's arm). Given role-prompt commits (`ArmDirs.rolePromptAt`, from
+ * cli.ts's `--old-role-prompt-at` and `--new-role-prompt-at`), each arm names the commit its
+ * Legion role prompt is composed at (`Arm.rolePrompt`; context.ts composes it): `new` the new
+ * commit, every other arm the old one. A role-line case (cases.ts's `rolePromptLine`) tests a
+ * line of the role prompt, not of the skill, so its `none` and `minus` keep the skill as `old` has
+ * it (the old directory, its reads and its profile) and leave out of the old arm's prompt each
+ * line equal to the case's line (`minus`: to `--planted-line` where one is given), so "informative"
+ * (old at least 2 above none) measures the role line; a skill case's arms are as above, each at
+ * its commit. A role-line case's arms given no commits are refused: it has none to compose at.
  */
 import { isUtf8 } from "node:buffer";
 import {
@@ -213,6 +223,13 @@ export interface PathCopy {
   readonly rows: PathRows;
 }
 
+/** The commit an arm's Legion role prompt is composed at (context.ts), and the line it leaves out
+ *  of the composed prompt (`less`: each line equal to it, trimmed), when it leaves one out. */
+export interface ArmRolePrompt {
+  readonly commit: string;
+  readonly less?: string;
+}
+
 /** One arm of a case. */
 export interface Arm {
   readonly name: ArmName;
@@ -246,6 +263,10 @@ export interface Arm {
    *  reads of it show (the first `[Skill file: …]` line of a read of it), by the name the profile
    *  lists it under (`skillDirsOf`). Absent, or without a name, where the case shows none. */
   readonly skillDirs?: Readonly<Record<string, string>>;
+  /** The commit its Legion role prompt is composed at, and the line it leaves out of it (the
+   *  file's header, "Role prompts at commits"). Absent when the arms are given no commits: the
+   *  prompt is then composed at the daemon image's commit (context.ts). */
+  readonly rolePrompt?: ArmRolePrompt;
 }
 
 /** The directories the arms are built from: each is the skill's own directory, SKILL.md at its
@@ -255,6 +276,9 @@ export interface ArmDirs {
   readonly new: string;
   /** The line `minus` leaves out in place of the case's line. */
   readonly plantedLine?: string;
+  /** The commits the old and the new arm's role prompts are composed at (the file's header, "Role
+   *  prompts at commits"). */
+  readonly rolePromptAt?: { readonly old: string; readonly new: string };
 }
 
 /** Oh My Pi's result for a `skill://` read of `skill` in a session whose skills are the arm's
@@ -849,13 +873,19 @@ function directory(dir: string, name: ArmName): string {
   return path.resolve(dir);
 }
 
-/** Leaves out of `file` each line that is `line` (trimmed). Returns how many it left out. */
-function removeLine(file: string, line: string): number {
-  const text = readFileSync(file, "utf8");
+/** `text` less each of its lines that is `line` (trimmed), and how many it left out: what minus
+ *  leaves out of a skill's file, and an arm of a role-line case of its role prompt (context.ts). */
+export function withoutLine(text: string, line: string): { text: string; removed: number } {
   const lines = text.split("\n");
   const kept = lines.filter((each) => each.trim() !== line.trim());
-  if (kept.length < lines.length) writeFileSync(file, kept.join("\n"));
-  return lines.length - kept.length;
+  return { text: kept.join("\n"), removed: lines.length - kept.length };
+}
+
+/** Leaves out of `file` each line that is `line` (trimmed). Returns how many it left out. */
+function removeLine(file: string, line: string): number {
+  const less = withoutLine(readFileSync(file, "utf8"), line);
+  if (less.removed > 0) writeFileSync(file, less.text);
+  return less.removed;
 }
 
 /** Whether `from`, a path of the old directory `old`, is copied into minus: not when it is a link
@@ -1272,14 +1302,44 @@ function withInjections(
 }
 
 /** The arm `name` of case `c`, from the skill directories `dirs`, with whether its session had
- * Dispatch (`dispatchOf`). `minus` writes its copy of the old directory to `<scratch>/minus`,
- * replacing one there. Throws naming the case when a skillReads index is not a read of a file of
- * the skill (cases.ts's `skillReadFile` or `pathReadFile`), when Oh My Pi shows an arm's file read
- * by path in a form the arms do not rebuild (`pathFormFault`), and InjectionRefused when the case
- * holds a block of its skill the arms cannot each give their text (`injectionFault`). */
+ * Dispatch (`dispatchOf`) and, given role-prompt commits (`dirs.rolePromptAt`), the commit its
+ * role prompt is composed at (the file's header, "Role prompts at commits"). `minus` of a skill
+ * case writes its copy of the old directory to `<scratch>/minus`, replacing one there. Throws
+ * naming the case when a skillReads index is not a read of a file of the skill (cases.ts's
+ * `skillReadFile` or `pathReadFile`), when Oh My Pi shows an arm's file read by path in a form
+ * the arms do not rebuild (`pathFormFault`), when a role-line case's arms are given no commits,
+ * and InjectionRefused when the case holds a block of its skill the arms cannot each give their
+ * text (`injectionFault`). */
 export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string): Arm {
   const fault = injectionFault(c);
   if (fault !== undefined) throw new InjectionRefused(`case ${c.id}: ${fault}`);
+  const roleLine = c.rolePromptLine !== undefined;
+  const at = dirs.rolePromptAt;
+  if (roleLine && at === undefined) {
+    throw new Error(
+      `case ${c.id}: it is a role-line case, and its arms are given no role-prompt commits (--old-role-prompt-at, --new-role-prompt-at)`
+    );
+  }
+  if (roleLine && name === "minus" && dirs.plantedLine?.trim() === "") {
+    throw new Error("the planted line is blank");
+  }
+  // The line a role-line case's none and minus leave out of the old arm's role prompt.
+  const less = !roleLine
+    ? undefined
+    : name === "none"
+      ? c.line.text
+      : name === "minus"
+        ? (dirs.plantedLine ?? c.line.text)
+        : undefined;
+  const rolePrompt: { rolePrompt?: ArmRolePrompt } =
+    at === undefined
+      ? {}
+      : {
+          rolePrompt: {
+            commit: name === "new" ? at.new : at.old,
+            ...(less === undefined ? {} : { less }),
+          },
+        };
   const targets = readTargets(c.messages);
   const pathRows = pathRowsOf(c, targets);
   const pathCopy = pathCopyOf(c, targets, pathRows);
@@ -1315,7 +1375,7 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     }
   }
 
-  if (name === "none") {
+  if (name === "none" && !roleLine) {
     const ids = new Set([...reads.values()].map((read) => read.id));
     const messages = c.messages.flatMap((message, index): SessionMessage[] => {
       if (reads.has(index)) return [];
@@ -1341,13 +1401,15 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
       dispatch: dispatchOf(c),
       ...(pathCopy === undefined ? {} : { pathCopy }),
       ...shared,
+      ...rolePrompt,
     };
   }
 
+  // A role-line case's none and minus keep the old text of the skill, as twin does.
   const skillDir =
-    name === "minus"
+    name === "minus" && !roleLine
       ? minusDirectory(c, dirs, scratch)
-      : directory(dirs[name === "twin" ? "old" : name], name);
+      : directory(dirs[name === "new" ? "new" : "old"], name);
   const arm: Arm = {
     name,
     skill: c.skill,
@@ -1357,6 +1419,7 @@ export function buildArm(c: Case, name: ArmName, dirs: ArmDirs, scratch: string)
     profileSkills: structuredClone(c.profile.skills),
     ...(pathCopy === undefined ? {} : { pathCopy }),
     ...shared,
+    ...rolePrompt,
   };
   const messages = c.messages.map((message, index) => {
     const byPath = pathReads.get(index);

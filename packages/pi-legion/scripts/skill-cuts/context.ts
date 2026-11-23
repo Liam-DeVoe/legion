@@ -73,6 +73,14 @@
  *   which sits between the two, names the session's claim, which a case does not hold, so it is
  *   left out and the record says so. A subagent's context (`subagent:<agent>`) has no role prompt:
  *   its case carries the system prompt its session recorded, which the capture sends whole.
+ *   An arm that names a role-prompt commit (arms.ts's `rolePrompt`, from cli.ts's
+ *   `--old-role-prompt-at` and `--new-role-prompt-at`) has its role prompt composed at that commit
+ *   of the first plugin repository of the profile that holds `prompts.go` there
+ *   (`rolePromptRepo`), in place of the daemon image's or the plugin's commit (`commitOf: "arm"`),
+ *   less each line equal (trimmed) to the arm's `less` line where it names one (the record's
+ *   `lineLeftOut`); an arm that leaves out a line its prompt does not hold would equal old, and
+ *   stops the case. Such an arm's case holds no role prompt of its own
+ *   (`profile.appendSystemPrompt`) and has a Legion context: cli.ts refuses any other.
  *
  * `source` reads the repositories: `ghSource` with read-only `gh api` calls (a directory from the
  * commit's tree and its blobs, read along the directory's path where GitHub cuts the commit's tree
@@ -105,8 +113,14 @@ import {
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
-import { type Arm, legionStore, type SkillCopy } from "./arms";
-import { type Case, listedName, type ProfileSkill, testedCopy } from "./cases";
+import { type Arm, legionStore, type SkillCopy, withoutLine } from "./arms";
+import {
+  type Case,
+  listedName,
+  type ProfileSkill,
+  type RolePromptAt,
+  testedCopy,
+} from "./cases";
 import {
   eachChunk,
   firstLine,
@@ -250,19 +264,23 @@ export interface ContextRecord {
     readonly as: "working directory" | "system prompt" | "user level";
   }[];
   /** The role prompt: the case's own text, or the parts Compose named, or none. Compose ran at
-   *  `commit` of `repo`: the commit the case's DAEMON_IMAGE_ITEM names (`commitOf: "daemon
-   *  image"`), else the commit the profile names for that plugin repository (`"plugin"`). */
+   *  `commit` of `repo`: the commit the arm names (`commitOf: "arm"`), else the commit the case's
+   *  DAEMON_IMAGE_ITEM names (`"daemon image"`), else the commit the profile names for that
+   *  plugin repository (`"plugin"`). `lineLeftOut`, for an arm that leaves a line out of the
+   *  composed prompt (arms.ts's `rolePrompt.less`): that line and how many lines equal to it were
+   *  left out. */
   readonly rolePrompt:
     | "case"
     | {
         readonly repo: string;
         readonly commit: string;
-        readonly commitOf: "daemon image" | "plugin";
+        readonly commitOf: "arm" | "daemon image" | "plugin";
         readonly role: string;
         readonly isRoot: boolean;
         readonly promptsBlob: string;
         readonly key: string;
         readonly parts: readonly string[];
+        readonly lineLeftOut?: { readonly text: string; readonly count: number };
       }
     | null;
   /** For a subagent's context, the agent definition it ran, with the skills it autoloads
@@ -1280,9 +1298,86 @@ async function composeParts(
   }
 }
 
-/** The git blob id of PROMPTS_GO in each `<repo>@<commit>` a source has read it from: a commit's
- *  file never changes, so it is read once per source. A read that failed is not kept. */
-const promptsBlobs = new WeakMap<RepoSource, Map<string, string>>();
+/** The git blob id of PROMPTS_GO in each `<repo>@<commit>` a source has read it from, or null
+ *  where the commit holds no such file: a commit's file never changes, so it is read once per
+ *  source. A read that failed is not kept. */
+const promptsBlobs = new WeakMap<RepoSource, Map<string, string | null>>();
+
+/** The git blob id of PROMPTS_GO in `repo` at `commit`, read through `source` once
+ *  (`promptsBlobs`), or null where the commit holds no such file. Throws when the read fails. */
+async function promptsBlobAt(
+  source: RepoSource,
+  repo: string,
+  commit: string
+): Promise<string | null> {
+  let known = promptsBlobs.get(source);
+  if (known === undefined) {
+    known = new Map();
+    promptsBlobs.set(source, known);
+  }
+  const id = `${repo}@${commit}`;
+  let blob = known.get(id);
+  if (blob === undefined) {
+    try {
+      blob = gitBlobId(await source.file(repo, commit, PROMPTS_GO));
+    } catch (error) {
+      if (!(error instanceof NoSuchFile)) throw error;
+      blob = null;
+    }
+    known.set(id, blob);
+  }
+  return blob;
+}
+
+/** The plugin repositories of `c`'s profile, each once, in the profile's order: those an arm's
+ *  role prompt can be composed from (`rolePromptRepo`). */
+export function pluginRepos(c: Pick<ContextCase, "profile">): string[] {
+  return [...new Set(c.profile.plugins.map((plugin) => plugin.repo))];
+}
+
+/** The repository whose role prompt an arm of `c` composes at `commit` (arms.ts's `rolePrompt`):
+ *  the first plugin repository of `c`'s profile that holds PROMPTS_GO at `commit`, or undefined
+ *  when none does (none holds the commit, or none holds the composer there). Throws when a read
+ *  fails. */
+export async function rolePromptRepo(
+  c: Pick<ContextCase, "profile">,
+  commit: string,
+  source: RepoSource
+): Promise<string | undefined> {
+  for (const repo of pluginRepos(c)) {
+    if ((await promptsBlobAt(source, repo, commit)) !== null) return repo;
+  }
+  return undefined;
+}
+
+/** The prompt parts of each case's plugin repository at `commit`, read through `source`, as
+ *  cases.ts's `loadCasesAt` checks a role-line case's line against them: the repository is
+ *  `rolePromptRepo`'s, and each part is read once. */
+export function rolePromptParts(commit: string, source: RepoSource): RolePromptAt {
+  const texts = new Map<string, Promise<string | undefined>>();
+  return {
+    commit,
+    async part(c, part) {
+      const repo = await rolePromptRepo(c, commit, source);
+      if (repo === undefined) {
+        return `no plugin repository of its profile (${pluginRepos(c).join(", ") || "none"}) holds ${PROMPTS_GO} at ${commit}`;
+      }
+      const id = `${repo}@${commit}:${part}`;
+      let text = texts.get(id);
+      if (text === undefined) {
+        text = source.file(repo, commit, part).then(
+          (bytes) => new TextDecoder().decode(bytes),
+          (error: unknown) => {
+            if (error instanceof NoSuchFile) return undefined;
+            throw error;
+          }
+        );
+        texts.set(id, text);
+      }
+      return { where: `${repo}:${part} at ${commit}`, text: await text };
+    },
+  };
+}
 
 /** The commit of `repo` that the evidence item DAEMON_IMAGE_ITEM of `c` names as its daemon
  *  image's, in `composedAt`'s words; undefined when `c` has no such item of `repo` or its item
@@ -1303,46 +1398,52 @@ export function daemonCommit(
  *  plugin repository that holds PROMPTS_GO, joined as `ComposePrompt` joins them. Each repository
  *  is read at the commit its daemon image was built from where `c`'s evidence names one
  *  (`daemonCommit`), since the daemon composes the role prompt, else at the profile's commit of
- *  it; the record says which (`commitOf`). */
+ *  it; the record says which (`commitOf`). An arm that names a role-prompt commit (`arm`'s
+ *  `rolePrompt`) has it composed at that commit of `rolePromptRepo`'s repository, less each line
+ *  equal (trimmed) to its `less`; throws when the prompt holds no such line, since the arm would
+ *  equal old. */
 async function rolePrompt(
   c: ContextCase,
   role: { readonly role: string; readonly isRoot: boolean },
   builds: Builds,
-  options: ContextOptions
+  options: Pick<ContextOptions, "source" | "cacheDir">,
+  arm: Pick<Arm, "name" | "rolePrompt"> | undefined
 ): Promise<{ text: string; record: ContextRecord["rolePrompt"] }> {
+  const at = arm?.rolePrompt;
   if (c.profile.appendSystemPrompt !== undefined) {
+    if (at !== undefined) {
+      throw new Error(
+        `case ${c.id}: it holds profile.appendSystemPrompt, its own role prompt text, so no commit composes its role prompt`
+      );
+    }
     return { text: c.profile.appendSystemPrompt, record: "case" };
   }
   const { source } = options;
-  const repositories = [
-    ...new Map(
-      c.profile.plugins.map((p) => {
-        const daemon = daemonCommit(c, p.repo);
-        const at =
-          daemon === undefined
-            ? { repo: p.repo, commit: p.commit, commitOf: "plugin" as const }
-            : { repo: p.repo, commit: daemon, commitOf: "daemon image" as const };
-        return [`${at.repo}@${at.commit}`, at];
-      })
-    ).values(),
-  ];
-  let known = promptsBlobs.get(source);
-  if (known === undefined) {
-    known = new Map();
-    promptsBlobs.set(source, known);
+  let repositories: { repo: string; commit: string; commitOf: "arm" | "daemon image" | "plugin" }[];
+  if (at === undefined) {
+    repositories = [
+      ...new Map(
+        c.profile.plugins.map((p) => {
+          const daemon = daemonCommit(c, p.repo);
+          const commitOf = daemon === undefined ? ("plugin" as const) : ("daemon image" as const);
+          const each = { repo: p.repo, commit: daemon ?? p.commit, commitOf };
+          return [`${each.repo}@${each.commit}`, each];
+        })
+      ).values(),
+    ];
+  } else {
+    const repo = await rolePromptRepo(c, at.commit, source);
+    if (repo === undefined) {
+      throw new Error(
+        `case ${c.id}: no plugin repository of its profile holds ${PROMPTS_GO} at ${at.commit}`
+      );
+    }
+    repositories = [{ repo, commit: at.commit, commitOf: "arm" }];
   }
   for (const { repo, commit, commitOf } of repositories) {
-    let promptsBlob = known.get(`${repo}@${commit}`);
-    if (promptsBlob === undefined) {
-      try {
-        promptsBlob = gitBlobId(await source.file(repo, commit, PROMPTS_GO));
-      } catch (error) {
-        // A repository that holds no PROMPTS_GO is passed over; a read that failed stops the case.
-        if (error instanceof NoSuchFile) continue;
-        throw error;
-      }
-      known.set(`${repo}@${commit}`, promptsBlob);
-    }
+    // A repository that holds no PROMPTS_GO is passed over; a read that failed stops the case.
+    const promptsBlob = await promptsBlobAt(source, repo, commit);
+    if (promptsBlob === null) continue;
     const key = `${promptsBlob}-${role.role}${role.isRoot ? "-root" : ""}`;
     const where = await builds.entry("compose", key, async (dest) => {
       const tree = await checkout(builds, source, repo, commit);
@@ -1357,8 +1458,20 @@ async function rolePrompt(
     const parts = JSON.parse(readFileSync(where, "utf8")) as string[];
     let text = "";
     for (const part of parts) text += (await fileText(builds, source, repo, commit, part)).text;
+    text = text.replace(/\n+$/, "");
+    let lineLeftOut: { text: string; count: number } | undefined;
+    if (at?.less !== undefined) {
+      const less = withoutLine(text, at.less);
+      if (less.removed === 0) {
+        throw new Error(
+          `case ${c.id} arm ${arm?.name}: its role prompt at ${commit} holds no line ${JSON.stringify(at.less)}, so the arm would equal old`
+        );
+      }
+      text = less.text;
+      lineLeftOut = { text: at.less, count: less.removed };
+    }
     return {
-      text: text.replace(/\n+$/, ""),
+      text,
       record: {
         repo,
         commit,
@@ -1368,12 +1481,27 @@ async function rolePrompt(
         promptsBlob,
         key,
         parts,
+        ...(lineLeftOut === undefined ? {} : { lineLeftOut }),
       },
     };
   }
   throw new Error(
     `case ${c.id}: its Legion context needs a role prompt, and no plugin repository holds ${PROMPTS_GO}`
   );
+}
+
+/** The role prompt of `c`'s Legion context as a capture of an arm that names no role-prompt commit
+ *  composes it (`rolePrompt`: at the daemon image's commit `c`'s evidence names, else at the
+ *  plugin's), and its record; the builds go through the cache under `options.cacheDir`. Throws
+ *  for a context with no Legion role, and as `rolePrompt` throws. rolecases.ts reads it to keep a
+ *  session whose prompt holds the line. */
+export async function composedRolePrompt(
+  c: ContextCase,
+  options: Pick<ContextOptions, "source" | "cacheDir">
+): Promise<{ text: string; record: ContextRecord["rolePrompt"] }> {
+  const role = legionRole(c.context);
+  if (role === undefined) throw new Error(`case ${c.id}: its context ${c.context} has no role`);
+  return rolePrompt(c, role, new Builds(options.cacheDir), options, undefined);
 }
 
 /** The retries of `after` less those of `before`, two `RepoSource.reads` records: each reason with
@@ -2216,8 +2344,13 @@ export async function buildContext(
   const leftOut: string[] = [];
   let roleRecord: ContextRecord["rolePrompt"] = null;
   const role = legionRole(c.context);
+  if (role === undefined && arm.rolePrompt !== undefined) {
+    throw new Error(
+      `case ${c.id}: it has no Legion role context (its context is ${c.context}), so arm ${arm.name} has no role prompt to compose at ${arm.rolePrompt.commit}`
+    );
+  }
   if (role !== undefined) {
-    const composed = await rolePrompt(c, role, builds, options);
+    const composed = await rolePrompt(c, role, builds, options, arm);
     prompts.push(composed.text);
     roleRecord = composed.record;
     leftOut.push(

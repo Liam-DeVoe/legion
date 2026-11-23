@@ -710,7 +710,7 @@ describe.skipIf(goMissing && !onActions)("a Legion context", () => {
     /** The system prompt file and the record of `of`'s arm `name`, with the old directory in both
      *  arms and `plantedLine` for minus. */
     const prompt = async (of: Case, name: ArmName, plantedLine?: string) => {
-      const { options } = setUp(root, of);
+      const { options } = setUp(root, c);
       writeRolePromptRepository(path.join(root, "repos"));
       const old = path.join(root, "old");
       const dirs = {
