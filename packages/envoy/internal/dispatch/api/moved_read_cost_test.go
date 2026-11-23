@@ -87,6 +87,42 @@ const (
 // movedCostCorpusPath is the corpus's SQL, which the test runs whole over its own connection.
 var movedCostCorpusPath = filepath.Join("testdata", "moved-read-cost-corpus.sql")
 
+// movedCostEventsShape is production's count of events per issue, read through its API at
+// 2026-11-23T23:20Z from the newest event's seq of 120 issues that advance a priority: the mean,
+// the p50, the p90 and the most. The corpus's SQL draws each issue's count from it. The count check
+// holds the corpus's mean, p50 and p90 within movedCostEventsSlack of production's, and its most at
+// or below production's and above movedCostEventsTail of it.
+var movedCostEventsShape = struct{ mean, p50, p90, most float64 }{51, 16, 118, 937}
+
+const (
+	movedCostEventsSlack = 0.1
+	movedCostEventsTail  = 0.8
+)
+
+// movedCostEventsQuery reads the events of the issues the corpus writes in the projects $1, their
+// first issues left out: how many there are and over how many issues, each issue's count of them
+// in nearest-rank percentiles, the issues whose events run seq 1 to their last_seq, and, of the
+// issues parked in backlog or icebox, those that hold the issue.updated that moved them there as
+// the parked read finds it (parkedMoveLateral), and those whose move is not their newest event.
+var movedCostEventsQuery = `with written as (
+		select i.key, i.status, i.last_seq, count(e.id) as events, min(e.seq) as low, max(e.seq) as high,
+		       max(e.seq) filter (where e.type = 'issue.updated' and e.payload->'changed' @> '"status"'::jsonb
+		                          and e.payload->>'status' = i.status) as moved
+		from issues i
+		left join events e on e.issue_key = i.key
+		where i.project_key = any($1) and i.number > 1
+		group by i.key, i.status, i.last_seq
+	)
+	select coalesce(sum(events), 0)::bigint, count(*), coalesce(avg(events), 0)::float8,
+	       coalesce(percentile_disc(0.5) within group (order by events), 0),
+	       coalesce(percentile_disc(0.9) within group (order by events), 0),
+	       coalesce(percentile_disc(0.99) within group (order by events), 0),
+	       coalesce(max(events), 0),
+	       count(*) filter (where events = last_seq and low = 1 and high = last_seq),
+	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved is not null),
+	       count(*) filter (where status in (` + sqlStringList(priorityParkedStatuses) + `) and moved < last_seq)
+	from written`
+
 // ───── the corpus ─────────────────────────────────────────────────────────
 
 // movedCostCorpus is the corpus's counts at the run's scale, as the corpus's SQL computes them, and
@@ -95,6 +131,9 @@ type movedCostCorpus struct {
 	scale                                                     float64
 	priorities, live, advancedIssues, advances, finished, ran int
 	others                                                    int64
+	// issues is how many issues the corpus writes, the projects' first issues left out, and parked
+	// how many of them stand in backlog: the advances project's issue n where n % 100 < 34.
+	issues, parked int
 	// busy is the issue of 200 runs and 339 other children; advancing is an issue of the advances
 	// project whose parent advances priorities too.
 	busy, advancing string
@@ -109,6 +148,12 @@ func newMovedCostCorpus(t *testing.T, scale float64) *movedCostCorpus {
 		busy: movedCostProjects[0] + "-2", advancing: movedCostAdvancesProject + "-3",
 	}
 	corpus.live = corpus.priorities - corpus.priorities/25
+	corpus.issues = len(movedCostProjects)*corpus.finished + corpus.advancedIssues
+	for n := 1; n <= corpus.advancedIssues; n++ {
+		if n%100 < 34 {
+			corpus.parked++
+		}
+	}
 	if corpus.priorities < 3 || corpus.advancedIssues < 4 || 5*corpus.ran > corpus.finished {
 		t.Fatalf("%s=%v leaves too small a corpus: %d priorities, %d advanced issues, %d issues run of %d finished",
 			movedCostScaleVariable, scale, corpus.priorities, corpus.advancedIssues, corpus.ran, corpus.finished)
@@ -179,6 +224,15 @@ func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 		slack int64
 	}
 	projects := len(movedCostProjects)
+	// The issues run 30 times, named: the first issue of each project holds the part_of tuples of
+	// the three documents the release before's create states for it (its spec, its issue tree and
+	// its decisions query), which the corpus does not write.
+	ranIssues := make([]string, 0, projects*corpus.ran)
+	for _, project := range movedCostProjects {
+		for k := 1; k <= corpus.ran; k++ {
+			ranIssues = append(ranIssues, project+"-"+strconv.Itoa(5*k+1))
+		}
+	}
 	counts := []corpusCount{
 		{"priorities", `select count(*) from priority_nodes`, nil, int64(corpus.priorities), 0},
 		{"live priorities", `select count(*) from priority_nodes where state = 'live'`, nil, int64(corpus.live), 0},
@@ -190,8 +244,8 @@ func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 			[]any{corpus.busy}, 200, 0},
 		{"other part_of children of " + corpus.busy, `select count(*) from graph_tuples where kind = 'part_of' and to_kind = 'issue' and to_id = $1`,
 			[]any{corpus.busy}, 339, 0},
-		{"other part_of children of the issues run 30 times", `select count(*) from graph_tuples where kind = 'part_of' and to_kind = 'issue' and to_id <> all ($1)`,
-			[]any{[]string{movedCostProjects[0] + "-2", movedCostProjects[1] + "-2", movedCostProjects[2] + "-2"}}, int64(projects * 100 * corpus.ran), 0},
+		{"other part_of children of the issues run 30 times", `select count(*) from graph_tuples where kind = 'part_of' and to_kind = 'issue' and to_id = any ($1)`,
+			[]any{ranIssues}, int64(projects * 100 * corpus.ran), 0},
 		// Each of the 59 terms' shares is rounded on its own, so the sum may stray by half a tuple
 		// for each term.
 		{"tuples of other kinds", `select count(*) from graph_tuples where who = $1::jsonb`, []any{movedCostOtherWho}, corpus.others, 30},
@@ -210,6 +264,37 @@ func seedMovedCostCorpus(t *testing.T, conn *pgx.Conn, corpus *movedCostCorpus) 
 		if read < count.want-count.slack || read > count.want+count.slack {
 			t.Errorf("the corpus holds %d %s, where the check at scale %v states %d", read, count.what, corpus.scale, count.want)
 		}
+	}
+	// The events of the issues the corpus writes, against production's shape.
+	var events, withEvents, p50, p90, p99, most, whole, moved, movedBefore int64
+	var mean float64
+	if err := conn.QueryRow(ctx, movedCostEventsQuery, append(slices.Clone(movedCostProjects), movedCostAdvancesProject)).
+		Scan(&events, &withEvents, &mean, &p50, &p90, &p99, &most, &whole, &moved, &movedBefore); err != nil {
+		t.Fatalf("count the corpus's events: %v", err)
+	}
+	shape := movedCostEventsShape
+	t.Logf("c-moved-read-cost: the corpus holds %d events over %d issues, by issue mean %.1f, p50 %d, p90 %d, p99 %d and max %d "+
+		"(production: mean %.0f, p50 %.0f, p90 %.0f and max %.0f)", events, withEvents, mean, p50, p90, p99, most,
+		shape.mean, shape.p50, shape.p90, shape.most)
+	t.Logf("c-moved-read-cost: %d of the corpus's issues hold events seq 1 to their last_seq (the check at scale %v writes %d issues); "+
+		"%d of the %d in backlog hold the issue.updated that moved them there, %d of them before their newest event",
+		whole, corpus.scale, corpus.issues, moved, corpus.parked, movedBefore)
+	if withEvents != int64(corpus.issues) || whole != withEvents {
+		t.Errorf("%d of the corpus's %d issues hold events seq 1 to their last_seq, where the check at scale %v writes %d issues, each with its events",
+			whole, withEvents, corpus.scale, corpus.issues)
+	}
+	if moved != int64(corpus.parked) || movedBefore == 0 || movedBefore == moved {
+		t.Errorf("%d of the corpus's %d issues in backlog hold the issue.updated that moved them there, %d of them before their newest "+
+			"event, where every one holds it and some but not all before their newest", moved, corpus.parked, movedBefore)
+	}
+	near := func(read, production float64) bool {
+		return math.Abs(read-production) <= movedCostEventsSlack*production
+	}
+	if !near(mean, shape.mean) || !near(float64(p50), shape.p50) || !near(float64(p90), shape.p90) ||
+		float64(most) > shape.most || float64(most) <= movedCostEventsTail*shape.most {
+		t.Errorf("the corpus's events by issue, mean %.1f, p50 %d, p90 %d and max %d, are not production's: mean %.0f, p50 %.0f and "+
+			"p90 %.0f within %.0f%%, and max at most %.0f and above %.0f", mean, p50, p90, most,
+			shape.mean, shape.p50, shape.p90, 100*movedCostEventsSlack, shape.most, movedCostEventsTail*shape.most)
 	}
 	var issues, workflow, graph int64
 	if err := conn.QueryRow(ctx, `select (select count(*) from issues), (select count(*) from workflow_tuples), (select count(*) from graph_tuples)`).

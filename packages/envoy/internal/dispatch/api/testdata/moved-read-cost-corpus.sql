@@ -1,9 +1,10 @@
 -- The corpus of c-moved-read-cost, which TestNoMovedReadGetsSlower (moved_read_cost_test.go) writes
 -- by SQL over the database of the release before, once that build has migrated it and is stopped.
 -- Each row has the shape its writer in that release stores: prioritystore's Create and relate for
--- the priorities and the advances tuples, and workflowstore's putNode for the runs and the plans.
--- These are the shapes of the R32 bench's corpus (dispatch://INFRA-1098/artifact/r32-bench-tar-gz).
--- No value is random.
+-- the priorities and the advances tuples, workflowstore's putNode for the runs and the plans, and
+-- events.Broker's append for the events of the issues. These are the shapes of the R32 bench's
+-- corpus (dispatch://INFRA-1098/artifact/r32-bench-tar-gz), with the events added. No value is
+-- random: what is drawn is drawn by the md5 of a fixed text.
 --
 -- Three settings name what the run made through the release before's own API before this file runs:
 --   moved_read_cost.scale             1 for the check's corpus; 0.1 a tenth. Every count of issues,
@@ -27,6 +28,25 @@
 -- issues of the advances project with 5,000 advances tuples over them, and 1,000,000 tuples of
 -- other kinds, split by the tuples_a_day of each `census: sizing tuples-a-write` line that
 -- cybermonklabs/legion#3178's body records.
+--
+-- Where the check fixes no number, the issues take production's shape, as its API answered at
+-- 2026-11-23T23:20Z over 13,298 issues:
+--   * Every issue has its events, seq 1 to its count. The counts are drawn from production's
+--     events per issue (mean 51, p50 16, p90 118, at most 937: the newest event's seq of 120 issues
+--     that advance a priority). Each issue takes that distribution's quantile at its place in the
+--     md5 order of the keys, so every scale draws the same distribution and only the count of
+--     issues scales.
+--   * The advances project's issues are open: 34% in backlog, 33% in todo and 33% in in_progress.
+--     Its 680 in backlog are production's 729 parked issues (backlog or icebox, advancing a
+--     priority) at this corpus's 12,383 issues. Production's statuses (done 33%, backlog 32%, todo
+--     18%, in_progress 17%) are out of reach beside the check's 10,383 finished issues; leaving no
+--     issue of the advances project done comes closest.
+--   * 68% of the issues have a parent and 58% advance a priority, their own or inherited, as in
+--     production (68%, and 7,677 of 13,298): beside the advances project's own children, each
+--     finished issue n = 2, 3 or 4 modulo 6 hangs under an issue of the advances project, and each
+--     n = 1 modulo 6 under issue n - 1 of its own project, which hangs under none.
+-- Production's 115 unplaced issues (in flight, advancing none) have no counterpart here: every issue
+-- in flight states a priority.
 
 create temp table moved_counts as
 select round(50 * s)::int as priorities,
@@ -43,36 +63,66 @@ select p.key, p.place - 1 as slot,
        timestamptz '2026-11-16 22:47:00+00' + (p.place - 1) * interval '5 days' as t0
 from unnest(string_to_array(current_setting('moved_read_cost.projects'), ',')) with ordinality as p(key, place);
 
--- The finished issues of the three projects, each a copy of its project's first issue.
-insert into issues (key, project_key, number, title, status, created_by, labels, priority, rank, node_kind, node_address,
-                    created_at, updated_at, closed_at)
-select p.key || '-' || (n + 1), p.key, n + 1, 'Finished work item ' || n || ' of project ' || p.key, 'done',
-       template.created_by, template.labels, template.priority, template.rank || lpad(n::text, 7, '0'), template.node_kind,
-       p.key || '-' || (n + 1),
-       p.t0 + n * interval '2 minutes', p.t0 + n * interval '2 minutes' + interval '9 hours',
-       p.t0 + n * interval '2 minutes' + interval '9 hours'
-from moved_projects p
-join issues template on template.key = p.key || '-1'
-cross join moved_counts c
-cross join lateral generate_series(1, c.finished) n;
+-- Every issue the corpus writes, before its row is written: its status, its parent, its life and
+-- the count of its events. Each takes its place in the draw of the counts by the md5 of its key,
+-- and an issue in backlog the seq of its move there by the next eight hex digits of that md5, from
+-- 2 to its count. An issue's first event creates it and every status but todo is reached by a
+-- move, so every issue but one in todo has at least two events.
+create temp table moved_issues as
+with written as (
+  -- The finished issues of the three projects. The parents of the issues under the advances
+  -- project are spread over its issues, from a third of the way along for each later project.
+  select p.key as project, n, p.key || '-' || (n + 1) as key, 'Finished work item ' || n || ' of project ' || p.key as title,
+         'done' as status,
+         case when n % 6 in (2, 3, 4) then a.key || '-' || ((n - 1 + p.slot * 667) % c.advanced_issues + 2)
+              when n % 6 = 1 and n > 1 then p.key || '-' || n end as parent_key,
+         p.t0 + n * interval '2 minutes' as created_at,
+         p.t0 + n * interval '2 minutes' + interval '9 hours' as updated_at,
+         p.t0 + n * interval '2 minutes' + interval '9 hours' as closed_at
+  from moved_projects p
+  cross join moved_counts c
+  cross join (select current_setting('moved_read_cost.advances_project') as key) a
+  cross join lateral generate_series(1, c.finished) n
+  union all
+  -- The open issues of the advances project, three of each four under the fourth as parent.
+  select a.key, n, a.key || '-' || (n + 1), 'Advance priority work item ' || n || ' across the board',
+         case when n % 100 < 34 then 'backlog' when n % 100 < 67 then 'todo' else 'in_progress' end,
+         case when n % 4 <> 1 then a.key || '-' || (n - (n - 1) % 4 + 1) end,
+         timestamptz '2026-11-10 08:00:00+00' + n * interval '7 minutes',
+         timestamptz '2026-11-10 08:00:00+00' + n * interval '7 minutes' + interval '2 hours',
+         null
+  from (select current_setting('moved_read_cost.advances_project') as key) a
+  cross join moved_counts c
+  cross join lateral generate_series(1, c.advanced_issues) n
+), placed as (
+  select w.*, (row_number() over (order by md5('moved-read-cost events/' || w.key)) - 0.5)::float8 / count(*) over () as place,
+         ('x' || substr(md5('moved-read-cost events/' || w.key), 9, 8))::bit(32)::bigint / 4294967296.0 as move_place
+  from written w
+)
+select p.project, p.n, p.key, p.title, p.status, p.parent_key, p.created_at, p.updated_at, p.closed_at, drawn.events,
+       case when p.status in ('backlog', 'icebox') then 2 + floor(p.move_place * (drawn.events - 1))::int end as moved_at
+from placed p
+-- The quantile at the place: log-linear through 1 at 0, production's p50 of 16 and p90 of 118, 425
+-- at 0.99 and 900 at the top, which hold the mean at 51.
+cross join lateral (
+  select greatest(case when p.status = 'todo' then 1 else 2 end, round(case
+    when p.place < 0.5 then power(16, p.place / 0.5)
+    when p.place < 0.9 then 16 * power(118 / 16.0, (p.place - 0.5) / 0.4)
+    when p.place < 0.99 then 118 * power(425 / 118.0, (p.place - 0.9) / 0.09)
+    else 425 * power(900 / 425.0, (p.place - 0.99) / 0.01) end)::int) as events
+) drawn;
 
--- The open issues of the advances project, spread over the statuses as the bench spreads them
--- (one in ten done), three of each four under the fourth as parent.
+-- The issues, each a copy of its project's first issue, the advances project's last: a finished
+-- issue's parent there is written in the same statement, which checks its key at the end. Each
+-- row's last_seq is the seq of its newest event, below.
 insert into issues (key, project_key, number, title, status, created_by, labels, priority, rank, node_kind, node_address,
-                    parent_key, created_at, updated_at, closed_at)
-select a.key || '-' || (n + 1), a.key, n + 1, 'Advance priority work item ' || n || ' across the board',
-       (array['triage', 'icebox', 'backlog', 'todo', 'in_progress', 'testing', 'needs_review', 'backlog', 'icebox', 'done'])[n % 10 + 1],
-       template.created_by, template.labels, template.priority, template.rank || lpad(n::text, 7, '0'), template.node_kind,
-       a.key || '-' || (n + 1),
-       case when n % 4 <> 1 then a.key || '-' || (n - (n - 1) % 4 + 1) end,
-       timestamptz '2026-11-10 08:00:00+00' + n * interval '7 minutes',
-       timestamptz '2026-11-10 08:00:00+00' + n * interval '7 minutes' + interval '2 hours',
-       case when n % 10 = 9 then timestamptz '2026-11-10 08:00:00+00' + n * interval '7 minutes' + interval '2 hours' end
-from (select current_setting('moved_read_cost.advances_project') as key) a
-join issues template on template.key = a.key || '-1'
-cross join moved_counts c
-cross join lateral generate_series(1, c.advanced_issues) n
-order by n;
+                    parent_key, created_at, updated_at, closed_at, last_seq)
+select i.key, i.project, i.n + 1, i.title, i.status,
+       template.created_by, template.labels, template.priority, template.rank || lpad(i.n::text, 7, '0'), template.node_kind,
+       i.key, i.parent_key, i.created_at, i.updated_at, i.closed_at, i.events
+from moved_issues i
+join issues template on template.key = i.project || '-1'
+order by i.project = current_setting('moved_read_cost.advances_project'), i.project, i.n;
 
 update projects p set next_number = (select max(number) + 1 from issues i where i.project_key = p.key)
 where p.key = any (string_to_array(current_setting('moved_read_cost.projects'), ',') || current_setting('moved_read_cost.advances_project'));
@@ -134,6 +184,123 @@ cross join lateral (
   from (select case when t <= c.asserted then t else t - c.asserted end as s) chosen
 ) pair
 order by t;
+
+-- What an issue's events say of it beside its row (api's newIssueEventPayload): its ancestors,
+-- parent first, and the priorities it advances, its own and those it inherits, in id order, with
+-- the greatest seq of its own advances tuples. Every event of an issue says what its row and the
+-- tuples above hold now.
+create temp table moved_issue_terms as
+with recursive own as (
+  select newest.from_id as key,
+         coalesce(array_agg(newest.to_id order by newest.to_id) filter (where newest.asserted and live.id is not null), '{}') as ids,
+         max(newest.seq) as revision
+  from (
+    select distinct on (t.from_id, t.to_id) t.from_id, t.to_id, t.asserted, t.seq
+    from priority_tuples t
+    where t.from_kind = 'issue' and t.kind = 'advances' and t.to_kind = 'priority'
+    order by t.from_id, t.to_id, t.seq desc
+  ) newest
+  left join priority_nodes live on live.kind = 'priority' and live.id = newest.to_id and live.state = 'live'
+  group by newest.from_id
+), chain as (
+  select i.key, i.parent_key as above, 1 as depth from moved_issues i where i.parent_key is not null
+  union all
+  select c.key, up.parent_key, c.depth + 1
+  from chain c join moved_issues up on up.key = c.above
+  where up.parent_key is not null
+), entries as (
+  select own.key, stated.id, false as inherited from own cross join unnest(own.ids) stated(id)
+  union
+  select c.key, stated.id, true
+  from chain c join own up on up.key = c.above cross join unnest(up.ids) stated(id)
+  where not exists (select 1 from own mine where mine.key = c.key and stated.id = any (mine.ids))
+)
+select i.key, coalesce(ancestry.keys, '[]') as ancestors, coalesce(advanced.entries, '[]') as advances,
+       coalesce(own.revision, 0) as revision
+from moved_issues i
+left join own on own.key = i.key
+left join (select key, jsonb_agg(above order by depth) as keys from chain group by key) ancestry on ancestry.key = i.key
+left join (select key, jsonb_agg(jsonb_build_object('id', id, 'inherited', inherited) order by id collate "C") as entries
+           from entries group by key) advanced on advanced.key = i.key;
+
+-- The events of each issue, as events.Broker's append writes them: seq 1 to the issue's count,
+-- each at its share of the issue's life from created_at to updated_at, all of them in the order of
+-- their moments across the issues. Seq 1 is the issue.created, written by the issue's creator in
+-- todo. An issue in in_progress, or finished, has the issue.updated that moved it to in_progress
+-- at seq 2, and a finished one its issue.closed last. An issue in backlog has the issue.updated
+-- that moved it there at the seq drawn for it, which the parked read (api's parkedMoveLateral)
+-- walks back to from the newest. Of the other seqs every third is a comment.created and the rest
+-- an issue.updated of one field; one in four is a person's, the issue's creator's, and the rest a
+-- session's. The payloads are api's IssueEventPayload, last_seq the event's own seq, and
+-- CommentEventPayload. notify is what events.Broker.Notify answers, true for a person's write.
+-- Each event is published to its issue's topic a second after it is written, so the outbox owes
+-- it nothing.
+insert into events (issue_key, seq, type, actor, payload, notify, published_at, published_destinations, created_at)
+select i.key, k, step.type, step.actor,
+       case when step.type = 'comment.created' then jsonb_build_object(
+         'id', md5('comment.created/' || i.key || '/' || k)::uuid::text, 'issue_key', i.key, 'artifact_id', null,
+         'author', step.actor,
+         'body', 'Comment ' || k || ' on ' || i.key || '. The step finished and its report is attached. It read the plan, '
+           'ran the checks the plan names and kept the output of each beside its command. Two checks passed at once; the '
+           'third failed on a fixture older than the change and passed once the fixture was rewritten to the shape the '
+           'writer stores today. Nothing outside the files in scope moved. The next step can start from the head this '
+           'comment names, and the reviewer can read the diff, the checks and their output without asking for more.',
+         'anchor', null, 'reply_to', null, 'answers', null, 'ask_id', null, 'turn', null, 'resolved', false,
+         'resolved_by', null, 'resolved_at', null, 'edited_at', null, 'suggestion', null, 'created_at', step.stamp,
+         'mentions', '[]'::jsonb, 'deliveries', '[]'::jsonb, 'reply_block', null, 'artifact_name', '',
+         'suppress_route', false, 'thread_logins', '[]'::jsonb)
+       else jsonb_build_object(
+         'key', i.key, 'project', i.project, 'number', stored.number, 'title', stored.title, 'status', step.status,
+         'priority', stored.priority, 'rank', stored.rank, 'labels', to_jsonb(stored.labels), 'parent', stored.parent_key,
+         'needs', '[]'::jsonb, 'duplicate_of', null, 'filed_from', null, 'advances', terms.advances,
+         'advances_revision', terms.revision, 'assignee', stored.assignee, 'claim', null,
+         'components', '{"mode": "inherit", "ids": [], "unknown": [], "reason": null, "inherited_from": null}'::jsonb,
+         'external_links', '[]'::jsonb, 'route', null, 'repo', null, 'resolved_repo', null,
+         'created_by', stored.created_by,
+         'created_at', to_char(stored.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+         'updated_at', step.stamp,
+         'closed_at', case when step.type = 'issue.closed' then to_char(stored.closed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') end,
+         'primary_artifact_id', '', 'verification_artifact_id', '', 'plan_artifact_id', '', 'last_seq', k,
+         'changed', step.changed, 'ancestors', terms.ancestors)
+         || case when k > 1 and step.changed ? 'status' then '{"thread_logins": []}'::jsonb else '{}'::jsonb end
+       end,
+       step.actor->>'kind' = 'user', moment.at + interval '1 second',
+       array['notifications.dispatch.issue.' || i.key || '.' || step.type], moment.at
+from moved_issues i
+join issues stored on stored.key = i.key
+join moved_issue_terms terms on terms.key = i.key
+cross join lateral generate_series(1, i.events) k
+cross join lateral (
+  select case
+           when k = 1 then 'created'
+           when i.status = 'done' and k = i.events then 'closed'
+           when k = i.moved_at or (i.status in ('in_progress', 'done') and k = 2) then 'moved'
+           when k % 3 = 0 then 'comment'
+           else 'edited'
+         end as kind,
+         i.created_at + (i.updated_at - i.created_at) * ((k - 1)::float8 / greatest(i.events - 1, 1)) as at
+) moment
+cross join lateral (
+  select case moment.kind when 'created' then 'issue.created' when 'closed' then 'issue.closed'
+                          when 'comment' then 'comment.created' else 'issue.updated' end as type,
+         case when k = 1 or k % 4 = 0 then stored.created_by
+              else '{"kind": "session", "id": "session-0123456789abcdef"}'::jsonb end as actor,
+         case
+           when k = 1 then 'todo'
+           when i.moved_at is not null and k < i.moved_at then 'todo'
+           when i.status = 'done' and k < i.events then 'in_progress'
+           else i.status
+         end as status,
+         case moment.kind
+           when 'created' then case when stored.parent_key is null then '["title", "status", "rank", "components"]'::jsonb
+                                    else '["title", "status", "rank", "parent", "components"]'::jsonb end
+           when 'closed' then '["status", "closed_at"]'::jsonb
+           when 'moved' then '["status"]'::jsonb
+           when 'edited' then jsonb_build_array((array['title', 'rank', 'labels', 'priority'])[k % 4 + 1])
+         end as changed,
+         to_char(moment.at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as stamp
+) step
+order by moment.at, i.key, k;
 
 -- The issues Legion ran: in each project, issue 1 with 200 runs and 339 children, and every fifth
 -- issue up to the 600th with 30 runs and 100 children.
@@ -304,4 +471,5 @@ from (
 ) t
 cross join lateral generate_series(1, t.share) n;
 
-drop table moved_counts, moved_projects, moved_ran, moved_runs, moved_run_tuples, moved_plans, moved_children;
+drop table moved_counts, moved_projects, moved_issues, moved_issue_terms, moved_ran, moved_runs, moved_run_tuples, moved_plans,
+  moved_children;
