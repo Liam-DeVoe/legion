@@ -875,12 +875,13 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// withinSessionScope, writeNeedsASignedInPerson).
 		handler = s.withinProjectScope(route, handler)
 		handler = s.withinSessionScope(route, handler)
-		// Outermost of the three, so a caller whose credential names a service and no person
-		// is told it may make no write at all rather than which session the write it tried
-		// belongs to. The project check has nothing to tell it: a token naming a service is
-		// held to no one project (broker_token.go). A read-only token names a service and no
-		// person too, and never reaches here: the read-only gate further out has answered it
-		// (refuseReadOnlyToken).
+		// Outermost of the three, so a machine's credential that names a service and no person,
+		// and that no job entry minted, is told it may make no write at all rather than which
+		// session the write it tried belongs to. The project check has nothing to tell it: such
+		// a token is held to no one project (broker_token.go). A job's token names a service and
+		// no person too, under the project scope named or public, and passes this check to the
+		// two inside it. A read-only token names a service and no person as well, and never
+		// reaches here: the read-only gate further out has answered it (refuseReadOnlyToken).
 		handler = s.writeNeedsASignedInPerson(handler)
 		handler = s.refuseChangedLogin(handler)
 	}

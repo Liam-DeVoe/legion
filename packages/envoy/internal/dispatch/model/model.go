@@ -61,8 +61,9 @@ func (a *ActorAct) Holds(scope string) bool {
 }
 
 // Credential is the request's credential as optionalActor resolved it: the scopes it holds, the
-// agent it names, and whether it may only read. A pointer, so Actor stays comparable with ==,
-// which this package's callers and its tests rely on.
+// agent it names, what a broker-issued token's project scope lets it write, and whether it may
+// only read. A pointer, so Actor stays comparable with ==, which this package's callers and its
+// tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
 	Scopes []string
@@ -81,6 +82,19 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
+	// ProjectScope is a broker-issued token's `project_scope` as the broker answered it
+	// (ciphertoken.Caller.ProjectScope): `named`, a token an operator's entry mapped to its one
+	// project; `person`, a token held to no one project; `none`, a read-only token's; or
+	// `public`, a job's token that reaches every public project beside the private projects of
+	// its list. Empty for every other credential. A broker-issued token that names a service and
+	// no person writes only under `named` or `public`, a job's two shapes, and is refused every
+	// write under any other (writeNeedsASignedInPerson).
+	ProjectScope string
+	// Projects is a broker token's list (ciphertoken.Caller.Projects), sorted: a `named` token's
+	// one project, or none for an account entry that names a person and no project; the projects
+	// a `person` token's trade asked for; and a `public` token's private projects, its job
+	// entry's whole list. Nil for every other credential and for a read-only token.
+	Projects []string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
