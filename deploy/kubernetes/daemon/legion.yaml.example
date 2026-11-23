@@ -270,9 +270,10 @@ github_apps:
 # worker_backends:                     # a phase worker's role (planner, implementer, tester, reviewer,
 #   implementer: claude                # merger, or a role of roles) on omp, the default, or claude:
 #                                      # Claude Code under `legion claude-bridge`, which runs under either
-#                                      # runtime. In a pod, as in this file, it runs out of the worker
-#                                      # image, which carries Claude Code and the claude-envoy plugin;
-#                                      # under runtime: tmux it needs LEGION_CLAUDE_PLUGIN_DIR (and
+#                                      # runtime. In a pod, as in this file, the worker image carries the
+#                                      # claude-envoy plugin and Claude Code's pin, not Claude Code. Each
+#                                      # launch there installs the pinned release. Under runtime: tmux it
+#                                      # needs LEGION_CLAUDE_PLUGIN_DIR (and
 #                                      # LEGION_CLAUDE_PATH, LEGION_BUN_PATH, else PATH) in the daemon's
 #                                      # environment. Legion holds no model route for it either: put
 #                                      # ANTHROPIC_API_KEY in provider_keys (pod.env refuses a
