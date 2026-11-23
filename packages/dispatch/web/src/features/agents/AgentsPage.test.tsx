@@ -1082,6 +1082,52 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
   }
 });
 
+// INFRA-3135 round 24 (the tester's, measured in builds Jobs infra-3135-a5b-h and -a5b-b): two
+// agents of one group are pinned, Alpha first in pin order, and the reader presses Enter on
+// Alpha's Unpin. The row moves below Beta's, and the browser puts the focus back on the button
+// that moved with it - in WebKit at 390x664 that left "Pin Alpha" at 816 px in a 664 px window,
+// with nothing scrolled. A landing is one the reader can see, and nothing scrolls to reach it, so
+// the focus goes with no scroll to the same control of the row now standing where Alpha's stood,
+// Beta's own pin button.
+test("Unpin that leaves the focus on the moved row's own control out of sight hands it to the pin of the row now at its place", async () => {
+  const user = userEvent.setup();
+  const pinnedIdle = (title: string, sessionID: string): Agent => ({
+    ...agents[1],
+    session_id: sessionID,
+    title,
+  });
+  const page = renderAgents({
+    agentState: {
+      "alpha-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 },
+      "beta-session": { pinned_at: "2026-09-14T00:10:00Z", unread_replies: 0 },
+    },
+    listedAgents: [pinnedIdle("Alpha", "alpha-session"), pinnedIdle("Beta", "beta-session")],
+  });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const unpinAlpha = await screen.findByRole("button", { name: "Unpin Alpha" });
+    expect(
+      within(region)
+        .getAllByRole("heading", { hidden: false, level: 2 })
+        .map((heading) => heading.textContent)
+    ).toEqual(["Alpha", "Beta"]);
+    // Where the move leaves Alpha's own button: below the window, as WebKit left it at 390x664,
+    // where the button stood 152 px past the window's foot. happy-dom lays nothing out itself.
+    unpinAlpha.getBoundingClientRect = () => new DOMRect(0, window.innerHeight + 152, 200, 40);
+    act(() => unpinAlpha.focus());
+    await user.keyboard("{Enter}");
+
+    const pinAlpha = await screen.findByRole("button", { name: "Pin Alpha" });
+    expect(screen.getByRole("button", { name: "Unpin Beta" })).toHaveFocus();
+    expect(pinAlpha).not.toHaveFocus();
+    expect(document.activeElement).not.toBe(document.body);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 /** Heard from eleven minutes ago, its last Dispatch activity half an hour old: Quiet. Dated as a
  *  row builds it, since a row reads its `seen 11 minutes ago`. */
 function staleAgent(): Agent {

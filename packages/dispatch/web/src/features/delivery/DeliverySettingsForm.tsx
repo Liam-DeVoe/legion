@@ -3,6 +3,7 @@ import { type FormEvent, type ReactNode, useId, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
+import { waitingForPausedReads } from "../../api/query-client";
 import { isLiveQuery } from "../../api/query-refresh";
 import { useReadBound } from "../../api/read-bound";
 import type { DeliverySettings, DeliverySettingsInput } from "../../api/types";
@@ -216,8 +217,11 @@ function DeliverySettingsFields({
       // Pending through the record's own read, which a caller holding the record has none of. A
       // read that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused
       // while the browser is offline - lets Save go then, and the form says why the record is not
-      // read yet (`useReadBound`).
-      const read = queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
+      // read yet (`useReadBound`). It waits on a fetch the network had already paused too, which
+      // that deadline ends as well.
+      const read = waitingForPausedReads(queryClient, () =>
+        queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey })
+      );
       // A live view learns of the save from Dispatch, as a delta, or as the snapshot a page that
       // had none (DELIVERY_NOT_CONFIGURED) is answered once a configuration exists.
       void queryClient.invalidateQueries({

@@ -36,6 +36,9 @@ interface Snapshot extends AnchorRow {
    *  while such rows are listed goes with the last of them. `keepPlace` counts that shrink only
    *  where such a row went. */
   rootTop: number | null;
+  /** Whether a press of the reader's is taking the current row itself away, as a thread's own
+   *  Dismiss does: the row `leaving` names is the row the hand is on, not one above it. */
+  selfLeaving: boolean;
   /** The row's top, in viewport pixels, immediately before the commit. */
   top: number;
 }
@@ -172,11 +175,13 @@ function focusedControl(): Element | null {
  * sight is not scrolled to: the selection bar's hand-off has put the focus on a row that will
  * stand in sight once those rows have gone (`useLastMarkedPlace`). The browser's own scroll
  * anchoring is turned off on the box that scrolls the rows in every commit in which a row above
- * the current one is named as leaving. The snapshot taken before the commit cannot tell whether
- * that row goes in it, and the browser would hold the view against that going. It is turned back
- * on as soon as this component has kept its place. A row that goes in the same commit without
- * the reader's press, by a live update or another device, is compensated as any other shift is,
- * so the rows in view do not jump under it.
+ * the current one is named as leaving, and in every commit in which the current row itself is
+ * named: a thread's own Dismiss takes away the row the reader's hand is on, and the browser
+ * holds the view against its going as much as against a row's above. The snapshot taken before
+ * the commit cannot tell whether that row goes in it, and the browser would hold the view
+ * against that going. It is turned back on as soon as this component has kept its place. A row
+ * that goes in the same commit without the reader's press, by a live update or another device,
+ * is compensated as any other shift is, so the rows in view do not jump under it.
  *
  * Rows are the elements matching `[item]`, identified by that attribute's value, and must keep
  * their identity across the commit (a remounted row is a new node and cannot be found again).
@@ -603,12 +608,15 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const snapshot = this.measure(previousProps);
     // A commit no press of the reader's takes rows away in is one the browser's own anchoring
     // holds the view through, so a hold still pending from a press ends before it.
-    if (snapshot === null || snapshot.leaving.length === 0) this.releaseNativeAnchoring();
+    if (snapshot === null || (snapshot.leaving.length === 0 && !snapshot.selfLeaving)) {
+      this.releaseNativeAnchoring();
+    }
     return snapshot;
   }
 
   /** The row the reader's hand is on and where it stands before the commit, with the rows a
-   *  press of theirs takes away above it, the native anchoring held off where there are any. */
+   *  press of theirs takes away above it, the native anchoring held off where there are any and
+   *  where the press is taking that row itself away. */
   private measure(previousProps: Readonly<ViewportAnchorProps>): Snapshot | null {
     const { enabled } = this.props;
     if (enabled !== undefined && !enabled()) return null;
@@ -620,13 +628,20 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     // measuring again there would take that drift for the place to keep.
     const held = this.heldTop(current.id, at);
     const leaving = this.leavingAbove(current.row, previousProps);
+    // Whether the press is taking the current row itself away, named in the render that last
+    // drew the rows or in this one, as a row above it is. The reader asked for that row to go,
+    // so it frees its whole height and nothing scrolls: the browser's own anchoring, which would
+    // hold the view against its going, is turned off for the commit just as for a row above.
+    // Measured in the Inbox at 390x664: a thread's own Dismiss moved the window from 437 px to 0
+    // in Chromium, Firefox and WebKit, and the view held at 437 with the anchoring off.
+    const selfLeaving =
+      previousProps.leaving?.(current.id) === true || this.props.leaving?.(current.id) === true;
     const top = held ?? current.row.getBoundingClientRect().top;
-    let rootTop: number | null = null;
-    if (leaving.length > 0) {
-      rootTop = this.root?.getBoundingClientRect().top ?? null;
-      this.holdNativeAnchoring();
-    }
-    return { group: at, id: current.id, leaving, rootTop, top, via: current.via };
+    // Only rows going from above the current one let it move up, so only they make the shrink
+    // above the list the press's own (`keepPlace`).
+    const rootTop = leaving.length > 0 ? (this.root?.getBoundingClientRect().top ?? null) : null;
+    if (leaving.length > 0 || selfLeaving) this.holdNativeAnchoring();
+    return { group: at, id: current.id, leaving, rootTop, selfLeaving, top, via: current.via };
   }
 
   componentDidUpdate(

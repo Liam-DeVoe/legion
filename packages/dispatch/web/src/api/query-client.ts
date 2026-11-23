@@ -182,8 +182,39 @@ export class DispatchQueryClient extends QueryClient {
       this.#followUps.set(hash, followUp);
     }
     // TanStack resolves a paused fetch's refetch at once rather than holding its caller until the
-    // network returns; the follow-up still runs when it does.
-    return query.state.fetchStatus === "paused" ? Promise.resolve() : followUp;
+    // network returns; the follow-up still runs when it does. A caller reading again through
+    // `waitingForPausedReads` is answered when that follow-up is, as for a query that was idle:
+    // its hold has a bound of its own, so a read the network never answers still lets its
+    // controls go (`api/read-bound.ts`).
+    return query.state.fetchStatus === "paused" && !waitingForPaused.has(this)
+      ? Promise.resolve()
+      : followUp;
+  }
+}
+
+/** The clients whose paused reads a caller is waiting on, while the call that reads them again
+ *  runs (`waitingForPausedReads`). */
+const waitingForPaused = new WeakSet<QueryClient>();
+
+/**
+ * Reads again through `read` - an `invalidateQueries` call, or anything that makes one - with a
+ * fetch the network has paused waited on rather than answered at once, and answers what `read`
+ * answered. A paused fetch has not answered any more than a fetch that was idle has, and
+ * TanStack pauses either while the browser is offline; what tells them apart is that TanStack
+ * resolves the refetch of a query already paused at once (`DispatchQueryClient`'s `#refetch`).
+ *
+ * It is for a caller whose hold over the read has a bound of its own (`api/read-bound.ts`'s
+ * `readWithinBound`): the control it holds stays held until the read answers or that bound runs
+ * out, so a read the network never answers still lets it go. Every other caller keeps TanStack's
+ * answer, at once, so a hold with no bound never waits for the network to come back. `read` runs
+ * at once, and the waiting covers the reads it starts in that one turn and no later ones.
+ */
+export function waitingForPausedReads<T>(client: QueryClient, read: () => T): T {
+  waitingForPaused.add(client);
+  try {
+    return read();
+  } finally {
+    waitingForPaused.delete(client);
   }
 }
 

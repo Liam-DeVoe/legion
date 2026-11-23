@@ -1,8 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { flushSync } from "react-dom";
 import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
+import { waitingForPausedReads } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { beginAnswerHold } from "../../components/focus-place";
@@ -242,12 +244,27 @@ export function useIssueTableActions({
       // the view is not in it, and the focus goes to the row now at its place
       // (`useLastMarkedPlace`). Where the row marked last is still listed, the focus goes to its
       // checkbox. An action that failed or changed nothing keeps the selection.
-      const listed = client.invalidateQueries({ queryKey: ["issues"] });
+      // Read again waiting on a fetch the network has paused, since the hold below has a bound
+      // of its own (`waitingForPausedReads`, `useReadBound`).
+      const listed = waitingForPausedReads(client, () =>
+        client.invalidateQueries({ queryKey: ["issues"] })
+      );
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
       if (mayHaveChanged) await holdThrough(listed);
-      if (answered) clearSelection();
-      setBusy(false);
+      // The bar's going and its hand-off are one render. This line runs outside any event of the
+      // reader's - the turn a write's answer takes, or the read's own bound - so React would
+      // commit it at normal priority and run the bar's hand-off, a passive effect
+      // (`components/SelectionBar.tsx`), in a later task: a frame would paint with the focus on
+      // the page's body. The press ends a frame and a task from here (`endHold`,
+      // `afterComponents`), which can come before that hand-off and leave it reading a press
+      // already answered, so it would move nothing. `flushSync` commits the going here and runs
+      // the bar's effects with it, so the focus is on the marked row's checkbox in the render
+      // the bar goes, before the press ends.
+      flushSync(() => {
+        if (answered) clearSelection();
+        setBusy(false);
+      });
       endHold();
     }
   };
