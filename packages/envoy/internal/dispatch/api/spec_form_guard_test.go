@@ -39,8 +39,8 @@ var (
 	// askOpenAssignment is an assignment of the set list that writes state open, or writes it from
 	// a parameter, which can be open.
 	askOpenAssignment = regexp.MustCompile(`(?:^|,)\s*(?:"?[a-z_][a-z0-9_]*"?\.)?"?state"?\s*=\s*(?:'open'|\$[0-9]+)`)
-	// setListEnd is where an update's set list ends.
-	setListEnd = regexp.MustCompile(`\s(?:where|returning|from)\s`)
+	// askSetListEnd is where an update's set list ends.
+	askSetListEnd = regexp.MustCompile(`\s(?:where|returning|from)\s`)
 )
 
 // opensAsk reports whether one normalised statement opens an ask: an insert, a merge or a copy into
@@ -51,7 +51,7 @@ func opensAsk(statement string) bool {
 	}
 	for _, match := range askUpdateStatement.FindAllStringIndex(statement, -1) {
 		set := statement[match[1]:]
-		if end := setListEnd.FindStringIndex(set); end != nil {
+		if end := askSetListEnd.FindStringIndex(set); end != nil {
 			set = set[:end[0]]
 		}
 		if askOpenAssignment.MatchString(set) {

@@ -565,9 +565,12 @@ type approvedSpec struct {
 // in the order of docs.LatestApprovedReview, so the statements of a judgment do not grow with the
 // documents under its root; a document that no person approved has no row. An approved version
 // that the parser refuses gives nothing to compare: the judgment goes on without its texts, logs
-// it once, and names it in Unread.
+// it once, and names it in Unread. It reads the issues under root as everyReader: the judgment is
+// the same for each person whose request or approval it judges, and its findings are kept as the
+// reason of a request that others read, so an issue reserved for its author, and what is below it,
+// gives no text to it.
 func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string, skip map[string]bool) (approvedSpec, error) {
-	issues, err := refs.IssueDescendants(ctx, q, root)
+	issues, err := refs.IssueDescendants(ctx, q, everyReader, root)
 	if err != nil {
 		return approvedSpec{}, fmt.Errorf("read the issues under %s: %w", root, err)
 	}
@@ -575,7 +578,7 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string, 
 		if inner == root || !slices.Contains(issues, inner) {
 			continue
 		}
-		below, err := refs.IssueDescendants(ctx, q, inner)
+		below, err := refs.IssueDescendants(ctx, q, everyReader, inner)
 		if err != nil {
 			return approvedSpec{}, fmt.Errorf("read the issues under %s: %w", inner, err)
 		}
