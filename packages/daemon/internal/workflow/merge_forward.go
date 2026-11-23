@@ -113,9 +113,10 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 
 // mergeForwardOnEntry is what a move does with the merge forward of the issue's pull request once
 // the move has put issue in the phase it now stands in and written that phase's start
-// (transition), from being the phase the move left. w is the walk of issue's run, as the move left
-// it. The pull request is read again in the transaction, since the copy a transition is handed can
-// be none, or one read before the transaction's other writes.
+// (transition). It reads where the move put the issue, never the phase the move left. w is the
+// walk of issue's run, as the move left it. The pull request is read again in the transaction,
+// since the copy a transition is handed can be none, or one read before the transaction's other
+// writes.
 //
 //   - A move into implementing drops the record's merge forward (clearMergeForward): the
 //     implementer works the head there, and a head it pushes is read for a conflict of its own.
@@ -148,7 +149,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //
 // mergeForward asks once for each head, so a move into merging at a head the merger was already
 // asked of asks nothing more.
-func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, from phase.Phase) error {
+func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if issue.Phase == phase.Implementing {
 		return e.clearMergeForward(ctx, tx, issue.Key)
 	}
