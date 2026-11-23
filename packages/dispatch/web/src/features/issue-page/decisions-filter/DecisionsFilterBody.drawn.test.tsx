@@ -30,6 +30,7 @@ import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
 import { type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
+import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import {
@@ -45,7 +46,7 @@ import {
   STATE_LINES,
 } from "../page-words";
 import { presetView } from "../presets";
-import { blockReads, Publisher } from "../projection-fixture";
+import { blockReads, Publisher, publishedNames } from "../projection-fixture";
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
@@ -207,6 +208,10 @@ interface BodyProps {
    *  turned off, and true draws a new one. */
   readonly drawn?: boolean;
   readonly isClosed?: boolean;
+  /** What the page publishes of its batched names read, published to the names store and handed
+   *  to the body, as the slot hands it: what it publishes for the tree's statements
+   *  (`publishedStatements`) unless a case gives another. */
+  readonly published?: PublishedReferences;
   readonly request?: OutlineRequest;
   readonly reveal?: string;
   readonly view?: TreeNode;
@@ -269,7 +274,8 @@ function publishedStatements(root: TreeNode): PublishedReferences {
 /** The body over the issue whose tree holds `children`, with `asks`, `comments` and the
  *  decisions read of `made` as the cache holds them. `made` or `asks` null leaves that read out
  *  of the cache, as before it answers. It is drawn under the names store, with what the page
- *  publishes for the tree's statements published to it (`publishedStatements`). */
+ *  publishes for the tree's statements published to it and handed to the body
+ *  (`publishedStatements`), where a case gives nothing else, and with no names line. */
 function renderBody(
   {
     asks = [],
@@ -341,13 +347,14 @@ function renderBody(
     children: grown,
     drawn = true,
     isClosed = false,
+    published: given,
     request,
     reveal,
     view,
     waitingPress,
   }: BodyProps) => {
     const tree = grown === undefined ? root : issueTree(grown);
-    const published = grown === undefined ? rootPublished : publishedStatements(tree);
+    const published = given ?? (grown === undefined ? rootPublished : publishedStatements(tree));
     const shown =
       view ??
       (grown === undefined ? decisionsView : presetView(tree, "decisions", "", new Set()).root);
@@ -358,6 +365,8 @@ function renderBody(
         holdsEscape={false}
         isClosed={isClosed}
         issue={issue}
+        namesLine={NO_FAILED_READS}
+        published={published}
         reader={READER}
         {...(request === undefined ? {} : { request })}
         {...(reveal === undefined ? {} : { reveal })}
@@ -1649,6 +1658,38 @@ test("each statement on the informs line is named within 32 characters", () => {
   expect(words(rowOf(short, D("first")).querySelector("[data-decision-statement] a"))).toBe(
     "Rows stand alone."
   );
+});
+
+// R8 over an entry's words: the body hands its rows what the page publishes of its batched names
+// read in the render that draws them (`published`), as the outline does, and the page publishes
+// to the names store only after the rows have rendered (`Publisher`): so a reference the page
+// asks for waits on the page's answer from a row's first render, drawn as its author wrote it
+// meanwhile, and is never read by the row; a row that read the store alone read it itself first,
+// one request for each row.
+test("a decision's row waits on the page's read for a reference the page asks for", async () => {
+  const address = "dispatch://CORE-2/spec#b-r1";
+  const written = `See ${address} first.`;
+  const name = "the queue's drain";
+  const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
+  const view = renderBody(
+    {
+      children: [statement("s1"), decisionNode("first", { text: written })],
+      made: [decision("first", { links: [shaped(specRef("s1"))] })],
+    },
+    { published: publishedNames(new Map(), { asked: [address] }) }
+  );
+  const rowWords = () =>
+    rowOf(view, D("first")).querySelector("[data-node-words]")?.textContent ?? "";
+  try {
+    await waitFor(() => expect(rowWords()).toContain(written));
+    expect(getReferences, "a row read the reference the page asks for").not.toHaveBeenCalled();
+    view.again({ published: publishedNames(new Map([[address, name]])) });
+    await waitFor(() => expect(rowWords()).toContain(`See ${name} first.`));
+    expect(getReferences, "a row read the reference the page named").not.toHaveBeenCalled();
+  } finally {
+    getReferences.mockRestore();
+    view.unmount();
+  }
 });
 
 // R9: the list is one tab stop and the outline's own keys work it: `j` and `k` move through
