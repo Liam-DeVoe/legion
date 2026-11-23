@@ -1743,7 +1743,10 @@ func TestPlainStateSummarizesTheHeldLifecycleRows(t *testing.T) {
 // An operator reading plain `legion state` is told which agents are in a tool call right now:
 // each by issue and role with the call its stream named and when that call started, read from
 // each claim view's `step`. A call whose end the daemon received is over, so the claim that made
-// it is in none; with no agent in a call the line says so.
+// it is in none; with no agent in a call the line says so. An issue's other claims
+// (`otherClaims`) are read too, and two claims of one role on one issue are named apart: the
+// role's own claim by its issue and role, and an agent named otherwise by its token beside them,
+// wherever the issue lists either claim.
 func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -1758,6 +1761,25 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 		`"workers":{"implementer":{"claim":{"session":"ses_i","state":"working","pluginContract":0,` + open + `},"rounds":1}}}}`
 	idle := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
 		`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},"workers":{}}}`
+	// A plan of `implementer reviewer implementer` runs its third step in a second agent of the
+	// role, `implementer-2`, beside the role's own agent; the state lists one of the two under
+	// `workers` and the other under `otherClaims`, either way round.
+	const (
+		ownToken    = `"token":"legion-legion-legion-208-implementer",`
+		secondToken = `"token":"legion-legion-legion-208-implementer-2",`
+	)
+	secondOpen := `"step":{"at":"2026-09-23T01:20:00Z","turnStartedAt":"2026-09-23T01:18:00Z","tool":"bash",` +
+		`"callId":"toolu_impl2_5","argsBytes":96,"argsHash":"5d1e0b7a24c9f836","startedAt":"2026-09-23T01:20:00Z"}`
+	twoAgents := func(workerToken, workerStep, otherToken, otherStep string) string {
+		return `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"step","stepRole":"implementer","status":"in_progress",` +
+			`"architect":{"session":"ses_a","state":"working","pluginContract":0,` + ended + `},` +
+			`"workers":{"implementer":{"claim":{` + workerToken + `"session":"ses_i","state":"working","pluginContract":0,` + workerStep + `},"rounds":1}},` +
+			`"otherClaims":[{"role":"implementer","claim":{` + otherToken + `"session":"ses_i2","state":"working","pluginContract":0,` + otherStep + `}}]}}`
+	}
+	const (
+		ownCall    = "LEGION-208 implementer \"bash toolu_impl_3 since 2026-09-23T01:14:00Z\""
+		secondCall = "LEGION-208 implementer (claim legion-legion-legion-208-implementer-2) \"bash toolu_impl2_5 since 2026-09-23T01:20:00Z\""
+	)
 	for _, tc := range []struct {
 		name, issues, want string
 	}{
@@ -1768,6 +1790,21 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 		},
 		{name: "every call ended", issues: idle, want: "agents in a tool call: none\n"},
 		{name: "no issues", issues: `{}`, want: "agents in a tool call: none\n"},
+		{
+			name:   "a second agent of the role in a call under otherClaims, the role's own agent's call ended",
+			issues: twoAgents(ownToken, ended, secondToken, secondOpen),
+			want:   "agents in a tool call: 1 — " + secondCall + "\n",
+		},
+		{
+			name:   "both agents of the role in a call, the second under otherClaims",
+			issues: twoAgents(ownToken, open, secondToken, secondOpen),
+			want:   "agents in a tool call: 2 — " + ownCall + "; " + secondCall + "\n",
+		},
+		{
+			name:   "both agents of the role in a call, the role's own under otherClaims",
+			issues: twoAgents(secondToken, secondOpen, ownToken, open),
+			want:   "agents in a tool call: 2 — " + ownCall + "; " + secondCall + "\n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			served := "{" + daemon + `,"issues":` + tc.issues + "}"
