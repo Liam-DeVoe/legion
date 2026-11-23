@@ -287,6 +287,9 @@ Each item below names a variable, then its purpose.
 - `DISPATCH_GITHUB_API_BASE`
 
   GitHub API origin override for App calls (tests and e2e point it at a fake); empty means `https://api.github.com`.
+  It must be an absolute http(s) URL with a host; a GitHub Enterprise base keeps its path (`/api/v3`).
+  A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone; any other value that is no such URL is refused too, printed only as the URL rule prints a URL.
+  The server and `redeliver-webhooks` both refuse it before anything connects.
   With `DISPATCH_DEV_SIGNIN=1` and an App private key loaded, it must name `127.0.0.1`, `[::1]` or `localhost`.
   That checks the host, not what listens there: every App call hands a signed App JWT to whatever owns the port, so the key must be a throwaway.
 

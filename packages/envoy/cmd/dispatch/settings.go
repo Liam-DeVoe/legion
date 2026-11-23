@@ -44,7 +44,7 @@ type setting struct {
 // server generates text with, the dashboard, and local and test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
-		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused, and so is a URL holding an `@` after its user name and password, by the variable's name alone: write each `@` in a password, user name, database name or query value as `%40`, and a `/` in a password as `%2F`."},
+		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused, and so is a URL holding an `@` after its user name and password, by the variable's name alone: write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as `%2F`; a database name holding an `@` is refused however it is written."},
 	{Name: "DISPATCH_FILE_STORE_BUCKET", Required: "no",
 		Description: "Bucket uploaded files (images, attachments) are stored in, keyed by their SHA-256. `gs://<bucket>` is a Google Cloud Storage bucket, reached with Application Default Credentials (on GKE the pod's Workload Identity principal), which needs `storage.objects.create` and `storage.objects.get` on it and nothing more; any other value is an S3 bucket's name, and the AWS SDK finds its region and credentials itself (`AWS_*`, the shared config files, the task role). `backfill-files` reads it too and opens the same store. Unset, every upload's bytes stay in Postgres, as before the bucket existed."},
 	{Name: "DISPATCH_AGENT_TOKEN", Required: "yes",
@@ -128,7 +128,7 @@ var settings = []setting{
 	{Name: "DISPATCH_APP_NAME", Required: "no",
 		Description: "The GitHub App's display name."},
 	{Name: "DISPATCH_GITHUB_API_BASE", Default: "`https://api.github.com`", Required: "no",
-		Description: "GitHub API origin the App calls; tests point it at a fake. `redeliver-webhooks` reads it too. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone."},
+		Description: "GitHub API origin the App calls, an absolute http(s) URL with a host (a GitHub Enterprise base keeps its path, such as `/api/v3`); tests point it at a fake. `redeliver-webhooks` reads it too. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone; any other value that is no absolute http(s) URL with a host is refused too, printed only as the URL rule prints a URL."},
 	{Name: "DISPATCH_SIGNING_KEY", Default: "a key kept in `~/.local/share/dispatch/signing-key`, created on first start", Required: "no",
 		Description: "One or more HMAC keys separated by whitespace, which sign session cookies and seal the refresh tokens Dispatch stores: the first signs and seals, and every one verifies a cookie and opens a seal. Every server process takes the same keys, and one whose keys a live server process does not share refuses to start. Dropping the key a cookie or seal was made under signs its person out; to rotate, add the new key second, then move it first, then remove the old key no sooner than 30 days later."},
 	{Name: "DISPATCH_INSECURE_COOKIE", Required: "no",
