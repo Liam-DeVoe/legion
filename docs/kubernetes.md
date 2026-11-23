@@ -1213,6 +1213,7 @@ A daemon before the release that adds `writer_audience` sends no `agentExecutabl
 So turn `writer_audience` off on this release first, and roll back below it only after that, in this order:
 
 1. On the release that carries the member, restore the account's grant to the pod's own principal, remove `writer_audience` from `legion.yaml`, and restart the daemon on the file.
+   This restart comes before every step of a later release the rollback crosses that deletes outbox rows with the daemon stopped, such as the unsent `memory-guard-kill` notices of [Rolling back below the release that guards the controller's pod's memory](#rolling-back-below-the-release-that-guards-the-controllers-pods-memory), since the restarted daemon can queue such rows again.
    The grant comes first, because a pod created without the member impersonates the account with the pod's own credentials, and Google refuses them without the grant.
    Keep the writer pool, its provider and the account's grant to the pool's principal until step 2 is done: until its replacement, a pod that carries the fifth flag still exchanges the writer token, and each new generation in it proves a dial with that token.
    This release reads the fifth flag of every pod (`sessionProxyFlagsIn`, `internal/runtime/sandbox/addresses.go`), so each pod that carries it holds a moved session store.
@@ -2474,7 +2475,7 @@ The note a kill sends is a `role_message` outbox row (`record.RoleMessage`), a k
 The release that added the memory guard in the controller's pod ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-3531`.
 Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
 A rollback below it has two steps of its own, and one effect on the controller's pod while that pod still runs.
-Take them in this order: stop this release's daemon, delete the unsent `memory-guard-kill` notices (the second step below), take `controller_pod` out of `legion.yaml` (the first step below), and only then pin the earlier image and start its daemon.
+Their order is written once, in the second step below.
 A rollback below the release that guards an issue pod's memory also takes the steps of that release's own section above.
 
 **`controller_pod` must come out of `legion.yaml` before the earlier image is pinned.**
@@ -2486,7 +2487,7 @@ A file that never set the member needs nothing.
 Each kill is a `controller_notice` outbox row whose payload's `kind` is `memory-guard-kill`.
 A sent notice leaves no row, so the rows that stand are the notices this release wrote and had not sent when its daemon stopped.
 An earlier release cannot send them: it refuses a controller notice of a kind it does not know (`record.DecodeOutboxPayload`, `unknown controller notice kind`), and its runner retries such a row on its backoff for ever.
-Stop this release's daemon, and run the block below once, before `controller_pod` comes out and before the earlier release starts:
+Run the block below once, with this release's daemon stopped, after every step of the rollback that restarts this release's daemon (the answer loop's restart that writes `answering: false`, or the restart that turns `writer_audience` off), since a restarted daemon can queue such rows again, and before `controller_pod` comes out of `legion.yaml` and the earlier image is pinned:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -3274,6 +3275,7 @@ The release that added the answer loop ([The answer loop](#the-answer-loop)) is 
 Name it by that entry rather than by its contract number, which moved more than once while it was open, each time `main` or another open pull request reached the number it held.
 So the release before it is whichever release of `main` precedes that entry, and the rules below apply to a rollback to it under either runtime.
 A rollback below it has three steps of its own, all taken before the earlier image is pinned, and a tmux daemon whose panes keep their sessions in a database has a wait of its own as well.
+The first of them restarts this release's daemon, so it comes before every step of a release the rollback crosses that deletes outbox rows with the daemon stopped, the unsent `memory-guard-kill` notices of [Rolling back below the release that guards the controller's pod's memory](#rolling-back-below-the-release-that-guards-the-controllers-pods-memory) among them: the restarted daemon can queue such rows again, and this section's own delete matches none of them.
 
 **The project must stop saying it answers, while this release still runs.**
 This release's daemon writes its project's answering record into the Envoy listener's agent registry, the key `project.<legion_project>` of the `legion_agents` bucket, at its boot and every minute after.
@@ -3698,7 +3700,7 @@ every row it finds takes the default, false, which the sweep derives again.
 The same mark keeps a root that the answer's own admission pass promoted past `admitted` in the sweep's reach until its architect's claim is given that entry, so a start of the resume that reaches no claim is written again.
 
 To roll a release at contract 146 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
-A rollback from a release above contract 146 takes first the steps of each release it crosses above 146: "Rolling back below the release that guards the controller's pod's memory" above gives those of the release whose `version.go` carries the entry for `dispatch://INFRA-3531`, which are, with this release's daemon stopped, to delete the unsent `memory-guard-kill` notices and then to take `controller_pod` out of `legion.yaml`, in that order.
+A rollback from a release above contract 146 takes first the steps of each release it crosses above 146: "Rolling back below the release that guards the controller's pod's memory" above gives those of the release whose `version.go` carries the entry for `dispatch://INFRA-3531`, which are to delete the unsent `memory-guard-kill` notices and to take `controller_pod` out of `legion.yaml`, in the order that section's second step gives.
 cybermonklabs/legion#3995, the release that tells a holder of an approved new version, changes no contract number, so it carries the number of the release before it, and a rollback that crosses it runs its four statements before both blocks ("Rolling back the release that tells a holder of an approved new version" above).
 Those statements and the two blocks touch no row, column or version row in common.
 A rollback below contract 144 also takes the steps of the releases it crosses, which "Each issue's experiment assignments in the state (daemon API contract 141)" below and "Rolling back below the release that guards an issue pod's memory", "Rolling back the release that frees the slot past review", "Rolling back the release whose update round ends at its bound" and "Rolling back the release that tells the merger of a merge-queue removal" above give.
