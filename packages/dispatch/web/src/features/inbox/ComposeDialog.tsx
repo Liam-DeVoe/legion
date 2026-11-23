@@ -43,7 +43,12 @@ import { deliveryOutcomeState, queuedWait } from "../conversation/delivery";
 import { DiscardDraftPrompt } from "../conversation/MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { useAgents } from "../conversation/useAgents";
-import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
+import {
+  AgentName,
+  AgentUnresponsiveNote,
+  UNRESPONSIVE_KEEPS_MESSAGES,
+  useAgentText,
+} from "../refs/AgentName";
 import { commentQuery } from "../refs/reference-target";
 import { useDialog } from "../shell/useDialog";
 import { StopTrying } from "../writes/StopTrying";
@@ -246,14 +251,15 @@ type RecipientState = "running" | "stored" | "unlisted" | "unlisted alone" | "un
 
 /** The words of a recipient's state before Send. The registry's own mark says an unresponsive
  *  session's state only in a tooltip, so what the server does with the message is said here, in
- *  the words the Agents page gives a queued attempt (`queuedWait`), with their time limit. A
- *  session the registry does not list may be stopped, and then the Envoy listener knows it and
- *  the message is stored for it, or the listener may not know it at all; only the server can tell
- *  the two apart. So its words name both outcomes, and the outcome after Send says which it was.
- *  A send to one is no broadcast and leaves nobody out, so only the first applies to it. */
+ *  the Agents page's words for such a session (`AgentUnresponsiveNote`): it has not ended, and the
+ *  message is stored until it answers. A session the registry does not list may be stopped, and
+ *  then the Envoy listener knows it and the message is stored for it, or the listener may not
+ *  know it at all; only the server can tell the two apart. So its words name both outcomes, and
+ *  the outcome after Send says which it was. A send to one is no broadcast and leaves nobody out,
+ *  so only the first applies to it. */
 const STATE_WORDS: Record<RecipientState, string> = {
   running: "Running",
-  stored: `Not running: the message is stored. The session ${queuedWait}`,
+  stored: `It has not ended: ${UNRESPONSIVE_KEEPS_MESSAGES}`,
   unknown: "Running state unknown",
   unlisted:
     "Not listed: the message is stored for it if the Envoy listener knows it; otherwise the send leaves it out",

@@ -437,8 +437,9 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
       );
     });
     await expect(stateOf(page, running.session_id)).toHaveText(/·\s*Running$/);
+    await expect(stateOf(page, stalled.session_id)).toContainText("Unresponsive");
     await expect(stateOf(page, stalled.session_id)).toContainText(
-      "Not running: the message is stored. The session is stopped; it gets the message if it runs again within 72 hours"
+      "It has not ended: messages sent to it are stored until it answers"
     );
     // Three recipients: the broadcast composer's fields, and no Issue picker.
     await expect(listTrigger(dialog, "Delivery mode")).toBeVisible();
