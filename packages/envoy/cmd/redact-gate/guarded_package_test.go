@@ -35,15 +35,58 @@ func (v Value) Type() Type                   { return nil }
 func (v Value) FieldByName(name string) Value { return v }
 func (v Value) FieldByIndex(index []int) Value { return v }
 func (v Value) Bool() bool                   { return false }
+func (v Value) Interface() any               { return nil }
 `
 
 // libStub stands for a library whose handle the read reflects on: an exported type to name its
-// package by, and the interface its unexported handle hides behind.
+// package by, the interface its unexported handle hides behind, and the handle, which keeps the
+// bool the read wants in an unexported field, as nats.go's legacy KV handle keeps useDirect.
 const libStub = `package lib
 
 type Conn struct{ n int }
 
 type KeyValue interface{ Bucket() string }
+
+type kvs struct{ useDirect bool }
+`
+
+// libWithoutFieldStub is a library none of whose struct types has the field the read names.
+const libWithoutFieldStub = `package lib
+
+type Conn struct{ n int }
+
+type KeyValue interface{ Bucket() string }
+`
+
+// libInterfaceFieldStub keeps the field the read names as an interface, which can hold the box.
+const libInterfaceFieldStub = `package lib
+
+type Conn struct{ n int }
+
+type KeyValue interface{ Bucket() string }
+
+type kvs struct{ useDirect any }
+`
+
+// libPromotedFieldStub keeps it as an interface in an embedded struct, which FieldByName finds.
+const libPromotedFieldStub = `package lib
+
+type Conn struct{ n int }
+
+type KeyValue interface{ Bucket() string }
+
+type options struct{ useDirect []any }
+
+type kvs struct{ options }
+`
+
+// libLocalTypeStub declares, inside a function, a struct type that keeps it as an interface: a
+// type no export data holds, whose values still name lib as their package.
+const libLocalTypeStub = libStub + `
+func Wrap(v any) any {
+	type held struct{ useDirect any }
+	return &held{useDirect: v}
+}
 `
 
 // genericLibStub is libStub with one generic type, as listenerwire declares APIErrorAs[Text]: a
@@ -131,16 +174,21 @@ func guardedCensusOf(t *testing.T, lib, source string, entry *reflectionExempt, 
 	t.Helper()
 	fset := token.NewFileSet()
 	stubs := stubImporter{}
+	var libSource *checkedSource
 	for _, stub := range []struct{ path, source string }{{"reflect", reflectStub}, {"example.com/lib", lib}, {"example.com/box", boxStub}} {
 		f, err := parser.ParseFile(fset, stub.path+".go", stub.source, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		pkg, err := (&types.Config{Importer: stubs}).Check(stub.path, fset, []*ast.File{f}, nil)
+		stubInfo := &types.Info{Defs: map[*ast.Ident]types.Object{}}
+		pkg, err := (&types.Config{Importer: stubs}).Check(stub.path, fset, []*ast.File{f}, stubInfo)
 		if err != nil {
 			t.Fatal(err)
 		}
 		stubs[stub.path] = pkg
+		if stub.path == "example.com/lib" {
+			libSource = &checkedSource{pkg: pkg, files: []*ast.File{f}, info: stubInfo}
+		}
 	}
 	f, err := parser.ParseFile(fset, "/repo/pkg/kv.go", source, parser.SkipObjectResolution)
 	if err != nil {
@@ -165,6 +213,8 @@ func guardedCensusOf(t *testing.T, lib, source string, entry *reflectionExempt, 
 	if closure != nil {
 		g.imports = map[string]map[string]bool{"example.com/lib": closure}
 	}
+	// The guarded package as the census type-checks it from source (sourceChecked).
+	g.declared = map[string]*checkedSource{"example.com/lib": libSource}
 	var c census
 	g.structural(&c, "/repo", "example.com/pkg", fset, []*ast.File{f}, info)
 	if len(c.Reflect) != 1 {
@@ -174,10 +224,13 @@ func guardedCensusOf(t *testing.T, lib, source string, entry *reflectionExempt, 
 }
 
 // TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage: a guarded_package entry
-// passes main's read of a library handle's unexported field, behind an interface, only where its
-// guard holds the handle's type to the named package, that package's import closure holds
-// neither the box's package nor an external error type's, and it declares no generic type; every
-// other shape is refused, each with its reason, and with no entry the site is refused as before.
+// passes main's read of a library handle's unexported field, behind an interface, only where it is
+// a FieldByName with a constant name whose result is only a method call's receiver (Elem and
+// Interface aside), its guard holds the handle's type to the named package through an unexported
+// variable, that package's import closure holds neither the box's package nor an external error
+// type's, it declares no generic type, and every struct type it declares with that field types it
+// with no interface or type parameter at any depth; every other shape is refused, each with its
+// reason, and with no entry the site is refused as before.
 func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *testing.T) {
 	entry := &reflectionExempt{File: "pkg/kv.go", Function: "example.com/pkg.readsDirect", GuardedPackage: "example.com/lib", Why: "test"}
 	clean := map[string]bool{"example.com/lib": true, "fmt": true}
@@ -211,6 +264,11 @@ func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *test
 		{"the closure holds the box", guardedRead, entry, map[string]bool{"example.com/lib": true, "example.com/box": true}, false, "holds the box's package example.com/box"},
 		{"the closure holds an external error type's package", guardedRead, entry, map[string]bool{"example.com/lib": true, "example.com/oauth": true}, false, "the external error type example.com/oauth.RetrieveError"},
 		{"no closure listed", guardedRead, entry, nil, false, "whose import closure no go list of these builds names"},
+		{"FieldByIndex in place of FieldByName", edit(`kvs.FieldByName("useDirect")`, "kvs.FieldByIndex([]int{0})"), entry, clean, false, "admits a reflect.Value.FieldByName with a constant name alone"},
+		{"a field name that is no constant", edit(`kvs.FieldByName("useDirect")`, "kvs.FieldByName(fieldName)") + "\nvar fieldName = \"useDirect\"\n", entry, clean, false, "whose name is a constant"},
+		{"Elem on the result", edit("return useDirect.Bool()", "return useDirect.Elem().Bool()"), entry, clean, false, "its result's Elem reaches what the field holds"},
+		{"Interface on the result", edit("return useDirect.Bool()", "return useDirect.Interface() != nil"), entry, clean, false, "its result's Interface reaches what the field holds"},
+		{"the result passed on", edit("return useDirect.Bool()", "return use(useDirect)") + "\nfunc use(reflect.Value) bool { return false }\n", entry, clean, false, "used 1 times, 0 of them as a method call's receiver"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := guardedCensus(t, c.source, c.entry, c.closure)
@@ -219,18 +277,26 @@ func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *test
 			}
 		})
 	}
-	// A generic type of the guarded package: an instance is lib's to reflect and holds whatever its
-	// type argument is, so the guard holds lib.Holder[box.Text] to lib while lib's import closure
-	// shows no box. A package that declares one is refused for every read under its guard.
-	for _, c := range []struct{ name, source string }{
-		{"a generic type of the guarded package holds the box", genericRead},
-		{"the guarded package declares a generic type", guardedRead},
+	// The guarded package's own types, read from its source: a generic type's instance is lib's to
+	// reflect and holds whatever its type argument is, so the guard holds lib.Holder[box.Text] to
+	// lib while lib's import closure shows no box; a field the read names that is an interface, or
+	// holds one, can hold the box at run time, whether the struct type keeping it declares it or
+	// embeds it, at package level or in a function; and a package none of whose struct types has
+	// that field leaves the census nothing to read.
+	fieldByName := strings.Replace(strings.Replace(genericRead, "kvs.FieldByIndex([]int{0, 0})", `kvs.FieldByName("V")`, 1), "text.IsNil()", "text.Bool()", 1)
+	for _, c := range []struct{ name, lib, source, why string }{
+		{"a generic type of the guarded package holds the box, read by FieldByIndex", genericLibStub, genericRead, "admits a reflect.Value.FieldByName with a constant name alone"},
+		{"a generic type of the guarded package holds the box, read by FieldByName", genericLibStub, fieldByName, "which declares the generic type Holder"},
+		{"the guarded package declares a generic type", genericLibStub, guardedRead, "which declares the generic type Holder"},
+		{"the field is an interface", libInterfaceFieldStub, guardedRead, "types the field useDirect with an interface or a type parameter, which can hold the box at run time: kvs.useDirect (any)"},
+		{"the field holds interfaces, promoted from an embedded struct", libPromotedFieldStub, guardedRead, "kvs.useDirect ([]any)"},
+		{"a struct type declared in a function keeps the field as an interface", libLocalTypeStub, guardedRead, "held.useDirect (any)"},
+		{"no struct type of the package has the field", libWithoutFieldStub, guardedRead, "no struct type example.com/lib declares has a field useDirect"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			const why = "which declares the generic type Holder"
-			got := guardedCensusOf(t, genericLibStub, c.source, entry, clean)
-			if got.OK || !strings.Contains(got.Why, why) {
-				t.Fatalf("the census answered ok=%t %q at %s:%d; want ok=false and %q in its reason", got.OK, got.Why, got.File, got.Line, why)
+			got := guardedCensusOf(t, c.lib, c.source, entry, clean)
+			if got.OK || !strings.Contains(got.Why, c.why) {
+				t.Fatalf("the census answered ok=%t %q at %s:%d; want ok=false and %q in its reason", got.OK, got.Why, got.File, got.Line, c.why)
 			}
 		})
 	}

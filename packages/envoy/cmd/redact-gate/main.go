@@ -129,10 +129,13 @@ type holderRow struct {
 // alone, each reflect.Value.Field it calls under a t.Field(i).IsExported() guard on its own index,
 // which the census checks in place of the types it reaches: the box keeps its text in unexported
 // fields. GuardedPackage names a reflection of a value whose type no static type names (a
-// library's unexported type behind an interface), which runs only where a guard holds that type
-// to the one package GuardedPackage names: the census checks the guard, and checks that neither
-// the box's package nor an external error type's is in that package's import closure, in place of
-// the types it reaches (structural.go, reflection).
+// library's unexported type behind an interface): a reflect.Value.FieldByName with a constant name,
+// which runs only where a guard holds that type to the one package GuardedPackage names, and whose
+// result is only a method call's receiver, other than Elem's and Interface's. In place of the types
+// it reaches, the census checks the guard (an unexported guard variable, stored once), that neither
+// the box's package nor an external error type's is in that package's import closure, that the
+// package declares no generic type, and that every struct type it declares with a field of that
+// name types it with no interface and no type parameter at any depth (structural.go, reflection).
 type reflectionExempt struct {
 	File               string   `json:"file"`
 	Function           string   `json:"function"`
@@ -281,6 +284,8 @@ type gate struct {
 	longestRow                string
 	valueOf                   map[string][]valueOfSite   // reflect.ValueOf sites by package
 	imports                   map[string]map[string]bool // each listed package's import closure, itself included (recordImports)
+	sources                   map[string]goSource        // each listed package's source and its build's export data (recordSource)
+	declared                  map[string]*checkedSource  // guarded packages type-checked from source, by package and build (sourceChecked)
 	failures                  int
 	unknowns                  int // runs past their bound (stages 4 and 5): neither a pass nor a failure
 	out                       io.Writer

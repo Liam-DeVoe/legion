@@ -3,8 +3,13 @@ package main
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
+	"go/importer"
+	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -598,11 +603,20 @@ var reflectionMethods = map[string]bool{
 // (exported_fields_only) is allowed instead where each of its calls is a reflect.Value.Field that
 // runs only under a t.Field(i).IsExported() guard on its own index (exportedGuarded): the box
 // keeps its text in unexported fields, so such a walk cannot reach it, whatever type it is given.
-// An entry that names a guarded package (guarded_package) is allowed instead where its reflect
-// call runs only under a guard holding its value's type to that package (packageGuarded), and
-// that package's import closure holds neither the box's package nor an external error type's
-// (closureClean): no type that package declares can then hold either, as no operand the census
-// checks can, an interface field aside.
+// An entry that names a guarded package P (guarded_package) is allowed instead for one shape of
+// read alone: a reflect.Value.FieldByName with a constant name, on a variable that runs only under
+// a guard holding its type to P (packageGuarded), whose result is a method call's receiver, other
+// than Elem's and Interface's, or one variable's value used only so (fieldRead). P's import closure
+// must hold neither the box's package nor an external error type's, and P must declare no generic
+// type (closureClean), so no type P declares can name the box. P's source is type-checked for the
+// build being read (sourceChecked), every named type it declares at package level or in a function
+// body among it, and every struct type of those whose fields, promoted ones included, hold the name
+// must type that field with no interface and no type parameter at any depth (through a pointer, a
+// slice, an array, a map, a channel or a struct's fields), and at least one must: only an interface
+// or a type parameter could hold the box at run time. Not covered, so refused: any other reflect
+// call, FieldByIndex and Field among them; a name that is no constant; a result passed on, stored
+// twice, or read through Elem or Interface. A func field's captured values are out of reflect's
+// reach, so a func type counts as holding nothing.
 func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function string) {
 	kind, what := "", ""
 	if callee := w.callee(call); reflectionMethods[callee] {
@@ -662,14 +676,24 @@ func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function str
 		switch {
 		case kind != "reflect":
 			f.Why = "guarded_package names a conversion, which no type guard holds"
+		case what != "(reflect.Value).FieldByName":
+			f.Why = "guarded_package admits a reflect.Value.FieldByName with a constant name alone, and this is " + what
 		case guarded == "":
 			f.Why = "guarded_package names a reflection that does not run only under a guard holding its value's type to one package: " + why
 		case guarded != exempt.GuardedPackage:
 			f.Why = "guarded_package names " + exempt.GuardedPackage + ", and the guard here holds the value's type to " + guarded
 		default:
-			if f.OK, f.Why = w.closureClean(guarded); f.OK {
-				f.Why = "named in the inventory (" + exempt.Why + "); " + f.Why
+			closure, cleanWhy := w.closureClean(guarded)
+			if !closure {
+				f.Why = cleanWhy
+				break
 			}
+			read, readWhy := w.fieldRead(call, parents, guarded)
+			if !read {
+				f.Why = readWhy
+				break
+			}
+			f.OK, f.Why = true, "named in the inventory ("+exempt.Why+"); "+cleanWhy+"; "+readWhy
 		}
 		return
 	}
@@ -956,24 +980,20 @@ func (w *walker) closureClean(pkg string) (bool, string) {
 	if len(held) > 0 {
 		return false, "guarded_package names " + pkg + ", whose import closure holds " + strings.Join(held, " and ")
 	}
-	declared := w.declaredPackage(pkg)
-	if declared == nil {
-		return false, "guarded_package names " + pkg + ", whose declarations this package's type-check does not read"
+	declared := w.g.sourceChecked(pkg)
+	if declared.err != "" {
+		return false, "guarded_package names " + pkg + ", whose source cannot be type-checked: " + declared.err
 	}
 	var generic []string
-	for _, name := range declared.Scope().Names() {
-		tn, ok := declared.Scope().Lookup(name).(*types.TypeName)
-		if !ok {
-			continue
-		}
+	for _, tn := range declared.declaredTypes() {
 		switch t := tn.Type().(type) {
 		case *types.Named:
 			if t.TypeParams().Len() > 0 {
-				generic = append(generic, name)
+				generic = append(generic, tn.Name())
 			}
 		case *types.Alias:
 			if t.TypeParams().Len() > 0 {
-				generic = append(generic, name)
+				generic = append(generic, tn.Name())
 			}
 		}
 	}
@@ -983,15 +1003,254 @@ func (w *walker) closureClean(pkg string) (bool, string) {
 	return true, "its guard holds its value's type to " + pkg + ", whose import closure holds neither the box's package nor an external error type's, and which declares no generic type"
 }
 
-// declaredPackage is the package at path as the walked package's type-check read it: the package
-// of an object the walked package uses, nil where it uses none.
-func (w *walker) declaredPackage(path string) *types.Package {
-	for _, obj := range w.info.Uses {
-		if obj != nil && obj.Pkg() != nil && obj.Pkg().Path() == path {
-			return obj.Pkg()
+// fieldRead reports whether call, a guarded reflect.Value.FieldByName on a value of a type of pkg,
+// is the one read guarded_package admits, and says why: a constant name, a result that is only a
+// method call's receiver, other than Elem's and Interface's (resultReceiver), and a field that
+// every struct type pkg declares with that name, promoted fields included, types with no interface
+// and no type parameter at any depth (holdsDynamic), with at least one such type.
+func (w *walker) fieldRead(call *ast.CallExpr, parents []ast.Node, pkg string) (bool, string) {
+	tv := w.info.Types[call.Args[0]]
+	if tv.Value == nil || tv.Value.Kind() != constant.String {
+		return false, "guarded_package admits a FieldByName whose name is a constant, and this one's is not"
+	}
+	name := constant.StringVal(tv.Value)
+	if why := w.resultReceiver(call, parents); why != "" {
+		return false, "guarded_package admits a FieldByName whose result is only a method call's receiver, other than Elem's and Interface's: " + why
+	}
+	declared := w.g.sourceChecked(pkg)
+	if declared.err != "" {
+		return false, "guarded_package names " + pkg + ", whose source cannot be type-checked: " + declared.err
+	}
+	var found int
+	var dynamic []string
+	for _, tn := range declared.declaredTypes() {
+		if _, ok := tn.Type().Underlying().(*types.Struct); !ok {
+			continue
+		}
+		obj, _, _ := types.LookupFieldOrMethod(tn.Type(), false, declared.pkg, name)
+		field, ok := obj.(*types.Var)
+		if !ok || !field.IsField() {
+			continue
+		}
+		found++
+		if holdsDynamic(field.Type(), map[types.Type]bool{}) {
+			dynamic = append(dynamic, tn.Name()+"."+name+" ("+typeString(field.Type())+")")
 		}
 	}
-	return nil
+	switch {
+	case found == 0:
+		return false, "no struct type " + pkg + " declares has a field " + name + ", so the census reads nothing of what the read reaches"
+	case len(dynamic) > 0:
+		return false, pkg + " types the field " + name + " with an interface or a type parameter, which can hold the box at run time: " + strings.Join(dynamic, ", ")
+	}
+	return true, fmt.Sprintf("FieldByName(%q) of the %d struct types %s declares with that field reaches no interface and no type parameter, and its result is only a method call's receiver", name, found, pkg)
+}
+
+// resultReceiver is "" where call's result is only a method call's receiver, other than Elem's and
+// Interface's, or the value of one variable stored once whose every use is such a receiver; else
+// why not.
+func (w *walker) resultReceiver(call *ast.CallExpr, parents []ast.Node) string {
+	if len(parents) == 0 {
+		return "its result has no use the census reads"
+	}
+	receiver := func(sel *ast.SelectorExpr) string {
+		if s := w.info.Selections[sel]; s == nil || s.Kind() != types.MethodVal {
+			return "its result's ." + sel.Sel.Name + " is no method"
+		}
+		if sel.Sel.Name == "Elem" || sel.Sel.Name == "Interface" {
+			return "its result's " + sel.Sel.Name + " reaches what the field holds"
+		}
+		return ""
+	}
+	var lhs ast.Expr
+	switch parent := parents[len(parents)-1].(type) {
+	case *ast.SelectorExpr:
+		return receiver(parent)
+	case *ast.AssignStmt:
+		if len(parent.Lhs) == 1 && len(parent.Rhs) == 1 && parent.Rhs[0] == call {
+			lhs = parent.Lhs[0]
+		}
+	case *ast.ValueSpec:
+		if len(parent.Names) == 1 && len(parent.Values) == 1 && parent.Values[0] == call {
+			lhs = parent.Names[0]
+		}
+	}
+	id, ok := lhs.(*ast.Ident)
+	if !ok {
+		return "its result is used other than as a receiver or one variable's value"
+	}
+	result, _ := w.info.Defs[id].(*types.Var)
+	if result == nil {
+		result, _ = w.info.Uses[id].(*types.Var)
+	}
+	if result == nil || len(w.stores[result]) != 1 {
+		return "the variable that holds its result is not stored to once"
+	}
+	var body ast.Node
+	for i := len(parents) - 1; i >= 0 && body == nil; i-- {
+		switch fn := parents[i].(type) {
+		case *ast.FuncDecl:
+			body = fn.Body
+		case *ast.FuncLit:
+			body = fn.Body
+		}
+	}
+	if body == nil {
+		return "its result is held outside a function"
+	}
+	uses, receivers := 0, 0
+	why := ""
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.Ident:
+			if w.info.Uses[n] == result {
+				uses++
+			}
+		case *ast.SelectorExpr:
+			if x, ok := ast.Unparen(n.X).(*ast.Ident); ok && w.info.Uses[x] == result {
+				receivers++
+				if r := receiver(n); r != "" && why == "" {
+					why = r
+				}
+			}
+		}
+		return true
+	})
+	switch {
+	case why != "":
+		return why
+	case uses != receivers:
+		return fmt.Sprintf("the variable %s that holds its result is used %d times, %d of them as a method call's receiver", id.Name, uses, receivers)
+	}
+	return ""
+}
+
+// holdsDynamic reports whether a value of t can hold a value of a type t does not name: t, or what
+// a pointer, slice, array, map, channel or struct field of it holds, is an interface or a type
+// parameter. A func's captured values are out of reflect's reach, so a func type holds none.
+func holdsDynamic(t types.Type, seen map[types.Type]bool) bool {
+	t = types.Unalias(t)
+	if seen[t] {
+		return false
+	}
+	seen[t] = true
+	switch t := t.(type) {
+	case *types.Interface, *types.TypeParam:
+		return true
+	case *types.Named:
+		return holdsDynamic(t.Underlying(), seen)
+	case *types.Pointer:
+		return holdsDynamic(t.Elem(), seen)
+	case *types.Slice:
+		return holdsDynamic(t.Elem(), seen)
+	case *types.Array:
+		return holdsDynamic(t.Elem(), seen)
+	case *types.Chan:
+		return holdsDynamic(t.Elem(), seen)
+	case *types.Map:
+		return holdsDynamic(t.Key(), seen) || holdsDynamic(t.Elem(), seen)
+	case *types.Struct:
+		for i := range t.NumFields() {
+			if holdsDynamic(t.Field(i).Type(), seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// goSource is a listed package's directory and files, and the export data of every package the
+// build it was listed in compiles (recordSource): what type-checks it from source.
+type goSource struct {
+	dir     string
+	files   []string
+	cgo     []string
+	exports map[string]string
+}
+
+// checkedSource is a package type-checked from its source (sourceChecked), or why it could not be.
+type checkedSource struct {
+	pkg   *types.Package
+	files []*ast.File
+	info  *types.Info
+	err   string
+}
+
+// declaredTypes is every named type the package's source declares, at package level or in a
+// function body: a type export data holds only where an exported declaration names it is here too.
+func (s *checkedSource) declaredTypes() []*types.TypeName {
+	var out []*types.TypeName
+	for _, f := range s.files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			if spec, ok := n.(*ast.TypeSpec); ok {
+				if tn, ok := s.info.Defs[spec.Name].(*types.TypeName); ok {
+					out = append(out, tn)
+				}
+			}
+			return true
+		})
+	}
+	return out
+}
+
+// recordSource keeps where p's source is and the export data of the build that listed it, so a
+// guarded package can be type-checked from source for that build (sourceChecked).
+func (g *gate) recordSource(p goListed, exports map[string]string) {
+	if g.sources == nil {
+		g.sources = map[string]goSource{}
+	}
+	g.sources[p.ImportPath] = goSource{dir: p.Dir, files: p.GoFiles, cgo: p.CgoFiles, exports: exports}
+}
+
+// sourceChecked is pkg type-checked from its source files for the build its listing last read
+// (recordSource), its imports from that build's export data; cached by package and build. Export
+// data holds an unexported type only where an exported declaration names it, so the guarded
+// package's own types are read from its source.
+func (g *gate) sourceChecked(pkg string) *checkedSource {
+	key := pkg
+	src, listed := g.sources[pkg]
+	if listed {
+		key += "\x00" + src.exports[pkg]
+	}
+	if checked := g.declared[key]; checked != nil {
+		return checked
+	}
+	checked := &checkedSource{}
+	if g.declared == nil {
+		g.declared = map[string]*checkedSource{}
+	}
+	g.declared[key] = checked
+	switch {
+	case !listed:
+		checked.err = "no go list of these builds names its source"
+		return checked
+	case len(src.cgo) > 0:
+		checked.err = "it has cgo files (" + strings.Join(src.cgo, ", ") + "), which the census does not read"
+		return checked
+	}
+	fset := token.NewFileSet()
+	for _, name := range src.files {
+		f, err := parser.ParseFile(fset, filepath.Join(src.dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			checked.err = err.Error()
+			return checked
+		}
+		checked.files = append(checked.files, f)
+	}
+	checked.info = &types.Info{Defs: map[*ast.Ident]types.Object{}}
+	conf := types.Config{Importer: importer.ForCompiler(fset, "gc", func(p string) (io.ReadCloser, error) {
+		if e := src.exports[p]; e != "" {
+			return os.Open(e)
+		}
+		return nil, fmt.Errorf("no export data for %s", p)
+	})}
+	typed, err := conf.Check(pkg, fset, checked.files, checked.info)
+	if err != nil {
+		checked.err = err.Error()
+		return checked
+	}
+	checked.pkg = typed
+	return checked
 }
 
 func (w *walker) listed(t types.Type, operands []string) bool {

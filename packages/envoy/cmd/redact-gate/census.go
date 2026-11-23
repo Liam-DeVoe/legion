@@ -237,6 +237,7 @@ func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[i
 			for _, p := range deps {
 				exports[p.ImportPath] = p.Export
 				g.recordImports(p.ImportPath, p.Deps)
+				g.recordSource(p, exports)
 			}
 			wanted := set(need)
 			for _, p := range deps {
