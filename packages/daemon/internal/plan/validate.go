@@ -2,9 +2,10 @@ package plan
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // The two checks a plan passes before Legion takes it. Both run on every plan, and each gives one
@@ -18,10 +19,8 @@ const noTask = "the plan has no task block, so it gives Legion no work."
 // notYet ends each reason of Supported: what a later release carries out.
 const notYet = " This release of Legion does not carry it out yet."
 
-// recordWord is the form of a role's name and of a role's type in Dispatch's step record, which
-// takes no other, and recordForm is the end of each refusal of a word outside it.
-var recordWord = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
-
+// recordForm is the end of each refusal of a role's name or a role's type outside the one form
+// Dispatch's step record takes for them (claim.IsRoleName).
 const recordForm = "is not of the form [a-z][a-z0-9-]* with at most 32 characters: Dispatch's step record takes no other."
 
 // Validate is what Legion cannot carry out in any release: a plan with no task; each role the plan
@@ -56,19 +55,19 @@ func Validate(p Plan, d Deployment) []Refusal {
 }
 
 // roleReasons is Validate's causes in the roles p defines, in the document's order and, for each
-// role, in this order: a name outside recordWord, a name of a role of d or of Legion's (IsLegionName), and a
-// type that is set and outside recordWord.
+// role, in this order: a name outside the record's form (claim.IsRoleName), a name of a role of d
+// or of Legion's (IsLegionName), and a type that is set and outside that form.
 func roleReasons(p Plan, d Deployment) []Refusal {
 	var refusals []Refusal
 	for _, role := range p.Roles {
-		if !recordWord.MatchString(role.Name) {
+		if !claim.IsRoleName(role.Name) {
 			refusals = append(refusals, Refusal{Reason: fmt.Sprintf("the plan defines the role %s, whose name %s", role.Name, recordForm)})
 		}
 		if _, ok := d.Roles[role.Name]; ok || IsLegionName(role.Name) {
 			refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
 				"the plan defines the role %s, which the deployment or Legion defines already; a role of a plan takes a name of its own.", role.Name)})
 		}
-		if role.Type != "" && !recordWord.MatchString(string(role.Type)) {
+		if role.Type != "" && !claim.IsRoleName(string(role.Type)) {
 			refusals = append(refusals, Refusal{Reason: fmt.Sprintf("the plan defines the role %s with the type %s, which %s", role.Name, role.Type, recordForm)})
 		}
 	}

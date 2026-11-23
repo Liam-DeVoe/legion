@@ -81,6 +81,11 @@ func IsRole(role Role) bool {
 	return role != RoleController && roleName.MatchString(string(role))
 }
 
+// IsRoleName reports whether name is of the role grammar, `^[a-z][a-z0-9-]{0,31}$`, the one form
+// Dispatch's step record takes for a role's name and a role's type. The controller's name is of it,
+// and is no role of a claim (IsRole).
+func IsRoleName(name string) bool { return roleName.MatchString(name) }
+
 // IsBuiltin reports whether role is one of Legion's six (Roles), and no role of the deployment.
 func IsBuiltin(role Role) bool { return slices.Contains(Roles, role) }
 
