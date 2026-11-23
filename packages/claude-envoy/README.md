@@ -185,9 +185,9 @@ message from Dispatch's Agents page as that person's own turn.
   session's Bash first), with `ENVOY_URL` and `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN` over its `envoy`
   section. With Envoy off it sends nothing and exits 1, saying why. It sends through envoy-client's
   own send (`createEnvoyClient().send`), the transport every other client uses: one idempotency key
-  on every attempt, so the listener stores the message at most once; an attempt with no answer or a
-  5xx sent again under that key; and the listener's URL named only as `urlForText` names it, never
-  its user info. It sends the session its shell names (`ENVOY_SESSION_ID`, else
+  on every attempt, so the listener stores the message at most once; an attempt with no answer, a
+  408 or a 5xx sent again under that key; and the listener's URL named only as `urlForText` names
+  it, never its user info. It sends the session its shell names (`ENVOY_SESSION_ID`, else
   `CLAUDE_CODE_SESSION_ID`) as `source_session`, so the listener's limit on each session's sending
   counts its messages. A send the listener stored without this machine's credential (a listener
   that asks for none takes one whose broker trade failed) prints its `Sent` line, exits 0, and

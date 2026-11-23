@@ -10,6 +10,7 @@ import {
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
+import { outage } from "@legion/contracts/http-status";
 import { errorClass, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
@@ -833,8 +834,8 @@ export class EnvoyApiError extends Error {
   /**
    * The whole seconds until the sender may send again, when the body names them: a
    * `sender_rate_limited` refusal's `retry_after_seconds`. The client never sends a refused
-   * message again by itself (`request` retries nothing below 500), so a caller that wants the
-   * message sent waits this long and sends it again.
+   * message again by itself (`request` sends no 429 again), so a caller that wants the message
+   * sent waits this long and sends it again.
    */
   readonly retryAfterSeconds: number | undefined;
   /** The topics a registration's project refusal names (`topic_not_in_project`,
@@ -903,8 +904,8 @@ const mintedDedupeKey = new RegExp(MINTED_DEDUPE_KEY_PATTERN);
  * (`MINTED_DEDUPE_KEY_PATTERN`: a lower-case UUID and a target with no dot), the stream stores
  * one copy and the recipient's plugin drops a repeat inside `DELIVERY_DUPLICATE_WINDOW_MS`, which
  * states the rare cases where a recipient that restarted still sees it twice (`resendSafe`). A
- * send refused with a 4xx on every attempt it made stays an `EnvoyApiError`. `last` (also the
- * `cause`) is what the last attempt got.
+ * send refused with a 4xx on every attempt it made, a 408 that was sent again among them, stays an
+ * `EnvoyApiError`. `last` (also the `cause`) is what the last attempt got.
  */
 export class EnvoySendUnconfirmedError extends Error {
   override readonly name = "EnvoySendUnconfirmedError";
@@ -980,7 +981,9 @@ export type EnvoyClient = {
 type RequestOptions = {
   readonly timeoutMs?: number;
   readonly retry?: boolean;
-  /** Called for each attempt that got no answer or a 5xx: one the listener may have acted on. */
+  /** Called for each attempt that got no answer or a 5xx: one the listener may have acted on. A
+   *  408, sent before anything was forwarded, is retried without it, as an attempt that reached
+   *  nothing. */
   readonly onUnanswered?: () => void;
   /**
    * Called when the call fails on an attempt that reached no route of the listener: its
@@ -1198,10 +1201,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         },
         { tokens: redacted, redirectTo: redirectOrigin(response, url, redacted) }
       );
-      // Only a 5xx is sent again. A 4xx is the listener's answer to this message, and so is a 429
-      // `sender_rate_limited`: the agent reads its sentence and decides when to send it again.
-      if (response.status >= 500) {
-        options.onUnanswered?.();
+      // An outage (`outage`) is sent again, but for a 429: the listener's 429 is
+      // `sender_rate_limited`, its answer to this message, whose sentence the agent reads to decide
+      // when to send it again. Any other 4xx is the listener's answer too. The listener writes no
+      // 408, so one is a hop's timeout on the request, sent before it forwarded anything (as
+      // `reachesDispatch` in `dispatch-http.ts` says of a gateway's): an attempt that reached
+      // nothing, so a send answered 408 on every attempt stays that refusal.
+      if (outage(response.status) && response.status !== 429) {
+        if (response.status !== 408) options.onUnanswered?.();
         if (attempt + 1 < tries) {
           await waitForRetry(retryDelayMs);
           continue;

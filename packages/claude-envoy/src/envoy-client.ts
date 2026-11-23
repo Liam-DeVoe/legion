@@ -77,7 +77,7 @@ function recorded(credential: RequestCredential): {
  * `envoy-send` command keeps every rule a session's own send keeps:
  * - one idempotency key for the message, on every attempt, so the listener stores it at most
  *   once however many attempts reach it;
- * - an attempt that got no answer or a 5xx is sent again under that key, after 250 ms;
+ * - an attempt that got no answer, a 408 or a 5xx is sent again under that key, after 250 ms;
  * - a send that may have arrived is told so (`EnvoySendUnconfirmedError`), naming the key that
  *   resends it safely, never "failed";
  * - each attempt's credential waits the attempt less the request's reserve

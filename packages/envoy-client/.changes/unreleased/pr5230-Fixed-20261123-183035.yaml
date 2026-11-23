@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    A listener call answered 408 is sent once more, as one answered with a 5xx is. The listener
+    writes no 408, so one is a hop's timeout sent before it forwarded anything: a send answered 408
+    on every attempt stays that refusal (`EnvoyApiError`), not `EnvoySendUnconfirmedError`. A 429
+    is still not sent again: the listener's 429 is `sender_rate_limited`, and the agent decides
+    when to send again. `transientStatus` (`./dispatch-http`) reads `outage` from
+    `@legion/contracts/http-status`; what it answers does not change.
+time: 2026-11-23T18:30:35.657356157Z
+custom:
+    Issue: pr5230
