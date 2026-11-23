@@ -58,14 +58,18 @@ type keyedReply struct {
 	err    error
 }
 
-// keyedPostAnswered is keyedPost with no client timeout, its answer taken with testwait.Receive:
-// its one bound is the test binary's deadline less testwait's margin, so a server a loaded machine
-// slows still answers, and one that never answers fails the test by name, with what.
+// keyedPostAnswered is keyedPostContext under the test's own context, which carries no deadline and
+// ends only when the test does, its answer taken with testwait.Receive: its one bound is the test
+// binary's deadline less testwait's margin, so a server a loaded machine slows still answers, and
+// one that never answers fails the test by name, with what. It does not go through keyedPost,
+// whose timeout is a context's deadline: a timeout of 0 there is a request already past its
+// deadline, not one with no bound.
 func keyedPostAnswered(t *testing.T, what string, server *httptest.Server, path, body, key string) keyedReply {
 	t.Helper()
+	ctx := t.Context()
 	answered := make(chan keyedReply, 1)
 	go func() {
-		status, body, header, err := keyedPost(server, path, body, key, 0)
+		status, body, header, err := keyedPostContext(ctx, server, path, body, key)
 		answered <- keyedReply{status: status, body: body, header: header, err: err}
 	}()
 	return testwait.Receive(t, what, answered)
