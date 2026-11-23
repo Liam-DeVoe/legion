@@ -1572,13 +1572,13 @@ func TestConfigCheckWarnsOfAnOperatorVolumeOfASlotsForm(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", kubernetesCheckConfig(t, pod("state-implementer-2"))}, &out, &errb)
 	warning := "runtime.kubernetes.pod.volumes[0].name state-implementer-2 has the form state-<slot> of a volume Legion gives each slot of a pod, and collides with the state volume of the slot of an agent named implementer-2 wherever an issue's plan names one; a later release refuses this name, so rename the volume\n"
-	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + modelsNoneLine + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("a volume of an agent's slot: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 	out.Reset()
 	errb.Reset()
 	code = run(context.Background(), []string{"legion", "config", "check", "--config", kubernetesCheckConfig(t, pod("gh-cache"))}, &out, &errb)
-	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines + modelsNoneLine + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("a volume no agent can collide with: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 	out.Reset()
