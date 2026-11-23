@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The tester's prompt says which checks are the tester's: the `before_merge` checks that CI does
+  not prove. The tester runs each of them again at each head that it tests, whoever ran it before.
+  A pass that the implementer recorded, or a result carried from an earlier head, no longer takes
+  the place of that run. The tester reads no CI and waits for none. It records each failure as a
+  fail result on its check (`dispatch result --verdict fail`), and its `test` handoff holds no
+  `implementerProof`, `failures` or `failed`. Every phase worker's part gives the rule to retract a
+  result of its own that observed wrongly (`dispatch result --retract <result id> --reason`).
+time: 2026-11-23T10:13:50Z
+custom:
+    Issue: tester-own-runs

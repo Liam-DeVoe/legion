@@ -2,7 +2,9 @@ package prompts
 
 import (
 	"embed"
+	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -126,7 +128,7 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 		readSource       = "read the code that already does the nearest thing"
 		noDefer          = "Nothing needed for correctness is deferred"
 		fastChecks       = "run the repository's fast local checks"
-		testerRunsTheApp = "read CI for everything static"
+		testerRunsTheApp = "Never run a lane again as a whole"
 		redTest          = "the test itself is not theirs to change"
 		dontModify       = "make the tester's red test pass; do not modify it"
 	)
@@ -148,8 +150,8 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	contains("core/oracle.md", readSource, true)
 	contains("core/oracle.md", noDefer, false)
 	// The implementer runs the repository's fast local checks before a push; the tester runs the
-	// application and reads CI for the static lanes (dispatch://LEGION-631), so the rule to rerun
-	// them is the implementer's alone.
+	// application and its own `before_merge` checks, and never a lane as a whole, so the rule to
+	// rerun a lane is the implementer's alone.
 	contains("core/implementer.md", fastChecks, true)
 	contains("core/tester.md", fastChecks, false)
 	contains("core/tester.md", testerRunsTheApp, true)
@@ -592,8 +594,9 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 // names core/oracle.md for no role, and it is pinned beside core/common.md to keep one wording of
 // that rule in the prompt tree, which a later core would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
-	// The phrase every part below carries for that rule. Outside these parts,
-	// packages/pi-legion/src/skills-guard.test.ts counts it once, in go/worker-common.md.
+	// The phrase that the parts below carry for that rule. core/tester.md says what CI proves in a
+	// sentence of its own, pinned below. Outside these parts,
+	// packages/pi-legion/src/skills-guard.test.ts counts the phrase once, in go/worker-common.md.
 	const ciCheckRule = "check carrying `ci_check` is CI's"
 	for _, pin := range []struct{ file, rule string }{
 		// R1: the simplify pass covers every file of the diff and reports what it sees.
@@ -618,7 +621,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or
 		// judged, or lists a check's attributes, carries the exception. The tester's and the
 		// implementer's role parts point at the worker skill's page, which a core part may not name.
-		{"core/tester.md", ciCheckRule},
+		{"core/tester.md", "CI proves a check that carries `ci_check`"},
 		{"core/implementer.md", ciCheckRule},
 		{"core/reviewer.md", ciCheckRule},
 		{"tester.md", ciCheckRule},
@@ -827,5 +830,274 @@ func TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI(t *testing.T) {
 		if !strings.Contains(skill, run.agreed) {
 			t.Errorf("%s does not hold %q, what it and roles/mechanics/headless.md agree on about %s", skillPath, run.agreed, run.name)
 		}
+	}
+}
+
+// testerParts are the parts Compose joins for the tester, each by its path in this package, with
+// its text. Compose names them, so a part it adds to the tester's prompt is read too. The three
+// parts that state what the tester runs must be among them, so a Compose that names none of them
+// ends the test rather than letting it pass on nothing.
+func testerParts(t *testing.T) map[string]string {
+	t.Helper()
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	composed, err := composer.Compose(claim.RoleTester, false)
+	if err != nil {
+		t.Fatalf("Compose the tester: %v", err)
+	}
+	parts := map[string]string{}
+	for _, path := range composed.RolePromptPaths {
+		rel, err := filepath.Rel(filepath.Join(stateDir, "prompts"), path)
+		if err != nil {
+			t.Fatalf("place %s in the snapshot: %v", path, err)
+		}
+		rel = filepath.ToSlash(rel)
+		if shared, ok := strings.CutPrefix(rel, "shared/"); ok {
+			rel = "roles/" + shared
+		}
+		parts[rel] = partText(t, rel)
+	}
+	for _, want := range []string{"roles/core/tester.md", "roles/tester.md", "go/worker-common.md"} {
+		if _, ok := parts[want]; !ok {
+			t.Fatalf("Compose joins %q for the tester, and not %s", slices.Sorted(maps.Keys(parts)), want)
+		}
+	}
+	return parts
+}
+
+// partPin is a sentence that a part must hold, matched over the part with its whitespace folded.
+type partPin struct{ part, text string }
+
+// missingPins are the pins whose part, with its whitespace folded, does not hold the pin's text,
+// one message each.
+func missingPins(parts map[string]string, pins []partPin) []string {
+	var missing []string
+	for _, pin := range pins {
+		if !strings.Contains(foldWhitespace(parts[pin.part]), pin.text) {
+			missing = append(missing, fmt.Sprintf("%s does not hold %q", pin.part, pin.text))
+		}
+	}
+	return missing
+}
+
+// requirePins fails t for each pin that its part does not hold. A control runs first: each pin
+// is taken out of a copy of its part, and the check must report that copy. A pin that its part
+// holds twice stays in the copy, so the control also refuses a pin whose removal from one place
+// another copy would hide.
+func requirePins(t *testing.T, parts map[string]string, pins []partPin) {
+	t.Helper()
+	for _, pin := range pins {
+		planted := maps.Clone(parts)
+		planted[pin.part] = strings.Replace(foldWhitespace(parts[pin.part]), pin.text, "", 1)
+		if got := missingPins(planted, []partPin{pin}); len(got) != 1 {
+			t.Errorf("control: a copy of %s without %q is not reported, so the part holds it more than once", pin.part, pin.text)
+		}
+	}
+	for _, problem := range missingPins(parts, pins) {
+		t.Error(problem)
+	}
+}
+
+// heldPhrase is a phrase that a part holds and that no part may hold.
+type heldPhrase struct{ part, phrase string }
+
+// partsHolding are the phrases that each part holds, with its whitespace folded, in the order of
+// the parts' paths and then of the phrases. With caseless, the match ignores case, so a sentence
+// that starts with a phrase is found too.
+func partsHolding(parts map[string]string, phrases []string, caseless bool) []heldPhrase {
+	var held []heldPhrase
+	for _, part := range slices.Sorted(maps.Keys(parts)) {
+		text := foldWhitespace(parts[part])
+		for _, phrase := range phrases {
+			haystack, needle := text, phrase
+			if caseless {
+				haystack, needle = strings.ToLower(text), strings.ToLower(phrase)
+			}
+			if strings.Contains(haystack, needle) {
+				held = append(held, heldPhrase{part, phrase})
+			}
+		}
+	}
+	return held
+}
+
+// requirePlantsCaught is the control of a check that no part holds any of phrases. It plants
+// each sentence alone at the end of a copy of the part the plant names (a new part where there is
+// none of that name), and fails t unless the check reports that part with each phrase the
+// sentence holds. A plant that holds no phrase fails t, and so does a phrase that no plant holds:
+// the test has then never seen the check catch it.
+func requirePlantsCaught(t *testing.T, parts map[string]string, phrases []string, caseless bool, plants []partPin) {
+	t.Helper()
+	caught := map[string]bool{}
+	for _, plant := range plants {
+		own := partsHolding(map[string]string{plant.part: plant.text}, phrases, caseless)
+		if len(own) == 0 {
+			t.Errorf("control: the plant %q holds none of the phrases, so it shows nothing", plant.text)
+		}
+		planted := maps.Clone(parts)
+		planted[plant.part] += "\n\n" + plant.text + "\n"
+		reported := partsHolding(planted, phrases, caseless)
+		for _, want := range own {
+			if !slices.Contains(reported, want) {
+				t.Errorf("control: %q planted in %s is not reported", want.phrase, plant.part)
+			}
+			caught[want.phrase] = true
+		}
+	}
+	for _, phrase := range phrases {
+		if !caught[phrase] {
+			t.Errorf("control: no plant holds %q, so the check was never seen to catch it", phrase)
+		}
+	}
+}
+
+// The words of the tester's run rule from before each of its `before_merge` checks became its own
+// to run again at each head that it tests, and the failure fields its `test` handoff held. Each is
+// joined from its halves, as retiredCheckSentences are, so that a search of the repository for one
+// finds the prompt text that holds it and never this test.
+const (
+	everyCheckOfTheIssue  = "Run every check" + " of the issue"
+	everyBeforeMergeCheck = "run every `before_merge`" + " check"
+	aFullTestRound        = "a full test" + " round"
+	sizeYourRound         = "size your round" + " to that change"
+	notRunAgain           = "cannot affect is" + " not run again"
+	implementerProofField = "implementer" + "Proof"
+	failuresField         = "`fail" + "ures`"
+	failedField           = "`fail" + "ed`"
+	readCIForStatic       = "read CI for" + " everything static"
+	aLaneStillRunning     = "A lane still running" + " is read as running"
+	oneDerivedResult      = "that read shows its" + " one derived result"
+)
+
+// oldTesterRunRule are the phrases that no part of the tester's prompt may hold.
+var oldTesterRunRule = []string{
+	everyCheckOfTheIssue, everyBeforeMergeCheck, aFullTestRound, sizeYourRound, notRunAgain,
+	implementerProofField, failuresField, failedField, readCIForStatic, aLaneStillRunning,
+	oneDerivedResult,
+}
+
+// mainTesterSentences are sentences of the tester's parts as main held them before this rule,
+// each in the part that held it. The last one is older: it was in roles/tester.md until the part
+// on a new head replaced it. Each holds at least one phrase of oldTesterRunRule.
+var mainTesterSentences = []partPin{
+	{"roles/core/tester.md", "Record what you ran and what you observed, and " + readCIForStatic + " — lint, types, the unit and integration suites and every other lane are CI's work, read on GitHub at the head you tested and written down nowhere for a later step to trust, except a `ci_check` job; rerun none of them yourself, and never re-run a CI lane as evidence."},
+	{"roles/core/tester.md", aLaneStillRunning + "; never wait for it."},
+	{"roles/core/tester.md", everyCheckOfTheIssue + " on the surface a person reaches it through — the CLI you type, the endpoint you curl, the TUI you drive in tmux, the workflow you dispatch, the job you submit — as the repository's testing skills describe."},
+	{"roles/core/tester.md", "On a new head, read what changed since the head you last tested (`git diff <that head> <new head>`), and " + sizeYourRound + ": test again only what it can affect, and confirm the rest by naming the earlier head."},
+	{"roles/tester.md", "A check carrying `ci_check` is CI's: " + oneDerivedResult + " (`skill://legion-worker/references/ci-checks.md`)."},
+	{"roles/tester.md", "Judge those results and record the verdict in your `test` handoff as `" + implementerProofField + "` (`{verdict: \"verified\" | \"rejected\", how}`)."},
+	{"roles/tester.md", "Otherwise " + everyBeforeMergeCheck + " yourself before completing, a whole test suite excepted as above."},
+	{"roles/tester.md", "A check that the change since its pass " + notRunAgain + ": record it at the new head with `--observed 'carried from <old sha>: <why the change cannot affect it>'`."},
+	{"roles/tester.md", "`head` (the 40-character lower-case commit your recorded results name), `" + implementerProofField + "`, and " + failuresField + " (each `{check, evidence}`) with " + failedField + " counting them."},
+	{"roles/tester.md", "A class search that finds an instance is a failure: record it under " + failuresField + " with the command and what it found, and run " + aFullTestRound + "."},
+}
+
+// The tester's checks are the `before_merge` checks that CI does not prove, and the tester runs
+// each of them again at each head that it tests, whoever ran it before. The core holds the one
+// definition, the sentences on a check whose words give its run to another runner and on a check
+// that runs after the merge, and the duty. The role part and the worker part say the same for a
+// new head and for a merge of the base, and the worker part keeps the implementer's carry in a
+// clause of its own. The tester reads no CI: the core says so, and the worker part takes the
+// tester out of the roles that decide on a red check. The control plants main's sentences of the
+// core in its place, and the core's sentences below must all be reported missing there.
+func TestTheTesterRunsEachOfItsBeforeMergeChecksAtEachHeadItTests(t *testing.T) {
+	parts := testerParts(t)
+	const core = "roles/core/tester.md"
+	pins := []partPin{
+		{core, "Your checks are the `before_merge` checks that CI does not prove."},
+		{core, "A check is not one of your checks where its own words give its run only to another role, a person or another step."},
+		{core, "Nor is it where the issue's document or plan does so, or says that you do not run it."},
+		{core, "A check whose `when` is `after_merge` or `default_branch` runs at its own time, never in a testing round."},
+		{core, "Its words and the part on the production check say when."},
+		{core, "Run each of your `before_merge` checks on the surface a person reaches it through, at the head, with one negative control, whoever ran it before."},
+		{core, "Treat each of them as broken until your own run at the head passes."},
+		{core, "A pass that the implementer recorded does not take the place of that run."},
+		{core, "Nor does a result carried from an earlier head, your own included."},
+		{core, "Run each of your `before_merge` checks by its own tests, never a whole suite, whatever lane holds them."},
+		{core, "You read no CI, and wait for none."},
+		{core, "drive again what that change can affect, and run each of your `before_merge` checks again at the new head"},
+		{core, "Each of your `before_merge` checks runs again, whatever those files or the resolution can reach"},
+		{"roles/tester.md", "Otherwise run each of your `before_merge` checks yourself before completing, a whole test suite excepted as above, and record each with `dispatch result --issue <issue> --check <block id> --role tester --verdict pass --commit <head sha>`"},
+		{"roles/tester.md", "Each of your `before_merge` checks runs again at each head that you test, whatever the change since its pass can affect."},
+		{"roles/tester.md", "A result carried from an earlier head does not take the place of that run, your own included"},
+		{"go/worker-common.md", "whether it is re-run, waited for or fixed is a decision for the roles it reached, except the tester, which reads no CI"},
+		{"go/worker-common.md", "A `before_merge` check those files or the resolution can reach runs again, by the implementer where it carries no `ci_check`."},
+		{"go/worker-common.md", "At a head that it tests, the tester runs again each `before_merge` check that its role prompt gives it, whatever the merge can reach."},
+		{"go/worker-common.md", "The empty commit changes no file. So the implementer records each `before_merge` check with no `ci_check` again at the new head, as carried from the commit before it"},
+		{"go/worker-common.md", "It runs none of them again. At a head that it tests, the tester runs each `before_merge` check that its role prompt gives it."},
+	}
+	var mainCore []string
+	for _, sentence := range mainTesterSentences {
+		if sentence.part == core {
+			mainCore = append(mainCore, sentence.text)
+		}
+	}
+	planted := maps.Clone(parts)
+	planted[core] = strings.Join(mainCore, " ")
+	var corePins []partPin
+	for _, pin := range pins {
+		if pin.part == core {
+			corePins = append(corePins, pin)
+		}
+	}
+	if got := missingPins(planted, corePins); len(got) != len(corePins) {
+		t.Errorf("control: main's sentences of %s, planted in its place, miss %d of its %d sentences, want all", core, len(got), len(corePins))
+	}
+	requirePins(t, parts, pins)
+}
+
+// A failure the tester finds is a fail result on its check, recorded at the head its `test`
+// record names before any later push, whatever the implementer recorded. A check with no pass
+// from the implementer is no fail of its own, and a defect that no check covers goes to the
+// architect. The `test` handoff holds no failure.
+func TestTheTesterRecordsEachFailAsAFailResult(t *testing.T) {
+	parts := testerParts(t)
+	requirePins(t, parts, []partPin{
+		{"roles/tester.md", "When a run of one of your checks fails, record a fail result on that check with `dispatch result --issue <issue> --check <block id> --role tester --verdict fail --commit <head sha>`, its evidence in `--observed`, whatever the implementer recorded."},
+		{"roles/tester.md", "Record it at the head your `test` record names, before you push any commit after that head."},
+		{"roles/tester.md", "A check with no pass from the implementer is not a fail of its own: record nothing for it."},
+		{"roles/tester.md", "A defect that no check covers is no fail result: report it to the architect, and the work adds the check that missed it."},
+		{"roles/tester.md", "the fail result you record on its check names the test and the command that shows it failing"},
+		{"roles/tester.md", "Each failure is a fail result on its check, never a field of this handoff."},
+	})
+}
+
+// Every phase worker retracts a result of its own only when it observed wrongly, with that
+// reason, and never to end a state or because a later run passed. A run whose setup did not meet
+// the check's words observed wrongly. A refused retraction goes to the architect. The command is
+// one `dispatch result` takes: a retraction carries its reason alone, and `dispatch result`
+// refuses one that also carries `--issue` ("retract takes reason alone, and this call also
+// carries issue"), so the control plants that command and the check must report it.
+func TestTheWorkerPartGivesTheRetractRule(t *testing.T) {
+	parts := testerParts(t)
+	const worker = "go/worker-common.md"
+	requirePins(t, parts, []partPin{
+		{worker, "Retract a result of your own only when it observed wrongly, with that reason: `dispatch result --retract <result id> --reason '<why it observed wrongly>'`."},
+		{worker, "A wrong command, a wrong head or a misread output observed wrongly."},
+		{worker, "So did a run whose setup did not meet the check's words, such as a service the check needs that was missing from your pod."},
+		{worker, "Never retract a true result to end a state, and never retract a fail because a later run passed."},
+		{worker, "When Dispatch refuses the retraction, name the result and its reason to the architect."},
+	})
+	retractWithIssue := regexp.MustCompile("dispatch result --retract[^`]*--issue")
+	if !retractWithIssue.MatchString(foldWhitespace(parts[worker] + "\n\n`dispatch result --retract <result id> --issue <issue> --reason '<why>'`\n")) {
+		t.Error("control: a retraction planted with `--issue` is not reported")
+	}
+	if phrase := retractWithIssue.FindString(foldWhitespace(parts[worker])); phrase != "" {
+		t.Errorf("%s gives a retraction that `dispatch result` refuses, since it also carries `--issue`: %q", worker, phrase)
+	}
+}
+
+// No part of the tester's prompt keeps the run rule that its checks and its duty replaced, the
+// failure fields of its `test` handoff, or an order to read CI. Each phrase is matched with the
+// part's whitespace folded and its case ignored. The control plants main's sentences one at a
+// time, each in the part that held it, and each phrase must be reported there.
+func TestNoTesterPartHoldsTheOldRunRule(t *testing.T) {
+	parts := testerParts(t)
+	requirePlantsCaught(t, parts, oldTesterRunRule, true, mainTesterSentences)
+	for _, held := range partsHolding(parts, oldTesterRunRule, true) {
+		t.Errorf("%s still says %q", held.part, held.phrase)
 	}
 }
