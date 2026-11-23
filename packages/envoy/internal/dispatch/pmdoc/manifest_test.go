@@ -278,10 +278,10 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
 // repairing or rebuilding the document. The name says "this version" from when version 3 was the
 // manifest's; the Verification document's check names the row, so it keeps its name, and the
-// elements versions 4, 5 and 7 add each have a row of their own
+// elements versions 4, 5 and 10 add each have a row of their own
 // (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
 // TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour,
-// TestTheTypedBlockVersionSevenAddsIsUnknownToABuildAtVersionSix).
+// TestTheTypedBlockVersionTenAddsIsUnknownToABuildAtVersionNine).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -417,15 +417,15 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 	}
 }
 
-// The plan_role block, which manifest version 7 adds (a role a plan defines: the block's id is the
+// The plan_role block, which manifest version 10 adds (a role a plan defines: the block's id is the
 // role's name, its type and model attributes are the role's type and model, and its body, in
 // Markdown, is the role's prompt), is staged by its own numbers: this build reads and writes it,
 // with the headings, lists and code a prompt holds, and a build at the version before declares no
 // plan_role, so it creates none and reads a stored document holding one as an element it does not
 // know (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT), while it still reads a plan task
-// carrying steps.
-func TestTheTypedBlockVersionSevenAddsIsUnknownToABuildAtVersionSix(t *testing.T) {
-	const adds = 7
+// carrying steps. This manifest adds nothing at versions 6 to 9.
+func TestTheTypedBlockVersionTenAddsIsUnknownToABuildAtVersionNine(t *testing.T) {
+	const adds = 10
 	element := Element{Kind: TypedBlockElement, Name: "plan_role"}
 	versions, declared := element.Versions()
 	if !declared || versions.Since != adds || versions.CreatableSince != adds {

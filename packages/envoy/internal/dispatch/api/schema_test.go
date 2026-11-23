@@ -33,8 +33,8 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	for index, typ := range schema.Types {
 		names[index] = typ.Name
 	}
-	if schema.Version != 7 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "plan_role", "check"}) {
-		t.Fatalf("schema = version %d, types %v; want version 7 and callout, ask, requirement, plan_task, plan_role, check", schema.Version, names)
+	if schema.Version != 10 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "plan_role", "check"}) {
+		t.Fatalf("schema = version %d, types %v; want version 10 and callout, ask, requirement, plan_task, plan_role, check", schema.Version, names)
 	}
 	if ciCheck, declared := schema.Types[5].Attributes.Lookup("ci_check"); !declared || ciCheck.Kind != pmdoc.BlockAttributeString {
 		t.Fatalf("check attribute ci_check = %+v (declared %v), want a string", ciCheck, declared)
@@ -43,8 +43,8 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
 	}
 	role := schema.Types[4]
-	if role.Content != "block+" || role.Since != 7 || role.CreatableSince != 7 {
-		t.Fatalf("plan_role = content %q since %d creatable_since %d, want block+ read and created from version 7", role.Content, role.Since, role.CreatableSince)
+	if role.Content != "block+" || role.Since != 10 || role.CreatableSince != 10 {
+		t.Fatalf("plan_role = content %q since %d creatable_since %d, want block+ read and created from version 10", role.Content, role.Since, role.CreatableSince)
 	}
 	for _, name := range []string{"type", "model"} {
 		if attribute, declared := role.Attributes.Lookup(name); !declared || attribute.Kind != pmdoc.BlockAttributeString {
