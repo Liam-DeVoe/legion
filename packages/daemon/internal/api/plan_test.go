@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // planDoc is the plan document of the tree root LEGION-208 these tests give Legion, and childDoc
@@ -400,7 +401,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 func seedMember(t *testing.T, h *harness, key, tree string) {
 	t.Helper()
 	parent := tree
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: tree, Project: testProject, Title: key,
 			Parent: &parent, Phase: phase.Admitted, Generation: 1, Status: "in_progress",
