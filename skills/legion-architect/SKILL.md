@@ -68,7 +68,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 ## 3. Children complete
 
-A parent's own first phase waits while Dispatch shows an open child under it (the `children-first` row).
+A parent's own first phase does not start while Dispatch shows an open child under it (the `children-first` row).
 
 ## 4. Integration verification
 
