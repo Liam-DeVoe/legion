@@ -513,12 +513,32 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		}
 		return keys
 	}
+	// A row whose issue owns no repository is stored under legionfacts.DefaultRepo, which stands
+	// for the project's published default repository (evals.PublishedDefaultIn): the items read
+	// shows and filters that repository, so a default move moves the cut and rewrites no row.
+	published, err := evals.PublishedDefaultIn(ctx, read.tx, read.project)
+	if err != nil {
+		return nil, err
+	}
+	resolve := func(repos map[string]string) map[string]string {
+		for key, repo := range repos {
+			if repo == legionfacts.DefaultRepo {
+				if published == "" {
+					delete(repos, key)
+					continue
+				}
+				repos[key] = published
+			}
+		}
+		return repos
+	}
 	var repos map[string]string
 	if len(read.request.repos) > 0 {
-		var err error
-		if repos, err = legionfacts.ReadRepos(ctx, read.tx, keysOf(filings, closed)); err != nil {
+		stored, err := legionfacts.ReadRepos(ctx, read.tx, keysOf(filings, closed))
+		if err != nil {
 			return nil, err
 		}
+		repos = resolve(stored)
 		filings = slices.DeleteFunc(filings, func(filing legionfacts.Filing) bool { return !slices.Contains(read.request.repos, repos[filing.Key]) })
 		closed = slices.DeleteFunc(closed, func(row legionfacts.Row) bool { return !slices.Contains(read.request.repos, repos[row.Issue]) })
 	}
@@ -531,10 +551,11 @@ func (s *server) legionItemSource(ctx context.Context, read evalItemsRead) (eval
 		keys := keysOf(pageFilings, pageClosed)
 		pageRepos := repos
 		if pageRepos == nil {
-			var err error
-			if pageRepos, err = legionfacts.ReadRepos(ctx, read.tx, keys); err != nil {
+			stored, err := legionfacts.ReadRepos(ctx, read.tx, keys)
+			if err != nil {
 				return nil, 0, err
 			}
+			pageRepos = resolve(stored)
 		}
 		issues, err := legionfacts.ReadItemIssues(ctx, read.tx, keys)
 		if err != nil {

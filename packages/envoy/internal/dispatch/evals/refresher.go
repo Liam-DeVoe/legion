@@ -523,7 +523,9 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 // none were recorded (syncSettings). A walk a lost cursor begins again is one of a family no rows
 // are served of, which a walk builds in the open; a served family's is the rebuild's. Where one of
 // the page's changes is of the delivery settings row and no rewrite of the page said so already,
-// the commit says that the day rows stand at the settings (markSettingsApplied). The event cursor
+// the commit says that the day rows stand at the settings (markSettingsApplied). Where a project's
+// default repository moved (work.defaults, syncDefaults), the commit publishes it, with the stored
+// figures it moves (publishDefaults). The event cursor
 // is stamped with the moment the pass ran as of, and the change cursor with its ReadAt, when a
 // page last read the change log to its end (page), which the lost-cursor rule reads and which a
 // full page leaves where it stood. Once the transaction commits, the pass records what the
@@ -598,6 +600,11 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			return err
 		}
 	}
+	if work.defaults != nil {
+		if err := publishDefaults(ctx, tx, r.build, work.defaults); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the eval day-row refresher's cursors: %w", err)
 	}
@@ -606,7 +613,7 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	if applied {
 		r.settingsApplied = true
 	}
-	if applied || len(rebuilds) > 0 {
+	if applied || len(rebuilds) > 0 || work.defaults != nil {
 		r.store.drainChanges(ctx)
 	}
 	return nil

@@ -263,6 +263,9 @@ func (r *refresh) noteWalked(family, project string, day time.Time) {
 // moved (foldFiguresOfDays), and the view is recomputed once more, from the figures of the rows
 // it read. A pass that fails first leaves the days' stamps unmoved, and the next pass's read of
 // the change log folds them (figureChanges).
+//
+// An owner key's walked days (owners.go) are folded into the figures of each project whose read
+// folds its rows (readersOf), with that project's own.
 func (r *refresh) foldWalked(ctx context.Context) error {
 	walked := r.walked
 	r.walked = nil
@@ -272,11 +275,21 @@ func (r *refresh) foldWalked(ctx context.Context) error {
 		if key.family == walkDelivery {
 			slugs = deliveryDaySlugs
 		}
-		if byProject[key.project] == nil {
-			byProject[key.project] = map[string]daySpan{}
+		projects := []string{key.project}
+		if isOwner(key.project) {
+			readers, err := readersOf(ctx, r.store.database.Pool, key.project)
+			if err != nil {
+				return err
+			}
+			projects = readers
 		}
-		for _, slug := range slugs {
-			addSpan(byProject[key.project], EvalID(key.project, slug), span.first, span.last)
+		for _, project := range projects {
+			if byProject[project] == nil {
+				byProject[project] = map[string]daySpan{}
+			}
+			for _, slug := range slugs {
+				addSpan(byProject[project], EvalID(project, slug), span.first, span.last)
+			}
 		}
 	}
 	for _, project := range slices.Sorted(maps.Keys(byProject)) {
@@ -472,10 +485,14 @@ func markFiguresBuilt(ctx context.Context, q executor, project string, through t
 }
 
 // figuresStart is the first end day of project's figures walk: the day after its first listed day
-// row, nil where it holds none.
+// row, its own or one of an owner key it reads (eval_project_owners, owners.go), whose figures it
+// folds, nil where it reads none.
 func (s *Store) figuresStart(ctx context.Context, project string) (*time.Time, error) {
 	var first *time.Time
-	if err := s.database.Pool.QueryRow(ctx, `select min(day) from eval_days where project_key = $1 and listed`, project).Scan(&first); err != nil {
+	if err := s.database.Pool.QueryRow(ctx, `
+		select min(d.day) from eval_project_owners o join eval_days d on d.project_key = o.owner
+		where o.project_key = $1 and d.listed
+	`, project).Scan(&first); err != nil {
 		return nil, fmt.Errorf("read the first day row of %s: %w", project, err)
 	}
 	if first == nil {

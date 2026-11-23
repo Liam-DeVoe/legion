@@ -323,7 +323,7 @@ func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
 	part := &day.Part
 	if err := row.Scan(&inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
 		&part.Samples, &part.LastValue, &part.LastAt, &part.LastRecordedAt, &part.LastReading, &part.Counts, &part.ViaRepository,
-		&day.UpdatedAt); err != nil {
+		&day.UpdatedAt, &day.owner); err != nil {
 		return WindowRow{}, err
 	}
 	day.Range = RangeCompare

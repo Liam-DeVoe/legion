@@ -501,7 +501,10 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	var history delivery.HistoryRows
 	var input *time.Time
 	var walks map[walkKey]walkState
-	firsts := make(map[string]map[evalKey]time.Time, len(r.projects))
+	// owners is the delivery family's owners (refresh.owners), and the owner keys the rewritten
+	// history counts rows for that the store holds none of yet, added below once it is attributed.
+	owners := slices.Clone(r.owners)
+	firsts := make(map[string]map[evalKey]time.Time, len(owners))
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
 			history, err = delivery.ReadHistoryRows(ctx, pool, names, judged, end)
@@ -512,7 +515,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			return err
 		},
 		func(ctx context.Context) error {
-			for _, project := range r.projects {
+			for _, project := range owners {
 				first, err := r.store.firstDays(ctx, project, ZeroDeliveryDay(next, project, r.today, every).Rows, nil)
 				if err != nil {
 					return err
@@ -534,7 +537,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		maps.Copy(earliest, first)
 	}
 	ids := map[string]bool{}
-	for _, project := range r.projects {
+	for _, project := range owners {
 		for _, slug := range slugs {
 			ids[EvalID(project, slug)] = true
 		}
@@ -580,7 +583,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// Where the days the change can move are built alone, the walk has written today, and the
 	// store's first days are the ones it built (refresh.firstOf), but a first input day the change
 	// leaves with no input (lost, below).
-	for _, project := range r.projects {
+	for _, project := range owners {
 		first := firsts[project]
 		if !movedOnly {
 			first = map[evalKey]time.Time{}
@@ -635,6 +638,17 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	); err != nil {
 		return err
 	}
+	for _, owner := range historyOwners(histories, prs, attribute) {
+		if slices.Contains(owners, owner) {
+			continue
+		}
+		owners = append(owners, owner)
+		r.first[walkKey{family: walkDelivery, project: owner}] = map[evalKey]time.Time{}
+		for _, slug := range slugs {
+			ids[EvalID(owner, slug)] = true
+		}
+	}
+	r.noteOwners(owners)
 	var days []time.Time
 	if movedOnly {
 		if sameRule {
@@ -642,7 +656,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 				was[k] = histories[k].containment
 			}
 		}
-		days = movedDeliveryDays(histories, was, prs, attribute, prevCards, cards, slugs, r.projects, firsts, *start, r.today)
+		days = movedDeliveryDays(histories, was, prs, attribute, prevCards, cards, slugs, owners, firsts, *start, r.today)
 	} else if start != nil {
 		for day := *start; !day.After(r.today); day = day.AddDate(0, 0, 1) {
 			days = append(days, day)
@@ -667,14 +681,14 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			one.pushes, one.pushJobs = attribute.pushRuns(h.pushesByDay[day], one.deploys), h.jobs
 			read.days[k] = one
 		}
-		rows := make([]ProjectDay, len(r.projects))
-		for p, project := range r.projects {
+		rows := make([]ProjectDay, len(owners))
+		for p, project := range owners {
 			rows[p] = read.Rows(project)
 		}
 		return rows
 	}
 	if movedOnly {
-		days = r.lostFirstDays(days, firsts, ids, names, dayOf)
+		days = r.lostFirstDays(days, owners, firsts, ids, names, dayOf)
 	}
 
 	var rows []DayRow
@@ -691,7 +705,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// stored on a day written, and every day written is built.
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
-			stored, err = r.store.readMembers(ctx, r.projects, families, names, days)
+			stored, err = r.store.readMembers(ctx, owners, families, names, days)
 			return err
 		},
 		func(ctx context.Context) error {
@@ -717,7 +731,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 				// day. A day of a project that builds no row and can hold a stored row of a moved eval
 				// (heldFrom) is written all the same, so its stale rows and members go.
 				for index, day := range chunk {
-					for p, project := range r.projects {
+					for p, project := range owners {
 						own := built[index][p]
 						first := r.first[walkKey{family: walkDelivery, project: project}]
 						own.Rows = dropUnshipped(own.Rows, first, day)
@@ -976,7 +990,7 @@ func movedDeliveryDays(histories []repoHistory, was []containment, prs []deliver
 // row of it before. So the series' first input day is dropped from r.first, where each day built
 // moves it again (noteBuilt), and every day from the lost one on is built, its stale rows deleted
 // with the rest of the days written.
-func (r *refresh) lostFirstDays(days []time.Time, firsts map[string]map[evalKey]time.Time, ids map[string]bool, names []string,
+func (r *refresh) lostFirstDays(days []time.Time, owners []string, firsts map[string]map[evalKey]time.Time, ids map[string]bool, names []string,
 	dayOf func(time.Time) []ProjectDay) []time.Time {
 	building := make(map[time.Time]bool, len(days))
 	for _, day := range days {
@@ -987,7 +1001,7 @@ func (r *refresh) lostFirstDays(days []time.Time, firsts map[string]map[evalKey]
 		key     evalKey
 	}
 	candidates := map[time.Time][]candidate{}
-	for p, project := range r.projects {
+	for p, project := range owners {
 		for key, since := range firsts[project] {
 			if ids[key.eval] && slices.Contains(names, key.deployRepo) && building[since] {
 				candidates[since] = append(candidates[since], candidate{project: p, key: key})
@@ -999,7 +1013,7 @@ func (r *refresh) lostFirstDays(days []time.Time, firsts map[string]map[evalKey]
 		built := dayOf(day)
 		for _, one := range keys {
 			if !inputKeys(built[one.project].Rows)[one.key] {
-				delete(r.first[walkKey{family: walkDelivery, project: r.projects[one.project]}], one.key)
+				delete(r.first[walkKey{family: walkDelivery, project: owners[one.project]}], one.key)
 				if lost == nil || day.Before(*lost) {
 					lost = &day
 				}
@@ -1080,6 +1094,36 @@ func historyOf(repo keptRepo, deploys delivery.RunsWithJobs, prs []delivery.Deli
 		}
 	}
 	return h
+}
+
+// historyOwners is every owner key (OwnerKey) the rewritten history counts a row for under the
+// settings histories were built by, in key order: each pull request no issue attributes
+// (attribution.of), each deploy run's (attribution.deploy) and the push runs on main of a
+// repository that are no deploy run of their day (attribution.pushRuns). A day the rewrite builds
+// builds their rows as it builds a project's.
+func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, attribute attribution) []string {
+	owners := map[string]bool{}
+	for _, pr := range prs {
+		if counts := attribute.of(pr); isOwner(counts.project) {
+			owners[counts.project] = true
+		}
+	}
+	for _, h := range histories {
+		for _, runs := range h.deploysByDay {
+			for _, run := range runs {
+				_, reached := h.applied[run.RunID]
+				for _, counts := range attribute.deploy(run, reached, h.shipped[run.RunID]).projects {
+					if isOwner(counts.project) {
+						owners[counts.project] = true
+					}
+				}
+			}
+		}
+		if len(h.pushesByDay) > 0 {
+			owners[OwnerKey(h.repo, nil)] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(owners))
 }
 
 // deleteStaleSettingsDays is deleteStaleDays over many days at once: it deletes each of the

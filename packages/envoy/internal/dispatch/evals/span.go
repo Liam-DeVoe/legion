@@ -672,9 +672,16 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 	family := days.family
 	projects := days.projects()
 	if family.walk == walkDelivery {
-		// A deploy counts for the projects of the pull requests it ships, so the delivery days of
-		// one project can move another's: every project's are judged together.
-		projects = r.projects
+		// A deploy counts for the projects of the pull requests it ships and its repository's
+		// owner key, so the delivery days of one owner can move another's: every owner's are
+		// judged together, a repository's own owner key among them though the store holds no row
+		// of it yet (trackKept tracks it with the rest).
+		if kept != nil {
+			for _, repo := range kept.is {
+				r.noteOwners([]string{OwnerKey(repo.name, nil)})
+			}
+		}
+		projects = r.owners
 	}
 	firsts, nexts := map[string]map[evalKey]time.Time{}, map[string]*time.Time{}
 	for _, project := range projects {
@@ -811,7 +818,8 @@ func firstOr(values []string, none string) string {
 func (r *refresh) trackKept(tracked map[string]map[evalKey]*trackedKey, covered map[string]daySpan, firsts map[string]map[evalKey]time.Time) {
 	for _, repo := range slices.Sorted(maps.Keys(covered)) {
 		span := covered[repo]
-		for _, project := range r.projects {
+		// Each owner's, a repository's own owner key among them (writeNamed).
+		for _, project := range r.owners {
 			for _, zero := range ZeroDeliveryDay(*r.settings, project, r.today, []string{repo}).Rows {
 				key := keyOf(zero)
 				if key.deployRepo != repo {
@@ -916,7 +924,7 @@ func (r *refresh) compareSpan(ctx context.Context, b *rebuild, built spanBuilt, 
 			days = append(days, at.day)
 		}
 	}
-	held, err := r.store.readMembers(ctx, r.projects, b.family.families, repos, days)
+	held, err := r.store.readMembers(ctx, r.owners, b.family.families, repos, days)
 	if err != nil {
 		return err
 	}

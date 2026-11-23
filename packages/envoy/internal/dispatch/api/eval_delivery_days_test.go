@@ -43,6 +43,22 @@ func refreshEvalDays(t *testing.T, registry *evals.Store, database *store.Store,
 	}
 }
 
+// publishDefaultRepos publishes every project's default repository (projects.default_repo) as the
+// evals refresher's page commit does (eval_days_defaults, evals.publishDefaults): the evals reads
+// and the delivery routes take the defaults from that record, so a test's write of default_repo by
+// SQL moves no read until it is published.
+func publishDefaultRepos(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	for _, statement := range []string{
+		`delete from eval_days_defaults`,
+		`insert into eval_days_defaults (project_key, repo) select key, default_repo from projects where default_repo is not null`,
+	} {
+		if _, err := pool.Exec(t.Context(), statement); err != nil {
+			t.Fatalf("publish the projects' default repositories: %v", err)
+		}
+	}
+}
+
 // storedDayRows reads every eval_days row of project but its unowned-p0 row of today (which the
 // refresher writes for every project), listed or not, every repository's, in key order: the rows
 // the partition is checked over, and the unlisted job series DayWindow leaves out.
@@ -476,11 +492,13 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 }
 
 // TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer: over a deliverytest history whose every
-// pull request counts for one project (Spec.OneProject: each names an issue of DELIV or none, and
-// every repository is DELIV's), so the project's day rows hold every row the deployment-wide
-// delivery routes count, the day rows of every day of the history are written as the server's
-// refresher writes them (refreshEvalDays); their partition by repository is checked; and for
-// evalDaysWindows seeded windows of 1 to 84 whole days, the rows of each cut, read by
+// pull request names an issue of one project (Spec.OneProject) and whose deploy repository is that
+// project's default repository, so the project's read holds every row the deployment-wide delivery
+// routes count (what an issue attributes in its own rows, and what no issue attributes — a deploy
+// that ships none, a CI run of no population pull request — in the rows of the repository it
+// publishes as its default, R15), the day rows of every day of the history are written as the
+// server's refresher writes them (refreshEvalDays); their partition by repository is checked; and
+// for evalDaysWindows seeded windows of 1 to 84 whole days, the rows of each cut, read by
 // evals.Store.DayWindow, folded by the folds the routes answer through, equal the routes' answers
 // (compareDayRowsWithRoutes): integers exact, floats within 1e-9. Then one day's rows of the first
 // window are deleted, and the same comparison must differ.
@@ -553,13 +571,15 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 
 // TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject (the architect's
 // condition): in deliverytest's default history, whose pull requests name issues of DELIV, one in
-// twenty of DELIVX, and some none, the deploys that ship pull requests of both are counted once by
-// GET /api/v1/delivery/measures over a window holding one, and once in each project's day rows,
-// and a deploy that ships no pull request of a project is counted by the measures alone: the two
-// projects' folded deploy-frequency deploys, less the deploys that ship both, are the
-// deployment-wide count less the deploys that ship none of a project. A delivery route that
-// answered the sum of the projects' rows would count those deploys twice, and miss those of no
-// project, and fail here.
+// twenty of DELIVX, and some none, and whose deploy repository is DELIV's default repository, the
+// deploys that ship pull requests of both are counted once by GET /api/v1/delivery/measures over a
+// window holding one, and once in each project's read; a deploy that ships no pull request of
+// either project counts for DELIV alone, through the repository it publishes as its default (R15),
+// and one that ships a pull request of a project through its issue counts in that project once,
+// not twice (its repository's row names the project among its sharers, which the project's read
+// skips). So the two projects' folded deploy-frequency deploys, less the deploys that ship both,
+// are the deployment-wide count. A delivery route that answered the sum of the projects' rows
+// would count the deploys of both twice, and fail here.
 func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916})
@@ -653,20 +673,22 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		}
 		folded[project] = frequency.SuccessfulDeploys
 	}
-	if folded[fixture.Project] != inFirst || folded[fixture.SecondProject] != inSecond {
-		t.Errorf("the day rows count %d deploys for %s and %d for %s, want %d and %d", folded[fixture.Project], fixture.Project,
-			folded[fixture.SecondProject], fixture.SecondProject, inFirst, inSecond)
+	if folded[fixture.Project] != inFirst+none || folded[fixture.SecondProject] != inSecond {
+		t.Errorf("the day rows count %d deploys for %s and %d for %s, want %d (the %d of its issues and the %d of no project, through its default repository) and %d",
+			folded[fixture.Project], fixture.Project, folded[fixture.SecondProject], fixture.SecondProject, inFirst+none, inFirst, none, inSecond)
 	}
-	if both == 0 || none == 0 || folded[fixture.Project]+folded[fixture.SecondProject]-both != wide-none {
-		t.Errorf("%s's %d deploys and %s's %d, less the %d that ship pull requests of both, are %d, want the deployment-wide %d less the %d that ship none of a project",
+	if both == 0 || none == 0 || folded[fixture.Project]+folded[fixture.SecondProject]-both != wide {
+		t.Errorf("%s's %d deploys and %s's %d, less the %d that ship pull requests of both, are %d, want the deployment-wide %d",
 			fixture.Project, folded[fixture.Project], fixture.SecondProject, folded[fixture.SecondProject], both,
-			folded[fixture.Project]+folded[fixture.SecondProject]-both, wide, none)
+			folded[fixture.Project]+folded[fixture.SecondProject]-both, wide)
 	}
 
-	// Run target itself: one item of each project's delivery family, on its start day.
+	// Run target itself: one item of each project's delivery family, on its start day. Its
+	// repository's own item of it, where it ships a pull request no issue attributes, is under
+	// that repository's owner key (evals.OwnerKey), which names no project.
 	rows, err := database.Pool.Query(ctx, `
 		select project_key || ' ' || day::text from eval_day_members
-		where family = $1 and row_key = $2 order by project_key
+		where family = $1 and row_key = $2 and not starts_with(project_key, ':') order by project_key
 	`, evals.KindDelivery, evals.RunMember(fixture.DeployRepo, target))
 	if err != nil {
 		t.Fatalf("read the items of run %d: %v", target, err)

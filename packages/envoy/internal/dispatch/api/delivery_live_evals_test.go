@@ -231,10 +231,12 @@ func TestAVersionOfAnEvalADeliveryViewReadsMarksIt(t *testing.T) {
 
 // TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs: the live Pipeline view ranks its slowest jobs
 // through the GET route's compute with the GET route's min_n, the one of pr-ci's job series in the
-// project the deploy repository is mapped to, and a register write of that min_n reaches it: the
-// write's version of pr-ci marks the view, and its delta lands on the GET route's body. Of six
-// PR-checks runs, all with a quick job and three with a slow one, no job ranks at the seeded 50,
-// both rank at 3, the slower first, and the quick one alone at 6, each body stating its min_n.
+// project whose published default repository is the deploy repository (evals.Store.DeployRepoEvals
+// reads eval_days_defaults, which the evals refresher's page commit moves, and which the test
+// writes as that commit does), and a register write of that min_n reaches it: the write's version
+// of pr-ci marks the view, and its delta lands on the GET route's body. Of six PR-checks runs,
+// all with a quick job and three with a slow one, no job ranks at the seeded 50, both rank at 3,
+// the slower first, and the quick one alone at 6, each body stating its min_n.
 // The view is pinned at the moment the runs are dated from, and each GET reads that at: the
 // Pipeline route reads at alone, and the hub's clock runs on with the wall clock, so a view of the
 // present would answer a later moment than any at the test could send.
@@ -246,6 +248,7 @@ func TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs(t *testing.T) {
 	if _, err := rig.database.Pool.Exec(ctx, `update projects set default_repo = 'acme/widgets' where key = 'HUB'`); err != nil {
 		t.Fatalf("make acme/widgets HUB's default repository: %v", err)
 	}
+	publishDefaultRepos(t, rig.database.Pool)
 	now := rig.clock.Now()
 	success, jobSuccess := delivery.DeliveryRunConclusionSuccess, delivery.DeliveryJobConclusionSuccess
 	for i := range 6 {

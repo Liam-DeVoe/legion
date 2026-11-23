@@ -61,9 +61,10 @@ func (r rig) legionFacts(t *testing.T, project string, day time.Time) (map[strin
 
 // TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues: over a hand-written
 // project of three issues that close on one day (a root in acme/web with two children, its child
-// in acme/api, and a root no repository resolves for), one that closes the next day, and two
-// filings of the first day (one into acme/api, one resolving to no repository), the day's write,
-// as the refresher's walk writes it, holds every Legion eval with input in every cut, in the
+// in acme/api, and a root that owns no repository, which the ':default' cut holds,
+// legionfacts.DefaultRepo), one that closes the next day, and two filings of the first day (one
+// into acme/api, one of an issue that owns none), the day's write, as the refresher's walk writes
+// it, holds every Legion eval with input in every cut, in the
 // all-repositories row and in each repository its input is in: idle time from the first whole day
 // after the first claim observation, slot wait not before the first whole day after the first slot
 // observation, and the splitting root figures with no children cut. It records the three issues on
@@ -158,7 +159,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	// time (six roles), 9 of rework and 21 of splitting (four classes and the finished issues in
 	// three cuts, and three root figures in two), in every cut its input is in.
 	wantGroups := map[string]int{}
-	for _, repo := range []string{"all", "acme/web", "acme/api"} {
+	for _, repo := range []string{"all", "acme/web", "acme/api", legionfactsDefault} {
 		for slug, count := range map[string]int{
 			SlugLegionWorkTime: 3, SlugLegionPhaseTime: 21, SlugLegionIdleTime: 18, SlugLegionRework: 9, SlugLegionSplitting: 21,
 		} {
@@ -210,7 +211,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	}
 	wantMembers := []string{
 		"delivery run:acme/web/7 acme/web 2026-11-03 as acme/web",
-		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-03", "legion EVAL-3  2026-11-03",
+		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-03", "legion EVAL-3 " + legionfactsDefault + " 2026-11-03",
 	}
 	if got := r.members(t, "EVAL"); !slices.Equal(got, wantMembers) {
 		t.Errorf("the items of the day: %v, want %v", got, wantMembers)
@@ -266,7 +267,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	}
 	wantMembers = []string{
 		"delivery run:acme/web/7 acme/web 2026-11-03 as acme/web",
-		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-04", "legion EVAL-3  2026-11-03",
+		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-04", "legion EVAL-3 " + legionfactsDefault + " 2026-11-03",
 		"legion EVAL-4 acme/web 2026-11-04",
 	}
 	if got := r.members(t, "EVAL"); !slices.Equal(got, wantMembers) {

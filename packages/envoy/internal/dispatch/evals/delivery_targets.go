@@ -167,25 +167,27 @@ var deliveryJudges = func() map[string][]string {
 
 // DeployRepoEvals reads the current definition and series of each of slugs in the project of
 // deployRepo, by slug, in one snapshot. The deployment-wide answers count every project's rows, so
-// no row names their project; the one a repository names is the project whose default repository
-// it is (projects.default_repo, which an issue of the project that names no repository resolves to,
-// refs.IssueRepoTerms), compared without case. Where no project's default is deployRepo, or more
-// than one project's is, no project is named, and where the project holds no version of a slug yet,
-// the slug's catalogue entry stands in: the definition and series the seed writes, whose target is
-// main's (measures.DefaultTargets). A slug neither holds is absent.
+// no row names their project; the one a repository names is the project whose published default
+// repository it is (eval_project_repos, the record the refresher's page commit moves in the
+// commit that makes the figures folded under it visible; owners.go), compared without case, so
+// the delivery routes and the Evals tab judge by one state (the architect's ruling of 14:07Z) and
+// a person's write of a default repository moves neither until that commit. Where no project
+// publishes deployRepo, or more than one does, no project is named, and where the project holds no
+// version of a slug yet, the slug's catalogue entry stands in: the definition and series the seed
+// writes, whose target is main's (measures.DefaultTargets). A slug neither holds is absent.
 func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []string) (map[string]Entry, error) {
 	tx, err := s.BeginSnapshot(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin the read of %s's evals %v: %w", deployRepo, slugs, err)
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `select key from projects where lower(default_repo) = lower($1) order by key limit 2`, deployRepo)
+	rows, err := tx.Query(ctx, `select project_key from eval_project_repos where lower(repo) = lower($1) order by project_key limit 2`, deployRepo)
 	if err != nil {
-		return nil, fmt.Errorf("read the project whose default repository is %s: %w", deployRepo, err)
+		return nil, fmt.Errorf("read the project whose published default repository is %s: %w", deployRepo, err)
 	}
 	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("read the project whose default repository is %s: %w", deployRepo, err)
+		return nil, fmt.Errorf("read the project whose published default repository is %s: %w", deployRepo, err)
 	}
 	entries := make(map[string]Entry, len(slugs))
 	if len(projects) == 1 {

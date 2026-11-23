@@ -399,6 +399,62 @@ func nameLine(table, column string) repoRenameLine {
 	}
 }
 
+// ownerNamed is true where column, an owner key of the eval day rows (evals.OwnerKey), holds the
+// old name as its repository, in any case: the key is ':' + repository + '|' + its sharers.
+func ownerNamed(r repoRename, column string) string {
+	return `lower(split_part(` + column + `, '|', 1)) = ` + QuoteLiteral(":"+strings.ToLower(r.From))
+}
+
+// ownerRenamed is column, an owner key, with the new name for its repository.
+func ownerRenamed(r repoRename, column string) string {
+	return QuoteLiteral(":"+r.To) + ` || substr(` + column + `, length(split_part(` + column + `, '|', 1)) + 1)`
+}
+
+// ownerWrite writes the new name in the owner key of table's project_key, and, where the table
+// holds eval ids under that key (eval_days), in the eval id's project too.
+func ownerWrite(r repoRename, table string, evalIDs bool) repoRenameStep {
+	where := ownerNamed(r, "project_key")
+	set := `project_key = ` + ownerRenamed(r, "project_key")
+	if evalIDs {
+		set += `, eval_id = ` + ownerRenamed(r, "project_key") + ` || substr(eval_id, length(project_key) + 1)`
+	}
+	return repoRenameStep{
+		table: table,
+		where: where,
+		write: "project_key",
+		sql:   `update ` + table + ` set ` + set + ` where ` + where,
+	}
+}
+
+// ownerCollisions deletes each row of table under an owner key of the old name whose key, with the
+// new name for its repository, is the key of another row, as collisions does for a repo column.
+// The eval id of a row holds its owner key too (ownerWrite rewrites both), so the keys compare
+// the slug that follows it rather than the id.
+func ownerCollisions(r repoRename, table string, keys ...string) repoRenameStep {
+	same := ""
+	key := `'project_key', d.project_key`
+	for _, column := range keys {
+		if column == "eval_id" {
+			same += ` and substr(t.eval_id, length(t.project_key) + 1) = substr(d.eval_id, length(d.project_key) + 1)`
+		} else {
+			same += ` and t.` + column + ` = d.` + column
+		}
+		key += `, '` + column + `', d.` + column + `::text`
+	}
+	return repoRenameStep{
+		table:   table,
+		where:   ownerNamed(r, "project_key"),
+		deletes: true,
+		sql: `delete from ` + table + ` d
+			where ` + ownerNamed(r, "d.project_key") + `
+			  and exists (
+				select 1 from ` + table + ` t
+				where (t.project_key = ` + ownerRenamed(r, "d.project_key") + `
+					or (` + ownerNamed(r, "t.project_key") + ` and t.project_key < d.project_key))` + same + `)
+			returning jsonb_build_object(` + key + `)::text`,
+	}
+}
+
 // citedNamed is true where a delivery pull request cites an issue URL that names the old name.
 func citedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(attribution_cited_issues) e(url) where ` + r.urlNamed("e.url") + `)`
@@ -420,6 +476,42 @@ var repoRenameLines = []repoRenameLine{
 	// as an issue_facts change (20261117100002), so the day-row refresher writes that issue's
 	// Legion day rows again, under the new name.
 	nameLine("issue_facts", "repo"),
+	// What a repository attributes is kept under its owner key in the eval day rows, their
+	// members and their owed days (evals.OwnerKey, migration 20261117100006): the key holds the
+	// repository's name, and so does the eval id of each row, so the pass rewrites both. A row
+	// under the new name already (a repository renamed to one that holds rows) is left, and the
+	// old name's row of the same key goes, as every other line's collision does. The day-row
+	// refresher writes the new name's rows again from their input, and the eval_days change each
+	// write logs wakes the views that read them.
+	{
+		fields: "eval_days.project_key, eval_day_members.project_key, eval_days_owed.project_key, eval_day_owners.owner, eval_days_defaults.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			var steps []repoRenameStep
+			for _, one := range []struct {
+				table string
+				keys  []string
+			}{
+				{"eval_days", []string{"eval_id", "writer", "deploy_repo", "series", "repo", "day"}},
+				{"eval_day_members", []string{"family", "deploy_repo", "row_key"}},
+				{"eval_days_owed", []string{"family", "day"}},
+			} {
+				steps = append(steps, ownerCollisions(r, one.table, one.keys...), ownerWrite(r, one.table, one.table == "eval_days"))
+			}
+			return append(steps,
+				repoRenameStep{
+					table: "eval_day_owners", where: ownerNamed(r, "owner"), deletes: true,
+					sql: `delete from eval_day_owners d where ` + ownerNamed(r, "d.owner") + `
+						and exists (select 1 from eval_day_owners t where t.owner = ` + ownerRenamed(r, "d.owner") + `)
+						returning jsonb_build_object('owner', d.owner)::text`,
+				},
+				repoRenameStep{
+					table: "eval_day_owners", where: ownerNamed(r, "owner"), write: "owner",
+					sql: `update eval_day_owners set owner = ` + ownerRenamed(r, "owner") + `, repo = ` + r.to() +
+						` where ` + ownerNamed(r, "owner"),
+				},
+				nameWrite(r, "eval_days_defaults", "repo"))
+		},
+	},
 	nameLine("check_results", "commit_repo"),
 	{
 		// A URL links one issue (issue_external_links_url), and readers compare a link in lower

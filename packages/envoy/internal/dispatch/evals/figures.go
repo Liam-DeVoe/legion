@@ -291,12 +291,16 @@ type stampedRow struct {
 
 // rowsStamp is the fingerprint of one eval's listed rows of one repository and day
 // (eval_day_figures.rows_stamp): each row's series and updated_at to the microsecond Postgres
-// keeps, in series order, which it sorts rows into. Every write that moves a row's value moves
-// its updated_at (upsertDays, writeDays, relistDays), a row deleteStaleDays deletes leaves the
-// day's rows, and one that moves nothing, such as a new build's rebuild of rows whose values
-// stood, leaves it, so the stamp moves exactly when the day's rows do, whichever build wrote them.
+// keeps, in series order and then in that of the moments, which it sorts rows into: a project's day
+// can hold a row of one series of its own and one of its default repository's (owners.go). Every
+// write that moves a row's value moves its updated_at (upsertDays, writeDays, relistDays), a row
+// deleteStaleDays deletes leaves the day's rows, and one that moves nothing, such as a new build's
+// rebuild of rows whose values stood, leaves it, so the stamp moves exactly when the day's rows
+// do, whichever build wrote them.
 func rowsStamp(rows []stampedRow) int64 {
-	slices.SortFunc(rows, func(a, b stampedRow) int { return strings.Compare(a.series, b.series) })
+	slices.SortFunc(rows, func(a, b stampedRow) int {
+		return cmp.Or(strings.Compare(a.series, b.series), a.updatedAt.Compare(b.updatedAt))
+	})
 	hash := fnv.New64a()
 	var word [binary.MaxVarintLen64]byte
 	for _, row := range rows {
@@ -499,8 +503,10 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 	rows, err := q.Query(ctx, `
 		select given.eval_id, d.deploy_repo, d.repo, d.day, d.series, d.updated_at
 		from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
-		join eval_days d on d.project_key = $1 and d.eval_id = given.eval_id and d.writer = given.writer
-			and d.day >= given.first_day and d.day <= given.last_day and d.listed
+		cross join eval_project_owners o
+		join eval_days d on d.project_key = o.owner and d.eval_id = o.owner || substr(given.eval_id, length($1) + 1)
+			and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and d.listed
+		where o.project_key = $1
 	`, scope.project, evalIDs, writers, firsts, lasts)
 	if err != nil {
 		return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
@@ -931,9 +937,27 @@ func refoldMoved(ctx context.Context, tx pgx.Tx, scope figureScope, entries map[
 // foldFiguresInTx is the stored figures' part of a write of project's day rows by build, in tx, the
 // write's own transaction, made after its rows: where any of the project's figures are folded
 // (readFigureScope), it folds again the figures of the days of spans (by eval id) whose rows moved,
-// and of every range that holds one (refoldFigures).
+// and of every range that holds one (refoldFigures). An owner key's rows (owners.go) have no
+// figures of their own: they are folded into the figures of each project whose read folds them
+// (readersOf), in the same transaction, each over the same days of its eval of the same slug.
 func foldFiguresInTx(ctx context.Context, tx pgx.Tx, build, project string, spans map[string]daySpan) error {
 	if len(spans) == 0 {
+		return nil
+	}
+	if isOwner(project) {
+		readers, err := readersOf(ctx, tx, project)
+		if err != nil {
+			return err
+		}
+		for _, reader := range readers {
+			moved := make(map[string]daySpan, len(spans))
+			for evalID, span := range spans {
+				moved[asReader(project, reader, evalID)] = span
+			}
+			if err := foldFiguresInTx(ctx, tx, build, reader, moved); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	scope, ok, err := readFigureScope(ctx, tx, build, project)
@@ -1330,32 +1354,43 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 }
 
 // readFigureCuts reads, in q, each repository and deploy repository project's listed day rows of
-// the days of r hold, in the byte order of their repositories and then of their deploy
-// repositories, as readDeployRepos reads delivery_runs': one statement walks eval_days_window from
-// one of the project's repositories to the next, one probe each, and reads each one's deploy
-// repositories from its rows of the days the ranges span, one range of the index each, rather than
-// every listed row of the project.
+// the days of r hold, its own and those of the owner keys its published default repository
+// attributes (eval_project_owners, owners.go), in the byte order of their repositories and then of
+// their deploy repositories, as readDeployRepos reads delivery_runs': one statement for each owner
+// walks eval_days_window from one of its repositories to the next, one probe each, and reads each
+// one's deploy repositories from its rows of the days the ranges span, one range of the index
+// each, rather than every listed row of the project.
 func readFigureCuts(ctx context.Context, q delivery.Querier, project string, r Range) ([]figureCut, error) {
-	rows, err := q.Query(ctx, `
-		with recursive held as (
-			(select repo from eval_days where project_key = $1 and listed order by repo limit 1)
-			union all
-			select (select d.repo from eval_days d where d.project_key = $1 and d.listed and d.repo > held.repo order by d.repo limit 1)
-			from held where held.repo is not null
-		)
-		select distinct held.repo, d.deploy_repo
-		from held join eval_days d on d.project_key = $1 and d.listed and d.repo = held.repo and d.day >= $2 and d.day < $3
-	`, project, r.From, r.To)
+	rows, err := q.Query(ctx, `select owner from eval_project_owners where project_key = $1`, project)
 	if err != nil {
-		return nil, fmt.Errorf("read the repositories of %s's day rows: %w", project, err)
+		return nil, fmt.Errorf("read the owners of %s's day rows: %w", project, err)
 	}
-	cuts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (figureCut, error) {
+	owners, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the owners of %s's day rows: %w", project, err)
+	}
+	held := map[figureCut]bool{}
+	for _, owner := range owners {
+		rows, err := q.Query(ctx, `
+			with recursive held as (
+				(select repo from eval_days where project_key = $1 and listed order by repo limit 1)
+				union all
+				select (select d.repo from eval_days d where d.project_key = $1 and d.listed and d.repo > held.repo order by d.repo limit 1)
+				from held where held.repo is not null
+			)
+			select distinct held.repo, d.deploy_repo
+			from held join eval_days d on d.project_key = $1 and d.listed and d.repo = held.repo and d.day >= $2 and d.day < $3
+		`, owner, r.From, r.To)
+		if err != nil {
+			return nil, fmt.Errorf("read the repositories of %s's day rows: %w", owner, err)
+		}
 		var cut figureCut
-		return cut, row.Scan(&cut.repo, &cut.deployRepo)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("read the repositories of %s's day rows: %w", project, err)
+		if _, err := pgx.ForEachRow(rows, []any{&cut.repo, &cut.deployRepo}, func() error {
+			held[cut] = true
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the repositories of %s's day rows: %w", owner, err)
+		}
 	}
-	slices.SortFunc(cuts, compareFigureCuts)
-	return cuts, nil
+	return slices.SortedFunc(maps.Keys(held), compareFigureCuts), nil
 }
