@@ -392,10 +392,10 @@ var ghFormattedValues = map[string]string{
 	"runGh: %s name":                                                        "the name of an environment variable",
 	"runGhChild: %s gh (3 places)":                                          "LEGION_GH_PATH, a configured path",
 	"checkedOwner: cannotPlace(kind)":                                       "a slot's kind, built from literals and a help-listed option name",
-	"repositoryTarget: cannotPlace(shown) (5 places)":                       "ghShown's words for the value, with the repository's strict form",
+	"repositoryTarget: cannotPlace(shown) (5 places)":                       "ghShown's words for the value: its slot's kind, never the value",
 	"selectors.dir: %s filepath.Base(dir)":                                  "an owner's directory, a login the bundle holds",
-	"selectors.dir: %s strings.Join(listed, \" and \")":                     "each owner and the slots naming it (ghNamed.shown), logins and kinds",
-	"selectors.dir: %s strings.Join(routed[dir], \", \")":                   "each slot naming that directory (ghNamed.shown)",
+	"selectors.dir: %s strings.Join(listed, \" and \")":                     "each owner and the slots naming it (ghNamed.shown): an owner IsOwner admitted and a name ghrepo.IsName admitted (repositoryTarget, ghRemote.repository), with a kind built from literals, help-listed names and remoteShown",
+	"selectors.dir: %s strings.Join(routed[dir], \", \")":                   "each slot naming that directory (ghNamed.shown), its owner and name admitted as above",
 	"selectors.fromAPI: cannotPlace(ordinalArgument(2))":                    "a position",
 	"selectors.fromCommand: %s leaf":                                        "the leaf's command path, as gh's help spelled it",
 	"selectors.fromCommand: %s unknown":                                     "a usage placeholder of gh's own help",
@@ -421,7 +421,9 @@ var ghFormattedValues = map[string]string{
 //   - each cannotPlace call whose name is neither a ghShown call nor a literal (`fn:
 //     cannotPlace(<name>)`);
 //   - and each piece of a cannotPlace call's why, read as the "+" of its pieces, that is neither a
-//     literal, a ghShown call nor an fmt call this reads on its own (`fn: cannotPlace why <piece>`).
+//     literal, a ghShown call nor an fmt.Sprintf call, whose format and arguments the fmt case
+//     reads on its own (`fn: cannotPlace why <piece>`): an fmt.Sprint piece, whose arguments no
+//     format holds to a verb, is reported whole.
 //
 // A format or a text built only of literals joined with "+" is a literal. A place that stands
 // more than once in one function is keyed with its count (`(5 places)`).
@@ -433,9 +435,7 @@ func ghFormatSites(t *testing.T) map[string]string {
 		add := func(key string) { found[owner+": "+key] = append(found[owner+": "+key], c.at) }
 		calls := func(expr ast.Expr, names ...string) bool {
 			inner, ok := expr.(*ast.CallExpr)
-			return ok && slices.ContainsFunc(names, func(name string) bool {
-				return text(inner.Fun) == name || strings.HasSuffix(name, ".") && strings.HasPrefix(text(inner.Fun), name)
-			})
+			return ok && slices.Contains(names, text(inner.Fun))
 		}
 		switch callee := text(call.Fun); {
 		case callee == "strconv.Quote" && len(call.Args) == 1:
@@ -449,7 +449,7 @@ func ghFormatSites(t *testing.T) map[string]string {
 				add("cannotPlace(" + text(call.Args[0]) + ")")
 			}
 			for _, piece := range sumPieces(call.Args[1]) {
-				if _, literal := literalString(piece); literal || calls(piece, "ghShown", "fmt.") {
+				if _, literal := literalString(piece); literal || calls(piece, "ghShown", "fmt.Sprintf") {
 					continue
 				}
 				add("cannotPlace why " + text(piece))
@@ -559,7 +559,7 @@ func TestNoRefusalFormatsAPersonsValueItself(t *testing.T) {
 	}
 	for _, key := range slices.Sorted(maps.Keys(sites)) {
 		if _, ok := ghFormattedValues[key]; !ok {
-			t.Errorf("%s formats a value itself, at %s, which ghFormattedValues does not hold: print a person's value through ghShown, or name why this one is none", key, sites[key])
+			t.Errorf("%s formats a value itself, at %s, which ghFormattedValues does not hold: name a person's value by its place through ghShown, or name why this one is none", key, sites[key])
 		}
 	}
 	for _, key := range slices.Sorted(maps.Keys(ghFormattedValues)) {

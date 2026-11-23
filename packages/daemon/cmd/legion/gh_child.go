@@ -212,7 +212,7 @@ func gitConfigKey(key string) string {
 // withGitHubUseHTTPPath adds credential.https://github.com.useHttpPath=true to env's GIT_CONFIG_COUNT
 // entries, which git reads as it reads `-c`, so the git gh runs tells its credential helper the
 // repository's path, whose owner `legion git-credential` answers for. A GIT_CONFIG_COUNT that is no
-// count is refused, named by its place: a count's slot takes no identifier.
+// count is refused, named by its place.
 func withGitHubUseHTTPPath(env []string) ([]string, error) {
 	count := 0
 	for _, pair := range env {

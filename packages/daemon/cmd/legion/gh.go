@@ -951,10 +951,10 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 // cannotPlace is ghTargetOf's refusal of an argument it cannot place: name, what it is, and why,
 // and how to name the repository instead, which for gh api is its endpoint (it has no -R). name is
 // never a person's value as written: its callers pass ghShown's words for one (an argument by its
-// position, a selector by its kind, a value quoted only where its slot's strict form admits it),
-// or a name gh's own help gave (an option the leaf lists, its command path). A value a person
-// gives where no place is (`gh secret set NAME <secret>` without --body, a header given without
-// -H) is the likeliest credential on the line, and gh itself, refusing it, prints none of it.
+// position, a selector by its kind, any other value by its place), or a name gh's own help gave
+// (an option the leaf lists, its command path). A value a person gives where no place is (`gh
+// secret set NAME <secret>` without --body, a header given without -H) is the likeliest
+// credential on the line, and gh itself, refusing it, prints none of it.
 func cannotPlace(name, why string, api bool) error {
 	advice := "pass -R <owner>/<repo>"
 	if api {
