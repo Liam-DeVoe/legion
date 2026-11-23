@@ -23,9 +23,9 @@ import (
 // imageOmp is an `omp` that answers each of the image's probes by its own plan, one step per
 // attempt of that probe (the last step repeats), telling them apart by argv as a real Oh My Pi
 // would run them, and recording the order they ran in and each attempt's argv and environment.
-// invocation is path as ImageProbe.Omp holds it, one shell word (shellprefix.Word): a temporary
-// path can hold a space or a quote.
-type imageOmp struct{ dir, path, invocation string }
+// invocation is the fake's path as ImageProbe.Omp holds it, one shell word (shellprefix.Word): a
+// temporary path can hold a space or a quote.
+type imageOmp struct{ dir, invocation string }
 
 func newImageOmp(t *testing.T, agents, load, session []string) imageOmp {
 	t.Helper()
@@ -96,7 +96,7 @@ echo "fake omp: no step $step for $kind" >&2; exit 65
 	if err := testexec.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
-	return imageOmp{dir: dir, path: path, invocation: shellprefix.Word(path)}
+	return imageOmp{dir: dir, invocation: shellprefix.Word(path)}
 }
 
 // calls are the probes the fake ran, in order.
