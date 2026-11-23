@@ -501,6 +501,36 @@
         "why": "a NATS test helper's read of nats.go's connection lock (Conn.mu), a sync.RWMutex a test takes by address to hold a publish: it prints nothing and reaches no answer"
       },
       {
+        "file": "packages/envoy/internal/dispatch/store/storetest/xidwindow_softirq_linux.go",
+        "function": "github.com/sjawhar/envoy/internal/dispatch/store/storetest.xidCurrentCPU",
+        "operands": ["*uint32", "unsafe.Pointer"],
+        "why": "the xid window rig's getcpu system call, given a local uint32 to write the CPU into by address: it prints nothing and reaches no answer"
+      },
+      {
+        "file": "packages/envoy/internal/dispatch/store/storetest/xidwindow_softirq_linux.go",
+        "function": "(*github.com/sjawhar/envoy/internal/dispatch/store/storetest.xidSoftirqReader).read",
+        "operands": ["*byte", "unsafe.Pointer"],
+        "why": "the xid window rig's pread of /proc/softirqs into its own buffer, passed to the system call by address: it prints nothing and reaches no answer"
+      },
+      {
+        "file": "packages/envoy/internal/dispatch/store/storetest/xidwindow_threadclock_linux.go",
+        "function": "github.com/sjawhar/envoy/internal/dispatch/store/storetest.xidOpenProc",
+        "operands": ["*byte", "unsafe.Pointer"],
+        "why": "the xid window rig's openat of a /proc file, its NUL-terminated path passed to the system call by address: it prints nothing and reaches no answer"
+      },
+      {
+        "file": "packages/envoy/internal/dispatch/store/storetest/xidwindow_threadclock_linux.go",
+        "function": "github.com/sjawhar/envoy/internal/dispatch/store/storetest.xidReadSchedstat",
+        "operands": ["*byte", "unsafe.Pointer"],
+        "why": "the xid window rig's pread of a thread's schedstat into a buffer on the stack, passed to the system call by address: it prints nothing and reaches no answer"
+      },
+      {
+        "file": "packages/envoy/internal/dispatch/store/storetest/xidwindow_threadclock_linux.go",
+        "function": "github.com/sjawhar/envoy/internal/dispatch/store/storetest.xidHoldThread",
+        "operands": ["*int", "*uint64", "unsafe.Pointer"],
+        "why": "the xid window rig's get_mempolicy and set_mempolicy system calls, given a local mode and node mask by address: they print nothing and reach no answer"
+      },
+      {
         "file": "packages/envoy/internal/bus/kv.go",
         "function": "github.com/sjawhar/envoy/internal/bus.readsDirect",
         "operands": [],
