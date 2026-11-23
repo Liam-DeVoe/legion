@@ -16,6 +16,7 @@
  *       [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>]
  *       [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] [--request-log <file>]
  *       [--reading-models <file>] [--again <case id>]... [--confirm-flagged] (both confirm only)
+ *       [--old-role-prompt-at <commit> --new-role-prompt-at <commit>]
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
@@ -49,9 +50,14 @@
  *   bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <file> --key-file <file>
  *       --skill <dir> --sessions <file> --seed <n> [--max <n>] --out <tasks.jsonl>
  *       [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]
+ *   bun scripts/skill-cuts/cli.ts build-role-cases --config <file> --key-file <file> --cut <id>
+ *       --skill <name> --old <dir> --role <role> --line <text> --old-role-prompt-at <commit>
+ *       --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl>
+ *       [--max <n>] [--budget-usd <n>] [--repos <dir>] [--cache-dir <dir>]
  *
- * `count-sql`, `copies`, `attribute`, `build-cases` and `build-tasks` are the commands of
- * countsql.ts, copies.ts, attribute.ts and build.ts, given their arguments whole.
+ * `count-sql`, `copies`, `attribute`, `build-cases`, `build-tasks` and `build-role-cases` are the
+ * commands of countsql.ts, copies.ts, attribute.ts, build.ts and rolecases.ts, given their
+ * arguments whole.
  *
  * **`behaviour`** runs the behaviour test of one skill: `--old` and `--new` are the skill's own
  * directories at the cut's base and in the cut, and `--cases` a case file of that skill (cases.ts,
@@ -146,6 +152,25 @@
  *   run any of whose confirms `confirm --confirm-flagged` made gives the case results as any run
  *   does, and the verdict line `case result only; no skill verdict stands (--confirm-flagged)`
  *   (CONFIRM_FLAGGED_VERDICT), never a skill verdict.
+ *
+ * **Role prompts at commits** (R8's arm). `--old-role-prompt-at <commit>` and
+ * `--new-role-prompt-at <commit>`, both or neither, have each arm's capture compose its Legion
+ * role prompt at a commit of the case's plugin repository in place of its daemon image's (arms.ts,
+ * "Role prompts at commits"; context.ts): `new` at the new commit, every other arm at the old one,
+ * each capture's record naming it (`rolePrompt.commitOf: "arm"`). `--old` and `--new` may then
+ * name one skill directory, so only the role prompt differs between old and new. The case file
+ * may hold role-line cases (cases.ts's `rolePromptLine`, written by `build-role-cases`), each
+ * checked against its prompt part at the old commit (`loadCasesAt`); their `none` and `minus` keep
+ * the skill and leave the role line (minus: `--planted-line`, where given) out of the old arm's
+ * prompt, and twin is the old arm again, so either kind of control case gives both controls.
+ * Refused, exit 2, naming the reason (`refuseRolePromptCases`, `otherCommits`): one option alone;
+ * a case file that holds a role-line case with neither (`loadCases`: no commit to check its line
+ * against); with them, a case with no Legion role context, a case that holds its own role prompt
+ * (`profile.appendSystemPrompt`), or a commit at which no plugin repository of a case holds the
+ * composer (the repository does not hold the commit); and an `--out` that holds a capture whose
+ * role prompt was composed at another commit than this run composes its arm's at (without the
+ * options, a capture composed at an arm's commit). `report` takes them too, and is refused the
+ * same way.
  *
  * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
@@ -247,7 +272,14 @@ import {
   sessionHeads,
   userTurnKey,
 } from "./capture";
-import { type Case, loadCases, pathReadFile, skillReadFile, Thinking } from "./cases";
+import {
+  type Case,
+  loadCases,
+  loadCasesAt,
+  pathReadFile,
+  skillReadFile,
+  Thinking,
+} from "./cases";
 import {
   configFrom,
   json,
@@ -262,8 +294,13 @@ import { type SkillCutsConfig, storeNamed } from "./config";
 import {
   ghSource,
   installedCopies,
+  legionRole,
   localSource,
+  PROMPTS_GO,
+  pluginRepos,
   type RepoSource,
+  rolePromptParts,
+  rolePromptRepo,
   UNREADABLE_DIRECTORY,
   UnreadableDirectory,
 } from "./context";
@@ -950,7 +987,11 @@ export function runnerDigest(): string {
 
 /** Where the captures of `arm` are saved under `out`: one directory per arm and text. `texts` are
  *  the digests of `--old` and `--new` (`textDigest`), so only `minus`'s copy is hashed here;
- *  `twin` holds the old text. */
+ *  `twin` holds the old text. An arm that leaves a line out of its role prompt (a role-line
+ *  case's none and minus, arms.ts's `rolePrompt.less`) holds the old text, and its directory
+ *  names a digest of that line too, so another planted line is captured again. The role-prompt
+ *  commits are named by no directory: an `--out` holds the captures of one pair of them
+ *  (`otherCommits`). */
 export function armCaptureDir(
   out: string,
   arm: Arm,
@@ -964,7 +1005,10 @@ export function armCaptureDir(
         : arm.name === "twin"
           ? texts.old
           : textDigest(arm.skillDir);
-  return path.join(out, "captures", `${arm.name}-${text}`);
+  const less = arm.rolePrompt?.less;
+  const line =
+    less === undefined ? "" : `-less-${createHash("sha256").update(less).digest("hex").slice(0, 16)}`;
+  return path.join(out, "captures", `${arm.name}-${text}${line}`);
 }
 
 /** The chance of each count, 0 to `runs`, of `runs` runs that each pass with chance `p`. */
@@ -1926,9 +1970,12 @@ async function controlStageCommand(r: Runner): Promise<void> {
   const result = id === undefined ? undefined : results.get(id);
   if (c === undefined || result === undefined) throw new Error(`no control case ${id}`);
   const planted = r.dirs.plantedLine;
+  const left = planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`;
+  // A role-line case's minus leaves its line out of the old arm's role prompt, not of the skill.
+  const from = c.rolePromptLine === undefined ? "" : " of the old arm's role prompt, the skill kept";
   say(
     r,
-    `the control case is ${c.id}${replacedWords(score)}; minus leaves out ${planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`}, and twin is the old text again (the false-loss control); old, minus and twin are sent in one order each round`
+    `the control case is ${c.id}${replacedWords(score)}; minus leaves out ${left}${from}, and twin is the old text again (the false-loss control); old, minus and twin are sent in one order each round`
   );
   if (stageDone(r, result, "control")) {
     say(r, `case ${c.id}: control runs made before, skipped`);
@@ -2432,10 +2479,94 @@ const BEHAVIOUR_USAGE = [
   "  [--planted-line <text>] [--budget-usd <n>] [--concurrency <n>] [--after-case <command>] [--request-log <file>]",
   "  [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]",
   "  [--reading-models <file>] (the skill's <cut id>/models/<skill>.json, written by attribute)",
+  "  [--old-role-prompt-at <commit> --new-role-prompt-at <commit>] (both or neither: each arm's Legion role prompt composed at the old or the new commit of the case's plugin repository)",
   "  [--again <case id>]... (confirm only: one more confirm of that flagged case)",
   "  [--confirm-flagged] (confirm only: confirm each flagged case even where the skill can get no verdict; report then gives case results only)",
-  "  report needs only --config, --out, --old and --cases",
+  "  report needs only --config, --out, --old and --cases (and the role-prompt commits, where the run was made with them)",
 ].join("\n");
+
+/** A saved capture's record as `otherCommits` reads it: its case and arm, and the commit its
+ *  context composed its role prompt at (context.ts's ContextRecord `rolePrompt`; a record made
+ *  before `commitOf` was recorded composed it at the plugin's commit). A record whose context
+ *  composed no role prompt does not parse. */
+const SavedComposition = z.looseObject({
+  case: z.string(),
+  arm: z.string(),
+  context: z.looseObject({
+    rolePrompt: z.looseObject({
+      commit: z.string(),
+      commitOf: z.enum(["arm", "daemon image", "plugin"]).default("plugin"),
+    }),
+  }),
+});
+
+/** Why the captures saved under `out` (`<out>/captures/<arm dir>/*.capture.json`) cannot serve a
+ *  run whose role-prompt commits are `at` (undefined: none, each role prompt composed at the
+ *  daemon image's or the plugin's commit), or undefined when they can: the first capture whose
+ *  role prompt was composed at another commit than the run would compose its arm's at, naming it,
+ *  its case and arm, and both commits. */
+function otherCommits(
+  out: string,
+  at: { readonly old: string; readonly new: string } | undefined
+): string | undefined {
+  const captures = path.join(out, "captures");
+  if (!existsSync(captures)) return undefined;
+  for (const armDir of readdirSync(captures).sort()) {
+    const dir = path.join(captures, armDir);
+    if (!statSync(dir).isDirectory()) continue;
+    for (const file of readdirSync(dir).sort()) {
+      if (!file.endsWith(".capture.json")) continue;
+      const record = path.join(dir, file);
+      const saved = SavedComposition.safeParse(readJson(record, "the capture record")).data;
+      if (saved === undefined) continue;
+      const { commit, commitOf } = saved.context.rolePrompt;
+      const wanted = at === undefined ? undefined : saved.arm === "new" ? at.new : at.old;
+      if ((commitOf === "arm" ? commit : undefined) === wanted) continue;
+      const was = commitOf === "arm" ? "an arm's commit" : `the ${commitOf}'s commit`;
+      return `${out} holds captures composed at other commits than this run's: ${record} (case ${saved.case}, arm ${saved.arm}) was composed at ${commit} (${was}), where this run composes it at ${wanted === undefined ? "the daemon image's or the plugin's commit" : `${wanted} (an arm's commit)`}; give the same --old-role-prompt-at and --new-role-prompt-at as the run that made them, or another --out`;
+    }
+  }
+  return undefined;
+}
+
+/** Refuses (Refused) the cases of a run given role-prompt commits `at` that cannot have their role
+ *  prompt composed at them: a case with no Legion role context, a case that holds its own role
+ *  prompt (`profile.appendSystemPrompt`), and a commit at which no plugin repository of a case
+ *  holds the composer (PROMPTS_GO: the repository does not hold the commit, or holds no composer
+ *  there), each checked once per set of plugin repositories. */
+async function refuseRolePromptCases(
+  cases: readonly Case[],
+  at: { readonly old: string; readonly new: string },
+  source: RepoSource
+): Promise<void> {
+  for (const c of cases) {
+    if (legionRole(c.context) === undefined) {
+      throw new Refused(
+        `case ${c.id} has no Legion role context (its context is ${c.context}), so it has no role prompt to compose at a commit`
+      );
+    }
+    if (c.profile.appendSystemPrompt !== undefined) {
+      throw new Refused(
+        `case ${c.id} holds profile.appendSystemPrompt, its own role prompt text, so no commit composes its role prompt`
+      );
+    }
+  }
+  for (const [flag, commit] of [
+    ["--old-role-prompt-at", at.old],
+    ["--new-role-prompt-at", at.new],
+  ] as const) {
+    const checked = new Set<string>();
+    for (const c of cases) {
+      const repos = pluginRepos(c);
+      if (checked.has(repos.join("\0"))) continue;
+      checked.add(repos.join("\0"));
+      if ((await rolePromptRepo(c, commit, source)) !== undefined) continue;
+      throw new Refused(
+        `${flag} ${commit}: no plugin repository of case ${c.id} (${repos.join(", ") || "none"}) holds ${PROMPTS_GO} at that commit: the repository does not hold the commit, or holds no role prompt composer there`
+      );
+    }
+  }
+}
 
 /** The reading sessions by model `file` holds: attribute.ts's `<cut id>/models/<skill>.json` of a
  *  skill (ModelCountFile). Throws a refusal naming the file. */
@@ -2475,6 +2606,8 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       "reading-models": { type: "string" },
       again: { type: "string", multiple: true },
       "confirm-flagged": { type: "boolean" },
+      "old-role-prompt-at": { type: "string" },
+      "new-role-prompt-at": { type: "string" },
     },
     BEHAVIOUR_USAGE
   );
@@ -2486,6 +2619,15 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       `--confirm-flagged goes with behaviour confirm only: report reads from the case results whether their confirms were made with it. ${BEHAVIOUR_USAGE}`
     );
   }
+  const oldAt = values["old-role-prompt-at"];
+  const newAt = values["new-role-prompt-at"];
+  if ((oldAt === undefined) !== (newAt === undefined)) {
+    throw new Refused(
+      `--old-role-prompt-at and --new-role-prompt-at go together: give both, or neither. ${BEHAVIOUR_USAGE}`
+    );
+  }
+  const rolePromptAt =
+    oldAt === undefined || newAt === undefined ? undefined : { old: oldAt, new: newAt };
   const report = command === "report";
   const given = required(
     values,
@@ -2498,13 +2640,20 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   const inCheckout = report ? undefined : outRefusal(given.out);
   if (inCheckout !== undefined) throw new Refused(inCheckout);
   const config = configFrom(given.config);
+  const source = values.repos === undefined ? ghSource() : localSource(values.repos);
   let cases: Case[];
   try {
-    cases = loadCases(given.cases, given.old);
+    cases =
+      rolePromptAt === undefined
+        ? loadCases(given.cases, given.old)
+        : await loadCasesAt(given.cases, given.old, rolePromptParts(rolePromptAt.old, source));
   } catch (error) {
     throw new Refused(messageFor(error));
   }
   if (cases.length === 0) throw new Refused(`${given.cases} holds no case`);
+  if (rolePromptAt !== undefined) await refuseRolePromptCases(cases, rolePromptAt, source);
+  const atOtherCommits = otherCommits(given.out, rolePromptAt);
+  if (atOtherCommits !== undefined) throw new Refused(atOtherCommits);
   const readingModels = values["reading-models"];
   const behaviour: Behaviour = {
     io,
@@ -2563,7 +2712,6 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   const scratch = values.scratch ?? path.join(tmpdir(), SCRATCH_DIR);
   const cacheDir = values["cache-dir"] ?? path.join(tmpdir(), CACHE_DIR);
   const plantedLine = values["planted-line"];
-  const source = values.repos === undefined ? ghSource() : localSource(values.repos);
   const hints = gatewayHints(loggedGateway(gateway, log, "hint"));
   const texts = { old: textDigest(given.old), new: textDigest(given.new) };
   const runner: Runner = {
@@ -2572,6 +2720,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       old: given.old,
       new: given.new,
       ...(plantedLine === undefined ? {} : { plantedLine }),
+      ...(rolePromptAt === undefined ? {} : { rolePromptAt }),
     },
     texts,
     scratch,
