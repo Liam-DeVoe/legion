@@ -25,11 +25,9 @@
 -- once, as the runner runs every migration, and a second run is refused on graph_nodes' primary
 -- key and writes nothing. The node stands before its tuples, and the tuples in the order of their
 -- kind and far end. Every row is dated '2026-11-22 23:04:06+00', a literal at this migration's
--- version, so a run after its own rows are taken out
--- (requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes) writes the same rows, and signed by
--- this migration's writer, `{"kind": "system", "id": "interaction-source"}`. No event records it,
--- so every row carries the `source_event` sentinel 0. The triggers of 20261109051232 announce the
--- attribute row once, at commit.
+-- version, and signed by this migration's writer, `{"kind": "system", "id": "interaction-source"}`.
+-- No event records it, so every row carries the `source_event` sentinel 0. The triggers of
+-- 20261109051232 announce the attribute row once, at commit.
 
 -- The attribute node, holding its kind, its name, its store name and its position.
 insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)

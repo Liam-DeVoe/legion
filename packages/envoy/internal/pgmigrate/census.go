@@ -305,9 +305,10 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 	// as an enabled one does, so no later migration is exempt from the limit.
 	var laterEventTrigger exemptionsOff
 	// changedBy names, by table, the first pending migration that touches the table with anything
-	// but bounded writes: after it, the keys, rules and triggers the census reads of the table are
-	// not certain to be the ones a later migration's writes meet, so no later migration is admitted
-	// for bounded writes of it (boundedWrites).
+	// but bounded writes or a concurrent index build (ConcurrentIndex): after it, the keys, rules
+	// and triggers the census reads of the table are not certain to be the ones a later
+	// migration's writes meet, so no later migration is admitted for bounded writes of it
+	// (boundedWrites).
 	changedBy := map[string]string{}
 	for _, migration := range migrations {
 		if recorded[migration.Version] {
@@ -385,8 +386,12 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 				return nil, err
 			}
 		}
+		// A concurrent index build (ConcurrentIndex) is a single non-unique index: it changes none of
+		// the keys, the rules, the row-level security, the children and the triggers a later
+		// migration's bounded writes are judged by (boundedTableQuery), so it leaves a table
+		// unchanged for them.
 		for _, table := range entry.Tables {
-			if table.Exists && table.Through == "" && table.BoundedWrites == 0 && changedBy[table.Name] == "" {
+			if table.Exists && table.Through == "" && table.BoundedWrites == 0 && !entry.ConcurrentIndex && changedBy[table.Name] == "" {
 				changedBy[table.Name] = migration.Name
 			}
 		}

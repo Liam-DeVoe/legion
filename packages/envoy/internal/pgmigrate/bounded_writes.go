@@ -30,7 +30,7 @@ type writeReading struct {
 	// nothing stops every admission of the migration.
 	voided string
 	// changedBy names, by table, the first earlier pending migration that touches the table with
-	// anything but bounded writes (Census keeps it).
+	// anything but bounded writes or a concurrent index build (Census keeps it).
 	changedBy map[string]string
 }
 
@@ -82,11 +82,12 @@ type boundedVerdict struct {
 //     whose size and keys the census does not read;
 //   - the census reads the table's keys, rules and triggers as they stand before any pending
 //     migration applies, so no earlier pending migration may touch the table with anything but
-//     bounded writes (changedBy), and neither the migration nor an earlier pending one may hold a
-//     statement whose effect the census cannot read (voided): a statement off the keep-on list, a
-//     DO block among them, or one that names a relation of pg_catalog (takesLaterExemptions). Nor
-//     may the migration hold a statement after which its names can resolve to another table than
-//     the one the census read (catalogReadsOff), a set of search_path among them.
+//     bounded writes or a concurrent index build, which changes none of them (changedBy), and
+//     neither the migration nor an earlier pending one may hold a statement whose effect the
+//     census cannot read (voided): a statement off the keep-on list, a DO block among them, or
+//     one that names a relation of pg_catalog (takesLaterExemptions). Nor may the migration hold
+//     a statement after which its names can resolve to another table than the one the census
+//     read (catalogReadsOff), a set of search_path among them.
 //
 // An enabled trigger of the table runs for each row the writes write, and it can read any table,
 // while the census does not read its body, as it reads no function's. So the table is admitted

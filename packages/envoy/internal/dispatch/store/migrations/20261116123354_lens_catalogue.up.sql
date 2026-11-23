@@ -42,9 +42,8 @@
 -- and a second run is refused on graph_nodes' primary key and writes nothing. The nodes stand in
 -- ascending (kind, id), all before any tuple, and the tuples in the order of their node, then
 -- their kind and far end. Every row is dated '2026-11-16 12:33:54+00', a literal at this
--- migration's version, so a run after its own rows are taken out
--- (requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes) writes the same rows, and signed by the
--- catalogue's writer, `{"kind": "system", "id": "lens-catalogue"}`.
+-- migration's version, and signed by the catalogue's writer,
+-- `{"kind": "system", "id": "lens-catalogue"}`.
 -- The migration records no event, so every row carries the `source_event` sentinel 0. The
 -- triggers of 20261109051232 announce the supertag and attribute rows once, at commit, and the
 -- server installs the block schema those nodes build, which is the one it installed before.

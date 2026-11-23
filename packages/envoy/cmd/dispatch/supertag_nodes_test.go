@@ -274,6 +274,15 @@ func requireTheCensusAdmitsEachTypeMigrationAboveTheLimit(t *testing.T, ctx cont
 	t.Logf("census at a %d-byte table limit over the backfilled store:\n%s", limit, out.String())
 	judged := 0
 	for _, entry := range report.Pending {
+		if entry.ConcurrentIndex {
+			// An index build, such as graph_nodes_interaction_live's, writes no row: the census
+			// admits it at any size, and a later type migration's bounded writes are judged as if it
+			// had not run, since it changes no key, rule or trigger of the table.
+			for _, refusal := range entry.Refusals {
+				t.Errorf("the census refuses %s over a backfilled store: %s", entry.Migration.Name, refusal)
+			}
+			continue
+		}
 		admitted := map[string]bool{}
 		for _, table := range entry.Tables {
 			if table.Name != "graph_nodes" && table.Name != "graph_tuples" {

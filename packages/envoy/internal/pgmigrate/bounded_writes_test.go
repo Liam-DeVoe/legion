@@ -176,6 +176,32 @@ func TestCensusAdmitsATableAboveTheLimitForEachBoundedWriteShape(t *testing.T) {
 	}
 }
 
+// A bounded write after an earlier pending concurrent index build of the same table is admitted:
+// the build is one non-unique index, which changes none of the keys, rules, row-level security,
+// children and triggers the census judges the write by, so it does not count as a change of the
+// table (changedBy), as an alter table does (TestCensusRefusesATableAboveTheLimitForEveryWriteThatIsNotBounded).
+// A store's index migration numbered before a type migration of the same release is this case.
+func TestCensusAdmitsABoundedWriteAfterAPendingConcurrentIndexOfItsTable(t *testing.T) {
+	ctx := context.Background()
+	conn := boundedWritesDatabase(t, ctx)
+	reviewTuplesTrigger(t)
+	pending := censusOf(t, ctx, conn, []string{
+		nonTransactionalMarker + "\ncreate index concurrently if not exists tuples_from_id on tuples (from_id)",
+		boundedInsert,
+	})
+	if !pending[0].ConcurrentIndex || len(pending[0].Refusals) != 0 {
+		t.Fatalf("the index build: concurrent index %v, refusals %q; want a concurrent index build the census admits", pending[0].ConcurrentIndex, pending[0].Refusals)
+	}
+	entry := pending[1]
+	table, ok := tableNamed(entry, "tuples")
+	if !ok || !table.Exists || table.Bytes <= 1 {
+		t.Fatalf("the census read tuples as %+v (found %v); want it in the database and above the one-byte limit", table, ok)
+	}
+	if len(entry.Refusals) != 0 || table.BoundedWrites != 1 {
+		t.Fatalf("the bounded insert after the index build: refusals %q, bounded writes %d; want tuples admitted for 1 bounded write", entry.Refusals, table.BoundedWrites)
+	}
+}
+
 // A table above the limit stays refused wherever a statement of the migration that touches it is
 // no bounded write, and the refusal names the shape that refused it: an insert whose rows a query
 // gives, an update with no WHERE, an update by a column outside the primary key, a lock table
