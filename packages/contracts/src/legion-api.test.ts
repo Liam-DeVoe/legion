@@ -112,6 +112,51 @@ const repositoriesAt152 = z.object({
  * this schema reads it, with the repositories block in contract 152's shape. */
 const stateWithRepositoriesAt152 = LegionStateResponse.extend({ repositories: repositoriesAt152 });
 
+// `holdReason` and the held list exactly as the contract before 236 holds them (`legion-api.ts`
+// before the fix beside the other steps): three hold reasons, thirteen held words, and `heldBy`
+// read as issue keys alone. It is the reader a plugin of that contract parses the state with, and
+// the route serves such a caller every issue held for a fix or for CI with no `holdReason`
+// (`api`'s `withoutUnadmittedHoldReason`); `state-before-fix-holds.json` is that body. This is a
+// copy and not an import, so a later edit of the current schema cannot move the reader it is held
+// to.
+const issueKeyBeforeTheFix = z.string().regex(DISPATCH_KEY_PATTERN);
+const heldIssueBeforeTheFix = z.object({
+  issue: issueKeyBeforeTheFix.optional(),
+  reason: z
+    .enum([
+      "tree_closed",
+      "tree_parked",
+      "label_off",
+      "ancestry",
+      "root_awaiting_person",
+      "design_gate",
+      "dispatch_blocker",
+      "children_first",
+      "accepted_ancestor",
+      "children_before_retro",
+      "task_stopped",
+      "at_work",
+      "unclassified",
+    ])
+    .optional(),
+  heldBy: z.array(issueKeyBeforeTheFix).optional(),
+});
+
+/** The state body a caller below 236 is served: this contract's state, every other key as this
+ * schema reads it, with the hold reasons and the held list of the contract before it. */
+const stateBeforeTheFixHolds = LegionStateResponse.extend({
+  admission: LegionStateResponse.shape.admission
+    .unwrap()
+    .extend({ held: z.array(heldIssueBeforeTheFix).optional() })
+    .optional(),
+  issues: z.record(
+    z.string(),
+    LegionIssueRecordResponse.extend({
+      holdReason: z.enum(["escalated", "task-stopped", "children"]).optional(),
+    })
+  ),
+});
+
 /** A claim's secret, as the requests below carry it. */
 const CLAIM_SECRET = fixtureSecret("claim");
 
@@ -128,6 +173,10 @@ const schemas: Record<string, z.ZodType> = {
   // caller whose plugin is at the contract before 202, its repositories block in contract 152's
   // shape.
   "state-narrowed-repositories.json": stateWithRepositoriesAt152,
+  // Written by internal/api's TestStateBeforeTheFixHoldsGolden: the state route's body for a
+  // caller whose plugin is at the contract before 236, which holds an issue held for a fix and one
+  // held for CI, each served with no `holdReason`.
+  "state-before-fix-holds.json": stateBeforeTheFixHolds,
   // One issue's record (`GET /legion/v1/issues/{key}/record`), which answers the very value the
   // state holds under `issues.<key>`: the issue schema the state response already carries.
   "issue-record.json": LegionIssueRecordResponse,
@@ -1436,6 +1485,67 @@ test("a state whose held rows name a parent held before its retro and a stopped 
   state.admission.held.push(...rows);
   expect(LegionStateResponse.parse(state).admission?.held?.slice(-2)).toEqual(rows);
   state.admission.held.push({ issue: "LEGION-233", reason: "stopped" });
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
+/** An issue's `holdReason` and `heldFrom` in a parsed state body, by the issue's key. */
+function holdOf(
+  state: { readonly issues: Record<string, { holdReason?: string; heldFrom?: string }> },
+  key: string
+): { holdReason?: string; heldFrom?: string } {
+  const issue = state.issues[key];
+  if (issue === undefined) throw new Error(`the state lacks ${key}`);
+  return { holdReason: issue.holdReason, heldFrom: issue.heldFrom };
+}
+
+// Contract 236 widens the value set again: `fix`, an issue held before its retro while a fix of
+// its task runs, and `ci`, an issue held before its retro until each check a CI job runs passes at
+// its head. The state golden internal/projection writes holds one issue for each, and it parses
+// with each reason kept.
+test("a state with an issue held for a fix and one held for CI parses", () => {
+  const parsed = LegionStateResponse.parse(fixture("state-controller-claim.json"));
+  expect(holdOf(parsed, "LEGION-212")).toEqual({ holdReason: "fix", heldFrom: "retro" });
+  expect(holdOf(parsed, "LEGION-213")).toEqual({ holdReason: "ci", heldFrom: "retro" });
+});
+
+// The control of the strip: the reader of the contract before 236 refuses the state served at
+// 236, at the two new reasons and nowhere else. So the body that reader is served must carry
+// neither, which is what the daemon's strip gives it (the case below).
+test("the reader before the fix holds refuses the state that names them", () => {
+  const refused = stateBeforeTheFixHolds.safeParse(fixture("state-controller-claim.json"));
+  expect(refused.success).toBeFalse();
+  expect(refused.error?.issues.map((issue) => issue.path.join(".")).sort()).toEqual([
+    "issues.LEGION-212.holdReason",
+    "issues.LEGION-213.holdReason",
+  ]);
+});
+
+// What a caller below 236 is served instead: each of the two holds with no `holdReason` and its
+// `heldFrom` kept, and an escalated hold as it stands. The reader before the fix holds parses it.
+test("the reader before the fix holds parses the state it is served", () => {
+  const parsed = stateBeforeTheFixHolds.parse(fixture("state-before-fix-holds.json"));
+  expect(holdOf(parsed, "LEGION-250")).toEqual({ holdReason: undefined, heldFrom: "retro" });
+  expect(holdOf(parsed, "LEGION-251")).toEqual({ holdReason: undefined, heldFrom: "retro" });
+  expect(holdOf(parsed, "LEGION-232")).toEqual({
+    holdReason: "escalated",
+    heldFrom: "implementing",
+  });
+});
+
+// From contract 236 a held row's `heldBy` may name what holds the issue other than an issue: a
+// check that a CI job runs, by its name, and the head the check is read at. So each entry is read
+// as a non-empty word beside an issue key. The reader before 236 reads issue keys alone, and is
+// served no such row. The row's reason is left out: this case reads `heldBy` alone.
+test("a held row's heldBy parses a check name and a head beside an issue key", () => {
+  const state = fixture("state.json") as {
+    admission: { held: { issue: string; heldBy: string[] }[] };
+  };
+  const heldBy = ["LEGION-231", "ci / test (ubuntu-24.04)", "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29"];
+  const row = { issue: "LEGION-250", heldBy };
+  state.admission.held.push(row);
+  expect(LegionStateResponse.parse(state).admission?.held?.at(-1)).toEqual(row);
+  expect(stateBeforeTheFixHolds.safeParse(state).success).toBeFalse();
+  row.heldBy = [""];
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
