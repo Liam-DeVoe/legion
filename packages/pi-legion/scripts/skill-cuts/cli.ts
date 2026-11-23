@@ -387,7 +387,7 @@ import {
   Thinking,
   textLines,
 } from "./cases";
-import { type CheckoutCopy, readOnlyCall, removeOutsideLinks } from "./checkout";
+import { type CheckoutCopy, colocateJj, readOnlyCall, removeOutsideLinks } from "./checkout";
 import {
   configFrom,
   fileDigests,
@@ -2058,11 +2058,13 @@ const Texts = z.strictObject({
 type Texts = z.infer<typeof Texts>;
 
 /** A written case's shared checkout as a stage records it (`StageResult.checkout`) and its marker
- *  begins (`CheckoutMarker`). */
+ *  begins (`CheckoutMarker`). `jj`, once a case whose session ran jj needed it: true when it was
+ *  made a colocated jj repository (checkout.ts's `colocateJj`), else why it could not be. */
 const SharedCheckout = z.strictObject({
   git: z.boolean(),
   depth: z.int().positive().nullable(),
   removedLinks: z.array(z.string()),
+  jj: z.union([z.literal(true), z.strictObject({ why: z.string() })]).optional(),
 });
 
 /** One stage of a case: `running` until score.ts's `stageOutcome` says `counted` or `unscreened`.
@@ -2079,8 +2081,9 @@ const SharedCheckout = z.strictObject({
  *  checkout its read-only calls were answered from (`sharedCheckout`): whether it is a git
  *  checkout (else GitHub's tarball, whose git commands are not answered), the depth of its
  *  history (`git log` there shows at most that many commits, then the shallow boundary; null for
- *  the tarball), and each symbolic link removed from it because it resolved outside it or not at
- *  all (checkout.ts's `removeOutsideLinks`); absent otherwise. */
+ *  the tarball), each symbolic link removed from it because it resolved outside it or not at
+ *  all (checkout.ts's `removeOutsideLinks`), and whether it is a colocated jj repository (`jj`,
+ *  where a case whose session ran jj made it one or failed to); absent otherwise. */
 const StageResult = z.strictObject({
   state: StageState,
   sends: z.literal(SENDS),
@@ -2981,15 +2984,30 @@ async function runStage(
   save({ ...state, captures, ...(ours === undefined ? {} : { ours }) });
 
   // A written case's read-only calls are answered from the shared checkout of its context
-  // session's repository at its commit, made once and kept in the cache.
+  // session's repository at its commit, made once and kept in the cache; a colocated jj
+  // repository too once a case whose session ran jj needs it.
   let checkout: CheckoutCopy | undefined;
   if (caseKind(c) === "written" && c.checkout !== undefined) {
     const { repo, commit, root, cwd } = c.checkout;
     try {
-      const shared = await sharedCheckout(r, repo, commit);
-      checkout = { dir: shared.dir, root, cwd, git: shared.marker.git, answers: new Map() };
-      const { git, depth, removedLinks } = shared.marker;
-      save({ ...state, checkout: { git, depth, removedLinks } });
+      const ranJj = sessionRanJj(c.messages);
+      const shared = await sharedCheckout(r, repo, commit, ranJj);
+      const { git, depth, removedLinks, jj } = shared.marker;
+      // A copy whose colocation failed answers the jj commands of a session that ran none as a
+      // checkout that is no jj repository does.
+      const copyJj = jj === true || ranJj ? jj : undefined;
+      checkout = {
+        dir: shared.dir,
+        root,
+        cwd,
+        git,
+        ...(copyJj === undefined ? {} : { jj: copyJj }),
+        answers: new Map(),
+      };
+      save({
+        ...state,
+        checkout: { git, depth, removedLinks, ...(jj === undefined ? {} : { jj }) },
+      });
     } catch (error) {
       if (!(error instanceof UnreadableDirectory)) throw error;
       return { ...current, dropped: `${UNREADABLE_DIRECTORY}: ${error.message}`, droppedAt: stage };
@@ -3054,8 +3072,8 @@ async function runGit(args: readonly string[]): Promise<{ code: number; stderr: 
 
 /** What a shared checkout's marker records (`sharedCheckout`), written last, once it is made:
  *  whether it is a git checkout (else GitHub's tarball of the commit, with why the git one failed),
- *  the depth of its history, the symbolic links removed from it, and the seconds and the bytes its
- *  making took. */
+ *  the depth of its history, the symbolic links removed from it, whether it is a colocated jj
+ *  repository, and the seconds and the bytes its making took. */
 const CheckoutMarker = SharedCheckout.extend({
   seconds: z.number().nonnegative(),
   bytes: z.int().nonnegative(),
@@ -3063,8 +3081,26 @@ const CheckoutMarker = SharedCheckout.extend({
 });
 type CheckoutMarker = z.infer<typeof CheckoutMarker>;
 
-/** The shared checkouts this process made or found, by `<cache dir>\0<repo>@<commit>`. */
-const sharedCheckouts = new Map<string, Promise<{ dir: string; marker: CheckoutMarker }>>();
+/** The last ask of this process for each shared checkout, by `<cache dir>\0<repo>@<commit>`: the
+ *  next ask waits for it, since a process never waits for its own lock. */
+const sharedCheckouts = new Map<string, Promise<unknown>>();
+
+/** A word `jj` of a shell command, where a program's name stands. */
+const JJ_WORD = /(^|[\s;&|(`])jj(?=$|[\s;&|)`])/;
+
+/** Whether `messages`, a context session's history, hold a `bash` call that runs jj (a word `jj`
+ *  of its command): the session's checkout was a jj workspace. */
+function sessionRanJj(messages: Case["messages"]): boolean {
+  return messages.some((message) =>
+    (message.content ?? []).some((block) => {
+      const input =
+        block.type === "toolCall" && block.name === "bash" ? block.arguments : undefined;
+      const command =
+        typeof input === "object" && input !== null ? Reflect.get(input, "command") : "";
+      return typeof command === "string" && JJ_WORD.test(command);
+    })
+  );
+}
 
 /** The bytes of every file under `dir`, its links counted as links. */
 function bytesUnder(dir: string): number {
@@ -3086,26 +3122,29 @@ function bytesUnder(dir: string): number {
  * them fails, the repository at the commit read into the cache (context.ts's `repositoryTree`:
  * GitHub's tarball through `gh`, or `--repos`' directory) copied there, whose git commands are not
  * answered. Then every symbolic link that resolves outside it, or nowhere, is removed (checkout.ts's
- * `removeOutsideLinks`), and its marker (`<commit>.ready.json`, CheckoutMarker) is written last,
- * so a half-made checkout is never used. A lock (`<commit>.lock`, `<pid>`, made whole by a link)
- * keeps a second run from making it at once: a run that finds the lock of a live process waits
- * for the marker; one that finds the lock of a process that runs no more (or its own pid, which no
- * call of its own holds) removes the lock and the half-made checkout and makes it again. Said
- * once, as it is made, with its seconds and size.
+ * `removeOutsideLinks`); where `jj` (the case's session ran jj), the git checkout is made a
+ * colocated jj repository (checkout.ts's `colocateJj`), or the marker records why not; and its
+ * marker (`<commit>.ready.json`, CheckoutMarker) is written last, so a half-made checkout is never
+ * used. A git checkout made before a case whose session ran jj asked for it is made a colocated jj
+ * repository then, once, its marker written again. A lock (`<commit>.lock`, `<pid>`, made whole by
+ * a link) keeps a second run from making it at once: a run that finds the lock of a live process
+ * waits for the marker; one that finds the lock of a process that runs no more (or its own pid,
+ * which no call of its own holds) removes the lock and the half-made checkout and makes it again.
+ * Said once, as it is made, with its seconds and size, and once as it is made a jj repository.
  */
 function sharedCheckout(
   r: Runner,
   repo: string,
-  commit: string
+  commit: string,
+  jj: boolean
 ): Promise<{ dir: string; marker: CheckoutMarker }> {
   const key = `${r.cacheDir}\0${repo}@${commit}`;
-  const held = sharedCheckouts.get(key);
-  if (held !== undefined) return held;
-  const made = makeSharedCheckout(r, repo, commit);
-  sharedCheckouts.set(key, made);
-  made.catch(() => {
-    if (sharedCheckouts.get(key) === made) sharedCheckouts.delete(key);
-  });
+  const before = sharedCheckouts.get(key) ?? Promise.resolve();
+  const made = before.then(() => makeSharedCheckout(r, repo, commit, jj));
+  sharedCheckouts.set(
+    key,
+    made.catch(() => undefined)
+  );
   return made;
 }
 
@@ -3113,16 +3152,22 @@ function sharedCheckout(
 async function makeSharedCheckout(
   r: Runner,
   repo: string,
-  commit: string
+  commit: string,
+  jj: boolean
 ): Promise<{ dir: string; marker: CheckoutMarker }> {
   const dir = path.join(r.cacheDir, "checkouts", repo, commit);
   const markerFile = `${dir}.ready.json`;
   const lock = `${dir}.lock`;
   mkdirSync(path.dirname(dir), { recursive: true });
+  const madeMarker = (): CheckoutMarker | undefined =>
+    existsSync(markerFile)
+      ? CheckoutMarker.parse(JSON.parse(readFileSync(markerFile, "utf8")))
+      : undefined;
+  // A made checkout serves the ask unless it asks for jj of a git checkout not yet colocated.
+  const serves = (marker: CheckoutMarker) => !jj || !marker.git || marker.jj !== undefined;
   for (;;) {
-    if (existsSync(markerFile)) {
-      return { dir, marker: CheckoutMarker.parse(JSON.parse(readFileSync(markerFile, "utf8"))) };
-    }
+    const found = madeMarker();
+    if (found !== undefined && serves(found)) return { dir, marker: found };
     // The lock, made whole: its pid is written into a file of this process's own, then linked to
     // the lock's name, which fails when the lock is there.
     const mine = `${lock}.${process.pid}.${randomBytes(4).toString("hex")}`;
@@ -3152,8 +3197,21 @@ async function makeSharedCheckout(
       continue;
     }
     try {
-      if (existsSync(markerFile)) continue;
       const started = performance.now();
+      const seconds = () => Math.round((performance.now() - started) / 100) / 10;
+      const made = madeMarker();
+      if (made !== undefined) {
+        if (serves(made)) continue;
+        const marker = { ...made, jj: await colocateJj(dir) };
+        writeWhole(markerFile, json(marker));
+        say(
+          r,
+          marker.jj === true
+            ? `the checkout of ${repo} at ${commit} is made a colocated jj repository in ${seconds()} s: ${dir}`
+            : `the checkout of ${repo} at ${commit} could not be made a colocated jj repository (${marker.jj.why}), so no jj command of a session that ran jj is answered: ${dir}`
+        );
+        return { dir, marker };
+      }
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true });
       let why: string | undefined;
@@ -3179,18 +3237,26 @@ async function makeSharedCheckout(
         cpSync(tree, dir, { recursive: true, verbatimSymlinks: true });
       }
       const removedLinks = removeOutsideLinks(dir);
+      const colocated = jj && why === undefined ? await colocateJj(dir) : undefined;
       const marker: CheckoutMarker = {
         git: why === undefined,
         depth: why === undefined ? CHECKOUT_DEPTH : null,
         removedLinks,
-        seconds: Math.round((performance.now() - started) / 100) / 10,
+        ...(colocated === undefined ? {} : { jj: colocated }),
+        seconds: seconds(),
         bytes: bytesUnder(dir),
         ...(why === undefined ? {} : { why }),
       };
       writeWhole(markerFile, json(marker));
+      const jjWords =
+        colocated === undefined
+          ? ""
+          : colocated === true
+            ? "; a colocated jj repository"
+            : `; no jj repository (${colocated.why}), so no jj command of a session that ran jj is answered`;
       say(
         r,
-        `the checkout of ${repo} at ${commit} is made in ${marker.seconds} s, ${mib(marker.bytes)} MiB (${marker.git ? `git, its history ${CHECKOUT_DEPTH} commits deep` : "GitHub's tarball, no history"}; ${removedLinks.length === 0 ? "no symbolic link leaves it" : `${removedLinks.length} symbolic links that leave it removed: ${removedLinks.join(", ")}`}): ${dir}`
+        `the checkout of ${repo} at ${commit} is made in ${marker.seconds} s, ${mib(marker.bytes)} MiB (${marker.git ? `git, its history ${CHECKOUT_DEPTH} commits deep` : "GitHub's tarball, no history"}; ${removedLinks.length === 0 ? "no symbolic link leaves it" : `${removedLinks.length} symbolic links that leave it removed: ${removedLinks.join(", ")}`}${jjWords}): ${dir}`
       );
       return { dir, marker };
     } finally {

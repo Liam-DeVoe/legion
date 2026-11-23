@@ -4985,6 +4985,134 @@ describe("behaviour: a replay's reads of skill files", () => {
     expect(readFileSync(path.join(checkouts, commit, "docs", "guide.md"), "utf8")).toBe(guide);
   }, 120_000);
 
+  // Catches: a jj command of a written case whose session ran jj answered with an error that
+  // session never saw (the copy no jj repository), one of a session that ran none answered as in a
+  // jj workspace, a checkout made again to add jj, or an answer that names the cache's copy in
+  // place of the session's paths.
+  test("the shared checkout is made a colocated jj repository once a written case whose session ran jj needs it, recorded in its marker and that case's stage; jj, git and pwd answer at the session's paths, and no answer names the copy", async () => {
+    const base = scenario("checkout-jj", LOSS_SKILL(), [{ id: "c04" }]);
+    const guide = "# Guide\n\nRun the app.\n";
+    const { repos, commit } = gitRepository(base.dir, { "docs/guide.md": guide });
+    const root = "/work/acme/proj";
+    const checkout = { repo: "acme/proj", commit, root, cwd: root };
+    // w00's session ran no jj; w01's ran `jj st`, its result in its history.
+    const ranJj = (c: Case): Case => ({
+      ...c,
+      messages: [
+        ...c.messages,
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "written_jj",
+              name: "bash",
+              arguments: { command: `cd ${root} && jj st` },
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "written_jj",
+          toolName: "bash",
+          content: [{ type: "text", text: "The working copy has no changes." }],
+        },
+      ],
+    });
+    const written = [
+      { ...makeWrittenCase("w00"), checkout },
+      ranJj({ ...makeWrittenCase("w01"), checkout }),
+    ];
+    const cases = [...base.cases, ...written];
+    writeFileSync(base.casesFile, `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+    const markers = new Map([...base.markers, ["w00", ""] as const, ["w01", ""] as const]);
+    const s = { ...base, cases, markers };
+    recordCaptures(s, ["old", "new", "none"]);
+    // Each run looks where it is as the dev box's sessions do, then acts.
+    const where = `cd ${root} && unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM ACME_TOOLS_PIN && pwd && (jj root 2>/dev/null || git rev-parse --show-toplevel) && git worktree list`;
+    const answered: { id: string; texts: string[]; errors: boolean[] }[] = [];
+    let calls = 0;
+    answer = (body) => {
+      if (isJudgement(body)) return behaviourStandIn(body);
+      const last = (body.messages as { content: unknown }[]).at(-1)?.content;
+      const results = Array.isArray(last)
+        ? last.filter((block) => String(block?.tool_use_id).startsWith("toolu_where_"))
+        : [];
+      if (results.length > 0) {
+        answered.push({
+          id: JSON.stringify(body).match(/Case (w0\d)/)?.[1] ?? "",
+          texts: results.map((block) =>
+            block.content[0].text.replace(/\n\nWall time: \d+\.\d\d seconds/g, "")
+          ),
+          errors: results.map((block) => block.is_error === true),
+        });
+        return behaviourStandIn(body);
+      }
+      calls += 1;
+      const call = (n: number, command: string) => ({
+        type: "tool_use" as const,
+        id: `toolu_where_${calls}_${n}`,
+        name: "bash",
+        input: { command },
+      });
+      return sseResponse(
+        messageSse({
+          id: `msg_where_${calls}`,
+          model: "claude-sonnet-5-5",
+          content: [call(1, where), call(2, "jj st")],
+          stopReason: "tool_use",
+        })
+      );
+    };
+    const cache = path.join(s.dir, "cache");
+    const ran = await cli(behaviour("screen", s, "--repos", repos, "--cache-dir", cache));
+    expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+    const checkouts = path.join(cache, "checkouts", "acme", "proj");
+    // Made once by w00, with no jj; made a colocated jj repository once, for w01.
+    const said = ran.stdout
+      .split("\n")
+      .filter((line) => line.includes("the checkout of acme/proj"));
+    expect(said).toEqual([
+      expect.stringContaining("(git, its history 50 commits deep; no symbolic link leaves it)"),
+      expect.stringContaining(
+        `the checkout of acme/proj at ${commit} is made a colocated jj repository in `
+      ),
+    ]);
+    expect(readdirSync(checkouts).sort()).toEqual([commit, `${commit}.ready.json`]);
+    expect(
+      JSON.parse(readFileSync(path.join(checkouts, `${commit}.ready.json`), "utf8"))
+    ).toMatchObject({ git: true, jj: true });
+    const plain = { git: true, depth: 50, removedLinks: [] };
+    expect(result(s.out, "w00").stages.screen?.checkout).toEqual(plain);
+    expect(result(s.out, "w01").stages.screen?.checkout).toEqual({ ...plain, jj: true });
+    const shape = new RegExp(`^${root}\\n${root}\\n${root} +[0-9a-f]{7,} \\(detached HEAD\\)\\n$`);
+    for (const id of ["w00", "w01"]) {
+      const mine = answered.filter((each) => each.id === id);
+      expect(mine.length).toBeGreaterThan(0);
+      for (const { texts, errors } of mine) {
+        expect(texts[0]).toMatch(shape);
+        if (id === "w00") {
+          expect({ text: texts[1]?.split("\n")[0], error: errors[1] }).toEqual({
+            text: 'Error: There is no jj repo in "."',
+            error: true,
+          });
+        } else {
+          expect(texts[1]).toContain("The working copy has no changes.");
+          expect(texts[1]).toContain("Add the guide");
+        }
+      }
+    }
+    expect(JSON.stringify(answered)).not.toContain(cache);
+    for (const id of ["w00", "w01"]) {
+      for (const run of result(s.out, id).stages.screen?.runs ?? []) {
+        expect({ rounds: run.checkoutRounds, unanswered: run.unanswered }).toEqual({
+          rounds: 1,
+          unanswered: undefined,
+        });
+      }
+    }
+  }, 180_000);
+
   // Catches: a model-written call of a written case's run that reads a file outside its checkout
   // copy (a key file of the pod) through a symbolic link the repository holds, so its text reaches
   // the model and the run records posted on Dispatch; or a half-made checkout, left by a run that

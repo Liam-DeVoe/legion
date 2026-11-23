@@ -4,6 +4,7 @@ import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { type Arm, type SkillCopy, snapshotTag } from "./arms";
+import type { CheckoutCopy } from "./checkout";
 import {
   bodyIdentity,
   type ContentBlock,
@@ -458,8 +459,9 @@ function jsonReply(content: Record<string, unknown>[], stop: string): Response {
 }
 
 // Catches: a reply's read of the skill by its path on disk taken for the judged step, so an arm
-// is judged while it still loads the skill, or answered with one text in every arm.
-test("answers a reply's whole read by path of the cut's own copy by arm, and a read of it with a line range with the lines of its range; another selector is the judged step", async () => {
+// is judged while it still loads the skill, or answered with one text in every arm; or a range
+// past the file's end judged as the step where the pin answers it with its notice.
+test("answers a reply's whole read by path of the cut's own copy by arm, and a read of it with a line range with the lines of its range, or the pin's notice for a range past its end; another selector is the judged step", async () => {
   const pathCopy = { dir: COPY, shownDir: SHOWN, rows: "hashline" as const };
   const old: Arm = {
     ...armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD }),
@@ -530,6 +532,24 @@ test("answers a reply's whole read by path of the cut's own copy by arm, and a r
     ],
   });
   expect(replayed.step.message.content).toEqual([ranged, ACT]);
+  // A range past the copy's end is answered with the pin's notice.
+  const past = {
+    ...call,
+    input: { path: `${COPY}/SKILL.md:${lines.length + 5}-${lines.length + 9}` },
+  };
+  const beyond = scripted([[past], [ACT]]);
+  const answeredPast = await replayOnce({ ...BODY, stream: false }, old, beyond.gateway);
+  expect(answeredPast.rounds).toBe(1);
+  expect(beyond.bodies[1]?.messages.at(-1)).toEqual({
+    role: "user",
+    content: [
+      toolResult(
+        "toolu_path",
+        `Line ${lines.length + 5} is beyond end of file (${lines.length} lines total). Use :1 to read from the start, or :${lines.length} to read the last line.`,
+        false
+      ),
+    ],
+  });
   const raw = { ...call, input: { path: `${COPY}/SKILL.md:raw` } };
   const judged = await replayOnce({ ...BODY, stream: false }, old, scripted([[raw]]).gateway);
   expect({ rounds: judged.rounds, step: judged.step.message.content }).toEqual({
@@ -1529,6 +1549,63 @@ test("a written case's reply whose calls all read is answered from a copy of its
     })),
   ]);
   expect(replayed.step.message.content).toEqual([...INSPECTION, WRITE_ACT]);
+});
+
+/** checkoutCopy's copy made a git checkout of one commit with a detached HEAD, as cli.ts's shared
+ *  checkout is. */
+function gitCheckoutCopy(): CheckoutCopy {
+  const copy = checkoutCopy();
+  const git = (...args: string[]) => {
+    const ran = Bun.spawnSync(["git", ...args], {
+      cwd: copy.dir,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: copy.dir,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_AUTHOR_NAME: "Acme",
+        GIT_AUTHOR_EMAIL: "dev@acme.test",
+        GIT_COMMITTER_NAME: "Acme",
+        GIT_COMMITTER_EMAIL: "dev@acme.test",
+      },
+    });
+    expect({ args, code: ran.exitCode, err: ran.stderr.toString() }).toMatchObject({ code: 0 });
+    return ran.stdout.toString().trim();
+  };
+  git("init", "--quiet");
+  git("add", ".");
+  git("commit", "--quiet", "-m", "Add the app");
+  git("checkout", "--quiet", "--detach", git("rev-parse", "HEAD"));
+  return { ...copy, git: true };
+}
+
+// Catches: a written case of the dev box judged on its agent's first look at the work (the defect:
+// every judged step of test-driven-development's written cases was such a bash call, which starts
+// with `unset`, prints `pwd`, and asks jj or git where it is, in a subshell), or an answer that
+// shows the copy's own path in place of the session's.
+test("a written case's reply that unsets variables, prints pwd and asks jj or git where it is, in a subshell, is answered from the copy at the session's paths, and the act after it is judged", async () => {
+  const copy = gitCheckoutCopy();
+  const look = toolCall("toolu_where", "bash", {
+    command: `cd ${SESSION_ROOT} && unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM ACME_TOOLS_PIN && pwd && (jj st 2>/dev/null || git status --short) && git worktree list`,
+  });
+  const top = toolCall("toolu_top", "bash", { command: "git rev-parse --show-toplevel" });
+  const { gateway, bodies } = scripted([[look, top], [WRITE_ACT]]);
+  const replayed = await replayOnce(
+    { ...BODY, stream: false },
+    armWith("old", { "SKILL.md": SKILL_MD }),
+    gateway,
+    { checkout: copy }
+  );
+  const last = bodies[1]?.messages.at(-1) as { content: { content: { text: string }[] }[] };
+  const texts = last.content.map((result) =>
+    (result.content[0]?.text ?? "").replace(/\n\nWall time: \d+\.\d\d seconds/, "")
+  );
+  expect(texts[0]).toMatch(
+    new RegExp(`^${SESSION_ROOT}\\n${SESSION_ROOT} +[0-9a-f]{7,} \\(detached HEAD\\)\\n$`)
+  );
+  expect(texts[1]).toBe(`${SESSION_ROOT}\n`);
+  expect(JSON.stringify(bodies)).not.toContain(copy.dir);
+  expect(replayed.checkoutRounds).toBe(1);
+  expect(replayed.step.message.content).toEqual([look, top, WRITE_ACT]);
 });
 
 // Catches: a written case's read of a code file the pin may summarize, or a ranged read, left

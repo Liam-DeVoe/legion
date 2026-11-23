@@ -335,19 +335,30 @@ with `--repos`), `git fetch --depth=50 --filter=blob:none origin <commit>` and `
 --detach <commit>` (a whole clone of a large repository's history does not finish in a stage's
 time: on a repository of 115,950 files the fetch took 12.9 s and the checkout 547 s and 2.7 GB);
 then every symbolic link in it that resolves outside it or not at all is removed (`checkout.ts`'s
-`removeOutsideLinks`; a link that resolves inside stays), and its marker
-(`<commit>.ready.json`: whether it is git, its depth, the links removed, the seconds and bytes of
-its making) is written last, so a half-made checkout is never used. A lock (`<commit>.lock`, the
+`removeOutsideLinks`; a link that resolves inside stays); where the case's context session ran jj
+(a `bash` call of its history runs `jj`), the git checkout is then made a colocated jj repository
+(`checkout.ts`'s `colocateJj`: `jj git init --colocate`, then `jj status`, whose snapshot of the
+working copy is taken once there, so no answer's jj command writes to it; with the runner's jj,
+found on its PATH); and its marker (`<commit>.ready.json`: whether it is git, its depth, the links
+removed, `jj` when made a jj repository, the seconds and bytes of its making) is written last, so
+a half-made checkout is never used. A checkout made before a case whose session ran jj asks for one
+is made a colocated jj repository then, once, under the same lock, and its marker written again; a
+`jj git init --colocate` that fails is recorded (`"jj": {"why"}`), its `.jj` removed, and no jj
+command of a session that ran jj is answered. A lock (`<commit>.lock`, the
 pid of the run making it) keeps two runs from making it at once: a run that finds the lock of a
 live process waits for the marker; one that finds the lock of a process that runs no more removes
 it and the half-made checkout and makes it again, and says so. Its making is said once, with its
-seconds and size. Where a git step fails, the checkout is GitHub's tarball of the commit
-(context.ts's tree read, kept in `--cache-dir`) copied there, shared the same way, and its git
-commands are not answered. Each stage records the checkout it answered from (`checkout`: `{"git",
-"depth", "removedLinks"}`): its history is 50 commits deep, so `git log` shows at most 50 commits
-and then the shallow boundary, and `git status` shows a detached HEAD (the session's branch is not
-known) and each link removed as deleted; git runs with `GIT_OPTIONAL_LOCKS=0`, so `git status`
-writes no index there. The answers are
+seconds and size, and its colocation once. Where a git step fails, the checkout is GitHub's tarball
+of the commit (context.ts's tree read, kept in `--cache-dir`) copied there, shared the same way, and
+its git and jj commands are not answered. Each stage records the checkout it answered from
+(`checkout`: `{"git", "depth", "removedLinks"}`, and `"jj"`: `true` or `{"why"}`, once a case whose
+session ran jj made it a jj repository or failed to): its history is 50 commits deep, so `git log`
+shows at most 50 commits and then the shallow boundary, and `git status` shows a detached HEAD (the
+session's branch is not known) and each link removed as deleted; git runs with
+`GIT_OPTIONAL_LOCKS=0`, so `git status` writes no index there. A jj command answers as in a jj
+workspace at the commit where the copy is a colocated jj repository, and as jj does in a checkout
+that is no jj repository (`Error: There is no jj repo in "."`) where the case's session ran no jj
+and no case made it one. The answers are
 the pinned Oh My Pi's forms (`checkout.ts`): `read` as a whole read by path, its rows as the
 case's reads by path show them, or `Path '<path>' not found`; a file that is no prose too (no
 notebook, SVG or document), and one of 100 lines or more, which Oh My Pi may show summarized,
@@ -356,21 +367,43 @@ unsummarized in place of the summary, the same in every arm, its round's record 
 Oh My Pi pages it unsummarized (`read.defaultLimit`): its first 300 lines, then `[<n> more lines
 in file. Use :301 to continue]`; a read with one line range with the lines of its range (the hashline line,
 a line before and three after, then `[<n> more lines in file. Use :<next> to continue]`; the
-lines alone where the pin widens a code file's range to its brackets); `grep` and
+lines alone where the pin widens a code file's range to its brackets), and a range that starts
+past the file's end with the pin's notice alone, no error (`Line <n> is beyond end of file
+(<lines> lines total). Use :1 to read from the start, or :<lines> to read the last line.`; so is
+such a range of the cut's own copy read by path, in every arm); `grep` and
 `glob` in their tools' forms (one line of context before a match, three after; `glob`'s paths in
-path order, since a checkout keeps no times of change); `bash` run in the checkout, its working
+path order, since a checkout keeps no times of change; `.git` and `.jj` left out of both). A
+`glob` path with no glob character is a directory, every file and directory under which matches,
+or a file, which answers itself; a path that is a list joined by `;` (outside braces) answers each
+of its patterns, a pattern whose directory is not there noted after the paths (`Skipped missing
+paths: <patterns>`), and a limit above 200 is noted as clamped (`Requested limit <n> clamped to the
+max of 200`); a list joined by commas or blanks, a single pattern (or every pattern of a list)
+whose base is not there, and a file under a glob are not answered (the pin's error is not
+rebuilt). `bash` runs in the checkout, its working
 directory and the checkout's root mapped between the session's paths and the runner's, its output
-as Oh My Pi's bash tool gives it, within 30 s and 50 KB (a line of at most 768 characters). The
+as Oh My Pi's bash tool gives it, within 30 s and 50 KB (a line of at most 768 characters), in an
+environment of its own: the system's PATH and the directory of the runner's jj, HOME
+`/nonexistent` (so no file of the repository is read as the user's git or jj configuration, even
+where the command unsets `GIT_CONFIG_GLOBAL`), and no system or global git configuration. Every
+path an answer shows is the session's: the copy's own path, as given and as its real path, becomes
+the session's checkout root in every output, so `pwd` gives the session's working directory, `git
+rev-parse --show-toplevel`, `git worktree list` and `jj root` its checkout root, and an error
+message the session's path; a test holds that no answer of a fixture run shows the copy's path. The
 calls are the model's, run on the runner's machine, so none may read a file outside the checkout:
 with no link out of it left, `cat` of a link, `grep -R`, `rg --follow`, `find -L` and a
 `read` follow no link out, and no option that follows links is refused. Beside that, a `read`,
 `grep` or `glob` whose target resolves outside the copy is not answered, nor is a `bash` command a
-word of which may lead outside it: a `$` or brace expansion, a path under `~`, a word naming
+word of which may lead outside it: a word whose expansion the runner cannot place inside the
+checkout (it follows a variable the command assigned, `$PWD`, `$(pwd)`, `$(git rev-parse
+--show-toplevel)` and, in a colocated copy, `$(jj root)`; not one assigned only in a branch of `||`
+or `&&`, or from another substitution), a brace expansion, a path under `~`, a word naming
 `.git`, an absolute path off the checkout's root, a relative one that leaves the root from any
-directory a `cd` before it may have moved to, or an option's attached path that does. A reply one
+directory a `cd` before it may have moved to, or an option's attached path that does; nor one that
+expands `$HOME` or `$PATH`, whose value would be the runner's. A reply one
 of whose read-only calls the copy answers in no form (a read with another selector or of a
-directory, a path outside the checkout or under `~`, a git command where the copy is the tarball,
-an output Oh My Pi's minimizer would rewrite, a `find` or `ls` tool, a run past its time) gets no
+directory, a path outside the checkout or under `~`, a git or jj command where the copy is the
+tarball, a jj command where its colocation failed, an output Oh My Pi's minimizer would rewrite, a
+`find` or `ls` tool, a run past its time) gets no
 verdict, never judged on that call: its reason begins `unanswered-read:` and names the call and
 why, and it is run again as any run with no verdict (at most 5 extra runs a case, stage and arm;
 an arm that cannot finish for such runs and those that read past round 5 drops its case as
@@ -387,21 +420,38 @@ whole text in place of the pin's summary; written: …`.
 
 #### Read-only calls
 
-One rule (`checkout.ts`'s `readOnlyCall`, its lists `READ_ONLY_TOOLS`, `READ_ONLY_PROGRAMS` and
-`READ_ONLY_GIT`) decides both the checkout rounds and the report's inspection floors. A read-only
-call is a call of the `read`, `grep`, `glob`, `find` or `ls` tool (the pinned Oh My Pi's file
-finder is `glob`; `find` and `ls` are declared by no capture), or a `bash` call whose every
-command, joined only by pipes, `&&`, `||`, `;` or line ends, is `cd`, `cat`, `head`, `tail`,
-`ls`, `find` (without `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`,
-`-fprintf` or `-fls`), `grep`, `rg` (without `--pre`), `wc`, `sed -n` (without `-i`, or a `w`,
-`W` or `e` command), `nl`, `stat`, `file` (without `-C`), `tree` (without `-o`), or `git` (with at
-most `-C <dir>`, `--no-pager` or `-P` before it) `log`, `show`, `diff`, `status`, `grep`,
-`ls-files` or `blame` (without `--output`, `-O`, `--open-files-in-pager`, `--ext-diff` or
-`--no-index`, with which `git diff` reads files outside the repository), with no
-redirection to a file (`/dev/null`, a copy of one stream into another such as `2>&1`, and an
-input `<` are allowed). A command substitution, a backtick, a process substitution, a variable
-assignment, a subshell or `{ }` group, a background `&`, a heredoc, a comment, a program named by
-its path, or any other command makes the call not read-only.
+One rule (`checkout.ts`'s `readOnlyCall`, its lists `READ_ONLY_TOOLS`, `READ_ONLY_PROGRAMS`,
+`READ_ONLY_GIT` and `READ_ONLY_JJ`) decides both the checkout rounds and the report's inspection
+floors. A read-only call is a call of the `read`, `grep`, `glob`, `find` or `ls` tool (the pinned
+Oh My Pi's file finder is `glob`; `find` and `ls` are declared by no capture), or a `bash` call
+whose commands, joined by pipes, `&&`, `||`, `;` or line ends, in a subshell `( … )`, a group
+`{ …; }` or a command substitution (`$(…)`, or a backtick with no `\` in it; each counted by its
+inner commands), are each `cd`, `cat`, `head`, `tail`, `ls`, `find` (without `-exec`, `-execdir`,
+`-ok`, `-okdir`, `-delete`, `-fprint`, `-fprint0`, `-fprintf` or `-fls`), `grep`, `rg` (without
+`--pre`), `wc`, `sed -n` (without `-i`, or a `w`, `W` or `e` command), `nl`, `stat`, `file`
+(without `-C`), `tree` (without `-o`), `pwd`, `true`, `echo`, `printf`, `env` with no command
+(`-0`, `-i`, `-u NAME`, then assignments), `unset` (but of `PATH`, `HOME`, `PWD` or
+`GIT_OPTIONAL_LOCKS`), `export`, an assignment `NAME=value` alone or before a command, `git` (with
+at most `-C <dir>`, `--no-pager` or `-P` before it) `log`, `show`, `diff`, `status`, `grep`,
+`ls-files`, `blame`, `rev-parse`, `worktree list`, `remote` (alone, `-v`, `show` or `get-url`) or
+`branch` with no name (alone, `-a`, `-r`, `-v`, `--list` or `--show-current`) (without
+`--output`, `-O`, `--open-files-in-pager`, `--ext-diff` or `--no-index`, with which `git diff`
+reads files outside the repository), or `jj` `status`, `st`, `log`, `show`, `diff`, `root`, `file
+show`, `bookmark list` or `workspace list` (without `--tool`, `--config`, `--config-toml` or
+`--config-file`, each of which may run a program), with no redirection to a file anywhere
+(`/dev/null`, a copy of one stream into another such as `2>&1`, and an input `<` are allowed). An
+assignment, `export` or `printf -v` affects only the call's own shell, and sets no variable that
+picks a program, a library, a configuration or a directory (`PATH`, `HOME`, `IFS`, `CDPATH`,
+`PAGER`, any `GIT_*`, `JJ_*`, `LD_*`, `XDG_*`, `BASH*`, …). A `$VAR` (or `${VAR}`) expansion is
+allowed of a variable the command assigns before it, or of `HOME`, `PATH` or `PWD`; a word of
+`find`, `rg`, `tree`, `file`, `sed`, `git` or `jj` takes one known value, so no expansion slips in
+an option that writes or runs a program. So `cd /work/acme/proj && unset GIT_CONFIG_GLOBAL && pwd
+&& (jj st || git status) && git worktree list` and `cd "$(git rev-parse --show-toplevel)"` are
+read-only, and `git branch new-name`, `git remote add x y`, `jj new`, `jj describe`, `export
+X=$(rm -rf /)`, `env -u X git status` and `(cat a > b)` are not. A process substitution, an
+arithmetic expansion, any other expansion (`$?`, `$1`, `${X:-y}`, `$'…'`), a background `&`, a
+heredoc or herestring, a comment, a program named by its path or an expansion, or any other
+command makes the call not read-only.
 
 #### The arm of ours
 

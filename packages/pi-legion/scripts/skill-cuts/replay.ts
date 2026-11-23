@@ -334,9 +334,10 @@ export interface SkillRead extends AnsweredCall {
  *  `:N`) is answered with those lines (`skillFileRange`, arms.ts's `pathFile` and
  *  `otherSkillRead`), one with any other selector not. A read of a directory of the arm's skill is
  *  none: Oh My Pi answers it with a listing, which the arm does not rebuild; nor is a read by path
- *  that `pathFile` does not answer, nor one `otherSkillRead` does not, nor a range past the end of
- *  its file. In the arm of ours, a read of the case's skill (`arm.ours.theirs`) gets Oh My Pi's
- *  unknown-skill text (`unknownSkill`): the arm does not install it. */
+ *  that `pathFile` does not answer, nor one `otherSkillRead` does not, nor a `skill://` range past
+ *  the end of its file (a range past the end of a file of the cut's copy read by path gets the
+ *  pin's notice, `pathFile`). In the arm of ours, a read of the case's skill (`arm.ours.theirs`)
+ *  gets Oh My Pi's unknown-skill text (`unknownSkill`): the arm does not install it. */
 function skillRead(
   id: string,
   target: string,

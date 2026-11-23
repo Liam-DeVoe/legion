@@ -719,12 +719,14 @@ function rangeWindow(
  * the hashline line of the whole file (hashline rows), then the rows `rangeWindow` gives (at most
  * READ_LINES lines from `first` of a range with no end), then `[<n> more lines in file. Use
  * :<next> to continue]` when lines of the file are left after them; `Path '<target>' not found`
- * for a file `dir` lacks. Where the pin widens a range of a code file to the brackets of the
- * blocks it cuts (`buildLineEntriesWithBlockContext`), this answers the lines alone. Returns why it
- * does not rebuild the read instead: a file of OWN_FORM_FILE, one that is no UTF-8 text, a range
- * that starts past the file's end (the pin's notice of it is not rebuilt) or of more than
- * READ_LINES lines, a shown line past READ_COLUMNS characters or one that opens a git conflict
- * block (the pin adds a notice of either), and lines past the bytes the pin shows of the range.
+ * for a file `dir` lacks; and for a range that starts past the file's end the pin's notice alone
+ * (read.ts lines 2750-2765), `Line <first> is beyond end of file (<n> lines total). Use :1 to read
+ * from the start, or :<n> to read the last line.`, no error. Where the pin widens a range of a
+ * code file to the brackets of the blocks it cuts (`buildLineEntriesWithBlockContext`), this
+ * answers the lines alone. Returns why it does not rebuild the read instead: a file of
+ * OWN_FORM_FILE, one that is no UTF-8 text, a range of more than READ_LINES lines, a shown line
+ * past READ_COLUMNS characters or one that opens a git conflict block (the pin adds a notice of
+ * either), and lines past the bytes the pin shows of the range.
  */
 export function pathRangeAnswer(
   dir: string,
@@ -748,7 +750,11 @@ export function pathRangeAnswer(
   const lines = raw.split("\n");
   if (lines.length > 1 && lines.at(-1) === "") lines.pop();
   if (read.first > lines.length) {
-    return `line ${read.first} is past the end of ${read.file} (${lines.length} lines), whose notice the runner does not rebuild`;
+    const total = lines.length;
+    return {
+      text: `Line ${read.first} is beyond end of file (${total} lines total). Use :1 to read from the start, or :${total} to read the last line.`,
+      isError: false,
+    };
   }
   const wanted = read.last === undefined ? READ_LINES : read.last - read.first + 1;
   if (wanted > READ_LINES) {
