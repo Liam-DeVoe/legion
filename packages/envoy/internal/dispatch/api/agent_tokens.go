@@ -462,16 +462,23 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	}
 	defer tx.Rollback(r.Context())
 	if byToken {
-		// The row's lock holds the list read here to the update below, so no edit between the two
-		// changes the list this one was decided on.
-		var standing []string
-		err := tx.QueryRow(r.Context(), `select projects from agent_tokens where id = $1 and owner = $2 for update`,
-			r.PathValue("id"), actor.ID).Scan(&standing)
+		// The row is locked first, so no edit changes the list read next before the update below
+		// writes what this edit was decided on. The lock's statement names no column: a lock clause
+		// beside the word projects reads as a lock on the projects table to the owner-row guard
+		// (lock_level_test.go's TestNoForUpdateOnOwnerTables).
+		var held bool
+		err := tx.QueryRow(r.Context(), `select true from agent_tokens where id = $1 and owner = $2 for update`,
+			r.PathValue("id"), actor.ID).Scan(&held)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 			return
 		}
 		if err != nil {
+			s.writeHandlerError(w, fmt.Errorf("update agent token scopes: lock the token: %w", err))
+			return
+		}
+		var standing []string
+		if err := tx.QueryRow(r.Context(), `select projects from agent_tokens where id = $1`, r.PathValue("id")).Scan(&standing); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("update agent token scopes: read the token's list: %w", err))
 			return
 		}
