@@ -16,7 +16,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 
-3. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
+3. Before you write the handoff or report your step, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
    another role that commits next sets aside whatever the working copy holds.
 
 4. Every role writes the one workspace, so a file can change under your check.

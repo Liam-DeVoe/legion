@@ -192,7 +192,9 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 		// phases holds only for the default steps, since a reviewer step before the acceptance is
 		// an earlier step too.
 		answers := []string{accepting, "to the phase of an earlier step of its task, with a `reason` that names the version and the change"}
-		duty := []string{summary, "a merged change never moves back", "whose pull request is still open", "`dispatch ask` the person on the root"}
+		// The person on the root is asked as "ask a person" says in go/architect-common.md: the root's
+		// architect, which alone gets this task, asks with dispatch ask.
+		duty := []string{summary, "a merged change never moves back", "whose pull request is still open", "ask the person on the root"}
 		r4 := []string{message, "`envoy_publish` to the role topic of the phase holder of each issue the version changes, naming the version and what changed"}
 		ruleIn(t, "go/architect-common.md", accepting, answers...)
 		ruleIn(t, "go/architect-common.md", summary, duty...)

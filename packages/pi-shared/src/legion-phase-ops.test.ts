@@ -189,6 +189,17 @@ test("the description sets the host's sentences before and after handoff_complet
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
 
+// Both hosts read this description, and Claude Code's tool offers the phase operations alone
+// (PHASE_OPS): no architect runs on Claude Code (the daemon's config refuses
+// `worker_backends.architect: claude`). So where it names sign_off it says whose operation that is.
+test("the description names sign_off as the architect's own operation, which no Claude Code session runs", () => {
+  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
+  expect(description).toContain(
+    "since an architect accepts with sign_off, the architect's own operation, and no architect runs on Claude Code; "
+  );
+  expect(description).not.toContain("since an architect accepts with sign_off; ");
+});
+
 // The daemon ends its HANDOFF_STALE_ENTRY refusal with the words that tell the worker what to do,
 // and the description must give the code those same words, so a worker reads one instruction in
 // its tool and in the refusal. The daemon's golden test

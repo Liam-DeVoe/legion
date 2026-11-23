@@ -54,8 +54,8 @@ The bundle holds one directory per owner the App is installed on, one more per o
 configured rename moved a repository away from while the project serves the name it moved to, and
 one for the issue's recorded owner.
 An issue pod shows its roles the directories that both Apps' bundles hold.
-No directory holds a read-only token, so a role writes in every repository its App reaches,
-whichever owner holds it.
+No directory holds a read-only token, so the role's whole bundle can write in every repository
+its App reaches, whichever owner holds it.
 The repository an issue names decides only which directory `GH_CONFIG_DIR` names: its owner's,
 or, for a repository a configured rename moved, the directory of the owner it moved to.
 The controller's bundle is the one bundle of read-only tokens.
@@ -555,7 +555,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
   The cap's message names both numbers, the rounds counted and the conflict rounds left out.
 - Each move back is counted by its kind, as the pair `<from>-<to>` of the phase it leaves
   and the phase it goes to — `testing-implementing`, `reviewing-implementing`, `merging-implementing`,
-  or any other of the 28 moves back a task's line can make, such as `testing-reviewing` on a
+  or any other of the 41 moves back a task's line can make, such as `testing-reviewing` on a
   task whose reviewer step comes before its tester step —
   beside the round count, and a move made while the head conflicts with its base raises no pair.
   `GET /legion/v1/state` serves the counts as `workers.implementer.backwardMoves`, left out for an

@@ -212,10 +212,11 @@ projects:
 #     roles: [implementer, tester, reviewer] # hook's own and is named once in the file. on is
 #                                      # the event: work_back, a move to an earlier phase, is the
 #                                      # one event the daemon has. moves are the moves back the
-#                                      # hook counts, each written <from>-<to> of two different
-#                                      # workflow phases (testing-implementing,
-#                                      # reviewing-implementing, merging-implementing, or any
-#                                      # other of the 28 moves back a task's line can make,
+#                                      # hook counts, each written <from>-<to> of two workflow
+#                                      # phases, which differ but in step-step
+#                                      # (testing-implementing, reviewing-implementing,
+#                                      # merging-implementing, or any other of the 41 moves
+#                                      # back a task's line can make,
 #                                      # such as testing-reviewing on a task whose review step
 #                                      # comes before its test step; a move into retro or
 #                                      # merging, or from implementing to a later step, is
@@ -273,9 +274,10 @@ github_apps:
 # worker_backends:                     # a phase worker's role (planner, implementer, tester, reviewer,
 #   implementer: claude                # merger, or a role of roles) on omp, the default, or claude:
 #                                      # Claude Code under `legion claude-bridge`, which runs under either
-#                                      # runtime. In a pod, as in this file, it runs out of the worker
-#                                      # image, which carries Claude Code and the claude-envoy plugin;
-#                                      # under runtime: tmux it needs LEGION_CLAUDE_PLUGIN_DIR (and
+#                                      # runtime. In a pod, as in this file, the worker image carries the
+#                                      # claude-envoy plugin and Claude Code's pin, not Claude Code. Each
+#                                      # launch there installs the pinned release. Under runtime: tmux it
+#                                      # needs LEGION_CLAUDE_PLUGIN_DIR (and
 #                                      # LEGION_CLAUDE_PATH, LEGION_BUN_PATH, else PATH) in the daemon's
 #                                      # environment. Legion holds no model route for it either: put
 #                                      # ANTHROPIC_API_KEY in provider_keys (pod.env refuses a
@@ -568,7 +570,7 @@ runtime:
         # - {volume: operator-experiments, mount_path: /etc/legion-experiments} # a variant's config_files overlays
 
 # The daemon reports, at boot, in `legion state` and to the controller on every tick, each worker
-# capability the deployment's own configuration closes or leaves open (LEGION-578): the secrets
+# capability the deployment's own configuration closes or leaves open: the secrets
 # broker (runtime.kubernetes.agent_secrets), model fallback (retry.modelFallback in the operator's
 # overlay, read by the image probe) and every pod's reservation (resources above, which the
 # daemon's defaults fill for every pod, so that row is present on every Kubernetes deployment). A
