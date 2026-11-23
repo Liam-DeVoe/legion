@@ -319,8 +319,8 @@ export const PHASE_OP_SENTENCES = {
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-    "The architect that owns an issue moves it, named by `issue`, back to an earlier step of its task from a step it does itself: " +
-    "its acceptance in accepting, a step whose key is owner, or a retro it does. That move counts no review round. ",
+    "The architect that owns an issue moves it, named by `issue`, back to an earlier step of its task from a step it does itself. " +
+    "Such a step is its acceptance in accepting, a step whose key is owner, or a retro it does. That move counts no review round. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -361,29 +361,35 @@ export function legionToolDescription(host: {
   return (
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
-    "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off and reports a step of its own with complete_step; " +
-    "the daemon accepts a completion only from the role working the issue's current phase, " +
-    "or a role's first completion of the phase it left, which it records and which moves nothing, " +
-    "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-    "architect), `verdict` pass|fail on a phase completion from the tester, a role of the deployment or of the plan, the fresh agent of acceptance " +
-    "and a reviewer of an issue with no pull request, each of which must send one (the daemon refuses a verdict from any other role there, " +
-    "and from the retro) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
-    "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
-    "A fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-    "to; without it, the task goes back to the first implementation step before the step that failed, and where no such step stands " +
+    "handoff_complete (phase workers alone) reports this phase complete. The daemon refuses an architect's completion, with " +
+    "ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first. That is because an architect accepts with sign_off and reports a step " +
+    "of its own with complete_step. The daemon accepts a completion from the role working the issue's current phase. " +
+    "It also accepts a role's first completion of the phase it left, which it records and which moves nothing. " +
+    "It also accepts the checking role's report on a look of its closed issue's production check. It accepts no other completion. " +
+    "`summary` is two sentences for the architect. " +
+    "`verdict` is pass|fail on a phase completion from the tester or a role of the deployment or of the plan. " +
+    "It is pass|fail too on one from the fresh agent of acceptance and from a reviewer of an issue with no pull request. " +
+    "Each of these roles must send one. The daemon refuses a verdict from any other role there, and from the retro. " +
+    "On a production check report, `verdict` is pass|pending|fail. " +
+    "The report sends pending when production does not carry the merge yet. It also sends pending when production carries the merge " +
+    "with a requirement only the deploy can show still unobserved and a look still to follow. " +
+    "On the check's last look, it sends pending only for an issue with no such requirement. " +
+    "A fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first. The task goes back to that step. " +
+    "Without `return_to`, the task goes back to the first implementation step before the step that failed. Where no such step stands " +
     "before it, Legion stops the task and tells its owner (task-stopped). Only a completion with the verdict " +
     "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
     "(RETURN_REFUSED). " +
     "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
-    "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
-    "and reports it with `commit`, the head that record's body names " +
-    "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
+    "calling. This call reads from Dispatch the newest record of your role's phase or, once the issue has moved on, of the phase it left. " +
+    "It reports the record with `commit`, the head that record's body names " +
+    "(`head`, the 40-character lower-case commit the work it reports was done against). In implementing, the implementer's must be the commit its " +
     "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first. Retro, the merger, the role acceptance and each role " +
     "of the deployment or of the plan write no handoff record. Each reports the commit the workspace stands on. So does a phase you left with no " +
-    "record, or with an implement record naming no head. It " +
-    "refuses, posting nothing, a planning, implementing, testing or reviewing phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
-    "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
+    "record, or with an implement record naming no head. It refuses a planning, implementing, testing or reviewing phase you work with no " +
+    "record, and a Dispatch that does not answer. In implementing, it also refuses an implement record naming no head, and an " +
+    "implementer's `@-` not yet on `legion/<issue>@origin`. There it also refuses an implement record whose head is not that pushed `@-`. " +
+    "Each of these refusals posts nothing and names the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
     "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
     "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
@@ -392,16 +398,15 @@ export function legionToolDescription(host: {
     `The completion that ends the retro carries \`plan_rating\` (${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}) and \`plan_reason\`, as ` +
     "skill://legion-retro says, and the daemon refuses a completion that breaks that skill's rating rule " +
     "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
-    "The daemon refuses " +
-    "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
-    "write this phase's handoff), " +
-    "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
-    `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
-    "pull request on `legion/<issue>` and none recorded " +
-    "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide), and the pass of the fresh agent of " +
-    "acceptance while an issue beneath its issue is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one: send the same completion " +
-    "again once each has left); a refused completion changed " +
-    "nothing, so fix what it names and complete again. " +
+    "The daemon refuses HANDOFF_SESSION_MISMATCH (another session wrote the record). It refuses HANDOFF_NOT_NEW (the record is " +
+    "the one you named for your previous phase: write this phase's handoff). " +
+    "It refuses HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names. That is because " +
+    `the phase was entered again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}). The daemon refuses the implementer's completion of implementing with no open ` +
+    "pull request on `legion/<issue>` and none recorded merged " +
+    "(HANDOFF_NO_PULL_REQUEST: open it). A HANDOFF_NO_PULL_REQUEST naming a closed pull request is the architect's to decide. " +
+    "The daemon refuses the pass of the fresh agent of acceptance while an issue beneath its issue is still in the workflow " +
+    "(SIGNOFF_CHILD_IN_WORKFLOW). The refusal names each one: send the same completion again once each has left. " +
+    "A refused completion changed nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
     "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
