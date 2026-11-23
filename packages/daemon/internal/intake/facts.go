@@ -2125,7 +2125,7 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 //
 // An entry behind the row's whose run is another agent's is a turn of that agent
 // (AnotherAgentsStep): two agents of one role keep a row each, as `implementer:a tester:b
-// implementer:b` does once a failed review returns the task to key a's step 1 while key b's turn
+// implementer:b` does once a move back returns the task to key a's step 1 while key b's turn
 // of step 3 is still open. served, the claim the role's row on the served entry names, is then not
 // holder, the claim of the row the task stands at, whose entry's task goes to holder alone, so
 // StaleEntry's words, which tell the worker that task comes to it, would have it wait for nothing.
@@ -2160,12 +2160,13 @@ func EntryFence(issue record.Issue, role claim.Role, served, holder claim.Token,
 // claim of role on issue, of a step whose run's row names another claim, holder, on a step of the
 // plan (stepTask), and nil where token works the step. Two claims of one issue can hold one role —
 // the agent of a key on a step of another role, beside that role's own claim of an earlier version
-// of the plan — and the row names the one that works its step (record.WorkerClaim), so a completion
-// from the other is no report of the step. A row of no step (stepTask "") or one that names no
-// claim names no worker, and a completion that names no claim, from a route before the claim was
-// carried, is judged by its role. A completion of an entry token's own claim served (served,
-// record.ServedClaim) is the entry fence's to answer: a step token ran that the task has since left
-// for another agent's step, which EntryFence refuses naming that agent (AnotherAgentsStep).
+// of the plan, or two agents at two steps of the role — and the row names the one that works its
+// step (record.WorkerClaim), so a completion from the other is no report of the step. A row of no
+// step (stepTask "") or one that names no claim names no worker, and a completion that names no
+// claim, from a route before the claim was carried, is judged by its role. A completion of an
+// entry token's own claim served (served, record.ServedClaim) is the entry fence's to answer: a
+// step token ran that the task has since left for another agent's step, which EntryFence refuses
+// naming that agent (AnotherAgentsStep).
 //
 // Both judges ask it before EntryFence: the completion route on its read, where the role works the
 // issue's phase, and the workflow's handoff on its own. Asked after, the fence would refuse such a
