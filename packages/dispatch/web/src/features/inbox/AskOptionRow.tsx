@@ -47,15 +47,14 @@ function OptionText({ option }: { option: AskOptionWithTrees }): ReactNode {
  * Other included as the digit after the last real option - and `digit` is the key the row draws
  * for that, beside its text and hidden from assistive tech, whose name for the option stays its
  * label (`option-digits.ts`). `approval` marks one of an approval request's two options
- * `data-ask-approval`, which the Inbox's `a` and Shift+R pick it by. `held` while the card's
- * answer is out: the input keeps the focus and its Tab stop, and a pick made then changes nothing
- * (`heldPress`). */
+ * `data-ask-approval`, which the Inbox's `a` and Shift+R pick it by. While the card's answer is
+ * out the options are held by their group (`AskCard`), so the row puts no attribute of its own on
+ * its input. */
 export function AskChoiceRow({
   approval,
   checked,
   className = "",
   digit,
-  held = false,
   hotkey = false,
   multiple,
   name,
@@ -66,7 +65,6 @@ export function AskChoiceRow({
   checked: boolean;
   className?: string;
   digit?: OptionDigit;
-  held?: boolean;
   hotkey?: boolean;
   multiple: boolean;
   name: string;
@@ -80,15 +78,11 @@ export function AskChoiceRow({
       className={`${ROW_CLASS} cursor-pointer ${checked ? `${selectedCardBorder} ${selectedCardBg}` : cardHoverBorder} ${className}`}
     >
       <input
-        aria-disabled={held || undefined}
         checked={checked}
-        className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
         data-ask-approval={approval}
         data-ask-option={hotkey ? "" : undefined}
         name={name}
-        onChange={() => {
-          if (!held) onChange();
-        }}
+        onChange={onChange}
         type={multiple ? "checkbox" : "radio"}
       />
       <OptionText option={option} />

@@ -69,7 +69,6 @@ import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { stoppedNote } from "../writes/useKeyedWrite";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -91,7 +90,7 @@ import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { inboxActionMark } from "./inbox-action-mark";
 import { useOptionDigits } from "./option-digits";
-import { useAskAnswerForm } from "./useAskAnswerForm";
+import { clarificationRefusal, useAskAnswerForm } from "./useAskAnswerForm";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
   api.answerAsk(id, input, bounds);
@@ -417,11 +416,11 @@ export function AskCard({
   };
   // The digit each option row draws where an Inbox holds this card in hand (`option-digits.ts`).
   const digitOf = useOptionDigits(displayedAsk.id);
-  // A control that disables itself under the reader's focus - Ask back once its text is sent,
-  // since a send that is out only holds it - would have the browser drop focus to the document
-  // body (in the Inbox, out of the row, which then lets the row go) with nothing the card could
-  // act on afterwards; the same hand-off as a vanishing form, in the commit that disables it,
-  // before the browser looks.
+  // A control that disables itself under the reader's focus - Ask back once its text is sent and
+  // the card no longer holds - would have the browser drop focus to the document body (in the
+  // Inbox, out of the row, which then lets the row go) with nothing the card could act on
+  // afterwards; the same hand-off as a vanishing form, in the commit that disables it, before the
+  // browser looks.
   const [formRef, trackForm] = useFormRef();
   useLayoutEffect(() => {
     const form = formRef.current;
@@ -431,31 +430,29 @@ export function AskCard({
     }
   });
   const tooltips = useTooltips();
-  // While the answer or the question back is out, the form's controls are held rather than
-  // disabled: whichever holds the focus keeps it (`heldPress`, `heldField`), and none sends a
-  // second write. Inside `NoTooltips` the card holds its form from the press until that write is
-  // done with: while it is out, and, once it lands, until a read of the ask's thread newer than
-  // the landing is drawn (`awaitingRead`). Until then the form on the page is stale: after an
-  // answer that landed with no body to show, its options are still picked, and Answer would send
-  // a second answer. A landing that starts no read of the thread ends the hold as it lands (a
-  // first answer that comes back with its body, whose record replaces the form at once), and so
-  // does a read that fails, so the card never stays held. Each control it holds - the answer box,
-  // Answer (Save answer), Ask back, Ask back instead, Answer with it anyway, the Cancel of a
-  // change, and the options with Other - is `aria-disabled` in place of `disabled`, on both sides:
-  // the box is `readOnly`, and the options are held by their rows (and, inside, by their group
-  // as well). `disabled` drops the focus to the body in a browser; this way the control the reader
-  // pressed keeps it. A press of any of them does nothing then, and neither does Ctrl+Enter, a
-  // paste or a drop in the box, or the form's submit. Inside `NoTooltips` each is drawn from the
-  // form as it stood when the hold began (`refusedForm`): the landing empties the box and closes
-  // the choice a question-shaped answer offers, and the control that would turn `disabled` or
-  // leave the page with that - Ask back, its text gone, or Ask back instead - stays on the page,
-  // held. So the hand-off above moves no focus while the card holds, and nothing holding the focus
+  // The card holds its form from the press of an answer or a clarification until that write is
+  // done with: while it is out, and inside `NoTooltips`, once it lands, until a read of the ask's
+  // thread newer than the landing is drawn as well (`awaitingRead`). Until then the form on that
+  // page is stale: after an answer that landed with no body to show, its options are still
+  // picked, and Answer would send a second answer. A landing that starts no read of the thread
+  // ends the hold as it lands (a first answer that comes back with its body, whose record
+  // replaces the form at once), and so does a read that fails, so the card never stays held.
+  // Outside `NoTooltips` the hold ends as the write is done with. Each control it holds - the
+  // answer box, Answer (Save answer), Ask back, Ask back instead, Answer with it anyway, the
+  // Cancel of a change, and the options with Other - is `aria-disabled` in place of `disabled` on
+  // every page (`heldPress`, `heldField`): the box is `readOnly`, and the options are held by
+  // their group. `disabled` drops the focus to the body in a browser; this way the control the
+  // reader pressed keeps it. A press of any of them does nothing then, and neither does
+  // Ctrl+Enter, a paste or a drop in the box, or the form's submit. Each is drawn from the form as
+  // it stood when the hold began (`refusedForm`): the landing empties the box and closes the
+  // choice a question-shaped answer offers, and the control that would turn `disabled` or leave
+  // the page with that - Ask back, its text gone, or Ask back instead - stays on the page, held.
+  // So the hand-off above moves no focus while the card holds, and nothing holding the focus
   // leaves. The one move of the focus comes as the hold ends: the form's hand-off, or Ask back
   // instead's, as it leaves the page, or the one above as Ask back turns `disabled`; a focus the
   // reader moved out of the form meanwhile stays where they put it. Any other reason a control
-  // cannot be pressed - nothing typed before the press, an upload still out - still disables it,
-  // on both sides. Outside `NoTooltips` the hold ends as the write lands.
-  const holdsFocus = !tooltips;
+  // cannot be pressed - nothing typed before the press, an upload still out - still disables it.
+  const waitsForRead = !tooltips;
   // The newest write of the form that has landed, by when it was sent: 0 while none has.
   const landedWrite = Math.max(
     mutation.isSuccess ? mutation.submittedAt : 0,
@@ -473,19 +470,19 @@ export function AskCard({
   const landedNow = landedWrite > landing.write;
   let readAfter = landedNow ? threadQuery.dataUpdatedAt : landing.readAfter;
   const awaitingRead =
-    holdsFocus &&
+    waitsForRead &&
     readAfter !== null &&
     threadQuery.isFetching &&
     threadQuery.dataUpdatedAt <= readAfter;
   if (!awaitingRead) readAfter = null;
-  if (holdsFocus && (landedNow || readAfter !== landing.readAfter)) {
+  if (waitsForRead && (landedNow || readAfter !== landing.readAfter)) {
     setLanding({ readAfter, write: Math.max(landedWrite, landing.write) });
   }
-  // The one flag every hold of the form reads: outside `NoTooltips` it is `isSubmitting`.
+  // The one flag every hold of the form reads.
   const held = isSubmitting || awaitingRead;
-  const refusedWhileOut = (holdsFocus && held) || undefined;
-  // What a held control is drawn from inside `NoTooltips`, recorded while rendering as the
-  // landing is, in the first render that holds: the press, before the landing empties the box.
+  const refusedWhileOut = held || undefined;
+  // What a held control is drawn from, recorded while rendering as the landing is, in the first
+  // render that holds: the press, before the landing empties the box.
   const formNow = {
     cannotAnswer: !canAnswer,
     choice: questionChoice,
@@ -500,13 +497,12 @@ export function AskCard({
   // Ask back instead takes the focus as it is drawn, once, through this one callback, stable
   // across renders as `useFormRef`'s is: a focus taken at each render would move the reader's
   // focus while a write is out - from Answer with it anyway, say, whose answer is out. The choice
-  // leaves the page, and the button with it, as the clarification lands, and inside `NoTooltips`
-  // once the ask is read again after it; a focus the button still holds then is handed off as the
-  // form's is (`handOffFocus`), whoever caused the loss: in the reading column to the column's own
-  // focus stop, in the list layout to the ask's own row. The button is held, never `disabled`,
-  // while the clarification is out, so no other hand-off takes that focus first. A question back
-  // hands the reader on to no next item: the Inbox's R8 hand-off follows an answer, never a
-  // question back.
+  // leaves the page, and the button with it, once the card stops holding after the clarification
+  // lands; a focus the button still holds then is handed off as the form's is (`handOffFocus`),
+  // whoever caused the loss: in the reading column to the column's own focus stop, in the list
+  // layout to the ask's own row. The button is held, never `disabled`, while the clarification is
+  // out, so no other hand-off takes that focus first. A question back hands the reader on to no
+  // next item: the Inbox's R8 hand-off follows an answer, never a question back.
   const focusAskBackInstead = useCallback(
     (button: HTMLButtonElement | null) => {
       if (button === null) return undefined;
@@ -683,9 +679,9 @@ export function AskCard({
   );
   const submitButton = (
     <button
-      // While nothing can be sent it is `disabled` alone, on both sides of `NoTooltips`; while the
-      // card holds, that is read inside from the form as the hold found it (`refusedForm`).
-      aria-disabled={cannotAnswer || uploading ? undefined : held || undefined}
+      // While nothing can be sent it is `disabled` alone; while the card holds, that is read from
+      // the form as the hold found it (`refusedForm`).
+      aria-disabled={cannotAnswer || uploading ? undefined : refusedWhileOut}
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
       className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
       disabled={cannotAnswer || uploading}
@@ -742,13 +738,16 @@ export function AskCard({
           </button>
         ) : (
           <button
-            // While it has no text to send it is `disabled` alone, on both sides of `NoTooltips`;
-            // while the card holds, that is read inside from the form as the hold found it
-            // (`refusedForm`), so the text the landing clears leaves it held and not `disabled`.
+            // While it has no text to send it is `disabled` alone; while the card holds, that is
+            // read from the form as the hold found it (`refusedForm`), so the text the landing
+            // clears leaves it held and not `disabled`.
+            aria-disabled={nothingToAskBack || uploading ? undefined : refusedWhileOut}
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${secondaryLook}`}
             {...inboxActionMark("inbox.ask-back")}
             disabled={nothingToAskBack || uploading}
-            {...heldPress(held, sendClarification)}
+            onClick={() => {
+              if (!held) sendClarification();
+            }}
             type="button"
           >
             {clarification.isPending ? "Sending…" : "Ask back"}
@@ -1002,9 +1001,9 @@ export function AskCard({
         ref={trackForm}
       >
         {(displayedAsk.options ?? []).length === 0 ? null : (
-          // While the card holds, each option row holds its input (`AskChoiceRow`'s `held`), and
-          // inside `NoTooltips` the group is `aria-disabled` as well, which ARIA passes to each
-          // option in it.
+          // While the card holds, the options are held by their group's `aria-disabled`, which
+          // ARIA passes to each option in it, and a pick of one changes nothing: an option row puts
+          // no attribute of its own on its input (`AskChoiceRow`).
           <fieldset aria-disabled={refusedWhileOut} className="min-w-0 space-y-2">
             <legend className="sr-only">Answer options</legend>
             {(displayedAsk.options ?? []).map((option, index) => (
@@ -1012,12 +1011,12 @@ export function AskCard({
                 approval={isApproval ? APPROVAL_ACTIONS[option.label] : undefined}
                 checked={selected.includes(option.label)}
                 digit={digitOf(index)}
-                held={held}
                 hotkey
                 key={option.label}
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
+                  if (held) return;
                   selectRealOption(option.label);
                   if (isCompact)
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
@@ -1029,11 +1028,11 @@ export function AskCard({
               <AskChoiceRow
                 checked={otherSelected}
                 digit={digitOf((displayedAsk.options ?? []).length)}
-                held={held}
                 hotkey
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
+                  if (held) return;
                   toggleOther();
                   // A multiple-choice Other turned off asks for no words, so it moves nobody.
                   if (!otherSelected) focusAnswerField();
@@ -1090,18 +1089,13 @@ export function AskCard({
             retrying={mutation.isPending}
           />
         )}
-        {clarification.isError ? (
+        {clarification.error === null ? null : (
           <QueryError
-            message={
-              // A question back the reader stopped may have been sent, and Retry makes that very
-              // press again (`retryLast`).
-              stoppedNote(clarification, "your clarification", "sent") ??
-              "Could not send your clarification."
-            }
+            message={clarificationRefusal(clarification)}
             onRetry={() => submitGuard.retryLast(clarification)}
             retrying={clarification.isPending}
           />
-        ) : null}
+        )}
       </form>
       {/* The person's way out of a question they will not answer, under the form that answers
           it. An approval request draws none: it is answered with Approve or Request changes. */}

@@ -62,7 +62,9 @@ export interface InboxSelection {
    *  the ones a fold or a page is holding back included. The bar says so instead of counting. */
   readonly allRows: boolean;
   /** The bar's own element, which the keymap reaches through this: `b` and `h` press the bar's
-   *  Snooze menu while rows are marked. */
+   *  Snooze list while rows are marked, and Escape from the bulk picker focuses the bar itself
+   *  when no drawn row is left that the bar's own Snooze write, while it is pending
+   *  (`snoozing`), is not taking away. */
   readonly barRef: RefObject<HTMLElement | null>;
   /** Whether the bar shows: a mark is on the page, a pick is in the air, or a refusal is
    *  standing. Escape with no row focused is the keyboard's Clear and is offered on exactly this,
@@ -97,9 +99,12 @@ export interface InboxSelection {
   readonly snoozePick: (until: string) => Promise<readonly string[]>;
   /** What the reader is told about the last bulk snooze the server refused in part. */
   readonly snoozeRefusal: string | undefined;
-  /** How many asks the snooze now in flight covers, 0 when none is: the optimistic fold empties
-   *  the selection the bar would otherwise count. */
-  readonly snoozing: number;
+  /** The asks the snooze now in flight covers, none while none is: the list keeps each in the
+   *  band the reader saw it in until the write lands - save under the Blocked on you narrowing,
+   *  which lists no snoozed ask and keeps a row only while the reader's hand is on it - and the
+   *  bar counts them while it is out, since the optimistic moment takes them out of the
+   *  selection it would otherwise count. */
+  readonly snoozing: ReadonlySet<string>;
 }
 
 /**
@@ -154,7 +159,7 @@ export function useInboxSelection({
   // Whether the reader pressed **Select all**. Any change to the marks ends it.
   const [allRows, setAllRows] = useState(false);
   const bulkWrite = useAskSnoozeMany();
-  const [snoozing, setSnoozing] = useState(0);
+  const [snoozing, setSnoozing] = useState<ReadonlySet<string>>(() => new Set());
   const barRef = useRef<HTMLElement>(null);
   const [snoozeRefusal, setSnoozeRefusal] = useState<string | undefined>(undefined);
   /** The rows the reader has pressed Dismiss on here, by `rowId`, while that press is out: the
@@ -201,16 +206,19 @@ export function useInboxSelection({
     const named = row === undefined ? undefined : dismissRow(row);
     if (named !== undefined) selectedThreads.push(named);
   }
-  // One pick, over the ids the bar is counting: the same optimistic move and rollback the per-row
-  // control makes, once per ask. The ids the server took leave the selection; the ones it refused
-  // are marked again under its own reason, even if Clear ran while the write was in flight, so a
+  // One pick, over the ids the bar is counting: the same optimistic moment and rollback the
+  // per-row control makes, once per ask, with the rows kept where the reader saw them while the
+  // write is out (`snoozing`), save under the Blocked on you narrowing, which lists no snoozed
+  // ask and keeps a row only while the reader's hand is on it. The ids the server took leave the
+  // selection, and their rows the band they were kept in, in one commit; the ones it refused are
+  // marked again under its own reason, even if Clear ran while the write was in flight, so a
   // second pick retries exactly those.
   const snoozePick = (until: string) => {
     const ids = [...selectedAsks];
     setSnoozeRefusal(undefined);
-    setSnoozing(ids.length);
+    setSnoozing(new Set(ids));
     return bulkWrite.submit(ids, until).then(({ failed }) => {
-      setSnoozing(0);
+      setSnoozing(new Set());
       setSnoozeRefusal(snoozeRefusalText(failed, ids.length));
       const refused = new Set(failed.map(({ askId }) => askId));
       const taken = ids.filter((id) => !refused.has(id));
@@ -252,7 +260,7 @@ export function useInboxSelection({
     barRef,
     // The bar outlives an empty list: a pick that empties this view leaves its write in the air,
     // and the refusal that comes back has to land somewhere the reader can see.
-    barShown: selected.length > 0 || snoozing !== 0 || snoozeRefusal !== undefined,
+    barShown: selected.length > 0 || snoozing.size !== 0 || snoozeRefusal !== undefined,
     clearSelection,
     dismissedHere: (id) => pressedHere.current.has(id),
     dismissPick,

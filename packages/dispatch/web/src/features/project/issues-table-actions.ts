@@ -1,9 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { flushSync } from "react-dom";
 import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
+import { invalidateWaitingForPaused } from "../../api/query-client";
+import { useReadBound } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
+import { beginAnswerHold } from "../../components/focus-place";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -46,6 +50,10 @@ export type EpicNaming =
   | { kind: "new"; keys: readonly string[] }
   | { kind: "rename"; key: string; title: string };
 
+/** What the list says when its read failed, and what an action's notice says before why the list
+ *  read after it has not settled. */
+export const ISSUES_NOT_LOADED = "Could not load issues.";
+
 /** The one sentence a merge records on the source issue, written and recognised in one place.
  *  A resume compares the whole sentence against the source's own messages, because the server
  *  is what knows whether it was posted: a recorded key only says a write was made. */
@@ -75,6 +83,8 @@ export function useIssueTableActions({
   const writes = useWrites();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>();
+  // Why the list read after an action has not settled, once its hold ran out (`useReadBound`).
+  const [unsettled, holdThrough] = useReadBound();
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
   const [duplicateEpic, setDuplicateEpic] = useState<DuplicateEpic>();
   const [unansweredEpic, setUnansweredEpic] = useState<string>();
@@ -181,6 +191,13 @@ export function useIssueTableActions({
     action: () => Promise<readonly string[] | undefined>,
     duplicate?: (error: ApiError) => void
   ) => {
+    // The action's whole run is part of the action of the reader's press that began it
+    // (`beginAnswerHold`), until its controls are let go. A press owns only the writes that start
+    // as it is made. An action of several writes starts its later writes after that: Start next
+    // writes one step at a time, New epic moves the issues after the create, and a batch sends
+    // `WRITES_IN_FLIGHT` writes at a time. Without this hold the press would end once its first
+    // writes were answered, and the bar's going would read as no doing of the reader's.
+    const endHold = beginAnswerHold();
     setBusy(true);
     setNotice(undefined);
     setMoved(new Set());
@@ -188,6 +205,8 @@ export function useIssueTableActions({
     // write landed while it ran, or ended without Dispatch's verdict (the reader stopped it) and
     // so may have landed. A write Dispatch refused (`ApiError`) changed nothing.
     let mayHaveChanged = false;
+    // Whether the action answered what it changed. Only such an action clears the selection.
+    let answered = false;
     const unwatch = writes.onOutcome((outcome) => {
       if (
         outcome.kind === "landed" ||
@@ -199,9 +218,9 @@ export function useIssueTableActions({
       const changed = await action();
       if (changed !== undefined) {
         mayHaveChanged = true;
+        answered = true;
         setNotice({ kind: "success", text: said });
         setMoved(new Set(changed));
-        clearSelection();
       }
     } catch (error) {
       if (error instanceof ApiError && error.code === "POSSIBLE_DUPLICATE" && duplicate)
@@ -212,15 +231,39 @@ export function useIssueTableActions({
       unwatch();
       // An action that may have changed the list keeps its controls held (`busy`) through the read
       // of the list that draws what it changed - a row's Start next gone once its issue starts
-      // next - so that going is still the press's doing (`causedByReader`); a batch that saved
-      // some of its changes before a refusal changed the list too. The read settles either way,
-      // and a failed one lets them go. An action that changed nothing - every write refused, or
-      // none made - lets them go at once, while the list is still read again behind them.
-      const listed = client.invalidateQueries({ queryKey: ["issues"] });
+      // next. The hold above lasts until then, so that going is still the press's doing
+      // (`causedByReader`). A batch that saved some of its changes before a refusal changed the
+      // list too. The read settles either way, and a failed one lets them go. A read that has not
+      // settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is
+      // offline - lets them go then, and the notice says why the list is not read yet
+      // (`useReadBound`). An action that changed nothing - every write refused, or none made -
+      // lets them go at once, while the list is still read again behind them.
+      // An action that answered what it changed clears the selection in the same batch that lets
+      // its controls go. So the selection bar, held, stays until that read settles or the
+      // deadline passes, and its hand-off reads the view the action left. A marked row that left
+      // the view is not in it, and the focus goes to the row now at its place
+      // (`useLastMarkedPlace`). Where the row marked last is still listed, the focus goes to its
+      // checkbox. An action that failed or changed nothing keeps the selection.
+      // Read again waiting on a fetch the network has paused, since the hold below has a bound
+      // of its own (`invalidateWaitingForPaused`, `useReadBound`).
+      const listed = invalidateWaitingForPaused(client, ["issues"]);
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: ["inbox"] });
-      if (mayHaveChanged) await listed;
-      setBusy(false);
+      if (mayHaveChanged) await holdThrough(listed);
+      // The bar's going and its hand-off are one render. This line runs outside any event of the
+      // reader's - the turn a write's answer takes, or the read's own bound - so React would
+      // commit it at normal priority and run the bar's hand-off, a passive effect
+      // (`components/SelectionBar.tsx`), in a later task: a frame would paint with the focus on
+      // the page's body. The press ends a frame and a task from here (`endHold`,
+      // `afterComponents`), which can come before that hand-off and leave it reading a press
+      // already answered, so it would move nothing. `flushSync` commits the going here and runs
+      // the bar's effects with it, so the focus is on the marked row's checkbox in the render
+      // the bar goes, before the press ends.
+      flushSync(() => {
+        if (answered) clearSelection();
+        setBusy(false);
+      });
+      endHold();
     }
   };
   const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;
@@ -572,8 +615,24 @@ export function useIssueTableActions({
   const interrupted = busy ? undefined : recovery.action;
   return {
     busy,
-    notice,
+    // A list read that has not settled is said after what the action did, in the words the List
+    // says for a list read that failed.
+    notice:
+      unsettled === undefined
+        ? notice
+        : {
+            kind: "error" as const,
+            text: `${notice === undefined ? "" : `${notice.text} `}${ISSUES_NOT_LOADED} ${unsettled}.`,
+          },
     moved,
+    // Whether the press of this action is taking row `key` out of the view: a row the action
+    // changed, while the action is out (`busy`), and while the list read after it is still out
+    // once its hold ran out (`unsettled`). The commit that lets the action go draws that read at
+    // the latest, and a read that outlived the hold is drawn in the commit that ends `unsettled`.
+    // The List's anchor asks the render before a commit as well (`ViewportAnchor`'s `leaving`), so
+    // the rows are named in that commit. A row a later live update takes away is not named. With
+    // no action out, `leaving` is undefined and names no row.
+    leaving: busy || unsettled !== undefined ? (key: string) => moved.has(key) : undefined,
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,

@@ -503,12 +503,19 @@ function SearchNarrowing({
               <input
                 className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
                 onChange={(event) => {
-                  if (event.target.value !== "") {
-                    set({ updatedSince: event.target.value });
+                  // A date the reader types is taken once its year is whole: an engine reports a
+                  // valid date from the year's first digit (Chromium reads `2` as the year 0002),
+                  // and taking that would narrow to a year the reader is still typing and draw
+                  // the box away from under their next keys. The box holds no `value` of its
+                  // own: React puts a controlled empty value back after every change it hands
+                  // here, so Chromium's date would be emptied at each digit before its year is
+                  // whole.
+                  const { value } = event.target;
+                  if (Number(value.slice(0, 4)) >= 1000) {
+                    set({ updatedSince: value });
                   }
                 }}
                 type="date"
-                value=""
               />
             </label>
           ) : null}
@@ -941,7 +948,7 @@ function PaletteDialog({
           {/* What the words themselves can do, between the controls and the hits: the three
               operator forms. The line saying that meaning search did not run is NOT here: it
               arrives with an answer, so a narrowing that degraded the search would push every
-              hit down the dialog, which R1 of dispatch://INFRA-3135 forbids. It is drawn with
+              hit down the dialog, and a search's answer moves no hit. It is drawn with
               the other notes about the answer, under the hits. */}
           <div className={`shrink-0 border-b ${borderDefault}`}>
             <SearchOperators inUse={operators} />

@@ -54,6 +54,14 @@ const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issu
  * the dialog, whose own Escape and Tab cycle then take over. It says the projects are loading
  * while their read is out, and that they could not be loaded where it failed, as the dialog does
  * beside it.
+ *
+ * While the create is out, the reader's press stays where they made it. Title and Spec are held:
+ * `aria-disabled` and read-only, never disabled. Create is held by `aria-disabled`. So the field
+ * or the button the reader submitted from keeps the focus, and a submit then sends nothing. A
+ * create that lands with no answer empties the title, and Create stays held while it has no
+ * title, with the focus still on it. Create is disabled only while no project is picked, which
+ * nothing the dialog sends changes. Create anyway is held while the create is out
+ * (`heldPress`), and disabled while the draft cannot be filed.
  */
 export function CreateIssueDialog({
   onClose,
@@ -108,9 +116,10 @@ export function CreateIssueDialog({
     "";
   const trimmedTitle = title.trim();
   const trimmedSpec = spec.trim();
-  // A draft with no project or no title cannot be filed: Create is disabled. While the create is
-  // out the dialog is held instead (`heldPress`): whichever control holds the focus keeps it, and
-  // nothing sends a second create.
+  // A draft with no project or no title cannot be filed (`ready`): Create is held then, and
+  // disabled only while no project is picked. While the create is out the dialog is held
+  // (`heldField`, `heldPress`): whichever control holds the focus keeps it, and nothing sends a
+  // second create.
   const ready = selectedProject !== "" && trimmedTitle !== "";
   const held = mutation.isPending;
   const canSubmit = ready && !held;
@@ -264,9 +273,9 @@ export function CreateIssueDialog({
               </button>
             )}
             <button
-              aria-disabled={held || undefined}
+              aria-disabled={!canSubmit || undefined}
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={!ready}
+              disabled={selectedProject === ""}
               type="submit"
             >
               {mutation.isPending ? "Creating…" : "Create"}

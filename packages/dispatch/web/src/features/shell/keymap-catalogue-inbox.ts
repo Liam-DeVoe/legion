@@ -160,6 +160,16 @@ export const INBOX_ACTIONS = {
     inEditable: true,
     surface: "inbox",
   },
+  // From the bar's Snooze, where its list hands the focus back as it closes, back to the row the
+  // bar was reached from. Not a palette row, as `back` is not.
+  "back-from-bulk": {
+    label: "Back to the list from the bulk snooze picker",
+    keys: [],
+    fixedKeys: ["Escape"],
+    palette: false,
+    inEditable: true,
+    surface: "inbox",
+  },
   "clear-selection": {
     label: "Clear the selection",
     keys: [],

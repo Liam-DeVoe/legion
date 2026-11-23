@@ -31,8 +31,9 @@ import { idlePriorityWrite, mockHeaderReads } from "./header-fixture";
 import { IssueHeader } from "./IssueHeader";
 import { stateForIssue } from "./pins";
 
-// The issue title's editor, read with the real header and the page's focus rescue mounted around
-// it as the app shell mounts it (`RescuedMain`).
+// The issue's header, read with the real `IssueHeader`: its title's editor with the page's focus
+// rescue mounted around it as the app shell mounts it (`RescuedMain`), and its pin under the reads
+// of the viewer's state asked while the pin's write is out.
 
 const base: Issue = {
   advances: [],
@@ -84,17 +85,24 @@ const details: IssueDetails = {
 /** The text of the page outside the header, which a reader can click on. */
 const PAGE_TEXT = "The issue's description";
 
+/** `details` closed: Done, with the time it closed. */
+const closedDetails: IssueDetails = {
+  ...details,
+  closed_at: "2026-09-24T07:00:00Z",
+  status: "done",
+};
+
 type Patches = Mock<(key: string, input: UpdateIssueInput, bounds: WriteBounds) => Promise<Issue>>;
 
 /** The header of the issue the cache holds, drawn again from each answer a write of it merges
  *  there, as `IssuePage` draws it. */
-function CachedHeader(): ReactNode {
+function CachedHeader({ isClosed }: { isClosed: boolean }): ReactNode {
   const issue = useQuery({ ...issueQuery(base.key), staleTime: Infinity }).data;
   if (issue === undefined) return null;
   return (
     <IssueHeader
       documentArtifact={undefined}
-      isClosed={false}
+      isClosed={isClosed}
       issue={issue}
       priorityWrite={idlePriorityWrite}
       state={stateForIssue(undefined, issue.key)}
@@ -103,12 +111,13 @@ function CachedHeader(): ReactNode {
 }
 
 /** The header of `details` in the main content, the page's focus rescue mounted on it, with the
- *  page's text after it, and the title writes it makes answered as Dispatch answers them. */
-function header(): { patches: Patches; unmount: () => void; user: UserEvent } {
+ *  page's text after it, and the title writes it makes answered as Dispatch answers them. With
+ *  `isClosed`, the issue is `closedDetails`. */
+function header(isClosed = false): { patches: Patches; unmount: () => void; user: UserEvent } {
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
-  client.setQueryData(issueQuery(base.key).queryKey, details);
+  client.setQueryData(issueQuery(base.key).queryKey, isClosed ? closedDetails : details);
   // The header reads the project list, the project's architecture sources and the issue's
   // subscribers at once; none of them is what these rows are about.
   const restoreReads = mockHeaderReads();
@@ -124,7 +133,7 @@ function header(): { patches: Patches; unmount: () => void; user: UserEvent } {
       <QueryClientProvider client={client}>
         <MarginProvider>
           <RescuedMain>
-            <CachedHeader />
+            <CachedHeader isClosed={isClosed} />
             <p>{PAGE_TEXT}</p>
           </RescuedMain>
         </MarginProvider>
@@ -155,9 +164,14 @@ async function pressAsBrowser(press: () => void): Promise<void> {
   });
 }
 
-/** Opens the title's editor with a click on its heading and writes `title` into it. */
+/** The header's Edit title button, which the title's heading is the description of. */
+function editTitleButton(): Promise<HTMLElement> {
+  return screen.findByRole("button", { description: base.title, name: "Edit title" });
+}
+
+/** Opens the title's editor with a click on Edit title and writes `title` into it. */
 async function editTitle(user: UserEvent, title: string): Promise<HTMLElement> {
-  await user.click(await screen.findByRole("heading", { level: 1, name: base.title }));
+  await user.click(await editTitleButton());
   const editor = await screen.findByRole("textbox", { name: "Issue title" });
   await user.clear(editor);
   await user.keyboard(title);
@@ -165,7 +179,8 @@ async function editTitle(user: UserEvent, title: string): Promise<HTMLElement> {
 }
 
 /** The editor closed on the saved `title`, and the reader's next key, `t`, edits no title: no
- *  text box takes it, the heading still reads `title`, and the one write is the save's. */
+ *  text box takes it, the heading still reads `title` with Edit title drawn again over it, and
+ *  the one write is the save's. */
 async function expectNextKeyEditsNoTitle(
   user: UserEvent,
   patches: Patches,
@@ -174,6 +189,9 @@ async function expectNextKeyEditsNoTitle(
   await waitFor(() => expect(patches).toHaveBeenCalledWith("CORE-1", { title }, keyedAttempt));
   expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
   expect(screen.getByRole("heading", { level: 1, name: title })).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { description: title, name: "Edit title" })
+  ).toBeInTheDocument();
   await user.keyboard("t");
   await afterRescue();
   expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
@@ -182,8 +200,8 @@ async function expectNextKeyEditsNoTitle(
 }
 
 // The reader's Enter saves the title and closes its editor: the editor's own `blur()` is the
-// reader leaving it, so nothing reopens it in the heading's place, and the next key they type
-// goes into no title.
+// reader leaving it, so nothing reopens it once Edit title is drawn in its place, and the next key
+// they type goes into no title.
 test("Enter in the title's editor saves it and closes it, and the next key edits no title", async () => {
   const { patches, unmount, user } = header();
   try {
@@ -249,36 +267,94 @@ test("Enter and Escape that end an IME composition in the title's editor save no
   }
 });
 
-// The heading opens its editor when the reader activates it, not when it takes the focus: an
-// editor opening on focus changes the page on focus (WCAG 2.2, 3.2.1 On Focus).
-test("focusing the title's heading does not open its editor", async () => {
+// The title's control is a button named for what it does, with the title it edits as its
+// description, so a screen reader reads "Edit title, button" and then the title. The heading
+// keeps the title as its name.
+test("Edit title is a button named Edit title and described by the title", async () => {
   const { unmount } = header();
   try {
+    const edit = await editTitleButton();
+    expect(edit).toHaveAccessibleName("Edit title");
+    expect(edit).toHaveAccessibleDescription(base.title);
+    expect(edit).toHaveAttribute("type", "button");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveAccessibleName(base.title);
+  } finally {
+    unmount();
+  }
+});
+
+// The heading is the title and no control: it takes no Tab stop, and it holds no handler of its
+// own, so a press made on it, and not on the button laid over it, opens nothing.
+test("the title's heading takes no Tab stop and opens no editor when pressed", async () => {
+  const { unmount, user } = header();
+  try {
     const heading = await screen.findByRole("heading", { level: 1, name: base.title });
-    act(() => heading.focus());
+    expect(heading).not.toHaveAttribute("tabindex");
+    await user.click(heading);
     await afterRescue();
-    expect(heading).toHaveFocus();
     expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
   } finally {
     unmount();
   }
 });
 
-// A click on the heading opens its editor, and so does Enter on the focused heading; the editor
-// takes the focus either way.
-test("a click on the title's heading, and Enter on it, open its editor", async () => {
+// Edit title opens the editor on the button's own activation: a click, Enter or Space. The editor
+// takes the focus, and Escape closes it and draws the heading and Edit title again.
+test("a click on Edit title, Enter on it and Space on it each open the title's editor", async () => {
   const { unmount, user } = header();
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: base.title }));
-    expect(await screen.findByRole("textbox", { name: "Issue title" })).toHaveFocus();
-    await user.keyboard("{Escape}");
-    await afterRescue();
-    const heading = await screen.findByRole("heading", { level: 1, name: base.title });
-    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+    const activations: Record<string, (edit: HTMLElement) => Promise<void>> = {
+      click: (edit) => user.click(edit),
+      Enter: async (edit) => {
+        act(() => edit.focus());
+        await user.keyboard("{Enter}");
+      },
+      Space: async (edit) => {
+        act(() => edit.focus());
+        await user.keyboard(" ");
+      },
+    };
+    for (const [by, activate] of Object.entries(activations)) {
+      await activate(await editTitleButton());
+      expect(await screen.findByRole("textbox", { name: "Issue title" }), by).toHaveFocus();
+      await user.keyboard("{Escape}");
+      await afterRescue();
+      expect(screen.queryByRole("textbox", { name: "Issue title" }), by).not.toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 1, name: base.title }), by).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Edit title" }), by).toBeInTheDocument();
+    }
+  } finally {
+    unmount();
+  }
+});
 
-    act(() => heading.focus());
-    await user.keyboard("{Enter}");
-    expect(await screen.findByRole("textbox", { name: "Issue title" })).toHaveFocus();
+// Edit title opens the editor when the reader activates it, not when it takes the focus: an
+// editor opening on focus changes the page on focus (WCAG 2.2, 3.2.1 On Focus), and the page's
+// focus rescue can give the button the focus with no act of the reader's.
+test("focusing Edit title does not open the title's editor", async () => {
+  const { unmount } = header();
+  try {
+    const edit = await editTitleButton();
+    act(() => edit.focus());
+    await afterRescue();
+    expect(edit).toHaveFocus();
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
+  } finally {
+    unmount();
+  }
+});
+
+// A closed issue's title edits nothing: it is the heading alone, with no Edit title button, no
+// Tab stop and nothing that a press on it opens.
+test("a closed issue's title is its heading alone, with no Edit title button", async () => {
+  const { unmount, user } = header(true);
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: base.title });
+    expect(heading).not.toHaveAttribute("tabindex");
+    expect(screen.queryByRole("button", { name: "Edit title" })).not.toBeInTheDocument();
+    await user.click(heading);
+    await afterRescue();
+    expect(screen.queryByRole("textbox", { name: "Issue title" })).not.toBeInTheDocument();
   } finally {
     unmount();
   }
@@ -357,10 +433,10 @@ function renderHeader(client: QueryClient, ui: ReactNode) {
     reads,
     unmount: () => {
       view.unmount();
-      restoreReads();
       getMyState.mockRestore();
       projects.mockRestore();
       putIssueState.mockRestore();
+      restoreReads();
       subscribers.mockRestore();
     },
     user: userEvent.setup(),

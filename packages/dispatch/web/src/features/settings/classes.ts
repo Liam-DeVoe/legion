@@ -21,7 +21,8 @@ export const settingsMonoInput = `rounded-md px-3 py-2 font-mono ${inputClasses(
  *  the same disabled or held while its form's write is out (`refused:`, `styles.css`). */
 export const settingsListTrigger = `rounded-md px-3 py-[9px] text-left leading-[normal] refused:cursor-not-allowed refused:opacity-50 ${inputClasses(false)} ${textPrimaryOnSurface}`;
 export const settingsListText = "[text-box:trim-both_text]";
-/** A section's submit button, disabled or held while its write is out (`refused:`, `styles.css`). */
+/** A Settings form's submit button. The `refused:` variant (`styles.css`) paints it the same
+ *  whether it is `disabled` or held by `aria-disabled` (`held-press.ts`). */
 export const settingsSubmitButton = `min-h-11 rounded-md px-4 py-2 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-9 ${primaryButtonBg} ${primaryButtonHoverBg}`;
 /** An `owner/repo` field's `pattern`: one slash between an owner and a name that hold neither a
  *  slash nor whitespace. Its slashes are escaped because browsers compile a `pattern` with the `v`

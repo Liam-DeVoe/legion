@@ -16,10 +16,9 @@ import { expect, type Locator, type Page, type Request } from "@playwright/test"
 
 import type { IssueField } from "../web/src/features/issue/issue-field-writes";
 import { getIssueEvents } from "./api";
-import { listOf, listTrigger } from "./filters";
+import { listTrigger } from "./filters";
 import { drawer, peekTrigger } from "./inbox-drawer";
 import { keptWrites, pendingWrites } from "./keyed-writes";
-import { pickFromMenu } from "./menus";
 import { settledState } from "./settled";
 
 /** At least how long `holdIssuePatches` holds each save: long enough for a row to make its next
@@ -78,7 +77,7 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     try {
       // The hold is the row's whole point: the save stays out at least this long, and until the
       // row lets it go, so the next pick, reload or read happens while it is out.
-      await Promise.all([sleep(PICK_HOLD_MS), released.promise]);
+      await Promise.all([heldFor(patch.arrivedAt), released.promise]);
       patch.held = false;
       await route.fallback();
       forwarded.push(patch.body);
@@ -91,6 +90,19 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     }
   });
   return { forwarded, holding: () => holding, release: () => released.resolve(), sent };
+}
+
+/** Sleeps until `Date.now()` reads `PICK_HOLD_MS` past `arrivedAt`. A timer runs on the
+ *  monotonic clock, and `Date.now()`, which a row reads a hold by (`HeldPatch`), on the wall
+ *  clock, each in whole milliseconds, so one `sleep(PICK_HOLD_MS)` can end while `Date.now()`
+ *  still reads 2999 ms (CI run 44781930916, `board.e2e.ts`'s priority-lane row): the hold is
+ *  ended by the clock that reads it. */
+async function heldFor(arrivedAt: number): Promise<void> {
+  for (let left = PICK_HOLD_MS; left > 0; left = PICK_HOLD_MS - (Date.now() - arrivedAt)) {
+    // What is left of the hold by `Date.now()`: the save stays out this long, so the row's
+    // next pick, reload or read happens while it is out.
+    await sleep(left);
+  }
 }
 
 /** Waits until no save of `held` is held and the tab keeps no write for a reload to send: every
@@ -248,58 +260,11 @@ export function expectReadWhileHeld(
 export const ISSUE_PAGE_PICKERS = ':is(main, aside[aria-label="Details"])';
 
 /** The issue page's own picker named `name` (such as `Priority of CORE-1`), inside
- *  `ISSUE_PAGE_PICKERS`: a native select or box named `name`, or a trigger named `name` and then
- *  what it shows - the priority's menu (`ChoiceMenu`, this tree's), and the shared list's single
- *  pick (`MultiSelect`) of the assignee and the repository (`listTrigger`). */
+ *  `ISSUE_PAGE_PICKERS`: the shared list's single pick (`MultiSelect`), whose trigger is named
+ *  `name` and then what it shows, such as the priority's, the assignee's and the repository's
+ *  (`listTrigger`). */
 export function pagePicker(page: Page, name: string): Locator {
   return listTrigger(page.locator(ISSUE_PAGE_PICKERS), name);
-}
-
-/** A value as the native select this tree's priority menu stands in for held it: the menu's `P1`
- *  is `1`, and its unset `Priority` is `""`; any other words are themselves. */
-function selectValueOf(words: string): string {
-  if (words === "Priority") return "";
-  return /^P([0-3])$/.exec(words)?.[1] ?? words;
-}
-
-/** What a picker's words say, as the value a native select of it held: a priority's `P1` is
- *  `1` (`selectValueOf`), the hand-on's `Asked of alice` is `alice`, and where it shows none
- *  (`Unassigned`, `No repository`, `Asked of nobody`) it is `""`; any other words are themselves. */
-function valueOfShown(words: string): string {
-  if (["Unassigned", "No repository", "Asked of nobody"].includes(words)) return "";
-  return selectValueOf(words).replace(/^Asked of /, "");
-}
-
-/** The words `picker` shows: the face its name goes on with, less the words beside a badge that
- *  only its name reads (the repository's). A select or a box shows its value. */
-function shownWords(element: Element): string {
-  if (element instanceof HTMLSelectElement || element instanceof HTMLInputElement) {
-    return element.value;
-  }
-  const face = element.querySelector("[id$='-face'], [id$='-shown']") ?? element;
-  return (face.querySelector("[aria-hidden='true']") ?? face).textContent ?? "";
-}
-
-/** Waits until `picker` shows `value`, in the words a native select of it held (`valueOfShown`). */
-export async function expectShows(picker: Locator, value: string): Promise<void> {
-  await expect
-    .poll(async () => valueOfShown(await picker.evaluate(shownWords)), {
-      message: `the picker shows ${JSON.stringify(value)}`,
-    })
-    .toBe(value);
-}
-
-/** Picks `value` in `picker`, as a reader does, in the values a native select of it held: a
- *  click on the trigger, then on the choice - in the priority's menu `P<value>`, or Unset for
- *  `""`; in a list the option named `value`. Only that press writes (INFRA-2160's R2 and R6). */
-export async function pickIn(picker: Locator, value: string): Promise<void> {
-  // The popup a trigger names is the kind of control it is, fixed while it is drawn.
-  if ((await picker.getAttribute("aria-haspopup")) === "menu") {
-    await pickFromMenu(picker, value === "" ? "Unset" : `P${value}`);
-    return;
-  }
-  await picker.click();
-  await listOf(picker).getByRole("option", { exact: true, name: value }).click();
 }
 
 /**
@@ -379,17 +344,12 @@ export interface Shown {
 let watchedNames = 0;
 
 /** Exposes to every document `page` loads a binding of its own, which records each value it is
- *  given that differs from the one before, once `read` has put it in its words, and returns its
- *  name and what it has recorded. */
-async function exposeShown(
-  page: Page,
-  read: (value: string) => string = (value) => value
-): Promise<{ binding: string; shown: Shown }> {
+ *  given that differs from the one before, and returns its name and what it has recorded. */
+async function exposeShown(page: Page): Promise<{ binding: string; shown: Shown }> {
   const values: string[] = [];
   watchedNames += 1;
   const binding = `__dispatchShown${watchedNames}`;
-  await page.exposeBinding(binding, (_source, given: string) => {
-    const value = read(given);
+  await page.exposeBinding(binding, (_source, value: string) => {
     if (values.at(-1) !== value) values.push(value);
   });
   return { binding, shown: { values } };
@@ -399,21 +359,17 @@ async function exposeShown(
  * Records every value the controls named `name` (such as `Priority of CORE-1`) show in `page`,
  * read at every animation frame of every document the page loads from now on - so from the first
  * frame a reload paints. A control is named `name` by its `aria-label`, or, as the shared list's
- * single pick (`MultiSelect`) and this tree's menus (`ChoiceMenu`) are, by the element its
- * `aria-labelledby` names first. A `<select>` or an `<input>` shows its value - an input's is what
- * is typed into it as well as what it holds; any other element its text less what it hides from
- * assistive technology, which for a single pick's trigger is what its name reads after its label:
- * the badge an Assignee or a hand-on shows, or the words a Repository's badge is read by. The
- * priority's menu shows `P<n>`, recorded as the digit its native select held (`selectValueOf`).
- * `within`, a CSS selector, reads only the controls inside what it matches - the page's `main`,
- * `main` and Details (`ISSUE_PAGE_PICKERS`), or the Inbox drawer
- * (`[role="dialog"][aria-label="Inbox"]`). Call it before the page loads the document a row
- * watches.
+ * single pick (`MultiSelect`) is, by the element its `aria-labelledby` names first. A `<select>`
+ * or an `<input>` shows its value - an input's is what is typed into it as well as what it holds;
+ * any other element its text less what it hides from assistive technology, which for a single
+ * pick's trigger is what its name reads after its label: the badge an Assignee or a hand-on shows,
+ * or the words a Repository's badge is read by. `within`, a CSS selector, reads only the controls
+ * inside what it matches - the page's `main`, `main` and Details (`ISSUE_PAGE_PICKERS`), or the
+ * Inbox drawer (`[role="dialog"][aria-label="Inbox"]`). Call it before the page loads the document
+ * a row watches.
  */
 export async function watchShown(page: Page, name: string, within = ":root"): Promise<Shown> {
-  const { binding, shown } = await exposeShown(page, (value) =>
-    value === "(none)" ? value : value.split("|").map(selectValueOf).join("|")
-  );
+  const { binding, shown } = await exposeShown(page);
   await page.addInitScript(
     ({ binding, name, within }: { binding: string; name: string; within: string }) => {
       const report = Reflect.get(window, binding) as (value: string) => Promise<void>;

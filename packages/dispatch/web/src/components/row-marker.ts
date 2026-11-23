@@ -25,12 +25,12 @@
  * comment's prose is a table too, so its `<tr>`s are rows, and the `<article>` a document is drawn
  * in (`ProofDocument`, `VersionView`) is a row around every control of the document.
  *
- * The rescue reads a row for a loss the reader caused alone (`focus-place.ts`): a press of theirs
- * inside the row of the control that lost the focus makes the loss theirs, a press on the one
- * checkbox a row draws is a press on its mark, and the same control in the row that moves up into
- * the place of the row a press took away takes the focus. A loss the reader did not cause leaves
- * the focus on the body, or on an open modal dialog's own stop, whatever rows stand near it, so
- * the rescue reads no row for it.
+ * The rescue reads rows (`focus-place.ts`) to tell whether the reader caused a loss - a press of
+ * theirs inside the row of the control that lost the focus makes the loss theirs, and a press on
+ * the one checkbox a row draws is a press on its mark - and to land a loss they caused: the same
+ * control in the row that moves up into the place of the row a press took away takes the focus. A
+ * loss the reader did not cause leaves the focus on the body, or on an open modal dialog's own
+ * stop, whatever rows stand near it (`leaveUncaused`), so no row decides where it lands.
  */
 export const ROW_MARKER_ATTRIBUTE = "data-row-marker";
 

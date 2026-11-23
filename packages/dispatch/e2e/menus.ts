@@ -1,28 +1,25 @@
-/** The menus a menu button opens - the Snooze, the priority and the status (dispatch://INFRA-2160)
- *  - as the rows reach them. The trigger is a button named for its menu ("Snooze <name>",
- *  "Snooze selected asks", "Priority of <KEY>", "Status") and then for what it shows ("Priority
- *  of <KEY> P1", "Status In progress"), unless what it shows is the first words of that name
- *  already ("Snooze", an unset "Priority"), so it is found by the start of its name
- *  (`triggerNamed`). The menu is portalled to the body, so it is found by the id its trigger's
- *  `aria-controls` names while it is open, never under the trigger. A Snooze choice is an action
- *  (`menuitem`); a priority or a status is a value (`menuitemradio`, the current one checked).
- *  Nothing here reads the app's own modules. */
+/** The status's menu (dispatch://INFRA-2160) as the rows reach it, and the trigger of the
+ *  priority, which opens the shared single pick's list (`MultiSelect`), as the Snooze's does. A
+ *  trigger is a button named for its control ("Priority of <KEY>", "Status") and then for what it
+ *  shows ("Priority of <KEY> P1", "Status In progress"), unless what it shows is the first words
+ *  of that name already (an unset "Priority"), so it is found by the start of its name
+ *  (`triggerNamed`). A menu or a list is portalled to the body, so it is found by the id its
+ *  trigger's `aria-controls` names while it is open, never under the trigger. A status is a value
+ *  of the menu (`menuitemradio`, the current one checked); a priority or a Snooze time is an
+ *  `option` of the list (`listOf`, `pickFromList` in `filters.ts`). Nothing here reads the app's
+ *  own modules. */
 import { expect, type Locator, type Page } from "@playwright/test";
 
-/** The name of the trigger of the menu named `label`: `label` alone, or `label` and then what
- *  the trigger shows, as a single pick's trigger is found (`listTrigger`). */
+/** The name of the trigger of the control named `label`, a menu or a single pick: `label` alone,
+ *  or `label` and then what the trigger shows, as `listTrigger` finds a single pick's trigger. */
 function triggerNamed(label: string): RegExp {
   return new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`);
 }
 
-/** The bar of selected rows' Snooze: the trigger of the menu that snoozes every ticked ask. */
-export function bulkSnoozeTrigger(page: Page): Locator {
-  return page
-    .getByRole("toolbar", { name: "Selected rows" })
-    .getByRole("button", { exact: true, name: "Snooze selected asks" });
-}
-
-/** The bulk Snooze's menu, open: what that trigger, or `b` or `h` with rows ticked, opens. */
+/** The bulk Snooze as a menu, open: a `menu` named "Snooze selected asks". The merged bar draws
+ *  no such menu - its Snooze is the shared single pick, whose list `listOf` finds from
+ *  `listTrigger(page, "Snooze selected asks")` - so only a row that still reads the bar's Snooze
+ *  as a menu calls this. */
 export function bulkSnoozeMenu(page: Page): Locator {
   return page.getByRole("menu", { name: "Snooze selected asks" });
 }
@@ -32,7 +29,9 @@ export function statusTrigger(page: Page): Locator {
   return page.getByTestId("issue-header").getByRole("button", { name: triggerNamed("Status") });
 }
 
-/** The trigger of the priority menu of the issue `key`, inside `scope`. */
+/** The trigger of the priority pick of the issue `key`, inside `scope`: the button of the shared
+ *  single pick (`MultiSelect`, `aria-haspopup="listbox"`), named `Priority of <KEY>` and then the
+ *  priority it shows. A press opens its list (`listOf` in `filters.ts`), not a menu. */
 export function priorityTrigger(scope: Locator | Page, key: string): Locator {
   return scope.getByRole("button", { name: triggerNamed(`Priority of ${key}`) });
 }

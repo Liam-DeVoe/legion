@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { RescuedMain } from "../../__tests__/focus-rescue";
 import { api } from "../../api/client";
 import type { Agent, AskFollower, Subscriber } from "../../api/types";
 import { AskRecipients, type AskRecipientsProps } from "./AskRecipients";
@@ -34,14 +35,24 @@ export function subscriber(
 
 export async function renderRecipients({
   agents = [],
+  client: queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  }),
   props = {},
   removeFollower = async () => {},
+  rescued = false,
   subscribers = [],
 }: {
   /** An Error rejects the agent registry read, as an unreachable Envoy listener does. */
   agents?: Agent[] | Error;
+  /** The query client the card reads through: a plain one unless the case needs the app's own
+   *  (`DispatchQueryClient`). */
+  client?: QueryClient;
   props?: Partial<AskRecipientsProps>;
   removeFollower?: AskRecipientsProps["removeFollower"];
+  /** Draws the card in the shell's main content with the page's focus rescue mounted on it
+   *  (`RescuedMain`), as the app shell mounts it. */
+  rescued?: boolean;
   /** An Error rejects the subscribers fetch, as an unreachable Envoy listener does. */
   subscribers?: Subscriber[] | Error;
 } = {}) {
@@ -60,28 +71,30 @@ export async function renderRecipients({
     getIssueSubscribers.mockResolvedValue(subscribers);
     getArtifactSubscribers.mockResolvedValue(subscribers);
   }
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   // Each recipient is an `AgentName`, whose live link needs a router.
-  const recipients = (drawn: Partial<AskRecipientsProps>) => (
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <AskRecipients
-          askId="ask-1"
-          claimant={null}
-          followers={followers}
-          owner={{ artifact_id: null, issue_key: "CORE-1" }}
-          removeFollower={removeFollower}
-          route={null}
-          routeHolder={null}
-          routeStatus={null}
-          {...drawn}
-        />
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const recipients = (drawn: Partial<AskRecipientsProps>) => {
+    const card = (
+      <AskRecipients
+        askId="ask-1"
+        claimant={null}
+        followers={followers}
+        owner={{ artifact_id: null, issue_key: "CORE-1" }}
+        removeFollower={removeFollower}
+        route={null}
+        routeHolder={null}
+        routeStatus={null}
+        {...drawn}
+      />
+    );
+    return (
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          {rescued ? <RescuedMain>{card}</RescuedMain> : card}
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
   const view = render(recipients(props));
   const user = userEvent.setup();
   // The routing list is folded at rest; every assertion of the tests that render it is about

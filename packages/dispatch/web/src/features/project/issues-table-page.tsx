@@ -114,7 +114,7 @@ type ToolbarPanel = "flags" | "view";
  * The one row the List's controls sit in: the search box, the trigger over the three flags that
  * narrow no column of the table, the chips of every narrowing that is on - the issues a link
  * names (`only=`), the flags, and every column's filter - **Clear filters** (which the row
- * draws), the columns menu, and the display menu carrying the grouping (INFRA-3135, R1 and R3).
+ * draws), the columns menu, and the display menu carrying the grouping.
  * A column's filter is set on that column's header, where `ColumnFilter` draws it, and its chip
  * is drawn here as well, so a column the reader hid keeps its narrowing in sight.
  */
@@ -129,7 +129,8 @@ export function IssueTableToolbar({
   /** Where the row's Shift+F and Shift+V are registered (`ControlRow`): the project scope for
    *  the page's one table, or its main one, and none for a table drawn beside it. */
   keyScope?: "project";
-  /** The search box, which the selection bar hands the focus to when no row is left for it. */
+  /** The search box. The focus goes here when a control of the table's head or of a notice goes
+   *  with it and no control at its place can take it (`noteFocus`). */
   searchRef: RefObject<HTMLInputElement | null>;
   /** The chip of the issues a link names, which the row draws first among its chips. */
   selection?: FilterChip;
@@ -291,8 +292,8 @@ export function IssueTableToolbar({
           >
             {() => (
               <>
-                <IssueFlagChips />
-                <Chip onClick={() => setUnclaimed(!unclaimed)} selected={unclaimed}>
+                <IssueFlagChips size="compact" />
+                <Chip onClick={() => setUnclaimed(!unclaimed)} selected={unclaimed} size="compact">
                   Unclaimed
                 </Chip>
               </>
@@ -313,7 +314,8 @@ export function IssueTableToolbar({
  * than disabled - each `StepButton`, and the Move to epic list through its `ariaDisabled` - so
  * the press that makes a control inert keeps the focus on it, and a confirm or a name dialog
  * hands the focus back to an opener that can take it. A held Move to epic opens no list and
- * stages no pick; a pick stages the epic, and Move, held until one is staged, writes it.
+ * stages no pick; a pick stages the epic, and Move, held until one is staged, writes it. The bar
+ * and its steps take the List's compact size, as its control row does.
  */
 export function IssueTableSelection({
   returnFocus,
@@ -345,10 +347,19 @@ export function IssueTableSelection({
   const [picking, setPicking] = useState(false);
   const epicTitles = new Map(epics.map((option) => [option.key, option.title]));
   return (
-    // Over the list, not in it: selecting a row moves no row (INFRA-3135, R4).
-    <SelectionBar count={selectedKeys.length} label="Selected issues" returnFocus={returnFocus}>
+    // Over the list, not in it: selecting a row moves no row.
+    <SelectionBar
+      count={selectedKeys.length}
+      label="Selected issues"
+      returnFocus={returnFocus}
+      size="compact"
+    >
       {selectedKeys.length < leafCount ? (
-        <StepButton ariaDisabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
+        <StepButton
+          ariaDisabled={busy}
+          onClick={() => table.toggleAllRowsSelected(true)}
+          size="compact"
+        >
           Select all {leafCount} matching
         </StepButton>
       ) : null}
@@ -359,6 +370,7 @@ export function IssueTableSelection({
         onClick={() =>
           startNext(selectedKeys, selectedKeys.length > table.getRowModel().rows.length)
         }
+        size="compact"
       >
         Start next
       </StepButton>
@@ -379,7 +391,8 @@ export function IssueTableSelection({
         optionLabel={(key) => epicTitles.get(key)}
         options={epics.map((option) => option.key)}
         searchLabel="Search epics"
-        triggerClassName={`max-w-60 rounded-lg border px-2 py-1 text-left refused:opacity-40 ${borderDefault} ${surfaceBg}`}
+        size="compact"
+        triggerClassName={`max-w-60 rounded-lg border text-left refused:opacity-40 ${borderDefault} ${surfaceBg}`}
         value={epic === "" ? undefined : epic}
       />
       <StepButton
@@ -389,21 +402,27 @@ export function IssueTableSelection({
           setEpic("");
           void moveTo(selectedKeys, into);
         }}
+        size="compact"
       >
         Move
       </StepButton>
-      <StepButton ariaDisabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
+      <StepButton
+        ariaDisabled={busy}
+        onClick={() => void moveTo(selectedKeys, null)}
+        size="compact"
+      >
         Take out of epic
       </StepButton>
       {newEpic === undefined ? null : (
         <StepButton
           ariaDisabled={busy || unansweredEpic !== undefined}
           onClick={() => void newEpic(selectedKeys)}
+          size="compact"
         >
           New epic from these
         </StepButton>
       )}
-      <StepButton ariaDisabled={busy} onClick={() => setSelection({})}>
+      <StepButton ariaDisabled={busy} onClick={() => setSelection({})} size="compact">
         Clear selection
       </StepButton>
     </SelectionBar>

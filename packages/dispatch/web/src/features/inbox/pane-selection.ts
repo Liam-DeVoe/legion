@@ -1,4 +1,12 @@
-import { createContext, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { focusIntoView } from "../../components/focus-place";
 import { focusOnDocument } from "../shell/roving";
@@ -6,7 +14,6 @@ import { answerDraft } from "./answer-drafts";
 import { type InboxRoute, useInboxRoute } from "./inbox-route";
 import { ROW_ATTRIBUTE, rowIn } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
-import { answerOutstanding } from "./outstanding-answers";
 import type { InboxSection } from "./sections";
 
 /** A row as the reader last saw it: the band it was drawn under and the turn band it sat in,
@@ -179,11 +186,11 @@ export function usePaneSelection({
   //
   // Read on every commit while the list holds the selected row, and kept as it was once the
   // list no longer does: the commit that drops the row is the one the settling effect reads
-  // this on, and the reader's own answer takes its row at once while the column keeps the
-  // question, so where that answer sends them is read here too. A snooze and a dismiss do not
-  // read it: they say where they send the reader as they act (`beginHandOff`), off the list as
-  // it stood then, since a snooze moves its row into `Later`, which is still drawn while the
-  // band is open or while the write is out.
+  // this on, and the reader's own answer takes its row once the server records it, so where
+  // that answer sends them is read here too. A snooze and a dismiss do not read it: they say
+  // where they send the reader as they act (`beginHandOff`), off the list as it stood then,
+  // since a snooze moves its row into `Later`, which is still drawn while the band is open, and
+  // the list keeps that row where it stood until the write lands.
   const stoodBetween = useRef<Neighbours>({ above: undefined, below: undefined });
   /** Where the selection goes when the row it is on leaves the bands: the next row the reader
    *  can see after it, else the nearest above it, so the column always shows something they
@@ -222,11 +229,11 @@ export function usePaneSelection({
       if (next !== undefined) select(rowId(next.row));
       return;
     }
-    // The column is holding a question past its row (their unsent answer, or one the server has
-    // not decided yet), so there is no row to step from: the place that row held is read off
-    // the rows it stood between, and the step runs from there rather than from the top of the
-    // list. The row it stood above took its place; where it stood last there is no such row,
-    // and the row it stood below is the one before the place it held.
+    // The column is holding a question past its row (their unsent answer), so there is no row to
+    // step from: the place that row held is read off the rows it stood between, and the step runs
+    // from there rather than from the top of the list. The row it stood above took its place;
+    // where it stood last there is no such row, and the row it stood below is the one before the
+    // place it held.
     const { above, below } = stoodBetween.current;
     const belowAt = visible.findIndex((placed) => rowId(placed.row) === below);
     const aboveAt = visible.findIndex((placed) => rowId(placed.row) === above);
@@ -382,28 +389,22 @@ export function usePaneSelection({
   /**
    * What the column shows this commit, given the selected row among the ones the list renders
    * (none, where it renders none at all). Normally that row, which leaves the column as it
-   * leaves the list. Two things outlive the row, both of them the reader's own answer to a
-   * question:
+   * leaves the list. The reader's unsent answer to a question outlives its row: a question whose
+   * row the server dropped while they had typed one into its box stays in the column - the card
+   * draws its closed state, with that text under it - until they select another row, so an
+   * answer they are in the middle of writing is never taken off the screen under their hands.
    *
-   * Their unsent answer. A question whose row the server dropped while they had typed one into
-   * its box stays in the column - the card draws its closed state, with that text under it -
-   * until they select another row, so an answer they are in the middle of writing is never taken
-   * off the screen under their hands.
-   *
-   * Their sent answer, until the server decides it (`outstanding-answers.ts`). `useAskAnswerForm`
-   * drops the row the moment the answer goes out, and the column hands the selection on when the
-   * server records it (`recordAnswered`), not when the page guesses it will: an answer the server
-   * refuses leaves the question here with the card's own refusal and its Retry under what they
-   * answered - the one surface that refusal is shown on - exactly as it does below this column's
-   * width, where the reader's hand on the row holds it (`heldRow`). This is `snoozing`'s rule for
-   * a deferred row, for the one write whose own optimistic update takes the row out of the Inbox
-   * read rather than merely out of this view.
+   * Their sent answer needs no hold of the column's: the list keeps the row where they saw it
+   * while the answer or a decline is out (`Inbox.tsx`, `heldRow`), though the write takes it out
+   * of the Inbox read, so the selected row is among those the list renders. The column hands the
+   * selection on when the server records the answer (`recordAnswered`), and a refusal leaves the
+   * question here with the card's own refusal and its Retry under what they answered.
    *
    * A kept row is drawn as its row among `candidates` where it is one, else as last seen.
    *
-   * A row held by neither - an ask they have neither typed nor sent an answer to, and every
-   * thread row, which a dismiss takes out of the list under its own optimistic update - leaves
-   * the column as it leaves the list, the first row this list selected for them included.
+   * Any other row - an ask they have typed no answer into, and every thread row, which a dismiss
+   * takes out of the list under its own optimistic update - leaves the column as it leaves the
+   * list, the first row this list selected for them included.
    */
   const paneRow = (listed: InboxListRow | undefined): InboxListRow | undefined => {
     const subject = paneSubject.current;
@@ -419,7 +420,7 @@ export function usePaneSelection({
       paneSubject.current = undefined;
       return undefined;
     }
-    const kept = subject.kept || answerOutstanding(selectedId) || answerDraft(selectedId) !== "";
+    const kept = subject.kept || answerDraft(selectedId) !== "";
     const row = candidates.find((candidate) => rowId(candidate) === selectedId) ?? subject.row;
     paneSubject.current = kept ? { kept: true, row } : undefined;
     return kept ? row : undefined;
@@ -453,7 +454,15 @@ export function usePaneSelection({
   // link is what they asked for), and one it does not hold leaves the first visible row
   // selected and the address rewritten, once every part of the list has come. Otherwise the
   // selection is the reader's, and the address follows it.
-  useEffect(() => {
+  //
+  // On the layout lane, so that the selection a commit hands on is drawn in the same task as that
+  // commit. The commit that takes the selected row off the list draws no column, and takes away
+  // whatever in the column held the focus; the next row's column is then drawn before the page's
+  // focus rescue reads that loss a frame later, so the Inbox hands the focus to the new column's
+  // own focus stop first (`Inbox.tsx`). Settled on the passive lane, the column could come a
+  // commit after the rescue's frame - WebKit's at times, and every time in happy-dom, whose frame
+  // is a task away - and the rescue would have walked the focus back to a control of the list.
+  useLayoutEffect(() => {
     if (!paneShown) return;
     // A list that holds nothing - still loading, failed, or genuinely empty - answers no
     // address: `?item=` is left unread until there are rows to read it against. A selected row

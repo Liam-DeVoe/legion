@@ -9,10 +9,11 @@ import { createContext, useContext } from "react";
  * React does: every card draws its digits there, and only the row in hand shows them
  * (`ROW_IN_HAND_CLASS`).
  *
- * A context rather than a prop, as the hand-on's registration is (`hand-on-live.ts`): the card
- * of a question written as a decision block is the document page's own, which no prop of the
- * Inbox reaches. With no provider - the issue page's Conversation, a document's margin and its
- * decision blocks, the Answers page - a card draws no digits, since no digit picks anything there.
+ * A context rather than a prop, as the hand-on's writes are (`AskHandOnWritesContext`,
+ * `useAskHandOn.ts`): the card of a question written as a decision block is the document page's
+ * own, which no prop of the Inbox reaches. With no provider - the issue page's Conversation, a
+ * document's margin and its decision blocks, the Answers page - a card draws no digits, since no
+ * digit picks anything there.
  */
 export type OptionDigits =
   | { readonly askId: string | undefined; readonly kind: "selected" }

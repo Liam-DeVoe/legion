@@ -209,8 +209,8 @@ None of them follows the filter, so a widened filter lists more asks than the nu
 Inbox.
 
 The Agents page links each agent's asks too. Its **Needs you** pill opens the Inbox filtered to
-that agent's asks waiting on you, under an `Asks from <agent> waiting on you · clear` chip. Choose
-the chip to remove the filter, or the **↗** beside it to open the agent's
+that agent's asks waiting on you, under an `Asks from <agent> waiting on you` chip. Choose the
+chip's **×** to remove the filter, or the **↗** beside it to open the agent's
 [live view](/legion/dispatch/agents/#the-live-view).
 
 ### Later and snooze

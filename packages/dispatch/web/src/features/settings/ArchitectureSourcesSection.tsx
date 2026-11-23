@@ -108,13 +108,15 @@ export function ArchitectureSourcesSection(): ReactNode {
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
-  // The form is held while a save or a delete is out: each control keeps the focus the press
-  // gave it (`heldPress`), and the form sends nothing more until the write lands.
+  // Add source is held while a save or a removal is out, by `aria-disabled`, and a submit sends
+  // nothing then. The project list, the repository and the branch are held while a save is out
+  // (`saveHeld`): `aria-disabled`, and the two boxes read-only. So the control the reader
+  // submitted from keeps the focus.
   const saveHeld = saveSource.isPending;
   const formHeld = saveHeld || deleteSource.isPending;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (deleteSource.isPending) return;
+    if (formHeld) return;
     // The project list is a button, which no `required` holds: an empty one files nothing here.
     if (project === "") {
       setProjectMissing(true);
@@ -218,6 +220,9 @@ export function ArchitectureSourcesSection(): ReactNode {
                         "Access verified"
                       )}
                     </TableCell>
+                    {/* A row's Refresh and Delete are held while a write of the section is out
+                        (`heldPress`), not disabled, so the one the reader pressed keeps the focus
+                        and a press of either then sends nothing. */}
                     <TableCell align="right">
                       <button
                         aria-label={`Refresh architecture source ${source.repo} for ${source.project}`}

@@ -20,6 +20,8 @@ import {
   userAgentStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
+import { invalidateWaitingForPaused } from "../../api/query-client";
+import { useReadBound } from "../../api/read-bound";
 import type {
   Agent,
   MessageDeliveryMode,
@@ -32,7 +34,12 @@ import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
 import { filterChips } from "../../components/filter-chips";
-import { useFocusPlace } from "../../components/focus-place";
+import {
+  controlsLikeRow,
+  focusNoScroll,
+  inSightWhole,
+  useFocusPlace,
+} from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -65,7 +72,13 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { listedReplies } from "../conversation/conversation-model";
-import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
+import {
+  broadcastDelivery,
+  capabilityLabel,
+  deliveryMode,
+  deliveryModesOf,
+  MODE_LABELS,
+} from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
@@ -193,6 +206,7 @@ function rowTarget(agent: Agent): AgentPart {
 
 function AgentExchangeReply({
   agent,
+  holdThroughRead,
   liveAgents,
   onReply,
   read,
@@ -200,25 +214,26 @@ function AgentExchangeReply({
   replyHeld,
 }: {
   agent: Agent;
+  /** Holds through the conversation's re-read (`useReadBound`). */
+  holdThroughRead: () => Promise<void>;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   reply: MessageWithTrees;
   replyHeld: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
-    // Pending through the read that draws the new attempt: Retry and the mode changes stay
-    // disabled until that read takes them away, so the press is still the cause of their going
-    // (`causedByReader`). The read settles either way, and a failed one lets them go.
-    onSuccess: () =>
-      queryClient.invalidateQueries({
-        queryKey: agentMessagesQuery(agent.session_id).queryKey,
-      }),
+    // Pending through the read that draws the new attempt: Retry and the mode changes stay held
+    // (`DeliveryRetry`) until that read takes them away, so the press is still the cause of their
+    // going (`causedByReader`). The read settles either way, and a failed one lets them go. A read
+    // that has not settled by the request deadline (`REQUEST_DEADLINE_MS`) - one paused while the
+    // browser is offline - lets them go then, and the conversation says why it is not read yet
+    // (`useReadBound`).
+    onSuccess: holdThroughRead,
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
@@ -276,28 +291,28 @@ function AgentExchangeReply({
 
 function AgentTargetedMessage({
   agent,
+  holdThroughRead,
   liveAgents,
   onReply,
   read,
   replyHeld,
 }: {
   agent: Agent;
+  /** Holds through the conversation's re-read (`useReadBound`). */
+  holdThroughRead: () => Promise<void>;
   liveAgents: readonly Agent[] | undefined;
   onReply: (reply: AgentReply) => void;
   read: MessageRead;
   replyHeld: boolean;
 }): ReactNode {
-  const queryClient = useQueryClient();
   const text = useAgentText();
   const label = text.sessionText(agent.session_id, agent.title);
   const retry = useKeyedWrite({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${label} again, as ${MODE_LABELS[delivery]}`,
-    // Pending through the read that draws the new attempt, as a reply's retry is.
-    onSuccess: () =>
-      queryClient.invalidateQueries({
-        queryKey: agentMessagesQuery(agent.session_id).queryKey,
-      }),
+    // Pending through the read that draws the new attempt, as a reply's retry is, and bounded
+    // the same way.
+    onSuccess: holdThroughRead,
     method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
@@ -333,6 +348,7 @@ function AgentTargetedMessage({
             {replies.map((reply) => (
               <AgentExchangeReply
                 agent={agent}
+                holdThroughRead={holdThroughRead}
                 key={reply.id}
                 liveAgents={liveAgents}
                 onReply={onReply}
@@ -367,6 +383,9 @@ function exchangesAfter(
   return exchanges.filter((read) => compareTimestamps(exchangeActivityAt(read), clearedBefore) > 0);
 }
 
+/** What a conversation says when its read failed, and before why its read has not settled. */
+const CONVERSATION_NOT_LOADED = "Could not load this conversation.";
+
 function AgentMessageList({
   agent,
   liveAgents,
@@ -388,6 +407,13 @@ function AgentMessageList({
   const agentState = useQuery(userAgentStateQuery());
   const [showOlder, setShowOlder] = useState(false);
   const [showCleared, setShowCleared] = useState(false);
+  // A retry's hold through this conversation's read, and why that read has not settled once the
+  // hold ran out (`useReadBound`).
+  const [unsettled, holdThrough] = useReadBound();
+  const holdThroughRead = () =>
+    holdThrough(
+      invalidateWaitingForPaused(queryClient, agentMessagesQuery(agent.session_id).queryKey)
+    );
   const clearedBefore = agentState.data?.[agent.session_id]?.cleared_before;
   const all = messages.data ?? [];
   const unread = exchangesAfter(all, clearedBefore);
@@ -424,12 +450,13 @@ function AgentMessageList({
   });
   if (messages.isPending || agentState.isPending) return null;
   if (messages.isError || agentState.isError) {
-    return <p className={`mt-3 text-sm ${dangerText}`}>Could not load this conversation.</p>;
+    return <p className={`mt-3 text-sm ${dangerText}`}>{CONVERSATION_NOT_LOADED}</p>;
   }
   if (all.length === 0) return null;
   const row = (read: MessageRead) => (
     <AgentTargetedMessage
       agent={agent}
+      holdThroughRead={holdThroughRead}
       key={read.message.id}
       liveAgents={liveAgents}
       onReply={onReply}
@@ -439,6 +466,13 @@ function AgentMessageList({
   );
   return (
     <div className={`mt-3 border-t pt-3 ${borderDefault}`}>
+      {/* A read of the conversation that has not settled is said as this list says one that
+          failed, in the same line. */}
+      {unsettled === undefined ? null : (
+        <p className={`mt-3 text-sm ${dangerText}`}>
+          {CONVERSATION_NOT_LOADED} {unsettled}.
+        </p>
+      )}
       {newest === undefined ? null : (
         <ol aria-label={`Conversation with ${label}`} className="space-y-2">
           {row(newest)}
@@ -472,6 +506,8 @@ function AgentMessageList({
             </button>
           </p>
         )}
+        {/* Held while its write is out (`heldPress`), not disabled: the button keeps the focus
+            the reader's press left on it, and a press of it then sends nothing. */}
         {visible.length === 0 ? null : (
           <button
             className={`ml-auto inline-flex min-h-11 items-center text-sm refused:cursor-not-allowed refused:opacity-50 md:min-h-8 ${textMutedHoverToSecondary}`}
@@ -948,8 +984,8 @@ const GROUP_FILTER_LABELS: ReadonlyMap<string, string> = new Map(
 /**
  * The one row the page's controls sit in: the search box, the one trigger over the three
  * narrowings that are no column of a table here - group, machine and role - and the chips of
- * the values that are on (INFRA-3135, R1 and R3). Each narrowing is still a multi-select whose
- * panel holds a text box that narrows its own options (R7: never a dropdown), because forty
+ * the values that are on. Each narrowing is still a multi-select whose panel holds a text box
+ * that narrows its own options, because forty
  * machines cannot be read in a list that does not search; all three now sit behind one trigger
  * rather than three of their own.
  */
@@ -1066,8 +1102,11 @@ function AgentFilterBar({
  * included, and `Clear selection` also empties the selected rows the filters hide. A selected
  * session missing from a list that is not `current` is counted as of unknown state, not as gone,
  * as the composer's chip names it. Clear selection goes with the selection it empties, and the
- * focus it held goes to the select-all checkbox before it, else, while no row matches and that
- * checkbox is disabled, to the search box (`useFocusPlace`).
+ * focus it held goes to the select-all checkbox before it while the reader can see it
+ * (`useFocusPlace`). While no row matches, that checkbox is disabled and the header holds no
+ * other control, so the page's rescue walks the focus back over the main content to the nearest
+ * control before the header that the reader can see and that takes no typed text: the Filter
+ * button.
  */
 function SelectionHeader({
   current,
@@ -1075,7 +1114,6 @@ function SelectionHeader({
   matching,
   onClear,
   onToggle,
-  searchInputRef,
   selected,
 }: {
   /** Whether the latest read of `listed` succeeded, so that it says who is absent (`useAgents`). */
@@ -1084,7 +1122,6 @@ function SelectionHeader({
   matching: readonly Agent[];
   onClear: () => void;
   onToggle: () => void;
-  searchInputRef: RefObject<HTMLInputElement | null>;
   selected: ReadonlySet<string>;
 }): ReactNode {
   const selection = matchingSelection(listed, matching, selected, current);
@@ -1098,7 +1135,7 @@ function SelectionHeader({
   }, [state]);
   const noteFocus = useFocusPlace(
     () => header.current,
-    () => searchInputRef.current
+    () => null
   );
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the header needs no role of its own.
@@ -1173,6 +1210,7 @@ function BroadcastComposer({
 }): ReactNode {
   const { plan } = composed;
   const { excluded, recipients, unchecked } = plan;
+  const [modeListOpen, setModeListOpen] = useState(false);
   // The selection's own mode, named when it is not the broadcast's usual BTW, so the reader knows
   // what their words become: an Aside, because a selected session takes Aside and not BTW.
   const asideOnly =
@@ -1256,18 +1294,27 @@ function BroadcastComposer({
         })}
       </ul>
       <div className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:order-2 narrow-or-short:mt-0">
-        <select
-          aria-label="Delivery mode"
-          className={`min-h-11 rounded-lg border px-3 py-2 text-sm ${inputClasses(true)}`}
-          onChange={(event) => onDelivery(event.target.value as MessageDeliveryMode)}
+        {/* The shared list's single pick of the modes, whose text box narrows them as the reader
+            types; its trigger shows the mode the broadcast sends in. A pick of that mode changes
+            nothing, as a select set to the value it holds fires nothing: a restored broadcast
+            stays the one refused, and a mode the selection takes stays unpicked. */}
+        <MultiSelect
+          emptyMessage="No mode matches that."
+          label="Delivery mode"
+          mode="single"
+          onOpenChange={setModeListOpen}
+          onPick={(picked) => {
+            const mode = deliveryMode(picked);
+            if (mode !== undefined && mode !== delivery) onDelivery(mode);
+          }}
+          open={modeListOpen}
+          optionLabel={capabilityLabel}
+          options={DELIVERY_CAPABILITIES}
+          searchLabel="Search delivery modes"
+          size="comfortable"
+          triggerClassName={`rounded-lg border text-left text-sm ${inputClasses(true)}`}
           value={delivery}
-        >
-          {DELIVERY_CAPABILITIES.map((mode) => (
-            <option key={mode} value={mode}>
-              {MODE_LABELS[mode]}
-            </option>
-          ))}
-        </select>
+        />
       </div>
       <textarea
         aria-label="Broadcast message"
@@ -1325,6 +1372,14 @@ function rowNode(list: HTMLElement | null, sessionID: string): HTMLElement | nul
     [...(list?.querySelectorAll<HTMLElement>(AGENT_ROW_SELECTOR) ?? [])].find(
       (node) => node.dataset.agentRow === sessionID
     ) ?? null
+  );
+}
+
+/** The rows `list` draws now, in the order the page shows them: a row kept mounted but hidden in
+ *  a collapsed group is none of them. */
+function drawnRows(list: HTMLElement | null): HTMLElement[] {
+  return [...(list?.querySelectorAll<HTMLElement>(AGENT_ROW_SELECTOR) ?? [])].filter(
+    (node) => !node.hidden
   );
 }
 
@@ -1590,18 +1645,24 @@ export function AgentsPage(): ReactNode {
   // any other way (the registry's own, say) would name the recipients in an order the reader
   // never sees, and send them in it.
   const matching = AGENT_GROUPS.flatMap((group) => matchingIn[group]);
-  /** The row a pin was made from while it held focus, until the render that moves it. A pin no
-   *  longer moves a row out of its group (D3), but it does move it within one - pinned rows
-   *  come first - and React moves its node, which can drop focus to the document. Focus follows
-   *  the row to where it lands, or to its group's heading when the row is hidden there, as
-   *  `IssueBoard`'s `focusAfterMove` lands on a collapsed rail, so the next `j`/`k` go on from
-   *  the reader's place rather than from the top (`useAgentsKeymap` steps from a heading too). */
-  const focusAfterPin = useRef<string | null>(null);
+  /** The row a pin was made from while it held focus, and where that row stood among the rows the
+   *  list drew, until the render that moves it. A pin no longer moves a row out of its group
+   *  (D3), but it does move it within one - pinned rows come first - and React moves its node,
+   *  which can drop focus to the document. Focus follows the row to where it lands, or to its
+   *  group's heading when the row is hidden there, as `IssueBoard`'s `focusAfterMove` lands on a
+   *  collapsed rail, so the next `j`/`k` go on from the reader's place rather than from the top
+   *  (`useAgentsKeymap` steps from a heading too). The place is the one the row after it moves
+   *  into, which takes the focus where the moved row's own control ends out of the reader's
+   *  sight. Null while no pin is waiting. */
+  const focusAfterPin = useRef<{ readonly place: number; readonly sessionID: string } | null>(null);
   const togglePin = (sessionID: string) => {
     if (
       closestMatching(document.activeElement, AGENT_ROW_SELECTOR)?.dataset.agentRow === sessionID
     ) {
-      focusAfterPin.current = sessionID;
+      focusAfterPin.current = {
+        place: drawnRows(listRef.current).findIndex((node) => node.dataset.agentRow === sessionID),
+        sessionID,
+      };
     }
     writePin(sessionID, !pinned.includes(sessionID));
   };
@@ -1701,9 +1762,10 @@ export function AgentsPage(): ReactNode {
   // A layout effect, so the frame the move paints already has focus where the row went.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `pinned` is the trigger, not a read
   useLayoutEffect(() => {
-    const sessionID = focusAfterPin.current;
-    if (sessionID === null) return;
+    const pin = focusAfterPin.current;
+    if (pin === null) return;
     focusAfterPin.current = null;
+    const { place, sessionID } = pin;
     const row = rowNode(listRef.current, sessionID);
     if (row === null) return;
     // A row the pin leaves hidden is in a collapsed group: it held focus, so the filters match
@@ -1712,6 +1774,22 @@ export function AgentsPage(): ReactNode {
     // Only the focus the move took is the page's to give back: still on the row, now hidden, or
     // dropped to the document.
     const focused = document.activeElement;
+    // The move can leave the focus on a control of the row itself, which the browser puts back
+    // where the row now stands: measured in WebKit at 390x664, Unpin on the first of three
+    // pinned agents left the focus on that row's Pin at 816 px in a 664 px window. A landing is
+    // one the reader can see, and nothing scrolls to reach it, so the focus goes with no scroll
+    // to the control standing where this one does in the row now at the moved row's place
+    // (`controlsLikeRow`), else that row's first control. A control the reader can see whole
+    // keeps the focus, so the page still follows the row wherever it stays in sight.
+    if (focused instanceof HTMLElement && focused !== row && row.contains(focused)) {
+      if (inSightWhole(focused, new Map())) return;
+      const at = drawnRows(listRef.current)[place];
+      if (at === undefined || at === row) return;
+      for (const control of controlsLikeRow(at, focused, row)) {
+        if (focusNoScroll(control)) return;
+      }
+      return;
+    }
     if (focused !== row && !focusOnDocument()) return;
     if (focused !== target) target?.focus();
   }, [pinned]);
@@ -1823,7 +1901,6 @@ export function AgentsPage(): ReactNode {
             matching={matching}
             onClear={() => setSelected(() => new Set())}
             onToggle={() => setSelected((current) => toggleMatching(matching, current))}
-            searchInputRef={searchInputRef}
             selected={selected}
           />
           {matching.length === 0 && current ? (

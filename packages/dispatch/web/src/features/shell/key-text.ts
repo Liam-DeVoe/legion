@@ -10,7 +10,7 @@
  * as a refusal names the keys it lists.
  *
  * The module imports nothing: `page-words.ts` reads it, which a browser spec's own Node process
- * loads, where `keymap.ts` cannot load, since it reads `import.meta.env` as it loads.
+ * loads, so that process reads how a key is written without loading the keymap.
  */
 
 /** Whether the browser says it runs on a Mac, read once as the app loads: there `$mod` is Cmd,

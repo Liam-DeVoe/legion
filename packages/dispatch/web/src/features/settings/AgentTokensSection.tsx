@@ -152,6 +152,7 @@ function TokenScopeChoices({
               className={`size-4 shrink-0 rounded aria-disabled:opacity-50 ${checkboxAccent}`}
               disabled={disabled}
               onChange={(event) => {
+                // Held, a change writes nothing, and the box, controlled, shows the set as it was.
                 if (held) return;
                 onChoose(scopesAfterChoice(chosen, scope.id, event.target.checked));
               }}
@@ -239,8 +240,8 @@ export function AgentTokensSection(): ReactNode {
   const listedIds = () => (tokens.data ?? []).map((token) => token.id);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    // An emptied form - a mint that landed - sends nothing, whatever submits it, and neither does
-    // a second press while the first mint is out.
+    // An emptied form - a mint that landed - sends nothing, whatever submits it, and so does one
+    // whose mint is out: a held New token is only `aria-disabled`, so its press still submits.
     if (name.trim() === "" || createToken.isPending) return;
     createToken.mutate({ before: listedIds(), name, scopes: newScopes });
   };

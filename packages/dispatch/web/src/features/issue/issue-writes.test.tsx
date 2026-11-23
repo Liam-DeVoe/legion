@@ -6,9 +6,10 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
+import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { pickNamed } from "../../__tests__/list-picks";
-import { choicesOf, pickFromMenu } from "../../__tests__/menu-picks";
+import { panelOf, pickNamed, rows } from "../../__tests__/list-picks";
+import { pickFromMenu } from "../../__tests__/menu-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -154,7 +155,7 @@ async function openTitleEditor(): Promise<HTMLInputElement> {
     return existing;
   }
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("heading", { level: 1 }));
+  await user.click(await screen.findByRole("button", { name: "Edit title" }));
   return (await screen.findByLabelText("Issue title")) as HTMLInputElement;
 }
 
@@ -380,7 +381,9 @@ test("IssuePage keeps an unsaved title draft when a stale refetch arrives", asyn
   patchIssue.mockImplementationOnce(() => firstSave.promise);
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     let title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -393,7 +396,7 @@ test("IssuePage keeps an unsaved title draft when a stale refetch arrives", asyn
 
     // Blur exits click-to-edit mode; re-enter it to start a second, still-unsaved edit
     // before the first save's response arrives.
-    await user.click(await screen.findByRole("heading", { level: 1, name: "A" }));
+    await user.click(await screen.findByRole("button", { description: "A", name: "Edit title" }));
     title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -497,8 +500,10 @@ test("IssuePage submits the selected priority through the issue mutation", async
 
   try {
     const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
-    expect(await choicesOf(user, priority)).toEqual(["Unset", "P0", "P1", "P2", "P3"]);
-    await pickFromMenu(user, priority, "P0");
+    await user.click(priority);
+    const list = within(panelOf(priority)).getByRole("listbox");
+    expect(rows(list)).toEqual(["✓Unset", "P0", "P1", "P2", "P3"]);
+    await user.click(within(list).getByRole("option", { name: "P0" }));
 
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
@@ -518,12 +523,12 @@ test("IssuePage keeps an optimistic priority selection while its save is pending
 
   try {
     const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
-    await pickFromMenu(user, priority, "P0");
+    await pickIn(user, () => priority, "P0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
 
-    expect(priority).toHaveTextContent("P0");
+    expect(priority).toHaveAccessibleName("Priority of CORE-1 P0");
 
     await act(async () => {
       save.resolve({ ...issue, priority: 0 });
@@ -544,18 +549,19 @@ test("IssuePage restores the previous priority after a failed save", async () =>
 
   try {
     const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
-    await pickFromMenu(user, priority, "P0");
+    await pickIn(user, () => priority, "P0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
-    expect(priority).toHaveTextContent("P0");
+    expect(priority).toHaveAccessibleName("Priority of CORE-1 P0");
 
     act(() => {
       save.reject(new Error("offline"));
     });
     await screen.findByRole("alert");
-    expect(priority).toHaveTextContent("Priority");
-    expect(priority).not.toBeDisabled();
+    expect(priority).toHaveAccessibleName("Priority of CORE-1 Priority");
+    expect(priority).not.toHaveAttribute("aria-disabled");
+    expect((priority as HTMLButtonElement).disabled).toBe(false);
   } finally {
     unmount();
     restore();
@@ -865,7 +871,9 @@ test("IssuePage retries an unchanged failed title draft", async () => {
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     const title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -2066,7 +2074,9 @@ test("IssuePage says what Retry does after a title save the reader stopped", asy
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     const title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);

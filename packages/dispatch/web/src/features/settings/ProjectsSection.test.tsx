@@ -2,11 +2,12 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent, { type UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, panelOf, rows, textBoxes } from "../../__tests__/list-picks";
+import { listOf, panelOf, pick, rows, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -79,6 +80,51 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
     expect(createProject).toHaveBeenCalledTimes(1);
   } finally {
     realClock();
+    cleanup();
+    queryClient.clear();
+    listProjects.mockRestore();
+    listDefaults.mockRestore();
+    createProject.mockRestore();
+  }
+});
+
+// While the create is out, Key, Name and New project are held, by `aria-disabled`, never
+// `disabled` (`pressHeld`): the control the reader submitted from keeps the focus, and a second
+// press sends nothing.
+test.each([
+  { label: "Key", role: "textbox" },
+  { label: "Name", role: "textbox" },
+  { label: "New project", role: "button" },
+] as const)("$label, held while the create is out, keeps the focus, and a second press sends nothing", async ({
+  label,
+  role,
+}) => {
+  const user = userEvent.setup();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+  // The create's answer, held until the case refuses it inside `act`.
+  const answer = Promise.withResolvers<never>();
+  const createProject = spyOn(api, "createProject").mockReturnValue(answer.promise);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProjectsSection />
+      </QueryClientProvider>
+    );
+    await screen.findByRole("cell", { name: "CORE" });
+    await user.click(screen.getByLabelText("Key"));
+    await user.paste("qa");
+    await user.click(screen.getByLabelText("Name"));
+    await user.paste("Quality");
+    await pressHeld(user, screen.getByRole(role, { name: label }), {
+      name: label,
+      sent: () => createProject.mock.calls.length,
+    });
+  } finally {
+    await act(async () => answer.reject(new ApiError(403, { code: "FORBIDDEN", error: "no" })));
     cleanup();
     queryClient.clear();
     listProjects.mockRestore();
@@ -262,13 +308,6 @@ test("with no default assignee picked, New project files nothing", async () => {
     view.done();
   }
 });
-
-/** Opens the list `trigger` names and picks `login` once the people are read. The new-project
- *  form offers the same people, so the option is read in the panel this trigger opened. */
-async function pickPerson(user: UserEvent, trigger: HTMLElement, login: string): Promise<void> {
-  await user.click(trigger);
-  await user.click(await within(panelOf(trigger)).findByRole("option", { name: login }));
-}
 
 /** The project routes' server state as the section reaches it: `list` answers what the default
  *  repository writes have left, and `put` stores the name in lower case, as the server does. A
@@ -509,8 +548,12 @@ test("a defaults read asked while a pick saved does not put back the assignee th
     );
     const control = await screen.findByLabelText("Default assignee of CORE");
     await waitFor(() => expect(control).toHaveTextContent("alice"));
-    // Opening the list reads who may be picked.
-    await pickPerson(user, control, "bob");
+    // Reaching for the picker reads who may be picked.
+    await user.click(control);
+    await waitFor(() =>
+      expect(within(panelOf(control)).getByRole("option", { name: "bob" })).toBeDefined()
+    );
+    await user.click(within(panelOf(control)).getByRole("option", { name: "bob" }));
     await waitFor(() =>
       expect(putDefault).toHaveBeenCalledWith("CORE", { assignee: "bob" }, keyedAttempt)
     );
@@ -587,13 +630,13 @@ test("Retry after two stopped saves of the same default assignee makes the newer
     const control = await screen.findByLabelText("Default assignee of CORE");
     await waitFor(() => expect(control).not.toBeDisabled());
 
-    await pickPerson(user, control, "alice@example.com");
+    await pick(user, "Default assignee of CORE", "alice@example.com");
     await stopTheLateWrite(queryClient);
     // A `PUT` carries no `Idempotency-Key`: the key a call is handed in its bounds is the page's
     // own name for the press the call is of, and what these lines compare is which press it is.
     const firstPress = putDefault.mock.calls[0]?.[2]?.key;
 
-    await pickPerson(user, control, "alice@example.com");
+    await pick(user, "Default assignee of CORE", "alice@example.com");
     await tick(0);
     const secondPress = putDefault.mock.calls.at(-1)?.[2]?.key;
     expect(secondPress).not.toBe(firstPress);
@@ -689,7 +732,7 @@ test("a default assignee save the reader stopped says Retry makes it again, not 
     );
     const control = await screen.findByLabelText("Default assignee of CORE");
     await waitFor(() => expect(control).not.toBeDisabled());
-    await pickPerson(user, control, "alice@example.com");
+    await pick(user, "Default assignee of CORE", "alice@example.com");
     await stopTheLateWrite(queryClient);
 
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(

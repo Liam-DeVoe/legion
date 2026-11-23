@@ -1,14 +1,15 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { createContext, type ReactNode, useMemo, useState } from "react";
 
-import { api, askSnoozeRequest } from "../../api/client";
+import { api, askSnoozeRequest, type WriteMethod } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import { holdBackReads } from "../../api/query-client";
 import type { InboxRow } from "../../api/types";
 import { snoozeWritten } from "../../api/write-events";
 import { refusedByDispatch, SendStoppedError } from "../writes/keyed-write";
-import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
+import { useAskWrites, useInboxWrites } from "./ask-writes";
 
 export interface AskSnoozeWrite {
   /** The server's reason after a refused save, or what one the reader stopped may have done and
@@ -19,9 +20,6 @@ export interface AskSnoozeWrite {
   /** The press the failed save was while `failed` holds - its ask, and the moment of a snooze or
    *  `null` for an un-snooze - which `retry` makes again; `undefined` otherwise. */
   failedPress: AskSnoozePress | undefined;
-  /** The ask the newest save is of while that save is in flight or failed, which the list around
-   *  the row holds (`useLiveRegistration`); `undefined` while none is. */
-  liveAskId: string | undefined;
   pending: boolean;
   /** What the in-flight write is doing, and `undefined` when none is: the moment a snooze is
    *  saving, or `null` for an un-snooze. The optimistic update has already moved the row by
@@ -50,59 +48,97 @@ interface SnoozeListener {
   readonly press: AskSnoozePress;
 }
 
+/** A snooze is a `PUT`, and bringing the row back a `DELETE`. */
+function snoozeMethod({ until }: AskSnoozePress): WriteMethod {
+  return until === null ? "DELETE" : "PUT";
+}
+
+/** The ask a press of a snooze is of. */
+function snoozeAsk({ askId }: AskSnoozePress): string {
+  return askId;
+}
+
+/** Every row's snooze write in one Inbox (`useAskSnoozeWrites`). */
+export interface AskSnoozeWrites {
+  /** The asks whose snooze write is out. The Inbox keeps each one's row in the band the reader
+   *  saw it in until the write lands (`heldRow`). A refused or stopped write is not out, so the
+   *  next read of the Inbox places its row. */
+  readonly out: ReadonlySet<string>;
+  /** The snooze write of `askId`. Every control drawn for that ask shows this one write. */
+  readonly of: (askId: string) => AskSnoozeWrite;
+}
+
 /**
- * The one way the SPA writes a row's snooze. The new moment lands on every inbox cache at once,
- * so the row drops into `Later` (or climbs back out) on the click, rolls back if the server
- * refuses, and the list refetches once the save settles - the same shape as the issue field
- * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
- *
- * Each press carries the ask it is of: `retry()` runs the newest render's `write` with the
- * press's own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. A host
- * may draw the row's control for one ask after another, so the Retry of a press the reader
- * stopped is of that press's ask, and so is the ask the save holds in the list while it is live
- * (`liveAskId`), whichever ask the hook is rendered for by then.
- *
- * The caller of `submit` and `retry` hears whether the server took that press (`onSettled`): of
- * the newest press only, and only while the hook's host is mounted, as TanStack calls a
- * `mutate`'s own callbacks. A Retry takes no callbacks of its own (`useKeyedWrite`'s `retry`),
- * so the hook's own callbacks tell the listener held beside the newest press, found by that
- * press: a Retry makes that very press again.
+ * The snooze writes of the Inbox around a control (`useAskSnoozeWrites`). Each Inbox provides its
+ * own (`AskSnoozeWritesProvider`): the page's and the drawer's are separate. A row's Snooze is
+ * drawn only inside an Inbox, so a control with no provider is a mistake in the code, and
+ * `useInboxWrites` throws for it.
  */
+export const AskSnoozeContext = createContext<AskSnoozeWrites | undefined>(undefined);
+
+/** Makes the snooze writes of one Inbox (`useAskSnoozeWrites`) and provides them to `children`.
+ *  The writes' own steps re-render this component alone: what it draws re-renders only when the
+ *  writes it provides change. */
+export function AskSnoozeWritesProvider({ children }: { children: ReactNode }): ReactNode {
+  return <AskSnoozeContext value={useAskSnoozeWrites()}>{children}</AskSnoozeContext>;
+}
+
+/** The snooze write of `askId` in the Inbox around the control (`AskSnoozeContext`). */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
+  return useInboxWrites(AskSnoozeContext).of(askId);
+}
+
+/**
+ * The one way the SPA writes a row's snooze, for every row of one Inbox. The new moment lands on
+ * every inbox cache at once, rolls back if the server refuses, and the list refetches once the
+ * save settles - the same shape as the issue field writes, without their cross-surface caches: a
+ * snooze is on the ask and shows nowhere else.
+ *
+ * The Inbox holds these writes by ask (`useAskWrites`), and the control that pressed holds none
+ * of them. A control can go while its write is out: the reading column's head goes when the
+ * reader moves the selection. So the row stays in the band the reader saw it in until its write
+ * lands (`out`), and moves into `Later` (or back out) then - save under the Blocked on you
+ * narrowing, which lists no snoozed ask and keeps the row only while the reader's hand is on it.
+ * A refusal stays with the ask until its next press, and every control drawn for the ask shows
+ * it, with its Retry. A refused or stopped write holds no row: the rollback has put the row's
+ * moment back, and the next read of the Inbox places it.
+ *
+ * Each press carries the ask it is of: a Retry runs the newest render's `write` with the press's
+ * own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. The Retry of a
+ * press the reader stopped makes that press again under its key; the Retry of a press Dispatch
+ * refused is a new press of the same values (`useAskWrites`).
+ *
+ * The caller of `submit` and `retry` hears whether the server took that press (`onSettled`),
+ * which is how a row's Snooze hands the reader on once its snooze lands (R8): of each ask's
+ * newest press only, since a newer press of the ask takes its place, and whichever control made
+ * it, since the write outlives the control. A Retry makes that very press again, so the listener
+ * held beside it is found by that press.
+ */
+export function useAskSnoozeWrites(): AskSnoozeWrites {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
-  /** The newest press's listener, set by each `submit` and `retry` and let go once that press is
-   *  heard or the host unmounts. */
-  const listener = useRef<SnoozeListener | undefined>(undefined);
-  useEffect(
-    () => () => {
-      listener.current = undefined;
-    },
-    []
-  );
-  /** Tells the newest press's listener whether the server took `press`; a press before it, or one
-   *  that settles after the host went, tells nobody. */
+  /** Each ask's newest press's listener, set by each `submit` and `retry` and let go once that
+   *  press is heard or a newer press of the ask takes its place. */
+  const [listeners] = useState(() => new Map<string, SnoozeListener>());
+  /** Tells the listener of the newest press of `press`'s ask whether the server took `press`; a
+   *  press before it tells nobody. */
   const heard = (press: AskSnoozePress, landed: boolean): void => {
-    const listening = listener.current;
+    const listening = listeners.get(press.askId);
     if (listening === undefined || listening.press !== press) return;
-    listener.current = undefined;
+    listeners.delete(press.askId);
     listening.onSettled(landed);
   };
-  const listen = (press: AskSnoozePress | undefined, onSettled: SnoozeSettled | undefined) => {
-    listener.current =
-      press === undefined || onSettled === undefined ? undefined : { onSettled, press };
-  };
-  // The row says why its snooze was refused, where the reader pressed it. A read of the Inbox
-  // asked while the snooze is out waits until Dispatch has taken it (its answer or the viewer's
-  // snooze event): Dispatch can answer it before, with the row's moment from before the press.
-  const mutation = useKeyedWrite({
+  // A read of the Inbox asked while a snooze is out waits until Dispatch has taken it (its answer
+  // or the viewer's snooze event): Dispatch can answer it before, with the row's moment from
+  // before the press.
+  const writes = useAskWrites(snoozeAsk, {
     holds: () => ({ endsOn: snoozeWritten, keys: [inboxKey] }),
-    // A snooze is a `PUT`, and bringing the row back a `DELETE`.
-    method: ({ until }: AskSnoozePress) => (until === null ? "DELETE" : "PUT"),
+    method: snoozeMethod,
     write: (press: AskSnoozePress, bounds) =>
       press.until === null
         ? api.unsnoozeAsk(press.askId, bounds)
         : api.snoozeAsk(press.askId, press.until, bounds).then(() => undefined),
+    // The row says why its snooze was refused, not the shell's pending-writes notice.
     inline: true,
     label: ({ until }) => (until === null ? "Ask brought back now" : "Ask snoozed"),
     onMutate: async (press) => {
@@ -126,30 +162,43 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
       void queryClient.invalidateQueries({ queryKey: inboxKey });
     },
   });
-  return {
-    // A save the reader stopped may have been made, and Retry makes it again (`retry`): the
-    // error's own words are a composer's, of a message.
-    error:
-      stoppedNote(
-        mutation,
-        mutation.variables?.until === null ? "the un-snooze" : "the snooze",
-        "saved"
-      ) ?? mutation.error?.message,
-    failed: mutation.isError,
-    failedPress: mutation.isError ? mutation.variables : undefined,
-    liveAskId: livePress(mutation)?.askId,
-    pending: mutation.isPending,
-    pendingUntil: mutation.isPending ? mutation.variables?.until : undefined,
-    retry: (onSettled) => {
-      listen(mutation.variables, onSettled);
-      mutation.retry();
-    },
-    submit: (until, onSettled) => {
-      const press = { askId, until };
-      listen(press, onSettled);
-      mutation.mutate(press);
-    },
-  };
+  return useMemo(() => {
+    const listen = (press: AskSnoozePress, onSettled: SnoozeSettled | undefined) => {
+      if (onSettled === undefined) listeners.delete(press.askId);
+      else listeners.set(press.askId, { onSettled, press });
+    };
+    return {
+      of: (askId: string): AskSnoozeWrite => {
+        const entry = writes.newest.get(askId);
+        return {
+          // A save the reader stopped may have been made, and Retry makes it again: the stop is
+          // said of the snooze, not in a composer's words of a message.
+          error:
+            entry?.state !== "failed"
+              ? undefined
+              : (stoppedNote(
+                  { error: entry.failure, method: snoozeMethod(entry.press) },
+                  entry.press.until === null ? "the un-snooze" : "the snooze",
+                  "saved"
+                ) ?? entry.failure.message),
+          failed: entry?.state === "failed",
+          failedPress: entry?.state === "failed" ? entry.press : undefined,
+          pending: entry?.state === "out",
+          pendingUntil: entry?.state === "out" ? entry.press.until : undefined,
+          retry: (onSettled) => {
+            if (entry?.state === "failed") listen(entry.press, onSettled);
+            writes.retry(askId);
+          },
+          submit: (until, onSettled) => {
+            const press = { askId, until };
+            listen(press, onSettled);
+            writes.press(press);
+          },
+        };
+      },
+      out: writes.out,
+    };
+  }, [listeners, writes]);
 }
 
 /** One ask whose snooze Dispatch did not confirm: one it refused, with the reason it gave - the
@@ -171,16 +220,20 @@ export interface AskSnoozeManyWrite {
 }
 
 /**
- * The bulk form of `useAskSnooze`, over the same route once per ask: the marked rows drop into
- * `Later` on the pick through the same optimistic write on every inbox cache, and the list
- * refetches once the whole set has settled. Each ask is a write of its own, under a key of its own
- * and tried until Dispatch decides it, so a transport failure is tried again rather than counted a
- * refusal, and each settles on its own: a refusal rolls back that row alone - to the moment it had
- * before, not to null, which would un-snooze a row that was already deferred - and the ones the
- * server took stay where they landed. A read of the Inbox asked while the set is out waits until
- * the last of them is decided, or until as many snooze events as asks have come, as the single
- * snooze's does; an ask Dispatch refused with no earlier attempt of its snooze that may have
- * landed unseen publishes no event, and the hold waits for none of it.
+ * The bulk form of a row's snooze (`useAskSnoozeWrites`), over the same route once per ask: the
+ * marked rows take the moment on the pick through the same optimistic write on every inbox
+ * cache, and the list refetches once the whole set has settled. Outside the Blocked on you
+ * narrowing, which lists no snoozed ask and keeps a row only while the reader's hand is on it,
+ * the Inbox keeps the rows where the reader saw them until `submit`'s promise settles
+ * (`useInboxSelection`'s `snoozing`), so they move into `Later` once the whole set has landed.
+ * Each ask is a write of its own, under a key of its own and tried until Dispatch decides it, so
+ * a transport failure is tried again rather than counted a refusal, and each settles on its own:
+ * a refusal rolls back that row alone - to the moment it had before, not to null, which would
+ * un-snooze a row that was already deferred - and the ones the server took stay where they
+ * landed. A read of the Inbox asked while the set is out waits until the last of them is decided,
+ * or until as many snooze events as asks have come, as a row's own snooze's does; an ask
+ * Dispatch refused with no earlier attempt of its snooze that may have landed unseen publishes no
+ * event, and the hold waits for none of it.
  */
 export function useAskSnoozeMany(): AskSnoozeManyWrite {
   const queryClient = useQueryClient();

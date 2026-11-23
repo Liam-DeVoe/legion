@@ -40,9 +40,9 @@ declare global {
  *   `[data-identity-block]`, with `data-condensed` on the header once the page has scrolled more
  *   than 40 px (`IssueHeader.tsx`).
  * - **The properties line** `[data-testid="issue-state-actions"]`: the status, the trigger of
- *   its menu named `Status` and then the status it shows, the priority, the trigger of its menu
- *   named `Priority of <key>` and then the priority, and the assignee, the trigger of its single
- *   pick named `Assignee of <key>` and then the person (`badgeValue`), the
+ *   its menu named `Status` and then the status it shows, and the priority and the assignee,
+ *   each the shared list's single pick, a button named `Priority of <key>` or `Assignee of <key>`
+ *   and then the value it draws (`badgeValue`), the
  *   children's progress `[data-testid="issue-progress-children"]` and
  *   `[data-testid="issue-progress-subtree"]`, the count `[data-testid="issue-whose-turn"]`, the
  *   approval control, the route's marker `[data-testid="issue-route-unreachable"]`, the labels
@@ -344,9 +344,10 @@ function cssValue(value: string): string {
   return value;
 }
 
-/** The header's control named `label` - the priority's and the status's menu, the assignee's
- *  single pick (dispatch://INFRA-2160) - whose words are the value it shows a reader: its name
- *  is `label` and then those words, and the menu's or the list's own name stands outside it. */
+/** The header's control named `label` - the status's menu (dispatch://INFRA-2160), the
+ *  priority's and the assignee's single pick of the shared list (`MultiSelect`) - whose words are
+ *  the value it shows a reader: its name is `label` and then those words, and the menu's or the
+ *  list's own name stands outside it (`listTrigger`). */
 export function badgeValue(page: Page, label: string): Locator {
   return listTrigger(issueHeader(page), label);
 }
@@ -424,9 +425,10 @@ export async function holdReviewReads(
 
 /**
  * Every element the header draws that a reader reads or presses, by what it is: its test id, or
- * its tag with the name a reader hears - its `aria-label`, the words of the elements its
- * `aria-labelledby` names (a menu's or a single pick's trigger: `Status In progress`), else its
- * words; and every run of words drawn outside those, as `text <its words>`. Words count as drawn
+ * its tag with the name a reader hears; and every run of words drawn outside those, as
+ * `text <its words>`. The name is the element's `aria-label`, else the words of the elements its
+ * `aria-labelledby` names, as a menu's trigger and the shared list's single pick are named
+ * (`Status In progress`, `Assignee of <key> alice`), else its own words. Words count as drawn
  * outside them where an element holds a text of its own and no part that holds no other part - a
  * control, the title, a test id around words alone - holds that element: the project, the key
  * and a pill are text in a span, and a property added that way is named too. A part that holds
@@ -435,21 +437,24 @@ export async function holdReviewReads(
  */
 export function headerParts(page: Page): Promise<string[]> {
   return issueHeader(page).evaluate((header) => {
-    const all = [...header.querySelectorAll("a, button, select, h1, textarea, [data-testid]")];
-    const leaves = all.filter(
-      (part) => !all.some((other) => other !== part && part.contains(other))
-    );
     const wordsOf = (element: Element | null) =>
       (element?.textContent ?? "").replace(/\s+/g, " ").trim();
     const nameOf = (part: Element) => {
       const labelledBy = part.getAttribute("aria-labelledby");
-      if (part.getAttribute("aria-label") !== null) return part.getAttribute("aria-label");
-      if (labelledBy === null) return wordsOf(part);
-      return labelledBy
-        .split(" ")
-        .map((id) => wordsOf(document.getElementById(id)))
-        .join(" ");
+      return (
+        part.getAttribute("aria-label") ??
+        (labelledBy === null
+          ? wordsOf(part)
+          : labelledBy
+              .split(/\s+/)
+              .map((id) => wordsOf(document.getElementById(id)))
+              .join(" "))
+      );
     };
+    const all = [...header.querySelectorAll("a, button, select, h1, textarea, [data-testid]")];
+    const leaves = all.filter(
+      (part) => !all.some((other) => other !== part && part.contains(other))
+    );
     const parts = all
       .filter((part) => part.checkVisibility())
       .map(
@@ -468,7 +473,7 @@ export function headerParts(page: Page): Promise<string[]> {
     // their own - a number in a sentence - are one run and not two.
     const words = texts
       .filter((element) => !texts.some((other) => other !== element && other.contains(element)))
-      .map((element) => `text ${(element.textContent ?? "").replace(/\s+/g, " ").trim()}`);
+      .map((element) => `text ${wordsOf(element)}`);
     return [...parts, ...words];
   });
 }
@@ -501,11 +506,13 @@ export function undersizedTargets(page: Page): Promise<string[]> {
   });
 }
 
-/** The controls the header holds to 24 px tall at every width: the status, the priority, the
- *  assignee, the count, Approve (`Approve v3` on a stale approval), Request changes, the labels'
- *  count and the control that copies the key, 24 by 24 px as row one's other controls are, each
- *  as `<name>: <height>` where it is drawn shorter. The two actions are the buttons whose words
- *  are an action's (`ACTION_WORDS`), the patterns the header itself finds them by. */
+/** The controls the header holds to 24 px tall at every width: the status, the priority's and
+ *  the assignee's triggers, the count, Approve (`Approve v3` on a stale approval), Request
+ *  changes, the labels' count and the control that copies the key, 24 by 24 px as row one's
+ *  other controls are, each as `<name>: <height>` where it is drawn shorter. The two actions are
+ *  the buttons whose words are an action's (`ACTION_WORDS`), the patterns the header itself
+ *  finds them by. A list's trigger is the button whose `aria-labelledby` names first the hidden
+ *  element that holds `Priority of <key>` or `Assignee of <key>` (`MultiSelect`). */
 export function shortControls(page: Page, key: string): Promise<string[]> {
   const actionWords = Object.values(ACTION_WORDS).map((pattern) => pattern.source);
   return issueHeader(page).evaluate(

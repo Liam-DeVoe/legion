@@ -9,19 +9,17 @@ import {
   putIssueState,
   putProjectDefaultRepository,
 } from "./api";
-import { filterPicker, listOf, openFilterPanel, pickFilterOption } from "./filters";
+import { filterPicker, listOf, openFilterPanel, pickFilterOption, pickFromList } from "./filters";
 import { nextFrames } from "./frames";
 import { pendingWrites } from "./keyed-writes";
 import {
   detailRead,
   expectReadWhileHeld,
-  expectShows,
   holdIssuePatches,
   ISSUE_PAGE_PICKERS,
   lastEventSeq,
   logReads,
   pagePicker,
-  pickIn,
   readAnsweredSince,
   refuseIssuePatches,
   revealPagePicker,
@@ -197,13 +195,13 @@ test("picker keeps the newest pick: a reload before the saves end sends both pic
     const held = await holdIssuePatches(page, key);
     const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
-    await expectShows(picker, "3");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P3`);
 
-    await pickIn(picker, "1");
+    await pickFromList(picker, "P1");
     await expect.poll(() => held.sent.length).toBe(1);
     // P1 is out, held: P2 waits its turn in the store's line, kept for a reload.
-    await pickIn(picker, "2");
-    await expectShows(picker, "2");
+    await pickFromList(picker, "P2");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P2`);
     await page.reload();
     await expect(picker).toBeVisible();
     held.release();
@@ -214,7 +212,7 @@ test("picker keeps the newest pick: a reload before the saves end sends both pic
       `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
     ).toEqual([1, 2]);
     expect(await getIssue(key)).toMatchObject({ priority: 2 });
-    await expectShows(picker, "2");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P2`);
   } finally {
     await context.close();
   }
@@ -233,21 +231,21 @@ test("picker keeps the newest pick: a pick made after leaving and coming back is
     const held = await holdIssuePatches(page, key);
     const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
-    await expectShows(picker, "3");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P3`);
 
-    await pickIn(picker, "0");
+    await pickFromList(picker, "P0");
     await expect.poll(() => held.sent.length).toBe(1);
-    await pickIn(picker, "1");
-    await expectShows(picker, "1");
+    await pickFromList(picker, "P1");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P1`);
 
     // Another issue and back: the picker that made P1 is gone, and P2 is made on the one the
     // return mounts, while P0 is still out.
     await navigateInApp(page, `/issues/${other.key}`);
     await expect(pagePicker(page, `Priority of ${other.key}`)).toBeVisible();
     await navigateInApp(page, `/issues/${key}`);
-    await expectShows(picker, "1");
-    await pickIn(picker, "2");
-    await expectShows(picker, "2");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P1`);
+    await pickFromList(picker, "P2");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P2`);
     expect(
       held.sent.map((patch) => patch.body),
       "P0 is still the only save out"
@@ -260,7 +258,7 @@ test("picker keeps the newest pick: a pick made after leaving and coming back is
       `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
     ).toEqual([0, 2]);
     expect(await getIssue(key)).toMatchObject({ priority: 2 });
-    await expectShows(picker, "2");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P2`);
   } finally {
     await context.close();
   }
@@ -282,19 +280,19 @@ test("picker keeps the newest pick: two picks made while a save is out send only
     const held = await holdIssuePatches(page, key);
     const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
-    await expectShows(picker, "3");
-    await expect.poll(() => shown.values.at(-1)).toBe("3");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P3`);
+    await expect.poll(() => shown.values.at(-1)).toBe("P3");
     const fromFirst = shown.values.length;
 
     // Each pick shows before the next is made, so the badge's record from the first pick on is
     // the newest pick at each moment, and nothing else.
-    await pickIn(picker, "1");
-    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    await pickFromList(picker, "P1");
+    await expect.poll(() => shown.values.at(-1)).toBe("P1");
     await expect.poll(() => held.sent.length).toBe(1);
-    await pickIn(picker, "2");
-    await expect.poll(() => shown.values.at(-1)).toBe("2");
-    await pickIn(picker, "0");
-    await expect.poll(() => shown.values.at(-1)).toBe("0");
+    await pickFromList(picker, "P2");
+    await expect.poll(() => shown.values.at(-1)).toBe("P2");
+    await pickFromList(picker, "P0");
+    await expect.poll(() => shown.values.at(-1)).toBe("P0");
     held.release();
     await savesEnded(page, held);
 
@@ -305,14 +303,14 @@ test("picker keeps the newest pick: two picks made while a save is out send only
     expect(
       shown.values.slice(fromFirst),
       "every value the badge showed from the pick of P1 until every save ended"
-    ).toEqual(["1", "2", "0"]);
+    ).toEqual(["P1", "P2", "P0"]);
 
     expect(
       await storedValues(key, "priority", seq),
       `the server received the picks in this order; the route passed on ${JSON.stringify(held.forwarded)}`
     ).toEqual([1, 0]);
     expect(await getIssue(key)).toMatchObject({ priority: 0 });
-    await expectShows(picker, "0");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P0`);
   } finally {
     await context.close();
   }
@@ -332,10 +330,10 @@ test("picker keeps a pick on screen: the priority on the issue page, over a read
     const reads = logReads(page, detailRead(key));
     const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
-    await expectShows(picker, "3");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P3`);
 
-    await pickIn(picker, "1");
-    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    await pickFromList(picker, "P1");
+    await expect.poll(() => shown.values.at(-1)).toBe("P1");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     // A rename of the issue, straight to the server: its live event has the page read the issue
@@ -349,10 +347,10 @@ test("picker keeps a pick on screen: the priority on the issue page, over a read
     expectReadWhileHeld(reads, held, renamedAt);
 
     expect(shown.values.slice(fromPick), "every value the page showed from the pick on").toEqual([
-      "1",
+      "P1",
     ]);
     expect(await getIssue(key)).toMatchObject({ priority: 1, title: renamed });
-    await expectShows(picker, "1");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P1`);
   } finally {
     await context.close();
   }
@@ -382,9 +380,11 @@ test("picker keeps a pick on screen: the repository on the issue page, over a re
     await revealPagePicker(page, `Repository of ${issue.key}`);
     await expect(picker).toHaveAccessibleName(`Repository of ${issue.key} acme/widgets`);
 
-    // The reader picks the repository's row in the list, which writes it.
+    // The list suggests Inherit, the project's default and the issue's own repository alone, so
+    // the reader types acme/gadgets into its text box and takes it with the row that takes it.
     await picker.click();
-    await listOf(picker).getByRole("option", { exact: true, name: "acme/gadgets" }).click();
+    await listOf(picker).getByRole("combobox").fill("acme/gadgets");
+    await listOf(picker).getByRole("option", { exact: true, name: 'Use "acme/gadgets"' }).click();
     await expect.poll(() => shown.values.at(-1)).toBe("acme/gadgets");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
@@ -421,12 +421,12 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
     const reads = logReads(page, detailRead(key));
     const picker = pagePicker(page, `Priority of ${key}`);
     await page.goto(`/issues/${key}`);
-    await expectShows(picker, "3");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P3`);
 
-    await pickIn(picker, "1");
+    await pickFromList(picker, "P1");
     await expect.poll(() => held.sent.length).toBe(1);
-    await pickIn(picker, "2");
-    await expect.poll(() => shown.values.at(-1)).toBe("2");
+    await pickFromList(picker, "P2");
+    await expect.poll(() => shown.values.at(-1)).toBe("P2");
     const beforeReload = shown.values.length;
     const reloadedAt = Date.now();
     await page.reload();
@@ -458,9 +458,9 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
     expect(
       [...new Set(shown.values.slice(beforeReload).filter((value) => value !== "(none)"))],
       `every value the badge showed from the reload on: ${JSON.stringify(shown.values.slice(beforeReload))}`
-    ).toEqual(["2"]);
+    ).toEqual(["P2"]);
     expect(await getIssue(key)).toMatchObject({ priority: 2 });
-    await expectShows(picker, "2");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P2`);
   } finally {
     await context.close();
   }
@@ -490,10 +490,10 @@ test("a pick that is late and still being tried stays on screen over a read, and
     const late = stopTrying(page, `${key} set to P1`);
     await page.clock.install();
     await page.goto(`/issues/${key}`);
-    await expectShows(picker, "3");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P3`);
 
-    await pickIn(picker, "1");
-    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    await pickFromList(picker, "P1");
+    await expect.poll(() => shown.values.at(-1)).toBe("P1");
     const fromPick = shown.values.length - 1;
     // The store has tried the pick, so its deadline runs: the page's clock jumps past it.
     await expect.poll(() => busy.refused.length, "the store tried the pick").toBeGreaterThan(0);
@@ -520,7 +520,7 @@ test("a pick that is late and still being tried stays on screen over a read, and
     expect(
       shown.values.slice(fromPick),
       "every value the badge showed from the pick on, while it was late"
-    ).toEqual(["1"]);
+    ).toEqual(["P1"]);
 
     busy.admit();
     await expect.poll(async () => (await getIssue(key)).priority).toBe(1);
@@ -530,9 +530,9 @@ test("a pick that is late and still being tried stays on screen over a read, and
       `the server stored the pick once; the route passed on ${JSON.stringify(busy.forwarded)}`
     ).toEqual([1]);
     expect(await getIssue(key)).toMatchObject({ priority: 1, title: renamed });
-    await expectShows(picker, "1");
+    await expect(picker).toHaveAccessibleName(`Priority of ${key} P1`);
     expect(shown.values.slice(fromPick), "every value the badge showed from the pick on").toEqual([
-      "1",
+      "P1",
     ]);
   } finally {
     await context.close();

@@ -79,7 +79,7 @@ import {
 import { SessionGroupsEditor } from "./SessionGroupsEditor";
 import { SourceFreshness } from "./SourceFreshness";
 import { Timeline, type TimelineSelection } from "./Timeline";
-import { WindowControl } from "./WindowControl";
+import { WINDOW_TRIGGER_SELECTOR, WindowControl } from "./WindowControl";
 
 /** A facet the page's one filter panel holds in both views: the four that are no column of the
  *  list. */
@@ -358,8 +358,9 @@ function OwnColourPicker({
       options={[...new Set([...selected, ...options])]}
       searchLabel="Search parent agents…"
       selected={selected}
+      size="compact"
       triggerAriaLabel={`Own colour and lane: ${state}`}
-      triggerClassName={`flex h-8 items-center rounded border px-2 text-sm ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`}
+      triggerClassName={`flex items-center rounded border text-sm ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`}
     >
       <span className="truncate">Own colour: {state}</span>
     </MultiSelect>
@@ -367,7 +368,7 @@ function OwnColourPicker({
 }
 
 /** The four facets that are no column of the list, so the one trigger of the control row holds
- *  them in both views (INFRA-3135, R3). */
+ *  them in both views. */
 const PANEL_FACETS: { key: PanelFacet; label: string }[] = [
   { key: "repo", label: "Repository" },
   { key: "session", label: "Session" },
@@ -384,7 +385,7 @@ const FACETS: { key: FacetKey; label: string }[] = [
 ];
 
 const facetLabelClass = `mb-1 block text-xs tracking-wide uppercase ${textMutedOnCanvas}`;
-const facetTriggerClass = `flex h-7 w-full items-center justify-between rounded border px-2 text-left text-xs ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`;
+const facetTriggerClass = `flex w-full items-center justify-between rounded border text-left text-xs ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`;
 
 /** One facet's searchable checkbox list: "Any <facet>" until something is picked, each value
  *  with its count, in the order `values` gives. A facet with no values in the window and nothing
@@ -431,6 +432,7 @@ function Facet({
         options={options}
         searchLabel={`Search ${label.toLowerCase()}\u2026`}
         selected={selected}
+        size="compact"
         triggerAriaLabel={`${label}: ${state}`}
         triggerClassName={facetTriggerClass}
       >
@@ -442,7 +444,7 @@ function Facet({
 
 /**
  * The one row the page's controls sit in: the search box, the one trigger over the facets, and
- * a chip for every value that is on (INFRA-3135, R1 and R3), so every facet can be set and taken
+ * a chip for every value that is on, so every facet can be set and taken
  * off from this row in either view.
  *
  * The panel holds the four facets that are no column of the list. While the list is drawn
@@ -762,14 +764,18 @@ export function DeliveryPage(): ReactNode {
   }
   // The header's **clear brush window** goes with the brush it clears, and the focus it held goes
   // to the control now at its place in the line it sits in, which holds no other, else to the
-  // Window select (`useFocusPlace`). The Window select itself stays mounted across a change of
-  // the window (`WindowControl`), so a pick keeps the focus where it was.
-  const windowSelect = useRef<HTMLSelectElement>(null);
+  // Window list's trigger while any part of it is in the reader's sight, scrolled the least
+  // distance that shows it whole, else to the main content's own stop with no scroll
+  // (`useFocusPlace`). So a reader scrolled below the trigger is not pulled back up to it. The
+  // trigger is found in the header by its mark (`WINDOW_TRIGGER_SELECTOR`), since the shared list
+  // hands out no element of its own. The Window list itself stays mounted across a change of the
+  // window (`WindowControl`), so a pick keeps the focus where it was.
   const generatedLine = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
     (element) => (generatedLine.current?.contains(element) ? generatedLine.current : null),
-    () => windowSelect.current
+    (line) => line.closest("header")?.querySelector<HTMLElement>(WINDOW_TRIGGER_SELECTOR) ?? null
   );
+  const [colorListOpen, setColorListOpen] = useState(false);
   // The list's own body is drawn once an answer is in; the control row is drawn before it
   // (`DeliveryControls`), at the one place in the tree, so the answer arriving does not remount
   // it and a link's narrowing has its chip and its way off while the page reads.
@@ -790,7 +796,7 @@ export function DeliveryPage(): ReactNode {
         {notConfigured ? null : (
           <WindowControl
             onChange={(window) => setState({ ...state, window, brush: null })}
-            selectRef={windowSelect}
+            size="compact"
             value={state.window}
           />
         )}
@@ -855,23 +861,33 @@ export function DeliveryPage(): ReactNode {
                 mode={state.view.mode}
                 onChange={(mode) => setView({ ...state.view, mode })}
               />
-              <label className={`flex items-center gap-2 ${textMutedOnCanvas}`}>
-                Color merges by
-                <select
-                  className={`rounded border px-2 py-1 ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`}
-                  onChange={(event) => {
-                    const colorBy = COLOR_FACETS.find((facet) => facet === event.target.value);
-                    if (colorBy !== undefined) setView({ ...state.view, colorBy });
+              <div className={`flex items-center gap-2 ${textMutedOnCanvas}`}>
+                {/* The list is named for the field itself, so its words here are for the eye
+                    alone. A pick of the choice it shows writes nothing, as a select set to the
+                    value it holds fires nothing. */}
+                <span aria-hidden="true">Color merges by</span>
+                <MultiSelect
+                  emptyMessage="No choice matches that."
+                  label="Color merges by"
+                  mode="single"
+                  onOpenChange={setColorListOpen}
+                  onPick={(picked) => {
+                    const colorBy = COLOR_FACETS.find((facet) => facet === picked);
+                    if (colorBy !== undefined && colorBy !== state.view.colorBy) {
+                      setView({ ...state.view, colorBy });
+                    }
                   }}
+                  open={colorListOpen}
+                  optionLabel={(facet) =>
+                    COLOR_FACET_OPTIONS.find((option) => option.value === facet)?.label
+                  }
+                  options={COLOR_FACETS}
+                  searchLabel="Search color choices"
+                  size="compact"
+                  triggerClassName={`rounded border text-left ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`}
                   value={state.view.colorBy}
-                >
-                  {COLOR_FACET_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                />
+              </div>
               {state.view.colorBy === "parentAgent" ? (
                 <OwnColourPicker
                   counts={data.color_counts?.parent_agent ?? {}}

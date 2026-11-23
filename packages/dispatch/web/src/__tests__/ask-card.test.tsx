@@ -20,9 +20,11 @@ import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
 import { Inbox } from "../features/inbox/Inbox";
+import { emulateChromiumFocusFixup } from "../features/issue-page/chromium-focus-fixup";
 import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
+import { pressHeld } from "./held-press";
 import { keyedAttempt } from "./keyed-attempt";
 import { userOnFakeClock } from "./user";
 
@@ -2337,17 +2339,18 @@ test("a reply composer remounted while its send is out shows the draft held and 
     expect(field.value).toBe("hello");
     expect(field).toHaveAttribute("aria-disabled", "true");
     expect(field.readOnly).toBe(true);
-    const send = second.getByRole("button", { name: /^Repl/ }) as HTMLButtonElement;
+    // Held while the send is out by `aria-disabled`, not `disabled`, so it would keep a reader's
+    // focus; a press of it posts nothing a second time.
+    const send = second.getByRole("button", { name: /^Repl/ });
     expect(send).toHaveAttribute("aria-disabled", "true");
-    // The send holds this one rather than disabling it, so it keeps the focus; a press on it
-    // posts nothing a second time.
+    expect(send).not.toBeDisabled();
     await user.click(send);
     expect(bodies).toEqual(["hello"]);
 
     await act(async () => sent.resolve(reply({ body: "hello" })));
     await waitFor(() => expect(field.value).toBe(""));
+    await waitFor(() => expect(field.readOnly).toBe(false));
     expect(field).not.toHaveAttribute("aria-disabled");
-    expect(field.readOnly).toBe(false);
     expect(bodies).toEqual(["hello"]);
   } finally {
     second.unmount();
@@ -2382,7 +2385,8 @@ test("two reply composers for one ask share its draft and its send", async () =>
     await waitFor(() => expect(bodies).toEqual(["One draft"]));
     expect(margin).toHaveAttribute("aria-disabled", "true");
     expect(block).toHaveAttribute("aria-disabled", "true");
-    expect(margin.readOnly && block.readOnly).toBe(true);
+    expect(margin.readOnly).toBe(true);
+    expect(block.readOnly).toBe(true);
     // Either composer's Reply is held while the shared send is out: a press posts nothing more.
     await user.click(view.getAllByRole("button", { name: /^Repl/ })[0] as HTMLElement);
     expect(bodies).toEqual(["One draft"]);
@@ -2393,6 +2397,84 @@ test("two reply composers for one ask share its draft and its send", async () =>
     expect(bodies).toEqual(["One draft"]);
   } finally {
     view.unmount();
+  }
+});
+
+// Ctrl+Enter in the reply box sends the reply, and the box is held while it is out: read-only and
+// `aria-disabled`, never `disabled`, which drops the focus to the body in a browser (emulated
+// here, as happy-dom keeps it). So the focus stays in the box through the hold, typing changes
+// nothing then, and the box is the reader's again, empty, once the reply lands.
+test("Ctrl+Enter in the reply box keeps the focus in the box through the reply's hold", async () => {
+  const user = userEvent.setup();
+  const unemulate = emulateChromiumFocusFixup();
+  const input = answered(ask(), []);
+  const sent = Promise.withResolvers<Comment>();
+  const bodies: (string | undefined)[] = [];
+  const createReply = async (_issueKey: string, body: CreateCommentInput) => {
+    bodies.push(body.body);
+    return sent.promise;
+  };
+  const { view } = renderCard(<AskReplyComposer ask={input} createReply={createReply} />);
+  try {
+    const field = view.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
+    await user.click(field);
+    await user.paste("Shipping it");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(bodies).toEqual(["Shipping it"]));
+    await waitFor(() => expect(field).toHaveAttribute("aria-disabled", "true"));
+    expect(field.readOnly).toBe(true);
+    expect(field).toHaveFocus();
+    await user.keyboard("x");
+    expect(field.value).toBe("Shipping it");
+
+    await act(async () => sent.resolve(reply({ body: "Shipping it" })));
+    await waitFor(() => expect(field.value).toBe(""));
+    await waitFor(() => expect(field).not.toHaveAttribute("aria-disabled"));
+    expect(field.readOnly).toBe(false);
+    expect(field).toHaveFocus();
+    expect(bodies).toEqual(["Shipping it"]);
+  } finally {
+    view.unmount();
+    unemulate();
+  }
+});
+
+// Reply pressed sends the reply, and the landing clears the draft: Reply then has nothing to send.
+// It is held by `aria-disabled` for that, as while the reply is out, never `disabled`, which drops
+// the focus to the body in a browser (emulated here, as happy-dom keeps it). So the focus stays on
+// Reply, and a press of it then sends nothing.
+test("Reply pressed keeps the focus when the reply lands and clears the draft, and a press then sends nothing", async () => {
+  const user = userEvent.setup();
+  const unemulate = emulateChromiumFocusFixup();
+  const input = answered(ask(), []);
+  const sent = Promise.withResolvers<Comment>();
+  const bodies: (string | undefined)[] = [];
+  const createReply = async (_issueKey: string, body: CreateCommentInput) => {
+    bodies.push(body.body);
+    return sent.promise;
+  };
+  const { view } = renderCard(<AskReplyComposer ask={input} createReply={createReply} />);
+  try {
+    const field = view.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
+    await user.click(field);
+    await user.paste("Shipping it");
+    const send = view.getByRole("button", { name: "Reply" });
+    await user.click(send);
+    await waitFor(() => expect(bodies).toEqual(["Shipping it"]));
+    expect(send).toHaveFocus();
+
+    await act(async () => sent.resolve(reply({ body: "Shipping it" })));
+    await waitFor(() => expect(field.value).toBe(""));
+    await waitFor(() => expect(send.textContent).toBe("Reply"));
+    // Still the reader's focus, held for its empty draft.
+    expect(send).toHaveFocus();
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).not.toBeDisabled();
+    await user.click(send);
+    expect(bodies).toEqual(["Shipping it"]);
+  } finally {
+    view.unmount();
+    unemulate();
   }
 });
 
@@ -2421,7 +2503,12 @@ test("a picture pasted into a reply composer joins its draft and holds the send 
     // user-event's paste carries text, never the file this row uploads.
     fireEvent.paste(field, { clipboardData: { files: [png("shot.png")] } });
     await view.findByText("Uploading file…");
-    expect((view.getByRole("button", { name: "Reply" }) as HTMLButtonElement).disabled).toBe(true);
+    // Held while the upload is out, by `aria-disabled`, and a press sends nothing.
+    const send = view.getByRole("button", { name: "Reply" });
+    expect(send).toHaveAttribute("aria-disabled", "true");
+    expect(send).not.toBeDisabled();
+    await user.click(send);
+    expect(bodies).toEqual([]);
     expect(uploadArtifact.mock.calls[0]?.[0]).toEqual({ issue: "CORE-1" });
     // Typed while the upload is out: the picture lands after it, not over it. The draft is
     // replaced in one edit, since a clear would be an edit of its own for the upload to land on.
@@ -2751,19 +2838,21 @@ test("AskCard compact variant keeps an open note visible when a real option is p
   }
 });
 
-test("AskCard compact variant keeps the focus on Answer, held, while its answer is out", async () => {
+// While its answer is out Answer is held (`aria-disabled`), never disabled: the browser takes the
+// focus off a button that turns disabled, which would drop the keyboard reader who pressed it onto
+// the page. Held, it keeps the focus, and a second press sends nothing. Once the answer lands its
+// record takes the form's place, and the card hands the focus the form held to the row.
+test("AskCard compact variant keeps the focus on Answer while its answer is out, and hands it to the row when the answer lands", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
-  let release: (value: Ask) => void = () => {};
-  let answers = 0;
+  const answering = Promise.withResolvers<Ask>();
+  let sent = 0;
   const { view } = renderCard(
     <div data-testid="row" tabIndex={-1}>
       <AskCard
         answerAsk={() => {
-          answers += 1;
-          const out = Promise.withResolvers<Ask>();
-          release = out.resolve;
-          return out.promise;
+          sent += 1;
+          return answering.promise;
         }}
         ask={input}
         getAskThread={emptyThread(input)}
@@ -2776,17 +2865,10 @@ test("AskCard compact variant keeps the focus on Answer, held, while its answer 
     const card = view.getByTestId("ask-ask-1");
     await user.click(await within(card).findByRole("radio", { name: "Ship" }));
     const answer = within(card).getByRole("button", { name: "Answer" });
-    answer.focus();
-    expect(answer).toHaveFocus();
-    await user.click(answer);
-    await waitFor(() => expect(answer).toHaveAttribute("aria-disabled", "true"));
-    expect(answer.hasAttribute("disabled")).toBe(false);
-    expect(answer).toHaveFocus();
-    // A second press while the answer is out sends nothing more.
-    await user.click(answer);
-    expect(answers).toBe(1);
-    release(answered(input, ["Ship"]));
+    await pressHeld(user, answer, { name: "Answer", sent: () => sent });
+    answering.resolve(answered(input, ["Ship"]));
     await view.findByRole("img", { name: "Selected" });
+    expect(view.getByTestId("row")).toHaveFocus();
   } finally {
     view.unmount();
   }

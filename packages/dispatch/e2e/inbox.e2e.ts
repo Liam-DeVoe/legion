@@ -21,6 +21,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { setPendingCredentialRequests } from "./fake-broker-helpers";
+import { listTrigger, pickFromList } from "./filters";
 import {
   assigneeFilter,
   assigneeOptions,
@@ -32,7 +33,6 @@ import {
 } from "./inbox-filter";
 import { askCard, askControls, inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
-import { pickFromMenu, priorityTrigger } from "./menus";
 import { setCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, test } from "./test";
@@ -694,9 +694,9 @@ test("under Waiting on, Sort by priority puts a P0 ask ahead of a P2 ask clarifi
     await page.goto(`/issues/${p0Issue.key}`);
     // `Priority of <KEY>` is the issue's own grade; the header also carries the control that
     // adds a priority the issue advances, whose name holds that word too.
-    const priority = page.getByRole("button", { name: /^Priority of / });
-    await pickFromMenu(priority, "P0");
-    await expect(priority).toHaveText("P0");
+    const priority = listTrigger(page, `Priority of ${p0Issue.key}`);
+    await pickFromList(priority, "P0");
+    await expect(priority).toHaveAccessibleName(`Priority of ${p0Issue.key} P0`);
     await expect.poll(() => getIssue(p0Issue.key)).toMatchObject({ priority: 0 });
     // Clarified P0 first, so recency alone would put the P2 ask on top: the order under test is
     // the priority one, not the one the writes happened to land in.
@@ -733,14 +733,14 @@ test("the Inbox sets its question's issue priority in place", async ({ browser }
     // the row it is showing. The control's name ends in the value it holds, its badge's words,
     // and holds no key, though the reading column's head draws the control's key inside it.
     const controls = await askControls(page, ask.id);
-    const control = priorityTrigger(controls, issue.key);
+    const control = listTrigger(controls, `Priority of ${issue.key}`);
     await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P2`);
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
         new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
     );
-    await pickFromMenu(control, "P0");
+    await pickFromList(control, "P0");
     expect((await patch).postDataJSON()).toEqual({ priority: 0 });
     await expect(control).toHaveAccessibleName(`Priority of ${issue.key} P0`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 0 });
@@ -791,10 +791,8 @@ test("a snoozed row leaves Later, the Blocked on you control and the Inbox count
         request.method() === "PUT" &&
         new URL(request.url()).pathname === `/api/v1/me/asks/${ask.id}/snooze`
     );
-    await pickFromMenu(
-      (await askControls(page, ask.id)).getByRole("button", {
-        name: new RegExp(`^Snooze ${issue.key}`),
-      }),
+    await pickFromList(
+      listTrigger(await askControls(page, ask.id), new RegExp(`^Snooze ${issue.key}\\b`)),
       "Tomorrow"
     );
     expect(Date.parse((await put).postDataJSON().snoozed_until)).toBeGreaterThan(Date.now());
@@ -844,8 +842,8 @@ test("a snoozed row leaves Later, the Blocked on you control and the Inbox count
     await expect(page.getByRole("button", { name: /Blocked on you: 1 item/ })).toBeVisible();
     // The row's link was not followed by any of it.
     expect(new URL(page.url()).pathname).toBe("/");
-    // What the page shows so far is the optimistic write; the reload reads the server, and a
-    // reload while the DELETE is unanswered aborts it, so the un-snooze must be recorded first.
+    // The row stays in its band while the un-snooze saves and moves once the DELETE is answered;
+    // the reload reads the server, so the un-snooze must be recorded there first.
     await expect
       .poll(async () => (await getInbox({ login: "alice" })).at(0)?.snoozed_until)
       .toBeNull();
@@ -1756,10 +1754,7 @@ for (const refusal of [
       // reading column's head, which carries the controls for the row it is showing.
       const controls = await askControls(page, ask.id);
       await expect(controls).toBeVisible();
-      await pickFromMenu(
-        controls.getByRole("button", { name: new RegExp(`^Snooze ${issue.key}`) }),
-        "Tomorrow"
-      );
+      await pickFromList(listTrigger(controls, new RegExp(`^Snooze ${issue.key}\\b`)), "Tomorrow");
 
       const retry = controls.getByRole("button", { name: "Retry" });
       await expect(retry).toBeVisible();

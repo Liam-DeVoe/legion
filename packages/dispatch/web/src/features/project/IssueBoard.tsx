@@ -46,7 +46,7 @@ import {
 } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
-import { PriorityControl } from "../issue/PriorityControl";
+import { PRIORITY_TRIGGER_SELECTOR, PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
@@ -96,8 +96,8 @@ const CARD_SELECTOR = "[data-board-card]";
  *  agent), so "the first link" is not the issue's. */
 const ISSUE_LINK = "[data-issue-link]";
 const COLUMN_SELECTOR = "[data-board-column]";
-/** A card's priority menu, where the card draws it enabled: `p` presses it. */
-const CARD_PRIORITY = "[data-priority-menu]:not(:disabled)";
+/** A card's priority trigger, where the card draws it unheld: `p` presses it. */
+const CARD_PRIORITY = `${PRIORITY_TRIGGER_SELECTOR}:not([aria-disabled="true"])`;
 
 /** The focus ring every board focus target draws: cards, columns and rails alike. */
 const boardFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
@@ -676,8 +676,8 @@ export function IssueBoard({
       when: focusedCard,
     },
     {
-      // A card in Done draws its priority disabled, so the key is offered on the cards whose
-      // menu would open.
+      // A card in Done holds its priority (`aria-disabled`), so the key is offered on the cards
+      // whose list would open.
       action: "board.priority",
       run: () =>
         cardAround(document.activeElement)?.querySelector<HTMLElement>(CARD_PRIORITY)?.click(),
@@ -712,7 +712,7 @@ export function IssueBoard({
   );
   // One row holds the Board's search and filtering, above whatever the board itself is showing
   // - its cards, the skeleton or a refusal - so a reader who has narrowed the list keeps the
-  // controls that did it (INFRA-3135, R1). Nothing they can press here makes the header taller:
+  // controls that did it. Nothing they can press here makes the header taller:
   // the filter panel is portalled over the page (`AnchoredPanel`), and the chips are the one
   // part of the row that may take a second line.
   const controls = (

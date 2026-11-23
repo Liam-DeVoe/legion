@@ -5,7 +5,6 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { runFocusFixup } from "../../__tests__/focus-fixup";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api/types";
 import {
@@ -19,6 +18,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -142,7 +142,7 @@ test("the change form opens with the caret in its field", async () => {
 
 // A keyboard reader who presses Keep stays on it while the Keep is out: Keep is held
 // (`heldPress`, `aria-disabled`), never disabled, which would drop the focus to the page's body in
-// a browser and does here under `runFocusFixup`, and a second press keeps nothing more. The
+// a browser and does here under `emulateChromiumFocusFixup`, and a second press keeps nothing more. The
 // controls are drawn with no row around them, so the focus stays the control's own: in the tree
 // the press hands it to the decision's row (`keepFocusOnRow`).
 test("Keep keeps the focus while its Keep is out, held rather than disabled, and a second press keeps nothing", async () => {
@@ -152,7 +152,7 @@ test("Keep keeps the focus while its Keep is out, held rather than disabled, and
   );
   const user = userEvent.setup();
   const { unmount } = renderActions();
-  const stopFocusFixup = runFocusFixup();
+  const stopFocusFixup = emulateChromiumFocusFixup();
   try {
     const keep = await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision });
     act(() => keep.focus());
@@ -182,7 +182,7 @@ test("Send change keeps the focus while its change is out, held rather than disa
   );
   const user = userEvent.setup();
   const { text, unmount } = renderActions();
-  const stopFocusFixup = runFocusFixup();
+  const stopFocusFixup = emulateChromiumFocusFixup();
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
     await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Keep one preset.");

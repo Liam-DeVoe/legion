@@ -118,11 +118,11 @@ export type RepoControlFailure = {
 /**
  * The issue's repository. It has two shapes, one per surface: the shared list
  * (`RepositoryList`) on every page today, and `main`'s box (`RepositoryBox`) inside `NoTooltips`,
- * the new issue page's design, which that page's own tree (INFRA-1196) decides. `inRow`,
+ * the new issue page's design, which that page's own tree decides. `inRow`,
  * `projectsFreshness` and `sayFailure` act inside `NoTooltips` alone, so only the box reads them,
- * and `held` outside it alone, so only the list reads it. `RepositoryBox` is `main`'s text
- * unchanged: its arms for outside `NoTooltips` cannot run here, and it stays apart from
- * `RepositoryList` until INFRA-1196 decides the new page's repository.
+ * and `held` outside it alone, so only the list reads it. `RepositoryBox` is `main`'s text: its
+ * arms for outside `NoTooltips` cannot run here, and it stays apart from `RepositoryList` until
+ * the new page's repository is decided there.
  */
 export function RepoControl({
   disabled = false,

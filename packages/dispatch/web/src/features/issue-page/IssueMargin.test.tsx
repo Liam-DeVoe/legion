@@ -3200,7 +3200,7 @@ test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus 
 
 // Outside the new issue page Referenced by is as on every other page: a read that fails after the
 // list answered draws its line over that list, and Retry is held (`heldPress`, `aria-disabled`)
-// while the read it sent is out.
+// while the read it sent is out, never disabled, as it is in Details.
 test("outside Details, Referenced by draws its line over the list it holds, and its Retry is held while the read it sent is out", async () => {
   const user = userEvent.setup();
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
@@ -3470,21 +3470,6 @@ const oneLivePriority: Priorities = {
   priority_work_parked: { by_priority: {}, count: 0, issues: [] },
   work_under_no_priority: { by_project: {}, count: 0, issues: [] },
 };
-
-/** Picks `oneLivePriority`'s one priority, "Evals collecting data now", in Priority to advance:
- *  the shared list's single pick (`IssuePriorityLine`), which this tree draws where `main` drew a
- *  select. A press on its trigger opens the list, the priority is pressed once the read lists it,
- *  and the pick hands the focus back to the trigger, which it returns. */
-async function pickEvalsToAdvance(user: UserEvent): Promise<HTMLElement> {
-  const picker = await screen.findByRole("button", {
-    name: pickNamed(CONTROL_LABELS.priority_to_advance),
-  });
-  await user.click(picker);
-  await user.click(
-    await within(panelOf(picker)).findByRole("option", { name: /Evals collecting data now$/ })
-  );
-  return picker;
-}
 
 // The add control lists what has no value yet, so where nothing can be added - a closed issue,
 // or one with a value for every property the menu lists - it is not drawn at all.
@@ -3816,7 +3801,7 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
     await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.advances }));
     const form = await screen.findByTestId("issue-advances");
-    await pickEvalsToAdvance(user);
+    await pickEvalsPriority(user, form);
     await user.click(within(form).getByRole("button", { name: CONTROL_LABELS.add }));
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     // Refused while its write is out, by the rule Add reads (`usableControl`): `disabled`, or
@@ -4038,7 +4023,10 @@ test.each(
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     act(() => control.focus());
     await user.keyboard("{Enter}");
-    const picker = await pickEvalsToAdvance(user);
+    await pickEvalsPriority(user);
+    const picker = screen.getByRole("button", {
+      name: pickNamed(CONTROL_LABELS.priority_to_advance),
+    });
     const form = picker.closest("form");
     if (form === null) throw new Error("the picker is in no form");
     // The issue's read after the write is held, so the write lands, and the line gives the focus
@@ -4408,7 +4396,7 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
   let unmount = otherPage.unmount;
   try {
     await user.click(await screen.findByRole("button", { name: addPriorityControlName("CORE-9") }));
-    await pickEvalsToAdvance(user);
+    await pickEvalsPriority(user);
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
     await waitFor(() =>
       expect(
@@ -4436,6 +4424,24 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
   }
 });
 
+/** Picks the Evals priority from the Priority to advance list of the add form in `scope` (the
+ *  page where none is named): the shared list's single pick (`MultiSelect`), whose trigger is
+ *  named for the list and then for what it shows (`pickNamed`), and whose rows are portalled to
+ *  the body in the panel the trigger names (`panelOf`). The pick puts the focus back on the
+ *  trigger. */
+async function pickEvalsPriority(
+  user: UserEvent,
+  scope: HTMLElement = document.body
+): Promise<void> {
+  const trigger = await within(scope).findByRole("button", {
+    name: pickNamed(CONTROL_LABELS.priority_to_advance),
+  });
+  await user.click(trigger);
+  await user.click(
+    await within(panelOf(trigger)).findByRole("option", { name: /Evals collecting data now$/ })
+  );
+}
+
 /** Adds the priority "Evals collecting data now" from the add control beside Add, by keyboard,
  *  and returns once the form's Add is pressed: the line gives the focus back to its add control
  *  beside Add while the write is out. */
@@ -4443,7 +4449,7 @@ async function addFirstPriority(user: UserEvent): Promise<void> {
   const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
   act(() => control.focus());
   await user.keyboard("{Enter}");
-  await pickEvalsToAdvance(user);
+  await pickEvalsPriority(user);
   await user.tab();
   await user.keyboard("{Enter}");
 }

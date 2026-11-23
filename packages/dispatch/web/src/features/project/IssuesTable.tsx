@@ -13,6 +13,7 @@ import { useFocusPlace } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
+import { focusListStop, useLastMarkedPlace } from "../../components/SelectionBar";
 import { TABLE_FRAME_MARK } from "../../components/table-keys";
 import { useTableLayout } from "../../components/table-layout";
 import {
@@ -34,7 +35,7 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
-import { useIssueTableActions } from "./issues-table-actions";
+import { ISSUES_NOT_LOADED, useIssueTableActions } from "./issues-table-actions";
 import {
   issueTableLayout,
   listingColumns,
@@ -180,9 +181,10 @@ export function IssuesTable({
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
-  // The issue the reader marked last - by its own checkbox, or `x` on its row - and the List's
-  // search box: where the focus goes when the bar goes with it (`returnFocus`, below). A
-  // select-all marks no row of the reader's own, so it records none.
+  // The issue the reader marked last - by its own checkbox, or `x` on its row: where the focus
+  // goes when the bar goes with it (`returnFocus`, below). A select-all marks no row of the
+  // reader's own, so it records none. The List's search box is the last place `noteFocus`,
+  // below, hands the focus to.
   const lastMarked = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const recordMark = useCallback((key: string) => {
@@ -289,24 +291,50 @@ export function IssuesTable({
     groupOrder: { compare: compareGroups, heading: groupValue },
   });
   const { table } = model;
+  // The issues this page of the table lists, in its order: its rows, not its group headings.
+  const leaves = () => model.displayRows.flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]));
+  // The List's own stop: its named table, which is drawn with no row as well.
+  const tableStop = () => model.layout.scrollRef.current?.querySelector("table") ?? null;
+  // The bar's hand-off where the issue marked last cannot take the focus, with no scroll. After a
+  // press that took that issue out of the view - off the list, or out of what the filters show,
+  // as Take out of epic does under the Epic filter: a row the reader can see at its place, else
+  // before it. With no issue marked, as after a select-all from the table's head: the first row
+  // the reader can see below the table's sticky head. Else the table's own stop. A row the window
+  // has not drawn is out of their sight, so it is never where the focus lands.
+  const landAtPlace = useLastMarkedPlace({
+    control: (key) =>
+      model.layout.scrollRef.current
+        ?.querySelector(`[${ISSUE_ROW_ATTRIBUTE}="${CSS.escape(key)}"]`)
+        ?.querySelector<HTMLElement>(ROW_CHECKBOX) ?? null,
+    lastMarked: () => lastMarked.current,
+    list: tableStop,
+    order: leaves,
+    shown: Object.keys(selection).length !== 0,
+  });
   // The bar gone with the focus (`SelectionBar`): the checkbox of the issue the reader marked
-  // last, else the first row's, else the search box once no row is listed. A row the window has
-  // not drawn is scrolled to and takes the focus as it lands (`focusRow`).
+  // last while the table lists it. A row the window has not drawn is scrolled to and takes the
+  // focus as it lands (`focusRow`). Else the hand-off above (`landAtPlace`) has put the focus
+  // itself, with no scroll, after a press that took that issue out of the view or with no issue
+  // marked. A table action clears the selection only once the list read after it has settled
+  // (`useIssueTableActions`), so the view read here is the one the action left.
   const returnFocus = () => {
-    const leaves = model.displayRows.flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]));
-    const last = lastMarked.current;
-    const key = last !== null && leaves.includes(last) ? last : leaves[0];
-    return key === undefined ? searchRef.current : model.focusRow(key, ROW_CHECKBOX);
+    if (landAtPlace()) return null;
+    // `landAtPlace` moved nothing, so the issue marked last is listed.
+    const key = lastMarked.current;
+    return key === null ? focusListStop(tableStop()) : model.focusRow(key, ROW_CHECKBOX);
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
-  // own - goes with the table when a press in it sends the List back to its skeleton, and the
-  // focus it held goes to the search box rather than the page's body. A notice's button under
-  // the toolbar goes with the notice it answers - the interrupted action's Finish and Dismiss, the
-  // possible duplicate's Create anyway and Cancel new epic, the unanswered epic's Dismiss - and its
-  // focus goes to the control now at its place among the notices, else the one before it, else
-  // the search box. Only the head and the notices are counted: the selection bar, the rows and
-  // the dialogs each hand the focus on themselves. The handler sits on the List's section, which
-  // stays in every branch.
+  // own - goes with the table when a press in it sends the List back to its skeleton. A notice's
+  // button under the toolbar goes with the notice it answers - the interrupted action's Finish
+  // and Dismiss, the possible duplicate's Create anyway and Cancel new epic, the unanswered
+  // epic's Dismiss - and its focus goes to the control now at its place among the notices, else
+  // the one before it. Each of these takes the focus only while the reader can see it; where none
+  // is in sight, the main content's own stop takes it with no scroll (`useFocusPlace`). Where the
+  // head or the notices hold no other control, the page's rescue walks the focus back over the
+  // main content to the nearest control before them that the reader can see and that takes no
+  // typed text, so never into the search box. Only the head and the notices are counted: the
+  // selection bar, the rows and the dialogs each hand the focus on themselves. The handler sits
+  // on the List's section, which stays in every branch.
   const sectionRef = useRef<HTMLElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(
@@ -318,7 +346,7 @@ export function IssuesTable({
       const notices = noticesRef.current;
       return notices?.contains(element) ? notices : element.closest("thead");
     },
-    () => searchRef.current
+    () => null
   );
 
   // The keys the table lists under the filters and the search it is showing, in row order. A key
@@ -362,6 +390,7 @@ export function IssuesTable({
     busy,
     notice,
     moved,
+    leaving,
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,
@@ -546,7 +575,7 @@ export function IssuesTable({
       {loading ? <LoadingSkeleton label="Loading issues" /> : null}
       {failed ? (
         <p className={dangerText} role="alert">
-          Could not load issues.{" "}
+          {ISSUES_NOT_LOADED}{" "}
           <button
             type="button"
             onClick={() => {
@@ -566,6 +595,7 @@ export function IssuesTable({
             filterCounts={openFacets}
             filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
             label={`${name} table`}
+            leaving={leaving}
             model={model}
             noun={ISSUE_TABLE_NOUN}
             onOpenFilterChange={setOpenFilter}
@@ -603,6 +633,7 @@ export function IssuesTable({
               />
             )}
             scrollTestId="issues-table-scroll"
+            size="compact"
             stackColumn="title"
             trailingWidth={ACTION_WIDTH}
           />

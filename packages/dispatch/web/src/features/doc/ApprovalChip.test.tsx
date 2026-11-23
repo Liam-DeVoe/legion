@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -499,6 +500,52 @@ test("a change request whose version moved shows the server's refusal in its box
   } finally {
     createArtifactVersionReview.mockRestore();
     view.unmount();
+  }
+});
+
+// While a review the reader sent is out, the controls that would send another are held
+// (`held-press.ts`), never `disabled`, on every surface: a `disabled` control drops the focus the
+// reader's press left on it to the page's body, and the Inbox's reading column then loses the
+// place it hands that focus on from. Approve keeps the focus and sends nothing more, and Request
+// changes is held beside it. In the Request changes dialog, the reason box, Cancel and the
+// dialog's own Request changes are held while the change request is out.
+test("while its review is out, Approve, Request changes and the change request dialog's controls are held, never disabled", async () => {
+  const user = userEvent.setup();
+  const written = Promise.withResolvers<ArtifactReview>();
+  // The review goes to the version the page read (`createArtifactVersionReview`).
+  const createArtifactVersionReview = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => written.promise
+  );
+  const approving = renderChip(artifact({ latest_version: 3, state: "awaiting" }), "header");
+  try {
+    const approve = screen.getByRole("button", { name: "Approve" }) as HTMLButtonElement;
+    await pressHeld(user, approve, {
+      name: "Approve",
+      sent: () => createArtifactVersionReview.mock.calls.length,
+    });
+    const requestChanges = screen.getByRole("button", { name: "Request changes" });
+    expect(heldNotDisabled(requestChanges as HTMLButtonElement, "Request changes")).toBe(true);
+  } finally {
+    approving.unmount();
+  }
+  const changing = renderChip(artifact({ latest_version: 3, state: "awaiting" }), "header");
+  try {
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Request changes" }));
+    const box = dialog.getByLabelText("Reason") as HTMLTextAreaElement;
+    await user.click(box);
+    await user.paste("Needs another pass");
+    await pressHeld(user, dialog.getByRole("button", { name: "Request changes" }), {
+      name: "the dialog's Request changes",
+      sent: () => createArtifactVersionReview.mock.calls.length - 1,
+    });
+    expect(heldNotDisabled(box, "the reason box")).toBe(true);
+    const cancel = dialog.getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+    expect(heldNotDisabled(cancel, "Cancel")).toBe(true);
+  } finally {
+    written.reject(new Error("the connection dropped"));
+    createArtifactVersionReview.mockRestore();
+    changing.unmount();
   }
 });
 

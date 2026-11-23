@@ -8,8 +8,9 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
-import { openerOf } from "../../components/focus-place";
+import { focusLost, openerOf } from "../../components/focus-place";
 import { openReplyBox, REPLY_BOX } from "../conversation/turn-keys";
+import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import { ITEM_COPY_REF_SELECTOR } from "../refs/CopyRefButton";
 import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import type { KeymapActionId } from "../shell/keymap-catalogue";
@@ -22,11 +23,9 @@ import { ROW_SELECTOR, rowIn, rowsIn } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
 import { optionIndex } from "./option-digits";
 import { PANE_READER_MOVE } from "./pane-placement";
-import type { PaneSelection } from "./pane-selection";
+import type { PaneSelection, PlacedRow } from "./pane-selection";
+import { BULK_PICKER_SELECTOR, ROW_SNOOZE_SELECTOR } from "./SnoozeControl";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
-
-/** The bulk bar's Snooze menu: `b` and `h` press it while rows are marked. */
-const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
 
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
 const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
@@ -83,6 +82,10 @@ export interface InboxKeyboard {
   readonly bulkBarRef: RefObject<HTMLElement | null>;
   /** Whether the bar of selected rows is shown, which is while its Clear selection is. */
   readonly bulkBarShown: boolean;
+  /** The asks the bar's own Snooze write is over while that write is out (`useInboxSelection`'s
+   *  `snoozing`): Escape from the bar's Snooze passes over their rows, which leave the list with
+   *  no press of the reader's once the write lands. */
+  readonly bulkSnoozing: ReadonlySet<string>;
   /** Unmarks every marked row: the bar's Clear selection. */
   readonly clearSelection: () => void;
   /** Dismisses, or moves to the Inbox, the rows `named` and hands the reader on to the item
@@ -97,6 +100,9 @@ export interface InboxKeyboard {
   /** Whether the reading column is on: the selection is then what the keys act on, else the row
    *  holding the focus. */
   readonly paneShown: boolean;
+  /** The rows the reader can see, as the list last rendered them: while it holds one, a commit
+   *  that draws no column is one the selection's settling draws the next column after. */
+  readonly presented: RefObject<readonly PlacedRow[]>;
   /** The rows the list shows, by `rowId`. */
   readonly rowsById: ReadonlyMap<string, InboxListRow>;
   /** The scope the keys bind under: the page's own, or the drawer's `dialog`. */
@@ -119,6 +125,9 @@ export interface InboxColumnHold {
    *  rendered: where a row's Dismiss beside the column hands the focus when the list draws no
    *  row for the item being read (`Inbox`'s `dismissFromRow`). */
   readonly paneScroller: () => HTMLElement | null;
+  /** The bar's Snooze trigger's `onTriggerFocus`: the row the focus came to it from, which
+   *  Escape from the trigger goes back to (`back-from-bulk`). */
+  readonly notePickerOrigin: (from: Element | null) => void;
 }
 
 /**
@@ -131,12 +140,14 @@ export function useInboxKeymap({
   barOpen,
   bulkBarRef,
   bulkBarShown,
+  bulkSnoozing,
   clearSelection,
   dismiss,
   listRef,
   onMark,
   paneSelection,
   paneShown,
+  presented,
   rowsById,
   scope,
   searchRef,
@@ -199,15 +210,25 @@ export function useInboxKeymap({
    *  the reader on that question, so the record is still theirs: React fires no blur for a
    *  node it removes, and the `document.body` the focus falls to is focused by nothing, so
    *  neither drop of (b) reads it. Their next focus does. A control that disables itself is
-   *  not that case: Chromium blurs it as it is disabled, before React removes it - the head's
-   *  `Assign to me` while its write is in flight - so the wrapper's `onBlur` reads the focus
-   *  leaving for the body and drops the record, and Escape then goes to the row of the
-   *  question the column shows. */
+   *  not that case: Chromium blurs it as it is disabled, before React removes it, so the
+   *  wrapper's `onBlur` reads the focus leaving for the body and drops the record, and Escape
+   *  then goes to the row of the question the column shows. A control held under the reader's
+   *  press while its write is out - the head's Assign to me and Snooze, a thread's Reply and its
+   *  box - is never disabled: it is held by `aria-disabled` (`held-press.ts`), the box read-only
+   *  as well, so it keeps the focus, and the record stands. */
   const paneReturn = useRef<string | null>(null);
   /** The question the column was showing when this component last looked, which is how the
-   *  layout effect below tells a commit that changed it from one that did not. Nothing else
-   *  writes it, so the record itself still names a row and nothing more. */
+   *  layout effect below tells a commit that changed it from one that did not, and what the
+   *  column's noted focus is told to be in (`paneFocus`). Nothing else writes it, so the record
+   *  itself still names a row and nothing more. */
   const shownQuestion = useRef<string | undefined>(undefined);
+  /** The element in the column that holds the focus, and the question the column showed as it
+   *  took it: what the column's own hand-off reads once a commit has taken that element away
+   *  (below `paneScroller`). Noted by the document's `focusin` below, and forgotten wherever the
+   *  focus lands outside a column still drawn, wherever it leaves the column for nothing
+   *  (`forgetPaneReturn`), and at a step of the selection taken with the focus outside the column
+   *  (`move`), so a reader who left the column is owed no hand-off. */
+  const paneFocus = useRef<{ element: Element; question: string | undefined } | null>(null);
   // The column shows another question, so the record is spent: the row it names belongs to a
   // question the reader has been carried off, whichever route carried them. Read after every
   // commit, as the selection's own settling is (`pane-selection.ts`), and dropped here rather
@@ -238,11 +259,17 @@ export function useInboxKeymap({
     if (node === null) paneReturn.current = null;
   }, []);
   // Fact (b), stated as itself: wherever the focus lands, the record stands only while that
-  // place is inside the column. A focus the column itself takes - the head's Snooze menu under
+  // place is inside the column. A focus the column itself takes - the head's Snooze list under
   // `h`, a link in the drawn document, the scroller `l` focuses as it writes the record - lands
   // in the column and changes nothing, so the key's own `focusin` cannot undo it, and
   // Escape's `run` reads the record before it focuses the row, so the drop that press makes
-  // takes nothing it still needs.
+  // takes nothing it still needs. The same listener notes the element the focus lands on inside
+  // the column's wrapper for the column's own hand-off (`paneFocus`), and forgets it wherever the
+  // focus lands outside a column still drawn. While the column is being let go, `paneRef` is
+  // already null: React detaches the wrapper's ref before the cleanups of the refs inside it, and
+  // the card's form hands the focus to the column's stop from its own (`AskCard`'s
+  // `handOffFocus`), a stop that goes with the column. That focus is no reader leaving the
+  // column, so the note stands for the column drawn next to hand the focus to its own stop.
   //
   // One listener for this component's life, not one put up and taken down around each record:
   // the record is a ref precisely so that `l` commits nothing, so there is no render to hang a
@@ -251,12 +278,20 @@ export function useInboxKeymap({
   // effect has nothing to depend on: it binds once on mount, unbinds on unmount, and no render
   // in between churns it.
   useEffect(() => {
-    const dropWhereFocusLands = () => {
+    const followFocus = () => {
       // `focusin` fires once the focus has landed, so the document already names where.
-      if (!inColumn(paneRef.current, document.activeElement)) paneReturn.current = null;
+      const focused = document.activeElement;
+      if (inColumn(paneRef.current, focused)) {
+        if (focused !== null && paneRef.current?.contains(focused) === true) {
+          paneFocus.current = { element: focused, question: shownQuestion.current };
+        }
+        return;
+      }
+      paneReturn.current = null;
+      if (paneRef.current !== null) paneFocus.current = null;
     };
-    document.addEventListener("focusin", dropWhereFocusLands);
-    return () => document.removeEventListener("focusin", dropWhereFocusLands);
+    document.addEventListener("focusin", followFocus);
+    return () => document.removeEventListener("focusin", followFocus);
   }, []);
   /** The drop a focus that lands nowhere makes, which is the half of fact (b) no `focusin`
    *  reports: React's `onBlur` bubbles from the column's descendants, so a reader whose control
@@ -267,10 +302,12 @@ export function useInboxKeymap({
    *  none, because those two nulls mean opposite things: a window or tab blur moves no focus and
    *  keeps the record, while a focus that left for the body drops it. The routes out that land
    *  on a node are this handler's too, an event before the listener above reads them, so what
-   *  needs it is only the focus that lands nowhere. */
+   *  needs it is only the focus that lands nowhere. The column's noted focus (`paneFocus`) is
+   *  dropped with the record, here as in the listener above. */
   const forgetPaneReturn = (event: FocusEvent<HTMLDivElement>) => {
     if (!inColumn(event.currentTarget, event.relatedTarget ?? document.activeElement)) {
       paneReturn.current = null;
+      paneFocus.current = null;
     }
   };
   /** The row Escape returns the focus to from inside the column: the row `l` recorded, else the
@@ -287,10 +324,16 @@ export function useInboxKeymap({
    *  editable target, and a step from an approval to a question the column draws as a card
    *  swaps `ApprovalBody` for `CardBody`, which unmounts the focused scroller and drops the
    *  focus to `document.body` - where neither of Escape's branches holds and the key would do
-   *  nothing. The reader then stands exactly where a click and then `j` leaves them today. */
+   *  nothing. The reader then stands exactly where a click and then `j` leaves them today. From
+   *  anywhere else the column's noted focus is forgotten: a control the column's own code took
+   *  away under the focus, with no render of the Inbox's to read that loss, leaves the note on
+   *  it, and the step's commit would hand the focus to the next question's stop (below
+   *  `paneScroller`), which no loss of this key took. */
   const move = (delta: 1 | -1) => {
     if (paneShown && focusInPane()) {
       paneSelection.selectedRow()?.focus();
+    } else {
+      paneFocus.current = null;
     }
     stepInMode(delta);
   };
@@ -328,6 +371,39 @@ export function useInboxKeymap({
    *  is rendered. */
   const paneScroller = () =>
     paneRef.current?.querySelector<HTMLElement>(PANE_SCROLLER_SELECTOR) ?? null;
+  // The column's own hand-off, for the focus its question took with it. A press in the head that
+  // takes away the question the column shows - its Snooze, Assign to me under the Unassigned
+  // filter, a thread's Dismiss - and a question the server takes away under the reader's focus
+  // both take the selected row off the list: the column goes with it, in a commit that draws
+  // none, and the selection's settling hands the next row the selection on the layout lane, so
+  // the column is drawn again for that row in the same task (`pane-selection.ts`). The focus the
+  // column held has fallen to the body, and what now stands where it was is the next question,
+  // not what the reader pressed for. The page's rescue takes nothing from another item
+  // (`showsAnother`, `components/focus-place.ts`), so without this hand-off it would walk a
+  // caused loss back to a control before the column, and leave an uncaused one on the body. So
+  // the focus goes to the column's own focus stop, with no scroll, whoever caused the loss, and
+  // `j`, `k` and Enter answer from there as they do from the body. A component may hand a lost
+  // focus to its own region's stop whoever caused the loss (`leaveUncaused`). On the layout lane
+  // too, in the commit that draws the column again, so it runs before the rescue's check a frame
+  // later, which then finds the focus placed. A focus the column lost while it still shows the
+  // same question - an editor a press opened in place - is the rescue's, and so is one that has
+  // gone somewhere by then. `focusLost`, not the body alone, so an engine that names a removed
+  // element focused until its focus fixup is read the same way. The reader's own snooze, dismiss
+  // or answer that lands hands the focus on to the next item's row after this (R8,
+  // `pane-selection.ts`), on the passive lane, so that row has it last.
+  useLayoutEffect(() => {
+    const noted = paneFocus.current;
+    if (noted === null || noted.element.isConnected) return;
+    const stop = paneScroller();
+    const lost = focusLost();
+    // The commit that takes the question off the list draws no column; while the list holds a
+    // row to hand the selection to, the commit the selection's settling makes draws it.
+    if (stop === null && lost && paneShown && presented.current.length > 0) return;
+    paneFocus.current = null;
+    if (stop !== null && lost && paneSelection.id !== noted.question) {
+      stop.focus({ preventScroll: true });
+    }
+  });
   /** Where the answer keys - Enter and the digits - act: the selected question's own card, not
    *  the whole column. The column of a question written as a decision block draws the whole live
    *  document, and `ProofDocument` hosts an answerable card for every open block of it
@@ -405,6 +481,9 @@ export function useInboxKeymap({
   };
   // The bar is reached through its own ref, which holds wherever the header draws it.
   const bulkPicker = () => bulkBarRef.current?.querySelector<HTMLElement>(BULK_PICKER_SELECTOR);
+  /** The row the bar's Snooze was reached from, so Escape from it - the bar sits above the bands
+   *  and has no row to fall back through - is one level out rather than a dead end. */
+  const pickerOrigin = useRef<string | null>(null);
   /** The approval request's Approve, or its Request changes, that `a` and Shift+R press (R7).
    *  Beside the column it is the chip's own button in the column's head, which the head draws
    *  from its first draw and holds until the document's read returns (`ReadingPaneHead`), and
@@ -708,17 +787,22 @@ export function useInboxKeymap({
     },
     {
       // One action for both: with rows marked it is the whole selection, otherwise the row in
-      // hand. The key presses the menu's trigger, which opens it with the focus on its first
-      // choice and hands the focus back here as it closes (`ChoiceMenu`).
+      // hand. The key presses the list's trigger, which opens the list with the focus in its text
+      // box, and the list hands the focus back to its trigger as it closes (`MultiSelect`); from
+      // the bar's trigger Escape goes back to the row (`back-from-bulk`).
       action: "inbox.snooze",
       run: () => {
         if (selectedAsks.length === 0) {
-          // The short row carries no Snooze of its own: the reading column's head does, for the
-          // row it is showing.
-          inHand("[data-inbox-snooze]")?.click();
+          // The selected short row carries no Snooze of its own: the reading column's head does,
+          // for the row it is showing.
+          inHand(ROW_SNOOZE_SELECTOR)?.click();
           return;
         }
-        bulkPicker()?.click();
+        // The focus arrives on the bar's trigger first, so the trigger records the row it came
+        // from (`notePickerOrigin`) for Escape from the bar to go back to.
+        const picker = bulkPicker();
+        picker?.focus();
+        picker?.click();
       },
       // The selection's key works from wherever marking leaves the reader - a row, the checkbox
       // they just ticked, the bar - but not from inside an ask they are answering: an option
@@ -728,7 +812,25 @@ export function useInboxKeymap({
       // column's own.
       when: () =>
         (selectedAsks.length > 0 && outsideAskCard()) ||
-        (inHand("[data-inbox-snooze]") !== null && (!paneShown || outsideAskCard())),
+        (inHand(ROW_SNOOZE_SELECTOR) !== null && (!paneShown || outsideAskCard())),
+    },
+    {
+      action: "inbox.back-from-bulk",
+      run: () => {
+        // The row `h` was pressed on, else the first row, passing over every row the bar's own
+        // Snooze write is over while that write is pending (`bulkSnoozing`, which the bar empties
+        // once the write settles, a refusal or a stop included). The list keeps such a row in its
+        // band only until the write lands, and its move into a folded Later then is no press's
+        // doing (`causedByReader`), so a focus put on it would fall to the body. With no drawn
+        // row left that the bar's write is not taking away, the bar itself is the level out: it
+        // holds the count and the way to clear it.
+        (
+          [rowIn(listRef.current, pickerOrigin.current), ...rows()].find(
+            (row) => row !== null && !bulkSnoozing.has(row.dataset.inboxRow ?? "")
+          ) ?? bulkBarRef.current
+        )?.focus();
+      },
+      when: () => document.activeElement?.matches(BULK_PICKER_SELECTOR) === true,
     },
     {
       // The priority of the issue the item in hand is about. A question or an approval request
@@ -736,8 +838,8 @@ export function useInboxKeymap({
       // the key opens nothing and the `?` help shows it not available. Not from inside an ask
       // the reader is answering, the rule Snooze holds to.
       action: "inbox.priority",
-      run: () => inHand("[data-priority-menu]")?.click(),
-      when: () => inHand("[data-priority-menu]") !== null && (!paneShown || outsideAskCard()),
+      run: () => inHand(PRIORITY_TRIGGER_SELECTOR)?.click(),
+      when: () => inHand(PRIORITY_TRIGGER_SELECTOR) !== null && (!paneShown || outsideAskCard()),
     },
     {
       // Escape is one level out, and the selection is the outermost thing a row press made:
@@ -777,5 +879,12 @@ export function useInboxKeymap({
       when: () => control() !== null,
     })),
   ]);
-  return { forgetPaneReturn, holdPane, paneScroller };
+  return {
+    forgetPaneReturn,
+    holdPane,
+    notePickerOrigin: (from) => {
+      pickerOrigin.current = rowAround(from)?.dataset.inboxRow ?? null;
+    },
+    paneScroller,
+  };
 }

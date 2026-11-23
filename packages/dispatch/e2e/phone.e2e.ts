@@ -25,6 +25,7 @@ import {
 } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { modKey, namesMac } from "./keyboard-palette";
+import { distinctKeys, watchWrites } from "./keyed-writes";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
@@ -217,7 +218,11 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
   }
 });
 
-test("a phone sheet trap wraps Tab from its last control to its first past a held composer @phone", async ({
+// While the comment composer holds a send, Tab from the margin sheet's last control wraps to its
+// first and never leaves the sheet. The send holds the composer's controls by `aria-disabled` and
+// disables none of them, so each keeps its Tab stop: the held body and the held Send are in the
+// sheet's Tab cycle. Enter on the held Send sends nothing.
+test("a phone sheet trap wraps Tab from its last control to its first and keeps it inside the sheet while the composer holds a send @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -238,30 +243,37 @@ test("a phone sheet trap wraps Tab from its last control to its first past a hel
     const form = sheet.getByRole("form", { name: "Comment composer" });
     const body = form.getByLabel("Comment");
     const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
+    const sends = watchWrites(page, "POST", `/api/v1/issues/${issue.key}/comments`);
     await body.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
+    // The send holds the composer's controls: each is `aria-disabled`, which `toBeDisabled`
+    // reads, and none matches `:disabled`.
+    const send = form.getByRole("button", { exact: true, name: "Sending…" });
     await expect(body).toBeDisabled();
-
-    // The hold makes none of the composer's controls `disabled` - its fieldset is `aria-disabled`
-    // and its fields read-only - so the focus a reader has in it stays, and the last control the
-    // trap reaches can be one of the composer's own. The first control a reader can reach -
-    // enabled and on screen - is marked before the key, and the focus starts on the last.
+    await expect(body).toHaveAttribute("aria-disabled", "true");
+    await expect(send).toHaveAttribute("aria-disabled", "true");
     await expect(form.locator(":disabled")).toHaveCount(0);
-    const startedOnLast = await sheet.evaluate((container) => {
-      const enabled = [
+
+    // The composer's hold is awaited above, so the sheet's controls are settled. The hold makes
+    // none of them `disabled` - its fieldset is `aria-disabled` and its fields read-only - so the
+    // focus a reader has in it stays, and the last control the trap reaches can be one of the
+    // composer's own. One read finds the first and the last control a reader can reach - enabled
+    // and on screen - marks the first, puts the focus on the last and counts them.
+    const start = await sheet.evaluate((container) => {
+      const controls = [
         ...container.querySelectorAll<HTMLElement>(
           'a[href], button, textarea, input, select, [tabindex]:not([tabindex="-1"])'
         ),
       ].filter((control) => !control.matches(":disabled") && control.getClientRects().length > 0);
-      const first = enabled[0];
-      const last = enabled.at(-1);
+      const first = controls[0];
+      const last = controls.at(-1);
       if (first === undefined || last === undefined || first === last)
         throw new Error("expected two enabled focus targets");
       first.dataset.e2eFirstControl = "";
       last.focus();
-      return document.activeElement === last;
+      return { focused: document.activeElement === last, stops: controls.length };
     });
-    expect(startedOnLast).toBe(true);
+    expect(start.focused, "the sheet's last control did not take the focus").toBe(true);
     await page.keyboard.press("Tab");
     expect(
       await page.evaluate(
@@ -269,16 +281,50 @@ test("a phone sheet trap wraps Tab from its last control to its first past a hel
       ),
       "Tab from the sheet's last control wraps to its first"
     ).toBe(true);
+    // From there, one Tab more than the sheet has controls takes the focus round the whole
+    // sheet. Each press records where the focus is.
+    const reached: string[] = [];
+    for (let press = 0; press <= start.stops; press += 1) {
+      await page.keyboard.press("Tab");
+      reached.push(
+        await sheet.evaluate((container) => {
+          const active = document.activeElement;
+          if (!(active instanceof HTMLElement) || !container.contains(active)) {
+            return "outside the sheet";
+          }
+          return `${active.localName} ${active.getAttribute("aria-label") ?? active.textContent?.trim() ?? ""}`;
+        })
+      );
+    }
+    expect(
+      reached.filter((stop) => stop === "outside the sheet"),
+      `Tab left the sheet: ${reached.join("; ")}`
+    ).toEqual([]);
+    expect(
+      reached,
+      `Tab did not stop on the held body and the held Send: ${reached.join("; ")}`
+    ).toEqual(expect.arrayContaining(["textarea Comment", "button Sending…"]));
+
+    // Enter on the held Send sends nothing: once the send is refused, it is still the one send.
+    await send.focus();
+    await expect(send).toBeFocused();
+    await page.keyboard.press("Enter");
     refuse();
+    await expect(form.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
+    expect(distinctKeys(sends), "Enter on the held Send sent the comment again").toEqual([
+      expect.any(String),
+    ]);
+    await expect(body).toHaveValue("Keep this draft");
   } finally {
     await alice.close();
   }
 });
 
-// The wrap's other end. Shift+Tab from the sheet's first control goes to its last one a reader
-// can reach, which a held composer leaves focusable: the hold makes none of its controls
-// `disabled`.
-test("a phone sheet trap wraps Shift+Tab from its first control past a held composer @phone", async ({
+// The wrap's other end. While the comment composer holds a send, Shift+Tab from the margin
+// sheet's first control wraps to the sheet's last control a reader can reach, which the held
+// composer leaves focusable: the hold makes none of its controls `disabled`. The composer keeps
+// the draft, and keeps it once the send is refused.
+test("a phone sheet trap wraps Shift+Tab from its first control to its last while the composer holds a send @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

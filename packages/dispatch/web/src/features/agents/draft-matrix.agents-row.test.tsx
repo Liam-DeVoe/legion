@@ -604,13 +604,12 @@ for (const held of HELD) {
     const page = await openAgents();
     try {
       await holdAtSession(page, held);
-      const toggle = within(row()).getByRole("button", { name: pickNamed("Choose issue") });
-      await page.user.click(toggle);
-      await page.user.click(
-        await within(panelOf(toggle)).findByRole("option", {
-          name: `${coreIssue.key} · ${coreIssue.title}`,
-        })
-      );
+      const trigger = within(row()).getByRole("button", { name: pickNamed("Choose issue") });
+      await page.user.click(trigger);
+      // The list is portalled out of the row, so its option is found in the panel the trigger
+      // names.
+      const option = `${coreIssue.key} · ${coreIssue.title}`;
+      await page.user.click(await within(panelOf(trigger)).findByRole("option", { name: option }));
       await waitFor(() => expect(field().value).toBe(`@Planner ${BODY}`));
       expect({ note: note(), retry: retryOffered() }).toEqual(ownMoveToIssue[held]);
     } finally {

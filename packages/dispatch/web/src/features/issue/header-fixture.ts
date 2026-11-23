@@ -14,11 +14,11 @@ export const idlePriorityWrite: IssuePriorityWrite = {
   submit: () => undefined,
 };
 
-/** Answers with nothing the read the header makes at once that the unit suite's network does not
- *  answer, so it does not reach the network: the project's architecture sources, which the
- *  components line reads at once and which, with none, offer no picker. The repository list
- *  reads the project list, which that network answers (`__tests__/network.ts`). Answers what
- *  restores it. */
+/** Answers with nothing the one read the header makes at once that the unit suite's network does
+ *  not answer, so it does not reach the network: the project's architecture sources, which the
+ *  components line reads at once and which, with none, offer no picker. The repository list reads
+ *  the project list, which that network answers (`__tests__/network.ts`). Answers what restores
+ *  it. */
 export function mockHeaderReads(): () => void {
   const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
   return () => architectureSources.mockRestore();

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { beginAnswerHold } from "./focus-place";
+
 /**
  * What a button spreads onto itself to be held while it cannot be pressed - its write is out,
  * its step has no page to go to - rather than disabled: `aria-disabled`, and a press that does
@@ -20,21 +22,26 @@ export function heldPress(
   };
 }
 
-/** What a text field spreads onto itself to be held while its write is out, rather than
- *  disabled, for the reason `heldPress` gives: `aria-disabled`, and `readOnly`, so the field
- *  keeps the focus and its Tab stop and takes no typing then. Its class paints it held
- *  (`aria-disabled:opacity-50`). */
-export function heldField(held: boolean): { "aria-disabled": true | undefined; readOnly: boolean } {
+/**
+ * What a text field spreads onto itself to be held while a write holds the form it is part of:
+ * `aria-disabled`, and read-only, so it takes no typing. It is never disabled, so the field the
+ * reader submitted from with Enter keeps the focus, as a held button does (`heldPress`).
+ */
+export function heldField(held: boolean): {
+  "aria-disabled": true | undefined;
+  readOnly: boolean;
+} {
   return { "aria-disabled": held || undefined, readOnly: held };
 }
 
 /**
  * Whether a control whose press started a write is held: from the first render with `pending`
- * until the commit after `pending` turns false. The list around a row lets go of the row in the
- * effects of the answer's commit (`useLiveRegistration`), so the row and the control go one
- * commit after the answer. A hold let go by those same effects ends in that commit too, so the
- * page's rescue reads the row's going as the press's doing (`causedByReader`) while the press is
- * still live, and the focus goes to the control now at the row's place rather than to the body.
+ * until the commit after `pending` turns false. A list that holds the write itself, as the Inbox
+ * does a row's snooze (`useAskSnoozeWrites`) and its Assign to me (`AskAssignWritesProvider`),
+ * lets go of the row in the answer's own commit, while this hold is still on. The hold is part of
+ * the action of the reader's press that started the write while it is on (`beginAnswerHold`), so
+ * the page's rescue reads the row's going as the press's doing (`causedByReader`), and the focus
+ * goes to the control now at the row's place rather than to the body.
  */
 export function useHeldThroughAnswer(pending: boolean): boolean {
   const [answering, setAnswering] = useState(false);
@@ -43,5 +50,7 @@ export function useHeldThroughAnswer(pending: boolean): boolean {
     setAnswering(true);
     return () => setAnswering(false);
   }, [pending]);
-  return pending || answering;
+  const held = pending || answering;
+  useEffect(() => (held ? beginAnswerHold() : undefined), [held]);
+  return held;
 }

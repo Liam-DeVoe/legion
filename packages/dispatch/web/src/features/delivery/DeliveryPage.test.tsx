@@ -5,6 +5,10 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { drawnSize } from "../../__tests__/control-size";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { pickIn } from "../../__tests__/issue-picks";
+import { panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -17,6 +21,7 @@ import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
   DeliveryPR,
+  DeliverySessionGroup,
   DeliverySettings,
   DeliveryTimelineWithMeasures,
   LiveServerFrame,
@@ -129,9 +134,33 @@ const emptyTimeline: DeliveryTimelineWithMeasures = {
   window: { from: "2024-06-01T00:00:00Z", to: "2024-06-02T00:00:00Z" },
 };
 
-/** The router's query string, where a test reads what the page wrote to the URL. */
+/** A session group of two sessions, as the page's answer lists it. */
+const RELEASE_CREW: DeliverySessionGroup = {
+  created_at: "2026-10-11T00:00:00Z",
+  created_by: { id: "alice@example.com", kind: "user" },
+  id: "g1",
+  name: "Release crew",
+  sessions: ["s1", "s2"],
+  updated_at: "2026-10-11T00:00:00Z",
+  updated_by: { id: "alice@example.com", kind: "user" },
+};
+
+/** How many pull requests each of `RELEASE_CREW`'s two sessions and one session outside it have,
+ *  and their titles, as the page's answer counts and names them. */
+const RELEASE_CREW_SESSIONS = {
+  session_pr_counts: { s1: 2, s2: 1, s3: 1 },
+  session_titles: { s1: "Planner one", s2: "Planner two", s3: "Reviewer" },
+};
+
+/** The router's query string, where a test reads what the page wrote to the URL, and the key of
+ *  its location, which every write of the address makes anew, even one of the same query. */
 function LocationProbe() {
-  return <output data-testid="location">{useLocation().search}</output>;
+  const location = useLocation();
+  return (
+    <output data-key={location.key} data-testid="location">
+      {location.search}
+    </output>
+  );
 }
 
 /** The unit DOM lays nothing out, so the box the list's rows scroll in reports a height and
@@ -157,18 +186,31 @@ function measureList(): () => void {
   };
 }
 
-function renderPage(url = DELIVERY_URL) {
+/** Renders the page at `url`, in a box of its own at the end of the document, else in
+ *  `container`; `rescued` draws it in the shell's main content with the page's focus rescue
+ *  mounted on it (`RescuedMain`), as the app shell mounts it. */
+function renderPage(
+  url = DELIVERY_URL,
+  { container, rescued = false }: { container?: HTMLElement; rescued?: boolean } = {}
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   restoreLayout = measureList();
   render(
     <MemoryRouter initialEntries={[url]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <DeliveryPage />
+          {rescued ? (
+            <RescuedMain>
+              <DeliveryPage />
+            </RescuedMain>
+          ) : (
+            <DeliveryPage />
+          )}
           <LocationProbe />
         </KeymapProvider>
       </QueryClientProvider>
-    </MemoryRouter>
+    </MemoryRouter>,
+    container === undefined ? {} : { container }
   );
   return queryClient;
 }
@@ -495,16 +537,17 @@ test("the facet column offers each value with its count, subscribes a pick and k
   await user.click(screen.getByRole("button", { name: "Filter Issue" }));
   expect(screen.getByRole("option", { name: /ACME-1 — Ship widgets/ })).toBeDefined();
 
-  const colorBy = screen.getByLabelText("Color merges by") as HTMLSelectElement;
-  expect([...colorBy.options].map((option) => option.textContent)).toEqual([
-    "Repository",
+  const colorBy = screen.getByLabelText("Color merges by");
+  await user.click(colorBy);
+  expect(rows(panelOf(colorBy))).toEqual([
+    "✓Repository",
     "Author",
     "Priority",
     "Component",
     "Parent agent",
   ]);
-  await user.selectOptions(colorBy, "component");
-  expect(colorBy.value).toBe("component");
+  await user.click(within(panelOf(colorBy)).getByRole("option", { name: "Component" }));
+  expect(colorBy).toHaveAccessibleName("Color merges by Component");
   // The list's dot follows the colour-by facet, and the row reads its issue with its priority.
   expect(screen.getByText("ACME-1 · P0")).toBeDefined();
 });
@@ -737,17 +780,7 @@ test("colouring by Parent agent offers the values to give their own colour and l
       ...emptyTimeline.color_counts,
       parent_agent: { "group:g1": 3, Reviewer: 2, __no_session__: 1 },
     },
-    session_groups: [
-      {
-        created_at: "2026-10-11T00:00:00Z",
-        created_by: { id: "alice@example.com", kind: "user" },
-        id: "g1",
-        name: "Release crew",
-        sessions: ["s1", "s2"],
-        updated_at: "2026-10-11T00:00:00Z",
-        updated_by: { id: "alice@example.com", kind: "user" },
-      },
-    ],
+    session_groups: [RELEASE_CREW],
   });
 
   const trigger = await screen.findByRole("button", { name: "Own colour and lane: 1 chosen" });
@@ -759,14 +792,87 @@ test("colouring by Parent agent offers the values to give their own colour and l
   await user.click(listbox.getByRole("option", { name: /^Reviewer/ }));
   await waitFor(() => expect(currentSearch().getAll("agents")).toEqual(["group:g1", "Reviewer"]));
 
-  await user.selectOptions(screen.getByLabelText("Color merges by"), "repo");
+  const colorBy = screen.getByLabelText("Color merges by");
+  await pickIn(user, () => colorBy, "Repository");
   expect(screen.queryByRole("button", { name: /^Own colour and lane/ })).not.toBeInTheDocument();
+});
+
+// R3: every list of options a reader picks from holds a text box that narrows the options. Color
+// merges by is the shared list's single pick of its choices: pressed, it opens with one text box,
+// a typed word leaves the choices it matches, and Enter on the one left colours the merges by it,
+// kept in the URL, as the select's pick did.
+test("the Color merges by list opens with a text box, a typed word narrows the choices, and a pick colours by it", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await answered(emptyTimeline);
+  const colorBy = await screen.findByRole("button", { name: pickNamed("Color merges by") });
+  expect(colorBy).toHaveAccessibleName("Color merges by Repository");
+  const boxes = textBoxes().length;
+  await user.click(colorBy);
+  const panel = panelOf(colorBy);
+  expect(textBoxes().length).toBe(boxes + 1);
+  expect(within(panel).getByRole("combobox", { name: "Search color choices" })).toHaveFocus();
+  await user.keyboard("agent");
+  expect(rows(panel)).toEqual(["Parent agent"]);
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(currentSearch().get("colorBy")).toBe("parentAgent"));
+  expect(colorBy).toHaveAccessibleName("Color merges by Parent agent");
+  expect(colorBy).toHaveFocus();
+  // Parent agent offers its values their own colour and lane.
+  expect(screen.getByRole("button", { name: /^Own colour and lane/ })).toBeDefined();
+});
+
+// A `<select>` set to the value it holds fires no change when that value is picked again. The
+// list opens on the choice it shows, so Enter at once picks that choice, and the page writes
+// nothing to the address: the router's location keeps its key (`LocationProbe`).
+test("a pick of the choice Color merges by shows writes nothing to the address", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await answered(emptyTimeline);
+  const colorBy = await screen.findByRole("button", { name: pickNamed("Color merges by") });
+  const location = screen.getByTestId("location");
+  const before = location.getAttribute("data-key");
+  await user.click(colorBy);
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("listbox")).toBeNull();
+  expect(colorBy).toHaveAccessibleName("Color merges by Repository");
+  expect(colorBy).toHaveFocus();
+  expect(location.getAttribute("data-key")).toBe(before);
+});
+
+// R2: each control takes its size from the page, comfortable or compact, as a value the page
+// passes. The Delivery page is compact, as its search box and its Filter trigger are, so its
+// Window, Color merges by, Own colour and lane and each facet in its Filter panel draw the
+// compact size's room (`controlPadding.compact`), rather than room of their own.
+test("R2: the Window, Color merges by, Own colour and lane and the Filter panel's facets draw the Delivery page's compact size", async () => {
+  const user = userEvent.setup();
+  renderPage(`${DELIVERY_URL}&colorBy=parentAgent`);
+  await answered({
+    ...emptyTimeline,
+    color_counts: { ...emptyTimeline.color_counts, parent_agent: { Reviewer: 2 } },
+    facet_counts: { ...emptyCounts, repo: { "acme/widgets": 1 } },
+  });
+  const window = await screen.findByLabelText("Window");
+  const colorBy = await screen.findByRole("button", { name: pickNamed("Color merges by") });
+  const ownColour = await screen.findByRole("button", { name: /^Own colour and lane/ });
+  const repository = await panelFacet(user, "Repository");
+  expect({
+    colorBy: drawnSize(colorBy),
+    ownColour: drawnSize(ownColour),
+    repository: drawnSize(repository),
+    window: drawnSize(window),
+  }).toEqual({
+    colorBy: "compact",
+    ownColour: "compact",
+    repository: "compact",
+    window: "compact",
+  });
 });
 
 test("a malformed custom window falls back to the 28-day preset and removes its bad parameters", async () => {
   renderPage("/delivery?mode=list&from=not-a-date&to=also-not-a-date");
   const window = await screen.findByLabelText("Window");
-  expect((window as HTMLSelectElement).value).toBe("28d");
+  expect(window).toHaveAccessibleName("Window Last 28 days");
   await waitFor(() => {
     expect(currentSearch().has("from")).toBe(false);
     expect(currentSearch().has("to")).toBe(false);
@@ -830,7 +936,8 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
   const socket = await openSocket();
   const brushed = await subscription(socket, "measures");
 
-  await user.selectOptions(await screen.findByLabelText("Window"), "7d");
+  const windowList = await screen.findByLabelText("Window");
+  await pickIn(user, () => windowList, "Last 7 days");
   await waitFor(() => expect(currentSearch().get("window")).toBe("7d"));
   expect(currentSearch().has("ws")).toBe(false);
   expect(currentSearch().has("we")).toBe(false);
@@ -838,7 +945,7 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
   await subscriptionTo(socket, { kind: "timeline", window: { preset: 7 }, query: "" });
   expect(socket.sent).toContainEqual({ type: "unsubscribe", sub: brushed.sub });
 
-  await user.selectOptions(screen.getByLabelText("Window"), "custom");
+  await pickIn(user, () => windowList, "Custom range…");
   await user.click(screen.getByLabelText("From"));
   await user.paste("2026-01-01");
   await user.click(screen.getByLabelText("To"));
@@ -855,26 +962,29 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
 });
 
 // A press that takes its own control away hands the focus on, never to the page's body (ruling
-// ff1a60f5). A preset picked on the Window select leaves that select, the same element, holding
-// the focus: the control stays mounted across a change of the window.
-test("a preset picked on the Window select keeps that select, and the focus on it", async () => {
+// ff1a60f5). A preset picked from the Window list leaves the list's trigger, the same element,
+// holding the focus: the control stays mounted across a change of the window.
+test("a preset picked from the Window list keeps its trigger, and the focus on it", async () => {
   const user = userEvent.setup();
   renderPage();
-  const select = await screen.findByLabelText("Window");
-  select.focus();
-  await user.selectOptions(select, "84d");
+  const trigger = await screen.findByLabelText("Window");
+  act(() => trigger.focus());
+  await pickIn(user, () => trigger, "Last 84 days");
   await waitFor(() => expect(currentSearch().get("window")).toBe("84d"));
-  expect(screen.getByLabelText("Window")).toBe(select);
-  expect(select).toHaveFocus();
+  expect(screen.getByLabelText("Window")).toBe(trigger);
+  expect(trigger).toHaveFocus();
 });
 
-// Clear brush window goes with the brush it clears, and its focus goes to the Window select: the
-// line it sits in holds no other control.
-test("clear brush window hands its focus to the Window select", async () => {
+/** The page over `DELIVERY_URL`'s window with a brush window set in it, as a drag along the
+ *  chart's time axis sets one, so the header draws clear brush window. */
+const BRUSHED_URL = `${DELIVERY_URL}&ws=${encodeURIComponent("2024-06-01T06:00:00.000Z")}&we=${encodeURIComponent("2024-06-01T12:00:00.000Z")}`;
+
+// Clear brush window goes with the brush it clears, and its focus goes to the Window list's
+// trigger, in the reader's sight as happy-dom draws every box: the line it sits in holds no other
+// control.
+test("clear brush window hands its focus to the Window list's trigger", async () => {
   const user = userEvent.setup();
-  renderPage(
-    `${DELIVERY_URL}&ws=${encodeURIComponent("2024-06-01T06:00:00.000Z")}&we=${encodeURIComponent("2024-06-01T12:00:00.000Z")}`
-  );
+  renderPage(BRUSHED_URL);
   const socket = await openSocket();
   const timeline = await subscription(socket, "timeline");
   serve(socket, snapshotFrame(timeline.sub, emptyTimeline));
@@ -883,7 +993,40 @@ test("clear brush window hands its focus to the Window select", async () => {
   await user.keyboard("{Enter}");
   await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
   expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
-  expect(screen.getByLabelText("Window")).toHaveFocus();
+  expect(screen.getByRole("button", { name: pickNamed("Window") })).toHaveFocus();
+});
+
+// With the page scrolled below the Window list's trigger, so that the trigger stands wholly above
+// the window, clear brush window's focus goes to no control out of the reader's sight: the trigger
+// is passed over, and the main content around the page takes the focus at its own stop, with no
+// scroll, so the reader stays where they scrolled to.
+test("clear brush window with the Window list's trigger scrolled out of sight hands its focus to the main content's own stop, scrolling nothing", async () => {
+  const user = userEvent.setup();
+  const main = document.createElement("main");
+  document.body.append(main);
+  renderPage(BRUSHED_URL, { container: main });
+  const socket = await openSocket();
+  const timeline = await subscription(socket, "timeline");
+  serve(socket, snapshotFrame(timeline.sub, emptyTimeline));
+  const clear = await screen.findByRole("button", { name: "clear brush window" });
+  const trigger = screen.getByLabelText("Window");
+  // Wholly above the window's top edge, where the reader's scroll left it: happy-dom lays
+  // nothing out.
+  trigger.getBoundingClientRect = () => new DOMRect(0, -60, 120, 32);
+  clear.focus();
+  const focuses = spyOn(HTMLElement.prototype, "focus");
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(currentSearch().has("ws")).toBe(false));
+    expect(screen.queryByRole("button", { name: "clear brush window" })).toBeNull();
+    expect(main).toHaveFocus();
+    expect(focuses.mock.calls).toEqual([[{ preventScroll: true }]]);
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    focuses.mockRestore();
+    scrolls.mockRestore();
+  }
 });
 
 test("the freshness row says Live with the last change while the socket is open, and Reconnecting once it drops", async () => {
@@ -1038,19 +1181,8 @@ test("a group's Parent agent value reads as its name, and Edit groups opens the 
     ...emptyTimeline,
     facet_counts: { ...emptyCounts, parent_agent: { "group:g1": 3, Reviewer: 1 } },
     prs: [listedPR],
-    session_groups: [
-      {
-        created_at: "2026-10-11T00:00:00Z",
-        created_by: { id: "alice@example.com", kind: "user" },
-        id: "g1",
-        name: "Release crew",
-        sessions: ["s1", "s2"],
-        updated_at: "2026-10-11T00:00:00Z",
-        updated_by: { id: "alice@example.com", kind: "user" },
-      },
-    ],
-    session_pr_counts: { s1: 2, s2: 1, s3: 1 },
-    session_titles: { s1: "Planner one", s2: "Planner two", s3: "Reviewer" },
+    session_groups: [RELEASE_CREW],
+    ...RELEASE_CREW_SESSIONS,
   });
 
   await user.click(screen.getByRole("button", { name: "Filter Parent agent" }));
@@ -1060,6 +1192,60 @@ test("a group's Parent agent value reads as its name, and Edit groups opens the 
   await openFilterPanel(user);
   await user.click(screen.getByRole("button", { name: "Edit groups" }));
   expect(screen.getByRole("dialog", { name: "Session groups" })).toBeDefined();
+});
+
+// The Session groups dialog is drawn in the page's control row, inside the row's slot, and its
+// controls are the dialog's, not the row's. The reader has scrolled the dialog so that every
+// control before Delete group is out of sight, and deletes the only group by keyboard. The live
+// update carrying the delete takes the Groups section away with it. The focus goes to no control
+// of the row behind the modal dialog, so the filter trigger, in sight, does not take it. With no
+// control of the dialog in sight, the page's rescue puts it on the dialog's own stop, with no
+// scroll.
+test("Delete group of the only group, with the dialog's other controls out of sight, leaves the focus on the dialog and not on the row behind it", async () => {
+  const user = userEvent.setup();
+  const remove = spyOn(api, "deleteDeliverySessionGroup").mockResolvedValue(undefined);
+  try {
+    const queryClient = renderPage(DELIVERY_URL, { rescued: true });
+    const grouped: DeliveryTimelineWithMeasures = {
+      ...emptyTimeline,
+      session_groups: [RELEASE_CREW],
+      ...RELEASE_CREW_SESSIONS,
+    };
+    const socket = await openSocket();
+    const { sub } = await subscription(socket, "timeline");
+    serve(socket, snapshotFrame(sub, grouped));
+    await openFilterPanel(user);
+    await user.click(await screen.findByRole("button", { name: "Edit groups" }));
+    const dialog = screen.getByRole("dialog", { name: "Session groups" });
+    const deleteGroup = within(dialog).getByRole("button", { name: "Delete group" });
+    // Scrolled 500 px above the window's top edge: happy-dom lays nothing out.
+    for (const control of dialog.querySelectorAll("a[href], button, input")) {
+      if (control !== deleteGroup) {
+        control.getBoundingClientRect = () => new DOMRect(0, -500, 200, 40);
+      }
+    }
+    act(() => deleteGroup.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    const scrolls = spyOn(Element.prototype, "scrollIntoView");
+    try {
+      serve(socket, snapshotFrame(sub, { ...grouped, session_groups: [] }));
+      await afterRescue();
+      expect(within(dialog).queryByRole("button", { name: "Delete group" })).toBeNull();
+      const focused = document.activeElement;
+      let landed: string | null;
+      if (focused === dialog) landed = "the Session groups dialog";
+      else if (focused === null || focused === document.body) landed = "the page";
+      else landed = focused.getAttribute("aria-label") ?? focused.textContent;
+      expect(landed).toBe("the Session groups dialog");
+      expect(scrolls).not.toHaveBeenCalled();
+    } finally {
+      scrolls.mockRestore();
+    }
+  } finally {
+    remove.mockRestore();
+  }
 });
 
 // R5: the order the list is in rides in the page's address, absent until the reader presses a

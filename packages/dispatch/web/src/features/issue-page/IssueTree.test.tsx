@@ -738,9 +738,10 @@ function readDecisionsText() {
 // A focused control that goes drops the focus to the document body: a keyboard reader loses
 // their place, and the tree closes the body the focus held, taking Change with it (measured in
 // Chromium: a `focusout` from Keep with no related target 45 ms after its write went out, then
-// the kept decision's body removed). Keep is held while its write is out (`heldPress`), never
-// disabled, and goes once its Keep lands, so its press moves the focus onto its decision's own
-// row first (`DecisionActions.tsx`'s `keepFocusOnRow`), and the row's body stays open throughout.
+// the kept decision's body removed). Keep is held while its write is out (`heldPress`,
+// `aria-disabled`), never disabled, and goes once its Keep lands, so its press moves the focus
+// onto its decision's own row first (`DecisionActions.tsx`'s `keepFocusOnRow`), and the row's
+// body stays open throughout.
 test("Keep keeps the focus on its decision's row while its write is out, and after", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -758,6 +759,7 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
     await user.click(keep);
     await waitFor(() => expect(kept).toHaveBeenCalled());
     await waitFor(() => expect(keep).toHaveAttribute("aria-disabled", "true"));
+    expect(keep).toBeEnabled();
     expect(document.activeElement, "the focus did not move from Keep to its row").toBe(row);
     expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
 
@@ -792,6 +794,7 @@ test("Send change keeps the focus on its decision's row while the comment is out
     await user.click(send);
     await waitFor(() => expect(sent).toHaveBeenCalled());
     await waitFor(() => expect(send).toHaveAttribute("aria-disabled", "true"));
+    expect(send).toBeEnabled();
     expect(document.activeElement, "the focus did not move from Send change to its row").toBe(row);
     expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
 

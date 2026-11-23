@@ -16,6 +16,7 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
+import { pickFromList } from "./filters";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
@@ -197,9 +198,10 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
     // The header's list, each part of the header by what it is: nothing else may be drawn there.
     // Its one link is the parent's, named exactly. The words it draws outside a control are in it:
-    // the project, the crumbs' separators, the key and the one chip's "Not requested". The
-    // status, the priority and the assignee are each a trigger named for its menu or its list and
-    // then the value it shows (dispatch://INFRA-2160). The status's shape is an svg with no words.
+    // the project, the crumbs' separators, the key and the one chip's "Not requested". The status
+    // is a trigger named for its menu (dispatch://INFRA-2160), and the priority and the assignee
+    // are each the shared list's single pick, a button named for its list; each is named then for
+    // the value it shows. The status's shape is an svg with no words.
     const named = [
       new RegExp(`^a ${seeded.parentKey}$`),
       /^button Open navigation$/,
@@ -1470,7 +1472,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
         new URL(response.url()).pathname === `/api/v1/issues/${key}` &&
         response.status() === 400
     );
-    await pickFromMenu(priority, "P3");
+    await pickFromList(priority, "P3");
     await pickerRefused;
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
@@ -1489,7 +1491,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     );
     await page.keyboard.press("2");
     expect((await write).postDataJSON()).toEqual({ priority: 2 });
-    await expect(badgeValue(page, `Priority of ${key}`)).toHaveText("P2");
+    await expect(priority).toHaveText("P2");
     await expect.poll(() => getIssue(key)).toMatchObject({ priority: 2 });
     await focusThePage(page);
     const pinned = page.waitForResponse(
@@ -1505,7 +1507,7 @@ test("the header's keys and the palette reach their controls", async ({ browser 
     expect((await pinned).ok()).toBe(true);
     await gotoIssue(page, `/issues/${key}`);
     await expectHeaderDrawn(page);
-    await expect(badgeValue(page, `Priority of ${key}`)).toHaveText("P2");
+    await expect(priority).toHaveText("P2");
     await expect(header.locator('[data-issue-action="pin"]')).toHaveAttribute(
       "aria-pressed",
       "true"

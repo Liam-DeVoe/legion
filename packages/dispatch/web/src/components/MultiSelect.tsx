@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import { stepIndex } from "../features/shell/roving";
+import { ControlKeyHint, keyshortcutsOf } from "../features/shell/ShortcutHelp";
 import {
   borderDefault,
   borderStrong,
@@ -59,10 +60,6 @@ const MOVE_KEYS: Readonly<Record<string, true>> = {
   PageDown: true,
   PageUp: true,
 };
-
-/** A key a closed trigger that takes the list's keys opens the list with as its search: one
- *  letter or digit, in any script. Punctuation (`?`, `/`, `]`) is no type-ahead and opens nothing. */
-const TYPED_KEY = /^[\p{L}\p{N}]$/u;
 
 /** Where `key` moves the highlight in `rows` from `from`, or undefined for a key that moves
  *  nothing or rows that hold nothing. The arrows wrap at the ends and Home and End go to them, as
@@ -145,9 +142,10 @@ interface SharedProps {
   readonly control?: ControlName;
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
    *  rather than looking actionable and doing nothing. It only sets `aria-disabled`, so the
-   *  trigger keeps its focus and its Tab stop and a press still opens the list, unless the host
-   *  refuses the open in `onOpenChange`: the Agents page's Issue list, and each host whose write
-   *  is out (`AssigneeControl`, `RepoControl`, `AskHandOn`). */
+   *  trigger keeps its focus and its Tab stop. No key on the closed trigger opens the list then
+   *  (`openFromKey`), and a press still does, unless the host refuses the open in
+   *  `onOpenChange`: the Agents page's Issue list, and each host whose write is out
+   *  (`AssigneeControl`, `RepoControl`, `AskHandOn`). */
   readonly ariaDisabled?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
@@ -169,6 +167,12 @@ interface SharedProps {
   /** Every keystroke in the search input, so a host can drop a message it showed for the
    *  previous query (a rejected create). */
   readonly onQueryChange?: (query: string) => void;
+  /** The focus arriving on the trigger from outside the list, with the element it came from
+   *  (the focus event's `relatedTarget`, null where it came from nowhere): a host that keeps
+   *  where the reader came from, for a way back there, records it here. The list handing the
+   *  focus back to its trigger is no arrival and calls nothing: a pick, Escape, Tab, or a press
+   *  of the trigger while the list is open. So the record outlives the reader's use of the list. */
+  readonly onTriggerFocus?: (from: Element | null) => void;
   readonly open: boolean;
   /** The values the host stores (URL keys, label strings) in list order. */
   readonly options: readonly string[];
@@ -184,8 +188,15 @@ interface SharedProps {
    *  a bare count. Defaults to that text. */
   readonly optionDetailLabel?: (value: string) => string;
   readonly searchLabel: string;
-  /** How much room the default trigger takes outside `NoTooltips`; a `triggerClassName` decides
-   *  for itself. */
+  /** The keys that also press the trigger where its host binds them and draws them (the Inbox's
+   *  `b` and `p`, in the reading pane's head): named in the trigger's `aria-keyshortcuts`, and the
+   *  first drawn inside it after what it draws (`ControlKeyHint`), outside the words that name it. */
+  readonly shortcutKeys?: readonly string[];
+  /** How much room the trigger takes (`controlPadding`): the page's size, which the page passes.
+   *  The default trigger outside `NoTooltips` takes the comfortable size where none is passed. A
+   *  `triggerClassName` draws a host's own look, and the size passed with it is added to it, so a
+   *  host's trigger is sized as the page's other controls are; one passed without a size keeps
+   *  the room it writes itself. */
   readonly size?: ControlSize;
   /** A multi-select trigger's accessible name in place of its text; a single pick's trigger's
    *  name starts with it in place of `label`, before what the trigger shows. */
@@ -216,18 +227,15 @@ interface MultipleProps extends SharedProps {
 interface SingleProps extends SharedProps {
   /** The closed trigger takes the list's keys, as a focused `<select>` does: ArrowDown, ArrowUp,
    *  Home, End, Page Down and Page Up open the list on the value picked and move the highlight by
-   *  that key, and a letter or a digit opens it with that key in the text box (`TYPED_KEY`). Each
-   *  is the trigger's own (`preventDefault`), so the page's keymap, which skips a handled key,
-   *  never reads it; any other key, `?` among them, opens nothing and reaches the keymap, which
-   *  reads a list's trigger as editable and fires no single key of the page on it. A host whose
-   *  value is written the moment it is picked passes it (the assignee, the repository, an ask's
-   *  hand-on), so a key moves only the highlight and only Enter or a click writes. Those three
-   *  are this list rather than native selects (INFRA-2160's R6, and its departure D2): a select
-   *  cannot write nothing on Escape, since Chromium keeps the highlighted option when Escape
-   *  closes its open list, which the keyboard-step rule of the live header's selects
-   *  (`useKeySteps` in `agent-view/SessionSettings.tsx`) cannot change. Without `keysOnTrigger`
-   *  the closed trigger takes Enter, Space and a click, and every other key stays the page's:
-   *  `]` on the Version picker is the page's next tab. */
+   *  that key. Without it the arrows open the list as a click does and the other four open
+   *  nothing; a typed character opens any list with that character in the text box. Each is the
+   *  trigger's own (`preventDefault`), so the page's keymap, which skips a handled key, never
+   *  reads it. A host whose value is written the moment it is picked passes it (the assignee, the
+   *  repository, an ask's hand-on), so a key moves only the highlight and only Enter or a click
+   *  writes. Those three are this list rather than native selects (INFRA-2160's R6, and its
+   *  departure D2): a select cannot write nothing on Escape, since Chromium keeps the highlighted
+   *  option when Escape closes its open list, which the keyboard-step rule of the live header's
+   *  selects (`useKeySteps` in `agent-view/SessionSettings.tsx`) cannot change. */
   readonly keysOnTrigger?: boolean;
   readonly mode: "single";
   /** Enables the `createLabel` row for a search that matches no option, which hands the typed
@@ -264,8 +272,14 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  * and the value staged in it, as a `<select>` reads. While the list is open the trigger
  * names the panel holding it (`aria-controls`), the text box and the listbox both. The trigger
  * ends in a chevron, as a `<select>` ends in its arrow, unless its host draws a look of its own
- * (`chevron`). A single pick that passes `keysOnTrigger` also opens from its closed trigger by the
- * keys a `<select>` takes there, so those keys, too, only move the highlight.
+ * (`chevron`).
+ *
+ * The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
+ * Enter and Space, which press it, ArrowDown and ArrowUp, with Alt or without, and a typed
+ * character, which goes into the text box and narrows the list by it. A single pick that passes
+ * `keysOnTrigger` also takes the keys a `<select>` takes there - ArrowDown, ArrowUp, Home, End,
+ * Page Down and Page Up open it with the highlight moved by that key - so those keys, too, only
+ * move the highlight.
  */
 export function MultiSelect(props: MultiSelectProps): ReactNode {
   const {
@@ -282,13 +296,15 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     marks,
     onOpenChange,
     onQueryChange,
+    onTriggerFocus,
     open,
     options,
     optionDetail,
     optionDetailLabel,
     optionLabel = (value: string) => value,
     searchLabel,
-    size = "comfortable",
+    shortcutKeys,
+    size,
     triggerAriaLabel,
     triggerClassName,
     triggerTextClassName = "",
@@ -302,10 +318,13 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const panelId = `${id}-panel`;
   const tooltips = useTooltips();
   const trigger =
-    triggerClassName ??
-    (tooltips
-      ? `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
-      : ON_PAGE.trigger);
+    triggerClassName === undefined
+      ? tooltips
+        ? `rounded-lg border text-sm font-semibold ${controlPadding[size ?? "comfortable"]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`
+        : ON_PAGE.trigger
+      : size === undefined
+        ? triggerClassName
+        : `${controlPadding[size]} ${triggerClassName}`;
   const listboxId = `${id}-options`;
   const nameId = `${id}-name`;
   const shownId = `${id}-shown`;
@@ -400,21 +419,22 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   };
 
   // Opening starts a fresh search on the value a single pick holds - or on what the key that
-  // opened it says; the panel hands the focus to the search unless the host hands it in itself
-  // (`focusOnOpen`). Closing returns the focus to the trigger when the close left it nowhere - the
-  // list that held it is gone - and leaves a focus that is somewhere. Whether it is nowhere is the
-  // page's one check for a lost focus (`focusLost`, whose doc says where each engine leaves the
-  // focus of an element taken away), so a Tab out of the text box the close took away puts the
-  // reader on the trigger rather than leave the focus to the page's rescue. A press outside moves
-  // the focus after this runs, so the focus ends where that press put it.
+  // opened it says: the character typed on the closed trigger in the text box, or the row a move
+  // key steps to (`keysOnTrigger`); the panel hands the focus to the search unless the host hands
+  // it in itself (`focusOnOpen`). Closing returns the focus to the trigger when the close left it
+  // nowhere - the list that held it is gone - and leaves a focus that is somewhere. Whether it is
+  // nowhere is the page's one check for a lost focus (`focusLost`, whose doc says where each
+  // engine leaves the focus of an element taken away), so a Tab out of the text box the close
+  // took away puts the reader on the trigger rather than leave the focus to the page's rescue. A
+  // press outside moves the focus after this runs, so the focus ends where that press put it.
   useEffect(() => {
     if (open) {
       const by = openedBy.current;
       openedBy.current = undefined;
       setQuery(by?.query ?? "");
-      if (by === undefined) setActiveValue(opensOn.current);
-      else if (by.key === undefined) setActiveValue(undefined);
-      else setActiveValue(stepTo(by.key, opensWith.current, opensOn.current));
+      setActiveValue(
+        by?.key === undefined ? opensOn.current : stepTo(by.key, opensWith.current, opensOn.current)
+      );
     } else if (wasOpen.current && focusLost()) {
       triggerRef.current?.focus();
     }
@@ -441,45 +461,59 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     if (underClear > 0) panel.scrollTop += underClear;
   }, [activeId, panelId]);
 
-  // A key on the closed trigger of a single pick that takes the list's keys: a move key opens the
-  // list on the row it moves to from the value picked, and a letter or a digit opens it with that
-  // key as the search, whose first match is then the active row - the type-ahead a `<select>` does
-  // (R6: "a typed letter"). A key held with Ctrl, Alt or Meta is a chord, and Space presses the
-  // trigger, so both stay the browser's and the page's.
+  // The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
+  // ArrowDown and ArrowUp, with Alt or without, open it as a click does, on the value picked, and
+  // a typed character opens it with that character in the text box, and the caret after it, so
+  // the options are already narrowed by it. A single pick that takes the list's keys
+  // (`keysOnTrigger`) takes the keys a `<select>` takes there: ArrowDown, ArrowUp, Home, End, Page
+  // Down and Page Up, with no Alt, open it on the row the key moves to from the value picked (R6:
+  // "an arrow key, Home, End, Page Up, Page Down or a typed letter only changes the choice that
+  // the control shows"). The key's own action is cancelled, so the page's keymap, which skips a
+  // handled key, never reads it, and the character is not typed a second time into the text box
+  // the focus moves to. Space is left to the button, which opens the list with an empty search. A
+  // disabled or busy trigger opens on none of these keys; a key held with Ctrl or Meta is the
+  // browser's, and a key that ends or moves an IME composition is the input method's.
   const openFromKey = (event: KeyboardEvent<HTMLButtonElement>) => {
-    if (!keysOnTrigger || open || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (open || disabled || ariaDisabled || event.ctrlKey || event.metaKey) return;
     if (event.nativeEvent.isComposing) return;
-    const typed = TYPED_KEY.test(event.key);
-    if (!typed && MOVE_KEYS[event.key] !== true) return;
+    const typed = !event.altKey && event.key.length === 1 && event.key !== " ";
+    const steps = keysOnTrigger && !event.altKey && MOVE_KEYS[event.key] === true;
+    if (!typed && !steps && event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
     event.preventDefault();
-    openedBy.current = typed ? { query: event.key } : { key: event.key, query: "" };
+    openedBy.current = typed
+      ? { query: event.key }
+      : steps
+        ? { key: event.key, query: "" }
+        : undefined;
     if (typed) onQueryChange?.(event.key);
     onOpenChange(true);
   };
 
   // Every row, the Create row and Clear are buttons, so the focus can reach one, as a screen
   // reader's cursor puts it there, and a press of each can take that focus to the body, where
-  // Escape no longer reaches the popover. Clear and the Create row always leave with their own
-  // press, Clear as the pick empties and the Create row as its value is made and the search
-  // empties, so a press of one that holds the focus gives it to the search box at the press
-  // itself, and the move does not depend on when the host applies the pick. A row's press need not
-  // take the row away. It can move the row, since a host can order the rows by the pick
-  // (`IssueLabels`, `ComponentPicker`), but a row the press only moves keeps its focus: as React
-  // ends a commit that took the focus away, it focuses again the element that held it before,
-  // where that element is still on the page (react-dom's `flushMutationEffects`). A row the press
-  // takes off the page loses the focus, as in Details a label only the open draft holds does as
-  // the reader unpicks it: `IssueLabels` lists the draft's labels with the issue's and the
-  // project's, so that label is listed only while the draft holds it. So a press of a row that
-  // holds the focus only notes it, and the commit that answers the press gives the search box the
-  // focus only where that commit left the focus lost (`focusLost`, the close's check above): on
-  // the body, or an element no longer on the page. It is the page's one check for a lost focus,
-  // the one the close and the rescue ask too, and its doc says where each engine leaves the focus
-  // of an element taken away. Left to fall, the focus is the page's rescue's to hand to the
-  // control now at the lost row's place (`handOn`), the next row where one follows. A pointer
-  // press focuses none of them (`onMouseDown` below), and leaves the focus where it is. A row or a
-  // Create row the options take away holds no press, and its focus stays on the page's body, as
-  // for every change the reader did not make. A popover that closes takes the search box along,
-  // and the close above gives the focus back to the trigger instead.
+  // Escape no longer reaches the popover. A press of Clear or of the Create row that holds the
+  // focus gives it to the search box at the press itself, before the press acts, so the move does
+  // not depend on when the host applies the press. Clear goes as the pick empties. A multi-select's
+  // Create row goes as its value is made and the search empties. A single pick's Create row goes
+  // with the list where the host takes the value, and the focus goes on to the trigger. Where the
+  // host refuses the value, the Create row stays, and the focus stays in the search box, where the
+  // reader corrects the text. A row's press need not take the row away. It can move the row, since
+  // a host can order the rows by the pick (`IssueLabels`, `ComponentPicker`), but a row the press
+  // only moves keeps its focus: as React ends a commit that took the focus away, it focuses again
+  // the element that held it before, where that element is still on the page (react-dom's
+  // `flushMutationEffects`). A row the press takes off the page loses the focus, as in Details a
+  // label only the open draft holds does as the reader unpicks it: `IssueLabels` lists the draft's
+  // labels with the issue's and the project's, so that label is listed only while the draft holds
+  // it. So a press of a row that holds the focus only notes it, and the commit that answers the
+  // press gives the search box the focus only where that commit left the focus lost (`focusLost`,
+  // the close's check above): on the body, or an element no longer on the page. It is the page's
+  // one check for a lost focus, the one the close and the rescue ask too, and its doc says where
+  // each engine leaves the focus of an element taken away. Left to fall, the focus is the page's
+  // rescue's to hand to the control now at the lost row's place (`handOn`), the next row where one
+  // follows. A pointer press focuses none of them (`onMouseDown` below), and leaves the focus where
+  // it is. A row or a Create row the options take away holds no press, and its focus stays on the
+  // page's body, as for every change the reader did not make. A popover that closes takes the
+  // search box along, and the close above gives the focus back to the trigger instead.
   const focusSearchFirst = (event: { readonly currentTarget: EventTarget }) => {
     if (event.currentTarget === document.activeElement) inputRef.current?.focus();
   };
@@ -583,6 +617,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         aria-disabled={ariaDisabled || undefined}
         aria-expanded={open}
         aria-haspopup="listbox"
+        aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
         aria-label={single ? undefined : triggerAriaLabel}
         aria-labelledby={namedBy}
         className={trigger}
@@ -593,6 +628,11 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           openedBy.current = undefined;
           if (open) onOpenChange(false, "trigger");
           else onOpenChange(true);
+        }}
+        onFocus={(event) => {
+          // The focus comes back from the list while the list is open and until its close has
+          // run the effect above, which is while `wasOpen` holds.
+          if (!wasOpen.current) onTriggerFocus?.(event.relatedTarget);
         }}
         onKeyDown={openFromKey}
         ref={triggerRef}
@@ -627,6 +667,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
         ) : (
           triggerText
         )}
+        <ControlKeyHint keys={shortcutKeys} />
       </button>
       {open ? (
         <AnchoredPanel

@@ -460,7 +460,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
         <TableShell
           className="max-h-48"
           label="Per day (UTC), newest first"
-          size="compact"
+          size="tight"
           stickyHead
         >
           <TableHead>

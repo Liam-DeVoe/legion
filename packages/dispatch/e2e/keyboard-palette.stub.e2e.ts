@@ -18,9 +18,9 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { listOf, listTrigger } from "./filters";
 import { selectedRow } from "./inbox-pane";
 import { openIssue, searchPath } from "./keyboard-palette";
-import { bulkSnoozeMenu } from "./menus";
 import { stubbed } from "./stub/stub-test";
 
 /** One issue per row, so each keeps the title it was written with, and the second project the
@@ -395,13 +395,13 @@ inboxTest(
       1
     );
 
-    // It runs on the page the palette opened over: the bulk Snooze menu opens on its first
-    // choice, the mark kept.
+    // It runs on the page the palette opened over: the bar's Snooze list opens with the focus in
+    // its text box, the mark kept.
     await snooze.click();
     await expect(dialog).toHaveCount(0);
-    await expect(
-      bulkSnoozeMenu(page).getByRole("menuitem", { exact: true, name: "Later today" })
-    ).toBeFocused();
+    const bulkSnooze = listTrigger(bar, "Snooze selected asks");
+    await expect(bulkSnooze).toHaveAttribute("aria-expanded", "true");
+    await expect(listOf(bulkSnooze).getByRole("combobox")).toBeFocused();
     await expect(bar).toContainText("1 selected");
   }
 );

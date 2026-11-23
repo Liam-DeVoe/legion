@@ -40,8 +40,9 @@ import { Navigate, useLocation, useNavigate, useSearchParams } from "react-route
  *   per letter. Every write below passes `{ replace: true }`. The one way to push an entry is
  *   `useAddressNavigate`'s explicit `{ replace: false }`, for a move that has always pushed:
  *   picking an artifact's version, so Back returns to the version the reader came from, the
- *   move off a document the reader has just removed, and taking off the List's chip of the
- *   issues a link names (`only=`), so Back gives that narrowing back.
+ *   move off a document the reader has just removed, taking off the List's chip of the issues a
+ *   link names (`only=`), so Back gives that narrowing back, and taking off the Inbox's agent
+ *   chip, so Back gives the agent's asks back.
  * - **A parameter is absent until the reader sets it.** A control at its default writes nothing,
  *   so a shared link carries only what was changed and an address that arrives naming nothing is
  *   the page as it opens.

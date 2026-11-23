@@ -5,7 +5,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useCallback, useLayoutEffect, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { pickFromMenu } from "../../__tests__/menu-picks";
+import { pickIn } from "../../__tests__/issue-picks";
 import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 import { ShortcutHelpOpener } from "../issue-page/shortcut-help-opener";
@@ -199,9 +199,9 @@ test("Snooze inside the drawer folds the row into Later and gives the next row t
 
     const row = within(dialog).getByTestId("ask-ask-a").closest<HTMLElement>("[data-inbox-row]");
     if (row === null) throw new Error("ask-a row missing");
-    await pickFromMenu(
+    await pickIn(
       user,
-      within(row).getByLabelText("Snooze CORE-1: Which approach?"),
+      () => within(row).getByLabelText("Snooze CORE-1: Which approach?"),
       "Tomorrow"
     );
 

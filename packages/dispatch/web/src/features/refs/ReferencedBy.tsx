@@ -332,6 +332,8 @@ export function ReferencedBy({
       {failed ? (
         <p className={`flex flex-wrap items-center gap-2 text-sm ${textMutedOnSurface}`}>
           <span>Referenced by unavailable.</span>
+          {/* Held while a read of the list is out (`heldPress`), never disabled: it keeps the
+              focus and its Tab stop, and a press of it sends nothing then. */}
           <button
             className={`font-medium underline refused:cursor-not-allowed refused:opacity-50 ${linkText} ${linkHoverText}`}
             {...retryPress}

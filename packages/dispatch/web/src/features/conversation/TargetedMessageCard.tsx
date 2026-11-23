@@ -178,9 +178,12 @@ export function DeliveryStatus({
   );
 }
 
-/** The retry row an unanswered targeted message keeps while its issue is open. A disabled
- *  button's reason renders as visible text beneath it - not a `title` - so it reaches a phone,
- *  where a tooltip on a disabled control is unreachable.
+/** The retry row an unanswered targeted message keeps while its issue is open. A button is
+ *  disabled only while the session does not take its mode. That reason renders as visible text
+ *  beneath the button - not a `title` - so it reaches a phone, where a tooltip on a disabled
+ *  control is unreachable. While a retry's write is out (`retrying`), every button of the row is
+ *  held (`heldPress`), not disabled. The pressed one keeps the focus and its Tab stop, and a
+ *  press of any of them sends nothing.
  *
  *  Retry re-sends in the attempt's OWN mode, and appears only while `isSafeRetry` holds for
  *  `latest`, the attempt the failure guidance above it describes: that send carries the same

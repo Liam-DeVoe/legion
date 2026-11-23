@@ -252,28 +252,6 @@ function bandOrder(by: InboxGroupBy): (left: string, right: string) => number {
 }
 
 /**
- * `groups` with the band `key` among them, empty and in the place `group` would draw it where no
- * row is left in it: the band the list keeps the reader's held row in (`Inbox.tsx`'s
- * `heldRow`) after the change that moved that row to another band took the band's last row away -
- * a priority picked on the only P2 ask, say. Without it the held row would be drawn in no band
- * for that commit, so its row would leave the page, with the reader's focus and the column's
- * selection, and come back as a new row in its new band.
- */
-export function withBand(
-  groups: readonly InboxGroup[],
-  key: string,
-  by: InboxGroupBy,
-  titles: Record<InboxSection, string>
-): readonly InboxGroup[] {
-  if (groups.some((band) => band.key === key)) return groups;
-  if (key === LATER_GROUP_KEY) return [...groups, { key, label: titles.later, rows: [] }];
-  const made: InboxGroup = { key, label: bandLabel(by, key, titles), rows: [] };
-  const order = bandOrder(by);
-  const at = groups.findIndex((band) => band.key === LATER_GROUP_KEY || order(key, band.key) < 0);
-  return at === -1 ? [...groups, made] : [...groups.slice(0, at), made, ...groups.slice(at)];
-}
-
-/**
  * How many rows each value of `field` would leave, counted under every OTHER field's chosen
  * values: a reader opening Priority sees what each priority holds inside the list they have
  * already narrowed, so ticking one of them never answers zero.

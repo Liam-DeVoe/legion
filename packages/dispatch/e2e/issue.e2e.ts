@@ -14,7 +14,9 @@ import {
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
+import { focusHolder } from "./focus";
 import { nextFrames } from "./frames";
+import { watchWrites } from "./keyed-writes";
 import { pickFromMenu, statusTrigger } from "./menus";
 import { clearIssueCreator, resetDatabase } from "./seed";
 import { expect, type Locator, test } from "./test";
@@ -263,7 +265,7 @@ test("issue header copies its key and persists its title, status, and route", as
         hint.setAttribute("style", style);
       }
     }, hintStyle);
-    await heading.click();
+    await page.getByTestId("issue-header").getByRole("button", { name: "Edit title" }).click();
     const issueTitle = page.getByLabel("Issue title");
     await issueTitle.fill("First decision revised");
     await issueTitle.press("Enter");
@@ -960,7 +962,7 @@ test("issue header delivers the click that ends a title edit to the control unde
   // `disabled` while their previous write is in flight, and a browser drops a click on a
   // disabled button.
   const pressWhileEditingTitle = async (control: Locator) => {
-    await page.getByTestId("issue-header").getByRole("heading", { level: 1 }).click();
+    await page.getByTestId("issue-header").getByRole("button", { name: "Edit title" }).click();
     await expect(page.getByLabel("Issue title")).toBeFocused();
     await expect(control).toBeEnabled();
     await expect(control).toBeVisible();
@@ -1003,6 +1005,93 @@ test("issue header delivers the click that ends a title edit to the control unde
       }
       await patchIssue(issue.key, { status: "triage" });
     }
+  } finally {
+    await context.close();
+  }
+});
+
+// The title's Edit title button opens its editor, and each way the reader ends the edit - Enter,
+// or a click on a plain part of the page outside the editor - saves it, closes it and draws the
+// heading and the button again. No field that takes typed text holds the focus then, so the
+// reader's next key goes to the page's keys: `x` writes no title and opens no editor, and `t`
+// starts the tab chord wherever the focus landed. `IssueHeader.test.tsx` sends these presses in
+// the order a browser sends them; this row has each engine send them.
+// `@firefox` and `@webkit`: the press that ends the edit blurs the title's text box - Enter by the
+// page's own `blur()`, a click on the page's text by the engine - and a commit after it takes the
+// box away and draws Edit title in its place. The page's focus rescue reads that loss as the
+// reader leaving the box only where the box still stands in the microtask it queues from the
+// box's `focusout`, so the row rests on the order in which each engine fires the blur, runs that
+// microtask and lets React commit the save (`playwright.config.ts`).
+test("Enter in the title's editor, and a click outside it, close it and leave the next key to the page @firefox @webkit", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Title before the edits" });
+
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ height: 900, width: 1280 });
+    // Every PATCH of the issue, so a title a stray key wrote is caught even if a later read hid it.
+    const patched = watchWrites(page, "PATCH", `/api/v1/issues/${issue.key}`);
+    await page.goto(`/issues/${issue.key}`);
+    const header = page.getByTestId("issue-header");
+    const heading = (title: string) => header.getByRole("heading", { level: 1, name: title });
+    const editTitle = header.getByRole("button", { name: "Edit title" });
+    const editor = page.getByRole("textbox", { name: "Issue title" });
+    await expect(heading("Title before the edits")).toBeVisible();
+
+    /** Opens the editor with a click on Edit title and types `title` over what it holds. */
+    const typeTitle = async (title: string) => {
+      await editTitle.click();
+      await expect(editor).toBeFocused();
+      await editor.fill("");
+      await page.keyboard.type(title);
+      await expect(editor).toHaveValue(title);
+    };
+    /** The edit ended on `title`: saved, the editor gone, the heading and Edit title drawn again,
+     *  no field that takes typed text holding the focus, and an `x` typed then neither opens an
+     *  editor nor writes a title. */
+    const expectClosedOn = async (title: string) => {
+      await expect.poll(async () => (await getIssue(issue.key)).title).toBe(title);
+      await expect(editor).toHaveCount(0);
+      await expect(heading(title)).toBeVisible();
+      await expect(editTitle).toBeVisible();
+      // The page's rescue runs a frame and a task after the loss, so it is done by now.
+      await nextFrames(page);
+      await nextFrames(page);
+      // One read is the answer: every hand-off of the loss has run, and nothing else moves the
+      // focus. The rescue may land it on Edit title, drawn where the editor stood.
+      const holder = await focusHolder(page);
+      expect(holder.takesText, `the focus is in ${holder.name}, which takes text`).toBe(false);
+      await page.keyboard.press("x");
+      await expect(editor).toHaveCount(0);
+      await expect(heading(title)).toBeVisible();
+    };
+
+    // 1. Enter saves the title and closes the editor; `t` then starts the tab chord wherever the
+    // focus landed, as it does from the page, and its second key picks the tab.
+    await typeTitle("Saved by Enter");
+    await page.keyboard.press("Enter");
+    await expectClosedOn("Saved by Enter");
+    await page.keyboard.press("t");
+    await expect(page.getByTestId("chord-indicator")).toHaveText(/t/);
+    await page.keyboard.press("c");
+    await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+
+    // 2. A click on the issue's key, plain text beside the title and no control, saves the title
+    // and closes the editor.
+    await typeTitle("Saved by a click outside");
+    await header.getByText(issue.key, { exact: true }).click();
+    await expectClosedOn("Saved by a click outside");
+
+    expect(patched.map(({ input }) => input)).toEqual([
+      { title: "Saved by Enter" },
+      { title: "Saved by a click outside" },
+    ]);
   } finally {
     await context.close();
   }

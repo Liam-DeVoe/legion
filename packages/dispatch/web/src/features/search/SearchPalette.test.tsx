@@ -19,6 +19,7 @@ import { ApiError, api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { IssueReferenceSummary, Project, SearchResponse, SearchResult } from "../../api/types";
 import { CONTROL } from "../../components/control-names";
+import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -749,6 +750,54 @@ test("arrow keys, Enter and Backspace inside an IME composition move no highligh
     getIssue.mockRestore();
     view.unmount();
     view.queryClient.clear();
+  }
+});
+
+// A Tab that is part of an input method's composition is the composition's too: it narrows no
+// chip, and its default stays the browser's. The bar is opened with the writing cursor in a block
+// of a document behind it, which is where a plain Tab narrows the chip to that block. It is opened
+// over an issue page, so the chip names the issue before any key is pressed.
+test("Tab inside an IME composition moves no chip, where a plain Tab would", async () => {
+  const user = userOnFakeClock();
+  // The bar reads the writing cursor on the render that opens it (`scopeAtCursor`), so the cursor
+  // is put in a block of a writing surface before the bar is drawn.
+  const editable = document.createElement("div");
+  editable.setAttribute("contenteditable", "true");
+  const block = document.createElement("p");
+  block.setAttribute(BLOCK_ID_ATTRIBUTE, "b-1");
+  block.textContent = "The sextant sights the horizon.";
+  editable.append(block);
+  document.body.append(editable);
+  editable.focus();
+  const caret = document.createRange();
+  caret.setStart(block.firstChild ?? block, 0);
+  caret.collapse(true);
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(caret);
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  const chip = () => screen.getByTestId("search-scope").textContent;
+
+  try {
+    // A composition goes on in the box the reader types into, so the box holds the focus first:
+    // the bar takes the focus on itself as it opens and hands it to the box a frame later, and
+    // until then a Tab is the dialog's own, to its first control (`useDialog`).
+    await user.click(box);
+    // `fireEvent` answers false for a key whose default was cancelled, which the bar does to
+    // each key it spends. user-event has no form for this: it cannot mark a key as an IME
+    // composition.
+    expect(chip()).toContain("Acting on LEGION-2");
+    expect(fireEvent.keyDown(box, { isComposing: true, key: "Tab" })).toBe(true);
+    expect(chip()).toContain("Acting on LEGION-2");
+
+    // The plain Tab is the bar's: it narrows the chip to the block the composing one left alone.
+    await user.keyboard("{Tab}");
+    expect(chip()).toContain("Acting on the block “The sextant sights the horizon.”");
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+    editable.remove();
+    window.getSelection()?.removeAllRanges();
   }
 });
 
@@ -1577,6 +1626,34 @@ test("a chip narrows the search, reads back in the person's words, and comes off
   }
 });
 
+test("a date typed in Updated since narrows the search only once its year is whole", async () => {
+  const user = userOnFakeClock();
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    await openFilters(user);
+    const box = screen.getByLabelText("Updated since");
+    // An engine reports a valid date from the year's first typed digit, as Chromium does with
+    // `0002-11-22`. user-event cannot type into a date box's parts, so the value the engine
+    // reports is set as it would report it.
+    fireEvent.change(box, { target: { value: "0002-11-22" } });
+    expect(screen.getByLabelText("Updated since")).toBe(box);
+    expect(screen.queryByRole("button", { name: /^Remove Updated since/ })).toBeNull();
+    // The same box once the year's last digit is typed.
+    fireEvent.change(box, { target: { value: "2026-11-22" } });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Remove Updated since/ })).not.toBeNull()
+    );
+    expect(screen.queryByLabelText("Updated since")).toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("a project picked in the panel narrows the search and reads back as its chip", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
@@ -1629,8 +1706,8 @@ function picks(name: RegExp): HTMLElement[] {
   ];
 }
 
-// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
-// options." The bar's Project and Status lists are such lists. Each one, opened from the panel,
+// Every list of options a reader picks from holds a text box that narrows the options, and the
+// bar's Project and Status lists are such lists. Each one, opened from the panel,
 // holds a text box of its own, and a word typed into it leaves only the options that match.
 test("the bar's Project and Status lists each hold a text box that narrows their options", async () => {
   const user = userOnFakeClock();
@@ -1674,9 +1751,8 @@ test("the bar's Project and Status lists each hold a text box that narrows their
   }
 });
 
-// INFRA-3135, round 12: the Project list was drawn from whatever the bar's read of the projects
-// held, and said "No projects yet" while that read was still out and after it had failed. It says
-// which, as the Agents composer's Issue list does.
+// The Project list says whether the bar's read of the projects is still out or failed, rather
+// than "No projects yet", as the Agents composer's Issue list does.
 test("the bar's Project list says its projects are loading, then that they could not be loaded, and never that there are none", async () => {
   const user = userOnFakeClock();
   const read = Promise.withResolvers<Project[]>();
@@ -1705,9 +1781,9 @@ test("the bar's Project list says its projects are loading, then that they could
   }
 });
 
-// INFRA-3135, review round 1 (thread PRRT_kwDORFy7ds63p6zJ): Shift+Tab out of the Project list
-// left both panels open with the focus on Updated since, and every Escape after it was refused
-// while the list stood open, so the bar could not be closed from the keyboard.
+// Shift+Tab out of the Project list closes that list and gives the focus back to its Project
+// trigger in the Filter panel. From there Escape closes the panel, with the focus on the bar's
+// Filter trigger, and the next Escape closes the bar, so the bar can be closed from the keyboard.
 test("after Shift+Tab out of the Project list, Escape closes the panel, and the next Escape the bar", async () => {
   const user = userOnFakeClock();
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([

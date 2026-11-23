@@ -37,7 +37,12 @@ import { Timestamp } from "../refs/Timestamp";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
 import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
 import { CLOSED_ISSUE_DOCUMENT_REFUSAL, CreateDocument } from "./CreateDocument";
-import { CLOSED_ISSUE_REMOVE_REFUSAL, RemoveDocument, removalIsOffered } from "./DocumentWayBack";
+import {
+  ARTIFACTS_NOT_LOADED,
+  CLOSED_ISSUE_REMOVE_REFUSAL,
+  RemoveDocument,
+  removalIsOffered,
+} from "./DocumentWayBack";
 
 function kindIcon(kind: Artifact["kind"]): ReactNode {
   const common = {
@@ -443,7 +448,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
     return <p className={`pt-3 text-sm ${textMutedOnSurface}`}>Loading artifacts…</p>;
   }
   if (artifacts.isError) {
-    return <p className={`pt-3 text-sm ${dangerText}`}>Could not load artifacts.</p>;
+    return <p className={`pt-3 text-sm ${dangerText}`}>{ARTIFACTS_NOT_LOADED}</p>;
   }
 
   return (

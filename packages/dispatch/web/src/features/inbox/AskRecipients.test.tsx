@@ -1,11 +1,16 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
-import type { Agent, AskFollower } from "../../api/types";
+import { onFakeClock, tick } from "../../__tests__/fake-clock";
+import { afterRescue } from "../../__tests__/focus-rescue";
+import { heldNotDisabled } from "../../__tests__/held-press";
+import { AGENT_LIST_REFILLING, ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
+import type { Agent, AskFollower, Subscriber } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { AskRecipients, reachLabel, reachRows } from "./AskRecipients";
 import { followers, renderRecipients, subscriber } from "./ask-recipients-fixture";
 
@@ -222,6 +227,178 @@ test("AskRecipients adds the issue's subscribers once each, removes one through 
     await waitFor(() => expect(invalidated).toContainEqual(["subscribers", "CORE-1"]));
   } finally {
     page.unmount();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// An Unfollow is confirmed in a dialog, which closes in the confirming press and hands the focus
+// back to the Unfollow that opened it. Every Unfollow is held while the write is out, never
+// disabled: the browser takes the focus off a control that turns disabled, so the dialog's
+// hand-back would find nothing to take the focus and leave the keyboard reader on the page's
+// body. Held, the Unfollow takes the focus back and keeps it, and a press of it opens nothing.
+test("an Unfollow confirmed keeps the focus while its write is out, and a press of it then opens nothing", async () => {
+  const out = Promise.withResolvers<void>();
+  const removed: string[] = [];
+  const page = await renderRecipients({
+    removeFollower: (_askId, sessionId) => {
+      removed.push(sessionId);
+      return out.promise;
+    },
+  });
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const section = screen.getByRole("region", { name: "Recipients" });
+    const unfollow = within(section).getAllByRole("button", {
+      name: "Unfollow",
+    })[1] as HTMLButtonElement;
+    // Where the focus is, named, as a failed check prints it.
+    const where = () =>
+      document.activeElement === unfollow
+        ? "the Unfollow pressed"
+        : (document.activeElement?.textContent ?? "nothing");
+    act(() => unfollow.focus());
+    await page.user.keyboard("{Enter}");
+    const dialog = screen.getByRole("dialog", { name: "Unfollow" });
+    act(() => within(dialog).getByRole("button", { name: "Confirm" }).focus());
+    await page.user.keyboard("{Enter}");
+    await waitFor(() => expect(removed).toEqual(["fedcba9876543210"]));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // A frame and two tasks, by when the browser would have moved the focus of a control that
+    // turned disabled.
+    await afterRescue();
+    expect(where()).toBe("the Unfollow pressed");
+    expect(heldNotDisabled(unfollow, "Unfollow")).toBe(true);
+
+    await page.user.keyboard("{Enter}");
+    await page.user.click(unfollow);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(removed).toHaveLength(1);
+    expect(where()).toBe("the Unfollow pressed");
+  } finally {
+    stopFocusFixup();
+    out.resolve();
+    page.unmount();
+  }
+});
+
+// An Unsubscribe is held from its confirming press until the commit after its write's answer,
+// which takes in the read of the subscribers its landing starts. So the dialog hands the focus
+// back to it while the write is out, and the chip that read takes away is the press's doing: the
+// page's rescue walks the focus back to the Unfollow before the chip's place, never the body. The
+// read is held past the press's own frame and task, as a read over the network takes longer than
+// those, so only the hold keeps the press the cause of the chip's going.
+test("an Unsubscribe confirmed keeps the focus through its write, and the read after it hands the focus to the Unfollow before its chip", async () => {
+  const out = Promise.withResolvers<void>();
+  const unsubscribed: string[] = [];
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(
+    (_key, sessionId) => {
+      unsubscribed.push(sessionId);
+      return out.promise;
+    }
+  );
+  const page = await renderRecipients({
+    rescued: true,
+    subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
+  });
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const section = screen.getByRole("region", { name: "Recipients" });
+    const viaIssue = await within(section).findByRole("list", { name: "Via issue subscription" });
+    const unsubscribe = within(viaIssue).getByRole("button", {
+      name: "Unsubscribe",
+    }) as HTMLButtonElement;
+    const lastUnfollow = within(section).getAllByRole("button", { name: "Unfollow" }).at(-1);
+    // Where the focus is, named, as a failed check prints it.
+    const where = () => {
+      const active = document.activeElement;
+      if (active === unsubscribe) return "the Unsubscribe pressed";
+      if (active === lastUnfollow) return "the last follower's Unfollow";
+      return active?.textContent || (active?.tagName ?? "nothing");
+    };
+    act(() => unsubscribe.focus());
+    await page.user.keyboard("{Enter}");
+    const dialog = screen.getByRole("dialog", { name: "Unsubscribe" });
+    act(() => within(dialog).getByRole("button", { name: "Confirm" }).focus());
+    await page.user.keyboard("{Enter}");
+    await waitFor(() => expect(unsubscribed).toEqual(["b0b0b0b0b0b0b0b0"]));
+    await afterRescue();
+    expect(where()).toBe("the Unsubscribe pressed");
+    expect(heldNotDisabled(unsubscribe, "Unsubscribe")).toBe(true);
+    await page.user.keyboard("{Enter}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(unsubscribed).toHaveLength(1);
+
+    // The read of the subscribers the landing starts, held until the case answers it.
+    const reread = Promise.withResolvers<Subscriber[]>();
+    page.getIssueSubscribers.mockImplementationOnce(() => reread.promise);
+    await act(async () => out.resolve());
+    await afterRescue();
+    expect(where()).toBe("the Unsubscribe pressed");
+    await act(async () => reread.resolve([]));
+    await waitFor(() =>
+      expect(
+        within(section).queryByRole("list", { name: "Via issue subscription" })
+      ).not.toBeInTheDocument()
+    );
+    await afterRescue();
+    expect(where()).toBe("the last follower's Unfollow");
+  } finally {
+    stopFocusFixup();
+    out.resolve();
+    page.unmount();
+    unsubscribeIssueSession.mockRestore();
+  }
+});
+
+// Offline, the read of the subscribers an Unsubscribe's landing starts waits for the network:
+// the app's query client fetches the idle query itself, and TanStack pauses that fetch until the
+// browser is back online. The hold through that read has a bound of its own, the request deadline
+// (`REQUEST_DEADLINE_MS`), so the Unsubscribe is let go there rather than held until the network
+// returns, and the card says why its recipients are not read.
+test("offline, an Unsubscribe's hold through the read after its write ends at the request deadline, and the card says why", async () => {
+  const out = Promise.withResolvers<void>();
+  const unsubscribeIssueSession = spyOn(api, "unsubscribeIssueSession").mockImplementation(
+    () => out.promise
+  );
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const page = await renderRecipients({
+    client,
+    subscribers: [subscriber("b0b0b0b0b0b0b0b0", "Platform PO")],
+  });
+  const online = onlineManager.isOnline();
+  try {
+    const section = screen.getByRole("region", { name: "Recipients" });
+    const viaIssue = await within(section).findByRole("list", { name: "Via issue subscription" });
+    const unsubscribe = within(viaIssue).getByRole("button", { name: "Unsubscribe" });
+    await page.user.click(unsubscribe);
+    const dialog = screen.getByRole("dialog", { name: "Unsubscribe" });
+    await page.user.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(unsubscribeIssueSession).toHaveBeenCalledTimes(1));
+    // The Unsubscribe as the reader meets it, and what the card says of its recipients' read.
+    const drawn = () => ({
+      said: within(section).queryByText(/^Could not load the recipients\./)?.textContent ?? null,
+      unsubscribe: unsubscribe.getAttribute("aria-disabled") === "true" ? "held" : "free",
+    });
+    await onFakeClock(async () => {
+      onlineManager.setOnline(false);
+      await act(async () => out.resolve());
+      await tick(REQUEST_DEADLINE_MS - 1_000);
+      expect(drawn()).toEqual({ said: null, unsubscribe: "held" });
+
+      await tick(2_000);
+      expect(drawn()).toEqual({
+        said: "Could not load the recipients. Dispatch could not be reached.",
+        unsubscribe: "free",
+      });
+    });
+  } finally {
+    page.unmount();
+    // The paused read goes with the cache, so the network's return starts no request.
+    client.clear();
+    onlineManager.setOnline(online);
+    out.resolve();
     unsubscribeIssueSession.mockRestore();
   }
 });

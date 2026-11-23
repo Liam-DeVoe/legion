@@ -11,9 +11,8 @@ export interface QueryErrorProps {
   message: string;
   /** Omitted for a failure a retry cannot get past; no Retry is offered then. */
   onRetry?: () => void;
-  /** Holds Retry while the retried request is in flight (`heldPress`): `aria-disabled`, never
-   *  `disabled`, since a browser takes the focus off a button that becomes disabled under it, and
-   *  a press then does nothing. */
+  /** Holds Retry while the retried request is in flight (`heldPress`): it keeps the focus and its
+   *  Tab stop, and a press of it sends nothing then. */
   retrying?: boolean;
 }
 

@@ -680,7 +680,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useKeyboardFit(mainRef, fillsViewport);
   // The page's one focus rescue, mounted once here: what it answers and where it sends the focus
   // is `useFocusRescue`'s own description (`components/focus-place.ts`).
-  useFocusRescue(mainRef);
+  useFocusRescue(mainRef, writesOf(queryClient));
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   // The status corner floats over the foot of the screen as the composers it sits above do, so
   // it publishes its own reach the same way: a control floating at that foot - the

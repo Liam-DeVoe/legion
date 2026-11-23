@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Artifact, InboxRow, MyReplyRow } from "../../api/types";
@@ -17,7 +17,7 @@ import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
 import { useActionKeys } from "../shell/keymap-keys";
 import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
-import { AssignToMe } from "./AssignToMe";
+import { AssignToMe, useAskAssign } from "./AssignToMe";
 import { askIssueKey, controlName } from "./ask-name";
 import { DismissControl } from "./DismissControl";
 import { EarlierApprovalDetails, EarlierApprovalToggle } from "./EarlierApproval";
@@ -88,11 +88,6 @@ export interface ReadingPaneHeadProps {
   onNextChange: (() => void) | undefined;
   /** Moves the column to the decision block; undefined when the question is not one. */
   onSkipToAnswer: (() => void) | undefined;
-  /** Registers the question while this head's Snooze write is in flight or failed, exactly as
-   *  a row's own control registers its own: the Inbox keeps a live row listed, so the control
-   *  holding `Snoozing…`, a refusal and its Retry is not unmounted by the fold the optimistic
-   *  snooze causes - the column follows that row, so the fold would take this head with it. */
-  onSnoozeLive: (askId: string, live: boolean) => void;
   /** The document's read failed, and the column draws the question's own card in its place,
    *  whose options answer an approval request: the head's place keeps its width and draws no
    *  Approve or Request changes of its own. */
@@ -122,15 +117,17 @@ export interface ReadingPaneHeadProps {
  * control once the person gives its action a key; a control whose action has none draws none.
  *
  * With the column on, `h`, `o` and `y` look inside the column rather than inside the selected
- * row (`hand()` returns the column in `useInboxKeymap.ts`), and the short row beside it draws no
- * Snooze and no copy-ref control at all. So this head draws the same three controls the card row
- * draws — `[data-inbox-snooze]`, `[data-inbox-owner]` (the title) and the copy-ref control — and
- * the keys find them here. The `<header>` of this head and of the thread's (`ThreadPaneHead`)
- * carries `data-inbox-pane-head`, so a key that looks for a control of the head alone finds it
- * there and never a control of the same kind inside the document the column draws under it: `a`
- * and Shift+R press the approval's Approve and Request changes (`data-approval-action`) there
- * while they take a press, and the command bar presses Open page, Skip to the answer, Next change
- * and the approval's state by their own marks (`inboxActionMark`).
+ * row (`hand()` returns the column in `useInboxKeymap.ts`), and the selected short row beside it
+ * draws no Snooze and no copy-ref control at all. So this head draws the same three controls the
+ * card row draws — `[data-inbox-snooze]`, `[data-inbox-owner]` (the title) and the copy-ref
+ * control — and the keys find them here. Another short row draws its own Snooze only while a
+ * snooze of its ask is out or refused (`AskShortRow`). The `<header>` of this head and of the
+ * thread's (`ThreadPaneHead`) carries `data-inbox-pane-head`, so a key that looks for a control
+ * of the head alone finds it there and never a control of the same kind inside the document the
+ * column draws under it: `a` and Shift+R press the approval's Approve and Request changes
+ * (`data-approval-action`) there while they take a press, and the command bar presses Open page,
+ * Skip to the answer, Next change and the approval's state by their own marks
+ * (`inboxActionMark`).
  */
 export function ReadingPaneHead({
   artifact,
@@ -138,16 +135,15 @@ export function ReadingPaneHead({
   onAnswered,
   onNextChange,
   onSkipToAnswer,
-  onSnoozeLive,
   readFailed,
   sectionBlockId,
   viewer,
 }: ReadingPaneHeadProps): ReactNode {
-  // The Inbox row keeps "Assign to me" mounted while its write is in flight or failed, so
-  // `Assigning…` and a refusal are shown by the instance that wrote rather than lost to the
-  // optimistic update that takes the issue out of `isUnassigned`. The head does the same.
-  const [assignLive, setAssignLive] = useState(false);
-  const onAssignLive = useCallback((_askId: string, live: boolean) => setAssignLive(live), []);
+  // The Inbox holds the Assign to me write, by ask, so it outlives this head, which goes when the
+  // reader moves the selection (`AskAssignWritesProvider`). The optimistic assignee takes the
+  // issue out of `isUnassigned` at the press, so the head draws the control while that write is
+  // out or refused as well: `Assigning…`, and a refusal with its Retry.
+  const assign = useAskAssign(ask.id);
   // The earlier approval's diff is open for the request it was opened on, and closed on the next.
   const [diffOpenFor, setDiffOpenFor] = useState<string | undefined>(undefined);
   const openKeys = useActionKeys("inbox.open-at-section");
@@ -199,19 +195,19 @@ export function ReadingPaneHead({
           )}
           {ask.issue_key !== null &&
           viewer !== undefined &&
-          (isUnassigned({ ask, kind: "ask" }) || assignLive) ? (
+          (isUnassigned({ ask, kind: "ask" }) || assign.pending || assign.failed) ? (
             <AssignToMe
               askId={ask.id}
               issueKey={ask.issue_key}
-              onLive={onAssignLive}
               shortcutKeys={assignKeys}
               viewer={viewer}
             />
           ) : null}
+          {/* The Inbox holds the write this Snooze makes, by ask, so it outlives this head, which
+              goes when the reader moves the selection (`useAskSnoozeWrites`). */}
           <SnoozeControl
             askId={ask.id}
             label={name}
-            onLive={onSnoozeLive}
             shortcutKeys={snoozeKeys}
             snoozedUntil={isSnoozed(ask) ? ask.snoozed_until : null}
             unsnoozeKeys={unsnoozeKeys}

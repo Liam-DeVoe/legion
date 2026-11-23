@@ -555,6 +555,10 @@ function commentReplyTarget(
   };
 }
 
+/** A comment's mention deliveries, each with its Retry while `isSafeRetry` holds for it. While a
+ *  retry's write is out (`retrying`), every Retry of the list is held (`heldPress`), as the
+ *  targeted-message card's retry row is held (`DeliveryRetry`), not disabled. The pressed one
+ *  keeps the focus and its Tab stop, and a press of any of them sends nothing. */
 function CommentDeliveryList({
   agents,
   deliveries,

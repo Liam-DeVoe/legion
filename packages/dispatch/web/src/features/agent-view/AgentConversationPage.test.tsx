@@ -22,6 +22,7 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 
 import { jump, onFakeClock, tick } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -2424,12 +2425,12 @@ function sendButton(name = "Send"): HTMLButtonElement {
   return within(composer()).getByRole("button", { name }) as HTMLButtonElement;
 }
 
-/** Whether a pending switch holds Send: `aria-disabled`, so it keeps focus and its keys, with no
- *  refusal of its own, since the one refusal, an empty box, is never Send's while a switch holds
- *  it. */
+/** Whether a pending switch holds Send: `aria-disabled`, never `disabled`, so a Send the reader
+ *  pressed keeps the focus and its keys, and a press of it sends nothing, with no refusal of its
+ *  own, since the one refusal, an empty box, is never Send's while a switch holds it. */
 function sendHeld(): boolean {
   const send = sendButton();
-  return send.getAttribute("aria-disabled") === "true" && !send.hasAttribute("title");
+  return heldNotDisabled(send, "Send") && !send.hasAttribute("title");
 }
 
 /** Waits for the session list to settle the delivery mode on `expected`, then returns the
@@ -2784,9 +2785,9 @@ test("a draft outlives the view it was written in and comes back when it wakes",
 
 // A model or thinking switch pending on a session holds that session's Send (it keeps reading
 // "Send", and the line under the box says what its placeholder says) and holds no other's; a
-// message out on another session holds nothing there either, and Enter sends nothing while a
-// switch holds. What the switch's own answer then does is the row above's
-// (`while a switch waits the pickers and Send hold`), on the one session.
+// message out on another session holds nothing there either, and neither a press of Send nor
+// Enter sends anything while a switch holds. What the switch's own answer then does is the row
+// above's (`while a switch waits the pickers and Send hold`), on the one session.
 test("a pending switch holds its own session's Send, and a send out on another holds nothing there", async () => {
   const user = userEvent.setup();
   const { createAgentMessage, held: answers } = holdSends();
@@ -2820,14 +2821,15 @@ test("a pending switch holds its own session's Send, and a send out on another h
   expect(sendHeld()).toBe(true);
   expect(within(composer()).getByText(wait)).toBeTruthy();
   expect(composerHint()).toBe(wait);
-  // The press and the 50 ms it is given run on the fake clock, so the wait costs no real time and
-  // a send the Enter put out at once is counted below. That the Enter sent nothing at all is held
-  // after the switch back, where the box still holds the draft.
+  // The presses and the 50 ms they are given run on the fake clock, so the wait costs no real time
+  // and a send a press put out at once is counted below. That the presses sent nothing at all is
+  // held after the switch back, where the box still holds the draft.
   await onFakeClock(async () => {
+    const clockUser = userOnFakeClock();
     // The paste left the caret in the box: a switch holds this press, and nothing is sent.
-    await userOnFakeClock().keyboard("{Enter}");
+    await clockUser.keyboard("{Enter}");
     // Nor does a press of Send itself.
-    await userOnFakeClock().click(sendButton());
+    await clockUser.click(sendButton());
     await jump(50);
   });
   expect(createAgentMessage).toHaveBeenCalledTimes(1);

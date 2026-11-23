@@ -620,12 +620,10 @@ test("an assignee the reader stopped says Retry asks again under its key, not a 
   const { queryClient, unmount, user } = renderControl();
   try {
     // The list is open, with everyone who has signed in, before the clock is held.
-    await user.hover(trigger());
     const list = await openList(user, ASSIGNEE);
-    await waitFor(() => expect(rows(list)).toHaveLength(3));
-    const bob = within(list).getByRole("option", { name: "bob" });
+    await waitFor(() => expect(rows(list)).toEqual(["Unassigned", "✓alice", "bob"]));
     jest.useFakeTimers();
-    await userOnFakeClock().click(bob);
+    await userOnFakeClock().click(within(list).getByRole("option", { name: /^bob\b/ }));
     await stopTheLateWrite(queryClient);
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(

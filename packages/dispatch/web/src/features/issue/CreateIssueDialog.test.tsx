@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { pressHeld } from "../../__tests__/held-press";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -125,11 +126,13 @@ test("preselects the route's project, submits title and spec, and opens the crea
     const trigger = await screen.findByRole("button", { name: pickNamed("Project") });
     await waitFor(() => expect(trigger).toHaveAccessibleName("Project OPS · Operations"));
     const create = screen.getByRole("button", { name: "Create" });
-    expect(create).toHaveAttribute("disabled");
+    // With no title there is nothing to create: Create is held, not disabled.
+    expect(create.getAttribute("aria-disabled")).toBe("true");
+    expect(create).not.toHaveAttribute("disabled");
 
     await view.user.click(screen.getByRole("textbox", { name: "Title" }));
     await view.user.paste("  Ship the keymap  ");
-    expect(create).not.toHaveAttribute("disabled");
+    expect(create).not.toHaveAttribute("aria-disabled");
     await view.user.click(screen.getByRole("textbox", { name: /Spec/ }));
     await view.user.paste("One line of spec.");
     await view.user.click(create);
@@ -253,6 +256,44 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
     );
     expect(calls.map((call) => call.force)).toEqual([undefined, true]);
   } finally {
+    view.unmount();
+  }
+});
+
+// While the create is out, the field or the button the reader submitted from is held -
+// `aria-disabled`, and a field read-only - never disabled (`pressHeld`). A disabled control drops
+// the focus to the page's body in a browser, out of the open modal dialog. So the pressed control
+// keeps the focus through the create, and a second press sends nothing.
+test.each([
+  { label: "Title", name: "Title", press: "{Enter}", role: "textbox" },
+  { label: /^Spec/, name: "Spec", press: "{Control>}{Enter}{/Control}", role: "textbox" },
+  { label: "Create", name: "Create", press: "{Enter}", role: "button" },
+] as const)("$name, held while the create is out, keeps the focus, and a second press sends nothing", async ({
+  label,
+  name,
+  press,
+  role,
+}) => {
+  const calls: CreateIssueInput[] = [];
+  // The create's answer, held until the case gives it inside `act`.
+  const answer = Promise.withResolvers<Issue>();
+  const view = renderDialog(userEvent.setup(), (input) => {
+    calls.push(input);
+    return answer.promise;
+  });
+  try {
+    await projectPicked();
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("Held create");
+    await pressHeld(view.user, screen.getByRole(role, { name: label }), {
+      name,
+      press,
+      sent: () => calls.length,
+    });
+  } finally {
+    await act(async () =>
+      answer.resolve(issue(calls[0] ?? { project: "CORE", title: "Held create" }, "CORE-9"))
+    );
     view.unmount();
   }
 });

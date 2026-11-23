@@ -17,19 +17,18 @@ import {
   displayChoice,
   filterPicker,
   listOf,
+  listTrigger,
   openDisplayMenu,
+  pickFromList,
 } from "./filters";
 import { nextFrames } from "./frames";
-import { dropFirstAnswer, watchWrites } from "./keyed-writes";
-import { pickFromMenu, priorityTrigger } from "./menus";
+import { distinctKeys, dropFirstAnswer, watchWrites } from "./keyed-writes";
 import {
   expectReadWhileHeld,
-  expectShows,
   holdIssuePatches,
   listRead,
   logReads,
   pagePicker,
-  pickIn,
   readAnsweredSince,
   savesEnded,
   watchCell,
@@ -99,7 +98,8 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await page.keyboard.press("Escape");
     await expect(page.getByText(new RegExp(`${epic.key} · Table epic`)).first()).toBeVisible();
     await expect(page.getByText(/next in queue #1/)).toBeVisible();
-    await page.getByRole("combobox", { name: "Rows per page" }).selectOption("25");
+    const perPage = listTrigger(page, "Rows per page");
+    await pickFromList(perPage, "25 per page");
     await page.getByRole("button", { name: "Next ›", exact: true }).click();
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
     await expect(page.getByText("(continued)", { exact: true })).toBeVisible();
@@ -126,19 +126,20 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     const second = await context.newPage();
     await second.goto(`/issues/${target.key}`);
     await expect(second.getByRole("heading", { level: 1, name: target.title })).toBeVisible();
-    const priority = priorityTrigger(second, target.key);
-    // The menu's trigger is held to the priority the seed gave the issue before the edit picks the
-    // other of 0 and 1, so the trigger read is one the page has drawn rather than a first empty one.
-    const before = target.priority === null ? "Priority" : `P${target.priority}`;
-    await expect(priority).toHaveText(before);
-    const next = before === "P0" ? "1" : "0";
-    await pickFromMenu(priority, `P${next}`);
+    const priority = listTrigger(second, `Priority of ${target.key}`);
+    // The list's trigger is held to the priority the seed gave the issue before the edit picks
+    // the other of P0 and P1, so the trigger read is one the page has drawn rather than a first
+    // empty value.
+    const before = `P${target.priority}`;
+    await expect(priority).toHaveAccessibleName(`Priority of ${target.key} ${before}`);
+    const next = before === "P0" ? "P1" : "P0";
+    await pickFromList(priority, next);
     await expect
       .poll(() => getIssue(target.key).then((issue) => issue.priority))
-      .toBe(Number(next));
+      .toBe(Number(next.slice(1)));
     await expect(
-      priorityTrigger(page.locator(`[data-issue-row="${target.key}"]`), target.key)
-    ).toHaveText(`P${next}`);
+      listTrigger(page.locator(`[data-issue-row="${target.key}"]`), `Priority of ${target.key}`)
+    ).toHaveAccessibleName(`Priority of ${target.key} ${next}`);
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
     await expect(targetSelection).toBeChecked();
     expect(
@@ -151,7 +152,7 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
 
     await chooseDisplay(page, "Group by", "");
     await page.keyboard.press("Escape");
-    await page.getByRole("combobox", { name: "Rows per page" }).selectOption("50");
+    await pickFromList(perPage, "50 per page");
     const selected = rows[25];
     if (!selected) throw new Error("The queue seed did not create 26 issues");
     await page.getByRole("checkbox", { name: `Select ${selected.key}`, exact: true }).check();
@@ -692,7 +693,7 @@ test("compact windows give the table three full rows and let the page scroll @ph
         fullPage: true,
       });
       await page.getByTestId("issues-table-pager").scrollIntoViewIfNeeded();
-      await expect(page.getByRole("combobox", { name: "Rows per page" })).toBeVisible();
+      await expect(listTrigger(page, "Rows per page")).toBeVisible();
     }
   } finally {
     await context.close();
@@ -738,7 +739,7 @@ test("a roomy window is filled by the box, which grows when the window does", as
     expect((await room())?.page).toBeLessThanOrEqual(1);
     await page.mouse.wheel(0, 400);
     expect(await page.evaluate(() => window.scrollY)).toBe(0);
-    await expect(page.getByRole("combobox", { name: "Rows per page" })).toBeInViewport();
+    await expect(listTrigger(page, "Rows per page")).toBeInViewport();
     const short = (await room())?.box ?? 0;
     await page.setViewportSize({ width: 1400, height: 1200 });
     await expect.poll(async () => (await room())?.box ?? 0).toBeGreaterThan(short + 200);
@@ -1037,7 +1038,7 @@ test("reload mid Start next finishes the recorded order without repeating its co
       .getByRole("button", { name: "Start next", exact: true })
       .click();
     await expect.poll(() => held).toBe(true);
-    expect(completed).toHaveLength(1);
+    expect(distinctKeys(completed)).toEqual([expect.any(String)]);
     mode = "refuse";
     await page.reload();
     const interrupted = page.getByRole("region", { name: "Interrupted table action" });
@@ -1052,7 +1053,7 @@ test("reload mid Start next finishes the recorded order without repeating its co
           .getByRole("row", { name: `${issue.key} ${issue.title}`, exact: true })
           .getByRole("cell", { name: `#${index + 1}`, exact: true })
       ).toBeVisible();
-    expect(completed).toHaveLength(1);
+    expect(distinctKeys(completed)).toEqual([expect.any(String)]);
     await page.reload();
     await expect(interrupted).toHaveCount(0);
   } finally {
@@ -1131,7 +1132,7 @@ test("reload mid merge moves current open descendants then records one reason an
     expect((await listIssueMessages(source.key)).map(({ message }) => message.body)).toEqual([
       expect.stringContaining(`Merged into ${target.key}`),
     ]);
-    expect(completed).toHaveLength(1);
+    expect(distinctKeys(completed)).toEqual([expect.any(String)]);
     await expect(interrupted).toHaveCount(0);
     await page.reload();
     await expect(interrupted).toHaveCount(0);
@@ -1165,8 +1166,9 @@ test("a status the bundle does not know leaves the whole page standing", async (
   }
 });
 
-// B2: a closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
-// list stages a target instead, and the confirmation is what sends anything.
+// A closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
+// list stages a target instead, and the confirmation is what sends anything. An arrow key on the
+// closed trigger opens the list, and picks nothing.
 test("an arrow key on the merge list's trigger closes no epic, and the confirmed merge does", async ({
   browser,
 }) => {
@@ -1185,6 +1187,7 @@ test("an arrow key on the merge list's trigger closes no epic, and the confirmed
     const trigger = page.getByRole("button", { name: "Merge into another epic" });
     await trigger.focus();
     await page.keyboard.press("ArrowDown");
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
     // Nothing must follow the keystroke: a merge the arrow key had started would leave the page
     // in that keypress's own task, so this window is where its write and its dialog would show.
     await page.waitForTimeout(500);
@@ -1192,8 +1195,8 @@ test("an arrow key on the merge list's trigger closes no epic, and the confirmed
     expect((await getIssue(child.key)).parent).toBe(source.key);
     await expect(page.getByRole("dialog", { name: "Merge this epic?" })).toHaveCount(0);
 
-    // The confirmed path still merges, and says what it is about to do first.
-    await trigger.click();
+    // The confirmed path still merges, and says what it is about to do first. The list the arrow
+    // opened is the one the target is picked from.
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     const asked = page.getByRole("dialog", { name: "Merge this epic?" });
@@ -1257,12 +1260,11 @@ test("picker keeps a pick on screen: the priority on the project table, over a l
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("project", "CORE"));
     await page.goto("/projects/CORE");
-    // This tree's priority is a menu (INFRA-2160's R4), and only a pick in it writes (R5).
-    const picker = priorityTrigger(page, issue.key);
-    await expectShows(picker, "3");
+    const picker = listTrigger(page, `Priority of ${issue.key}`);
+    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);
 
-    await pickIn(picker, "1");
-    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    await pickFromList(picker, "P1");
+    await expect.poll(() => shown.values.at(-1)).toBe("P1");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     // A rename of another issue, straight to the server: its live event has the table read the
@@ -1276,10 +1278,10 @@ test("picker keeps a pick on screen: the priority on the project table, over a l
     expectReadWhileHeld(reads, held, renamedAt);
 
     expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
-      "1",
+      "P1",
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
-    await expectShows(picker, "1");
+    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P1`);
   } finally {
     await context.close();
   }
@@ -1304,11 +1306,11 @@ test("picker keeps a pick on screen: the priority on the table of an item of the
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", item.id));
     await page.goto(`/priorities/${item.id}`);
-    const picker = priorityTrigger(page, issue.key);
-    await expectShows(picker, "3");
+    const picker = listTrigger(page, `Priority of ${issue.key}`);
+    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);
 
-    await pickIn(picker, "1");
-    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    await pickFromList(picker, "P1");
+    await expect.poll(() => shown.values.at(-1)).toBe("P1");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     // A status move of the item's other issue, straight to the server: its live event has the
@@ -1324,10 +1326,10 @@ test("picker keeps a pick on screen: the priority on the table of an item of the
     expectReadWhileHeld(reads, held, movedAt);
 
     expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
-      "1",
+      "P1",
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
-    await expectShows(picker, "1");
+    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P1`);
   } finally {
     await context.close();
   }
@@ -1353,11 +1355,11 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
     const reads = logReads(page, listRead("advances", "none"));
     await page.goto("/priorities");
     const table = page.getByRole("region", { name: "In flight under no priority" });
-    const picker = priorityTrigger(table, issue.key);
-    await expectShows(picker, "3");
+    const picker = listTrigger(table, `Priority of ${issue.key}`);
+    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);
 
-    await pickIn(picker, "1");
-    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    await pickFromList(picker, "P1");
+    await expect.poll(() => shown.values.at(-1)).toBe("P1");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     // A status move of the table's other issue, straight to the server, to another status the
@@ -1373,10 +1375,10 @@ test("picker keeps a pick on screen: the priority on a table of the Priorities v
     expectReadWhileHeld(reads, held, movedAt);
 
     expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
-      "1",
+      "P1",
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
-    await expectShows(picker, "1");
+    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P1`);
   } finally {
     await context.close();
   }

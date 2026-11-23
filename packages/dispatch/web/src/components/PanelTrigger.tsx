@@ -6,6 +6,12 @@ import { CONTROL, type ControlName, type ControlSize, controlPadding } from "./c
 import { useFocusPlace } from "./focus-place";
 import { heldPress } from "./held-press";
 
+/** The frame of a panel a trigger opens: a card over the page, at most 20rem tall and 16rem wide
+ *  and never past the window's edges, that scrolls what it cannot hold. The row's `+N more` panel
+ *  is drawn in it too (`ControlRow`). */
+export const PANEL_FRAME =
+  "flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border shadow-lg";
+
 export interface PanelTriggerProps {
   readonly align?: "left" | "right";
   /** Holds the trigger while a write it leads to is out - an epic's actions while a table action
@@ -117,7 +123,7 @@ export function PanelTrigger({
         <AnchoredPanel
           align={align}
           anchorRef={trigger}
-          className={`flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border text-sm font-normal shadow-lg ${stacked ? "items-start gap-2 p-2" : "p-1"} ${card}`}
+          className={`${PANEL_FRAME} text-sm font-normal ${stacked ? "items-start gap-2 p-2" : "p-1"} ${card}`}
           focusOnOpen={focusOnOpen}
           id={panelId}
           label={title ?? (typeof label === "string" ? label : undefined)}

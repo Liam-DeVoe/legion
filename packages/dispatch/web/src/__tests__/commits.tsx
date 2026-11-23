@@ -49,10 +49,11 @@ export function recordCommits<Host>(draw: () => string): Commits<Host> {
   };
 }
 
-/** What a picker's trigger draws - the priority's menu (`ChoiceMenu`) or a single pick's list
- *  (`MultiSelect`): the words its name says after its label, the value it holds as a `<select>`
- *  says its value, and its text. A trigger that shows its label's first words - an unset
- *  priority's `Priority` - is named by its label alone, and its name says nothing after it. */
+/** What a picker's trigger draws - the shared list's single pick whose trigger shows a badge, as
+ *  `PriorityEditor` and `AssigneeControl` draw one, or a menu's (`ChoiceMenu`): what the
+ *  trigger's name says after its label, as a `<select>` says its value, and the text the trigger
+ *  shows. A trigger that shows its label's first words - an unset priority's `Priority` - is
+ *  named by its label alone, and its name says nothing after it. */
 export function drawnPick(trigger: HTMLElement): string {
   const [, ...shown] = trigger.getAttribute("aria-labelledby")?.split(" ") ?? [];
   const named = shown.map((id) => document.getElementById(id)?.textContent).join(" ");

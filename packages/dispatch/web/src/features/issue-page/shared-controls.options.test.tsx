@@ -342,19 +342,6 @@ function parentOf(element: Element): HTMLElement {
   return parent;
 }
 
-/** The choices the priority menu `trigger` opens (`ChoiceMenu`), each by its name and whether it
- *  is checked; the menu is closed again with Escape, which writes nothing. */
-async function menuChoicesOf(user: UserEvent, trigger: HTMLElement): Promise<string[][]> {
-  await user.click(trigger);
-  const menu = await within(document.body).findByRole("menu");
-  const choices = within(menu)
-    .getAllByRole("menuitemradio")
-    .map((item) => [item.textContent ?? "", item.getAttribute("aria-checked") ?? ""]);
-  await user.keyboard("{Escape}");
-  await waitFor(() => expect(within(document.body).queryByRole("menu")).toBeNull());
-  return choices;
-}
-
 function sessionClaim(sessionId: string): IssueClaim {
   return { actor: { id: sessionId, kind: "session" }, at: CLAIMED_AT };
 }
@@ -615,16 +602,23 @@ test("outside NoTooltips inRow, author, versions and exact change nothing", asyn
 });
 
 // The header variant of the assignee and the priority is the prototype's `.person` and `.prio`,
-// drawn at the header line's 24 px on the trigger of the same menu, and of the same list, as the
-// badge: the priority is a menu and the assignee the shared list's single pick on this tree
-// (INFRA-2160's R1 and R4, INFRA-3135), so each trigger is a button named by its list and then
-// by what it shows.
-test("the header variant draws the person and the priority bars on the same menu and list", async () => {
-  const expectHeaderTrigger = (trigger: HTMLElement) => {
-    expect(classOf(trigger)).toContain("min-h-6");
-    expect(classOf(trigger).filter((token) => token.startsWith("md:min-h-"))).toEqual([]);
+// drawn on the trigger of the same list as the badge, at the header line's 24 px.
+test("the header variant draws the person and the priority bars on the trigger of the same list", async () => {
+  const expectHeaderWrapper = (wrapper: HTMLElement) => {
+    expect(classOf(wrapper)).toContain("min-h-6");
+    expect(classOf(wrapper).filter((token) => token.startsWith("md:min-h-"))).toEqual([]);
   };
   const user = userEvent.setup();
+  // The rows the list `trigger` opens offers, once it holds `count` of them: each list is read
+  // open, its rows in its panel, and closed again before the other opens.
+  const offered = async (trigger: HTMLElement, count: number) => {
+    await user.click(trigger);
+    const list = within(panelOf(trigger)).getByRole("listbox");
+    await waitFor(() => expect(within(list).getAllByRole("option")).toHaveLength(count));
+    const offers = listRows(list);
+    await user.keyboard("{Escape}");
+    return offers;
+  };
 
   for (const level of [0, 1, 2, 3, null] as const) {
     const header = draw(
@@ -640,16 +634,23 @@ test("the header variant draws the person and the priority bars on the same menu
       "inside"
     );
     try {
-      const name = level === null ? "Priority of CORE-1" : `Priority of CORE-1 P${level}`;
-      const trigger = within(header.container).getByRole("button", { name });
-      expect(trigger.querySelectorAll("rect")).toHaveLength(3);
-      expect(trigger.querySelectorAll("rect[class~='fill-page-ink']")).toHaveLength(
+      const trigger = within(header.container).getByRole("button", {
+        name: pickNamed("Priority of CORE-1"),
+      });
+      const wrapper = parentOf(trigger);
+      expect(wrapper.querySelectorAll("rect")).toHaveLength(3);
+      expect(wrapper.querySelectorAll("rect[class~='fill-page-ink']")).toHaveLength(
         level === null ? 0 : 3 - level
       );
-      expect(trigger.textContent).toBe(level === null ? PROPERTY_LABELS.priority : `P${level}`);
-      const badgeTrigger = within(badge.container).getByRole("button", { name });
-      expect(await menuChoicesOf(user, trigger)).toEqual(await menuChoicesOf(user, badgeTrigger));
-      expectHeaderTrigger(trigger);
+      const label = level === null ? PROPERTY_LABELS.priority : `P${level}`;
+      expect(trigger.querySelector(":scope > span > span")?.textContent).toBe(label);
+      const badgeTrigger = within(badge.container).getByRole("button", {
+        name: pickNamed("Priority of CORE-1"),
+      });
+      expect(trigger).toHaveAccessibleName(`Priority of CORE-1 ${label}`);
+      expect(badgeTrigger).toHaveAccessibleName(`Priority of CORE-1 ${label}`);
+      expect(await offered(trigger, 5)).toEqual(await offered(badgeTrigger, 5));
+      expectHeaderWrapper(wrapper);
     } finally {
       undraw(header);
       undraw(badge);
@@ -669,17 +670,8 @@ test("the header variant draws the person and the priority bars on the same menu
       const badgeSelect = within(badge.container).getByRole("button", {
         name: pickNamed("Assignee of CORE-1"),
       });
-      // A press reads who has signed in, and both lists then offer each of them. Each list is
-      // read open, its rows in its panel, and closed again before the other opens.
-      const offered = async (trigger: HTMLElement) => {
-        await user.click(trigger);
-        const list = within(panelOf(trigger)).getByRole("listbox");
-        await waitFor(() => expect(within(list).getAllByRole("option")).toHaveLength(3));
-        const offers = listRows(list);
-        await user.keyboard("{Escape}");
-        return offers;
-      };
-      expect(await offered(select)).toEqual(await offered(badgeSelect));
+      // A press reads who has signed in, and both lists then offer each of them.
+      expect(await offered(select, 3)).toEqual(await offered(badgeSelect, 3));
       const wrapper = parentOf(select);
       const shown = select.querySelector(":scope > span > span");
       if (assignee === null) {
@@ -690,7 +682,7 @@ test("the header variant draws the person and the priority bars on the same menu
         expect(wrapper.querySelector("[data-initial]")?.getAttribute("data-initial")).toBe("A");
       }
       // The 24 px is the wrapper's, as the badge's wrapper holds its tap target.
-      expectHeaderTrigger(wrapper);
+      expectHeaderWrapper(wrapper);
     } finally {
       undraw(header);
       undraw(badge);
@@ -2008,9 +2000,12 @@ test("the default shapes keep main's class strings", async () => {
       "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
     "AssigneeControl badge, unassigned":
       "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
-    // This tree's priority (INFRA-2160's R4): the trigger of its menu, and the badge it shows.
+    // This tree's priority (INFRA-3135): the wrapper, the trigger of the shared list's single pick
+    // in it, and the badge the trigger shows.
+    "PriorityControl wrapper":
+      "relative inline-flex min-h-11 shrink-0 items-center rounded-sm md:min-h-8 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400 ",
     "PriorityControl trigger":
-      "relative inline-flex min-h-11 shrink-0 items-center rounded-sm cursor-pointer outline-none md:min-h-8 focus-visible:ring-2 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400 refused:cursor-not-allowed refused:opacity-50",
+      "flex cursor-pointer items-center self-stretch rounded-sm outline-none refused:cursor-not-allowed md:max-xl:-my-1.5",
     "PriorityControl badge, P0":
       "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300",
     "PriorityControl badge, P1":
@@ -2519,20 +2514,17 @@ test("the default shapes keep main's class strings", async () => {
       "AssigneeControl badge, unassigned",
       caseOf(view, "unassigned").querySelector("button > span > span")
     );
-    const p0 = within(caseOf(view, "P0")).getByRole("button", { name: "Priority of CORE-1 P0" });
+    const p0 = within(caseOf(view, "P0")).getByRole("button", {
+      name: pickNamed("Priority of CORE-1"),
+    });
+    classAt("PriorityControl wrapper", p0.parentElement);
+    // This tree holds the trigger while a write is out (`refused:`).
     classAt("PriorityControl trigger", p0);
-    classAt("PriorityControl badge, P0", p0.querySelector("[id$='-face'] > span"));
-    classAt(
-      "PriorityControl badge, P1",
-      within(caseOf(view, "P1"))
-        .getByRole("button", { name: "Priority of CORE-2 P1" })
-        .querySelector("[id$='-face'] > span")
-    );
+    classAt("PriorityControl badge, P0", p0.querySelector(":scope > span > span"));
+    classAt("PriorityControl badge, P1", caseOf(view, "P1").querySelector("button > span > span"));
     classAt(
       "PriorityControl badge, none",
-      within(caseOf(view, "no priority"))
-        .getByRole("button", { name: "Priority of CORE-3" })
-        .querySelector("[id$='-face'] > span")
+      caseOf(view, "no priority").querySelector("button > span > span")
     );
 
     const held = within(caseOf(view, "held")).getByTestId("issue-claim");
@@ -4479,7 +4471,9 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
     const view = draw(<ReadApprovalChip id={SPEC_ID} />, surface);
     try {
       const scope = within(view.container);
-      const approve = await scope.findByRole("button", { name: "Approve" });
+      const approve = (await scope.findByRole("button", {
+        name: "Approve",
+      })) as HTMLButtonElement;
       approve.focus();
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
@@ -4534,7 +4528,9 @@ test("inside NoTooltips Approve keeps the focus when its write fails and takes t
     const view = draw(<ReadApprovalChip id={SPEC_ID} />, surface);
     try {
       const scope = within(view.container);
-      const approve = await scope.findByRole("button", { name: "Approve" });
+      const approve = (await scope.findByRole("button", {
+        name: "Approve",
+      })) as HTMLButtonElement;
       approve.focus();
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
@@ -6328,8 +6324,8 @@ interface AskCardControl {
   /** The write the press sends. */
   readonly write: "answer" | "clarification";
   /** Brings the card to the press, sends the write by the keyboard, and answers the control,
-   *  which inside `NoTooltips` holds the focus then. */
-  readonly press: (scope: CardScope, user: UserEvent, surface: Surface) => Promise<HTMLElement>;
+   *  which holds the focus then. */
+  readonly press: (scope: CardScope, user: UserEvent) => Promise<HTMLElement>;
   /** Presses the control again, as a reader would while its write is out. */
   readonly again: (scope: CardScope, user: UserEvent, control: HTMLElement) => Promise<void>;
 }
@@ -6495,9 +6491,9 @@ const ASK_CARD_CONTROLS: readonly AskCardControl[] = [
   },
 ];
 
-/** Inside `NoTooltips`, the AskCard control holds the focus and is refused without `disabled`:
- *  the answer box is `readOnly`, an option says it by its group's `aria-disabled`, and every
- *  other control by its own. */
+/** The AskCard control holds the focus and is refused without `disabled`: the answer box is
+ *  `readOnly`, an option says it by its group's `aria-disabled`, and every other control by its
+ *  own. */
 function expectAskControlRefusedHoldingFocus(control: HTMLElement): void {
   if (control instanceof HTMLTextAreaElement) {
     expect(document.activeElement).toBe(control);
@@ -6512,18 +6508,6 @@ function expectAskControlRefusedHoldingFocus(control: HTMLElement): void {
     return;
   }
   expectRefusedHoldingFocus(control);
-}
-
-/** Outside `NoTooltips`, the AskCard control holds the focus and is held without `disabled`, as
- *  every control of this tree is while its own write is out (`heldPress`, `heldField`): the answer
- *  box is `readOnly` and `aria-disabled`, an option's input and every other control
- *  `aria-disabled`, and no group is. */
-function expectAskControlHeld(control: HTMLElement): void {
-  expect(document.activeElement).toBe(control);
-  expect(control.getAttribute("aria-disabled")).toBe("true");
-  expect(control.hasAttribute("disabled")).toBe(false);
-  expect(control.hasAttribute("readonly")).toBe(control instanceof HTMLTextAreaElement);
-  expect(control.closest("fieldset")?.hasAttribute("aria-disabled") ?? false).toBe(false);
 }
 
 /** Once its write has failed, the AskCard control is still drawn and takes a press again. */
@@ -6559,19 +6543,18 @@ function AskRow({
   );
 }
 
-// While the card's answer or its clarification is out, every control of its form is held: each
-// is `aria-disabled` in place of `disabled`, which drops the focus to the body in a browser, on
-// both sides of `NoTooltips` - this tree keeps no control disabled while its own write is out -
-// the answer box `readOnly`, and inside an option is held by its group as well: the one the
-// reader pressed keeps the focus, and a press of it sends no second write and changes nothing.
-// Once the write lands, and inside `NoTooltips` once the read of the ask that a clarification
-// starts is drawn as well, what it takes off the page - the form, which the answer replaces with
-// its record, or the choice a question-shaped answer offers - hands the focus on as it goes, to
-// the row the card is drawn in, and a clarification that empties the box leaves Ask back
-// `disabled`, which hands it on too; once the write fails, the pressed control is still drawn and
-// kept the focus all along.
+// While the card's answer or its clarification is out, every control of its form is refused, on
+// both sides of `NoTooltips`. Each is `aria-disabled` in place of `disabled`, which drops the
+// focus to the body in a browser (the answer box is `readOnly`, an option is refused by its
+// group): the one the reader pressed keeps the focus, and a press of it sends no second write and
+// changes nothing. Once the write lands, and inside `NoTooltips` once the read of the ask that a
+// clarification starts is drawn as well, what it takes off the page - the form, which the answer
+// replaces with its record, or the choice a question-shaped answer offers - hands the focus on as
+// it goes, to the row the card is drawn in, and a clarification that empties the box leaves Ask
+// back `disabled`, which hands it on too; once the write fails, the pressed control is still drawn
+// and kept the focus all along.
 for (const control of ASK_CARD_CONTROLS) {
-  test(`inside NoTooltips AskCard's ${control.name} keeps the focus while its write is out, then the card hands it to the row`, async () => {
+  test(`AskCard's ${control.name} keeps the focus while its write is out, then the card hands it to the row`, async () => {
     const user = userEvent.setup();
     for (const surface of ["inside", "outside"] as const) {
       for (const write of ["lands", "fails"] as const) {
@@ -6587,16 +6570,14 @@ for (const control of ASK_CARD_CONTROLS) {
           const scope = within(view.container);
           const row = scope.getByTestId("ask-row");
           await settleReads();
-          const pressed = await control.press(scope, user, surface);
+          const pressed = await control.press(scope, user);
           await waitFor(() => expect(sent).toHaveBeenCalledTimes(1));
           await settleReads();
-          const held =
-            surface === "inside" ? expectAskControlRefusedHoldingFocus : expectAskControlHeld;
-          held(pressed);
+          expectAskControlRefusedHoldingFocus(pressed);
           await control.again(scope, user, pressed);
           await settleReads();
           expect(sent).toHaveBeenCalledTimes(1);
-          held(pressed);
+          expectAskControlRefusedHoldingFocus(pressed);
 
           if (write === "fails") {
             const failure = new Error("the connection dropped");
@@ -6702,11 +6683,11 @@ function recordFocusMoves(): FocusMoves {
   };
 }
 
-/** Once the ask is read again, the focus moved once, to `row`, on both sides of `NoTooltips`:
- *  the pressed control held it until what took it off the page handed it on. */
+/** Once the ask is read again, the focus moved once, to `row`. */
 function expectOneMoveToRow(focus: FocusMoves, row: HTMLElement): void {
   expect(document.activeElement).toBe(row);
-  expect(focus.moved).toEqual([row]);
+  expect(focus.moved).toHaveLength(1);
+  expect(focus.moved[0]).toBe(row);
 }
 
 /** Inside `NoTooltips`, while the card refuses, its answer box is `readOnly` and not `disabled`,
@@ -6719,12 +6700,13 @@ function expectAnswerBoxReadOnly(scope: CardScope): void {
 
 // An answer Dispatch made and lost its answer to (`409 KEY_COMMITTED`) lands with no body: the
 // card has no record to draw, so it reads the ask again, and until that read is drawn the form
-// stays on the page with its option still picked. Inside `NoTooltips` the card stays refused until
-// then: Answer keeps the focus and is `aria-disabled`, the box is read-only, and a press of Answer
-// sends no second answer, which Dispatch would refuse, the ask being closed. Once the read draws
-// the recorded answer, the form leaves the page and hands the focus to the row, the one move of
-// the focus. Outside `NoTooltips` Answer is held, never `disabled`, while the write alone is out:
-// it keeps the focus until the read draws the recorded answer, and the form hands it on then.
+// stays on the page with its option still picked. While the write is out Answer keeps the focus
+// and is `aria-disabled`, on both sides of `NoTooltips`. Inside `NoTooltips` the card stays
+// refused until the read is drawn: the box is read-only, and a press of Answer sends no second
+// answer, which Dispatch would refuse, the ask being closed. Outside `NoTooltips` the card stops
+// refusing as the write lands, and Answer keeps the focus, as on `main` it took a press again
+// then. Once the read draws the recorded answer, the form leaves the page and hands the focus to
+// the row, the one move of the focus.
 test("inside NoTooltips an answer that lands with no answer body keeps the ask card refused until the ask is read again", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
@@ -6785,14 +6767,14 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
   }
 });
 
-// A clarification empties the box as it lands and reads the ask again. Inside `NoTooltips`, until
-// that read is drawn, Ask back is drawn as it stood at the press: refused with `aria-disabled`, and
-// not `disabled` for the text the landing took, which would drop the focus in a browser; it keeps
-// the focus, and a press of it sends nothing; the box stays read-only. Once the read is drawn Ask
-// back, with no text to send, is `disabled`, and the card hands the focus to the row, the one move
-// of the focus. Outside `NoTooltips` Ask back is held, never `disabled`, while the write is out,
-// and keeps the focus; the landing empties the box, Ask back with no text is `disabled` then,
-// and the card hands the focus to the row as it disables it.
+// A clarification empties the box as it lands and reads the ask again. While the write is out Ask
+// back is refused with `aria-disabled`, on both sides of `NoTooltips`: it keeps the focus. Inside
+// `NoTooltips`, until that read is drawn, Ask back is drawn as it stood at the press: refused, and
+// not `disabled` for the text the landing took, which would drop the focus in a browser; a press
+// of it sends nothing, and the box stays read-only. Once the read is drawn Ask back, with no text
+// to send, is `disabled`, and the card hands the focus to the row. Outside `NoTooltips` the card
+// stops refusing as the clarification lands, so Ask back is `disabled` then, and the card hands
+// the focus to the row at the landing. Either way that is the one move of the focus.
 test("inside NoTooltips Ask back keeps the focus until the ask is read again", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
@@ -6826,12 +6808,12 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
         expect(createComment).toHaveBeenCalledTimes(1);
         expectRefusedHoldingFocus(askBack);
         expectAnswerBoxReadOnly(scope);
+        expect(focus.moved).toHaveLength(0);
       } else {
         expect(askBack.hasAttribute("disabled")).toBe(true);
         expect(document.activeElement).toBe(row);
-        expect(focus.moved).toEqual([row]);
+        expect(focus.moved).toHaveLength(1);
       }
-      if (surface === "inside") expect(focus.moved).toHaveLength(0);
 
       answerReread(threadOf(ask));
       await waitFor(() => expect(askBack.hasAttribute("disabled")).toBe(true));
@@ -6849,12 +6831,13 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
 });
 
 // A clarification sent by Ask back instead closes the choice a question-shaped answer offers as
-// it lands, and reads the ask again. Inside `NoTooltips`, until that read is drawn, the choice
-// stays on the page with both its actions refused and the box read-only: Ask back instead keeps
-// the focus and a press of it sends nothing. Once the read is drawn the choice leaves the page and
-// the card hands the focus to the row, the one move of the focus. Outside `NoTooltips` Ask back
-// instead is held, never `disabled`, while the write is out, and keeps the focus; the choice
-// leaves as the clarification lands, and its hand-off gives the focus to the row then.
+// it lands, and reads the ask again. While the write is out Ask back instead keeps the focus and
+// is `aria-disabled`, on both sides of `NoTooltips`. Inside `NoTooltips`, until that read is
+// drawn, the choice stays on the page with both its actions refused and the box read-only: Ask
+// back instead keeps the focus and a press of it sends nothing. Once the read is drawn the choice
+// leaves the page and the card hands the focus to the row. Outside `NoTooltips` the card stops
+// refusing as the clarification lands, so the choice leaves then, and the card hands the focus to
+// the row at the landing. Either way that is the one move of the focus.
 test("inside NoTooltips Ask back instead keeps the focus until the ask is read again", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
@@ -6889,12 +6872,12 @@ test("inside NoTooltips Ask back instead keeps the focus until the ask is read a
         expect(createComment).toHaveBeenCalledTimes(1);
         expectRefusedHoldingFocus(instead);
         expectAnswerBoxReadOnly(scope);
+        expect(focus.moved).toHaveLength(0);
       } else {
         expect(instead.isConnected).toBe(false);
         expect(document.activeElement).toBe(row);
-        expect(focus.moved).toEqual([row]);
+        expect(focus.moved).toHaveLength(1);
       }
-      if (surface === "inside") expect(focus.moved).toHaveLength(0);
 
       answerReread(threadOf(ask));
       await waitFor(() => expect(instead.isConnected).toBe(false));

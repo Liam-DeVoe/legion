@@ -1,5 +1,6 @@
 import type { IssuePriority } from "../../api/types";
 import { outsideAskCard } from "../inbox/ask-card";
+import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
 import { ACTION_WORDS, CHIP_ACTIONS, chipBox } from "./approval-chip-box";
@@ -13,7 +14,6 @@ import { usableControl } from "./usable-control";
  */
 const HEADER = "[data-issue-header]";
 const PIN_TOGGLE = 'button[data-issue-action="pin"]';
-const PRIORITY_MENU = "[data-priority-menu]";
 const STATUS_MENU = "[data-status-menu]";
 const TITLE_HEADING = 'h1[tabindex="0"]';
 
@@ -116,15 +116,16 @@ function outsideInputsAndAskCards(): boolean {
 
 /**
  * The header's keys: the ones today's header binds, each with its target on the new header (`s`
- * opens the status menu and `p` the priority menu, `0` to `3` set the priority, `e` puts the
+ * opens the status menu and `p` the priority list, `0` to `3` set the priority, `e` puts the
  * caret in the title, `Shift+P` pins and unpins), and `a` and `Shift+R`, which approve and open
  * Request changes on the focused approval chip or entry. Each is the catalogue's action of
  * today's page (`keymap-catalogue.ts`), so its label and its keys are the ones the person sees
- * and sets there. A menu's keys are its own while it is open, Escape among them, which closes it
- * and gives the focus back where the key was pressed (`ChoiceMenu`).
+ * and sets there. A menu's or a list's keys are its own while it is open, Escape among them,
+ * which closes it: the status menu gives the focus back where the key was pressed
+ * (`ChoiceMenu`), and the priority list to its trigger (`MultiSelect`).
  *
  * They register into the `issue` scope the view row pushes (`useIssueKeymap.ts`); this hook
- * pushes none. The digits go through the header's one priority write, the one its menu and the
+ * pushes none. The digits go through the header's one priority write, the one its list and the
  * palette's Set priority rows use, so a refusal of any of them is said once, by the header.
  *
  * `s`, `p` and `e` are offered exactly while their control takes a press by the page's one rule
@@ -145,15 +146,15 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
     },
     {
       action: "issue.priority",
-      run: () => headerControl(PRIORITY_MENU)?.click(),
-      when: () => headerControl(PRIORITY_MENU) !== null,
+      run: () => headerControl(PRIORITY_TRIGGER_SELECTOR)?.click(),
+      when: () => headerControl(PRIORITY_TRIGGER_SELECTOR) !== null,
     },
     {
-      // While the menu is open the focus is in it, whose keys are its own, so a digit there is
-      // the menu's pick and never this second write.
+      // While the list is open the focus is in its text box, whose keys are its own, so a digit
+      // there is the list's and never this second write.
       action: "issue.set-priority",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => headerControl(PRIORITY_MENU) !== null && outsideInputsAndAskCards(),
+      when: () => headerControl(PRIORITY_TRIGGER_SELECTOR) !== null && outsideInputsAndAskCards(),
     },
     {
       // The heading's click opens the editor, and a focus does not, so the key clicks it: a

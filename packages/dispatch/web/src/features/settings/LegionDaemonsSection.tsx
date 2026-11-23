@@ -218,6 +218,11 @@ export function LegionDaemonsSection(): ReactNode {
       removeDaemon.retry();
     }
   };
+  // While either write is out, Save Legion daemon and every row's Remove are held by
+  // `aria-disabled` (`heldPress`), and the address box by `aria-disabled` and read-only, never
+  // disabled: the control the reader pressed or submitted from keeps the focus, and a press or a
+  // submit then sends nothing.
+  const writing = saveDaemon.isPending || removeDaemon.isPending;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (writing) return;
@@ -233,9 +238,6 @@ export function LegionDaemonsSection(): ReactNode {
     }
     saveDaemon.mutate({ project, state_url: url });
   };
-  // The form is held while a save or a remove is out: each control keeps the focus the press
-  // gave it (`heldPress`), and the form sends nothing more until the write lands.
-  const writing = saveDaemon.isPending || removeDaemon.isPending;
 
   return (
     <section aria-labelledby="legion-daemons-heading" data-legion-daemons>

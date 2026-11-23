@@ -1,8 +1,9 @@
 import { createAsk, createIssue, createProject, getIssue } from "./api";
 import { barAction, selectEditorText } from "./editor";
+import { listTrigger, pickFromList } from "./filters";
 import { focusThePage } from "./issue-page-g";
-import { openIssue } from "./keyboard-issue";
-import { pickFromMenu, priorityTrigger } from "./menus";
+import { onBody, openIssue } from "./keyboard-issue";
+import { statusTrigger } from "./menus";
 import { expect, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -36,7 +37,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Keyboard issue");
     const header = page.getByTestId("issue-header");
-    const priority = priorityTrigger(header, issue.key);
+    const priority = listTrigger(header, `Priority of ${issue.key}`);
     const priorityMenu = page.getByRole("menu", { name: `Priority of ${issue.key}` });
     const statusMenu = page.getByRole("menu", { name: "Status" });
 
@@ -67,7 +68,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     );
     await page.keyboard.press("2");
     expect((await patch).postDataJSON()).toEqual({ priority: 2 });
-    await expect(priority).toHaveText("P2");
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} P2`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: 2 });
     await focusThePage(page);
 
@@ -82,7 +83,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await focusThePage(page);
 
     await page.reload();
-    await expect(priority).toHaveText("P2");
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} P2`);
     await expect(header.getByRole("button", { name: "Unpin issue" })).toBeVisible();
     await focusThePage(page);
 
@@ -209,7 +210,7 @@ test("a priority the server refuses shows the header's own failure, whether the 
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Refused priority");
     const header = page.getByTestId("issue-header");
-    const priority = priorityTrigger(header, issue.key);
+    const priority = listTrigger(header, `Priority of ${issue.key}`);
     await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
       if (route.request().method() !== "PATCH") {
         await route.continue();
@@ -232,21 +233,75 @@ test("a priority the server refuses shows the header's own failure, whether the 
     await expect(failure).toBeVisible();
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
-    await expect(priority).toHaveText("Priority");
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} Priority`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
 
     // The menu goes through that same write, so its refusal lands in the one failure the
     // digit key already showed instead of raising a second beside it.
-    await pickFromMenu(priority, "P3");
+    await pickFromList(priority, "P3");
     await expect(failure).toHaveCount(1);
     await expect(failure.getByRole("button", { name: "Retry" })).toBeVisible();
-    await expect(priority).toHaveText("Priority");
+    await expect(priority).toHaveAccessibleName(`Priority of ${issue.key} Priority`);
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
   } finally {
     await context.close();
   }
 });
 
+test("Escape leaves a focused header select, so the next chord is a chord and not type-ahead", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Type-ahead" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await openIssue(page, issue.key, "Type-ahead");
+    // Every PATCH this page sends, so a status a type-ahead picked is caught even though the
+    // pill would show it for only as long as the reader stayed.
+    const patched: string[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "PATCH") {
+        patched.push(new URL(request.url()).pathname);
+      }
+    });
+
+    // Three of the status labels begin with `t` (Triage, Todo, Testing), so a `t` that reached
+    // the Status menu would pick one of them, and a `t` on the priority list's trigger would
+    // open that list, instead of starting the tab chord. `s` opens the status's menu and `p` the
+    // priority's list (dispatch://INFRA-2160), and Escape closes each with nothing written.
+    for (const [key, control] of [
+      ["s", statusTrigger(page)],
+      ["p", listTrigger(page, `Priority of ${issue.key}`)],
+    ] as const) {
+      await page.keyboard.press(key);
+      await expect(control).toHaveAttribute("aria-expanded", "true");
+      await page.keyboard.press("Escape");
+      await expect(control).toHaveAttribute("aria-expanded", "false");
+      await expect.poll(() => onBody(page)).toBe(true);
+      await page.keyboard.press("t");
+      await expect(page.getByTestId("chord-indicator")).toHaveText(/t/);
+      await page.keyboard.press("c");
+      await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+      await page.getByRole("tab", { name: "Spec" }).click();
+      await focusThePage(page);
+    }
+
+    expect(patched).toEqual([]);
+    await expect
+      .poll(() => getIssue(issue.key))
+      .toMatchObject({
+        priority: null,
+        status: "triage",
+      });
+  } finally {
+    await context.close();
+  }
+});
 // The issue page's `0`-`3` write the issue's priority, and an ask card on that page carries option
 // radios. A radio takes no typed text, so this slice's editable policy lets a digit through to the
 // page - which must not turn "pick option 2" into "this issue is P2". The second half of this row

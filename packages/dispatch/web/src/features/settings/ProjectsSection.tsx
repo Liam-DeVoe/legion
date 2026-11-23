@@ -208,6 +208,10 @@ export function ProjectsSection(): ReactNode {
             </div>
           ) : null}
 
+          {/* While the create is out, Key and Name are held, `aria-disabled` and read-only, and
+              New project and the default assignee's list by `aria-disabled`, never disabled: the
+              control the reader submitted from keeps the focus, the guard refuses a submit then
+              (`projectSubmitGuard`), and a pick made in the list then is dropped. */}
           <form
             className={`mt-6 grid gap-4 rounded-xl border p-4 sm:grid-cols-[1fr_2fr_1fr_auto] sm:items-end ${borderDefault}`}
             onSubmit={submitProject}

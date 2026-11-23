@@ -42,6 +42,7 @@ import { IssueTabs } from "./IssueTabs";
 import { ItemMatchList } from "./ItemMatchList";
 import { issuePriority } from "./issue-priority";
 import { issueTabs } from "./issue-tab-list";
+import { PRIORITY_TRIGGER_SELECTOR } from "./PriorityControl";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
@@ -102,9 +103,8 @@ function ItemLandingFailure({
 /** The header controls the `issue` scope presses (`usableControl`, `header-control.ts`). */
 const LABELS_TRIGGER = 'button[aria-label="Edit labels"]';
 const PIN_TOGGLE = 'button[aria-label="Pin issue"], button[aria-label="Unpin issue"]';
-const PRIORITY_MENU = "[data-priority-menu]";
 const STATUS_MENU = "[data-status-menu]";
-const TITLE_HEADING = 'h1[tabindex="0"]';
+const TITLE_BUTTON = 'button[aria-label="Edit title"]';
 
 /**
  * Whether focus is outside every `<input>` and outside every ask card. `0`-`3` and `Shift+P` are
@@ -266,15 +266,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     },
     {
       action: "issue.priority",
-      run: () => usableControl(PRIORITY_MENU)?.click(),
-      when: () => usableControl(PRIORITY_MENU) !== null,
+      run: () => usableControl(PRIORITY_TRIGGER_SELECTOR)?.click(),
+      when: () => usableControl(PRIORITY_TRIGGER_SELECTOR) !== null,
     },
     {
-      // While the menu is open the focus is in it, whose keys are its own, so a digit there is
-      // the menu's pick and never this second write.
+      // While the list is open the focus is in its text box, whose keys are its own, so a digit
+      // there is the list's and never this second write.
       action: "issue.set-priority",
       run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
-      when: () => usableControl(PRIORITY_MENU) !== null && outsideInputsAndAskCards(),
+      when: () => usableControl(PRIORITY_TRIGGER_SELECTOR) !== null && outsideInputsAndAskCards(),
     },
     {
       action: "issue.labels",
@@ -282,12 +282,12 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(LABELS_TRIGGER) !== null,
     },
     {
-      // The heading is a Tab stop only while the issue is open - closed, its `tabIndex` is -1
-      // and it opens no editor - so the key is offered exactly while it edits. The key clicks
-      // it, since the heading opens its editor when activated and not when it takes the focus.
+      // The header draws its Edit title button only while the issue is open, so the key is
+      // offered exactly while the title can be edited. The key presses that button, which opens
+      // the editor when it is activated and not when it takes the focus.
       action: "issue.title",
-      run: () => usableControl(TITLE_HEADING)?.click(),
-      when: () => usableControl(TITLE_HEADING) !== null,
+      run: () => usableControl(TITLE_BUTTON)?.click(),
+      when: () => usableControl(TITLE_BUTTON) !== null,
     },
     {
       action: "issue.pin",

@@ -8,6 +8,7 @@ import {
   patchIssue,
   resolveAsk,
 } from "./api";
+import { listTrigger, pickFromList } from "./filters";
 import { inboxList, inboxPane, selectedRow } from "./inbox-pane";
 import {
   ADDED_WORD,
@@ -27,14 +28,11 @@ import {
   session,
   WINDOW_ANCHOR,
 } from "./inbox-reading-pane";
-import { priorityTrigger } from "./menus";
 import {
   expectReadWhileHeld,
-  expectShows,
   holdIssuePatches,
   inboxRead,
   logReads,
-  pickIn,
   savesEnded,
   watchShown,
 } from "./pick-writes";
@@ -402,11 +400,11 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, inboxRead);
     await page.goto(INBOX);
-    const picker = priorityTrigger(page, issue.key);
-    await expectShows(picker, "3");
+    const picker = listTrigger(page, `Priority of ${issue.key}`);
+    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);
 
-    await pickIn(picker, "1");
-    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    await pickFromList(picker, "P1");
+    await expect.poll(() => shown.values.at(-1)).toBe("P1");
     const fromPick = shown.values.length - 1;
     await expect.poll(() => held.sent.length).toBe(1);
     // A rename of the issue, straight to the server: its live event has the Inbox read the
@@ -420,10 +418,10 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     expectReadWhileHeld(reads, held, renamedAt);
 
     expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
-      "1",
+      "P1",
     ]);
     expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
-    await expectShows(picker, "1");
+    await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P1`);
   } finally {
     await alice.close();
   }

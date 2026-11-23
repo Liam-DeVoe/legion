@@ -1,19 +1,14 @@
 /** What the unit rows of an issue's picks share (`issue-field-writes.test.tsx`,
  *  `assignee-repo-picks.test.tsx`): the issue picked and its detail, the page's query client
- *  signed in, what each save Dispatch received carried, what the shared list's single picks
- *  show, suggest and pick, and the priority's menu.
- *
- *  This tree's priority is a menu, not a native select (INFRA-2160's R4): its trigger is a button
- *  named by the menu and then by what it shows (`ChoiceMenu`), so it is found by the start of its
- *  name, and a pick is a press of the trigger and then of the choice, as a reader makes it, and
- *  writes only then. */
+ *  signed in, what each save Dispatch received carried, and what the shared list's single picks
+ *  show, suggest and pick. */
 import type { QueryKey } from "@tanstack/react-query";
-import { screen, within } from "@testing-library/react";
+import { within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
 import { DispatchQueryClient } from "../api/query-client";
 import type { Issue, IssueDetails } from "../api/types";
-import { panelOf, pickNamed } from "./list-picks";
+import { panelOf } from "./list-picks";
 
 /** CORE-1, the issue every row picks a field of, as Dispatch answers a save of it. */
 export const issue: Issue = {
@@ -114,10 +109,11 @@ export async function pickIn(
 }
 
 /** Picks `repo` from the Repository list `trigger` opens, which writes it, opening the list
- *  unless it stands open: its row where the list offers one - `""` is an Inherit pick, the list's
- *  Inherit row - and else the row that takes it as typed text, `Use "<repo>"`, as a reader gives
- *  a repository the list does not suggest (it suggests the project's default and the issue's
- *  own). A row that reaches the list with a read is waited for before this is called. */
+ *  unless it stands open. Where the list offers `repo` as a row, that row is picked; `""` is an
+ *  Inherit pick, the list's Inherit row. The list suggests only the project's default repository
+ *  and the issue's own, so any other `repo` is typed into the list's text box and given by the row
+ *  that takes it, `Use "<repo>"`, as a reader gives it. A row whose suggestion arrives with a read
+ *  waits for that read before it calls this. */
 export async function pickRepo(
   user: UserEvent,
   trigger: () => HTMLElement,
@@ -133,25 +129,4 @@ export async function pickRepo(
   await user.click(panel.getByRole("combobox"));
   await user.paste(repo);
   await user.click(panel.getByRole("option", { name: `Use "${repo}"` }));
-}
-
-/** Every trigger of the menu named `label` (`Priority of CORE-1`) on the screen, in its order. */
-export function pickerTriggers(label: string): HTMLElement[] {
-  return screen.getAllByRole("button", { name: pickNamed(label) });
-}
-
-/** The priority the menu's `trigger` shows, in the words a native `<select>` of it held as its
- *  value: the priority's digit, and `""` where it shows none (Priority). */
-export function shownValue(trigger: HTMLElement): string {
-  const face = trigger.querySelector("[id$='-face']") ?? trigger;
-  return /^P([0-3])$/.exec(face.textContent ?? "")?.[1] ?? "";
-}
-
-/** Picks `value` in the priority menu `trigger` opens, as a reader does: a press of the trigger,
- *  then of the choice `P<value>`, or of Unset for `""`. */
-export async function pick(user: UserEvent, trigger: HTMLElement, value: string): Promise<void> {
-  await user.click(trigger);
-  const menu = await screen.findByRole("menu");
-  const name = pickNamed(value === "" ? "Unset" : `P${value}`);
-  await user.click(within(menu).getByRole("menuitemradio", { name }));
 }

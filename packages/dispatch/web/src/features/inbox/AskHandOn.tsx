@@ -25,11 +25,9 @@ import {
   badgeSelectWrapper,
 } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
-import { useLiveRegistration } from "../writes/useKeyedWrite";
-import { AskHandOnLiveContext } from "./hand-on-live";
 import { inboxActionMark } from "./inbox-action-mark";
 import { askWaitingOnPerson } from "./list-row";
-import { useAskHandOn } from "./useAskHandOn";
+import { type AskHandOnWrite, AskHandOnWritesContext, useAskHandOn } from "./useAskHandOn";
 
 /**
  * Who an open ask waits on, and the one control that hands it to somebody else. It sits in the
@@ -56,36 +54,58 @@ import { useAskHandOn } from "./useAskHandOn";
  *
  * Under it, where somebody has already handed the ask on, who did it and when
  * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
- * reader pressed it, as `AssignToMe` and `SnoozeControl` do - and, as those two do, it asks
- * the list drawing it to hold the ask while that write is live (pending or failed), because
- * the optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment the
- * write starts (`isMine`, `inAssigneeFilter`): without the hold this card would be unmounted
- * before the server answered, and a refusal would put the row back with a fresh card that
- * never failed, so the reader would see it return and no reason. The hold comes from the list
- * itself, through the context it provides (`hand-on-live.ts`), rather than from a prop every
- * host passes down: the card the reader pressed can be one the Inbox never rendered itself -
- * the decision block its reading column draws through the document page - and a prop that
- * path does not carry is a hold that path does not get. What the list does with the request
- * is the list's own: it holds an ask it already listed a row for and ignores one it did not,
- * since a card can be drawn inside a list that lists no row for its ask - a Reply-thread
- * card, a sibling ask block - and holding that ask would pull it into the reader's list. A
- * card drawn where no list can drop it registers with nobody.
+ * reader pressed it, as `AssignToMe` does.
+ *
+ * Inside an Inbox the write is not the card's: the Inbox holds every card's hand-on, by ask
+ * (`useAskHandOnWrites`), reached through the context it provides (`AskHandOnWritesContext`)
+ * rather than a prop every host passes down, since the card the reader pressed can be one the
+ * Inbox never rendered itself - the decision block its reading column draws through the document
+ * page. The optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment
+ * the write starts (`isMine`, `inAssigneeFilter`), and the reading column's card goes whenever
+ * the reader moves the selection, so the hold outlives the card: the Inbox keeps the row where
+ * the reader saw it while the write is out, and the card drawn for the ask again, or the ask's
+ * short row beside the column, shows the write's `Handing on…`, its refusal and its Retry. The
+ * Inbox keeps only a row it drew: a card can be drawn inside a list that draws no row for its
+ * ask - a Reply-thread card, a sibling ask block - and holding that ask would pull it into the
+ * reader's list. Outside an Inbox the card makes its own write (`useAskHandOn`), which holds
+ * nothing: no list there can drop the card.
  */
 export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
+  const writes = useContext(AskHandOnWritesContext);
+  return writes === undefined ? (
+    <OwnAskHandOn ask={ask} assignee={assignee} />
+  ) : (
+    <HandOnControl ask={ask} assignee={assignee} write={writes.of(ask)} />
+  );
+}
+
+/** The hand-on of a card drawn outside an Inbox, as the card's own write (`useAskHandOn`). */
+function OwnAskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
+  return <HandOnControl ask={ask} assignee={assignee} write={useAskHandOn(ask)} />;
+}
+
+/** The badge, the list it opens and the refusal under them, drawn from `write`: the Inbox's
+ *  hand-on of the ask, or the card's own. */
+function HandOnControl({
+  ask,
+  assignee,
+  write,
+}: {
+  ask: Ask;
+  assignee: string | null;
+  write: AskHandOnWrite;
+}): ReactNode {
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const [open, setOpen] = useState(false);
-  const write = useAskHandOn(ask);
   const page = usePageWords();
-  const onLive = useContext(AskHandOnLiveContext);
-  // The ask held is the one the live hand-on is of, which is the card's own unless a host has
-  // drawn the card for another ask since that press (`useAskHandOn`).
-  useLiveRegistration(write.liveAskId, onLive);
   // The trigger is held (`aria-disabled`, which keeps the focus on it) from the pick until the
-  // commit after the write's answer (`useHeldThroughAnswer`): the one in which the list lets go of
-  // the ask (the registration above) and, where the hand-on takes the ask out of the reader's
-  // list, takes the row and this card away. A refusal lets go of the trigger the commit after its
-  // answer, with Retry beside it. While held, the list does not open.
+  // commit after the write's answer (`useHeldThroughAnswer`). Inside an Inbox the write's
+  // `pending` and the Inbox's hold on the row come from the same state, so the Inbox lets go of
+  // the row in the answer's own commit, while the trigger is still held: where the hand-on takes
+  // the ask out of the reader's list, that commit takes the row and this card away. A refusal
+  // lets go of the trigger the commit after its answer, with Retry beside it. While held, the
+  // list does not open.
   const held = useHeldThroughAnswer(write.pending);
   const waitingOn = askWaitingOnPerson(ask) ?? "";
   // The people are listed only while the list stands open, which is after the reader reached for

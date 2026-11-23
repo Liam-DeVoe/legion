@@ -859,11 +859,37 @@ test("IssuePage offers no `l` while the labels trigger is held by its save, and 
   }
 });
 
-// The issue header's Assignee was a `<select>`, which takes a page's single keys as its own; its
-// list's trigger is a button, and the keymap reads it as the select it replaced, so a digit
-// pressed on it writes no priority. The same keys pressed on the page write it, which shows the
-// binding was there to fire.
-test("IssuePage writes no priority from a digit pressed on the Assignee trigger, and writes it from the page", async () => {
+// `e` presses the header's Edit title button, the control a click reaches, and the button opens
+// the title's editor with the focus in it. The key is the binding's and not text, so the editor
+// holds the title as it was.
+test("IssuePage's `e` opens the title's editor through the Edit title button", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage();
+
+  try {
+    const edit = await screen.findByRole("button", { name: "Edit title" });
+    let presses = 0;
+    edit.addEventListener("click", () => {
+      presses += 1;
+    });
+    await user.keyboard("e");
+    const editor = await screen.findByRole("textbox", { name: "Issue title" });
+    expect(editor).toHaveFocus();
+    expect(editor).toHaveValue(issue.title);
+    expect(presses).toBe(1);
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The issue header's Assignee is an option list's trigger, which takes the keys a select takes.
+// It opens the list on a typed character, with that character as the list's search, so a digit
+// or a letter of a page binding typed on the closed trigger does nothing else on the page: no
+// priority, no title editor, no labels list, no pin, no tab chord. The same digit pressed on the
+// page writes the priority, which shows the binding was there to fire.
+test("IssuePage takes a digit or a binding's letter typed on the closed Assignee trigger as the list's search, and the digit writes the priority from the page", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 3 });
@@ -876,14 +902,23 @@ test("IssuePage writes no priority from a digit pressed on the Assignee trigger,
     // Focused with no press, so the trigger's list stays shut: a closed trigger is the case.
     await act(async () => assignee.focus());
     expect(document.activeElement === assignee).toBe(true);
-    await user.keyboard("2");
-    // This tree's closed trigger takes the list's keys (`keysOnTrigger`, INFRA-2160's R6): the
-    // digit opened the list with "2" in its text box, which writes nothing, as a select's
-    // type-ahead does. Escape closes it, back onto the trigger.
-    const box = await screen.findByRole("combobox", { name: "Search people" });
-    expect((box as HTMLInputElement).value).toBe("2");
-    await user.keyboard("{Escape}");
-    expect(document.activeElement === assignee).toBe(true);
+    for (const [keys, typed] of [
+      ["2", "2"],
+      ["e", "e"],
+      ["l", "l"],
+      ["t", "t"],
+      ["{Shift>}P{/Shift}", "P"],
+    ] as const) {
+      await user.keyboard(keys);
+      const search = await screen.findByRole("combobox", { name: "Search people" });
+      expect((search as HTMLInputElement).value, typed).toBe(typed);
+      expect(screen.queryByRole("textbox", { name: "Issue title" }), typed).toBeNull();
+      expect(screen.queryByRole("combobox", { name: "Search or create label" }), typed).toBeNull();
+      await user.keyboard("{Escape}");
+      expect(document.activeElement === assignee, typed).toBe(true);
+    }
+    expect(screen.getByRole("button", { name: "Pin issue" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Spec", selected: true })).toBeTruthy();
     await act(async () => assignee.blur());
     await user.keyboard("3");
 

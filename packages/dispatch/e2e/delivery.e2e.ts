@@ -6,7 +6,7 @@ import {
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { openFilterPanel } from "./filters";
+import { listTrigger, openFilterPanel, pickFromList } from "./filters";
 import { sql } from "./psql";
 import { expect, type Page, test } from "./test";
 import { pressFinger } from "./touch";
@@ -168,7 +168,7 @@ test("colour by priority with swimlanes splits the merges into one column per pr
   const lanes = page.getByRole("switch", { name: "Swimlanes" });
   await expect(lanes).toHaveAttribute("aria-checked", "false");
   await expect(page.getByTitle("Merges (2)")).toBeVisible();
-  await page.getByLabel("Color merges by").selectOption("priority");
+  await pickFromList(listTrigger(page, "Color merges by"), "Priority");
   await lanes.click();
 
   await expect(page).toHaveURL(/colorBy=priority/);

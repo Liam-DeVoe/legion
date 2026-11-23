@@ -7,7 +7,7 @@ import {
   tableFilterActive,
   textMutedOnCanvas,
 } from "../theme/classes";
-import { CONTROL } from "./control-names";
+import { CONTROL, type ControlSize } from "./control-names";
 import type { RowNoun } from "./DataTable";
 import { MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
@@ -21,8 +21,16 @@ function FunnelIcon(): ReactNode {
   );
 }
 
-const filterTrigger = (active: boolean) =>
-  `min-h-11 min-w-11 rounded p-1 md:min-h-8 md:min-w-8 ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
+/** The funnel's touch target at each size. The comfortable size keeps 44 px at every width. The
+ *  compact size keeps 44 px wherever a finger is the pointer and gives it up only from `md`,
+ *  where a mouse is, for 32 px. */
+const FILTER_TARGET: Record<ControlSize, string> = {
+  comfortable: "min-h-11 min-w-11",
+  compact: "min-h-11 min-w-11 md:min-h-8 md:min-w-8",
+};
+
+const filterTrigger = (active: boolean, size: ControlSize) =>
+  `${FILTER_TARGET[size]} rounded p-1 ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
 
 export interface ColumnFilterProps<TData> {
   readonly column: Column<TData, unknown>;
@@ -32,6 +40,9 @@ export interface ColumnFilterProps<TData> {
   readonly noun: RowNoun;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
+  /** How much room the funnel takes (`ControlSize`): the table's own `size`, which is the
+   *  page's. */
+  readonly size?: ControlSize;
   /** The values whose rows are not loaded yet: each says `load` rather than count them as
    *  none, as Status does for Done before the closed issues are read. */
   readonly unloaded: readonly string[];
@@ -49,6 +60,7 @@ export function ColumnFilter<TData>({
   noun,
   open,
   onOpenChange,
+  size = "comfortable",
   unloaded,
 }: ColumnFilterProps<TData>): ReactNode {
   const meta = column.columnDef.meta;
@@ -63,7 +75,7 @@ export function ColumnFilter<TData>({
         onOpenChange={onOpenChange}
         open={open}
         title={`Filter ${name}`}
-        triggerClassName={filterTrigger(value !== "")}
+        triggerClassName={filterTrigger(value !== "", size)}
       >
         {() => (
           <input
@@ -113,7 +125,7 @@ export function ColumnFilter<TData>({
       triggerAriaLabel={
         picks.length === 0 ? `Filter ${name}` : `Filter ${name}: ${picks.length} picked`
       }
-      triggerClassName={filterTrigger(picks.length > 0)}
+      triggerClassName={filterTrigger(picks.length > 0, size)}
     >
       <FunnelIcon />
     </MultiSelect>

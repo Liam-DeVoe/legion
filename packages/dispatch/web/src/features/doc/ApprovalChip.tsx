@@ -343,6 +343,8 @@ function RequestChangesDialog({
               {page !== null && held ? page.CONTROL_LABELS.close : "Cancel"}
             </button>
             <button
+              // Held while the write is out (`heldPress`), so the focus the reader's press left
+              // on it stays there; `disabled` only while there is no reason to send.
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`}
               disabled={trimmed === ""}
               {...heldPress(held, () => onSubmit(trimmed))}

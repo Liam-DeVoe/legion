@@ -10,6 +10,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
+import { listOf, listTrigger, pickFromList } from "./filters";
 import {
   assigneeFilter,
   assigneeOptions,
@@ -30,7 +31,7 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
-import { bulkSnoozeMenu, bulkSnoozeTrigger, choiceOf, menuOf, pickFromMenu } from "./menus";
+import { bulkSnoozeMenu, choiceOf, menuOf } from "./menus";
 import { stubbed } from "./stub/stub-test";
 
 /** The first choice of the bulk bar's Snooze menu, which `h` with rows marked opens on. */
@@ -146,7 +147,7 @@ test.describe("inbox selection", () => {
 
     await markFromKeyboard(page, 2);
     const bar = page.getByRole("toolbar", { name: "Selected rows" });
-    await pickFromMenu(bulkSnoozeTrigger(page), "Tomorrow");
+    await pickFromList(listTrigger(bar, "Snooze selected asks"), "Tomorrow");
 
     await expect(bar).toContainText(
       "Could not snooze 2 of 2: snoozed_until must be a moment, and 1 other reason."
@@ -171,7 +172,8 @@ test.describe("inbox selection", () => {
     // `h` from the box the reader just ticked is the flow the pointer leaves them in: it
     // opens the bulk Snooze menu with no roving in between.
     await page.keyboard.press("h");
-    await expect(bulkFirstChoice(page)).toBeFocused();
+    const picker = listTrigger(bar, "Snooze selected asks");
+    await expect(listOf(picker).getByRole("combobox")).toBeFocused();
     await page.keyboard.press("Escape");
 
     // j moves off the ticked row, and h opens the menu from there too. A tick marks its
@@ -211,7 +213,8 @@ test.describe("inbox selection", () => {
     const bar = page.getByRole("toolbar", { name: "Selected rows" });
     await expect(bar).toContainText("1 selected");
     await page.keyboard.press("h");
-    await expect(bulkFirstChoice(page)).toBeFocused();
+    const picker = listTrigger(bar, "Snooze selected asks");
+    await expect(listOf(picker).getByRole("combobox")).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(rows.nth(1)).toBeFocused();
     await expect(bar).toContainText("1 selected");
@@ -289,7 +292,14 @@ test.describe("inbox selection", () => {
       items.map((item) => item.getAttribute("data-inbox-row") ?? "")
     )) {
       const picker = await rowSnooze(page, askId);
-      pickers.push((await picker.getAttribute("aria-label")) ?? "none");
+      // The shared list's single pick is named by the element its `aria-labelledby` names first.
+      pickers.push(
+        await picker.evaluate(
+          (node) =>
+            document.getElementById(node.getAttribute("aria-labelledby")?.split(" ")[0] ?? "")
+              ?.textContent ?? "none"
+        )
+      );
     }
     if (hasReadingPane(page)) {
       expect(pickers).toEqual(
@@ -349,8 +359,7 @@ test.describe("inbox selection", () => {
   );
 
   // The `?agent=` chip narrows the list the same way the assignee filter does, and the Inbox
-  // stays mounted across it: the chip's clear link and the browser's own Back are client-side
-  // moves.
+  // stays mounted across it: the chip's press and the browser's own Back are client-side moves.
   agentFilterTest(
     "a mark made outside the agent filter does not count inside it @pr",
     async ({ page, scene }) => {
@@ -360,7 +369,7 @@ test.describe("inbox selection", () => {
       await expect(rows).toHaveCount(1);
       await expect(rows.nth(0)).toHaveAttribute("data-inbox-row", scene.fromOtherAskId);
 
-      await page.getByRole("link", { name: "Clear agent filter" }).click();
+      await page.getByRole("button", { name: "Clear agent filter" }).click();
       await expect(rows).toHaveCount(2);
       await page
         .locator(`[data-inbox-row="${scene.fromSessionAskId}"]`)
@@ -398,7 +407,7 @@ test.describe("inbox selection", () => {
 
     await markFromKeyboard(page, 2);
     const bar = page.getByRole("toolbar", { name: "Selected rows" });
-    await pickFromMenu(bulkSnoozeTrigger(page), "Tomorrow");
+    await pickFromList(listTrigger(bar, "Snooze selected asks"), "Tomorrow");
     await expect(bar).toContainText("Could not snooze 2 of 2");
 
     const rows = page.locator("[data-inbox-row]");
@@ -426,7 +435,9 @@ test.describe("inbox selection", () => {
       await expect(hold).toBeFocused();
       await page.keyboard.press("h");
       await expect(hold).toBeFocused();
-      await expect(bulkSnoozeMenu(page)).toHaveCount(0);
+      const picker = listTrigger(bar, "Snooze selected asks");
+      await expect(picker).not.toBeFocused();
+      await expect(picker).toHaveAttribute("aria-expanded", "false");
     }
   );
 
@@ -451,10 +462,11 @@ test.describe("inbox selection", () => {
     await rows.nth(2).getByRole("checkbox").check();
     await expect(bar).toContainText("1 selected");
 
-    await bulkSnoozeTrigger(page).click();
-    await expect(bulkFirstChoice(page)).toBeFocused();
+    const picker = listTrigger(bar, "Snooze selected asks");
+    await picker.click();
+    await expect(listOf(picker).getByRole("combobox")).toBeFocused();
     await page.keyboard.press("Escape");
-    await expect(bulkSnoozeTrigger(page)).toBeFocused();
+    await expect(picker).toBeFocused();
   });
 });
 

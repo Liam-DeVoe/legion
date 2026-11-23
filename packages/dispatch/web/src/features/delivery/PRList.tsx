@@ -52,7 +52,7 @@ import {
 } from "./lib/prList";
 
 /** The facets that are columns of this table, so in the List view each is filtered on its own
- *  header rather than from the page's panel (INFRA-3135, R2). The page maps them to and from the
+ *  header rather than from the page's panel. The page maps them to and from the
  *  column filters and keeps writing its own parameters: the table filters nothing itself,
  *  because what it draws is the answer Dispatch already filtered (`serverFiltered` below). */
 export const COLUMN_FACETS = [
@@ -126,7 +126,7 @@ type ColumnId =
   | "rework";
 
 /** Every column, in the order the table opens with, at the width the list drew it before the
- *  shared table (INFRA-3135, R8): each fits its longest usual content at `text-xs`, "deployed
+ *  shared table: each fits its longest usual content at `text-xs`, "deployed
  *  Sep 26, 10:48 PM", "ACME-1028 · No priority", a parent agent's title, and a sortable header's
  *  label with its arrow. Title is the one the table fills its box with (`fillColumn`): never
  *  narrower than its 128 px, it takes whatever the box has over the others, so the columns come
@@ -340,7 +340,7 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
       title: {
         accessorFn: (row) => row.pr.title,
         sortingFn: byText,
-        // Plain text, as the list drew it before the shared table (INFRA-3135, R8), and what `o`
+        // Plain text, as the list drew it before the shared table, and what `o`
         // and Enter press for the row in hand: the core's keymap clicks `PR_OPEN_ATTRIBUTE`. It
         // is no control and no stop for the focus; the press goes up to the row's own, which
         // opens the details as a pointer press anywhere on the row does.
@@ -600,6 +600,7 @@ export function PRList({
         />
       )}
       scrollTestId="delivery-pr-list"
+      size="compact"
       stackColumn="title"
     />
   );
