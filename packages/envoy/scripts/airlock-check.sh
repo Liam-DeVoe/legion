@@ -50,7 +50,9 @@
 # and k7's consumers come from sjawhar/dotfiles), k6 and k7 need bun, wget, git, uv and the
 # clients scripts/airlock-clients.sh
 # installs (az, gcloud, pulumi and boto3), k9 needs git, and k15 needs lake from the Lean
-# toolchain this environment names. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
+# toolchain this environment names and a Postgres server for the request state machine's
+# mutants: BROKER_TEST_DATABASE_URL, else DEV_BROKER_POSTGRES_URL; with neither, k15 reports
+# those mutants UNKNOWN and fails. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
 # is, so a pod with no container runtime names its test server there.
 # k7 also requires four operator inputs, and refuses to start without them, naming each one
 # missing: AIRLOCK_GCLOUD_SECRET, AIRLOCK_GWS_READ_SECRET and AIRLOCK_GWS_ADMIN_SECRET, the
@@ -2170,11 +2172,15 @@ check_k15() {
 		"the seed corpus exited $seed_status and -fuzztime=600s exited $fuzz_status"
 
 	echo "airlock-check: running the mutants..." >&2
-	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" bash "$SCRIPT_DIR/airlock-mutants.sh") >"$WORK_DIR/mutants.log" 2>&1
+	# The request state machine's mutants run their tests against a Postgres server; with none,
+	# airlock-mutants.sh runs them not at all and exits 3, which this check reads as UNKNOWN and
+	# never as caught.
+	local database="${BROKER_TEST_DATABASE_URL:-${DEV_BROKER_POSTGRES_URL:-}}"
+	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" BROKER_TEST_DATABASE_URL="$database" bash "$SCRIPT_DIR/airlock-mutants.sh") >"$WORK_DIR/mutants.log" 2>&1
 	local mutants_status=$?
 	echo
 	echo "the mutants:"
-	grep -E '^(PASS|FAIL):' "$WORK_DIR/mutants.log" | sed 's/^/  /'
+	grep -E '^(PASS|FAIL|UNKNOWN):' "$WORK_DIR/mutants.log" | sed 's/^/  /'
 	# The check's words name six mutants, which is a floor and not a count: the tree holds every
 	# mutant of the decision anyone has written, and each must be caught. So this reads two
 	# things — that airlock-mutants.sh caught every mutant it found, and that the six the check
@@ -2184,11 +2190,11 @@ check_k15() {
 	for named in go-extra-header go-no-host-check go-hostless-entry go-carries-value lean-all-headers lean-carries-value; do
 		grep -qE "^PASS: $named " "$WORK_DIR/mutants.log" || missing="$missing $named"
 	done
-	control "scripts/airlock-mutants.sh exited $mutants_status: $caught mutant(s) caught, the check's six among them"
-	control "$(grep -E '^(PASS|FAIL):' "$WORK_DIR/mutants.log" | tr '\n' ' ')"
+	control "scripts/airlock-mutants.sh exited $mutants_status: $caught mutant(s) caught, the check's six among them; $(grep -E '^UNKNOWN: [0-9]' "$WORK_DIR/mutants.log" || echo 'every mutant ran')"
+	control "$(grep -E '^(PASS|FAIL|UNKNOWN):' "$WORK_DIR/mutants.log" | tr '\n' ' ')"
 	judge "$([ "$mutants_status" = 0 ] && [ -z "$missing" ] && echo 0 || echo 1)" \
-		"negative control: each of the six mutants is caught" \
-		"airlock-mutants.sh exited $mutants_status with $caught caught and none of the six missing${missing:+; missing:$missing}"
+		"negative control: each of the six mutants is caught, and every other mutant of the tree ran and was caught" \
+		"airlock-mutants.sh exited $mutants_status ($([ "$mutants_status" = 3 ] && echo 'UNKNOWN: a mutant did not run' || echo 'not 0')) with $caught caught${missing:+; of the six missing:$missing}"
 }
 
 ###############################################################################################

@@ -231,7 +231,10 @@ consumers (`scripts/az-broker`, `scripts/secret-run`, `shims/gh`,
 `scripts/gcloud-broker` and the tier commands of `gws/accounts.json`) are fetched from
 `sjawhar/dotfiles` at main with `gh api`. `k15` needs no stack: it builds the Lean
 model with `lake`, prints its theorem statements and their axioms, runs the comparison
-fuzz test for ten minutes, and runs the six mutants through `airlock-mutants.sh`.
+fuzz test for ten minutes, and runs every mutant through `airlock-mutants.sh`, the six
+it names among them. The request state machine's mutants need a Postgres server:
+`BROKER_TEST_DATABASE_URL`, else `DEV_BROKER_POSTGRES_URL`; with neither, they do not run,
+the script exits 3, and k15 fails as UNKNOWN.
 
 Before starting `k7`, set these operator inputs. An absent or empty input is a usage
 error (exit 2), reported before setup starts, and so is a broker name that is not
@@ -714,18 +717,23 @@ defect as a unified diff; for each, the script copies `packages/envoy` to a fres
 comparison fuzz test over the committed seed corpus, a `lean-*.patch` under `lake build` or, when
 it still builds, that same comparison against the mutated model, and a `proxy-*.patch`,
 `policy-*.patch` or `requests-*.patch` under every test its own `# must fail: <Test>` lines name,
-in that package. A `requests-*.patch` needs the Postgres `BROKER_TEST_DATABASE_URL` names: without
-one it prints `UNKNOWN:` and is not run, and naming it on the command line exits 2. A mutant
-nothing catches fails the run.
+in that package. A `requests-*.patch` needs the Postgres `BROKER_TEST_DATABASE_URL` names. Without
+one it is not run: it prints `UNKNOWN:`, the summary names it, and the run exits 3, so a check that
+reads the exit never takes a mutant nobody ran for a caught one. `--skip-database-mutants` leaves
+those mutants out on purpose: each prints `SKIPPED:`, the summary lists them, and they alone do not
+make the run exit 3. A mutant nothing catches fails the run.
 
 ```bash
-AIRLOCK_MODEL=<the built airlock-model> packages/envoy/scripts/airlock-mutants.sh [<name>...]
+AIRLOCK_MODEL=<the built airlock-model> BROKER_TEST_DATABASE_URL=<a Postgres server> \
+  packages/envoy/scripts/airlock-mutants.sh [--skip-database-mutants] [<name>...]
 ```
 
 With no name it runs every mutant; a name is a patch's file name with or without
-`.patch`. It prints one `PASS:` or `FAIL:` line per mutant and exits non-zero when
-any was not caught, 2 when the model mutants need `lake` and it is not installed.
-No patch ever touches this repository.
+`.patch`. It prints one `PASS:`, `FAIL:`, `UNKNOWN:` or `SKIPPED:` line per mutant. It
+exits 1 when any was not caught, else 3 when any was not run, else 0, and 2 when the
+model mutants need `lake` and it is not installed. `airlock-check.sh k15` passes it
+`BROKER_TEST_DATABASE_URL`, else `DEV_BROKER_POSTGRES_URL`. No patch ever touches this
+repository.
 
 ## listener-deploy-probe.sh
 

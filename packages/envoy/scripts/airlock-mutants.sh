@@ -30,23 +30,26 @@
 #     load fingerprints, which a live grant is held to at its release.
 #   - a requests mutant (requests-*.patch, internal/cipher/requests/testdata/mutants) is held to
 #     the same rule against ./internal/cipher/requests/, whose tests need the Postgres
-#     BROKER_TEST_DATABASE_URL names. Where it names none, the mutant is not run and its line says
-#     UNKNOWN, counted apart from the caught ones; a requests mutant named on the command line with
-#     no database exits 2.
+#     BROKER_TEST_DATABASE_URL names. Where it names none, the mutant is not run: its line says
+#     UNKNOWN, and the run exits 3, since a mutant nobody ran is neither caught nor missed and a
+#     check that reads this script must not take the run for a pass. --skip-database-mutants
+#     makes that a choice: each such mutant's line says SKIPPED, the run lists them at its end,
+#     and they alone no longer make it exit 3.
 #
 # A mutant nothing catches is a hole in the tests or in the proofs, and this script fails on
 # it. The patches are never applied to this repository: every one is applied inside the copy,
 # and the run ends with jj's or git's status of the repository to show it is untouched.
 #
-# Usage: packages/envoy/scripts/airlock-mutants.sh [<name>...]
+# Usage: packages/envoy/scripts/airlock-mutants.sh [--skip-database-mutants] [<name>...]
 #        with no name, every mutant of the four testdata/mutants directories; a name is a patch's
 #        file name, with or without the .patch suffix (for example go-carries-value).
 #
 # Needs go, GNU patch or git (the patches are plain unified diffs, and `git apply -p1`
 # applies them where patch is not installed), and, for the model mutants, lake from the Lean
 # toolchain this environment names (ELAN_HOME and PATH are taken as they are); a missing
-# lake exits 2. The Go mutants need the built model, and the proxy and policy mutants need neither. One
-# PASS: or FAIL: line per mutant, and a non-zero exit when any mutant was not caught.
+# lake exits 2. The Go mutants need the built model, and the proxy, policy and requests mutants
+# need neither. One PASS:, FAIL:, UNKNOWN: or SKIPPED: line per mutant; the exit is 1 when any
+# mutant was not caught, else 3 when any was not run (UNKNOWN), else 0.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -61,7 +64,7 @@ MODEL="$AIRLOCK_PKG_DIR/lean/.lake/build/bin/airlock-model"
 
 usage() {
 	cat <<'EOF'
-usage: airlock-mutants.sh [<name>...]
+usage: airlock-mutants.sh [--skip-database-mutants] [<name>...]
 
 Applies each mutant of internal/cipher/proxyrules/testdata/mutants, of
 internal/cipher/proxy/testdata/mutants, of internal/cipher/policy/testdata/mutants and of
@@ -71,25 +74,41 @@ seed corpus, a lean-*.patch must fail `lake build`, because a proof no longer ho
 same comparison against the mutated model, and a proxy-*.patch, policy-*.patch or
 requests-*.patch must fail every test of its package its own `# must fail: <Test>` lines name,
 and is counted by those tests alone. A requests-*.patch needs the Postgres
-BROKER_TEST_DATABASE_URL names; without one it is reported UNKNOWN and not run.
+BROKER_TEST_DATABASE_URL names; without one it is not run, reported UNKNOWN, and the run
+exits 3.
 
-  <name>   a patch's file name, with or without the .patch suffix (for example
-           go-carries-value or proxy-connect-carried); with no name, every mutant of the four
-           directories
+  --skip-database-mutants   choose not to run the requests-* mutants when
+                            BROKER_TEST_DATABASE_URL names no database: each is reported
+                            SKIPPED and listed at the end, and they alone do not make the run
+                            exit 3
+  <name>                    a patch's file name, with or without the .patch suffix (for example
+                            go-carries-value or proxy-connect-carried); with no name, every
+                            mutant of the four directories
 
-No patch is ever applied to this repository. It prints one PASS:, FAIL: or UNKNOWN: line per
-mutant and a last line saying how many were caught, exits non-zero when a mutant was not caught,
-and exits 2 when go, lake or both patch and git are missing, or when a requests mutant named on
-the command line has no database.
+No patch is ever applied to this repository. It prints one PASS:, FAIL:, UNKNOWN: or SKIPPED:
+line per mutant and a summary naming each mutant that was not run. It exits 1 when a mutant
+was not caught, else 3 when a mutant was not run, else 0, and 2 when go, lake or both patch
+and git are missing.
 EOF
 }
 
-case "${1:-}" in
--h | --help)
-	usage
-	exit 0
-	;;
-esac
+SKIP_DATABASE_MUTANTS=false
+names=()
+for arg in "$@"; do
+	case "$arg" in
+	-h | --help)
+		usage
+		exit 0
+		;;
+	--skip-database-mutants) SKIP_DATABASE_MUTANTS=true ;;
+	-*)
+		echo "airlock-mutants: unexpected option $arg" >&2
+		usage >&2
+		exit 2
+		;;
+	*) names+=("$arg") ;;
+	esac
+done
 
 if ! command -v go >/dev/null 2>&1; then
 	echo "airlock-mutants: go is not on PATH" >&2
@@ -125,15 +144,11 @@ mutant_file() {
 
 # The mutants to run: the names given, else every patch of the four testdata/mutants, in name order.
 mutants=()
-if [[ $# -gt 0 ]]; then
-	for name in "$@"; do
+if [[ ${#names[@]} -gt 0 ]]; then
+	for name in "${names[@]}"; do
 		name="${name%.patch}"
 		if [[ ! -f "$(mutant_file "$name")" ]]; then
 			echo "airlock-mutants: no mutant named $name in $MUTANT_DIR, $PROXY_MUTANT_DIR, $POLICY_MUTANT_DIR or $REQUESTS_MUTANT_DIR" >&2
-			exit 2
-		fi
-		if [[ "$name" == requests-* && -z "${BROKER_TEST_DATABASE_URL:-}" ]]; then
-			echo "airlock-mutants: $name's tests need the Postgres BROKER_TEST_DATABASE_URL names, and it names none" >&2
 			exit 2
 		fi
 		mutants+=("$name")
@@ -143,6 +158,12 @@ else
 		mutants+=("$(basename "$patch_file" .patch)")
 	done
 fi
+
+# database_mutant_unrun answers whether <name> is a mutant whose tests need the Postgres
+# BROKER_TEST_DATABASE_URL names, on a run where it names none.
+database_mutant_unrun() {
+	[[ "$1" == requests-* && -z "${BROKER_TEST_DATABASE_URL:-}" ]]
+}
 
 needs_lake=false
 needs_model=false
@@ -231,8 +252,20 @@ named_tests() {
 }
 
 failures=0
-unrun=0
+unrun=()
+skipped=()
 for name in "${mutants[@]}"; do
+	# A mutant whose tests cannot run here is set aside before anything is copied or applied.
+	if database_mutant_unrun "$name"; then
+		if [[ "$SKIP_DATABASE_MUTANTS" == true ]]; then
+			echo "SKIPPED: $name — --skip-database-mutants: its tests need the Postgres BROKER_TEST_DATABASE_URL names, and it names none"
+			skipped+=("$name")
+		else
+			echo "UNKNOWN: $name — not run: its tests need the Postgres BROKER_TEST_DATABASE_URL names, and it names none, so they would skip"
+			unrun+=("$name")
+		fi
+		continue
+	fi
 	started=$SECONDS
 	copy="$WORK_DIR/$name"
 	log="$WORK_DIR/$name.log"
@@ -252,11 +285,6 @@ for name in "${mutants[@]}"; do
 		requests-*) package=./internal/cipher/requests/ ;;
 		*) package=./internal/cipher/proxy/ ;;
 		esac
-		if [[ "$name" == requests-* && -z "${BROKER_TEST_DATABASE_URL:-}" ]]; then
-			echo "UNKNOWN: $name — not run: the tests it names need the Postgres BROKER_TEST_DATABASE_URL names, and it names none, so they would skip"
-			unrun=$((unrun + 1))
-			continue
-		fi
 		tests="$(must_fail "$(mutant_file "$name")")"
 		if [ -z "$tests" ]; then
 			echo "FAIL: $name — the patch names no test that must fail (a '# must fail: <Test>' line), so nothing it could catch would count"
@@ -313,10 +341,13 @@ echo
 if [[ $failures -gt 0 ]]; then
 	echo "$failures of ${#mutants[@]} mutants were not caught"
 else
-	echo "$((${#mutants[@]} - unrun)) mutants, each caught"
+	echo "$((${#mutants[@]} - ${#unrun[@]} - ${#skipped[@]})) mutants, each caught"
 fi
-if [[ $unrun -gt 0 ]]; then
-	echo "$unrun mutant(s) not run, so neither caught nor missed: set BROKER_TEST_DATABASE_URL to run the requests-* mutants"
+if [[ ${#skipped[@]} -gt 0 ]]; then
+	echo "skipped by --skip-database-mutants, so neither caught nor missed: ${skipped[*]}"
+fi
+if [[ ${#unrun[@]} -gt 0 ]]; then
+	echo "UNKNOWN: ${#unrun[@]} mutant(s) not run, so neither caught nor missed: ${unrun[*]}; set BROKER_TEST_DATABASE_URL to a Postgres server to run them, or pass --skip-database-mutants to leave them out on purpose"
 fi
 
 # Last, the assurance that this run changed nothing here: every patch was applied inside
@@ -333,4 +364,9 @@ else
 	echo "The repository itself was never patched: every patch was applied under $WORK_DIR, never in $REPO_DIR."
 fi
 
-[[ $failures -eq 0 ]]
+if [[ $failures -gt 0 ]]; then
+	exit 1
+fi
+if [[ ${#unrun[@]} -gt 0 ]]; then
+	exit 3
+fi
