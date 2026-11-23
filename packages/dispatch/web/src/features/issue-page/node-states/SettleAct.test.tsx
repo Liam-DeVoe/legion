@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { type HeldNotifications, holdNotifications } from "../../../__tests__/commits";
 import { jump, realClock } from "../../../__tests__/fake-clock";
 import { installFakeLiveSockets } from "../../../__tests__/live-socket-harness";
 import { ApiError, api, type WriteBounds, type WriteRequest } from "../../../api/client";
@@ -12,17 +13,18 @@ import { liveSocketFor } from "../../../api/live-socket";
 import { issueCoverageQuery } from "../../../api/queries";
 import { MIN_REFETCH_INTERVAL_MS } from "../../../api/query-refresh";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import type { TreeNode } from "../issue-tree";
+import { heldBy, type TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
 import { CONTROL_LABELS, SETTLE_ANSWERS } from "../page-words";
-import { treeAnswer as fixtureAnswer } from "../tree-read/tree-fixtures";
+import { treeAnswer as fixtureAnswer, treeNode } from "../tree-read/tree-fixtures";
 import {
   issueTreeQuery,
   subscribeTreeFreshness,
   type TreeAnswer,
   viewQuery,
 } from "../tree-read/tree-read";
+import { closeOvertaken } from "./node-states";
 import { SettleIssueProvider } from "./settle-write";
 
 /**
@@ -47,7 +49,8 @@ const SETTLE_PATH =
 const HELD_VIEW = viewQuery(KEY, "spec").queryKey;
 const OPEN_VIEW = viewQuery(KEY, "verification").queryKey;
 
-/** Requirement 7, which an agent proposed and nobody has settled. */
+/** Requirement 7, which an agent proposed and nobody has settled: the tree read names it by the
+ *  id `readId` holds. */
 const PROPOSED: TreeNode = {
   alsoUnder: [],
   children: [],
@@ -58,6 +61,7 @@ const PROPOSED: TreeNode = {
   id: "spec-md#b-r7",
   life: "proposed",
   question: false,
+  readId: `${KEY}/spec-md#r7`,
   reference: REFERENCE,
   replaced: false,
   text: "Requirement 7",
@@ -71,6 +75,7 @@ const PROPOSED: TreeNode = {
 const OTHER_ISSUE: TreeNode = {
   ...PROPOSED,
   id: "core-2-spec-md#b-r7",
+  readId: "CORE-2/spec-md#r7",
   reference: "dispatch://CORE-2/artifact/spec-md#b-r7",
 };
 /** The settle's path of `OTHER_ISSUE`, under the issue its address names. */
@@ -97,6 +102,37 @@ function PageReads(): ReactNode {
   useQuery(issueCoverageQuery(KEY));
   useQuery(viewQuery(KEY, "verification"));
   return null;
+}
+
+/** The row of `node` as `IssueTree` draws it, focused where `focused` says, its node as the tree
+ *  read the page holds draws it: where the answer holds the node (its `readId`), with the marks
+ *  that answer gives it, as the outline stamps them on its rows (`closeOvertaken`), so an answer
+ *  that holds it settled draws it with no mark and no act; else as given. The read is watched by
+ *  an observer that is never enabled, so it sends no request. */
+function TreeRow({ focused, node }: { focused: boolean; node: TreeNode }): ReactNode {
+  const answer = useQuery({ ...issueTreeQuery(KEY), enabled: false }).data;
+  return (
+    <NodeRow
+      author={{ kind: "person", name: "bob", reader: false }}
+      body={false}
+      context={false}
+      focused={focused}
+      isClosed={false}
+      level={1}
+      node={
+        answer?.nodes?.some((read) => read.id === node.readId)
+          ? closeOvertaken(node, answer, heldBy)
+          : node
+      }
+      onFocus={() => {}}
+      onPin={() => {}}
+      onToggle={() => {}}
+      ownAnswer={false}
+      pinned={false}
+      rowKey="row"
+      tabStop
+    />
+  );
 }
 
 interface DrawnRow {
@@ -151,10 +187,10 @@ interface RowOptions {
 }
 
 /** The focused proposed row `options.node`, drawn in the tree of `KEY` as `IssueTree` draws its
- *  rows (`SettleIssueProvider`), its settle answered by `answer` at each attempt, the first
- *  `options.failedCoverage` reads of the coverage failing, each other read of it answered
- *  `options.covered`, and each read of the tree answered by `options.tree`. `refocus` draws it
- *  unfocused and focused again. */
+ *  rows (`SettleIssueProvider`) and as the tree read draws its node (`TreeRow`), its settle
+ *  answered by `answer` at each attempt, the first `options.failedCoverage` reads of the coverage
+ *  failing, each other read of it answered `options.covered`, and each read of the tree answered
+ *  by `options.tree`. `refocus` draws it unfocused and focused again. */
 function drawRow(
   answer: (attempt: number) => Promise<unknown>,
   options: RowOptions = {}
@@ -205,22 +241,7 @@ function drawRow(
             Elsewhere
           </button>
           <SettleIssueProvider value={KEY}>
-            <NodeRow
-              author={{ kind: "person", name: "bob", reader: false }}
-              body={false}
-              context={false}
-              focused={focused}
-              isClosed={false}
-              level={1}
-              node={options.node ?? PROPOSED}
-              onFocus={() => {}}
-              onPin={() => {}}
-              onToggle={() => {}}
-              ownAnswer={false}
-              pinned={false}
-              rowKey="row"
-              tabStop
-            />
+            <TreeRow focused={focused} node={options.node ?? PROPOSED} />
           </SettleIssueProvider>
         </NoTooltips>
       </MemoryRouter>
@@ -558,6 +579,58 @@ test("after a 200 Settling… is said until the tree read answers", async () => 
     expect(drawn.row().querySelector('[data-node-mark="proposed"]')).not.toBeNull();
     expect(drawn.sentence()).toBeNull();
   } finally {
+    drawn.unmount();
+  }
+});
+
+// The read of the tree that ends the wait after a landing draws its row in the render that ends
+// the wait: where it answers with the node settled, the act goes with the row's mark, and is never
+// drawn taking a press on a row still marked proposed, where a press would settle a node Dispatch
+// holds settled, and be refused. TanStack Query tells the tree read's observers on a timer of its
+// own, as a browser does (`holdNotifications`), and React draws an update it is told outside that
+// timer at once, so a wait that ended outside it would draw the act before the row.
+test("after a 200 the tree read that answers the node settled takes the act and the mark in one render", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<TreeAnswer>();
+  const drawn = drawRow(async () => settled(), { tree: () => answer.promise });
+  const tree = () => drawn.client.getQueryState(issueTreeQuery(KEY).queryKey);
+  // What the act said each time it was drawn taking a press on a row still marked proposed.
+  const pressable: string[] = [];
+  const watch = new MutationObserver(() => {
+    const row = drawn.row();
+    const settle = row.querySelector<HTMLButtonElement>('[data-row-act="settle"]');
+    if (settle === null || row.querySelector('[data-node-mark="proposed"]') === null) return;
+    if (!settle.disabled || settle.textContent === CONTROL_LABELS.settle) {
+      pressable.push(settle.textContent ?? "");
+    }
+  });
+  let held: HeldNotifications | undefined;
+  try {
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.client.isMutating(), "the write is still out").toBe(0));
+    expect(tree()?.fetchStatus, "the tree read answered").toBe("fetching");
+    expect(drawn.settle().textContent).toBe(SETTLE_ANSWERS.settling);
+    expect(drawn.settle().disabled).toBe(true);
+
+    watch.observe(drawn.row(), {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+    held = holdNotifications();
+    // The answer holds Requirement 7 by the id `PROPOSED.readId` names, settled.
+    const settledNode = treeNode("r7", "requirement", KEY, { in: "spec-md", state: "settled" });
+    answer.resolve(fixtureAnswer([settledNode], [], { converted: true }));
+    await waitFor(() => expect(tree()?.fetchStatus).toBe("idle"));
+    held.tell();
+    await waitFor(() => expect(drawn.row().querySelector('[data-row-act="settle"]')).toBeNull());
+    expect(pressable, "the act took a press on a row still marked proposed").toEqual([]);
+    expect(drawn.row().querySelector("[data-node-mark]")).toBeNull();
+    expect(drawn.sent).toHaveLength(1);
+  } finally {
+    held?.tell();
+    watch.disconnect();
     drawn.unmount();
   }
 });

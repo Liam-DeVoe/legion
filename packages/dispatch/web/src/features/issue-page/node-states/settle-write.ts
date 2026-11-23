@@ -1,4 +1,10 @@
-import { matchQuery, type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  matchQuery,
+  notifyManager,
+  type QueryClient,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   createContext,
   createElement,
@@ -104,8 +110,10 @@ class SettleLandings {
   }
 
   readonly subscribe = (listener: () => void): (() => void) => {
-    this.#listeners.add(listener);
-    return () => this.#listeners.delete(listener);
+    // Told in TanStack Query's batch, so a wait's end draws with the tree read that ends it.
+    const told = notifyManager.batchCalls(listener);
+    this.#listeners.add(told);
+    return () => this.#listeners.delete(told);
   };
 
   /** Whether a settle of the node `reference` names is waited on: its watch runs. */
