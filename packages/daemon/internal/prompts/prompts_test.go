@@ -750,35 +750,34 @@ func TestEveryComposedReviewerSentenceThatRequestsChangesNamesABehaviouralFindin
 // 2026-11-22T19:29:27Z, after INFRA-138's finding): the reviewer before it approves the head that
 // carries its text commit, and the implementer when it pushes its one text-only commit, before it
 // tells the reviewer. Without the step, the reviewer's approval gate and the architect's acceptance
-// read no pass standing at the head the reviewer approves. This shows the text is loaded, never
-// that a role follows it.
+// read no pass standing at the head the reviewer approves. Each part that carries the step holds it
+// in one paragraph (`ruleIn`), with its command and its skip of a check carrying `ci_check`: the
+// implementer's in roles/implementer.md and in go/implementer.md, the reviewer's in
+// roles/reviewer.md, and the carry the reviewer owes its own commit in roles/core/reviewer.md. The
+// implementer's prompt composes both of its parts, so deleting the step from one of them leaves
+// the other's copy in the composed prompt, and only the part's own pin fails. This shows the text
+// is loaded, never that a role follows it.
 func TestTheRoleThatPushesATextOnlyCommitRecordsTheCarryAtItsHead(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	const observed = "--observed 'carried from <head before>: the commit changes only text: <files>'"
-	for _, tc := range []struct {
-		role claim.Role
-		want []string
-	}{
-		{claim.RoleReviewer, []string{
-			"Before you approve, record each `before_merge` check of this issue's Verification document again at the head you approve",
-			"--role reviewer --verdict pass --commit <head> " + observed,
-			"you record that carry at the new head before you approve it",
-		}},
-		{claim.RoleImplementer, []string{
-			"When you push that commit, record each `before_merge` check again at its head, as carried from the head before it, before you tell the reviewer",
-			"--role implementer --verdict pass --commit <head> " + observed,
-		}},
-	} {
-		text := foldWhitespace(composedText(t, composer, tc.role, false))
-		for _, want := range tc.want {
-			if !strings.Contains(text, want) {
-				t.Errorf("the composed %s prompt omits the carry record at a text-only head: %q", tc.role, want)
-			}
-		}
+	const (
+		observed        = "--observed 'carried from <head before>: the commit changes only text: <files>'"
+		reviewerRule    = "Before you approve, record each `before_merge` check of this issue's Verification document again at the head you approve"
+		reviewerCommand = "--role reviewer --verdict pass --commit <head> " + observed
+		reviewerCore    = "you record that carry at the new head before you approve it"
+		implementerRule = "When you push that commit, record each `before_merge` check again at its head, as carried from the head before it, before you tell the reviewer"
+		implementerCmd  = "--role implementer --verdict pass --commit <head> " + observed
+		ciCheckSkipped  = "A check carrying `ci_check` is CI's, so skip it, and run none of them again."
+	)
+	ruleIn(t, "roles/reviewer.md", reviewerRule, reviewerCommand, ciCheckSkipped)
+	ruleIn(t, "roles/core/reviewer.md", reviewerCore)
+	for _, part := range []string{"roles/implementer.md", "go/implementer.md"} {
+		ruleIn(t, part, implementerRule, implementerCmd, ciCheckSkipped)
 	}
+	composedSays(t, composer, claim.RoleReviewer, false, reviewerRule, reviewerCommand, reviewerCore)
+	composedSays(t, composer, claim.RoleImplementer, false, implementerRule, implementerCmd)
 }
 
 // A review the review App submits decides a round only when the head its Legion footer names is

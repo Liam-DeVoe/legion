@@ -5,6 +5,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { ANSWERS, labelOf, SKIPS, scenarioOf } from "./completion-answers";
 import {
   credentialPrinted,
+  ghUndeclared,
   loadRun,
   mounted,
   namesOf,
@@ -26,6 +27,7 @@ import {
   WORLD_REMOTE_NAMES,
   WORLD_REMOTE_VCS,
 } from "./run-names";
+import { writeGhSelectors } from "./test-programs";
 import { WORLD_REPO } from "./world-issue";
 
 // The rows run the rig's programs as real processes, which a loaded pod slows past bun's 5 s
@@ -2297,6 +2299,51 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
     expect(unparsed).toStartWith("names: <run>/reviewer-wake.json cannot be parsed: ");
     expect(unparsed).toEndWith(", so no word it gave the run's agents can be traced");
   });
+});
+
+// Rule 7: a write naming an owner outside the world's project is refused by the Legion gh wrapper,
+// exit 2 before gh runs (`outsideAnswer`), and the rule judges such a call whatever status the
+// world answered it with. Catches: a rule that passes every write the world answered exit 0
+// before it reads which owner the write names, so a world that took a write production's wrapper
+// refuses, and told the agent it landed, reads healthy; and one that, to catch it, calls the
+// wrapper's own refusal, exit 2, unhealthy.
+describe("health: rule 7, gh, an owner outside the project", () => {
+  const runs = temporaryDirectories("health-outside-owner");
+  test("a write naming an owner outside the project the world answered exit 0 is unhealthy, and its refusal exit 2 is not", () => {
+    const dir = runs();
+    writeFileSync(
+      path.join(dir, "world.json"),
+      JSON.stringify({
+        key: "LWEVAL-1",
+        repo: "example/widgets",
+        pr: 1001,
+        branch: "legion/LWEVAL-1",
+        base: "main",
+        head: "0".repeat(40),
+      })
+    );
+    writeGhSelectors(dir);
+    const argv = ["api", "-X", "POST", "repos/actions/checkout/issues", "-f", "title=t"];
+    /** Rule 7's reason for a run whose implementer made the write `argv` once, answered `exit` by
+     * `handler` (and `route`, the one the record names). */
+    const answered = (exit: number, route: string | null, handler: string) => {
+      const call = { at: "2026-11-17T12:01:00.000Z", as: "gh", by: "implementer", argv, files: {} };
+      writeFileSync(
+        path.join(dir, "calls.jsonl"),
+        [
+          { at: "2026-11-17T12:00:00.000Z", opened: "calls.jsonl" },
+          { ...call, route, handler, exit },
+        ]
+          .map((line) => `${JSON.stringify(line)}\n`)
+          .join("")
+      );
+      return ghUndeclared({ dir, scenario: "threads-closed" });
+    };
+    expect(answered(0, "^gh api ", "route")).toBe(
+      `gh refusal: calls.jsonl:2, \`gh ${argv.join(" ")}\` of the implementer, exited 0: the refusal of an owner outside the project with another status than the Legion gh wrapper's 2, which threads-closed does not declare for that role`
+    );
+    expect(answered(2, null, "wrapper")).toBeUndefined();
+  }, 120_000);
 });
 
 // Rule 20: a write no route or answer of the world models. The gh stand-in records what answered

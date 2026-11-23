@@ -444,12 +444,12 @@ let answered: { state: string; head: string; body: string } | undefined;
 /** What answered this call, which the record keeps (`handler`): `route`, the route the record
  * names, with its own answer; the name of a reading of the run that route names (its `answer`,
  * `fromRun`) or of this file's own answer (`comparison`, `pr view`, `pr list`, `pr diff`, `pr
- * checks`, `review submit`, `review create`, `review read`, `thread`, `graph`); gh's own refusal
- * of a read of the pull request (gh-view.ts's PULL_NOT_FOUND and FIELD_REFUSED), which `rig.sh
- * health` declares for every role; `wrapper`, the Legion gh wrapper's refusal; or `unrouted`, the
- * 404 of a call nothing of the world models, which `rig.sh
- * health` names when that call is a write (its unmodelled-write rule). Each answer sets it where
- * it is decided, before anything there can refuse the call. */
+ * checks`, `review submit`, `review create`, `review read`, `thread`, `graph`, `pinned read`);
+ * gh's own refusal of a read of the pull request (gh-view.ts's PULL_NOT_FOUND and FIELD_REFUSED),
+ * which `rig.sh health` declares for every role; `wrapper`, the Legion gh wrapper's refusal; or
+ * `unrouted`, the 404 of a call nothing of the world models, which `rig.sh health` names when
+ * that call is a write (its unmodelled-write rule). Each answer sets it where it is decided,
+ * before anything there can refuse the call. */
 let handler = "unrouted";
 /** Records the call with the status it exits with, then exits. `by` is the role the call's pane
  * names (LEGION_ROLE, as production names a pane's role), so a run that boots one agent per role
@@ -479,10 +479,11 @@ let onPaneToken = false;
  * project, from a pane that names its GH_CONFIG_DIR, gh-pane-token.ts's `runsOnPaneToken`), the
  * call goes on to the world's GitHub as any other does (`onPaneToken`), and gets what it answers
  * for that owner: production's own answer to a read round 33's agents made of an action the
- * world's workflow pins (`pinnedRead`), and GitHub's 404 for any other repository the world does
- * not hold, as GitHub answers a token that cannot see it. A run with no world names no project; a
- * world whose selectors cannot be read, or name no words of the wrapper's refusal, is the rig's
- * fault, and the call ends with 2, naming the file, as a world.json that is no world ends it.
+ * world's workflow pins (`pinned`, read from `PINNED_READS`), and GitHub's 404 for any other
+ * repository the world does not hold, as GitHub answers a token that cannot see it. A run with no
+ * world names no project; a world whose selectors cannot be read, or name no words of the
+ * wrapper's refusal, is the rig's fault, and the call ends with 2, naming the file, as a world.json
+ * that is no world ends it.
  *
  * The wrapper's refusal of a write whose repository GitHub answers 404 to the leak guard's read of
  * its visibility, exit 2 before gh runs, saying that GitHub answers 404 for the repository (main's

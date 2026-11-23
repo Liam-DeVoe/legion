@@ -53,10 +53,11 @@
  *      failing closed. The owners a call names are read by the selector table of the wrapper of
  *      the run's label, which the world refused it by (<run>/gh-selectors.json, gh-selectors.ts's
  *      `runSelectors`). A worker run with a call whose selectors cannot
- *      be read is unhealthy, since which refusal it was is unknown. A write the stand-in refused
- *      as one nothing of the world models is rule 20's. Rules 7 and 20 read only a call an agent
- *      of the run made itself (`typedBy`: its first word stands after a `gh` the agent ran), so
- *      a `gh send-telemetry` gh itself starts after a command is no call of the run's;
+ *      be read is unhealthy, since which refusal it was is unknown. A write naming no such owner
+ *      that the stand-in refused as one nothing of the world models is rule 20's. Rules 7 and 20
+ *      read only a call an agent of the run made itself (`typedBy`: its first word stands after a
+ *      `gh` the agent ran), so a `gh send-telemetry` gh itself starts after a command is no call
+ *      of the run's;
  *   8. another run: no tool call of the run names a path under another run's directory
  *      (`otherRun`): a sibling under the same runs directory, an archived run, or a run of another
  *      batch, wherever it sits;
@@ -962,9 +963,6 @@ export function ghUndeclared(
     if (call.as !== "gh" || call.exit === undefined) continue;
     if (!typed({ ...call, argv: call.argv ?? [] })) continue;
     const writes = callWrites({ ...(raw as object), argv: call.argv ?? [] });
-    // A write the world took is no refusal, and one it answered with no route and no answer of its
-    // own is rule 20's, which names it as the write it is (`unmodelledWrite`).
-    if (writes && (call.exit === 0 || call.handler === "unrouted")) continue;
     const named = `${CALLS}:${index + 1}, \`gh ${(call.argv ?? []).join(" ").slice(0, 160)}\` of the ${call.by ?? "unnamed role"}, exited ${call.exit}`;
     if (repo !== undefined && selectors === null) {
       try {
@@ -980,7 +978,12 @@ export function ghUndeclared(
       namesOwnerOutside(ghTargetOf(call.argv ?? [], selectors, {}), repo)
         ? selectors
         : undefined;
-    if (outside === undefined && call.exit === 0) continue;
+    // A call naming no owner outside the project that exited 0 is no refusal, and a write the
+    // world answered with no route and no answer of its own is rule 20's, which names it as the
+    // write it is (`unmodelledWrite`). A call naming such an owner, a write among them, is
+    // `outsideAnswer`'s whatever its status.
+    if (outside === undefined && (call.exit === 0 || (writes && call.handler === "unrouted")))
+      continue;
     const refusal =
       outside === undefined
         ? ghRefusal(call, routes, repo)

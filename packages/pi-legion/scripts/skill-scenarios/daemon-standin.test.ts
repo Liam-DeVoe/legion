@@ -1605,6 +1605,25 @@ test.skipIf(skip)(
   600_000
 );
 
+/** A checkout named `name` under the run directory that holds this checkout's daemon module, for a
+ * fixture to change: the module copied; the envoy module linked beside it, which the module's
+ * go.mod replaces with its sibling directory (`../envoy`); and this checkout's go.work and
+ * go.work.sum copied to its root. A checkout's daemon module builds under its own go.work, as
+ * rig.sh's builds do (`go_binary`), which reconciles the daemon's and envoy's requirements; with
+ * none above it, `go run` builds in module mode, where the envoy module's requirements are read
+ * beside the daemon's go.mod alone, and stops at `go: updates to go.mod needed` once envoy
+ * requires a newer version of a module than the daemon's go.mod lists. It returns the checkout and
+ * its daemon module's directory. */
+function daemonCheckout(name: string): { checkout: string; daemon: string } {
+  const checkout = path.join(work, name);
+  const daemon = path.join(checkout, "packages", "daemon");
+  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
+  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  for (const file of ["go.work", "go.work.sum"])
+    cpSync(path.join(CHECKOUT, file), path.join(checkout, file));
+  return { checkout, daemon };
+}
+
 /** The sentence the older daemon (`olderCheckout`) refuses a late completion with: words of its
  * own, so a stand-in that read this checkout's daemon for that label answers with another. */
 const OLDER_SENTENCE =
@@ -1621,11 +1640,7 @@ let older: string | undefined;
  * the file. */
 function olderCheckout(): string {
   if (older !== undefined) return older;
-  const checkout = path.join(work, "older-checkout");
-  const daemon = path.join(checkout, "packages", "daemon");
-  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
-  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
-  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const { checkout, daemon } = daemonCheckout("older-checkout");
   const server = path.join(daemon, "internal", "api", "server.go");
   const registered = readFileSync(server, "utf8");
   const fewer = registered
@@ -1812,11 +1827,7 @@ let unstated: string | undefined;
  * the plan, `ready` read ahead of it (`REQUEST_WITHOUT_READY`). Made once for the file. */
 function unstatedCheckout(): string {
   if (unstated !== undefined) return unstated;
-  const checkout = path.join(work, "unstated-checkout");
-  const daemon = path.join(checkout, "packages", "daemon");
-  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
-  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
-  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const { checkout, daemon } = daemonCheckout("unstated-checkout");
   const edit = (file: string, from: string | RegExp, to: string) => {
     const at = path.join(daemon, "internal", "api", file);
     const text = readFileSync(at, "utf8");
@@ -2324,11 +2335,7 @@ const MAPPED_FIELDS =
 let mapping: string | undefined;
 function mappingCheckout(): string {
   if (mapping !== undefined) return mapping;
-  const checkout = path.join(work, "mapping-checkout");
-  const daemon = path.join(checkout, "packages", "daemon");
-  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
-  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
-  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const { checkout, daemon } = daemonCheckout("mapping-checkout");
   const state = path.join(daemon, "internal", "api", "state.go");
   const live = readFileSync(state, "utf8");
   const mapped = live.replace(LIVE_FIELD, MAPPED_FIELDS);
@@ -3476,11 +3483,7 @@ let unstorable: string | undefined;
  * words, as main `724196ef`'s does, and is this checkout's in all else. Made once for the file. */
 function unstorableCheckout(): string {
   if (unstorable !== undefined) return unstorable;
-  const checkout = path.join(work, "unstorable-checkout");
-  const daemon = path.join(checkout, "packages", "daemon");
-  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
-  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
-  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const { checkout, daemon } = daemonCheckout("unstorable-checkout");
   const storable = path.join(daemon, "internal", "api", "storable_text.go");
   const refusing = readFileSync(storable, "utf8");
   const unstoring = refusing.replace(
@@ -3634,11 +3637,7 @@ test.skipIf(skip || olderHost === undefined)(
 let counting: string | undefined;
 function countingCheckout(): string {
   if (counting !== undefined) return counting;
-  const checkout = path.join(work, "counting-checkout");
-  const daemon = path.join(checkout, "packages", "daemon");
-  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
-  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
-  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const { checkout, daemon } = daemonCheckout("counting-checkout");
   const state = path.join(daemon, "internal", "api", "state.go");
   const uncounted = readFileSync(state, "utf8");
   const counted = uncounted.replace(COUNTLESS_VIEW, COUNTED_VIEW);
@@ -3744,10 +3743,7 @@ let codeless: string | undefined;
  * HANDOFF_NOT_NEW is named. Made once for the file. */
 function codelessCheckout(): string {
   if (codeless !== undefined) return codeless;
-  const checkout = path.join(work, "codeless-checkout");
-  const daemon = path.join(checkout, "packages", "daemon");
-  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
-  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const { checkout, daemon } = daemonCheckout("codeless-checkout");
   let renamed = 0;
   for (const file of ["api/handoff.go", "workflow/engine.go"]) {
     const source = path.join(daemon, "internal", file);
