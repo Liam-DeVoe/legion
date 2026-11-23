@@ -573,7 +573,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold.
   A refresh that fails any other way (the issuer undiscovered, down or slow, a `5xx` or `429`, another OAuth error, or an answer without an ID token that verifies) ends nothing:
   the request that found the confirmation lapsed is refused `503 SIGNIN_UNAVAILABLE`, the sessions and the refresh token are kept, and the first request after the issuer answers again refreshes and is served.
-  A refresh is one request to the issuer's token endpoint, with the client's secret sent the way the issuer's discovery document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
+  A refresh is one request to the issuer's token endpoint (two at most where the issuer's discovery document names neither method, below), with the client's secret sent the way that document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
   Each request to the token endpoint has ten seconds, and the whole refresh, which also reads the person's row and, the first time, the discovery document, has fifteen; a refusal ends the sessions when its answer comes within both.
   An issuer whose document names neither is asked by HTTP Basic and, when that fails, may be asked again in the form, so its refusal can need both requests to answer within the fifteen seconds.
   Logout ends Dispatch's session only, not the issuer's.
@@ -2800,13 +2800,13 @@ A project left with no default after both statements is one to name a person on 
 Reaching the migration with one left stops it, and its refusal names the repair that works from there: nothing is serving by then, so it is `update projects set default_assignee = '<the person''s email>' where key = '<KEY>';` on the database itself.
 
 **`20261111210103` is a stop-the-world migration: deploy it with no server of the earlier release running.**
-The narrowing ships in the same release as the fill, where the rule above splits a narrowing across two releases, because the deployment runs one replica under a Kubernetes Deployment's `strategy: Recreate` (`packages/envoy/infra/README.md`):
+The narrowing ships in the same release as the fill, where the rule above splits a narrowing across two releases, because that release is deployed with no server of the earlier release running: a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica, does that, and a deployment above one replica, which rolls, is scaled to zero first (`packages/envoy/infra/README.md`):
 no server of the earlier release serves while the migration runs, and the release that boots over it names a default on every project it creates.
 An older release started over the new schema creates a project with no default, which the column now refuses (`23502`), so that create answers `500`;
 recover a failed deploy forward, as `0113` and `0117` require.
 
-A migration runs while the build before it is still serving.
-The app Deployment of `envoy-infra:gcp:Dispatch` rolls above one replica (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
+Above one replica a migration runs while the build before it is still serving.
+The app Deployment of `envoy-infra:gcp:Dispatch` is recreated at one replica and rolls above one (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
 — and again for as long as a rollback lasts — the previous image's queries run against the new schema.
 A migration may therefore only add: a table, an index, a trigger, a column that is nullable or defaulted, a constraint added `not valid`.
 In the same release as the code that depends on it, it may not drop or rename a column or a table, change a column's type, or tighten a constraint the running build's queries would violate.
