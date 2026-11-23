@@ -896,7 +896,7 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 		return path
 	}
 	slow, late, malformed := overlay("slow.yml"), overlay("refuses-late.yml"), overlay("malformed.yml")
-	slowTLS := shTLSClient("node", t.TempDir(), tlsSleepsAtEmSign, nodeAnswer)
+	slowTLS := shTLSClient("node", standInRuns(t), tlsSleepsAtEmSign, nodeAnswer)
 	for _, tc := range []struct {
 		name, file string
 		// cut is whether the probe's deadline cuts the overlay read, which then runs under
@@ -919,7 +919,7 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			args := []string{"--role-config-files", "implementer=" + tc.file}
 			if tc.cut {
-				reads := standInLogAt(filepath.Join(t.TempDir(), "reads"))
+				reads := newStandInLog(filepath.Join(t.TempDir(), "reads"))
 				t.Setenv("LEGION_TEST_OVERLAY_READS", reads.path)
 				probeDeadlineOnceLogged(t, reads, "config get "+tc.file, shortProbeBudget)
 				args = append(args, "--probe-budget", shortProbeBudget)

@@ -154,8 +154,8 @@ func TestAStandInDeadlineReadsItsParentsEndAtOnce(t *testing.T) {
 // derived from it, is woken with no read of the stand-in after the end. The wait below reads the
 // channel alone, never the stand-in, since every read of the stand-in looks at its parent first and
 // would end it on its own. A stand-in that learns the end closes the channel at once, so the wait
-// has a bound of its own, a minute, and a stand-in that does not fails here then, not at the test
-// binary's deadline.
+// is Eventually's, a minute cut to a second before the test binary's deadline, and a stand-in that
+// does not fails here by name, whatever -timeout the binary runs under.
 func TestAStandInDeadlineNothingReadsEndsWithItsParent(t *testing.T) {
 	errParent := errors.New("the parent's cause")
 	parent, cancelParent := context.WithCancelCause(context.Background())
@@ -164,7 +164,7 @@ func TestAStandInDeadlineNothingReadsEndsWithItsParent(t *testing.T) {
 	defer cancel()
 	done := stand.Done()
 	cancelParent(errParent)
-	WithinPolling(t, time.Minute, Poll, "the end of a stand-in nothing read, after its parent ended", func() bool {
+	Eventually(t, "the end of a stand-in nothing read, after its parent ended", func() bool {
 		select {
 		case <-done:
 			return true

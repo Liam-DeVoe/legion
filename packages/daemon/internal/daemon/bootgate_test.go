@@ -608,11 +608,13 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 // was never shown one. Main's form counted a 900 ms budget from before the shell started, which a
 // loaded machine could spend before the shell had exited.
 //
-// gate.timeout is the budget as a clock reads it, 100 ms short of WaitDelay, and the attempt's
-// deadline is the moment the budget passed (testwait.StandInDeadline). No clock in run reads
-// either where expire is set, but a gate that judged the end by the clock, the run's time against
-// timeout or the time against the attempt's deadline, would call this exit a timeout: the run
-// returns past WaitDelay, after the budget passed.
+// gate.timeout is the budget as a clock reads it, 100 ms short of WaitDelay. The attempt's deadline
+// reads as the budget's at a time (when the attempt began plus timeout) until the budget passes,
+// and as the moment the budget passed from then on (attemptDeadline, testwait.StandInDeadline).
+// No clock in run reads either where expire is set, but a gate that judged the end by the clock,
+// the run's time against timeout or the time against the attempt's deadline, read before the
+// command runs or after, would call this exit a timeout: the run returns past WaitDelay, after
+// both.
 //
 // The child holding the pipe leaves the probe's process group (setsid) before the probe exits, so
 // the group is gone once the probe is. This gives up a case main's form also held, a child still in
@@ -627,7 +629,7 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
 	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: procgroup.WaitDelay - 100*time.Millisecond}
 	var passedFirst bool
-	gate.expire = budgetPassedOnceTheProbeIsGone(leader, &passedFirst)
+	gate.expire = budgetPassedOnceTheProbeIsGone(leader, gate.timeout, &passedFirst)
 
 	r, err := gate.run(context.Background(), `echo $$ >"$2"; echo answered >&2; setsid sh -c 'echo $$ >"$0"; exec sleep 30' "$1" & while [ ! -s "$1" ]; do sleep 0.01; done; exit 0`, pidFile, leader)
 
@@ -652,10 +654,11 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t
 // own pid, its group's id (procgroup.Configure), to leader as its first act, and kill(-pid, 0)
 // answers ESRCH once no member of that group is left: after the probe has exited on its own and Go
 // has reaped it, which Wait does before it starts the WaitDelay a child holding the pipe keeps the
-// run open for. The cancel the run calls once it has its answer records in *passedFirst whether the
-// budget had passed by then, before it ends the attempt itself. An attempt whose group is not gone
-// within answerBudget ends then, as a budget does.
-func budgetPassedOnceTheProbeIsGone(leader string, passedFirst *bool) func(context.Context) (context.Context, context.CancelFunc) {
+// run open for. Until its budget passes, the attempt's deadline reads as the real budget's would,
+// timeout after the attempt began (attemptDeadline). The cancel the run calls once it has its
+// answer records in *passedFirst whether the budget had passed by then, before it ends the attempt
+// itself. An attempt whose group is not gone within answerBudget ends then, as a budget does.
+func budgetPassedOnceTheProbeIsGone(leader string, timeout time.Duration, passedFirst *bool) func(context.Context) (context.Context, context.CancelFunc) {
 	gone := func() bool {
 		raw, err := os.ReadFile(leader)
 		if err != nil || !strings.HasSuffix(string(raw), "\n") {
@@ -670,11 +673,26 @@ func budgetPassedOnceTheProbeIsGone(leader string, passedFirst *bool) func(conte
 			testwait.Holds(answerBudget, testwait.Poll, func() bool { return run.Err() != nil || gone() })
 			pass(context.DeadlineExceeded)
 		}()
-		return run, func() {
+		return attemptDeadline{Context: run, budget: time.Now().Add(timeout)}, func() {
 			*passedFirst = errors.Is(run.Err(), context.DeadlineExceeded)
 			cancel()
 		}
 	}
+}
+
+// attemptDeadline is an attempt whose deadline reads as budget, the moment the real budget of
+// context.WithTimeout would pass, until the stand-in it wraps sets a deadline of its own: the moment
+// the stand-in's budget passed.
+type attemptDeadline struct {
+	context.Context
+	budget time.Time
+}
+
+func (a attemptDeadline) Deadline() (time.Time, bool) {
+	if at, ok := a.Context.Deadline(); ok {
+		return at, true
+	}
+	return a.budget, true
 }
 
 // killPIDFile kills the process named by the PID pidFile holds, left running past a test's own
