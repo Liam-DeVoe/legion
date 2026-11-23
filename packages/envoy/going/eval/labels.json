@@ -19,12 +19,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It names DEMO-16, CSV export: times out on boards over 500 cards, as the issue that tracks the export timing out."
+          "why": "It names DEMO-16, CSV export: times out on boards over 500 cards, as the issue already tracking the export timeout."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "Identifies DEMO-16 as “CSV export: times out on boards over 500 cards,” the issue tracking the timeout."
+          "why": "The answer identifies DEMO-16, CSV export: times out on boards over 500 cards, as the tracked timeout issue."
         }
       ],
       "label": "pass"
@@ -36,12 +36,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It only says what it will look up; neither DEMO-31 blocked by DEMO-30 nor that DEMO-30 blocks nothing else is stated."
+          "why": "It only narrates lookups and never states that DEMO-31 is blocked by DEMO-30 or that DEMO-30 blocks no other issue."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "Does not identify DEMO-31 as blocked by DEMO-30 or state that DEMO-30 blocks no other issue."
+          "why": "The answer does not identify DEMO-31 as the only issue blocked by DEMO-30."
         }
       ],
       "label": "fail"
@@ -53,12 +53,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It says search failed and names no file; upload-error.txt on DEMO-23 and the 24.1 MB upload are missing."
+          "why": "It reports a search failure and never names upload-error.txt on DEMO-23 or the 413 answer to a 24.1 MB upload."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "Does not identify upload-error.txt on DEMO-23 or its 413 response to a 24.1 MB upload."
+          "why": "The answer does not identify upload-error.txt on DEMO-23 or its 413 response to a 24.1 MB upload."
         }
       ],
       "label": "fail"
@@ -70,12 +70,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It names the postmortem of the queue backlog of 2026-11-03 as a document on OPS-8."
+          "why": "It names the document Postmortem: queue backlog of 2026-11-03 on OPS-8."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "Identifies the queue backlog postmortem dated 2026-11-03 as an artifact on OPS-8."
+          "why": "The answer links the queue backlog postmortem dated 2026-11-03 as a document on OPS-8."
         }
       ],
       "label": "pass"
@@ -87,12 +87,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "Fact 2 is quoted, but fact 1 only in part: the quote starts mid-sentence at 'minutes, day or night' and the answer even says the handbook is empty, so 'a page is answered within 15 minutes' is not stated."
+          "why": "It quotes the second-contact rule but gives only '…minutes, day or night' for the answer time, says it did not read what comes before, and opens by calling the handbook empty, so 'a page is answered within 15 minutes, day or night' is stated only in part."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "States that unanswered pages go to the second contact after 15 minutes. It does not state that pages must be answered within 15 minutes, day or night."
+          "why": "Although it states escalation to the second contact after 15 minutes, the answer omits that a page must be answered within 15 minutes, day or night."
         }
       ],
       "label": "fail"
@@ -104,12 +104,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It names DEMO-12, Export: CSV and PDF, with its five sub-issues DEMO-13, DEMO-14, DEMO-16, DEMO-17 and DEMO-18."
+          "why": "It lists the five sub-issues of DEMO-12, Export: CSV and PDF: DEMO-13, DEMO-14, DEMO-16, DEMO-17 and DEMO-18."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "Names DEMO-12, Export: CSV and PDF, and lists all five required sub-issues: DEMO-13, DEMO-14, DEMO-16, DEMO-17, and DEMO-18."
+          "why": "The answer names DEMO-12 as the CSV and PDF export epic and lists all five required sub-issues: DEMO-13, DEMO-14, DEMO-16, DEMO-17 and DEMO-18."
         }
       ],
       "label": "pass"
@@ -121,12 +121,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It lists five open issues assigned to femi: DEMO-14, DEMO-18, DEMO-22, OPS-4 and OPS-15; the fact names six, and DEMO-13 is missing."
+          "why": "It lists five open issues and leaves out DEMO-13, so the six open issues assigned to Femi are not stated."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "The answer lists five open issues instead of six and omits DEMO-13."
+          "why": "The answer gives five open issues assigned to Femi instead of six and omits DEMO-13."
         }
       ],
       "label": "fail"
@@ -138,12 +138,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It gives OPS-3 and OPS-14 as the open P1s of OPS with no assignee."
+          "why": "It names OPS-3 and OPS-14 as the open OPS P1 issues with no assignee."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "Identifies OPS-3 and OPS-14 as the two open P1 issues in OPS without assignees."
+          "why": "The answer identifies OPS-3 and OPS-14 as the two open P1 issues in OPS with no assignee."
         }
       ],
       "label": "pass"
@@ -155,12 +155,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It gives DEMO-20 and DEMO-22 as the DEMO issues in needs review."
+          "why": "It names DEMO-20 and DEMO-22 as the DEMO issues in needs review."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "Identifies DEMO-20 and DEMO-22 as the two DEMO issues in needs review."
+          "why": "The answer identifies DEMO-20 and DEMO-22 as the DEMO issues in needs review."
         }
       ],
       "label": "pass"
@@ -172,12 +172,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It lists DEMO-14, DEMO-16, DEMO-17 and DEMO-18 as not done but calls DEMO-13 done; the facts say DEMO-13 is not done either, and none of the five is done."
+          "why": "It says DEMO-13 is done and lists only four not-done children, which contradicts the facts that all five are not done and none is done."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "The answer incorrectly says DEMO-13 is done and lists only four unfinished children, whereas all five children are not done."
+          "why": "The answer incorrectly says DEMO-13 is done and only four children remain, contradicting that all five DEMO-12 sub-issues are not done."
         }
       ],
       "label": "fail"
@@ -189,12 +189,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It counts three open asks in OPS, on OPS-4, OPS-9 and OPS-26."
+          "why": "It states three open asks in OPS, on OPS-4, OPS-9 and OPS-26."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "States that OPS has three open asks and locates them on OPS-4, OPS-9, and OPS-26."
+          "why": "The answer states that OPS has three open asks and identifies them on OPS-4, OPS-9 and OPS-26."
         }
       ],
       "label": "pass"
@@ -205,17 +205,16 @@
       "labels": [
         {
           "by": "claude",
-          "label": "fail",
-          "why": "The answer is a loop of the model narrating its own tool call; it never says the Release checklist is a document of DEMO."
+          "label": "pass",
+          "why": "Inside the looping noise it says the project has a release checklist document and that the checklist is DEMO/release-checklist, which states that the Release checklist is a document of DEMO."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "States that the release checklist is a project document and identifies it as DEMO/release-checklist, establishing its DEMO project membership."
+          "why": "Despite the surrounding repetition, the answer calls the release checklist a project document and identifies it as DEMO/release-checklist."
         }
       ],
-      "label": "pass",
-      "discussion": "claude labelled it fail for the run's looping narration of its own tool call; gpt pointed out that the answer does say \"The project has a release checklist document\" and names it DEMO/release-checklist, which is the fact. claude agreed: the rule asks whether the answer states the fact, and the noise around it does not unsay it. Agreed: pass."
+      "label": "pass"
     },
     {
       "task": "answer-01",
@@ -224,12 +223,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It only says what it will read; neither Dana's suggestion nor DEMO-21's status, priority and assignee is stated."
+          "why": "It only narrates lookups and states neither Dana's six-emoji suggestion nor DEMO-21's backlog, P3, no-assignee state."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "Does not state Dana’s suggestion to start with six emoji and see what people request. It also omits DEMO-21’s title, backlog status, P3 priority, and lack of assignee."
+          "why": "The answer omits both Dana's suggestion to start with six emoji and DEMO-21's backlog, P3 and unassigned state."
         }
       ],
       "label": "fail"
@@ -241,12 +240,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "Fact 1 is stated (in progress, P1, Chen), but it says DEMO-13 is done where fact 2 says none of the five is, and fact 3, Chen wanting to split it in two and Femi agreeing, is missing."
+          "why": "It says one of five children (DEMO-13) is done, which contradicts 'none of them is done', and it omits Chen's proposal to split the epic, which Femi agrees with."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "The answer incorrectly says one child is done and omits that Chen wants to split the epic into CSV export and PDF export and Femi agrees."
+          "why": "The answer incorrectly says one of the five sub-issues is done and omits Chen's proposed CSV/PDF split and Femi's agreement."
         }
       ],
       "label": "fail"
@@ -258,12 +257,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "Under the noise, the final paragraph states that Ana answered the DEMO-3 ask choosing First, above the summary, because a reader looks for it at the top."
+          "why": "Its final answer states that Ana answered the ask on DEMO-3 with the back-link first, above the summary, because a reader looks for it at the top."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "States that Ana answered the ask on DEMO-3 by choosing the back-link first, above the summary, because readers look for it at the top."
+          "why": "The answer states that Ana answered the DEMO-3 ask with the back-link first above the summary because a reader looks for it at the top."
         }
       ],
       "label": "pass"
@@ -275,12 +274,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states DEMO-31 is blocked by DEMO-30, API: rate limit headers, which is in progress and assigned to ben@example.com."
+          "why": "It states that DEMO-31 is blocked by DEMO-30, API: rate limit headers, which is in progress and assigned to ben@example.com."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "States that DEMO-31 is blocked by DEMO-30, API: rate limit headers, and that DEMO-30 is in progress and assigned to Ben."
+          "why": "The answer states that DEMO-31 is blocked by DEMO-30, API: rate limit headers, which is in progress and assigned to Ben."
         }
       ],
       "label": "pass"
@@ -292,12 +291,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It never gives any restore step; it only says the search failed and the runbook seemed empty."
+          "why": "It only narrates lookups and states none of the restore steps (snapshot, restore-<date> volume, row-count check, swap and delete after 7 days)."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "Does not provide any of the required restore steps: selecting the snapshot, restoring into restore-<date>, checking row counts, or swapping volumes and deleting the old one after seven days."
+          "why": "The answer supplies none of the required snapshot selection, restore-<date> volume, row-count check, volume swap or seven-day deletion instructions."
         }
       ],
       "label": "fail"
@@ -309,12 +308,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states the 14:10 UTC deploy doubled the retry rate because the worker image shipped a 0-second retry delay, the 2 million messages at 15:00 drained by 18:30, and the follow-ups OPS-3 (dead-letter queue) and OPS-7 (paging on-call)."
+          "why": "It states the 14:10 UTC deploy that doubled the retry rate, the cause (a worker image with a 0-second retry delay), 2 million messages at 15:00 drained by 18:30, and the follow-ups OPS-3 (dead-letter queue) and OPS-7 (page on-call)."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "States the 14:10 UTC deploy, doubled retry rate caused by a zero-second retry delay, two million queued messages at 15:00, and drainage by 18:30. It also names OPS-3 for a dead-letter queue and OPS-7 for paging on-call."
+          "why": "The answer states the 14:10 UTC deploy, doubled retries from a zero-second worker retry delay, two million messages at 15:00, drainage by 18:30 and both OPS-3 and OPS-7 follow-ups."
         }
       ],
       "label": "pass"
@@ -326,12 +325,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states OPS has 21 open issues of 31 in all."
+          "why": "It states that OPS has 21 open issues of 31 in all."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "States that OPS has 21 open issues out of 31 total."
+          "why": "The answer states that OPS has 21 open issues and 31 issues in all."
         }
       ],
       "label": "pass"
@@ -343,12 +342,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states DEMO-14 in progress with femi, DEMO-17 in backlog with no assignee, and DEMO-18 in testing claimed by session-tester-01."
+          "why": "It states that DEMO-14 is in progress with Femi, DEMO-17 is in backlog with no assignee, and DEMO-18 is in testing, claimed by the tester session."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "States that DEMO-14 is in progress with Femi, DEMO-17 is in backlog without an assignee, and DEMO-18 is in testing with its claim held by session-tester-01."
+          "why": "The answer states that DEMO-14 is in progress with Femi, DEMO-17 is in backlog without an assignee and DEMO-18 is in testing with its claim held by the tester session."
         }
       ],
       "label": "pass"
@@ -360,12 +359,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It names DEMO-16, CSV export: times out on boards over 500 cards, as the open bug about the export timing out."
+          "why": "It names DEMO-16, CSV export: times out on boards over 500 cards, as the open bug the export timeout refers to."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "Identifies DEMO-16, “CSV export: times out on boards over 500 cards,” as the export timeout issue."
+          "why": "The answer identifies DEMO-16, CSV export: times out on boards over 500 cards, as the export timeout bug."
         }
       ],
       "label": "pass"
@@ -377,12 +376,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "Fact 1 is stated (Dana: start with six emoji and see what people ask for), and the backlog and priority 3 of fact 2, but not that DEMO-21 has no assignee."
+          "why": "It states Dana's six-emoji suggestion and DEMO-21's backlog and priority 3, but it never says DEMO-21 has no assignee."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "States Dana’s six-emoji suggestion and identifies DEMO-21, Comments: emoji reactions, as backlog at priority 3. It does not state that DEMO-21 has no assignee."
+          "why": "The answer gives Dana's six-emoji suggestion and DEMO-21's backlog and P3 state but omits that DEMO-21 has no assignee."
         }
       ],
       "label": "fail"
@@ -394,12 +393,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It gives the claim's date but not 15:00Z, and it says no plan is written, contradicting the planner's own word that the three-task plan is about half done; only the open ask is right."
+          "why": "It gives the claim date without 15:00Z, says the planner has not written a plan instead of quoting its 'Writing the plan for DEMO-7…' status at about half done, and states only the open ask on column order."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "Identifies session-planner-01 as holding DEMO-7 and describes its unanswered column-order ask. It omits the 15:00Z claim time and the reported activity of writing a three-task plan, starting with the column drag handle, at about half done."
+          "why": "The answer omits the claim time of 15:00Z and the planner's reported three-task plan, drag-handle-first focus and roughly half-done progress."
         }
       ],
       "label": "fail"
@@ -411,15 +410,16 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "The chart has eight bars, running from the week of 28 September (2026-W40) to the week of 16 November (2026-W47), and the text says \"eight weeks… through the week of 16 November\". The fact asks for one bar per ISO week from 2026-W40 to 2026-W46, so the answer's chart covers one week too many."
+          "why": "The chart has eight bars, from the week of 2026-09-28 (W40) through the week of 2026-11-16 (W47), so it does not have one bar per ISO week from W40 to W46."
         },
         {
           "by": "gpt",
-          "label": "fail",
-          "why": "The chart shows eight weekly bars from 2026-W40 through 2026-W47, rather than the required seven-week range ending at 2026-W46."
+          "label": "pass",
+          "why": "The chart contains one bar for each ISO week from 2026-W40 through 2026-W46, with an additional bar for the following week."
         }
       ],
-      "label": "fail"
+      "label": "pass",
+      "discussion": "claude labelled it fail because the chart draws eight bars, W40 to W47, so it does not have one bar for each week from W40 to W46; gpt pointed out that the chart has one bar for every week W40 to W46 and that the fact does not say those are the only weeks, while the rule lets an answer state a fact with more beside it. claude agreed: the extra W47 bar adds to the fact without contradicting it. Agreed: pass."
     },
     {
       "task": "find-03",
@@ -428,12 +428,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states DEMO-31, API: client retries on 429, is blocked by DEMO-30, and that DEMO-30 blocks no other issue."
+          "why": "It states that only DEMO-31, API: client retries on 429, is blocked by DEMO-30, and that DEMO-30 blocks nothing else."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "Identifies DEMO-31, API: client retries on 429, as the only issue blocked by DEMO-30 and explicitly says no other issue names DEMO-30 as a blocker."
+          "why": "The answer identifies DEMO-31, API: client retries on 429, as blocked by DEMO-30 and states that no other issue names DEMO-30 as a blocker."
         }
       ],
       "label": "pass"
@@ -445,12 +445,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It names upload-error.txt on DEMO-23 but says it could not read the file and never states that the file holds the 413 answer to a 24.1 MB upload."
+          "why": "It names upload-error.txt on DEMO-23 but says it could not read the file, and it never states that the file holds the 413 answer to a 24.1 MB upload."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "Locates upload-error.txt on DEMO-23 and mentions a 413 error. It does not state that the file holds the response to a 24.1 MB upload; it instead attributes the error information to a comment."
+          "why": "The answer identifies upload-error.txt on DEMO-23 but does not state that the file holds the 413 response to an upload of 24.1 MB."
         }
       ],
       "label": "fail"
@@ -462,12 +462,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It says it cannot tell which issue the planner is on; DEMO-7 and session-planner-01's claim are never stated."
+          "why": "It says it cannot tell which issue the planner is on and never names DEMO-7, Board: drag to reorder columns."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "Does not identify DEMO-7, Board: drag to reorder columns, as the issue claimed by session-planner-01."
+          "why": "The answer does not identify DEMO-7, Board: drag to reorder columns, as the issue claimed by the planner agent session."
         }
       ],
       "label": "fail"
@@ -484,7 +484,7 @@
         {
           "by": "gpt",
           "label": "pass",
-          "why": "Identifies DEMO-24 and DEMO-33 as the two DEMO issues labelled flaky."
+          "why": "The answer identifies DEMO-24 and DEMO-33 as DEMO issues and explicitly lists the flaky label on both."
         }
       ],
       "label": "pass"
@@ -496,12 +496,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states the DEMO-3 ask, whether the back-link comes first above the summary or stays at the end, and that Ana answered First, above the summary."
+          "why": "It states the ask on DEMO-3, whether the back-link comes first above the summary or stays at the end, and that Ana chose First, above the summary."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "States the DEMO-3 ask’s choice between placing the back-link first above the summary or at the end, and states that Ana answered “First, above the summary.”"
+          "why": "The answer states the DEMO-3 ask's first-above-summary versus end alternatives and Ana's answer choosing first above the summary."
         }
       ],
       "label": "pass"
@@ -513,12 +513,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states the DEMO-3 ask about putting the back-link first above the summary or keeping it at the end, and Ana's answer, First, above the summary."
+          "why": "It gives the ask on DEMO-3 by its title and its two choices ('First, above the summary' or 'At the end, as now'), and states that Ana answered First, above the summary."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "States the DEMO-3 ask’s question about back-link placement and identifies Ana’s answer as “First, above the summary.”"
+          "why": "The answer identifies the DEMO-3 back-link-order ask, gives its first-above-summary and end alternatives and states that Ana chose first above the summary."
         }
       ],
       "label": "pass"
