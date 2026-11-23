@@ -342,6 +342,9 @@ interface StandinHooks {
    * releases this hold.
    */
   readonly startupHold?: Hold;
+  /** pi-envoy's start-turn cap for the session (`ENVOY_STARTUP_TURN_CAP_MS`), in place of its
+   *  30 s, for a case whose start never comes and so waits the whole cap. */
+  readonly startupTurnCapMs?: number;
   /**
    * Holds the daemon-launched controller's `POST /legion/v1/claims/ready`, the last step of its
    * claim in `session_start`, sent once it holds the role and the controller topic, with the
@@ -615,6 +618,9 @@ async function startController(
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
         LEGION_TEST_STARTUP_HOLD_URL: `${base}${STARTUP_HOLD_ROUTE}`,
+        ...(hooks.startupTurnCapMs === undefined
+          ? {}
+          : { ENVOY_STARTUP_TURN_CAP_MS: String(hooks.startupTurnCapMs) }),
       },
       args,
       cols: COLUMNS,
@@ -1981,8 +1987,13 @@ test.skipIf(skip)(
 // a startup card waits for the start turn. Two ways leave that start unsent for good: the start
 // claim's registration that never answers (the daemon unreachable mid-request), and a session
 // launched without the start word on its command line. A card that reached the idle session must
-// still get a turn of its own, without waiting for the operator to type; the bound here is three
-// times pi-envoy's STARTUP_TURN_CAP_MS (30 s).
+// still get a turn of its own, without waiting for the operator to type. The session runs on a
+// start-turn cap of `UNSENT_START_CAP_MS` (`ENVOY_STARTUP_TURN_CAP_MS`) rather than pi-envoy's 30 s,
+// which its own unit cases hold (packages/pi-envoy/src/card-wake.test.ts). The bound here is four
+// times that cap, and under the 30 s default, so a session that ignored the variable fails it.
+// The cap counts from pi-envoy's first read of the unsent mark, which is at the card's own
+// delivery or later, so a short cap still finds the card held as a startup card.
+const UNSENT_START_CAP_MS = 5_000;
 for (const variant of ["the start claim never answers", "the start command never runs"] as const) {
   test.skipIf(skip)(
     `a startup card held by an unsent start mark gets its turn when ${variant}`,
@@ -1993,6 +2004,7 @@ for (const variant of ["the start claim never answers", "the start command never
       const session = await startController(
         {
           startupHold,
+          startupTurnCapMs: UNSENT_START_CAP_MS,
           onListener: (listened) => {
             if (listened !== "") sid ??= listened;
           },
@@ -2016,9 +2028,9 @@ for (const variant of ["the start claim never answers", "the start command never
 
       // A real clock: the bound is the property under test.
       const first = await session.until(
-        "the startup card's model request, within 90 s",
+        `the startup card's model request, within ${(4 * UNSENT_START_CAP_MS) / 1_000} s`,
         () => session.turns[0],
-        90_000
+        4 * UNSENT_START_CAP_MS
       );
       expect(conversation(first.request)).toContain(card.summary);
       expect(lastMessage(first.request)).toContain(WAKE_ONE);

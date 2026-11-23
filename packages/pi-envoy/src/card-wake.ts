@@ -155,14 +155,15 @@ import type {
  * starts a turn that runs ahead of the start command, and an RPC card's wake fires once the host is
  * idle after the drain, which can be before the daemon's prompt arrives. So while the mark holds —
  * it names this session (the instance's own and the host's live one), and its start is unsent
- * and this module first read that unsent mark less than `STARTUP_TURN_CAP_MS` ago, or was sent
- * less than `STARTUP_TURN_CAP_MS` ago — the phase holds whatever `ctx.mode` is: an idle card in
- * any mode goes as a startup card. An idle check while it holds keeps the phase and the seen
- * startup cards, sends no wake and checks again when the hold may end: at the sent mark's cap, or
- * every `STARTUP_TURN_POLL_MS` while the start is unsent, up to that mark's cap (a poll, since no
- * event tells this module of the send, nor of a start claim refused before the send, which clears
- * the mark). The unsent mark's cap counts from this module's first read of it, never again from a
- * later check, so a start that never comes (a claim that never answers, a session given no start
+ * and this module first read that unsent mark less than the cap ago, or was sent less than the
+ * cap ago (`startupTurnCapMs`, `STARTUP_TURN_CAP_MS` by default) — the phase holds whatever
+ * `ctx.mode` is: an idle card in any mode goes as a startup card. An idle check while it holds
+ * keeps the phase and the seen startup cards, sends no wake and checks again when the hold may
+ * end: at the sent mark's cap, or every `STARTUP_TURN_POLL_MS` while the start is unsent, up to
+ * that mark's cap (a poll, since no event tells this module of the send, nor of a start claim
+ * refused before the send, which clears the mark). The unsent mark's cap counts from this
+ * module's first read of it, never again from a later check, so a start that never comes (a
+ * claim that never answers, a session given no start
  * command) holds the cards back once, for that long. A busy check is as before. The start turn's
  * run clears the mark at its `agent_start`, and its `agent_end` checks again: that check ends the
  * phase and sends one wake. A startup card seen while the mark held, at its `message_end` or at a
@@ -180,9 +181,11 @@ import type {
  *  check stops waiting for it: one older than this is a send the host failed. */
 export const STARTUP_CARD_CAP_MS = 30_000;
 
-/** How long the start-turn mark holds the startup wake back: from its start's send
+/** How long the start-turn mark holds the startup wake back by default: from its start's send
  *  (`startupTurn.sentAt`), or, while its start is unsent, from this module's first read of that
- *  unsent mark. A mark older than this is a start the host failed or one that is not coming. */
+ *  unsent mark. A mark older than this is a start the host failed or one that is not coming.
+ *  `ENVOY_STARTUP_TURN_CAP_MS` replaces it (`extensions/envoy.ts`), for a test that drives a start
+ *  that never comes on a real Oh My Pi and would otherwise wait the whole cap. */
 export const STARTUP_TURN_CAP_MS = 30_000;
 
 /** How often a check reads a mark whose start is unsent again, until its cap: no event tells this
@@ -267,6 +270,9 @@ export interface CardWakeDeps {
   /** Whether `session` is the session the cards go into: this instance's own, and the host's
    *  live one. */
   readonly isOwnSession: (session: string) => boolean;
+  /** How long the start-turn mark holds the startup wake back; `STARTUP_TURN_CAP_MS` when not
+   *  given. */
+  readonly startupTurnCapMs?: number;
 }
 
 /** A card whose `message_end` was seen and that waits for the check: the run it came in, and
@@ -502,12 +508,13 @@ export class CardWake {
     const mark = this.#deps.startupTurn();
     if (mark === undefined || !this.#deps.isOwnSession(mark.session)) return undefined;
     const now = this.#deps.now();
+    const cap = this.#deps.startupTurnCapMs ?? STARTUP_TURN_CAP_MS;
     if (mark.sentAt !== undefined) {
-      const left = mark.sentAt + STARTUP_TURN_CAP_MS - now;
+      const left = mark.sentAt + cap - now;
       return left > 0 ? left : undefined;
     }
     if (this.#unsentMark?.mark !== mark) this.#unsentMark = { mark, firstRead: now };
-    const left = this.#unsentMark.firstRead + STARTUP_TURN_CAP_MS - now;
+    const left = this.#unsentMark.firstRead + cap - now;
     return left > 0 ? Math.min(left, STARTUP_TURN_POLL_MS) : undefined;
   }
 

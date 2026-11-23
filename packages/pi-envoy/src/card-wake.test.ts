@@ -50,6 +50,8 @@ function harness(
   options: {
     readonly reportsIdle?: boolean;
     readonly mode?: NonNullable<SessionContext["mode"]> | null;
+    /** `startupTurnCapMs`; the module's default, the production one, when not given. */
+    readonly startupTurnCapMs?: number;
   } = {}
 ) {
   let clock = 1_000;
@@ -63,6 +65,9 @@ function harness(
     },
     startupTurn: () => mark,
     isOwnSession: (session) => session === OWN_SESSION,
+    ...(options.startupTurnCapMs === undefined
+      ? {}
+      : { startupTurnCapMs: options.startupTurnCapMs }),
   });
   const branch: unknown[] = [];
   const timers: (() => void | Promise<void>)[] = [];
@@ -765,6 +770,25 @@ describe("while the start-turn mark names the session", () => {
 
     // The same unsent mark holds nothing now: an idle card is an aside that starts its own turn.
     expect(host.card("after-the-cap").delivery).toMatchObject(aside);
+  });
+
+  // Every other case here runs on the module's own cap, which is production's: 30 s. A test that drives
+  // a start that never comes on a real Oh My Pi gives a shorter one (`ENVOY_STARTUP_TURN_CAP_MS`,
+  // extensions/envoy.ts), and the hold ends at that cap instead, as it does at the default.
+  test("holds an unsent mark for 30 s by default, and for the cap it is given instead", async () => {
+    expect(STARTUP_TURN_CAP_MS).toBe(30_000);
+    const host = harness({ mode: "tui", startupTurnCapMs: 3_000 });
+    host.markUnsent();
+    host.setIdle(true);
+    host.message(host.card("short-cap").message);
+    await host.fire();
+    host.advance(2_000);
+    await host.fire();
+    expect(host.sent).toEqual([]);
+
+    host.advance(1_000);
+    await host.fire();
+    expect(host.sent).toEqual([wakeMessage(oneCard)]);
   });
 
   // `/legion-controller-start`'s claim refused before the send clears the unsent mark.

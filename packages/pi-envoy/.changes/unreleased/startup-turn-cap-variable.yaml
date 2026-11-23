@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  `ENVOY_STARTUP_TURN_CAP_MS` replaces the 30 seconds (30000, the default) that a Legion controller's start-turn mark holds a startup card's wake back while the start is unsent or just sent. It is for a test that drives a start that never comes on a real Oh My Pi; a deployment does not set it.

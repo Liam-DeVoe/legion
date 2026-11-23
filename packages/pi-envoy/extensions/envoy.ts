@@ -110,11 +110,7 @@ import {
   natsConnectionOptions,
   natsDialBudget,
 } from "@legion/envoy-client/nats-connection";
-import {
-  type BrokerNatsCredential,
-  followNatsCredential,
-  keepNatsCredential,
-} from "@legion/envoy-client/nats-credential";
+import { followNatsCredential, keepNatsCredential } from "@legion/envoy-client/nats-credential";
 import {
   NoRelaySubjectError,
   refusedTopicsNoticeText,
@@ -202,12 +198,12 @@ import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
-import { connect, Events, type NatsConnection, StringCodec } from "nats";
+import { connect, Events, StringCodec } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
 import { CARD_DELIVERED_ENTRY, CardAges } from "../src/card-age";
-import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
+import { CardWake, type EnvoyCardMarker, STARTUP_TURN_CAP_MS } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
@@ -1422,12 +1418,15 @@ export default function envoyExtension(hostApi: PiApi): void {
   // no turn (`../src/card-wake`). A card the host's dispose flushes at shutdown wakes nothing. The
   // start-turn mark the Legion entry keeps, as published at this build's interface version, holds
   // the startup phase while it names the session open here (`sessionOpen`: this instance's own and
-  // the host's live one), never a `task` subagent's.
+  // the host's live one), never a `task` subagent's. `ENVOY_STARTUP_TURN_CAP_MS` replaces the
+  // mark's 30-second cap for a test that drives a start that never comes; read inline, as this
+  // file's other knobs are.
   const cardWake = new CardWake({
     now: () => Date.now(),
     sendMessage: (message, options) => pi.sendMessage(message, options),
     startupTurn: () => publishedInterface?.startupTurn,
     isOwnSession: (session) => sessionOpen(session),
+    startupTurnCapMs: Number(process.env.ENVOY_STARTUP_TURN_CAP_MS ?? "") || STARTUP_TURN_CAP_MS,
   });
 
   // When each card reached each session this process serves, which every model request shows
