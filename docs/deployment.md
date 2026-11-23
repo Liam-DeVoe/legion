@@ -441,7 +441,8 @@ list of strings, a command word that is no bare name where the configuration nam
 quoted name, and a read that fails or prints what is no name and JSON value.
 That read, and each read of the worker image's wrapper, prints what jj prints on standard error
 but the warnings that jj prints on every command, such as `Cannot define an alias that overrides
-the built-in command`.
+the built-in command`, and jj's note of a key that a read names and no configuration sets
+(`No matching config key for`), which only a read prints.
 A read of the aliases or of `ui.default-command` that fails leaves out jj's error too, and the
 line after it says that the read failed.
 So a warning that jj prints once, such as `Your repo appears to have been copied`, prints once

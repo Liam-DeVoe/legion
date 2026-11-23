@@ -141,12 +141,9 @@ func (u jjUnexpandable) Error() string { return "could not expand " + u.what + "
 // readJJAliases runs the read (jjAliasRead) as each command of the step runs (runJJCommand): next,
 // in env, in the working directory, as a child in this process's group, prints on stderr what it
 // printed on standard error but the warnings jj prints on every command and jj's error
-// (jjOnceOnly), and reads what it printed (parseJJAliases). So a warning that jj prints once, such
-// as `Your repo appears to have been copied`, which the read takes where it is the first command in
-// a copied repository, prints, and one that every command prints prints as often as jj alone
-// prints it for the command that runs after the read. jj's error is named by the line of a read
-// that fails (jjUnexpandable), which runJJ prints next. A read that cannot start prints nothing of
-// its own, and is jjUnexpandable too, with its start error.
+// (jjOnceOnly), and reads what it printed (parseJJAliases). jj's error is named by the line of a
+// read that fails (jjUnexpandable), which runJJ prints next. A read that cannot start prints
+// nothing of its own, and is jjUnexpandable too, with its start error.
 func readJJAliases(next string, env []string, stderr io.Writer) (jjAliases, error) {
 	stdout, printed, code, err := runJJCommand(next, env, jjAliasRead)
 	if err != nil {

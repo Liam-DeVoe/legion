@@ -215,14 +215,14 @@ func (s *jjStep) output(env, args []string) (stdout, stderr string, err error) {
 // <error>`.
 func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, err error) {
 	stdout, stderr, code, err = runJJCommand(s.next, env, args)
-	if err != nil {
-		code = 126
-		if errors.Is(err, syscall.ENOENT) {
-			code = 127
-		}
-		return "", "", 0, jjStepFailure{code: code, output: fmt.Sprintf("legion jj: run %s: %v\n", s.next, err)}
+	if err == nil {
+		return stdout, stderr, code, nil
 	}
-	return stdout, stderr, code, nil
+	status := 126
+	if errors.Is(err, syscall.ENOENT) {
+		status = 127
+	}
+	return "", "", 0, jjStepFailure{code: status, output: fmt.Sprintf("legion jj: run %s: %v\n", s.next, err)}
 }
 
 // runJJCommand runs next with args in env and waits for it, as a child in this process's group,
@@ -310,18 +310,26 @@ var jjEveryCommandMore = regexp.MustCompile("^(?:$|[ 0-9]|Caused by:|The `trunk\
 // it: `Error: `, `Config error: ` or `Internal error: ` (cli/src/command_error.rs).
 var jjErrorHeading = regexp.MustCompile(`^(?:Error|Config error|Internal error): `)
 
+// jjUnsetKey is jj's note of a key that a read names and no configuration sets, which jj prints
+// and then exits 0: `No matching config key for: <key>` in jj 0.45.1-sami and 0.46.0, with no colon
+// in jj 0.38.0 (cli/src/commands/config/list.rs).
+var jjUnsetKey = regexp.MustCompile("^Warning: No matching config key for[: ]")
+
 // jjSGR is an escape sequence of jj's colours, which a line carries where ui.color is always.
 var jjSGR = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 // jjOnceOnly is stderr, what a jj command of legion jj's own printed on standard error, as legion
 // jj prints it: each line but the warnings jj prints on every command, each with the lines jj
-// prints as its parts (jjEveryCommand, jjEveryCommandMore), each line read with its colours left
-// out. The command that legion jj runs after its own prints those warnings itself, so each prints
-// as often as jj alone prints it for that command. A warning that jj prints once and then never
-// again, such as `Your repo appears to have been copied …` (lib/src/secure_config.rs), is printed:
-// the first command in the state that makes jj print it is the one that prints it, and that may be
-// a command of legion jj's own. Where withError is false, jj's error and every line after it
-// (jjErrorHeading) are left out too, for a caller whose own line names that error.
+// prints as its parts (jjEveryCommand, jjEveryCommandMore), and jj's note of a key no
+// configuration sets (jjUnsetKey), each line read with its colours left out. The command that
+// legion jj runs after its own prints those warnings itself, so each prints as often as jj alone
+// prints it for that command. Only a read that names a key prints the note, which none of legion
+// jj's own does; it is left out so that this filter and the pod's wrapper's
+// (packages/daemon/docker/jj's once_only) hold one rule. A warning that jj prints once and then
+// never again, such as `Your repo appears to have been copied …` (lib/src/secure_config.rs), is
+// printed: the first command in the state that makes jj print it is the one that prints it, and
+// that may be a command of legion jj's own. Where withError is false, jj's error and every line
+// after it (jjErrorHeading) are left out too, for a caller whose own line names that error.
 func jjOnceOnly(stderr string, withError bool) string {
 	var kept strings.Builder
 	part := false
@@ -333,6 +341,8 @@ func jjOnceOnly(stderr string, withError bool) string {
 		case jjEveryCommand.MatchString(plain):
 			part = true
 		case part && jjEveryCommandMore.MatchString(plain):
+		case jjUnsetKey.MatchString(plain):
+			part = false
 		default:
 			part = false
 			kept.WriteString(line)

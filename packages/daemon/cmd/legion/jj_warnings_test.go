@@ -1,6 +1,9 @@
 package main
 
 import (
+	"maps"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -12,8 +15,8 @@ import (
 // of the aliases and the step's snapshot (jjOnceOnly). Each prints the warnings jj prints once and
 // drops those jj prints on every command, which the command after it prints itself. The rows of
 // the two forms run through the shared fixture (jj_push_fixture_test.go), as a role runs a
-// command; the last test reads jjOnceOnly itself, so this file names what the change adds, as
-// jj_expand_read_test.go does.
+// command, and read jj's colours by jjSGR; the last two tests read jjOnceOnly itself, so this file
+// names what the change adds, as jj_expand_read_test.go does.
 
 // rolePushCopiedWarning starts the warning that jj prints for the first command in a copy of a
 // repository that has a configuration of its own, and for no command after it
@@ -74,27 +77,41 @@ func TestAWarningJJPrintsOnceReachesTheRoleOnce(t *testing.T) {
 // written under the tmux form. The push sends C with the implementer's author after the step's one
 // snapshot, so the step's snapshot is among the commands that print nothing of that warning, and
 // so, under the pod's form, is the wrapper's read of git.executable-path; under both forms, the
-// read of `st`. The test unsets the alias after the push, so that its own reads of what the push
-// left, which read jj's standard error with its standard output, read no warning.
+// read of `st`. Each of the three prints it so with ui.color = "always" in the repository's
+// configuration as well, under which jj prints the warning in its colours on every command, a
+// read's --color=never notwithstanding, since jj prints it before it reads --color. The test sets
+// ui.color after the setup's reads, and unsets the alias and ui.color after the push, so that its
+// own reads of what the push left, which read jj's standard error with its standard output, read
+// no warning and no colour.
 func TestAWarningJJPrintsOnEveryCommandPrintsAsOftenAsJJAlonePrintsIt(t *testing.T) {
 	t.Parallel()
 	impl := rolePushImplementer
 	const toml = "[aliases]\nlog = [\"log\", \"-r\", \"@\"]"
 	for _, row := range []struct {
-		name string
-		args []string
-		push bool
+		name   string
+		args   []string
+		push   bool
+		colour bool
 	}{
 		{name: "jj st", args: []string{"st"}},
 		{name: "jj status", args: []string{"status"}},
 		{name: "jj git push -b b", args: []string{"git", "push", "-b", "b"}, push: true},
+		{name: "jj st with ui.color always", args: []string{"st"}, colour: true},
+		{name: "jj status with ui.color always", args: []string{"status"}, colour: true},
+		{name: "jj git push -b b with ui.color always", args: []string{"git", "push", "-b", "b"}, push: true, colour: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				colour := func(f *rolePushFixture) {
+					if row.colour {
+						f.configure("[ui]\ncolor = \"always\"")
+					}
+				}
 				twin := newRolePushFixture(t, form, "")
 				twin.configure(toml)
 				twin.workAndB()
+				colour(twin)
 				line := row.args
 				if form == rolePushPod {
 					line = slices.Concat([]string{twin.podForces[0], "--config-file=/dev/null"}, row.args)
@@ -104,10 +121,17 @@ func TestAWarningJJPrintsOnEveryCommandPrintsAsOftenAsJJAlonePrintsIt(t *testing
 				if code != 0 || alone == 0 {
 					t.Fatalf("jj alone exited %d on %q and printed %q %d times, want 0 and at least once:\n%s", code, line, rolePushOverridesWarning, alone, aloneErr)
 				}
+				if row.colour && !jjSGR.MatchString(aloneErr) {
+					t.Fatalf("jj alone printed no colours on %q with ui.color = \"always\":\n%s", line, aloneErr)
+				}
 				f := newRolePushFixture(t, form, rolePushRecords)
 				f.configure(toml)
 				c := f.workAndB()
-				divergent := f.divergence()
+				var divergent map[string]int
+				if row.push {
+					divergent = f.divergence()
+				}
+				colour(f)
 				code, _, stderr := f.push(impl, row.args...)
 				n := strings.Count(stderr, rolePushOverridesWarning)
 				t.Logf("jj alone printed %q %d times for %q, and the form's jj %d times for %q", rolePushOverridesWarning, alone, line, n, row.args)
@@ -123,7 +147,57 @@ func TestAWarningJJPrintsOnEveryCommandPrintsAsOftenAsJJAlonePrintsIt(t *testing
 				want := rolePushSends("b", c, "implementer", impl)
 				want.snapshots = rolePushTakesOneSnapshot
 				f.jj(impl, "config", "unset", "--repo", "aliases.log")
+				if row.colour {
+					f.jj(impl, "config", "unset", "--repo", "ui.color")
+				}
 				f.check(want, row.args, code, stderr, divergent, 0)
+			})
+		})
+	}
+}
+
+// A command whose reads find no key prints no warning that jj alone does not print: a bare `jj`,
+// where no configuration sets ui.default-command, and `jj nosuch`, which no configuration names an
+// alias, print each line that starts `Warning:`, read with jj's colours left out (jjSGR), as many
+// times as jj alone prints it for the line the form runs, built as the every-command test builds
+// it, and exit as jj alone exits. The pod's wrapper reads ui.default-command for the one and
+// aliases.nosuch for the other, keys no configuration sets, of which jj notes `No matching config
+// key for`; the pane's legion jj reads every alias and ui.default-command in one read that names
+// no key.
+func TestACommandWhoseReadsFindNoKeyPrintsNoWarningJJAloneDoesNotPrint(t *testing.T) {
+	t.Parallel()
+	impl := rolePushImplementer
+	warnings := func(stderr string) map[string]int {
+		counts := map[string]int{}
+		for line := range strings.SplitSeq(jjSGR.ReplaceAllString(stderr, ""), "\n") {
+			if strings.HasPrefix(line, "Warning:") {
+				counts[line]++
+			}
+		}
+		return counts
+	}
+	for _, row := range []struct {
+		name string
+		args []string
+	}{
+		{name: "jj", args: nil},
+		{name: "jj nosuch", args: []string{"nosuch"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, "")
+				line := row.args
+				if form == rolePushPod {
+					line = slices.Concat([]string{f.podForces[0], "--config-file=/dev/null"}, row.args)
+				}
+				aloneCode, _, aloneErr := f.alone(impl, line...)
+				code, _, stderr := f.push(impl, row.args...)
+				alone, got := warnings(aloneErr), warnings(stderr)
+				t.Logf("jj alone exited %d and printed the warnings %v for %q, and the form's jj exited %d and printed %v for %q", aloneCode, alone, line, code, got, row.args)
+				if code != aloneCode || !maps.Equal(got, alone) {
+					t.Errorf("the command exited %d and printed the warnings %v, want %d and %v, as jj alone does for %q:\n%s", code, got, aloneCode, alone, line, stderr)
+				}
 			})
 		})
 	}
@@ -131,9 +205,10 @@ func TestAWarningJJPrintsOnEveryCommandPrintsAsOftenAsJJAlonePrintsIt(t *testing
 
 // jjOnceOnlyBlocks are blocks of jj's standard error as jj 0.38.0, 0.45.1-sami and 0.46.0 print
 // them, each with whether jjOnceOnly keeps it: a warning jj prints once, a line of jj's of no
-// heading, and a warning jj prints on every command, each warning with the lines jj prints as its
-// parts, and some with jj's colours. They are in an order that puts a block that jjOnceOnly keeps,
-// one with no heading among them, right after each that it drops.
+// heading, a warning jj prints on every command, each warning with the lines jj prints as its
+// parts, and some with jj's colours, and jj's note of a key a read names and no configuration
+// sets. They are in an order that puts a block that jjOnceOnly keeps, one with no heading among
+// them, right after each that it drops.
 var jjOnceOnlyBlocks = []struct {
 	name, text string
 	kept       bool
@@ -162,6 +237,10 @@ var jjOnceOnlyBlocks = []struct {
 		text: "Warning: Failed to load `template-aliases.x`: Expected a string or a table with a `definition` string key, but is integer\n"},
 	{name: "aliases that -R, --config or --config-file would define",
 		text: "Warning: Command aliases cannot be loaded from -R/--repository path or --config/--config-file arguments.\n"},
+	{name: "a key a read names and no configuration sets, as jj 0.45 and 0.46 note it",
+		text: "Warning: No matching config key for: aliases.nosuch\n"},
+	{name: "a key a read names and no configuration sets, with no colon as in jj 0.38",
+		text: "Warning: No matching config key for ui.default-command\n"},
 	{name: "a concurrent operation", kept: true,
 		text: "Concurrent modification detected, resolving automatically.\n"},
 	{name: "a trunk() that does not resolve, with its second line and its hint",
@@ -188,16 +267,21 @@ var jjOnceOnlyErrors = []string{
 	"\x1b[1m\x1b[38;5;1mError: \x1b[39mThere is no jj repo in \".\"\x1b[0m\n",
 }
 
-// The filter of what a jj command of legion jj's own prints on standard error drops each warning jj
-// prints on every command, each with the lines jj prints as its parts, and keeps every other line:
-// each block of jjOnceOnlyBlocks alone, and all of them in one text, give what the block's kept
-// says, a block with jj's colours read as it reads with none, and the colours of a block it keeps
-// kept. A line of no heading right after a warning it drops, such as the snapshot's line of the
-// descendants it rebased, is kept. jj's error, each of jjOnceOnlyErrors after those blocks, and
-// every line after it, are dropped where the caller asks for no error, and kept where it asks for
-// the error.
-func TestTheFilterOfJJsOutputDropsOnlyTheWarningsJJPrintsOnEveryCommand(t *testing.T) {
-	t.Parallel()
+// jjOnceOnlyCase is a text of jj's standard error, whether the filter is to keep jj's error, and
+// what the filter gives of it.
+type jjOnceOnlyCase struct {
+	name, text string
+	withError  bool
+	want       string
+}
+
+// jjOnceOnlyCases are the texts that each filter of jj's standard error is read over, without jj's
+// error and with it: each block of jjOnceOnlyBlocks alone, which gives the block where its kept
+// says so and nothing where not; all of them in one text, which gives the blocks it keeps; and
+// all of them followed by each of jjOnceOnlyErrors, which gives the blocks it keeps and, with the
+// error, the error whole after them.
+func jjOnceOnlyCases() []jjOnceOnlyCase {
+	var cases []jjOnceOnlyCase
 	var all, kept strings.Builder
 	for _, block := range jjOnceOnlyBlocks {
 		want := ""
@@ -206,24 +290,78 @@ func TestTheFilterOfJJsOutputDropsOnlyTheWarningsJJPrintsOnEveryCommand(t *testi
 			kept.WriteString(block.text)
 		}
 		all.WriteString(block.text)
-		for _, withError := range []bool{false, true} {
-			if got := jjOnceOnly(block.text, withError); got != want {
-				t.Errorf("%s, with error %v: the filter gives %q, want %q", block.name, withError, got, want)
-			}
-		}
+		cases = append(cases, jjOnceOnlyCase{block.name, block.text, false, want}, jjOnceOnlyCase{block.name, block.text, true, want})
 	}
-	for _, withError := range []bool{false, true} {
-		if got := jjOnceOnly(all.String(), withError); got != kept.String() {
-			t.Errorf("every block in one text, with error %v: the filter gives\n%q\nwant\n%q", withError, got, kept.String())
-		}
-	}
+	cases = append(cases,
+		jjOnceOnlyCase{"every block in one text", all.String(), false, kept.String()},
+		jjOnceOnlyCase{"every block in one text", all.String(), true, kept.String()})
 	for _, failure := range jjOnceOnlyErrors {
-		text := all.String() + failure
-		if got := jjOnceOnly(text, false); got != kept.String() {
-			t.Errorf("with no error: the filter gives\n%q\nwant what it keeps of the blocks before jj's error, and nothing of the error\n%q", got, kept.String())
+		heading, _, _ := strings.Cut(failure, "\n")
+		name := "every block, then jj's error " + heading
+		cases = append(cases,
+			jjOnceOnlyCase{name, all.String() + failure, false, kept.String()},
+			jjOnceOnlyCase{name, all.String() + failure, true, kept.String() + failure})
+	}
+	return cases
+}
+
+// The filter of what a jj command of legion jj's own prints on standard error drops each warning jj
+// prints on every command, each with the lines jj prints as its parts, and jj's note of a key a
+// read names and no configuration sets, and keeps every other line: each of jjOnceOnlyCases gives
+// what it wants, a block with jj's colours read as it reads with none, and the colours of a block
+// it keeps kept. A line of no heading right after a line it drops, such as the snapshot's line of
+// the descendants it rebased, is kept. jj's error, each of jjOnceOnlyErrors after those blocks, and
+// every line after it, are dropped where the caller asks for no error, and kept where it asks for
+// the error.
+func TestTheFilterOfJJsOutputDropsOnlyTheWarningsJJPrintsOnEveryCommand(t *testing.T) {
+	t.Parallel()
+	for _, c := range jjOnceOnlyCases() {
+		if got := jjOnceOnly(c.text, c.withError); got != c.want {
+			t.Errorf("%s, with error %v: the filter gives\n%q\nwant\n%q", c.name, c.withError, got, c.want)
 		}
-		if got, want := jjOnceOnly(text, true), kept.String()+failure; got != want {
-			t.Errorf("with the error: the filter gives\n%q\nwant what it keeps of the blocks, then jj's error whole\n%q", got, want)
+	}
+}
+
+// The pod's wrapper's filter of what jj prints on standard error for one of its reads
+// (packages/daemon/docker/jj's once_only) is legion jj's (jjOnceOnly), one rule in two languages:
+// read out of the script, from `once_only() {` to the `}` that closes it, with the line that sets
+// the escape character it reads and with `set -u`, as the wrapper runs it, and run under /bin/sh
+// without the argument `error` and with it, it prints for each of jjOnceOnlyCases what jjOnceOnly
+// gives for the same text, and what the case wants.
+func TestThePodWrappersFilterOfJJsOutputIsLegionJJs(t *testing.T) {
+	t.Parallel()
+	read, err := os.ReadFile(filepath.Join("..", "..", "docker", "jj"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(string(read), "\n")
+	esc := slices.IndexFunc(lines, func(line string) bool { return strings.HasPrefix(line, "esc=") })
+	start := slices.Index(lines, "once_only() {")
+	if esc < 0 || start < 0 {
+		t.Fatalf("packages/daemon/docker/jj holds no line that sets esc (%d) or no `once_only() {` (%d)", esc, start)
+	}
+	end := slices.Index(lines[start:], "}")
+	if end < 0 {
+		t.Fatal("packages/daemon/docker/jj holds no `}` that closes once_only")
+	}
+	program := strings.Join(slices.Concat([]string{"set -u", lines[esc]}, lines[start:start+end+1], []string{`once_only "$1"`}), "\n")
+	for _, c := range jjOnceOnlyCases() {
+		mode := ""
+		if c.withError {
+			mode = "error"
+		}
+		cmd := exec.Command("/bin/sh", "-c", program, "once_only", mode)
+		cmd.Env = []string{"PATH=/usr/bin:/bin"}
+		cmd.Stdin = strings.NewReader(c.text)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: once_only %q failed: %v\n%s", c.name, mode, err, stderr.String())
+		}
+		got := string(out)
+		if want := jjOnceOnly(c.text, c.withError); got != want || got != c.want {
+			t.Errorf("%s: once_only %q prints\n%q\nwant what jjOnceOnly gives\n%q\nand the case wants\n%q", c.name, mode, got, want, c.want)
 		}
 	}
 }

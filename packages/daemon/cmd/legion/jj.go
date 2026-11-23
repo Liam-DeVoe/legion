@@ -460,7 +460,8 @@ func (s *jjStep) dryRunFilled() ([]string, error) {
 func (s *jjStep) dryRun(given []jjGiven) []string {
 	p := &s.push
 	words := s.appendWords(make([]string, 0, len(p.args)+len(jjDryRunFlags)+len(jjDryRunQuiet)), given, true, 0, p.configEnd)
-	words = append(s.appendWords(append(words, jjDryRunQuiet...), given, true, p.configEnd, p.end), jjDryRunFlags...)
+	words = s.appendWords(append(words, jjDryRunQuiet...), given, true, p.configEnd, p.end)
+	words = append(words, jjDryRunFlags...)
 	return s.appendWords(words, given, true, p.end, len(p.args))
 }
 
