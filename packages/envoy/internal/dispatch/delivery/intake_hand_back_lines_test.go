@@ -57,16 +57,17 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 	for _, fault := range []struct {
 		name string
 		// line is what the line the fault makes each delivery write says, "" where it writes
-		// none of its own; cause is what the hand-back line's error names; final is what a line
-		// of the delivery that is acknowledged says.
-		line, cause, final string
+		// none of its own; cause is what the hand-back line's error names; final holds what a line
+		// of the delivery that is acknowledged says, any one of them.
+		line, cause string
+		final       []string
 		// start makes the fault before the envelope is published, and answers the pool and the
 		// GitHub client the intake runs on and what ends the fault.
 		start func(t *testing.T, ctx context.Context, pool *store.Pool, fake *fakeGitHub, github *githubPulls) (*store.Pool, *githubapp.Client, func())
 	}{
 		{
 			name: "the_owed_table_is_locked", line: "read the revision of the read a pull request is owed",
-			cause: "status 500", final: "the read it is owed is recorded",
+			cause: "status 500", final: []string{"the read it is owed is recorded"},
 			start: func(t *testing.T, ctx context.Context, pool *store.Pool, fake *fakeGitHub, github *githubPulls) (*store.Pool, *githubapp.Client, func()) {
 				github.mu.Lock()
 				github.failing = true
@@ -76,7 +77,11 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 		},
 		{
 			name: "github_has_no_such_pull_request_while_the_owed_table_is_locked", line: "read the revision of the read a pull request is owed",
-			cause: "status 404", final: "the read is owed, and the reconcile reads it again",
+			// The lock ends while the envelope comes round every 20 ms, so it may end between the
+			// acknowledged delivery's two owes, the refusal's and the failure's, which then writes
+			// the failure's line: either line is that delivery's own, above DEBUG. Which owe is
+			// written is TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed's case.
+			cause: "status 404", final: []string{"the read is owed, and the reconcile reads it again", "the read it is owed is recorded"},
 			start: func(t *testing.T, ctx context.Context, pool *store.Pool, fake *fakeGitHub, github *githubPulls) (*store.Pool, *githubapp.Client, func()) {
 				github.mu.Lock()
 				delete(github.pulls, number)
@@ -86,7 +91,7 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 		},
 		{
 			name: "the_shared_rate_limit_cannot_be_read", line: "the shared GitHub rate limit was not read",
-			cause: "status 500", final: "the read it is owed is recorded",
+			cause: "status 500", final: []string{"the read it is owed is recorded"},
 			start: func(t *testing.T, ctx context.Context, pool *store.Pool, fake *fakeGitHub, github *githubPulls) (*store.Pool, *githubapp.Client, func()) {
 				github.mu.Lock()
 				github.failing = true
@@ -162,12 +167,15 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 			}
 			acknowledged := false
 			for _, record := range final {
-				if message, _ := record["msg"].(string); strings.Contains(message, fault.final) && record["level"] != "DEBUG" {
-					acknowledged = true
+				message, _ := record["msg"].(string)
+				for _, said := range fault.final {
+					if strings.Contains(message, said) && record["level"] != "DEBUG" {
+						acknowledged = true
+					}
 				}
 			}
 			if !acknowledged {
-				t.Errorf("the delivery that was acknowledged wrote no line above DEBUG saying %q, want its own level: a delivery that does not hand the envelope back keeps its lines' levels; it wrote %v", fault.final, final)
+				t.Errorf("the delivery that was acknowledged wrote no line above DEBUG saying any of %q, want its own level: a delivery that does not hand the envelope back keeps its lines' levels; it wrote %v", fault.final, final)
 			}
 		})
 	}

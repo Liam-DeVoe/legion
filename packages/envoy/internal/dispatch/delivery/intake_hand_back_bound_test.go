@@ -341,6 +341,13 @@ func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCo
 // the owe, so it was written at every hand-back, every headWriteRedeliverAfter, and said the
 // reconcile reads the pull request again when nothing was owed (review of
 // cybermonklabs/legion#4209 at def907052c, N2).
+//
+// The database takes writes again only between two deliveries (refusalLiftGap). A delivery tries
+// two owes, the refusal's (oweRefusedRead) and, once that is refused, the failure's (deliver's
+// oweEnvelopesRead); a lift between the two takes the failure's and acknowledges the envelope
+// with no refusal owed and no INFO line, which is right for that order and is not the case read
+// here. When the test lifted as soon as NATS had made the second delivery, a run under -race lifted
+// there.
 func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testing.T) {
 	for _, refusal := range []struct {
 		name   string
@@ -351,7 +358,8 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 	} {
 		t.Run(refusal.name, func(t *testing.T) {
 			fastPageRetries(t)
-			logs := captureLogs(t)
+			// DEBUG too, since the second hand-back's line is DEBUG (handBackLineDue).
+			logs := captureLogsAt(t, slog.LevelDebug)
 			pool, ctx := deliveryTestPool(t)
 			const number = 4215
 			fake := newFakeGitHub(t)
@@ -362,7 +370,7 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 			natsClient := intakeTestClient(t)
 			intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool),
 				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-			intake.redeliverAfter = testRedeliverAfter
+			intake.redeliverAfter = refusalLiftGap
 			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
@@ -370,12 +378,14 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 			publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number,
 				prEnvelope("acme/widgets", number, "opened", poisonHead, "feature/x", "", at))
 
-			faulted := uint64(0)
-			for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-				if faulted = deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; faulted >= 2 {
-					break
-				}
-			}
+			// deliver writes the hand-back line once both owes of its delivery were refused, and
+			// hands the envelope back with a delay of redeliverAfter, so the lift lands after the
+			// second delivery's owes and refusalLiftGap before the third delivery's.
+			waitFor(t, 30*time.Second, func() bool { return len(handBackSegments(logs())) >= 2 }, func() string {
+				return fmt.Sprintf("the envelope was handed back %d time(s) in 30 s while its owed read could not be written, want 2: %+v",
+					len(handBackSegments(logs())), deliveryConsumerInfo(t, natsClient))
+			})
+			faulted := len(handBackSegments(logs()))
 			restore()
 			awaitAcknowledged(t, natsClient)
 			delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before
@@ -389,10 +399,7 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 					said = append(said, record)
 				}
 			}
-			t.Logf("deliveries_while_refused=%d deliveries=%d owed=%q info_lines=%d", faulted, delivered, reason, len(said))
-			if faulted < 2 {
-				t.Fatalf("the envelope was delivered %d time(s) in 30 s while its owed read could not be written, want it handed back", faulted)
-			}
+			t.Logf("hand_backs_while_refused=%d deliveries=%d owed=%q info_lines=%d", faulted, delivered, reason, len(said))
 			if reason != string(owedRefusal) {
 				t.Errorf("#%d is owed %q, want %q", number, reason, owedRefusal)
 			}
@@ -405,6 +412,13 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 		})
 	}
 }
+
+// refusalLiftGap is the hand-back delay of an intake whose test ends a fault of
+// pull_request_reads_owed and then reads whether GitHub's refusal was owed: the time between a
+// hand-back's line and the next delivery, in which the test ends the fault, so that it never ends
+// between the two owes of one delivery. Ending it is one statement, so a second is room enough on
+// a loaded machine.
+const refusalLiftGap = time.Second
 
 // The owe of a read GitHub refused waits on a lock no longer than the statements beside it do
 // (owedTableBound), so a lock of pull_request_reads_owed holds a delivery, and one of the
@@ -419,7 +433,9 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 // message's context and waited out a 60 s lock, where the other statements fail after 5 s
 // (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, its last note); an owe of the refused
 // read bounded at 25 s beside one bounded at 5 s passed the test's earlier form, which measured
-// only the minute (the deep audit of ac562e9837, finding 1).
+// only the minute (the deep audit of ac562e9837, finding 1). The lock ends after the first
+// hand-back's line and refusalLiftGap before the second delivery, so it does not end between that
+// delivery's two owes, where the owe beside would take the read as a failure.
 func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *testing.T) {
 	fastPageRetries(t)
 	logs := captureLogs(t)
@@ -436,7 +452,7 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 	natsClient := intakeTestClient(t)
 	intake := newIntake(natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
 		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
-	intake.redeliverAfter = testRedeliverAfter
+	intake.redeliverAfter = refusalLiftGap
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
