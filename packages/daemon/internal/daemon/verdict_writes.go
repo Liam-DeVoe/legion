@@ -149,10 +149,8 @@ func (v *verdictWriter) add(target verdictTarget) {
 	if target.overForeign {
 		queue = &v.swept
 	}
-	for _, queued := range *queue {
-		if queued == target {
-			return
-		}
+	if slices.Contains(*queue, target) {
+		return
 	}
 	*queue = append(*queue, target)
 	v.pending[target.issue]++

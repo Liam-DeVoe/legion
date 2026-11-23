@@ -35,7 +35,7 @@ func withoutVerdictCheck(fact intake.PullRequestChecks) (intake.PullRequestCheck
 	isStatus := func(status record.CommitStatus) bool { return status.Context == verdict.CheckName }
 	isName := func(name string) bool { return name == verdict.CheckName }
 	if !slices.ContainsFunc(fact.CheckRuns, isRun) && !slices.ContainsFunc(fact.Statuses, isStatus) &&
-		!slices.ContainsFunc(fact.Failing, isName) && !slices.ContainsFunc(fact.Cancelled, isName) {
+		!slices.Contains(fact.Failing, verdict.CheckName) && !slices.Contains(fact.Cancelled, verdict.CheckName) {
 		return fact, false
 	}
 	fact.CheckRuns = slices.DeleteFunc(slices.Clone(fact.CheckRuns), isRun)
