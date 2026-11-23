@@ -13,7 +13,7 @@ import (
 )
 
 // The records the daemon's writer of the required check legion-verdict keeps, in the five tables of
-// migration 20261122045825_verdicts: the pull requests of a verdict repository that no Legion issue
+// migration 20261123213816_verdicts: the pull requests of a verdict repository that no Legion issue
 // owns, with their heads; the reviews of a verdict repository's pull requests, Legion heads and
 // outside ones alike; the side reviewer a controller named for such a pull request and head; the
 // verdicts given on a head; and each check run and commit status the writer

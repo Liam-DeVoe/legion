@@ -22,18 +22,27 @@ import (
 // The relaunch goes through the launch path every replacement takes (replaceProcess): it is paced
 // as every launch is (reserveWake), a held suspension ends it in a suspension, and the process it
 // lets go records what that ended (endReviewHead), which the next process is told.
+//
+// Where the clone stands is the claim's own record of its launch (Claim.ReviewLaunchHead and
+// ReviewLaunchGeneration), which the store keeps, so a daemon that restarts and re-adopts a live
+// reviewer whose head has not moved hands it its next task in the process it found running. Only a
+// row that records no head for the process the claim records — one a release before this one
+// launched — sends that reviewer's next task to a launch at the record's head.
 
-// reviewAt is the head a reviewer's launch gave it, at that launch's generation; known is false
-// for a machine that has built no launch since it was made, which knows no head at all.
+// reviewAt is a head the record held, at a generation of the claim's, as reviewRaisedFor keeps the
+// one a relaunch was raised for; known is false while none was raised.
 type reviewAt struct {
 	generation uint64
 	head       string
 	known      bool
 }
 
-// at is whether the launch at generation gave the reviewer head.
-func (r reviewAt) at(generation uint64, head string) bool {
-	return r.known && r.generation == generation && r.head == head
+// launchedAt is whether the launch that started the process the claim records gave the reviewer
+// head (Claim.ReviewLaunchHead): its record names the claim's own generation, which no launch
+// before this release's wrote.
+func (m *Machine) launchedAt(head string) bool {
+	return m.claim.ReviewLaunchGeneration != 0 && m.claim.ReviewLaunchGeneration == m.claim.Generation &&
+		m.claim.ReviewLaunchHead == head
 }
 
 // reviewHeadHolds is whether the reviewer's process works at the head the record holds now, which
@@ -55,14 +64,14 @@ func (m *Machine) reviewHeadHolds(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if head == "" || m.reviewLaunched.at(m.claim.Generation, head) {
+	if head == "" || m.launchedAt(head) {
 		return true, nil
 	}
 	if raised := m.reviewRaisedFor; raised.known && raised.head == head && m.claim.Generation > raised.generation {
 		if m.reviewRefused != head {
 			m.reviewRefused = head
 			m.log.Error("supervise: the reviewer was started again for the record's head and its launch gave it another; it is handed nothing until the record holds another head",
-				"head", head, "launchedAt", m.reviewLaunched.head, "generation", m.claim.Generation)
+				"head", head, "launchedAt", m.claim.ReviewLaunchHead, "generation", m.claim.Generation)
 		}
 		return false, nil
 	}
@@ -82,9 +91,8 @@ func (m *Machine) raiseReviewRelaunch(head string) {
 	m.reviewRaising = true
 	m.reviewRaisedFor = reviewAt{generation: m.claim.Generation, head: head, known: true}
 	ev := ReviewHeadMoved{Claim: m.claim.Token, Generation: m.claim.Generation, Head: head}
-	launched := m.reviewLaunched
 	m.log.Info("supervise: the reviewer's process works at another head than its record's; it is started again at the record's head before it is handed anything",
-		"launchedAt", launched.head, "launchKnown", launched.known, "head", head, "generation", ev.Generation)
+		"launchedAt", m.claim.ReviewLaunchHead, "launchGeneration", m.claim.ReviewLaunchGeneration, "head", head, "generation", ev.Generation)
 	m.goroutines++
 	go func() {
 		if err := m.Handle(m.worker(), ev); err != nil {
@@ -105,7 +113,7 @@ func (m *Machine) raiseReviewRelaunch(head string) {
 func relaunchAtReviewHead(m *Machine, ctx context.Context, ev Event) error {
 	moved := ev.(ReviewHeadMoved)
 	if moved.Generation != m.claim.Generation || m.claim.Role != claim.RoleReviewer || m.launchWaits() ||
-		m.reviewLaunched.at(m.claim.Generation, moved.Head) {
+		m.launchedAt(moved.Head) {
 		return nil
 	}
 	_, err := m.replaceProcess(ctx, "the reviewer's process is started again at the head under review", ordinaryEnd, endReviewHead)

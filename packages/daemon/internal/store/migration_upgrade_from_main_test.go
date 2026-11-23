@@ -74,8 +74,9 @@ import (
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047),
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, the check states' two (20261121065041, 20261121074614)
-// and the verdict records (20261122045825), so an upgrade of a database main migrated applies it
+// dispatch://INFRA-4729's 20261120055717, the check states' two (20261121065041, 20261121074614),
+// the reviewer's launch head (20261123211314) and the verdict records (20261123213816), so an
+// upgrade of a database main migrated applies it
 // just before them. It adds pull_requests.statuses at its default, the empty list, and it touches
 // no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
@@ -152,11 +153,15 @@ import (
 // The phase verdict's removal (20261121074614) is applied after it and touches no
 // outbox_kind_check: it drops phases.verdict, adds phases.states_serial at 0, and takes the key
 // verdict out of each queued notice.
-// The verdict records (20261122045825) stand above every other version of this list, the check
-// states' two included (TestTheVerdictRecordsStandAboveEveryOtherMigration): they create five
-// tables and their indexes and touch no outbox_kind_check, so an upgrade of a database main
-// migrated applies them last and they need no row of their own here (verdicts_test.go writes and
-// reads each table). So the design news stays the last word of that check.
+// The reviewer's launch head (20261123211314) is applied after all of these and touches no
+// outbox_kind_check: it adds claims.review_launch_head and claims.review_launch_generation at their
+// defaults, the empty string and 0, on every row it finds, so it needs no row of its own here.
+// The verdict records (20261123213816) stand above every other version of this list, the check
+// states' two and the reviewer's launch head included
+// (TestTheVerdictRecordsStandAboveEveryOtherMigration): they create five tables and their indexes
+// and touch no outbox_kind_check, so an upgrade of a database main migrated applies them last and
+// they need no row of their own here (verdicts_test.go writes and reads each table). So the
+// design news stays the last word of that check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -168,7 +173,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121065041,
-	20261121074614, 20261122045825,
+	20261121074614, 20261123211314, 20261123213816,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -188,9 +193,10 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902 and
 // dispatch://INFRA-4729's 20261120055717. That is why the loop below holds the list rather than
 // counting it, so that a version added above any of them is named here rather than read as main's.
-// The check states' 20261121065041 and the phase verdict's removal, 20261121074614, which came
-// after them, stand above main's newest too, and are named in that list with the rest. The verdict
-// records' 20261122045825 stands above all of them, and the list names it too.
+// The check states' 20261121065041, the phase verdict's removal, 20261121074614, and the reviewer's
+// launch head, 20261123211314, which came after them, stand above main's newest too, and are named
+// in that list with the rest. The verdict records' 20261123213816 stands above all of them, and the
+// list names it too.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

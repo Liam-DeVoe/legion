@@ -898,9 +898,12 @@ repository's objects and one checkout.
 A reviewer's pane outlives its round, and nothing moves its clone while the pane runs. So before
 the daemon sends a reviewer a task, or publishes it a merge forward's review or the ask of its
 verdict past review, it reads the pull request's head again. Where that head is not the one the
-pane's launch was given, or the daemon restarted since that launch, the pane is started again on
-its session first (`supervise.ReviewHeadMoved`), and that launch brings the clone to the head as
-above. The task or message goes to the new pane once it is ready, and the old pane is sent
+pane's launch was given, the pane is started again on its session first
+(`supervise.ReviewHeadMoved`), and that launch brings the clone to the head as above. The claim's
+row keeps the head each launch was given (`claims.review_launch_head`), so a daemon that restarts
+goes on sending a live reviewer its tasks in the pane it found while the head has not moved; only a
+pane an earlier release launched, whose row records no head, is started again at its next task.
+The task or message goes to the new pane once it is ready, and the old pane is sent
 nothing. A relaunch whose launch still gives the reviewer another head is not raised a second
 time for that head: the task waits, with one error line, until the record holds another head.
 

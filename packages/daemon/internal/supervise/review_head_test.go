@@ -101,15 +101,48 @@ func TestAReviewersTaskAtAnotherHeadGoesToAProcessLaunchedAtIt(t *testing.T) {
 	h.wantCalls("Resume", 1)
 }
 
-// The head a process was launched at lives in the machine's memory alone, so a machine a daemon
-// restart rebuilt does not know where its reviewer's clone stands: the reviewer's next task goes
-// to a process launched at the record's head, as a task after the head moved does. A record that
-// holds no head (an issue with no pull request) holds no task back, and a record that cannot be
-// read holds the task back, unsent and with no relaunch, until it answers.
+// The head a process was launched at is the claim's own record (Claim.ReviewLaunchHead), which
+// the store keeps, so a machine a daemon restart rebuilt hands its live reviewer the next task in
+// the process it found, where the record's head has not moved, and relaunches it where it has.
+// A row that records no launch head for the process the claim records — one a release before this
+// one launched — sends the reviewer's next task to a process launched at the record's head. A
+// record that holds no head (an issue with no pull request) holds no task back, and a record that
+// cannot be read holds the task back, unsent and with no relaunch, until it answers.
 func TestAReviewersTaskWaitsForAProcessWhoseHeadTheMachineKnows(t *testing.T) {
-	t.Run("after a restart", func(t *testing.T) {
+	t.Run("after a restart, at the same head", func(t *testing.T) {
 		h, _ := newReviewerHarness(t, "head-1")
 		h.reach(StateIdle)
+		h.restart()
+		h.must(RequestDeliver{Claim: h.token, Task: "review round two"})
+		h.m.Wait()
+		h.wantPrompts(2)
+		h.wantCalls("Resume", 0)
+	})
+	t.Run("after a restart, at a head that moved", func(t *testing.T) {
+		h, recorded := newReviewerHarness(t, "head-1")
+		h.reach(StateIdle)
+		h.restart()
+		recorded.set("head-2")
+		h.specs.setReviewHead("head-2")
+		h.must(RequestDeliver{Claim: h.token, Task: "review round two"})
+		h.m.Wait()
+		h.wantPrompts(1)
+		if got := h.wantCalls("Resume", 1)[0].Spec.ReviewHead; got != "head-2" {
+			t.Fatalf("the relaunch gave the reviewer head %q, want head-2", got)
+		}
+		h.relaunched()
+		h.m.Wait()
+		h.wantPrompts(2)
+	})
+	t.Run("a row an earlier release wrote", func(t *testing.T) {
+		h, _ := newReviewerHarness(t, "head-1")
+		h.reach(StateIdle)
+		h.m.Wait()
+		earlier := h.store.load(h.token)
+		earlier.ReviewLaunchHead, earlier.ReviewLaunchGeneration = "", 0
+		if err := h.store.PutClaim(h.ctx, earlier); err != nil {
+			t.Fatal(err)
+		}
 		h.restart()
 		h.must(RequestDeliver{Claim: h.token, Task: "review round two"})
 		h.m.Wait()

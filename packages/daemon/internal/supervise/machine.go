@@ -468,6 +468,18 @@ type Claim struct {
 	// forgetSession clears it with the session. No other code writes it. The store keeps it in
 	// claims.agent_resume_generation.
 	AgentResumeGeneration uint64
+	// ReviewLaunchHead is the head a reviewer's launch gave it (runtime.SpawnSpec.ReviewHead, ""
+	// for a launch given none), and ReviewLaunchGeneration that launch's generation: where the
+	// clone the reviewer's process works in stands, since the launch makes or moves that clone and
+	// nothing moves it while the process runs. spawnSpec sets both for a reviewer, and they reach
+	// the store with the write that records the process the launch started (launchNow), so a
+	// daemon that restarts and re-adopts a live reviewer knows where its clone stands
+	// (reviewHeadHolds). A generation other than the claim's own — 0 on a row a release before this
+	// one wrote — says nothing of the process the claim records, whose next task waits for a launch
+	// at the record's head. Every other role leaves both empty. The store keeps them in
+	// claims.review_launch_head and claims.review_launch_generation.
+	ReviewLaunchHead       string
+	ReviewLaunchGeneration uint64
 	// UpdateRound is the update round this claim is in, and "" when none is open: the round's
 	// identity and its kind in one string. PodRoundPrefix and the pod's uid is the drift round of
 	// the pod the claim runs on, which every claim of that pod shares, and PluginRoundPrefix and
@@ -1416,17 +1428,14 @@ type Machine struct {
 	// it, and the reason the claim stores with the abandoned session (Claim.Abandoned) still tells
 	// the fresh agent at its first task.
 	lostCause SessionLoss
-	// reviewLaunched is the head a reviewer's launch gave it, at the generation of that launch
-	// (spawnSpec): where the clone its process works in stands, since nothing moves that clone
-	// while the process runs. It is memory only: a machine a restart rebuilt knows no launch's
-	// head, and its reviewer's next task goes to a process launched at the record's
-	// (reviewHeadHolds). reviewRaising is whether a relaunch this machine raised for the head
+	// reviewRaising is whether a relaunch this machine raised for a reviewer's head
 	// (raiseReviewRelaunch, ReviewHeadMoved) is still to be decided, so a send that finds the
 	// heads apart again meanwhile raises none of its own; the fence clears it. reviewRaisedFor is
 	// the record's head the last relaunch was raised for, at the generation it was raised over,
 	// so a launch since that still gave another head raises none again (reviewHeadHolds), and
-	// reviewRefused the head that refusal was last logged for.
-	reviewLaunched  reviewAt
+	// reviewRefused the head that refusal was last logged for. All three are memory only: a
+	// machine a restart rebuilt raises again at most once. Where the reviewer's clone stands is
+	// the claim's own record (Claim.ReviewLaunchHead), which a restart reads back.
 	reviewRaising   bool
 	reviewRaisedFor reviewAt
 	reviewRefused   string
@@ -3338,10 +3347,13 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.Tree, m.claim.Issue, m.claim.Role
 	spec.Generation, spec.BootToken = m.claim.Generation, token
 	spec.ResumeSessionFile, spec.ResumeSession, spec.ResumeByAgent = "", "", false
-	// The head this launch's process will work at, which a build at a later generation replaces:
-	// the generation is the try's own, so a try that never starts leaves the record of a
-	// generation no process runs at, which no send reads (reviewHeadHolds).
-	m.reviewLaunched = reviewAt{generation: m.claim.Generation, head: spec.ReviewHead, known: true}
+	// The head this launch's process will work at, which a build at a later generation replaces.
+	// It reaches the store with the write that records the process the launch started (launchNow);
+	// a try that never starts leaves the head of a generation no process runs at, which no send
+	// reads, since a send reads it only of the process the claim records (reviewHeadHolds).
+	if m.claim.Role == claim.RoleReviewer {
+		m.claim.ReviewLaunchHead, m.claim.ReviewLaunchGeneration = spec.ReviewHead, m.claim.Generation
+	}
 	return spec, nil
 }
 

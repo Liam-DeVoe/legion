@@ -460,6 +460,29 @@ func TestAClaimsAgentResumeGenerationRoundTrips(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
+// The head a reviewer's launch gave it (ReviewLaunchHead) and that launch's generation
+// (ReviewLaunchGeneration) are columns of their own: a daemon restarted while the reviewer's
+// process runs reads them back, and with them where the reviewer's own clone stands, so the
+// reviewer's next task goes to the process it found when the head has not moved. A claim no
+// reviewer's launch wrote reads back with neither, the columns' defaults.
+func TestAReviewersLaunchHeadRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-reviewer")
+	want.Role = claim.RoleReviewer
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	if got := onlyClaim(t, store); got.ReviewLaunchHead != "" || got.ReviewLaunchGeneration != 0 {
+		t.Fatalf("a claim no launch head was written for reads back %q at %d, want neither", got.ReviewLaunchHead, got.ReviewLaunchGeneration)
+	}
+	want.Generation, want.ReviewLaunchHead, want.ReviewLaunchGeneration = 4, "5e7f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90", 4
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim again: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
 // The turn a claim last started and the one it last ended are nullable columns of their own: a
 // claim that has taken no turn reads back with neither time rather than with a zero one, and a
 // claim that has worked reads both back to the microsecond, which is what a restarted daemon

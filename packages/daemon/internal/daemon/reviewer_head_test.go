@@ -169,8 +169,8 @@ func (s headSpecs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.Sp
 // reviewer's machine, so it is held to the same rule as a task: while the process the reviewer
 // runs was launched at another head than the one its record holds, the row publishes nothing and
 // waits, the reviewer is started again at the record's head, and the row publishes once that
-// process is ready. A reviewer this daemon re-adopted knows no launch's head, so it is started
-// again too.
+// process is ready. The reviewer here is re-adopted from a row that records no launch head, as an
+// earlier release's launch leaves it (supervise.Claim.ReviewLaunchHead), so it is started again too.
 func TestAMessageHeldForAReviewerWaitsForAProcessAtTheRecordedHead(t *testing.T) {
 	publisher := &holderPublisher{}
 	runner, sup, _ := runnerIn(t, phase.Retro, "in_progress", publisher, quietLogger())
