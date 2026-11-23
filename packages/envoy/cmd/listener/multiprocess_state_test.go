@@ -455,7 +455,12 @@ func TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite(t *testing.T) {
 		register("example-host-b")
 		// The standby's cache must still hold example-host-a as the role set begins, the entry the
 		// claim reads its claimant from (liveSessionEntry): with the cache caught up, the role set
-		// would keep the newer host with nothing trailing, and the row would show nothing.
+		// would keep the newer host with nothing trailing, and the row would show nothing. The check
+		// reads the cache at the role set's start, not at its write: the write follows the refresh's
+		// leader read, by when the cache can hold example-host-b, and the role set keeps the newer
+		// host there because it writes from the leader's record. The check fails, naming the cause,
+		// only when about 240 ms pass between example-host-b's registration answering and this read,
+		// and it never passes with no trail.
 		if row := b.cachedSession(sessionID); row == nil || row["host"] != "example-host-a" {
 			t.Fatalf("%s's cache holds %v for %s right before the role set, want example-host-a: it no longer trails %s's write of example-host-b", b.instance, row, sessionID, a.instance)
 		}
