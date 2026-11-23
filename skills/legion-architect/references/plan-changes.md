@@ -15,6 +15,7 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
 - **`task-stopped`:** Legion stopped the task and holds the issue.
   Either a step failed and no earlier step of the type implementation can take the work back, and the reason names the task and the step: read the failed step's report.
   Or another architect of your tree stopped it with `stop_task`, and the reason names that architect and the notice carries `stoppedBy`: no step failed.
+  Or the deployment no longer defines the role of a step the task had still to run, and the reason reads "step <i> names the role <role>, which the deployment no longer defines": give a later version that changes the task, or the operator defines the role again and a person's todo restarts the task.
   A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.
   Then give a later version that changes the task, or end the work: `park_child` for a child, under the park rule; `dispatch ask` on the root for a root.
 

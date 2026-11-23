@@ -83,7 +83,7 @@ Each item below names a script, then what it proves.
   the daemon requires a store that keeps sessions in a database):
   the Agent Sandbox install check accepts and refuses by name;
   the image probe Sandbox passes; a root provisions its workspace, registers, runs under gVisor and adopts its working copy's author;
-  every container of its pod reserves the issue pod's one cpu and memory reservation with request equal to limit (the rig's overrides and the daemon's defaults both), the pod is `Guaranteed` with no affinity, and the checkpoint reads that one reservation, which all six roles share, back inside the pod:
+  every container of its pod reserves the issue pod's one cpu and memory reservation with request equal to limit (the rig's overrides and the daemon's defaults both), the pod is `Guaranteed` with no affinity, and the checkpoint reads that one reservation, which all its roles share, back inside the pod:
   `nproc` and `MemTotal` on AWS, the pod's cgroup cpu quota and `MemTotal` on GKE, where a sandboxed pod on the container-optimized compute platform reads `nproc` 2 whatever it reserves;
   a second role joins the root's issue pod;
   suspend, resume, a same-agent refusal of a session the table lacks, a pod killed in place, and a relaunch before registration each hold;
@@ -2101,7 +2101,7 @@ Each item below names a check, then what it does and what it requires.
 
   the whole of the change on an issue of its own:
   its role runs, its session is in the table, and `SuspendIssue` closes it as the daemon's durable close effect does
-  — the Sandbox `Suspended`, its pod waited out, then the Sandbox deleted with the six role Secrets it owned.
+  — the Sandbox `Suspended`, its pod waited out, then the Sandbox deleted with the role Secrets it owned.
   Nothing of the issue is left: `get sandbox` is `NotFound` and `get pvc <pod>-issue` answers none.
   The resume that follows is a launch from nothing:
   a new Sandbox, a new pod, and that pod's own disk under the same name with a new uid and the new pod as its owner, the agent carrying on from the table with `LEGION_WORKSPACE_RECREATED=true` and a marker holding its resumed incarnation alone
@@ -2146,7 +2146,7 @@ What the run had to learn about GKE (`LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernete
   GKE Autopilot's Warden admission webhook refuses to schedule a pod whose summed ephemeral-storage request passes 10Gi (naming `autogke-pod-limit-constraints`, "higher than the Autopilot maximum of 10Gi";
   seen live when the six role containers of the earlier layout each asked for their own limit, about 110Gi in all).
   With every role in one `roles` container, that cap is the issue pod's one reservation itself:
-  `runtime.kubernetes.resources.issue.ephemeral_storage` and its request, at most 10Gi on GKE Autopilot, shared by all six roles.
+  `runtime.kubernetes.resources.issue.ephemeral_storage` and its request, at most 10Gi on GKE Autopilot, shared by all its roles.
 
 - **GKE Autopilot adds its own NodeAffinity to every issue pod.**
   Any pod carrying `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` (every issue pod's annotation;
@@ -2289,7 +2289,7 @@ Its verdict is one line, just before the evidence line:
 `stage 4b e2e: PASS`; `stage 4b e2e: FAIL (check <check>)`, after [notes](#libmodel-gateway-unservedsh) on whether the controller could have failed that check for want of a model key;
 or `stage 4b e2e: BLOCKED (check <check>)` when the checkpoint could not run and the teardown checks (`transcripts`, `namespace-clean`, `production-audit`) passed, which makes the run no verdict on the change while the checkpoints before it stand, and gets no notes.
 Capacity is such a stop.
-No pod asks for or keeps off a node: each issue pod carries its own disk and the issue pod's one cpu and memory reservation, shared by its six roles (docs/kubernetes.md "Issue sizing:
+No pod asks for or keeps off a node: each issue pod carries its own disk and the issue pod's one cpu and memory reservation, shared by its roles (docs/kubernetes.md "Issue sizing:
 one reservation per pod"), so `preflight` counts the `legion` pool's room in pods of that reservation under the run's resources (`lib/stage4b-room.jq`) and ends BLOCKED `capacity: …` when it cannot place the run's four pods at once:
 tree 1's root and its two children beside tree 2's root.
 Its room is what each Ready, schedulable pool node, neither tainted `karpenter.sh/disrupted` nor being deleted, has free beside every non-terminal pod placed on it, of any namespace, plus the pods the pool's cpu and memory limits still leave room for beside what it already runs (a pool with no limit bounds nothing).
@@ -2600,7 +2600,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   while tree 1 keeps running: the proof human sets child 1 `done`, and its Sandbox and pod are gone (`kubectl get sandboxes,pods -l legion.dev/issue=<child 1>` lists nothing) and so is the disk that pod owned, the daemon logged `sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned` for it exactly once and no lost volume, every claim of child 1, its own architect's among them, is `retired` with its session kept for a reopen, and the root's Sandbox stays Running, its pod's own disk Bound and its pod the same uid.
   The proof human then sets child 2 `backlog`, and within 600 s it has no Sandbox, no pod and no disk (`kubectl get sandboxes,pods -l legion.dev/issue=<child 2>` lists nothing, and `<pod>-issue` answers none):
-  a park reaches the same durable suspend effect as a close, which deletes the Sandbox with the six role Secrets it owned once the pod is gone, so nothing of the parked child is kept and its next `todo` makes the Sandbox afresh.
+  a park reaches the same durable suspend effect as a close, which deletes the Sandbox with the role Secrets it owned once the pod is gone, so nothing of the parked child is kept and its next `todo` makes the Sandbox afresh.
   Each of these waits reads the disk inside it, since a pod's own claim is reaped a moment after the pod object goes.
   The two slots those children held are freed with them, and tree 3, waiting since `issue-independence`, takes one: a child's slot going to a root is the cap counting issues
 
@@ -2631,7 +2631,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The read tool returned both skills at `skill://fixture-omp-skill` and `skill://fixture-claude-skill`, each carrying the run's nonce.
   The lsp tool's status lists `gopls`, `typescript-language-server` and `pyright` for the checkout, and its hovers return each root's own signature (`func Greet`, `function greet`, `def greet`).
   A role shim of tree 2's pod logged the CodeGraph warm-up's success line (`built the index: codegraph init took <duration>, done <duration> after launch`;
-  one of the pod's six shims wins the warm-up lease and builds, the others skip), read from the log of the pod's one `roles` container with `kubectl logs -c roles --timestamps`, each line behind its role's `<role>: ` prefix, and kept, with every role's warm-up line, as `codegraph-warm-up.txt`;
+  one of the pod's role shims wins the warm-up lease and builds, the others skip), read from the log of the pod's one `roles` container with `kubectl logs -c roles --timestamps`, each line behind its role's `<role>: ` prefix, and kept, with every role's warm-up line, as `codegraph-warm-up.txt`;
   the role whose shim built and the seconds from the pod's creation to the line are recorded (`warm_up_built_elapsed`, tested by `bun test scripts/e2e/lib`);
   `codegraph status --json` then reads `initialized: true` and `index.state: "complete"`;
   the codegraph tool's affected names `greet_test.go` for `fixture/greet.go`, its impact of `Greet` names the caller (`GreetWorld` or `caller.go`), and its control, the impact of `NoSuchSymbol`, errs or names none of them.
@@ -2797,7 +2797,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   in the same pod the reviewer's `gh` is the review App's bot from a different `hosts.yml`, and each role's bundle root holds owners' directories, the bundle's `renames.txt` and the kubelet's entries alone, its own owner's directory holding `config.yml` and `hosts.yml` alone and no directory for a repository (INFRA-2543 R2).
   Isolation in the pod's one `roles` container, each read in the role's own namespaces (entered as its agent sees the pod:
   `nsenter -t <its role-init> -U -m -p -i`, then its shim's `-U`):
-  the container holds all six roles' directories under `/var/run/legion/roles` (the control that a cover, not an absent mount, hides each sibling's), while in the implementer's and in the reviewer's namespaces that directory is empty, `/proc` lists one worker-shim, its own, and the `hosts.yml` at its `GH_CONFIG_DIR` hashes to its own `/var/run/legion/roles/<role>/gh` copy in the container and differs from the other's;
+  the container holds every role's directory under `/var/run/legion/roles` (the control that a cover, not an absent mount, hides each sibling's), while in the implementer's and in the reviewer's namespaces that directory is empty, `/proc` lists one worker-shim, its own, and the `hosts.yml` at its `GH_CONFIG_DIR` hashes to its own `/var/run/legion/roles/<role>/gh` copy in the container and differs from the other's;
   the pod shares no process namespace; the daemon logged `github credential written` for every role of the pod and names no token route;
   GitHub's record of the pull request's head attributes it to the implement App's bot, the head carries no CI-skipping line and has check runs, and the daemon recorded it as the implementer's completion (acceptance 4a);
   no commit of the pull request changes only `.legion/` (`pull_request_legion_only_commits`), and the planner's handoff is a Dispatch record of tree 1's `plan` handoff written by the planner's claim session (`assert_handoff_record`, which every later round's implementer, tester and reviewer handoff passes too);
@@ -3034,7 +3034,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   every Sandbox pod whose one `roles` container the pod watch saw ready is judged from the spec the watch recorded for it, deleted pods included:
   gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, the pool, Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
   a move waits out the second the stopped daemon could have created a pod in, since a pod's `creationTimestamp` counts whole seconds;
-  the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, split provisioning, and the run's reservations:
+  the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), a role-private Secret for each role, split provisioning, and the run's reservations:
   every container, the init containers included, carries cpu and memory as both request and limit and ephemeral-storage as a request no greater than its limit (the node-disk bound between pods of unrelated trees), all four the issue pod's one reservation:
   the `boot` row's `issue: { cpu: 2950m, memory: 16Gi }` override, the ephemeral-storage limit and request the daemon's defaults;
   each pod is `Guaranteed`, and none carries an affinity (`lib/stage4b-pods.jq` `reservation_problems`).

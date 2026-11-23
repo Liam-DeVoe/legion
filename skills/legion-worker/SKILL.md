@@ -1,6 +1,6 @@
 ---
 name: legion-worker
-description: Use when dispatched as a per-process Legion phase worker — planner, implementer, tester, reviewer, or merger — booted from the daemon's LEGION_* environment.
+description: Use when dispatched as a per-process Legion phase worker — planner, implementer, tester, reviewer, merger, or a deployment's role — booted from the daemon's LEGION_* environment.
 ---
 
 # Legion Phase Worker
@@ -12,7 +12,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 1. Read the issue, then its `open-items.md` where one exists (`dispatch doc-read --issue <issue> --artifact open-items-md`):
    the architect records decisions there that it does not message.
-   Then read each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`).
+   Then read each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`), or, for a deployment's role, which writes none, its runs (`dispatch steps --issue <issue>`).
    A record beats your memory.
 
 2. Before the turn's first `jj new`, list `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only` and `jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only`.
@@ -20,7 +20,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 3. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
 
-4. Before you write the handoff, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
+4. Before you write the handoff or report your step, run `jj -R "$LEGION_WORKSPACE" status` and remove or restore every file you copied in that is not your phase's work:
    the working copy is the next role's first commit.
 
 5. Every role writes the one workspace, so a file can change under your check.
@@ -64,7 +64,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 - A released pod is not a stop.
   Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
 
-- When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
+- When another role's topic answers 404, read its handoff with `dispatch handoff-read`, or its runs (step 1).
 
 ## Commits and pushes
 
@@ -89,11 +89,6 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
   with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 
-- End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
-
-- A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
-  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
-
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
   a set variable outranks the gh directory the daemon refreshes.
 
@@ -109,7 +104,7 @@ and the production check after the close (`skill://legion-worker/references/merg
 
 ## References
 
-- The PR body, its `Thermo` line, the simplify pass: `skill://legion-worker/references/pr-body.md`.
+- The PR body, its `Thermo` line, the simplify pass, a comment's footer: `skill://legion-worker/references/pr-body.md`.
 
 - A check's result, the evidence each phase owes, a red or missing CI check, no surface for the changed path: `skill://legion-worker/references/results.md`.
 

@@ -19,7 +19,7 @@ in your cluster, from one published worker image, and every agent of that issue 
 | Postgres | Two databases: one for the daemon's record (`postgres_dsn`, or `LEGION_POSTGRES_DSN` in its environment), and one for the agents' conversations, which every pod reaches directly (`runtime.kubernetes.session_store`, required, with its key: `postgres` with `session_dsn_secret`, or `cloudsql-iam` with `session_database`; an issue pod's disk is deleted with the pod, so a conversation kept on it would die with it). The second may be another database of the same server; its login needs `USAGE, CREATE ON SCHEMA public`, since Oh My Pi creates its own two tables there. |
 | [Dispatch](/legion/dispatch/) | Its URL and a bearer token for Legion's agents, and, for the issues that name no repository, the project's default repository, set in Dispatch ([below](#the-projects-repositories)). |
 | The Envoy listener and NATS | The listener's URL and API token, and the NATS URLs. The daemon reads Dispatch's issue events and each repository's GitHub events from Envoy's notification stream on NATS, and reaches agents through the listener. [Envoy](/legion/dispatch/envoy/) covers how a repository's webhooks reach the listener and the NATS subjects the daemon's user needs. |
-| Three GitHub Apps | An **implement** App (the implementer's and merger's identity), a **review** App (every other role's) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps)). |
+| Three GitHub Apps | An **implement** App (the identity of the implementer, the merger and each role of `roles` whose `github_app` is `implement`), a **review** App (every other role's) and an **Envoy** App (the webhook that feeds Envoy, and Dispatch's GitHub reads), each installed on the owner of every repository Legion works, with its private key ([below](#the-github-apps)). |
 | The worker image | `ghcr.io/cybermonklabs/legion-worker`, pinned by digest. |
 | A model route | An Oh My Pi provider file and settings overlay, and the credential they read ([below](#the-model-route)). |
 
@@ -126,8 +126,8 @@ decide what they may do there:
 
 | App | Write | Read |
 | --- | --- | --- |
-| **review** (planner, tester, reviewer, architect) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages, statuses, attestations |
-| **implement** (implementer, merger) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts, attestations |
+| **review** (planner, tester, reviewer, architect, and each role of `roles` whose `github_app` is `review` or unset) | contents, pull requests, checks, actions, issues, code scanning alerts | metadata, packages, statuses, attestations |
+| **implement** (implementer, merger, and each role of `roles` whose `github_app` is `implement`) | contents, pull requests, issues, actions, statuses, workflows | checks, metadata, packages, code scanning alerts, attestations |
 
 The implement App cannot create a check run, and a review never comes from the App that wrote the
 change. `gh api /apps/<app slug> --jq .permissions` shows what an App asks accounts for, and
@@ -228,7 +228,7 @@ installation that Dispatch searches.
 An install of a role App counts as every other installation of it does, because the daemon
 keeps no list of owners.
 An account that installs the implement App gets a directory with that App's write token in the
-gh bundle of every implementer and merger, from the next bundle the daemon builds.
+gh bundle of every role that acts as that App, from the next bundle the daemon builds.
 An install of the review App gives every other role that App's token the same way, and the
 controller its read-only one.
 The account's name joins the owners that each later launch of that App's roles is told in the
@@ -328,8 +328,8 @@ Dispatch read them, delete the files, then install every App from
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
-  and why, open until `capabilities.decided.pool-capacity` names a reason. A six-role issue pod
-  sums to 3 CPU and 19 GiB at the defaults, its disk limits to 80Gi over 6Gi requested. A container
+  and why, open until `capabilities.decided.pool-capacity` names a reason. An issue pod, whatever
+  roles it runs, sums to 3 CPU and 19 GiB at the defaults, its disk limits to 80Gi over 6Gi requested. A container
   past its disk limit has its own pod evicted, the offending issue's alone, rather than the node
   reaching `DiskPressure` where another tree's pod can go; the 1Gi request reserves almost no disk,
   so a node's root volume can be oversubscribed by the pods' limits — an operator who knows the
@@ -443,8 +443,8 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its session. A child's
-  other five claims are retired. A root's are suspended with the rest of its tree for the linger,
+  With `tester`, the merge hands the tester the check's first look in its session. Every other
+  claim of a child is retired. A root's are suspended with the rest of its tree for the linger,
   and retired when the linger ends. With `off`, no check opens at all: a child's close retires
   every claim of the child and releases its pod, and a root's close suspends every claim of its
   tree for the linger. The loader refuses any other value,
@@ -659,7 +659,7 @@ What each part is for:
   issue whose work keeps going back. Each entry carries `name`, its own and named once in the
   file; `on`, the event, and `work_back`, a move to an earlier phase, is the one event the daemon
   has; `every`, a positive whole number of those moves; `roles`, the roles the words are written
-  to, one or more of `implementer`, `tester`, `reviewer`, `planner` and `merger` (`architect` is
+  to, one or more of `implementer`, `tester`, `reviewer`, `planner`, `merger` and the roles of `roles` (`architect` is
   refused: the daemon's own wake to an architect is a notice); and the words, as `prompt` in the
   key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
   name `moves`, the moves it counts, each written `<from>-<to>` with two different workflow phases
@@ -825,9 +825,9 @@ What each part is for:
   each refused by name. What the pacing is holding right now is in the state's `wakesWaiting`
   ([Observe](#observe)).
 - **`worker_backends`** (optional) runs a role on Claude Code instead of Oh My Pi:
-  `worker_backends: {implementer: claude}`. Each key is an issue role, each value `omp` (the
+  `worker_backends: {implementer: claude}`. Each key is an issue role or a role of `roles`, each value `omp` (the
   default) or `claude`. Claude Code runs the phase workers (`planner`, `implementer`, `tester`,
-  `reviewer`, `merger`) under either runtime; the loader refuses `claude` for the architect, naming
+  `reviewer`, `merger`, and each role of `roles`) under either runtime; the loader refuses `claude` for the architect, naming
   why, and refuses any other value. The controller always runs on Oh My Pi. A tmux daemon running a
   Claude Code role resolves `claude` from `LEGION_CLAUDE_PATH` (else `PATH`), the `bun` its MCP
   server runs on from `LEGION_BUN_PATH` (else `PATH`), and a built `packages/claude-envoy` from
@@ -850,8 +850,8 @@ What each part is for:
     merger: [/etc/legion-operator-roles/fallback.yml]
   ```
 
-  Each key is a role (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, or
-  `controller` under `controller: daemon`), each value a list of absolute paths. The role's
+  Each key is a role (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, a role
+  of `roles`, or `controller` under `controller: daemon`), each value a list of absolute paths. The role's
   `PI_CONFIG_FILES` names them after the overlays every role names (`PI_CONFIG_FILES` in
   `runtime.kubernetes.pod.env`, or `runtime.tmux.pi_config_files`), so each outranks those; a role
   you leave out is told exactly what it is told without the key. The loader refuses an unknown
@@ -884,7 +884,7 @@ What each part is for:
   ```
 
   Each key is a Legion role (`architect`, `planner`, `implementer`, `tester`, `reviewer`,
-  `merger`, or `controller`), each value a decimal number of hours, and `0` switches the backstop
+  `merger`, or `controller`) or a role of `roles`, each value a decimal number of hours, and `0` switches the backstop
   off for that role, which nothing else does. The last recorded step is the last the daemon
   received from that agent, or the turn's own start when nothing has come since the turn began; a
   claim whose record holds neither is judged from nothing and left alone, as is a claim in no turn
@@ -1060,7 +1060,7 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
 
 ## The model route
 
-Legion names no model and no provider: how an agent reaches a model is yours. The repository's
+Legion names no provider, and no model but the `model` a role of `roles` names: how an agent reaches a model is yours. The repository's
 `deploy/kubernetes/operator-route/` is a working example, rendered in the
 [configuration reference](/legion/legion/reference/config/):
 
