@@ -15,12 +15,25 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// fixHead is the head of LEGION-208's pull request #42 (stepRoot), and formerHead a head the pull
-// request has left, at which Dispatch still publishes states.
+// fixHead is the head of LEGION-208's pull request #42 in these tests, and formerHead a head the
+// pull request has left, at which Dispatch still publishes states.
 const (
-	fixHead    = "head"
-	formerHead = "head-before"
+	fixHead    = headOne
+	formerHead = headEarlier
 )
+
+// fixOf is fixes' line of fix n in state for check at fixHead, at place 1.
+func fixOf(n int, state, check string) string {
+	return fmt.Sprintf("%d %s %s@%s place 1", n, state, check, fixHead)
+}
+
+// failureOf is failures' line of check's failure at fixHead, gone to wentTo with fix.
+func failureOf(check, wentTo string, fix int) string {
+	return fmt.Sprintf("%s@%s %s %d", check, fixHead, wentTo, fix)
+}
+
+// settledBody is the role message of the listener's settlement settledAt(fixHead, 1, "unit").
+var settledBody = toldBody("CI settled at " + fixHead + ": \"build\" succeeded, \"unit\" failed")
 
 // fixChecks is the set of checks of LEGION-208 at every head of these tests: k-unit, which no CI
 // job runs, and k-ci and k-ci2, which a CI job runs.
@@ -35,13 +48,16 @@ type fixRig struct {
 	serial int64
 }
 
-// newFixRig seeds LEGION-208 at admitted on the plan whose one task's steps are words (none: the
-// project's default steps), starts its first step, and moves it by each of moves, as the
-// transitions of its line move it: the tests stand past the testing step without deciding it.
+// newFixRig seeds LEGION-208 at admitted, its pull request #42 open at fixHead, on the plan whose
+// one task's steps are words (none: the project's default steps), starts its first step, and
+// moves it by each of moves, as the transitions of its line move it: the tests stand past the
+// testing step without deciding it.
 func newFixRig(t *testing.T, engine *Engine, words []string, moves ...TriggerKind) *fixRig {
 	t.Helper()
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: statesRepo, Number: 42,
+		Branch: "legion/LEGION-208", HeadSHA: fixHead, Failing: []string{}})
 	if len(words) > 0 {
 		seedStepsPlan(t, pool, root.Key, root.Generation, words...)
 	}
@@ -142,8 +158,8 @@ func TestAFailureWhileTheReviewRunsStartsAFix(t *testing.T) {
 		r := reviewing(t)
 		r.fails(fixHead, "k-ci")
 		assertPhase(t, r.pool, phase.Reviewing)
-		assertStrings(t, "the fixes", r.fixes(), []string{"1 reading k-ci@head place 1"})
-		assertStrings(t, "the failures", r.failures(), []string{"k-ci@head fix 1"})
+		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
+		assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1)})
 		if got := r.jobReads(); !reflect.DeepEqual(got, oneJobRead("a", "k-ci")) {
 			t.Fatalf("the job reads = %+v, want %+v", got, oneJobRead("a", "k-ci"))
 		}
@@ -168,12 +184,12 @@ func TestAFailureWhileTheReviewRunsStartsAFix(t *testing.T) {
 // told to every role as before (the seam everyRoleToldCI) the implementer gets the settlement's
 // message beside the fix, which the subtest asserts.
 func TestAFixesCITaskGetsOneDeliveryOfAFailure(t *testing.T) {
-	settled := toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")
+	settled := settledBody
 	t.Run("the fix alone reaches the implementer", func(t *testing.T) {
 		r := reviewing(t)
 		r.fails(fixHead, "k-ci")
 		applyRefusingNothing(t, r.pool, r.engine, settledAt(fixHead, 1, "unit"))
-		assertStrings(t, "the fixes", r.fixes(), []string{"1 reading k-ci@head place 1"})
+		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
 		assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
 		assertStrings(t, "the reviewer's messages", r.told(claim.RoleReviewer), nil)
 		assertStrings(t, "the owner's messages", r.told(claim.RoleArchitect), []string{settled})
@@ -184,7 +200,7 @@ func TestAFixesCITaskGetsOneDeliveryOfAFailure(t *testing.T) {
 		r.engine.everyRoleToldCI = true
 		r.fails(fixHead, "k-ci")
 		applyRefusingNothing(t, r.pool, r.engine, settledAt(fixHead, 1, "unit"))
-		assertStrings(t, "the fixes", r.fixes(), []string{"1 reading k-ci@head place 1"})
+		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
 		assertStrings(t, "the implementer's messages with every role told", r.told(claim.RoleImplementer), []string{settled})
 	})
 }
@@ -196,7 +212,7 @@ func TestAnIssueOnTheDefaultStepsGetsAFix(t *testing.T) {
 	r := newFixRig(t, engineRunningByDefault(t, "implementer", "reviewer"), nil, TriggerImplementationReady)
 	assertPhase(t, r.pool, phase.Reviewing)
 	r.fails(fixHead, "k-ci")
-	assertStrings(t, "the fixes", r.fixes(), []string{"1 reading k-ci@head place 1"})
+	assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
 	if got := r.jobReads(); !reflect.DeepEqual(got, oneJobRead("default", "k-ci")) {
 		t.Fatalf("the job reads = %+v, want %+v", got, oneJobRead("default", "k-ci"))
 	}
@@ -211,7 +227,7 @@ func TestAFailureWhileTheImplementerRunsGoesToIt(t *testing.T) {
 	assertPhase(t, r.pool, phase.Implementing)
 	r.fails(fixHead, "k-ci")
 	assertStrings(t, "the fixes", r.fixes(), nil)
-	assertStrings(t, "the failures", r.failures(), []string{"k-ci@head implementer 0"})
+	assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "implementer", 0)})
 	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), []string{toFix("k-ci")})
 
 	r.fails(fixHead, "k-ci")
@@ -229,7 +245,7 @@ func TestAFailureAtAFormerHeadStartsNothing(t *testing.T) {
 	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
 
 	r.fails(fixHead, "k-ci")
-	assertStrings(t, "the fixes after the failure at the head", r.fixes(), []string{"1 reading k-ci@head place 1"})
+	assertStrings(t, "the fixes after the failure at the head", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
 }
 
 // A second check failing at the head while the fix reads its job joins that fix, never a second
@@ -241,8 +257,8 @@ func TestASecondFailureAtTheHeadJoinsTheFixThatIsStarting(t *testing.T) {
 		r := reviewing(t)
 		r.fails(fixHead, "k-ci")
 		r.fails(fixHead, "k-ci2")
-		assertStrings(t, "the fixes", r.fixes(), []string{"1 reading k-ci@head place 1"})
-		assertStrings(t, "the failures", r.failures(), []string{"k-ci2@head fix 1", "k-ci@head fix 1"})
+		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
+		assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1), failureOf("k-ci2", "fix", 1)})
 		if got := r.jobReads(); !reflect.DeepEqual(got, oneJobRead("a", "k-ci")) {
 			t.Fatalf("the job reads = %+v, want %+v", got, oneJobRead("a", "k-ci"))
 		}
@@ -255,8 +271,8 @@ func TestASecondFailureAtTheHeadJoinsTheFixThatIsStarting(t *testing.T) {
 		r.fails(fixHead, "k-ci", "k-ci2")
 		r.engine.noFixRule = false
 		r.fails(fixHead, "k-ci2")
-		assertStrings(t, "the fixes", r.fixes(), []string{"1 reading k-ci@head place 1"})
-		assertStrings(t, "the failures", r.failures(), []string{"k-ci2@head fix 1", "k-ci@head fix 1"})
+		assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "reading", "k-ci")})
+		assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1), failureOf("k-ci2", "fix", 1)})
 	})
 }
 
@@ -282,8 +298,8 @@ func TestASecondFailureAtTheEndJoinsTheRunningFix(t *testing.T) {
 
 	r.fails(fixHead, "k-ci2")
 
-	assertStrings(t, "the fixes", r.fixes(), []string{"1 running k-ci@head place 1"})
-	assertStrings(t, "the failures", r.failures(), []string{"k-ci2@head fix 1", "k-ci@head fix 1"})
+	assertStrings(t, "the fixes", r.fixes(), []string{fixOf(1, "running", "k-ci")})
+	assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "fix", 1), failureOf("k-ci2", "fix", 1)})
 	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), []string{toRunningFix("k-ci2")})
 	if issue := issueOf(t, r.pool, r.engine, "LEGION-208"); issue.RunningFix != 1 {
 		t.Fatalf("the issue read names running fix %d, want 1", issue.RunningFix)
@@ -308,7 +324,7 @@ func TestAFailureInTheRetroGoesToTheMerger(t *testing.T) {
 	assertPhase(t, r.pool, phase.Retro)
 	r.fails(fixHead, "k-ci")
 	assertStrings(t, "the fixes", r.fixes(), nil)
-	assertStrings(t, "the failures", r.failures(), []string{"k-ci@head merger 0"})
+	assertStrings(t, "the failures", r.failures(), []string{failureOf("k-ci", "merger", 0)})
 	assertStrings(t, "the implementer's messages", r.told(claim.RoleImplementer), nil)
 	assertStrings(t, "the merger's messages", r.told(claim.RoleMerger), nil)
 }
@@ -325,7 +341,7 @@ func TestATaskOfTheReleaseBeforeStartsNoFix(t *testing.T) {
 	applyRefusingNothing(t, r.pool, r.engine, settledAt(fixHead, 1, "unit"))
 	assertStrings(t, "the fixes", r.fixes(), nil)
 	assertStrings(t, "the failures", r.failures(), nil)
-	settled := toldBody("CI settled at head: \"build\" succeeded, \"unit\" failed")
+	settled := settledBody
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer} {
 		assertStrings(t, "the "+string(role)+"'s messages", r.told(role), []string{settled})
 	}
