@@ -45,8 +45,10 @@ type mintedToken struct {
 // applies the body and refuses what it cannot grant, so an answer past it means the body was
 // dropped or widened between the daemon and GitHub, leaving a lease wider than the one asked
 // for; it is refused rather than served, as the secrets broker refuses one its narrowing does
-// not hold (heldBy). The refusal names what was asked for and the permission the answer named,
-// never a value the answer carries that a request did not, which for this answer is the token.
+// not hold (heldBy). The refusal names what was asked for, and the permission the answer named
+// only from two closed sets (heldWords), the request's own permission names and the accesses
+// accessOrder ranks: whatever answers in GitHub's place can echo the request back, the App's JWT
+// and all, as a permission's name or as its access.
 //
 // An answer naming no permission at all is refused too: GitHub names every permission a token
 // holds, and the token it mints for a request whose permissions were dropped on the way holds
@@ -65,11 +67,32 @@ func (t mintedToken) narrowedTo(permissions map[string]string) error {
 	for _, permission := range slices.Sorted(maps.Keys(t.Permissions)) {
 		access := t.Permissions[permission]
 		if rank := accessOrder[access]; rank == 0 || rank > accessOrder[permissions[permission]] {
-			return fmt.Errorf("GitHub App token exchange returned a token wider than the permissions asked for (%s): it holds %s: %s",
-				askedFor(permissions), permission, access)
+			return fmt.Errorf("GitHub App token exchange returned a token wider than the permissions asked for (%s): it holds %s",
+				askedFor(permissions), heldWords(permissions, permission, access))
 		}
 	}
 	return nil
+}
+
+// The phrases heldWords prints in place of a permission or an access the answer wrote that is
+// not one of the closed set it may print.
+const (
+	notAskedPermission = "(a permission the request did not name)"
+	unorderedAccess    = "(an access this daemon cannot order)"
+)
+
+// heldWords is a permission and its access, as GitHub's answer named them, as a refusal may print
+// them: the permission where it is one of the request's own (permissions' keys), the access where
+// it is one accessOrder ranks, and a fixed phrase in place of either otherwise. The answer's words
+// decide the refusal as they came; only these closed sets print.
+func heldWords(permissions map[string]string, permission, access string) string {
+	if _, asked := permissions[permission]; !asked {
+		permission = notAskedPermission
+	}
+	if accessOrder[access] == 0 {
+		access = unorderedAccess
+	}
+	return permission + ": " + access
 }
 
 // askedFor is what a token request carried, for a refusal to say what GitHub turned down: its

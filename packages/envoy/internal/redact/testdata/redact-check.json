@@ -6541,6 +6541,55 @@
       "production": "appauth mintFromCommand: each broker phrase it decides on in agent-secrets' stderr (brokerNoInstallation, brokerNarrowingRefused) survives the rule the CLI printed it through, which a credential sharing a run of the phrase would cut"
     },
     {
+      "id": "appauth-answer-words-exchange-permission",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokenExchangeAnswerEchoingTheAppJWTPrintsNoneOfIt/permission",
+      "production": "appauth narrowedTo: a permission GitHub's token exchange answer names that the request did not ask for printed as a fixed phrase, never as it came (heldWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/appauth.heldWords",
+      "capture": "appauth.answer-words/exchange-permission",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/exchange.go",
+        "preimage": "permission = notAskedPermission",
+        "replacement": "_ = notAskedPermission"
+      }
+    },
+    {
+      "id": "appauth-answer-words-exchange-access",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokenExchangeAnswerEchoingTheAppJWTPrintsNoneOfIt/access",
+      "production": "appauth narrowedTo: an access GitHub's token exchange answer names that accessOrder does not rank printed as a fixed phrase, never as it came (heldWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/appauth.heldWords",
+      "capture": "appauth.answer-words/exchange-access",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/exchange.go",
+        "preimage": "access = unorderedAccess",
+        "replacement": "_ = unorderedAccess"
+      }
+    },
+    {
+      "id": "appauth-answer-words-suspended-at",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestAnInstallationReadEchoingTheAppJWTAsItsSuspensionPrintsNoneOfIt/echo",
+      "production": "appauth grantedPermissions: an installation's suspended_at in a suspension's refusal printed only as the time it parses as, never as it came (shownSuspension)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).grantedPermissions",
+      "capture": "appauth.answer-words/suspended-at-echo",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/permissions.go",
+        "preimage": "installation, shownSuspension(*payload.SuspendedAt))",
+        "replacement": "installation, *payload.SuspendedAt)"
+      }
+    },
+    {
+      "id": "appauth-answer-words-suspended-at-control",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestAnInstallationReadEchoingTheAppJWTAsItsSuspensionPrintsNoneOfIt/control",
+      "production": "appauth grantedPermissions: a suspended_at GitHub writes as a time still prints as that time"
+    },
+    {
       "id": "cipher-unknown-field-as-it-came",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",
