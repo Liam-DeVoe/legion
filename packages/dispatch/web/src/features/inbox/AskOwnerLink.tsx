@@ -27,9 +27,11 @@ export function AskOwnerLink({
   /** Marks the link an Inbox row's `o` binding follows; a group header's link is never one. */
   inboxOwner?: boolean;
   owner: OpenAskOwner;
-  /** For a line that wraps: an issue's link asks the line for its key's width alone, and its
-   *  title, drawn at no width of its own, grows into whatever room the line leaves. So the link
-   *  moves to a line of its own only when its key does not fit beside what stands before it. */
+  /** For a line that wraps: the link asks the line for no more than its key's width. An issue's
+   *  link asks for its key's width alone, and its title, drawn at no width of its own, grows into
+   *  whatever room the line leaves; a document's link has no key, so it asks for no width at all
+   *  and its name grows into that room the same way. So the link moves to a line of its own only
+   *  when an issue's key does not fit beside what stands before it. */
   sizedByKey?: boolean;
 }): ReactNode {
   const marker = inboxOwner ? "" : undefined;
@@ -56,7 +58,7 @@ export function AskOwnerLink({
   const { name, project, slug } = document;
   return (
     <Link
-      className={`min-w-0 truncate text-sm font-semibold ${linkText} ${linkHoverText} ${className}`}
+      className={`min-w-0 truncate text-sm font-semibold ${linkText} ${linkHoverText} ${className}${sizedByKey ? " w-0" : ""}`}
       data-inbox-owner={marker}
       to={buildProjectPath({
         item: askId === undefined ? undefined : { id: askId, kind: "ask" },
@@ -82,7 +84,7 @@ export function InboxOwnerLink({
 }: {
   ask: OpenAskRow;
   rowOwner: boolean;
-  /** `AskOwnerLink`'s: the link asks its line for its key's width alone. */
+  /** `AskOwnerLink`'s: the link asks its line for no more than its key's width. */
   sizedByKey?: boolean;
 }): ReactNode {
   const key = askIssueKey(ask);
@@ -114,10 +116,14 @@ export function InboxOwnerLink({
  *  way. */
 export function ThreadOwnerLine({
   className,
+  sizedByKey = false,
   thread,
 }: {
   /** The classes the host's line gives the session's name. */
   className: string;
+  /** `AskOwnerLink`'s, for a host whose line wraps: the owner's link asks the line for no more
+   *  than its key's width. A session's name is drawn as before. */
+  sizedByKey?: boolean;
   thread: MyReplyRow;
 }): ReactNode {
   const row = inboxThreadRow(thread);
@@ -125,5 +131,7 @@ export function ThreadOwnerLine({
     return <span className={className}>{row.session.name}</span>;
   }
   const owner = threadOwner(thread);
-  return owner === null ? null : <AskOwnerLink className="grow" owner={owner} />;
+  return owner === null ? null : (
+    <AskOwnerLink className="grow" owner={owner} sizedByKey={sizedByKey} />
+  );
 }

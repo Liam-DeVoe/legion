@@ -469,13 +469,20 @@ interface ShortRowProps {
 }
 
 /**
- * The frame both short rows draw in, two lines deep: the kind's icon at the left edge, then
- * what the row is about and when it was last written in; under them the approval state of the
- * row's issue, the priority tag, an ask's urgency, and what the row says about its owner. The
- * approval mark stands first on that line, at its start, so the marks of rows one above another
- * start at one x whatever the other marks and the owner say. Every mark is `shrink-0`, so the
- * title is what shortens and neither the marks nor the key are ever cut. `children` is drawn
- * under the two lines.
+ * The frame both short rows draw in, two lines deep, or three where the second wraps: the kind's
+ * icon at the left edge, then what the row is about and when it was last written in; under them
+ * the approval state of the row's issue, the priority tag, an ask's urgency, and what the row
+ * says about its owner. The approval mark stands first on that line, at its start, so the marks
+ * of rows one above another start at one x whatever the other marks and the owner say. Every
+ * mark is `shrink-0`, and so are the owner's key and the controls beside it, so the line wraps
+ * rather than drawing one item over another: a line that cannot wrap squeezes the owner's link
+ * below its key's width once a long mark and a priority fill it, and the key then runs out of its
+ * link, under the copy control or past the row's edge. The owner and whatever it carries beside
+ * it are one group, whose link asks the line for its key's width alone, and a document's link,
+ * which has no key, for none (`sizedByKey`). So the group moves under the marks only when an
+ * issue's key and its controls do not fit beside them, and otherwise stands there and the title
+ * or the document's name takes the room the line leaves, cut as before. `children` is drawn under
+ * the lines.
  */
 function ShortRowFrame({
   age,
@@ -497,7 +504,8 @@ function ShortRowFrame({
   children?: ReactNode;
   group: string;
   onRelease: (() => void) | undefined;
-  /** The second line below the marks: the row's owner, and whatever it carries beside it. */
+  /** What the second line draws after the marks: the row's owner, and whatever it carries beside
+   *  it. The frame draws it as one group, which wraps as one. */
   owner: ReactNode;
   row: InboxListRow;
   section: InboxSection;
@@ -524,11 +532,11 @@ function ShortRowFrame({
             {age}
           </time>
         </div>
-        <div className="flex min-w-0 items-baseline gap-2 pl-6">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 pl-6">
           <RowApprovalMark gate={rowApprovalGate(row)} />
           <RowPriorityTag priority={rowPriority(row)} />
           <RowUrgencyMark urgency={rowUrgency(row)} />
-          {owner}
+          <div className="flex min-w-0 grow items-baseline gap-2">{owner}</div>
         </div>
         {children}
       </div>
@@ -595,7 +603,7 @@ function AskShortRow({
       group={groupKey}
       onRelease={onRelease}
       onSelect={onSelect}
-      owner={<InboxOwnerLink ask={ask} rowOwner />}
+      owner={<InboxOwnerLink ask={ask} rowOwner sizedByKey />}
       row={row}
       section={section}
       selected={selected}
@@ -701,7 +709,11 @@ function ThreadShortRow({
       onSelect={onSelect}
       owner={
         <>
-          <ThreadOwnerLine className={`truncate text-sm ${textMutedOnCanvas}`} thread={thread} />
+          <ThreadOwnerLine
+            className={`truncate text-sm ${textMutedOnCanvas}`}
+            sizedByKey
+            thread={thread}
+          />
           {reference === undefined ? null : <CopyRefButton route={reference} />}
           <DismissControl shown={selected} thread={thread} />
         </>

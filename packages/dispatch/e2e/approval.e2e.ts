@@ -1423,10 +1423,11 @@ test("the step that holds the gate", async ({ browser }) => {
  *  below its width. */
 type MarkRenderer = "short ask row" | "short thread row" | "ask card" | "thread card";
 
-/** One row whose mark the place test reads: its id, the renderer that drew it and its mark's
- *  words. */
+/** One row whose mark the place test reads: its id, the key of its issue, the renderer that drew
+ *  it and its mark's words. */
 interface PlacedMark {
   readonly id: string;
+  readonly key: string;
   readonly renderer: MarkRenderer;
   readonly words: string;
 }
@@ -1479,31 +1480,168 @@ async function expectMarksInOnePlace(page: Page, rows: readonly PlacedMark[]): P
   }
 }
 
+/** Where an item of a row is drawn, in the page's pixels. */
+interface Box {
+  readonly bottom: number;
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+}
+
+/** The row's own items the line of its approval mark and the line of its owner draw, beside the
+ *  issue key: the mark, the priority tag, the urgency mark and the copy-reference button
+ *  (`COPY_REF_SELECTOR` in `web/src/features/refs/CopyRefButton.tsx`). */
+const LINE_ITEMS = {
+  copy: "[data-copy-ref] button",
+  mark: "[data-inbox-approval]",
+  priority: "[data-inbox-priority]",
+  urgency: "[data-inbox-urgency]",
+} as const;
+
+/** A box as a failure prints it, to a tenth of a pixel. */
+function boxWords(box: Box): string {
+  const at = (n: number) => Math.round(n * 10) / 10;
+  return `x ${at(box.left)}..${at(box.right)}, y ${at(box.top)}..${at(box.bottom)}`;
+}
+
+/** Reads the boxes of row `row`'s own items on the line its approval mark stands on and on the
+ *  line its owner stands on - the mark, the priority tag, the urgency mark, the issue key and the
+ *  copy-reference button - and requires that no two of them overlap by more than half a pixel
+ *  each way and that each stands inside the row's box. The key is the span of the owner's link
+ *  that reads it, since a thread row's owner link carries no marker of its own. The two lines are
+ *  the band from the top of the mark or the key, whichever is higher, to the bottom of the lower:
+ *  what a card draws under them stands on neither. A failure prints the row and every box. */
+async function expectLineItemsApart(page: Page, row: PlacedMark): Promise<void> {
+  const read = await inboxRow(page, row.id).evaluate(
+    (element, { key, selectors }) => {
+      const boxOf = (part: Element): Box => {
+        const { bottom, left, right, top } = part.getBoundingClientRect();
+        return { bottom, left, right, top };
+      };
+      const keySpan = [...element.querySelectorAll("a > span")].find(
+        (span) => span.textContent?.trim() === key
+      );
+      const mark = element.querySelector(selectors.mark);
+      if (keySpan === undefined || mark === null) return null;
+      const ends = [boxOf(mark), boxOf(keySpan)];
+      const top = Math.min(...ends.map((box) => box.top));
+      const bottom = Math.max(...ends.map((box) => box.bottom));
+      const items: { box: Box; part: string }[] = [{ box: boxOf(keySpan), part: "key" }];
+      for (const [part, selector] of Object.entries(selectors)) {
+        for (const item of element.querySelectorAll(selector)) {
+          const box = boxOf(item);
+          if (Math.min(bottom, box.bottom) - Math.max(top, box.top) > 0.5) {
+            items.push({ box, part });
+          }
+        }
+      }
+      // The row is an `<li>`, whose text reads with the breaks its lines are drawn with.
+      const text = element instanceof HTMLElement ? element.innerText : element.textContent;
+      return { items, row: boxOf(element), text: (text ?? "").replace(/\s+/g, " ") };
+    },
+    { key: row.key, selectors: LINE_ITEMS }
+  );
+  expect(read, `${row.renderer} ${row.id}: the row draws its mark and its key ${row.key}`).not.toBe(
+    null
+  );
+  if (read === null) return;
+  const report = [
+    `${row.renderer} ${row.id} "${row.words}" of ${row.key}: row ${boxWords(read.row)}, reading "${read.text}"`,
+    ...read.items.map((item) => `  ${item.part}: ${boxWords(item.box)}`),
+  ].join("\n");
+  const overlaps: string[] = [];
+  for (const [index, first] of read.items.entries()) {
+    for (const second of read.items.slice(index + 1)) {
+      const across =
+        Math.min(first.box.right, second.box.right) - Math.max(first.box.left, second.box.left);
+      const down =
+        Math.min(first.box.bottom, second.box.bottom) - Math.max(first.box.top, second.box.top);
+      if (across > 0.5 && down > 0.5) {
+        overlaps.push(`${first.part} and ${second.part}: ${across} px across, ${down} px down`);
+      }
+    }
+  }
+  expect(
+    overlaps,
+    `${row.renderer} ${row.id}: no two items of the mark's line and the owner's line overlap by more than half a pixel each way:\n${report}`
+  ).toEqual([]);
+  const outside = read.items
+    .filter(
+      ({ box }) =>
+        box.left < read.row.left - 0.5 ||
+        box.right > read.row.right + 0.5 ||
+        box.top < read.row.top - 0.5 ||
+        box.bottom > read.row.bottom + 0.5
+    )
+    .map((item) => item.part);
+  expect(
+    outside,
+    `${row.renderer} ${row.id}: each item of the mark's line and the owner's line stands inside the row's box:\n${report}`
+  ).toEqual([]);
+}
+
+/** Reads that the issue key of ask row `row` stands on the line of its approval mark, and the
+ *  start of its title after it on that line: where the line has room, the owner is drawn beside
+ *  the marks, cut as it was before that line wrapped. */
+async function expectOwnerBesideMarks(page: Page, row: PlacedMark): Promise<void> {
+  const boxes = await inboxRow(page, row.id).evaluate((element) => {
+    const boxOf = (part: Element | null | undefined): Box | null => {
+      if (part === null || part === undefined) return null;
+      const { bottom, left, right, top } = part.getBoundingClientRect();
+      return { bottom, left, right, top };
+    };
+    const key = element.querySelector("[data-inbox-owner] > span");
+    return {
+      key: boxOf(key),
+      mark: boxOf(element.querySelector("[data-inbox-approval]")),
+      title: boxOf(key?.nextElementSibling),
+    };
+  });
+  const { key, mark, title } = boxes;
+  const onMarkLine = (box: Box) =>
+    mark !== null && Math.min(box.bottom, mark.bottom) - Math.max(box.top, mark.top) > 0.5;
+  expect(
+    key !== null &&
+      title !== null &&
+      onMarkLine(key) &&
+      onMarkLine(title) &&
+      title.left >= key.right &&
+      title.right - title.left > 0.5,
+    `${row.renderer} ${row.id}: its key and the start of its title stand on its mark's line: ${JSON.stringify(boxes)}`
+  ).toBe(true);
+}
+
 test("the approval mark stands at one place on every row", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "MARKPLACE", name: "One place" });
   await setGatedSteps("MARKPLACE", ["spec"]);
   // Four issues whose rows differ in everything beside the mark: titles of 12 and of 80
-  // characters, an urgent ask and a calm one, a priority or none, and a mark of two lengths.
+  // characters, an urgent ask and a calm one, a priority or none, and a mark of two lengths. The
+  // last one's long mark, priority and urgency fill its short ask row's line at 1440, so its key
+  // moves under them (`fullLine`); every other short ask row has room for its key beside them.
   const seeds = [
-    { changed: false, priority: 1, title: "Lease window", urgency: "high" },
+    { changed: false, fullLine: false, priority: 1, title: "Lease window", urgency: "high" },
     {
       changed: false,
+      fullLine: false,
       priority: null,
       title: "Retire the old mirror retry budget once every region reads the shared lease sets",
       urgency: "low",
     },
-    { changed: true, priority: null, title: "Mirror retry", urgency: "low" },
+    { changed: true, fullLine: false, priority: null, title: "Mirror retry", urgency: "low" },
     {
       changed: true,
+      fullLine: true,
       priority: 3,
       title: "Move the nightly ledger replays onto the new storage cluster before the cutover.",
       urgency: "high",
     },
   ] as const;
-  // Each issue's ask row and thread row, as the short rows and as the cards draw them.
+  // Each issue's ask row and thread row, as the short rows and as the cards draw them, and the
+  // short ask rows whose line has room for the key beside the marks.
   const short: PlacedMark[] = [];
   const cards: PlacedMark[] = [];
+  const roomy: PlacedMark[] = [];
   for (const seed of seeds) {
     const { issue, row, spec } = await issueWithThread("MARKPLACE", seed.title);
     if (seed.priority !== null) await patchIssue(issue.key, { priority: seed.priority });
@@ -1519,18 +1657,19 @@ test("the approval mark stands at one place on every row", async ({ browser }) =
     await reviewArtifact(spec, { state: "approved" }, { login: "alice" });
     if (seed.changed) await editSpec(spec);
     const words = seed.changed ? "Approved v1 · changed since" : "Approved v1";
-    short.push(
-      { id: ask.id, renderer: "short ask row", words },
-      { id: row, renderer: "short thread row", words }
-    );
+    const { key } = issue;
+    const shortAsk: PlacedMark = { id: ask.id, key, renderer: "short ask row", words };
+    short.push(shortAsk, { id: row, key, renderer: "short thread row", words });
+    if (!seed.fullLine) roomy.push(shortAsk);
     cards.push(
-      { id: ask.id, renderer: "ask card", words },
-      { id: row, renderer: "thread card", words }
+      { id: ask.id, key, renderer: "ask card", words },
+      { id: row, key, renderer: "thread card", words }
     );
   }
 
   /** The list draws the eight rows and no other, each wearing its mark; the marks of one
-   *  renderer start at one x; and no mark covers any other text of its row. */
+   *  renderer start at one x; no mark covers any other text of its row; and no item of the
+   *  mark's line or the owner's line draws over another or past its row. */
   const expectMarksInPlace = async (page: Page, rows: readonly PlacedMark[]) => {
     await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
     for (const row of rows) {
@@ -1542,6 +1681,7 @@ test("the approval mark stands at one place on every row", async ({ browser }) =
         await textUnderMark(page, row.id),
         `${row.renderer} ${row.id}: the text its mark covers`
       ).toEqual([]);
+      await expectLineItemsApart(page, row);
     }
   };
 
@@ -1556,6 +1696,9 @@ test("the approval mark stands at one place on every row", async ({ browser }) =
     await expect(inboxPane(page)).toBeVisible();
     await expectMarksInPlace(page, short);
     await expect(page.locator("[data-inbox-row] [data-inbox-thread-card]")).toHaveCount(0);
+    // Where the line has room, the owner stands beside the marks as it did before the line
+    // wrapped: the key, then the start of its title.
+    for (const row of roomy) await expectOwnerBesideMarks(page, row);
 
     // Below its width: the two cards.
     await page.setViewportSize({ height: 768, width: 1024 });
