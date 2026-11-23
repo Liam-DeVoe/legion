@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
@@ -135,9 +137,9 @@ func (d *driver) withAncestry(issue intake.DispatchIssue, recorded *record.Issue
 		return issue, nil
 	}
 	var roots []record.Issue
-	if err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		roots, err = d.records.QueuedRootsUnder(d.ctx, tx, issue.Key)
+		roots, err = d.records.QueuedRootsUnder(ctx, tx, issue.Key)
 		return err
 	}); err != nil {
 		return issue, fmt.Errorf("read the queued roots whose chain holds %s: %w", issue.Key, err)

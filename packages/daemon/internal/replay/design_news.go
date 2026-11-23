@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -71,12 +72,12 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 func (d *driver) designChangesRow(row record.OutboxRow) error {
 	var root *record.Issue
 	var owed record.TreeNews
-	if err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		if root, err = d.records.Issue(d.ctx, tx, row.Issue); err != nil || root == nil {
+		if root, err = d.records.Issue(ctx, tx, row.Issue); err != nil || root == nil {
 			return err
 		}
-		facts, err := record.TreeNewsFacts(d.ctx, d.records, tx, d.window.GateSteps, root.Tree)
+		facts, err := record.TreeNewsFacts(ctx, d.records, tx, d.window.GateSteps, root.Tree)
 		owed = record.OwedNews(facts)
 		return err
 	}); err != nil {
@@ -105,8 +106,8 @@ func (d *driver) designChangesRow(row record.OutboxRow) error {
 		}
 	}
 	at := d.now().UTC()
-	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
-		recorded, err := d.records.DesignChangesOf(d.ctx, tx, pairs)
+	if err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
+		recorded, err := d.records.DesignChangesOf(ctx, tx, pairs)
 		if err != nil {
 			return err
 		}
@@ -118,12 +119,12 @@ func (d *driver) designChangesRow(row record.OutboxRow) error {
 			if pair.From != 0 {
 				changes.State, changes.Reason = record.DesignChangesUnavailable, designChangesUnreadable
 			}
-			if err := d.records.PutDesignChanges(d.ctx, tx, changes); err != nil {
+			if err := d.records.PutDesignChanges(ctx, tx, changes); err != nil {
 				return err
 			}
 		}
 		for _, key := range filled {
-			if err := d.records.FillTold(d.ctx, tx, key.issue, key.audience, fills[key], at); err != nil {
+			if err := d.records.FillTold(ctx, tx, key.issue, key.audience, fills[key], at); err != nil {
 				return err
 			}
 		}
@@ -199,13 +200,13 @@ func (d *driver) changesOf(tx pgx.Tx, items []record.NewsItem) (map[record.Versi
 func (d *driver) settleNews(row record.OutboxRow, tree string) error {
 	now := d.now().UTC()
 	var queued []owedHolder
-	err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+	err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		queued = nil
-		root, err := d.records.Issue(d.ctx, tx, tree)
+		root, err := d.records.Issue(ctx, tx, tree)
 		if err != nil || root == nil {
 			return err
 		}
-		facts, err := record.TreeNewsFacts(d.ctx, d.records, tx, d.window.GateSteps, root.Tree)
+		facts, err := record.TreeNewsFacts(ctx, d.records, tx, d.window.GateSteps, root.Tree)
 		if err != nil {
 			return err
 		}
@@ -224,7 +225,7 @@ func (d *driver) settleNews(row record.OutboxRow, tree string) error {
 			case settleLater:
 				continue
 			case settleRaise:
-				if err := d.records.RaiseTold(d.ctx, tx, news.Issue, record.AudienceHolder, news.Items, now); err != nil {
+				if err := d.records.RaiseTold(ctx, tx, news.Issue, record.AudienceHolder, news.Items, now); err != nil {
 					return err
 				}
 				continue
@@ -234,7 +235,7 @@ func (d *driver) settleNews(row record.OutboxRow, tree string) error {
 		if owed.ArchitectOwed() {
 			switch settlementOf(owed.Architect, changes, record.ToldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed) {
 			case settleRaise:
-				if err := d.records.RaiseTold(d.ctx, tx, root.Key, record.AudienceArchitect, owed.Architect, now); err != nil {
+				if err := d.records.RaiseTold(ctx, tx, root.Key, record.AudienceArchitect, owed.Architect, now); err != nil {
 					return err
 				}
 			case settleSend:
@@ -272,7 +273,7 @@ func (d *driver) settleNews(row record.OutboxRow, tree string) error {
 			if err != nil {
 				return err
 			}
-			if err := d.records.Enqueue(d.ctx, tx, queue); err != nil {
+			if err := d.records.Enqueue(ctx, tx, queue); err != nil {
 				return err
 			}
 			queued = append(queued, start)
@@ -487,8 +488,8 @@ func newsOnlyReaches(c supervise.Claim, found bool, entry int64) bool {
 // design gate is closed.
 func (d *driver) mergerNewsUnrecorded(issue record.Issue) (bool, error) {
 	unrecorded := false
-	err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		facts, err := record.TreeNewsFacts(d.ctx, d.records, tx, d.window.GateSteps, issue.Tree)
+	err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		facts, err := record.TreeNewsFacts(ctx, d.records, tx, d.window.GateSteps, issue.Tree)
 		if err != nil {
 			return err
 		}
@@ -525,9 +526,9 @@ func (d *driver) mergerNewsUnrecorded(issue record.Issue) (bool, error) {
 func (d *driver) creditNews(issue record.Issue, role claim.Role, token claim.Token, credit bool) (bool, error) {
 	says := false
 	now := d.now().UTC()
-	err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+	err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		says = false
-		facts, err := record.TreeNewsFacts(d.ctx, d.records, tx, d.window.GateSteps, issue.Tree)
+		facts, err := record.TreeNewsFacts(ctx, d.records, tx, d.window.GateSteps, issue.Tree)
 		if err != nil {
 			return err
 		}
@@ -556,7 +557,7 @@ func (d *driver) creditNews(issue record.Issue, role claim.Role, token claim.Tok
 			if err != nil {
 				return err
 			}
-			holder, held, err := claims.holderOf(d.ctx, tx, d.records, member)
+			holder, held, err := claims.holderOf(ctx, tx, d.records, member)
 			if err != nil {
 				return err
 			}
@@ -587,12 +588,12 @@ func (d *driver) creditNews(issue record.Issue, role claim.Role, token claim.Tok
 				continue
 			}
 			if len(told) > 0 {
-				if err := d.records.RaiseTold(d.ctx, tx, key.issue, key.audience, told, now); err != nil {
+				if err := d.records.RaiseTold(ctx, tx, key.issue, key.audience, told, now); err != nil {
 					return err
 				}
 			}
 			if opening {
-				if err := d.records.SettleOpening(d.ctx, tx, key.issue, key.audience, false); err != nil {
+				if err := d.records.SettleOpening(ctx, tx, key.issue, key.audience, false); err != nil {
 					return err
 				}
 			}

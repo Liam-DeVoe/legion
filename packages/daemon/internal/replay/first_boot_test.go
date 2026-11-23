@@ -39,7 +39,7 @@ func TestTheFirstBootOfCoverGivesAReleasedWaiterItsSlot(t *testing.T) {
 					return nil
 				}
 				read, first = true, at
-				return st.Tx(ctx, func(tx pgx.Tx) error {
+				return store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 					records := record.NewStore()
 					slots, err := records.Slots(ctx, tx)
 					if err != nil {

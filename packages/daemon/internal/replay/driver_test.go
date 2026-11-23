@@ -566,7 +566,7 @@ func TestAWarmStartMatchesTheSeed(t *testing.T) {
 	}()
 	simulated := newSimClock(at)
 	st.UseClock(simulated.Now)
-	err = st.Tx(ctx, func(tx pgx.Tx) error {
+	err = store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		unplaced, err := Seed(ctx, tx, record.NewStoreWithClock(simulated.Now), st, withRanks(trace, firstStartRanks(trace).ranks()), at)
 		if err == nil && len(unplaced) > 0 {
 			err = fmt.Errorf("the start state could not place %v", unplaced)

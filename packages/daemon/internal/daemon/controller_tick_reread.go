@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // applyControllerTick is one turn: it re-reads from Dispatch the issues anything is currently
@@ -57,12 +58,13 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) []intake.IssueSta
 // hands over decides nothing there; it is the runtime's own (clockNow), the one every other
 // judgement of this runtime reads.
 func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, error) {
-	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	return blockers.WaitedOn(ctx, tx, w.records, w.dispatchProject, w.gatedSteps, record.MainRule, w.clockNow())
+	var keys []string
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		keys, err = blockers.WaitedOn(ctx, tx, w.records, w.dispatchProject, w.gatedSteps, record.MainRule, w.clockNow())
+		return err
+	})
+	return keys, err
 }
 
 // readObserved is Dispatch's answer for keys: one GetIssue each while they number

@@ -25,7 +25,7 @@ type coverState struct {
 // readCoverState reads parent's and child's coverState at at from the replay's database.
 func readCoverState(ctx context.Context, st *store.Store, at time.Time, parent, child string) (coverState, error) {
 	state := coverState{at: at}
-	err := st.Tx(ctx, func(tx pgx.Tx) error {
+	err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		slots, err := records.Slots(ctx, tx)
 		if err != nil {

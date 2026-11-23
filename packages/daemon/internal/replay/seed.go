@@ -750,7 +750,7 @@ func (s *seeder) turns() error {
 			d := supervise.Delivery{ID: "seed:" + string(turn.Claim.Token), Task: "the work the record shows under way at the window's start",
 				Phase: worked, Generation: issue.Generation, QueuedAt: turn.Start, DeliveredAt: turn.Start, ConfirmedAt: turn.Start,
 				Prompted: true}
-			if _, err := s.claims.PutClaimAndDeliveryTx(s.ctx, s.tx, c, d); err != nil {
+			if err := s.claims.PutClaimAndDeliveryTx(s.ctx, s.tx, c, d); err != nil {
 				return fmt.Errorf("replay: seed the claim of %s: %w", turn.Claim.Token, err)
 			}
 		}
@@ -808,7 +808,7 @@ func (s *seeder) waitingArchitects() error {
 			c.Generation = max(last.Generation, 1)
 			c.LastReady, c.LastTurnStart, c.LastTurnEnd = last.Start, last.Start, last.End
 		}
-		if _, err := s.claims.PutClaimTx(s.ctx, s.tx, c); err != nil {
+		if err := s.claims.PutClaimTx(s.ctx, s.tx, c); err != nil {
 			return fmt.Errorf("replay: seed the claim of %s: %w", token, err)
 		}
 	}

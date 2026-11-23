@@ -497,8 +497,8 @@ func (d *driver) observe() error {
 // treeOf is the tree key's record stands in, "" for an issue the replay does not record.
 func (d *driver) treeOf(key string) string {
 	var tree string
-	_ = pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		issue, err := d.records.Issue(d.ctx, tx, key)
+	_ = store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := d.records.Issue(ctx, tx, key)
 		if err == nil && issue != nil {
 			tree = issue.Tree
 		}
@@ -510,9 +510,9 @@ func (d *driver) treeOf(key string) string {
 // recorded is key's record in the replay's database, nil for an issue it does not record.
 func (d *driver) recorded(key string) (*record.Issue, error) {
 	var issue *record.Issue
-	err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		issue, err = d.records.Issue(d.ctx, tx, key)
+		issue, err = d.records.Issue(ctx, tx, key)
 		return err
 	})
 	return issue, err
@@ -677,8 +677,8 @@ func (d *driver) run() error {
 // (admit.Admission.View), so the states from the window's start to its first pass are the start
 // state's.
 func (d *driver) startView() error {
-	return pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		view, err := d.admission.View(d.ctx, tx)
+	return store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		view, err := d.admission.View(ctx, tx)
 		if err != nil {
 			return fmt.Errorf("replay: read the start state at %s as a pass reads it: %w", stamp(d.window.From), err)
 		}
@@ -733,8 +733,8 @@ func (d *driver) down(at time.Time) bool {
 // in the run it stands in (firstSlotBefore, keepFirstSlot), the start state holding no slot's moment
 // once the slot went back.
 func (d *driver) seed() error {
-	return d.st.Tx(d.ctx, func(tx pgx.Tx) error {
-		report, err := SeedAndReport(d.ctx, tx, d.records, d.st, withRanks(d.trace, d.shadow.ranks), d.window.From)
+	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
+		report, err := SeedAndReport(ctx, tx, d.records, d.st, withRanks(d.trace, d.shadow.ranks), d.window.From)
 		if err != nil {
 			return err
 		}
@@ -748,7 +748,7 @@ func (d *driver) seed() error {
 			d.used[assumeSlotFromBeforeTheReach] = true
 		}
 		maps.Copy(d.childWait, report.ChildrenTold)
-		issues, err := d.records.Issues(d.ctx, tx)
+		issues, err := d.records.Issues(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -766,13 +766,13 @@ func (d *driver) seed() error {
 			if first := d.firstSlotBefore(issue.Key); !first.IsZero() {
 				d.started[issue.Key] = first
 				if readsFirstSlots(d.rule) {
-					if err := keepFirstSlot(d.ctx, tx, issue, first); err != nil {
+					if err := keepFirstSlot(ctx, tx, issue, first); err != nil {
 						return err
 					}
 				}
 			}
 		}
-		claims, err := d.st.ClaimsTx(d.ctx, tx)
+		claims, err := d.st.ClaimsTx(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -1155,24 +1155,20 @@ func (d *driver) boot(boot Boot) error {
 }
 
 // serialized runs write in one transaction that takes the lock every fact applies under, with
-// the commit hooks and the run settling a fact has (intake.WithCommitHooks, intake.OpenSettlers),
-// as the daemon's boot runs its reconcile and its uncounted runs outside ApplyFact.
+// the run settling a fact has (intake.OpenSettlers), as the daemon's boot runs its reconcile and
+// its uncounted runs outside ApplyFact; the hooks write registers run once it commits
+// (store.Transact, store.OnCommit).
 func (d *driver) serialized(write func(ctx context.Context, tx pgx.Tx) error) error {
-	scoped, committed := intake.WithCommitHooks(d.ctx)
-	scoped, settle := intake.OpenSettlers(scoped, d.handlers...)
-	if err := pgx.BeginFunc(scoped, d.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(scoped, tx); err != nil {
+	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx, settle := intake.OpenSettlers(ctx, d.handlers...)
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return err
 		}
-		if err := write(scoped, tx); err != nil {
+		if err := write(ctx, tx); err != nil {
 			return err
 		}
-		return settle(scoped, tx)
-	}); err != nil {
-		return err
-	}
-	committed()
-	return nil
+		return settle(ctx, tx)
+	})
 }
 
 // catchesUp is every root a boot's catch-up reads, and so holds out of the pass's decision whether
@@ -1273,9 +1269,9 @@ func caughtUpKind(kind string) bool {
 // selection reads (blockers.WaitedOn, blockers.ReadPlan), as the daemon's tick reads Dispatch.
 func (d *driver) tick(at time.Time) error {
 	var keys []string
-	if err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		keys, err = blockers.WaitedOn(d.ctx, tx, d.records, d.window.Project, d.window.GateSteps, d.rule, d.now())
+		keys, err = blockers.WaitedOn(ctx, tx, d.records, d.window.Project, d.window.GateSteps, d.rule, d.now())
 		return err
 	}); err != nil {
 		return fmt.Errorf("replay: read what the tick at %s re-reads: %w", stamp(at), err)

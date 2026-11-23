@@ -4,8 +4,8 @@ import (
 	"context"
 	"slices"
 
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // passMoves is what one admission pass did with the cap's slots, gathered across the whole of
@@ -63,7 +63,7 @@ func (a *Admission) logPassMoves(ctx context.Context, moves *passMoves) {
 		return
 	}
 	slots, given, taken, passed := moves.slots, moves.given, moves.taken, moves.passed
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		a.log.Info("admission: a pass moved slots", "slots", slots, "cap", a.cap, "given", given, "taken", taken, "passed", passed)
 	})
 }

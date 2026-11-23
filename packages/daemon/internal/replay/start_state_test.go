@@ -27,7 +27,7 @@ func seedReported(t *testing.T, st *store.Store, w Window, at time.Time, read fu
 	if err != nil {
 		t.Fatalf("build the trace: %v", err)
 	}
-	tx, err := st.Pool().Begin(ctx)
+	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the seed's transaction: %v", err)
 	}

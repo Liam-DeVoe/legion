@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -162,9 +163,9 @@ func (d *driver) dueNow() time.Time { return d.now().Add(dueSlack) }
 func (d *driver) drain() error {
 	for {
 		var due []record.OutboxRow
-		if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
-			due, err = d.records.DueRows(d.ctx, tx, d.window.Project, "", nil, d.dueNow())
+			due, err = d.records.DueRows(ctx, tx, d.window.Project, "", nil, d.dueNow())
 			return err
 		}); err != nil {
 			return fmt.Errorf("replay: list the outbox rows due at %s: %w", stamp(d.clock.Instant()), err)
@@ -224,8 +225,8 @@ func (d *driver) waitHolds(row record.OutboxRow) (bool, error) {
 		return false, nil
 	}
 	waits := false
-	err = pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		slots, err := d.records.Slots(d.ctx, tx)
+	err = store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		slots, err := d.records.Slots(ctx, tx)
 		for _, slot := range slots {
 			if slot.Issue == row.Issue && slot.WaitsSince != nil {
 				waits = true
@@ -246,8 +247,8 @@ func (d *driver) waitHolds(row record.OutboxRow) (bool, error) {
 func (d *driver) wake() error {
 	var next *time.Time
 	now := d.dueNow()
-	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
-		return tx.QueryRow(d.ctx, `select min(next_at) from outbox where split_part(issue, '-', 1) = $1 and next_at > $2
+	if err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select min(next_at) from outbox where split_part(issue, '-', 1) = $1 and next_at > $2
 			and (lease_until is null or lease_until <= $2)`, d.window.Project, now).Scan(&next)
 	}); err != nil {
 		return fmt.Errorf("replay: read when the outbox is next due after %s: %w", stamp(now), err)
@@ -274,9 +275,9 @@ func (d *driver) wake() error {
 func (d *driver) take(row record.OutboxRow) (bool, error) {
 	var leased record.OutboxRow
 	var ok bool
-	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		leased, ok, err = d.records.ClaimRow(d.ctx, tx, row.ID, d.dueNow(), outboxLease)
+		leased, ok, err = d.records.ClaimRow(ctx, tx, row.ID, d.dueNow(), outboxLease)
 		return err
 	}); err != nil || !ok {
 		return false, err
@@ -308,8 +309,8 @@ func (d *driver) take(row record.OutboxRow) (bool, error) {
 
 // finish deletes row, the stub's run of it over (record.Postgres.FinishOutbox).
 func (d *driver) finish(row record.OutboxRow) error {
-	return d.st.Tx(d.ctx, func(tx pgx.Tx) error {
-		return d.records.FinishOutbox(d.ctx, tx, row.ID, row.LeaseToken)
+	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return d.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
 	})
 }
 
@@ -341,8 +342,8 @@ func (d *driver) finishAssumed(row record.OutboxRow, assumption int) error {
 // of its approved design not yet recorded, a claim its tree's lifecycle refuses.
 func (d *driver) retry(row record.OutboxRow, why error) error {
 	next := d.clock.Instant().Add(record.RetryBackoff(row.Attempts))
-	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
-		return d.records.RetryOutbox(d.ctx, tx, row.ID, row.LeaseToken, next, why.Error())
+	if err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return d.records.RetryOutbox(ctx, tx, row.ID, row.LeaseToken, next, why.Error())
 	}); err != nil {
 		return err
 	}
@@ -503,15 +504,15 @@ func (d *driver) handOverRow(row record.OutboxRow, payload record.StatusWrite, r
 func (d *driver) handOverHolds(row record.OutboxRow, payload record.StatusWrite) (bool, error) {
 	var issue, root *record.Issue
 	var handover *record.Handover
-	if err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		if issue, err = d.records.Issue(d.ctx, tx, row.Issue); err != nil || issue == nil {
+		if issue, err = d.records.Issue(ctx, tx, row.Issue); err != nil || issue == nil {
 			return err
 		}
-		if handover, err = d.records.Handover(d.ctx, tx, row.Issue); err != nil || handover == nil || handover.Cancelled {
+		if handover, err = d.records.Handover(ctx, tx, row.Issue); err != nil || handover == nil || handover.Cancelled {
 			return err
 		}
-		root, err = d.records.Issue(d.ctx, tx, handover.Tree)
+		root, err = d.records.Issue(ctx, tx, handover.Tree)
 		return err
 	}); err != nil {
 		return false, fmt.Errorf("read the hand-over of %s: %w", row.Issue, err)
@@ -625,8 +626,8 @@ func (d *driver) superviseRow(row record.OutboxRow, payload record.SuperviseRequ
 // phaseEntry is the entry role's phases row of issue names (record.PhaseRow.Entry).
 func (d *driver) phaseEntry(issue string, role claim.Role) (int64, error) {
 	var entry int64
-	err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		rows, err := d.records.Phases(d.ctx, tx, issue)
+	err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := d.records.Phases(ctx, tx, issue)
 		if err != nil {
 			return err
 		}
@@ -772,17 +773,17 @@ func (d *driver) start(row record.OutboxRow, payload record.SuperviseRequest, is
 		}
 		delivered = true
 	}
-	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if c.Pending != nil {
-			_, err = d.st.PutClaimAndDeliveryTx(d.ctx, tx, c, *c.Pending)
+			err = d.st.PutClaimAndDeliveryTx(ctx, tx, c, *c.Pending)
 		} else {
-			_, err = d.st.PutClaimTx(d.ctx, tx, c)
+			err = d.st.PutClaimTx(ctx, tx, c)
 		}
 		if err != nil {
 			return err
 		}
-		return d.records.FinishOutbox(d.ctx, tx, row.ID, row.LeaseToken)
+		return d.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
 	}); err != nil {
 		return fmt.Errorf("write the claim %s of the start row %d: %w", token, row.ID, err)
 	}
@@ -911,9 +912,9 @@ func (d *driver) neverStartedWork(key string, role claim.Role, served phase.Phas
 // know.
 func (d *driver) gateClosed(issue record.Issue) (bool, error) {
 	var gates map[record.DesignStep]record.DesignGate
-	err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		gates, err = d.records.GatesOf(d.ctx, tx, issue.Tree)
+		gates, err = d.records.GatesOf(ctx, tx, issue.Tree)
 		return err
 	})
 	if err != nil {

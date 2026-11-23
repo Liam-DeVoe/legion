@@ -2,6 +2,7 @@ package replay
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -480,12 +482,12 @@ func (d *driver) queueLeft(key string, move *Move) error {
 func (d *driver) merged(key string, move *Move, to phase.Phase, refuse func(string)) error {
 	var issue *record.Issue
 	var open []string
-	if err := pgx.BeginTxFunc(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		if issue, err = d.records.Issue(d.ctx, tx, key); err != nil || issue == nil {
+		if issue, err = d.records.Issue(ctx, tx, key); err != nil || issue == nil {
 			return err
 		}
-		members, err := d.records.TreeIssues(d.ctx, tx, issue.Tree)
+		members, err := d.records.TreeIssues(ctx, tx, issue.Tree)
 		open = record.OpenBeneath(*issue, members)
 		return err
 	}); err != nil {
@@ -736,8 +738,8 @@ func (d *driver) ensurePullRequest(key string) error {
 	}
 	d.used[assumeNoGitHub] = true
 	arrived := d.now()
-	return d.st.Tx(d.ctx, func(tx pgx.Tx) error {
-		return d.records.PutPullRequest(d.ctx, tx, record.PullRequest{Issue: key, Repo: issue.Repo, Number: d.numbers.of(key, issue.Repo),
+	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return d.records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Repo: issue.Repo, Number: d.numbers.of(key, issue.Repo),
 			Branch: claim.IssueBranch(key), Base: issue.DefaultBranch, HeadUpdatedAt: arrived, State: record.PullRequestOpen})
 	})
 }
@@ -819,9 +821,9 @@ func (n *pullRequestNumbers) of(key, repo string) int {
 // pullRequestOf is the pull request record key holds in the replay's database, nil for none.
 func (d *driver) pullRequestOf(key string) (*record.PullRequest, error) {
 	var pr *record.PullRequest
-	err := d.st.Tx(d.ctx, func(tx pgx.Tx) error {
+	err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		pr, err = d.records.PullRequest(d.ctx, tx, key)
+		pr, err = d.records.PullRequest(ctx, tx, key)
 		return err
 	})
 	return pr, err

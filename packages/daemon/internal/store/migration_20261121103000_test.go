@@ -46,7 +46,7 @@ func TestTheSlotsReadingWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	st.UseClock(func() time.Time { return at })
 	records := record.NewStore()
 	issue := slotsReadingIssue()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -126,7 +126,7 @@ func TestTheSlotsReadingWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	if applied != 1 {
 		t.Fatalf("the roll-forward applied %d migrations, want this one alone, again", applied)
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		read, err := records.Issue(ctx, tx, issue.Key)
 		if err != nil {
 			return err
@@ -180,7 +180,7 @@ func TestAClaimsStopIsStampedWhenItStops(t *testing.T) {
 			t.Fatalf("record the claim %s: %v", state, err)
 		}
 		var claims []record.HolderClaim
-		if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			claims, err = record.NewStore().HolderClaims(ctx, tx, "acme")
 			return err

@@ -9,8 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // RuleTables is where an admission pass under a slot rule the daemon does not run reads, and
@@ -320,7 +320,7 @@ func (a *Admission) cover(ctx context.Context, tx pgx.Tx, waiter, holder string,
 	inUse--
 	a.logSlot(ctx, "released", waiter, inUse)
 	moves.take(waiter, coverReason(waiter, holder, facts), inUse)
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		a.log.Info(CoverTakenLine, "waiter", waiter, "holder", holder, "slots", inUse, "cap", a.cap)
 	})
 	return slots, inUse, nil

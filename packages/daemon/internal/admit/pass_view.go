@@ -9,8 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // PassView is the project as one admission pass leaves it: what the pass read and judged, and the
@@ -50,7 +50,7 @@ type PassView struct {
 }
 
 // UsePassObserver registers observe, which is handed the view of each admission pass once the
-// fact the pass ran in has committed (intake.OnCommit), so a pass whose fact rolls back is never
+// fact the pass ran in has committed (store.OnCommit), so a pass whose fact rolls back is never
 // seen. A replay of a recorded window registers one to measure its run from the states the pass
 // decided from; the daemon registers none, and an admission with no observer gathers no view. It
 // is a setter rather than a parameter of New for the reason UseExperiments is.
@@ -83,7 +83,7 @@ func (a *Admission) observePass(ctx context.Context, issues []record.Issue, slot
 		return
 	}
 	view, observe := a.passView(issues, slots, facts, rows, line, dropped, moves, promoted), a.observer
-	intake.OnCommit(ctx, func() { observe(view) })
+	store.OnCommit(ctx, func() { observe(view) })
 }
 
 // passView is the view of a pass over its reads and moves, its line less the members promoted

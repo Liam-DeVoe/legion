@@ -2,6 +2,7 @@ package replay
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -643,7 +645,7 @@ func (d *driver) conflictFor(p *piece, kept bool) (bool, error) {
 		pr.HeadSHA = d.newHead(key)
 	}
 	pr.ConflictingHead = pr.HeadSHA
-	if err := d.st.Tx(d.ctx, func(tx pgx.Tx) error { return d.records.PutPullRequest(d.ctx, tx, *pr) }); err != nil {
+	if err := store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error { return d.records.PutPullRequest(ctx, tx, *pr) }); err != nil {
 		return false, err
 	}
 	d.used[assumeNoGitHub] = true
@@ -714,7 +716,7 @@ func (d *driver) headOfItsOwn(key string) error {
 		return err
 	}
 	moved.HeadSHA, moved.ConflictingHead = d.newHead(key), ""
-	return d.st.Tx(d.ctx, func(tx pgx.Tx) error { return d.records.PutPullRequest(d.ctx, tx, *moved) })
+	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error { return d.records.PutPullRequest(ctx, tx, *moved) })
 }
 
 // newHead is a head the replay's own pull request record of key moves to, unique in the run.

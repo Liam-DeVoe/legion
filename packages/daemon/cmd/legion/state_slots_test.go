@@ -126,7 +126,7 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 	slotIndex := 0
 	seed := func(what string, fn func(tx pgx.Tx) error) {
 		t.Helper()
-		if err := st.Tx(ctx, fn); err != nil {
+		if err := store.Transact(ctx, st.Pool(), func(_ context.Context, tx pgx.Tx) error { return fn(tx) }); err != nil {
 			t.Fatalf("seed %s: %v", what, err)
 		}
 	}
@@ -250,7 +250,7 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 
 	// The state, through the real route, as `legion state` and `legion state --json` read it.
 	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{
-		State: slotsStateSource{store: st, steps: steps, cap: slotCap, now: now}, StateTransactions: st,
+		State: slotsStateSource{store: st, steps: steps, cap: slotCap, now: now}, StateTransactions: st.Pool(),
 		Project: projectToken, DispatchProject: slotsProject, OperatorToken: "operator-bearer-for-slots-tests", Log: quiet,
 	}).Handler)
 	t.Cleanup(server.Close)

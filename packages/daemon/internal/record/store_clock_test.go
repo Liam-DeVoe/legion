@@ -293,7 +293,7 @@ func clockClaim() supervise.Claim {
 func claimTimes(t *testing.T, st *store.Store, token claim.Token, old bool) (updated time.Time, activity *time.Time) {
 	t.Helper()
 	ctx := context.Background()
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if old {
 			_, err := tx.Exec(ctx, `update claims set updated_at = '2001-01-01T00:00:00Z' where token = $1`, string(token))
 			return err

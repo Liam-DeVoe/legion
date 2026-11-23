@@ -102,7 +102,7 @@ func openReplayDatabase(ctx context.Context, dsn string) (replayDatabase, *store
 		st.Close()
 		return db, nil, errors.Join(fmt.Errorf("replay: migrate the replay's database %s: %w", name, err), db.drop(ctx))
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		// Every fact commits, and a replay's facts are many: a commit that does not wait for the
 		// write-ahead log to reach the disk changes no decision (review Q4, item 5).
 		if _, err := tx.Exec(ctx, "alter database "+pgx.Identifier{name}.Sanitize()+" set synchronous_commit = off"); err != nil {

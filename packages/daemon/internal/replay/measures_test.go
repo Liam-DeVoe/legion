@@ -289,7 +289,7 @@ func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
 	var projected []moment
 	rule := record.MainRule
 	look := func(ctx context.Context, st *store.Store, at time.Time) error {
-		return st.Tx(ctx, func(tx pgx.Tx) error {
+		return store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			records := record.NewStore()
 			claims, err := st.ClaimsTx(ctx, tx)
 			if err != nil {
