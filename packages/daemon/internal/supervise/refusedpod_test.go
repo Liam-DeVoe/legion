@@ -98,7 +98,13 @@ func TestARegistrationAddsItsPodToTheSetAndNothingTakesItOut(t *testing.T) {
 // pod puts the pod the refusal names in the set, and the retry that later comes up in another pod
 // adds nothing before its agent registers. A wake whose launch an open pause's gate stops before
 // it reaches any pod leaves the claim the release's (suspended): the release's bundle is still
-// unrestored, so the launch after the pause puts its pod in the set.
+// unrestored, so the launch after the pause puts its pod in the set. So does a resume whose start
+// a daemon's suspension cuts short before it reaches any pod: that launch restored nothing, so
+// the release's mark stays (Machine.releaseUnrestored, which launchNow leaves), and the daemon's
+// resume after that suspension puts the pod it comes up in in the set. And the pod a launch after
+// the release comes up in takes that mark off (addRestoringPod), since the bundle is sent once, to
+// that pod: after a daemon's suspension, the daemon's resume into a third pod puts that pod in the
+// set only once an agent registers there.
 //
 // The cases after them put no pod in the set at the resume (markRestoringLaunch). A claim the
 // daemon suspended for its own rule was saved by no release. A project pause's stop suspends as
@@ -183,6 +189,64 @@ func TestTheFirstLaunchAfterAnIdleReleaseAddsItsPodToTheSet(t *testing.T) {
 			t.Fatalf("the resumed claim is %s at %+v, want it launching in pod %s", c.State, c.Locator, replacedPod)
 		}
 		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once its resume after the pause came up in the next pod, before its agent registered,")
+	})
+
+	t.Run("a resume whose start a daemon's suspension cuts short before any pod, then the daemon's resume", func(t *testing.T) {
+		h := released(t)
+		started, cut := make(chan struct{}), make(chan error, 1)
+		h.rt.OnResume = func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done() // the start waits in the runtime until something ends its context
+			cut <- ctx.Err()
+			return ctx.Err()
+		}
+		resuming := make(chan error, 1)
+		go func() { resuming <- h.handle(RequestRuleResume{Claim: h.token, Reason: "a wake for a delivery"}) }()
+		<-started
+		suspending := make(chan error, 1)
+		go func() {
+			suspending <- h.handle(RequestSuspend{Claim: h.token, Reason: "its tree lingers", By: SuspendedByDaemon})
+		}()
+		if err := <-cut; err == nil {
+			t.Fatal("the resume's start ran to completion, want it cut short by the suspension")
+		}
+		<-resuming
+		if err := <-suspending; err != nil {
+			t.Fatalf("the daemon's suspension answered %v, want the claim suspended", err)
+		}
+		h.rt.OnResume = nil
+		if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByDaemon || c.Locator != nil {
+			t.Fatalf("the claim is %s by %q at %+v, want it suspended by the daemon before any pod", c.State, c.SuspendedBy, c.Locator)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod}}, "once the daemon's suspension cut the resume's start short before any pod,")
+
+		h.rt.ScriptResume(fake.SpawnResult{Locator: podProcess(replacedPod, 3)})
+		h.must(RequestRuleResume{Claim: h.token, Reason: "it owns its phase"})
+		if c := h.claim(); c.State != StateLaunching || locatorPod(c.Locator) != replacedPod {
+			t.Fatalf("the resumed claim is %s at %+v, want it launching in pod %s", c.State, c.Locator, replacedPod)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once the daemon's resume came up in the pod that restored the release's bundle, before its agent registered,")
+	})
+
+	t.Run("a resume that came up in the next pod, then the daemon's suspension and resume into a third pod", func(t *testing.T) {
+		h := released(t)
+		h.rt.ScriptResume(fake.SpawnResult{Locator: podProcess(replacedPod, 2)})
+		h.must(RequestRuleResume{Claim: h.token, Reason: "a wake for a delivery"})
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once the wake's resume came up in the next pod, before its agent registered,")
+		h.connect()
+		h.register()
+		h.ready()
+		h.must(RequestSuspend{Claim: h.token, Reason: "its tree lingers", By: SuspendedByDaemon})
+		if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByDaemon {
+			t.Fatalf("the claim is %s by %q, want it suspended by the daemon", c.State, c.SuspendedBy)
+		}
+
+		h.rt.ScriptResume(fake.SpawnResult{Locator: podProcess(anotherPod, 3)})
+		h.must(RequestRuleResume{Claim: h.token, Reason: "it owns its phase"})
+		if c := h.claim(); c.State != StateLaunching || locatorPod(c.Locator) != anotherPod {
+			t.Fatalf("the resumed claim is %s at %+v, want it launching in pod %s", c.State, c.Locator, anotherPod)
+		}
+		h.wantRegistered(RegisteredPods{Pods: []string{refusedPod, replacedPod}}, "once the daemon's resume came up in a third pod, before its agent registered,")
 	})
 
 	t.Run("a resume of a claim the daemon suspended", func(t *testing.T) {
