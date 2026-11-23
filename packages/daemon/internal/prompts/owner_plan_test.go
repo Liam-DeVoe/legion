@@ -717,8 +717,8 @@ func TestTheSentencesTheAcceptanceShowedFalseSayWhatTheDaemonDoes(t *testing.T) 
 // reviewRound, classify.RoundWaitsOnMergeState), so the architect's part no longer says the
 // approval ends the round whatever CI says. The reviewer waits, before it approves, for a required
 // check still running and for a `ci_check` run, so its part says so where it says the daemon does
-// the rest of the waiting. The reviewer and the merger push nothing (roles/reviewer.md,
-// roles/merger.md), so the shared update and push steps say they are not theirs. The production
+// the rest of the waiting. The reviewer pushes nothing (roles/reviewer.md), so the shared update
+// and push steps say they are not its own; the merger pushes its merge of the base. The production
 // check, opened once the pull request merges, records an `after_merge` result (workflow's openCheck
 // and checkTask), so the root's last round asks none. Each part is read alone, by its name. This
 // shows the text is loaded, never that an agent follows it.
@@ -744,10 +744,10 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 		{
 			"go/worker-common.md", func(t *testing.T) string { return goPart(t, "worker-common.md") },
 			[]string{
-				"Do its five steps in that turn, in this order; the reviewer and the merger create no commit and push nothing, so each commit and push that the steps and this paragraph name is not theirs.",
-				"Where your role pushes (the reviewer and the merger push nothing), push the issue branch yourself",
+				"Do its five steps in that turn, in this order; the reviewer creates no commit and pushes nothing, so each commit and push that the steps and this paragraph name is not its own, and the merger pushes the merge of the base it made.",
+				"Where your role pushes (the reviewer pushes nothing), push the issue branch yourself",
 			},
-			[]string{"Push the issue branch yourself"},
+			[]string{"Push the issue branch yourself", "the reviewer and the merger create no commit and push nothing", "the reviewer and the merger push nothing"},
 		},
 		{
 			"roles/architect-root.md", func(t *testing.T) string { return rolePart(t, "architect-root.md") },

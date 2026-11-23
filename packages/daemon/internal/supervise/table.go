@@ -301,8 +301,8 @@ type PodUpdateOpen struct {
 // work, so a role that follows the steps answers with nothing of its own running. A role whose
 // work finishes after its answer pushes what that work made and answers again with the same
 // round, which podUpdateSignalled records in place of the first answer. The text goes to role, and
-// the reviewer and the merger create no commit and push nothing (their role parts), so theirs
-// says so in step 1 and asks no commit or push of what their work made (createsNoCommit).
+// the reviewer creates no commit and pushes nothing (its role part), so its text says so in step 1
+// and asks no commit or push of what its work made (createsNoCommit).
 //
 // The step to answer is the one step a role can be unable to do: the op list its `legion` tool
 // holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
@@ -365,10 +365,12 @@ The daemon starts your process again on the new pod, in this same session. The d
 }
 
 // createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose
-// handoff is a record on the Dispatch issue, and the merger, which merges what others pushed
-// (roles/reviewer.md, roles/merger.md). The update task asks no commit or push of either.
+// handoff is a record on the Dispatch issue (roles/reviewer.md). The update task asks no commit or
+// push of it. The merger is not one: it makes and pushes the merge of the base forward in merging
+// (roles/merger.md, workflow's mergeForward), and a merge commit it has not pushed when the pod is
+// replaced is lost with the pod.
 func createsNoCommit(role claim.Role) bool {
-	return role == claim.RoleReviewer || role == claim.RoleMerger
+	return role == claim.RoleReviewer
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
