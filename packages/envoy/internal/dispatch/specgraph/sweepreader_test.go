@@ -189,12 +189,13 @@ func readerLine(t *testing.T, fsys fstest.MapFS) ([]byte, [sha256.Size]byte) {
 // back, of readerAnswer's form, the states of the scenario; and line, the key of the line of its input
 // that it answers (readerLine: the sha256 of the bytes that ask wrote to the process), which ask sets
 // from those bytes. A reply is a value of its own, a string and an array, so no code changes the reply
-// that ask returned. The judgment of the sweeps (judgeAnswer) reads its states itself (states) and
-// gives back its key, by which sweepAgainst counts the input as read, so a sweep that hands the
-// judgment the reader's reply to another line, the base's or another input's, moves the digest of its
-// base and fails by name (sweepCount.judged). Code that writes a reply of its own, as replyOf does, or
-// sets the text of one, could hand the judgment other states under an input's key, and shows in its
-// code.
+// that ask returned. The judgment of the sweeps (judgeAnswer) reads the states of the two replies that
+// it is handed itself (states) and gives back the key of each, the base's and the input's, by which
+// sweepAgainst counts the input as read, so a sweep that hands the judgment, as the base's reply or as
+// the input's, the reader's reply to another line than the one that it stands for (the input's, the
+// base's or another input's) moves the digest of its base and fails by name (sweepCount.judged). Code
+// that writes a reply of its own, as replyOf does, or sets the text or the key of one, could hand the
+// judgment other states under a line's key, and shows in its code.
 type readerReply struct {
 	line [sha256.Size]byte
 	text string

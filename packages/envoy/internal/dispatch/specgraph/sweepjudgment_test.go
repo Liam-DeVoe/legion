@@ -181,26 +181,28 @@ func movesBeyond(whole, got map[string]string, hasRight bool, allowed map[string
 // place). Of a right it reads whether there is one and its places, and no words. It gives toward, the
 // line of each place that moved toward true (movesBeyond with no right), and beyond, the line of each
 // that moved toward true beyond the input's right (movesBeyond with that right, which is toward where
-// the input has none), or the error of either, or of a reply that gives no states; and answered, the key
-// of the line that got answers, by which sweepAgainst counts the input as read (counted), so the count
-// holds the reply that the judgment read for the input and no other. Its callers are sweepAgainst and
+// the input has none), or the error of either, or of a reply that gives no states; and answered, the keys
+// of the lines that whole and got answer, in that order, by which sweepAgainst counts the input as read
+// (counted), so the count holds both replies that the judgment read for the input, the base's and the
+// input's, and no other. Its callers are sweepAgainst and
 // TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain, which hands it answers of each base
 // whose arguments it ranges over by their types (eachAnswer, replyOf) and holds each to the definition
 // applied place by place (definedAnswer).
-func judgeAnswer(whole, got readerReply, hasRight bool, allowed map[string]string) (toward, beyond []string, answered [sha256.Size]byte, err error) {
+func judgeAnswer(whole, got readerReply, hasRight bool, allowed map[string]string) (toward, beyond []string, answered [2][sha256.Size]byte, err error) {
+	answered = [2][sha256.Size]byte{whole.line, got.line}
 	base, err := whole.states()
 	if err != nil {
-		return nil, nil, got.line, fmt.Errorf("the base: %w", err)
+		return nil, nil, answered, fmt.Errorf("the base: %w", err)
 	}
 	input, err := got.states()
 	if err != nil {
-		return nil, nil, got.line, fmt.Errorf("the input: %w", err)
+		return nil, nil, answered, fmt.Errorf("the input: %w", err)
 	}
 	toward, err = movesBeyond(base, input, false, nil)
 	if err == nil {
 		beyond, err = movesBeyond(base, input, hasRight, allowed)
 	}
-	return toward, beyond, got.line, err
+	return toward, beyond, answered, err
 }
 
 // definedBeyond is the definition that the domain test holds the judgment (movedBeyond) to, written
@@ -666,10 +668,10 @@ func cell(kind, base, input string, right placeRight) string {
 // that is no state of its kind, or reads another right at a place than the input's, fails by the
 // case. It fails by name where a right at a place (placeRight) gains a field, or judgeAnswer an
 // argument or a type of one, that it does not range over. It does not show what sweepAgainst hands
-// judgeAnswer: that each reply that it hands it for an input is the reader's reply to that input's
-// line is the sweeps' digests' (judgeAnswer gives back the reply's key, by which the sweep counts the
-// input), and that it hands it the input's right is the known positives' (knownPositives), at their
-// bases.
+// judgeAnswer: that each of the two replies that it hands it for an input, the base's and the input's,
+// is the reader's reply to the line that it stands for is the sweeps' digests' (judgeAnswer gives back
+// the keys of both, by which the sweep counts the input), and that it hands it the input's right is the
+// known positives' (knownPositives), at their bases.
 func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T) {
 	t.Parallel()
 	kinds := judgedKinds()
