@@ -392,12 +392,13 @@ Each item below names a script, then what it proves.
 
 - `agents.sh`
 
-  one key of an owner's plan is one agent in one session across roles, and one role at two steps of a task is one agent in one session, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with four issues whose owners give their plans:
+  one key of an owner's plan is one agent in one session across roles, one role at two steps of a task is one agent in one session, and a second agent of one role is an agent in a session of its own, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with five issues whose owners give their plans:
   `implementer:a tester:a reviewer` runs steps 1 and 2 in one agent and one session, the tester's step and the retro each a relaunch of the implementer's claim that resumes its session, and step 3 in another;
   `dispatch steps --issue <KEY>`, run as a person with their personal token, prints the same agents the records name;
   the control, `implementer:a tester reviewer`, runs step 2 in an agent and a session of its own;
   `implementer:a reviewer implementer:a` runs steps 1 and 3 in one agent and one session, through a failed review that returns the task to step 1, and step 3's task names the reports of steps 1 and 2;
-  its control, `implementer:a reviewer implementer`, is refused.
+  its control, `implementer:a reviewer implementer`, runs step 3 and the retro in `…-implementer-2`, the second agent of the role implementer, launched once in a session of its own;
+  and `implementer reviewer implementer` runs step 3 in `…-implementer-2` the same way.
   No GitHub, no cluster
 
 - `step-records-read.sh`
