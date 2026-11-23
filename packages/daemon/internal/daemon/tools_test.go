@@ -86,7 +86,7 @@ func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 			// abandoning it as an empty working-copy commit.
 			merges := make([]string, 2)
 			for i := range merges {
-				s.run.Run(s.repo, slices.Concat([]string{s.jj, "new"}, bases, []string{"-m", fmt.Sprintf("m%d", i+1)})...)
+				s.runJJ(slices.Concat([]string{"new"}, bases, []string{"-m", fmt.Sprintf("m%d", i+1)})...)
 				merges[i] = s.commitID("@")
 			}
 			listed := s.mergeBases(merges[0], merges[1])
@@ -99,15 +99,10 @@ func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 					t.Fatalf("the fixture is wrong, not jj: m%d holds %q in f, want \"b\\n\", as each of its parents does", i+1, held)
 				}
 			}
-			s.run.Run(s.repo, s.jj, "new", merges[0], merges[1], "-m", "merge")
-			conflicted, held := s.conflicted("@"), s.show("@")
-			if conflicted || held != "b\n" {
-				state := "clean"
-				if conflicted {
-					state = "conflicted"
-				}
-				t.Errorf("%s merges m1 and m2, two merges of the same %d commits that each hold \"b\\n\" in f, into a %s commit holding %q in f; want a clean one holding \"b\\n\". "+
-					"This is jj-vcs/jj#6369, and the pinned jj must carry the fork's fix of sjawhar/jj#4, which starts from jj-vcs/jj#10100", version, tc.n, state, held)
+			s.runJJ("new", merges[0], merges[1], "-m", "merge")
+			if s.fConflicted("@") || s.show("@") != "b\n" {
+				t.Errorf("%s merges m1 and m2, two merges of the same %d commits that each hold \"b\\n\" in f, into %s; want a clean one holding \"b\\n\". "+
+					"This is jj-vcs/jj#6369, and the pinned jj must carry the fork's fix of sjawhar/jj#4, which starts from jj-vcs/jj#10100", version, tc.n, s.describe("@"))
 			}
 		})
 	}
@@ -121,25 +116,20 @@ func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 		root := s.root("o\n")
 		a := s.commit("a", "f", "a\n", root)
 		b := s.commit("b", "f", "b\n", root)
-		s.run.Run(s.repo, s.jj, "new", a, b, "-m", "m")
+		s.runJJ("new", a, b, "-m", "m")
 		m := s.commitID("@")
-		if listed := s.conflicts(m); !slices.Contains(listed, "f") {
-			t.Fatalf("the fixture is wrong, not jj: jj resolve --list -r m lists %v, want f, which a sets to \"a\\n\" and b to \"b\\n\"", listed)
+		if !s.fConflicted(m) {
+			t.Fatal("the fixture is wrong, not jj: jj file list -r m reads f as clean, want a conflict at f, which a sets to \"a\\n\" and b to \"b\\n\"")
 		}
 		r1 := s.commit("r1", "f", "R\n", m)
 		r2 := s.commit("r2", "g", "x\n", m)
 		if listed := s.mergeBases(r1, r2); !slices.Equal(listed, []string{m}) {
 			t.Fatalf("the fixture is wrong, not jj: git merge-base --all r1 r2 lists %v, want m alone, %s", listed, m)
 		}
-		s.run.Run(s.repo, s.jj, "new", r1, r2, "-m", "merge")
-		conflicted, held := s.conflicted("@"), s.show("@")
-		if conflicted || held != "R\n" {
-			state := "clean"
-			if conflicted {
-				state = "conflicted"
-			}
-			t.Errorf("%s merges r1, which resolves m's conflict at f to \"R\", and r2, which leaves it, into a %s commit holding %q in f; want a clean one holding \"R\\n\": "+
-				"in sjawhar/jj#4's merge rules, where the merge bases' merge does not resolve and one side holds it, the merge takes the other side", version, state, held)
+		s.runJJ("new", r1, r2, "-m", "merge")
+		if s.fConflicted("@") || s.show("@") != "R\n" {
+			t.Errorf("%s merges r1, which resolves m's conflict at f to \"R\", and r2, which leaves it, into %s; want a clean one holding \"R\\n\": "+
+				"in sjawhar/jj#4's merge rules, where the merge bases' merge does not resolve and one side holds it, the merge takes the other side", version, s.describe("@"))
 		}
 	})
 	// K4: A and B change f from the root's "o" to "x" and to "y", and P1 and P2 are two merges of A
@@ -153,16 +143,11 @@ func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 		if want := slices.Sorted(slices.Values([]string{h.a, h.b})); !slices.Equal(listed, want) {
 			t.Fatalf("the fixture is wrong, not jj: git merge-base --all P1 P2 lists %v, want A and B, %v", listed, want)
 		}
-		s.run.Run(s.repo, s.jj, "new", h.p1, h.p2, "-m", "merge")
-		if !slices.Contains(s.conflicts("@"), "f") {
-			conflicted, held := s.conflicted("@"), s.show("@")
-			state := "clean"
-			if conflicted {
-				state = "conflicted"
-			}
-			t.Errorf("%s merges P1 and P2, two merges of A and B, which hold \"x\" and \"y\" in f, where P1 resolves f to \"x\" and P2 to \"y\", into a %s commit holding %q in f; want a conflict at f: "+
+		s.runJJ("new", h.p1, h.p2, "-m", "merge")
+		if !s.fConflicted("@") {
+			t.Errorf("%s merges P1 and P2, two merges of A and B, which hold \"x\" and \"y\" in f, where P1 resolves f to \"x\" and P2 to \"y\", into a clean commit holding %q in f; want a conflict at f: "+
 				"in sjawhar/jj#4's merge rules, where the merge bases' merge of a text file does not resolve and both sides changed it, each differently, the merge merges the two sides against a virtual merge base, as git does, "+
-				"and here both sides rewrite the same lines of it, so the merge is a conflict", version, state, held)
+				"and here both sides rewrite the same lines of it, so the merge is a conflict", version, s.show("@"))
 		}
 	})
 	// VB1: in R5 of dispatch://INFRA-4149/spec the virtual merge base that sjawhar/jj#4's merge
@@ -179,23 +164,23 @@ func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 	}{
 		{"a resolution that edits a line of the hunk the merge bases disagree on, rebased onto P1", func(s *jjScratch) string {
 			h := s.block()
-			s.run.Run(s.repo, s.jj, "rebase", "-r", h.d, "-d", h.p1)
+			s.runJJ("rebase", "-r", h.d, "-d", h.p1)
 			return h.d
 		}},
 		{"a resolution that edits a line of the hunk the merge bases disagree on, after an abandon of P2", func(s *jjScratch) string {
 			h := s.block()
-			s.run.Run(s.repo, s.jj, "abandon", h.p2)
+			s.runJJ("abandon", h.p2)
 			return h.d
 		}},
 		{"a resolution that edits a line of the hunk the merge bases disagree on, squashed into P1", func(s *jjScratch) string {
 			h := s.block()
-			s.run.Run(s.repo, s.jj, "squash", "--from", h.d, "--into", h.p1, "--use-destination-message")
+			s.runJJ("squash", "--from", h.d, "--into", h.p1, "--use-destination-message")
 			return h.p1
 		}},
 		{"a kept conflict checked out with jj new and edited", func(s *jjScratch) string {
 			h := s.k4Five()
-			s.run.Run(s.repo, s.jj, "rebase", "-r", h.d, "-d", h.p1)
-			s.run.Run(s.repo, s.jj, "new", h.d, "-m", "w")
+			s.runJJ("rebase", "-r", h.d, "-d", h.p1)
+			s.runJJ("new", h.d, "-m", "w")
 			checkedOut, err := os.ReadFile(filepath.Join(s.repo, "f"))
 			if err != nil {
 				s.t.Fatal(err)
@@ -205,13 +190,13 @@ func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 		}},
 		{"one parent restored from the merge, then jj resolve --tool :ours", func(s *jjScratch) string {
 			h := s.k4()
-			s.run.Run(s.repo, s.jj, "restore", "--from", h.d, "--into", h.p1, "f")
+			s.runJJ("restore", "--from", h.d, "--into", h.p1, "f")
 			s.resolve(h.d, ":ours")
 			return h.d
 		}},
 		{"one parent rebased onto A, then jj resolve --tool :theirs", func(s *jjScratch) string {
 			h := s.k4()
-			s.run.Run(s.repo, s.jj, "rebase", "-s", h.p2, "-d", h.a)
+			s.runJJ("rebase", "-s", h.p2, "-d", h.a)
 			s.resolve(h.d, ":theirs")
 			return h.d
 		}},
@@ -220,7 +205,7 @@ func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 			t.Parallel()
 			s := newJJScratch(t, jj, git)
 			revision := tc.run(s)
-			if slices.Contains(s.conflicts(revision), "f") {
+			if s.fConflicted(revision) {
 				return
 			}
 			held := s.show(revision)
@@ -250,8 +235,15 @@ func newJJScratch(t *testing.T, jj, git string) *jjScratch {
 	t.Helper()
 	repo := t.TempDir()
 	s := &jjScratch{t: t, jj: jj, git: git, repo: repo, run: fixturegit.Isolated(t, t.TempDir())}
-	s.run.Run(repo, append([]string{jj}, fixturegit.JJInit(repo, true)[1:]...)...)
+	s.runJJ(fixturegit.JJInit(repo, true)[1:]...)
 	return s
+}
+
+// runJJ runs the scratch's jj with args in its repository under its runner, and fails the test
+// when jj fails.
+func (s *jjScratch) runJJ(args ...string) {
+	s.t.Helper()
+	s.run.Run(s.repo, append([]string{s.jj}, args...)...)
 }
 
 // write sets a file of the working copy, which the next jj command snapshots into the working-copy
@@ -268,7 +260,7 @@ func (s *jjScratch) write(name, content string) {
 func (s *jjScratch) root(content string) string {
 	s.t.Helper()
 	s.write("f", content)
-	s.run.Run(s.repo, s.jj, "commit", "-m", "root")
+	s.runJJ("commit", "-m", "root")
 	return s.commitID("@-")
 }
 
@@ -285,30 +277,22 @@ func (s *jjScratch) show(revision string) string {
 	return s.run.Out(s.repo, s.jj, "file", "show", "-r", revision, "f")
 }
 
-// conflicted is whether revision holds a conflict.
-func (s *jjScratch) conflicted(revision string) bool {
+// fConflicted is whether f holds a conflict at revision, as jj file list reads it: the template
+// prints "conflict" for a conflicted f and nothing for a clean one, and jj exits 0 either way.
+func (s *jjScratch) fConflicted(revision string) bool {
 	s.t.Helper()
-	return s.run.Out(s.repo, s.jj, "log", "-r", revision, "--no-graph", "-T", `if(conflict, "conflict", "clean")`) == "conflict"
+	return s.run.Out(s.repo, s.jj, "file", "list", "-r", revision, "-T", `if(conflict, "conflict")`, "f") == "conflict"
 }
 
-// conflicts is the paths jj resolve --list names at revision. At a revision that holds no conflict
-// jj resolve fails for want of one to list, so a failure there is an empty list.
-func (s *jjScratch) conflicts(revision string) []string {
+// describe is revision as the test's messages name it: a clean or a conflicted commit, by whether
+// f holds a conflict there, and what jj file show prints of f.
+func (s *jjScratch) describe(revision string) string {
 	s.t.Helper()
-	listing, err := s.run.Try(s.repo, s.jj, "resolve", "--list", "-r", revision)
-	if err != nil {
-		if !s.conflicted(revision) {
-			return nil
-		}
-		s.t.Fatalf("jj resolve --list -r %s in %s: %v\n%s", revision, s.repo, err, listing)
+	state := "clean"
+	if s.fConflicted(revision) {
+		state = "conflicted"
 	}
-	var paths []string
-	for line := range strings.Lines(listing) {
-		if fields := strings.Fields(line); len(fields) > 0 {
-			paths = append(paths, fields[0])
-		}
-	}
-	return paths
+	return fmt.Sprintf("a %s commit holding %q in f", state, s.show(revision))
 }
 
 // commit starts a commit on parents described as description, sets name to content in it, and
@@ -316,7 +300,7 @@ func (s *jjScratch) conflicts(revision string) []string {
 // the next `jj new` leaves it in place rather than abandoning it as an empty working-copy commit.
 func (s *jjScratch) commit(description, name, content string, parents ...string) string {
 	s.t.Helper()
-	s.run.Run(s.repo, slices.Concat([]string{s.jj, "new"}, parents, []string{"-m", description})...)
+	s.runJJ(slices.Concat([]string{"new"}, parents, []string{"-m", description})...)
 	s.write(name, content)
 	return s.commitID("@")
 }
@@ -363,7 +347,7 @@ func (s *jjScratch) vbBuild(o, a, b, d string) vbHistory {
 	for _, id := range []*string{&h.a, &h.b, &h.p1, &h.p2, &h.d} {
 		*id = s.run.Out(s.repo, s.jj, "log", "-r", *id, "--no-graph", "-T", "change_id")
 	}
-	s.run.Run(s.repo, s.jj, "new", h.root, "-m", "elsewhere")
+	s.runJJ("new", h.root, "-m", "elsewhere")
 	return h
 }
 
@@ -395,7 +379,7 @@ func (s *jjScratch) k4() vbHistory {
 // to do.
 func (s *jjScratch) resolve(revision, tool string) {
 	s.t.Helper()
-	if out, err := s.run.Try(s.repo, s.jj, "resolve", "-r", revision, "--tool", tool); err != nil && s.conflicted(revision) {
+	if out, err := s.run.Try(s.repo, s.jj, "resolve", "-r", revision, "--tool", tool); err != nil && s.fConflicted(revision) {
 		s.t.Fatalf("jj resolve -r %s --tool %s in %s: %v\n%s", revision, tool, s.repo, err, out)
 	}
 }
