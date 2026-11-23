@@ -832,9 +832,10 @@ type startMarks struct {
 // asking what such a row carries reads this request and no other, and a field added here
 // reaches every one of those starts. It goes through startOrOwe, so the worker comes back on
 // the one row that carries its new task, and that row waits for the issue's admission slot where
-// the phase it starts holds one: a transition's start into a phase up to the review puts a
-// worker to work on the change, which is exactly what the cap counts. The issue carries the
-// phase the transition wrote on it, so the rule reads the phase the start is for. Whether the
+// the phase it starts holds one: a transition's start into a phase that keeps one (every phase but
+// accepting, retro and merging, record.PhaseKeepsSlot) puts a worker to work on the change, which
+// is exactly what the cap counts. The issue carries the phase the transition wrote on it, so the
+// rule reads the phase the start is for. Whether the
 // start is news of its issue is marks.reasserts, handed on as the movement startOrOwe marks or
 // leaves unmarked.
 //
@@ -894,10 +895,13 @@ const (
 //
 // A start whose phase holds one of the cap's slots is marked for it, and the outbox holds such
 // a row unclaimable while the issue holds no slot (store.go's outboxInOrder). The cap counts
-// the issues the daemon has started whose change is still to write, each holding its row from
-// its start until its work is past its review, except while it waits on another issue
-// (record.KeepsSlot, blockers.waitsOf), so a start claimable at once
-// would put a worker to work on an issue holding no slot — where the cap is full that is what
+// the issues the daemon has started whose work is still to do, each holding its row while it
+// stands in a phase that keeps one — every phase but accepting, retro and merging, so on the
+// default steps from its start until its work is past its review, and again at a step after an
+// acceptance whose phase keeps one — except while it waits on another issue (record.KeepsSlot,
+// blockers.waitsOf); an issue whose first step is an acceptance is started on no row (admit's
+// slotFor). So a start claimable at once would put a worker to work on an issue holding no slot —
+// where the cap is full that is what
 // it would do — and a worker put to work on an issue the cap has not admitted is what a start
 // of a phase worker may never be. A transition's start, admission's start of a mid-phase member,
 // the boot's resume by rule, the silence repair and the cutover's one-time start of a merger the
@@ -924,9 +928,9 @@ const (
 // A start that waits for a slot and one that waits for none take each other out nowhere, and
 // need not: the mark is read from the phase, so two such rows never name the same phase, the
 // issue stands in the newer one's, and the phase fence ends the older. What keeping them apart
-// keeps is the waiting line, whose place belongs to the row that waits and is not a past-review
-// row's to hand over, and the lane's own order behind a row that waits, a close's suspend among
-// it (admit's promotion of a re-admitted tree queues its start behind that suspend, so the
+// keeps is the waiting line, whose place belongs to the row that waits and is not a row's that
+// waits for none to hand over, and the lane's own order behind a row that waits, a close's suspend
+// among it (admit's promotion of a re-admitted tree queues its start behind that suspend, so the
 // worker comes back after the stop rather than before it).
 //
 // A start with no task or no phase is refused here, before the mark. The two guards that would
@@ -961,10 +965,11 @@ const (
 // readyWorkerTask) are enqueued directly and stay claimable at once. None of the first five puts
 // a worker to work on a phase, so none of them is the cap's to hold, and a slot they waited for
 // might never be offered. The last is sent to a worker already at work on the phase it is in —
-// its agent has just reported ready — so in a phase up to its review the issue holds the row the
+// its agent has just reported ready — so in a phase that keeps a slot the issue holds the row the
 // cap counts already or gave it back to wait on another issue, a wait that stops none of its
-// work, and past its review it needs none (record.KeepsSlot), so this one has nothing to wait
-// for in any case. The work of an entry that same ready worker stands below is sent through
+// work, and in accepting, retro or merging it needs none (record.KeepsSlot), so this one has
+// nothing to wait for in any case. The work of an entry that same ready worker stands below is
+// sent through
 // SendOwedEntry, and that start comes through here with the rest.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
 	return startOrOwe(ctx, tx, store, issue, payload, at, newsOfTheIssue)

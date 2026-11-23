@@ -251,8 +251,9 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue, floor, now time.
 // SendArchitectStart writes the start of root's architect again, for the entry its phases row
 // already names (row): the start StartArchitect writes, enqueued directly rather than through
 // StartOrOwe, so it waits for no admission slot and marks no movement: a root architect's start
-// takes no slot, whether the root holds its row, holds none past its review (record.KeepsSlot) or
-// gave it back for a wait (admit's releaseSlotsForWaits). It raises no entry, as no resume of the
+// takes no slot, whether the root holds its row, holds none in accepting, retro or merging
+// (record.KeepsSlot) or gave it back for a wait (admit's releaseSlotsForWaits). It raises no entry,
+// as no resume of the
 // work an entry already names does (enter, SendOwedEntry).
 //
 // What it sends is what the row says of the entry's task (record.PhaseRow.EntryVerbatim), and
