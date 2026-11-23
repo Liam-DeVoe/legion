@@ -533,3 +533,129 @@ func (e *Engine) tellStepsOfFix(ctx context.Context, tx pgx.Tx, issue record.Iss
 	}
 	return nil
 }
+
+// runningFixOf is the walk of issue's run and its task's fix number n, where that fix runs (the
+// fix the issue record names, record.Issue.RunningFix, with its entry raised): the fix a
+// completion or a move back of the implementer's claim names ends it. A fix that reads its job
+// still, has ended, or was never run is no fix a completion ends: the completion is refused as one
+// of an entry the issue has moved past (HANDOFF_STALE_ENTRY), changing nothing.
+func (e *Engine) runningFixOf(ctx context.Context, tx pgx.Tx, issue record.Issue, n int) (Walk, *record.TaskFix, *intake.Refusal, error) {
+	w, fix, err := e.fixNamed(ctx, tx, issue, n)
+	if err != nil || fix != nil {
+		return w, fix, nil, err
+	}
+	return w, nil, refused("HANDOFF_STALE_ENTRY", fmt.Sprintf("the implementer's completion of fix %d of task %s of %s is of a fix that runs no more; this completion changed nothing",
+		n, w.Task, issue.Key)).Refusal, nil
+}
+
+// fixNamed is the walk of issue's run and its task's fix number n where that fix runs, nil where
+// it does not (runningFixOf).
+func (e *Engine) fixNamed(ctx context.Context, tx pgx.Tx, issue record.Issue, n int) (Walk, *record.TaskFix, error) {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !w.Stored || issue.RunningFix != n {
+		return w, nil, err
+	}
+	fix, err := e.store.RunningFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil || fix == nil || fix.Fix != n || fix.State != record.FixRunning {
+		return w, nil, err
+	}
+	return w, fix, nil
+}
+
+// fixCompleted ends fix, which the implementer's completion fact ended: the fix passed, at the
+// commit the completion reports, or, for one that names none, at the task's head as it stands
+// (taskHead), since only the fix pushes while it runs. Its run ends with the completion's report.
+func (e *Engine) fixCompleted(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix *record.TaskFix, fact intake.HandoffComplete, pr *record.PullRequest) error {
+	endHead := fact.Commit
+	if endHead == "" {
+		_, endHead = taskHead(pr)
+	}
+	return e.endFix(ctx, tx, issue, w, fix, StepEnd{Result: ResultPassed, Report: fact.HandoffRecord}, endHead)
+}
+
+// fixMovedBack applies the implementer's move back while it runs fix fact.Fix: the fix's report of
+// a failure, taken whatever phase the issue stands in. It ends the fix failed at the task's head,
+// returning the task to the step the move names, which stands before the fix's own step on the
+// task's walk; the issue does not move now, since the step beside the fix goes on. It is refused
+// BACKWARD_REFUSED, changing nothing, where the fix it names runs no more, where the step it names
+// is not before the fix's, and where the pull request has merged, and it is refused as every move
+// back is for a reason Dispatch would refuse and on a lingering tree.
+func (e *Engine) fixMovedBack(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.BackwardMove) (intake.Result, error) {
+	w, fix, err := e.fixNamed(ctx, tx, issue, fact.Fix)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if fix == nil {
+		return refused("BACKWARD_REFUSED", fmt.Sprintf("the implementer's move of %s to %s names fix %d of task %s, which runs no more, so it changed nothing",
+			issue.Key, fact.To, fact.Fix, w.Task)), nil
+	}
+	to, ok := w.PlaceOf(fact.To)
+	if !ok || to.Kind != record.PlaceStep || to.Position >= fix.Place {
+		return refused("BACKWARD_REFUSED", fmt.Sprintf("a fix's move back is its report of a failure, which returns task %s of %s to a step before the fix's own, step %d; %s is no such step, so the implementer's move of fix %d changed nothing",
+			w.Task, issue.Key, fix.Place, fact.To, fix.Fix)), nil
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if pr != nil && pr.State == record.PullRequestMerged {
+		return refused("BACKWARD_REFUSED", fmt.Sprintf("the implementer's move of fix %d of %s to %s changed nothing: its pull request has merged; a merged change never moves back",
+			fix.Fix, issue.Key, fact.To)), nil
+	}
+	if code, why := backwardReasonRefusal(phase.Implementing, fact.To, fact.Reason); code != "" {
+		return refused(code, why), nil
+	}
+	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if lingers {
+		return refusedLingering(issue, fmt.Sprintf("the implementer's move of fix %d to %s", fix.Fix, fact.To)), nil
+	}
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return intake.Result{}, err
+	}
+	_, head := taskHead(pr)
+	return intake.Result{}, e.endFix(ctx, tx, issue, w, fix, StepEnd{Result: ResultFailed, ReturnedTo: &to.Position}, head)
+}
+
+// endFix is the one writer of a fix's end: the fix row ends (record.FixEnded) with end's result,
+// at endHead, the commit the fix's own completion reports, or the task's head where its end
+// reports none, so "the fix made new commits" is its end against its own start, EndHead against
+// Head, and never a commit another step pushed. A fix that failed returns the task to the earlier
+// of the step a step beside it returned the task to and the step the fix's own report names
+// (earlierReturn). The run of the step the fix ran again ends with end (endRun), its report and
+// its return among it.
+func (e *Engine) endFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix *record.TaskFix, end StepEnd, endHead string) error {
+	now := e.now()
+	fix.State, fix.Result, fix.EndHead, fix.EndedAt = record.FixEnded, string(end.Result), endHead, &now
+	if end.Result == ResultFailed {
+		fix.Failed = true
+		if end.ReturnedTo != nil {
+			fix.ReturnTo = earlierReturn(fix.ReturnTo, *end.ReturnedTo)
+		}
+	}
+	if err := e.store.UpdateFix(ctx, tx, *fix); err != nil {
+		return err
+	}
+	place := record.TaskPlace{Kind: record.PlaceStep, Position: fix.Place}
+	if role, typ, ok := stepOfWalk(w, place); ok && recordsSteps(issue) {
+		at := place.StepPlace(w.Task)
+		if _, err := e.endRun(ctx, tx, issue.Key, at, end, func(start record.StepStart) record.StepRecord {
+			return stepWrite(issue, at, role, typ, start.Agent, start.Starts)
+		}); err != nil {
+			return err
+		}
+	}
+	e.logOnCommit(ctx, "workflow: a fix ends", "issue", issue.Key, "task", fix.Task, "fix", fix.Fix, "result", fix.Result,
+		"check", fix.Check, "head", fix.Head, "endHead", fix.EndHead, "returnTo", fix.ReturnTo, "phase", issue.Phase)
+	return nil
+}
+
+// earlierReturn is the earlier of two places a task returns to, by place from 1, where 0 is none.
+func earlierReturn(stored, reported int) int {
+	if stored == 0 || (reported > 0 && reported < stored) {
+		return reported
+	}
+	return stored
+}
