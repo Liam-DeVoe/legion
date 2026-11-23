@@ -24,8 +24,9 @@ import (
 //     never starts.
 //
 // The first end is the one it keeps; a later pass or cancel changes nothing. It carries parent's
-// values. Its Deadline is parent's: the moment its own deadline passes is a fact, not a time known
-// when it is made.
+// values. Its Deadline is parent's until pass ends it, and from then the moment pass ended it: the
+// moment its own deadline passes is a fact, not a time known when it is made, and once it has
+// passed, a caller that reads the time against Deadline reads it past, as against a real one.
 func StandInDeadline(parent context.Context) (ctx context.Context, pass func(cause error), cancel context.CancelFunc) {
 	// causes holds the cause: context.Cause finds a cause only in the context the standard
 	// library's own cancel records it in, which it looks up through Value. It is cut from parent's
@@ -41,7 +42,11 @@ func StandInDeadline(parent context.Context) (ctx context.Context, pass func(cau
 			cause = context.DeadlineExceeded
 		}
 		d.endWithParent()
-		d.end(context.DeadlineExceeded, cause)
+		if d.end(context.DeadlineExceeded, cause) {
+			d.mu.Lock()
+			d.passedAt = time.Now()
+			d.mu.Unlock()
+		}
 		stop()
 	}
 	cancel = func() {
@@ -57,15 +62,24 @@ func StandInDeadline(parent context.Context) (ctx context.Context, pass func(cau
 // parentCancelCtx compares the two channels) and learns its end the way it learns any other
 // context's: from Err and context.Cause once Done is closed.
 type standInDeadline struct {
-	parent context.Context
-	causes context.Context
-	record context.CancelCauseFunc
-	done   chan struct{}
-	mu     sync.Mutex
-	err    error
+	parent   context.Context
+	causes   context.Context
+	record   context.CancelCauseFunc
+	done     chan struct{}
+	mu       sync.Mutex
+	err      error
+	passedAt time.Time
 }
 
-func (d *standInDeadline) Deadline() (time.Time, bool) { return d.parent.Deadline() }
+func (d *standInDeadline) Deadline() (time.Time, bool) {
+	d.mu.Lock()
+	passedAt := d.passedAt
+	d.mu.Unlock()
+	if !passedAt.IsZero() {
+		return passedAt, true
+	}
+	return d.parent.Deadline()
+}
 
 func (d *standInDeadline) Done() <-chan struct{} {
 	d.endWithParent()
@@ -91,15 +105,16 @@ func (d *standInDeadline) endWithParent() {
 	}
 }
 
-// end ends d with err and cause, unless d has ended already. The cause is recorded before Done
-// is closed, so whoever Done wakes reads it.
-func (d *standInDeadline) end(err, cause error) {
+// end ends d with err and cause, unless d has ended already, and reports whether it ended it. The
+// cause is recorded before Done is closed, so whoever Done wakes reads it.
+func (d *standInDeadline) end(err, cause error) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.err != nil {
-		return
+		return false
 	}
 	d.record(cause)
 	d.err = err
 	close(d.done)
+	return true
 }

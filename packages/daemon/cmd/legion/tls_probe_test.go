@@ -2758,9 +2758,10 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	// grace the trap starts no process and sleeps for no fixed time: one that slept 0.6 s in a
 	// /bin/sleep of its own was SIGKILLed at the grace's end on a loaded machine, which took that
 	// long to start it. The deadline ends the probe's context as a real deadline does, its Err and
-	// the cause of the run's context context.DeadlineExceeded (testwait.StandInDeadline), so a run
-	// that read the probe's context once its stop was over, and not the cause its own context
-	// recorded when its limit fired, takes the deadline for what ended it, and fails the row.
+	// its cause context.DeadlineExceeded (testwait.StandInDeadline), while the run's own context
+	// keeps the cause its limit recorded when it fired first, errTLSRunLimit: so a run that read the
+	// probe's context once its stop was over, and not that cause, takes the deadline for what ended
+	// it, and fails the row.
 	dir = t.TempDir()
 	deadlinePassed := filepath.Join(dir, "deadline")
 	if err := syscall.Mkfifo(deadlinePassed, 0o600); err != nil {
@@ -3254,6 +3255,36 @@ func TestATLSRunsOwnLimitIsCountedFromBeforeItsCommandStarts(t *testing.T) {
 	}
 	if cause := context.Cause(passed); !errors.Is(cause, errTLSRunLimit) {
 		t.Errorf("a run whose limit passed ended with the cause %v, want %v", cause, errTLSRunLimit)
+	}
+}
+
+// probeDeadlineAsBuilt is newProbeDeadline as the package builds it, read before any test puts its
+// own in its place (probeDeadlineOnceLogged).
+var probeDeadlineAsBuilt = newProbeDeadline
+
+// `legion probe-image --probe-budget` runs the probe under a deadline counted from the call: the
+// context newProbeDeadline gives ends budget after it, with Err and cause context.DeadlineExceeded,
+// which is how a step and a TLS run read that the deadline has passed. Every test that cuts a probe
+// puts a deadline of its own in newProbeDeadline's place, at a moment of a stand-in's run, so this
+// holds the one they stand beside.
+func TestTheProbesDeadlineIsItsBudgetCountedFromTheCall(t *testing.T) {
+	const budget = 7 * time.Second
+	before := time.Now()
+	probe, cancel := probeDeadlineAsBuilt(context.Background(), budget)
+	defer cancel()
+	after := time.Now()
+	if deadline, ok := probe.Deadline(); !ok || deadline.Before(before.Add(budget)) || deadline.After(after.Add(budget)) {
+		t.Errorf("the probe's deadline is %s (one set: %t), want %s after the call, between %s and %s",
+			deadline.Format(time.RFC3339Nano), ok, budget, before.Add(budget).Format(time.RFC3339Nano), after.Add(budget).Format(time.RFC3339Nano))
+	}
+
+	passed, stop := probeDeadlineAsBuilt(context.Background(), time.Millisecond)
+	defer stop()
+	if !testwait.Holds(tlsStandInStart, testwait.Poll, func() bool { return passed.Err() != nil }) {
+		t.Fatalf("a probe whose 1ms budget passed was still running after %s", tlsStandInStart)
+	}
+	if err, cause := passed.Err(), context.Cause(passed); !errors.Is(err, context.DeadlineExceeded) || !errors.Is(cause, context.DeadlineExceeded) {
+		t.Errorf("a probe whose budget passed ended with Err %v and cause %v, want %v for both", err, cause, context.DeadlineExceeded)
 	}
 }
 

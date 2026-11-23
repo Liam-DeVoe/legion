@@ -75,9 +75,20 @@ func TestAStandInDeadlineEndsAsTheDeadlineItStandsInFor(t *testing.T) {
 			if stand.Err() != nil || context.Cause(stand) != nil {
 				t.Fatalf("the stand-in before its end: Err %v, cause %v; want neither", stand.Err(), context.Cause(stand))
 			}
+			before := time.Now()
 			row.stand(pass, cancel, cancelStandParent)
-			Receive(t, "the stand-in's end", stand.Done())
+			after := time.Now()
+			// The child is waited for first, with no read of the stand-in before it: every read
+			// of the stand-in looks at its parent first, so a read here would end it whether or
+			// not it learns its parent's end on its own, as a waiting child needs it to.
 			Receive(t, "the end of the stand-in's child", standChild.Done())
+			Receive(t, "the stand-in's end", stand.Done())
+			if row.passes {
+				if at, ok := stand.Deadline(); !ok || at.Before(before) || at.After(after) {
+					t.Errorf("the stand-in's deadline once it passed = %s (one set: %t), want the moment it passed, between %s and %s",
+						at.Format(time.RFC3339Nano), ok, before.Format(time.RFC3339Nano), after.Format(time.RFC3339Nano))
+				}
+			}
 
 			for _, read := range []struct {
 				what       string

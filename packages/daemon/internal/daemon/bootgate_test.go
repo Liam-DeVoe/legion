@@ -602,19 +602,32 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 //
 // The budget passes at a fact of the run, not at a time (budgetPassedOnceTheProbeIsGone): once the
 // probe's process group is gone, which is after the probe has exited on its own and Go has reaped
-// it, and before the run returns, which WaitDelay holds open for the child. A budget timed from the
-// shell's start cut off a probe a loaded machine took longer than the budget to start, or to let
-// exit, and passed about 100 ms before the run's own return, which a stall of the test process
-// could eat. The child holding the pipe leaves the probe's process group (setsid) before the probe
-// exits, as a descendant that escaped the group does, so the group is gone once the probe is, and
-// a stop the budget's end could still send then finds nothing to signal (procgroup.Configure).
+// it, and before the run returns, which WaitDelay holds open for the child. The row requires that
+// order: where the budget had not passed by the time the run gave its answer back, the run proves
+// nothing and the row fails saying so, so it cannot pass a gate that reads the budget's end and
+// was never shown one. Main's form counted a 900 ms budget from before the shell started, which a
+// loaded machine could spend before the shell had exited.
+//
+// gate.timeout is the budget as a clock reads it, 100 ms short of WaitDelay, and the attempt's
+// deadline is the moment the budget passed (testwait.StandInDeadline). No clock in run reads
+// either where expire is set, but a gate that judged the end by the clock, the run's time against
+// timeout or the time against the attempt's deadline, would call this exit a timeout: the run
+// returns past WaitDelay, after the budget passed.
+//
+// The child holding the pipe leaves the probe's process group (setsid) before the probe exits, so
+// the group is gone once the probe is. This gives up a case main's form also held, a child still in
+// the group when the budget passes. A budget that passes at a fact can pass between the reap and
+// the run's own read of its context, where exec would still send the group a stop; a child in the
+// group would take it, and the run would count the exit a kill. That race is the test's own, and
+// main's form ordered it by its 900 ms margin, which load can spend. Out of the group, such a stop
+// finds nothing to signal (ESRCH), which procgroup.Configure reads as no kill.
 func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t *testing.T) {
 	dir := t.TempDir()
 	pidFile, leader := filepath.Join(dir, "lingering.pid"), filepath.Join(dir, "leader")
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
-	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: answerBudget}
-	var attempt context.Context
-	gate.expire = budgetPassedOnceTheProbeIsGone(leader, &attempt)
+	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: procgroup.WaitDelay - 100*time.Millisecond}
+	var passedFirst bool
+	gate.expire = budgetPassedOnceTheProbeIsGone(leader, &passedFirst)
 
 	r, err := gate.run(context.Background(), `echo $$ >"$2"; echo answered >&2; setsid sh -c 'echo $$ >"$0"; exec sleep 30' "$1" & while [ ! -s "$1" ]; do sleep 0.01; done; exit 0`, pidFile, leader)
 
@@ -624,8 +637,8 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t
 	if r.elapsed < procgroup.WaitDelay {
 		t.Fatalf("the run returned after %s, inside WaitDelay (%s): nothing held the probe's output pipe past its exit, so this run proves nothing", r.elapsed, procgroup.WaitDelay)
 	}
-	if cause := context.Cause(attempt); !errors.Is(cause, context.DeadlineExceeded) {
-		t.Fatalf("the attempt ended with %v, not its budget: the probe's process group was not gone when the run returned, so this run proves nothing", cause)
+	if !passedFirst {
+		t.Fatalf("the attempt's budget had not passed when the run gave its answer back, after %s: this run proves nothing", r.elapsed)
 	}
 	if r.timedOut || r.exit != 0 || !strings.Contains(r.stderr, "answered") {
 		t.Errorf("run = exit %d, timed out %t, stderr %q after %s; want exit 0, not timed out, and the answer: the probe exited on its own before its budget passed",
@@ -639,13 +652,10 @@ func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t
 // own pid, its group's id (procgroup.Configure), to leader as its first act, and kill(-pid, 0)
 // answers ESRCH once no member of that group is left: after the probe has exited on its own and Go
 // has reaped it, which Wait does before it starts the WaitDelay a child holding the pipe keeps the
-// run open for. From then on a stop that the budget's end sends finds nothing to signal, so the
-// run cannot count that end as a kill. *attempt is the attempt's context, for the test to read once
-// the run has returned. The cancel the run calls once it has returned asks the same question
-// first, and the group is gone by then, so the budget is recorded as passed however late the watch
-// below came to see the group go: the test's check that it passed waits on that fact and on no
-// span. An attempt whose group is not gone within answerBudget ends then, as a budget does.
-func budgetPassedOnceTheProbeIsGone(leader string, attempt *context.Context) func(context.Context) (context.Context, context.CancelFunc) {
+// run open for. The cancel the run calls once it has its answer records in *passedFirst whether the
+// budget had passed by then, before it ends the attempt itself. An attempt whose group is not gone
+// within answerBudget ends then, as a budget does.
+func budgetPassedOnceTheProbeIsGone(leader string, passedFirst *bool) func(context.Context) (context.Context, context.CancelFunc) {
 	gone := func() bool {
 		raw, err := os.ReadFile(leader)
 		if err != nil || !strings.HasSuffix(string(raw), "\n") {
@@ -656,15 +666,12 @@ func budgetPassedOnceTheProbeIsGone(leader string, attempt *context.Context) fun
 	}
 	return func(ctx context.Context) (context.Context, context.CancelFunc) {
 		run, pass, cancel := testwait.StandInDeadline(ctx)
-		*attempt = run
 		go func() {
 			testwait.Holds(answerBudget, testwait.Poll, func() bool { return run.Err() != nil || gone() })
 			pass(context.DeadlineExceeded)
 		}()
 		return run, func() {
-			if gone() {
-				pass(context.DeadlineExceeded)
-			}
+			*passedFirst = errors.Is(run.Err(), context.DeadlineExceeded)
 			cancel()
 		}
 	}
