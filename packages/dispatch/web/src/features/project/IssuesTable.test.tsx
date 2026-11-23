@@ -92,11 +92,15 @@ function savedIssue(key: string): Issue {
 }
 /** Steps the router's history back one entry, as the browser's Back does: `Route` sets it. */
 let back: () => void = () => {};
+/** Opens CORE's Issues tab at `search` in the same page, as a link inside the app does, with no
+ *  reload and no new read the address does not ask for: `Route` sets it. */
+let go: (search: string) => void = () => {};
 function Route(): ReactNode {
   useKeymapScope("project");
   const location = useLocation();
   const navigate = useNavigate();
   back = () => navigate(-1);
+  go = (search) => navigate(`/projects/CORE/issues${search}`);
   return (
     <>
       <output data-testid="route">{location.pathname}</output>
@@ -3825,70 +3829,163 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
   expect(workingFact("work-time")).toBe("Work time2 h 31 m");
 }, 120_000);
 
-// The live view sends a board entry again only when its stored row moves, so the page grows an
-// open issue's values itself: the value plus its rate times the hours from as_of to its clock.
-test("an open row's Work time is its board entry grown from its as_of to the page's clock", async () => {
+/** The text of `key`'s cell under the column whose header starts with `name`. */
+function cellText(key: string, name: string): string | null | undefined {
+  const headers = screen.getAllByRole("columnheader").map((header) => header.textContent ?? "");
+  const row = screen.getByRole("row", { name: `${key} Work ${key}` });
+  const cells = within(row).getAllByRole("cell");
+  return cells[headers.findIndex((text) => text.startsWith(name))]?.textContent;
+}
+
+// k5 (R4): the live view sends a board entry again only when its stored row moves, so the page
+// grows an open issue's facts itself: each value plus its rate times the hours from as_of to the
+// clock the rows are built at. G (CORE-1) worked 0.5 h, all of it in Implementing, as of 120
+// minutes before the clock, each growing an hour an hour, so 2.5 h now; H (CORE-2) worked 1.5 h
+// in Implementing with no growth. A build that draws or reads the entry as sent shows G at 30 m
+// and 0.5 h, puts H first under both sorts, and leaves G out of 1 hour to 1 day.
+test("an open row's facts are its board entry grown from its as_of to the page's clock, in its cell, its card, both sorts, the Work time filter and Time per phase in Hours", async () => {
+  const user = userEvent.setup();
   const now = new Date("2026-11-17T12:00:00Z");
   setSystemTime(now);
   restores.push(() => setSystemTime());
   const sockets = liveSockets(restores);
+  const cols = "cols=key,title,work_hours,phase_hours";
   table(
-    [issue("CORE-1", { status: "in_progress" })],
-    "?cols=key,title,work_hours",
+    [issue("CORE-1", { status: "in_progress" }), issue("CORE-2", { status: "in_progress" })],
+    `?${cols}&sort=-work_hours`,
     {},
     {},
     Promise.resolve(DAEMON)
   );
-  // 1 hour of work 90 minutes before the clock, at 1 hour an hour.
-  const asOf = new Date(now.getTime() - 90 * 60_000).toISOString();
-  await answerBoard(sockets, legionBoard({ "CORE-1": openFacts(asOf) }));
+  const asOf = new Date(now.getTime() - 120 * 60_000).toISOString();
+  await answerBoard(sockets, {
+    ...legionBoard({
+      "CORE-1": {
+        ...boardFacts(0.5),
+        as_of: asOf,
+        closed_at: null,
+        growth: {
+          hours_by_phase: { implementing: 1 },
+          slot_hours: 1,
+          work_hours: 1,
+          work_last_at: 1,
+        },
+        work_last_at: asOf,
+      },
+      "CORE-2": { ...boardFacts(1.5), closed_at: null },
+    }),
+    columns: [{ id: "implementing", label: "Implementing", cards: [phaseCard("CORE-1", asOf)] }],
+  });
+
+  await waitFor(() => expect(cellText("CORE-1", "Work time")).toBe("2 h 30 m"));
+  expect(cellText("CORE-2", "Work time")).toBe("1 h 30 m");
+  expect(listedKeys()).toEqual(["CORE-1", "CORE-2"]);
+
+  // Time per phase in its Hours mode writes each row's total, and its tooltip each phase's hours.
+  await user.click(screen.getByRole("button", { name: "Hours" }));
+  const g = () =>
+    within(screen.getByRole("row", { name: "CORE-1 Work CORE-1" })).getByRole("button", {
+      name: /^Time per phase, /,
+    });
+  await waitFor(() => expect(g().textContent).toBe("2.5 h"));
+  await user.click(g());
+  const line = screen
+    .getByRole("tooltip")
+    .querySelector<HTMLElement>('[data-phase-hours-line="implementing"]');
+  expect(line?.textContent).toContain("2.5 h");
+  await user.keyboard("{Escape}");
+
+  act(() => go(`?${cols}&sort=-phase_hours`));
+  await waitFor(() => expect(routeSearch()).toContain("sort=-phase_hours"));
+  expect(listedKeys()).toEqual(["CORE-1", "CORE-2"]);
+
+  act(() => go(`?${cols}&f.work_hours=1h-1d`));
+  await waitFor(() => expect(routeSearch()).toContain("f.work_hours=1h-1d"));
+  await waitFor(() => expect(listedKeys()).toContain("CORE-1"));
+
+  act(() => go("?layout=board"));
+  const region = await screen.findByRole("region", { name: "Project board" });
   await waitFor(() =>
     expect(
-      within(screen.getByRole("row", { name: "CORE-1 Work CORE-1" })).getByText("2 h 30 m")
-    ).toBeDefined()
+      region.querySelector('[data-board-card="CORE-1"] [data-legion-fact=work-time]')?.textContent
+    ).toBe("Work time2 h 30 m")
   );
 });
 
-// One build of the rows gives them one clock (`Item.at`): a row's Time in Legion phase and Work
-// time, and those of its card on the Board, are of that moment. A clock that moves on with no new
-// build draws them as they were: on the Board, and in the table drawn again.
-test("a row's and its card's Time in Legion phase and Work time are of the clock the rows were built at", async () => {
+// k5 (R4): one build of the rows gives them one clock (`Item.at`): a row's Time in Legion phase,
+// Work time and Time waiting, those of its card on the Board, and the filters that read them, are
+// of that moment. A clock that moves on with no new board frame and no listing read draws them
+// as they were: on the Board, in the table drawn again, under another sort, grouping and column
+// set, and in each filter's Under 1 hour. A build that counted its times at each render would
+// read 1 h 5 m, 2 h 40 m and 1 h 5 m 10 minutes on, and each filter would leave the issue out.
+test("a row's and its card's Time in Legion phase, Work time and Time waiting, and their filters, are of the clock the rows were built at", async () => {
   const user = userEvent.setup();
   const start = new Date("2026-11-17T12:00:00Z");
   setSystemTime(start);
   restores.push(() => setSystemTime());
   const sockets = liveSockets(restores);
   const ago = (minutes: number) => new Date(start.getTime() - minutes * 60_000).toISOString();
-  table(
+  const cols = "cols=key,title,time_in_phase,work_hours,waited";
+  const { listing } = table(
     [issue("CORE-1", { status: "in_progress" })],
-    "?cols=key,title,time_in_phase,work_hours",
+    `?${cols}`,
     {},
     {},
     Promise.resolve(DAEMON)
   );
   await answerBoard(sockets, {
     ...legionBoard({ "CORE-1": openFacts(ago(90)) }),
-    columns: [{ id: "implementing", label: "Implementing", cards: [phaseCard("CORE-1", ago(30))] }],
+    columns: [
+      {
+        id: "implementing",
+        label: "Implementing",
+        cards: [
+          {
+            ...phaseCard("CORE-1", ago(55)),
+            waiting: { reason: "slot", since: ago(55), blocked_by: null },
+          },
+        ],
+      },
+    ],
   });
-  /** The row's Time in Legion phase and Work time cells, found by their column's header. */
-  const cellTimes = () => {
-    const headers = screen.getAllByRole("columnheader").map((header) => header.textContent ?? "");
-    const row = screen.getByRole("row", { name: "CORE-1 Work CORE-1" });
-    const cells = within(row).getAllByRole("cell");
-    return ["Time in Legion phase", "Work time"].map(
-      (name) => cells[headers.findIndex((text) => text.startsWith(name))]?.textContent
-    );
-  };
-  await waitFor(() => expect(cellTimes()).toEqual(["30 m", "2 h 30 m"]));
+  /** The row's Time in Legion phase, Work time and Time waiting cells. */
+  const cellTimes = () =>
+    ["Time in Legion phase", "Work time", "Time waiting"].map((name) => cellText("CORE-1", name));
+  const AT_BUILD = ["55 m", "2 h 30 m", "55 m"];
+  await waitFor(() => expect(cellTimes()).toEqual(AT_BUILD));
+  const reads = listing.mock.calls.length;
 
+  // Ten minutes on, with no board frame and no listing read.
   setSystemTime(new Date(start.getTime() + 10 * 60_000));
   await user.click(screen.getByRole("button", { name: "Board" }));
   const region = await screen.findByRole("region", { name: "Project board" });
   const fact = (hook: string) =>
     region.querySelector(`[data-board-card="CORE-1"] [data-legion-fact=${hook}]`)?.textContent;
-  await waitFor(() => expect(fact("phase-time")).toBe("Time in Legion phase30 m"));
+  await waitFor(() => expect(fact("phase-time")).toBe("Time in Legion phase55 m"));
   expect(fact("work-time")).toBe("Work time2 h 30 m");
 
   await user.click(screen.getByRole("button", { name: "Table" }));
-  await waitFor(() => expect(cellTimes()).toEqual(["30 m", "2 h 30 m"]));
+  await waitFor(() => expect(cellTimes()).toEqual(AT_BUILD));
+
+  // Another sort, a grouping and one more column draw the table again.
+  const regrouped = `?${cols},review_rounds&sort=created&group=priority`;
+  act(() => go(regrouped));
+  await waitFor(() => expect(routeSearch()).toContain("group=priority"));
+  await waitFor(() =>
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toContainEqual(
+      expect.stringMatching(/^Review rounds/)
+    )
+  );
+  expect(cellTimes()).toEqual(AT_BUILD);
+
+  // Each filter's Under 1 hour, alone, lists the issue.
+  for (const name of ["Time waiting", "Time in Legion phase"]) {
+    act(() => go(regrouped));
+    await user.click(await screen.findByRole("button", { name: new RegExp(`^Filter ${name}`) }));
+    await user.click(await screen.findByRole("option", { name: /^Under 1 hour/ }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(routeSearch()).toContain("under-1h"));
+    expect(listedKeys()).toEqual(["CORE-1"]);
+  }
+  expect(listing.mock.calls.length).toBe(reads);
 });
