@@ -602,7 +602,7 @@ func walkOf(family, project string) walkKey {
 }
 
 // apply writes every day w names, each family's whole days by writeNamed's rule: where the days of
-// a family move no day they do not name, each in a transaction of its own, and otherwise in the
+// a family move no day they do not name, in one transaction of their own, and otherwise in the
 // page's commit, as the rebuilds it answers, which the caller commits with the page's cursors
 // (commitPage). The days a write left owed before this page (owedDays) are named with the page's
 // own: a pass that failed after a moving write and before the day's own left them so. The
@@ -702,9 +702,10 @@ type deliveryItem struct {
 // (shippedNeighbours). No link beyond those is followed: the rows of the items behind them did
 // not move. With them it writes the days of each posted deploy w names (applyPosted), each
 // delivery day of owed, and, where the page read another set of kept repositories (w.kept), the
-// days of each that differs. It names the days first, each read once, and then writes them as
-// writeNamed says, which answers the rebuild the page's commit holds, nil where each day was
-// written in a transaction of its own.
+// days of each that differs. It names the days first, each read once and every day of each round
+// of naming in one read (readDeliveries), and then writes them as writeNamed says, which answers
+// the rebuild the page's commit holds, nil where the days were written in a transaction of their
+// own.
 func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay) (*rebuild, error) {
 	if !r.delivers() && w.kept == nil {
 		return nil, nil
@@ -717,6 +718,13 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 		}
 		r.nameDelivery(days, read, project, true)
 		return nil
+	}
+	days.read = func(ctx context.Context, keys []projectDay) error {
+		named := make([]time.Time, len(keys))
+		for i, key := range keys {
+			named[i] = key.day
+		}
+		return r.readDeliveries(ctx, named)
 	}
 	if len(w.prs)+len(w.runs) > 0 {
 		items, err := r.store.deliveryItemDays(ctx, w.prs, w.runs)
@@ -753,11 +761,18 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 	if err := r.applyPosted(ctx, days, w.prodEvents); err != nil {
 		return nil, err
 	}
+	var owing []projectDay
 	for _, day := range owed {
 		if slices.Contains(deliveryDayFamilies, day.family) && r.writesDelivery(day.project) {
-			if err := days.name(ctx, day.project, day.day); err != nil {
-				return nil, err
-			}
+			owing = append(owing, projectDay{project: day.project, day: day.day})
+		}
+	}
+	if err := days.read(ctx, owing); err != nil {
+		return nil, err
+	}
+	for _, day := range owing {
+		if err := days.name(ctx, day.project, day.day); err != nil {
+			return nil, err
 		}
 	}
 	var kept *keptMove
@@ -777,7 +792,8 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 // and the days eval_day_members holds it, and the pull requests it shipped, under when they were
 // last counted. A row the record still holds that is no posted deploy (a GitHub deploy, whose run
 // a source repository's rows count, or a failure) names no day: it moves no row of these evals.
-// Each project's rows are read in one statement (prodevents.ChangedRows).
+// Each project's rows are read in one statement (prodevents.ChangedRows), and the days it names in
+// one read of several days (readDeliveries).
 func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[string]map[string][]time.Time) error {
 	for _, project := range slices.Sorted(maps.Keys(changed)) {
 		repo := EventsRepo(project)
@@ -832,7 +848,11 @@ func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[s
 				}
 			}
 		}
-		for _, day := range slices.SortedFunc(maps.Keys(named), time.Time.Compare) {
+		ordered := slices.SortedFunc(maps.Keys(named), time.Time.Compare)
+		if err := r.readDeliveries(ctx, ordered); err != nil {
+			return err
+		}
+		for _, day := range ordered {
 			if err := days.name(ctx, project, day); err != nil {
 				return err
 			}
@@ -1092,7 +1112,11 @@ func (r *refresh) nameDeliveryItems(ctx context.Context, days *pageDays, items [
 		job.projects[member.project], job.members[member.member] = true, true
 	}
 	var linked []deliveryItem
-	for _, day := range slices.SortedFunc(maps.Keys(jobs), time.Time.Compare) {
+	ordered := slices.SortedFunc(maps.Keys(jobs), time.Time.Compare)
+	if err := r.readDeliveries(ctx, ordered); err != nil {
+		return nil, nil, err
+	}
+	for _, day := range ordered {
 		read, err := r.readDelivery(ctx, day, nil, nil)
 		if err != nil {
 			return nil, nil, err
@@ -1163,20 +1187,56 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 // them.
 func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies map[string]*delivery.ApplyRows,
 	posted map[string]postedRecord) (deliveryRead, error) {
+	day = measures.Midnight(day)
 	if read, ok := r.reads[day]; ok {
 		return read, nil
 	}
+	if err := r.readDays(ctx, []time.Time{day}, applies, posted); err != nil {
+		return deliveryRead{}, err
+	}
+	return r.reads[day], nil
+}
+
+// readDeliveries reads the delivery rows of each of days the page has not read yet in one read of
+// several days (readDeliveryDays), each repository's deploy runs read of the days' windows alone:
+// the days one round of a page's naming names, which readDelivery then answers. A page makes a
+// handful of rounds whatever the number of days it names, so it reads the deploy runs a handful of
+// times, where a read of each day read every deploy run created from the day on.
+func (r *refresh) readDeliveries(ctx context.Context, days []time.Time) error {
+	return r.readDays(ctx, days, nil, nil)
+}
+
+// readDays reads, in one read (readDeliveryDays), each of days the page has not read yet, each
+// kept repository's deploy runs taken from applies and each events repository's posted deploys
+// from posted, where they hold them, and keeps each read for the page (refresh.reads) and its
+// owner keys (noteOwners).
+func (r *refresh) readDays(ctx context.Context, days []time.Time, applies map[string]*delivery.ApplyRows,
+	posted map[string]postedRecord) error {
+	unread := make([]time.Time, 0, len(days))
+	for _, day := range days {
+		day = measures.Midnight(day)
+		if _, ok := r.reads[day]; !ok {
+			unread = append(unread, day)
+		}
+	}
+	if len(unread) == 0 {
+		return nil
+	}
+	slices.SortFunc(unread, time.Time.Compare)
+	unread = slices.Compact(unread)
 	kept, err := r.keptRepos(ctx)
 	if err != nil {
-		return deliveryRead{}, err
+		return err
 	}
-	read, err := r.store.readDeliveryDay(ctx, kept, day, applies, posted)
+	reads, err := r.store.readDeliveryDays(ctx, kept, unread, applies, posted)
 	if err != nil {
-		return deliveryRead{}, err
+		return err
 	}
-	r.noteOwners(read.owners())
-	r.reads[day] = read
-	return read, nil
+	for i, read := range reads {
+		r.noteOwners(read.owners())
+		r.reads[unread[i]] = read
+	}
+	return nil
 }
 
 // noteOwners adds to the delivery family's owners (refresh.owners) each owner key of keys it does

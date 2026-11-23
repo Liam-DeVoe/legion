@@ -1135,9 +1135,16 @@ func listRuns(ctx context.Context, q Querier, repo string, kind DeliveryRunKind,
 // of its first paint at INFRA's size (dispatch://INFRA-2916, R8). A window ending at the present
 // holds no run created after it, so nothing bounds it. $4 and $5 are Production.JobNames and
 // Production.ApplyStep.
-var windowApplyRunsCreated = runCreatedAt + ` >= $2 and ` + runCreatedAt + ` <= coalesce((
-			` + firstShipCompletion("$1", "$4", "$5", ">= $3") + `
+var windowApplyRunsCreated = applyRunsCreated("$2", "$3")
+
+// applyRunsCreated is windowApplyRunsCreated of the window from start to end, two SQL expressions:
+// the window's own placeholders, or the columns of a list of windows the statement reads each of
+// (daysRunsQuery). $1, $4 and $5 are windowApplyRunsCreated's.
+func applyRunsCreated(start, end string) string {
+	return runCreatedAt + ` >= ` + start + ` and ` + runCreatedAt + ` <= coalesce((
+			` + firstShipCompletion("$1", "$4", "$5", ">= "+end) + `
 		), 'infinity')`
+}
 
 // windowApplyRunsWhere is the filter of a window's apply runs over the alias r: the deploy runs on
 // main of $1 created as windowApplyRunsCreated says.
