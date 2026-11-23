@@ -5,7 +5,8 @@
 -- claim token (claim.AgentToken), so the steps of one key share one name and one claim in every
 -- task, version and generation of the issue. record.NameAgents gives it before a version's steps
 -- are written, from the issue's earlier rows, and nothing else writes it. A step of the key owner
--- holds none: its agent is the tree's architect.
+-- holds none: its agent is the issue's own architect while that claim holds its role, else the
+-- nearest architect above it whose claim does, else the tree's (workflow's ownerAgent).
 --
 -- Every row the table already holds takes the default, the empty string, and reads as its role
 -- (record.PlanStep.AgentName): the release before this one ran each role at most once in a task and
