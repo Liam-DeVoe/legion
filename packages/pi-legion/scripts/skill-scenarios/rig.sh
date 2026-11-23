@@ -1714,7 +1714,7 @@ cmd_judge_omp() {
   echo "exit=$status" >>"$dir/out.txt"
   rm -rf -- "$keys"
   [ -z "$docker_late" ] ||
-    fail "judge-omp: docker run of the judge did not end within its bound of $((docker_timeout + omp_timeout)) s: the daemon's $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT) and omp's own $omp_timeout s (SKILL_SCENARIOS_TIMEOUT)"
+    fail "judge-omp: docker run $judge_image did not end within its bound of $((docker_timeout + omp_timeout)) s: the daemon's $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT) and omp's own $omp_timeout s (SKILL_SCENARIOS_TIMEOUT)"
   return "$status"
 }
 

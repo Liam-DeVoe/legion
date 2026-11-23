@@ -1315,7 +1315,9 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     expect({ code: result.exitCode, refusals: refusals(result) }).toEqual({
       code: 1,
       refusals: [
-        "skill-scenarios: judge-omp: docker run of the judge did not end within its bound of 3 s: the daemon's 2 s (SKILL_SCENARIOS_DOCKER_TIMEOUT) and omp's own 1 s (SKILL_SCENARIOS_TIMEOUT)",
+        expect.stringMatching(
+          /^skill-scenarios: judge-omp: docker run \S+ did not end within its bound of 3 s: the daemon's 2 s \(SKILL_SCENARIOS_DOCKER_TIMEOUT\) and omp's own 1 s \(SKILL_SCENARIOS_TIMEOUT\)$/
+        ),
       ],
     });
     expect(docker.calls()).toEqual(["image inspect", "run --rm"]);
