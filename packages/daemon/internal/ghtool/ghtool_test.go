@@ -277,6 +277,14 @@ func (f *fixture) checked() string {
 	return string(recorded)
 }
 
+// checkedCall is what a recording stand-in check (leakguardtest.Recording) writes for the guard's
+// run of a gh call that begins with words: the check's gh-guard mode, `--` and the words, the call
+// form leak-check-v33 takes (leakguard's modeArgv). It ends with no line end, so words may be the
+// call's first words alone.
+func checkedCall(words []string) string {
+	return "checked gh-guard -- " + strings.Join(words, " ")
+}
+
 func args(argv ...string) string {
 	data, err := json.Marshal(argv)
 	if err != nil {
@@ -896,7 +904,7 @@ func TestACallIsRoutedByTheModelsArgumentsAndRunsWithItsFooter(t *testing.T) {
 		if env := f.wantEnv(owner); !slices.Equal(ran[0].Env, env) {
 			t.Errorf("gh %q ran with %q, want %q", tc.argv, ran[0].Env, env)
 		}
-		if checked := f.checked(); !strings.Contains(checked, "checked gh-guard "+strings.Join(run, " ")) {
+		if checked := f.checked(); !strings.Contains(checked, checkedCall(run)) {
 			t.Errorf("the check was handed %q, want the whole call with its footer, %q", checked, run)
 		}
 	}
@@ -1866,7 +1874,7 @@ func TestACallTheLeakGuardClearsRunsAsBefore(t *testing.T) {
 			if env := f.wantEnv("acme"); !slices.Equal(ran[0].Env, env) {
 				t.Errorf("gh ran with the environment\n%q\nwant exactly\n%q", ran[0].Env, env)
 			}
-			if checked := f.checked(); !strings.Contains(checked, "checked gh-guard "+strings.Join(want, " ")) {
+			if checked := f.checked(); !strings.Contains(checked, checkedCall(want)) {
 				t.Errorf("the check was handed %q, want the whole call %q", checked, want)
 			}
 			if tc.read != "" && !strings.Contains(f.checked(), tc.read) {

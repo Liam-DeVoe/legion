@@ -128,7 +128,7 @@ func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 		if ran := f.invocations(false); len(ran) != 1 {
 			t.Fatalf("gh %q ran gh %d times: %+v", argv, len(ran), ran)
 		}
-		if checked := f.checked(); !strings.Contains(checked, "checked gh-guard "+strings.Join(argv[:4], " ")) {
+		if checked := f.checked(); !strings.Contains(checked, checkedCall(argv[:4])) {
 			t.Errorf("the installed check recorded %q, want the call", checked)
 		}
 	})
@@ -208,7 +208,7 @@ func TestACallBeforeTheInstallLandsIsRefusedAndTheNextAfterItRuns(t *testing.T) 
 	if got := f.run(2, argv...); !got.Ran || got.Exit != 0 || got.Output != "posted\n" {
 		t.Fatalf("gh %q after the install = %+v; want gh's answer, exit 0", argv, got)
 	}
-	if checked := f.checked(); !strings.Contains(checked, "checked gh-guard "+strings.Join(argv[:4], " ")) {
+	if checked := f.checked(); !strings.Contains(checked, checkedCall(argv[:4])) {
 		t.Errorf("the installed check recorded %q, want the call after the install", checked)
 	}
 	if check, err := pending.Check(); err != nil || check != filepath.Join(stateDir, "leak-check", leakguardtest.CheckName) {
@@ -319,7 +319,7 @@ func TestEachCallRunsTheMachinesCheckAsItIsWhenTheCallIsMade(t *testing.T) {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			t.Fatal(err)
 		}
-		return bytes.Count(recorded, []byte("checked gh-guard "+strings.Join(argv[:4], " ")))
+		return bytes.Count(recorded, []byte(checkedCall(argv[:4])))
 	}
 
 	point(first)
@@ -371,7 +371,7 @@ func TestTheMachinesCheckIsResolvedInTheDaemonsEnvironmentAndNotTheGuards(t *tes
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			t.Fatal(err)
 		}
-		return bytes.Count(recorded, []byte("checked gh-guard "+strings.Join(argv[:4], " ")))
+		return bytes.Count(recorded, []byte(checkedCall(argv[:4])))
 	}
 	if byName, onGuardPath := checked(namedRecord), checked(onGuardPathRecord); byName != 1 || onGuardPath != 0 {
 		t.Fatalf("the call was checked %d times by the check %s names and %d by the one on the guard's PATH; want once by the named one alone",

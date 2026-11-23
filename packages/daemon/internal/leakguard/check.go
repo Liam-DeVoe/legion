@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -401,7 +402,7 @@ func modeArgv(path, mode string, args ...string) []string {
 	if len(args) == 0 {
 		return []string{path, mode}
 	}
-	return append(append(make([]string, 0, 3+len(args)), path, mode, "--"), args...)
+	return slices.Concat([]string{path, mode, "--"}, args)
 }
 
 // child is one process this package runs: the shared check in one of its shapes, a read of a
