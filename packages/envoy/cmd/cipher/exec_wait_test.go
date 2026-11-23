@@ -54,12 +54,13 @@ type waitRead struct {
 }
 
 // waitMark is a moment of the fake's: when it came, the time the stall meter had counted this
-// process held up by then, and how long each thread of the client had waited to run by then
-// (clientRunDelays), so a span between two marks can be cleared of both processes' hold-ups.
+// process held up by then, and how long the client's main thread, the one thread that carries
+// its steps (backoffHook), had waited to run by then (clientStepThreadDelay), so a span between
+// two marks can be cleared of both processes' hold-ups.
 type waitMark struct {
 	at     time.Time
 	held   time.Duration
-	client map[string]time.Duration
+	client time.Duration
 }
 
 func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool, grantAfter time.Duration) *waitBroker {
@@ -150,7 +151,7 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 	return b
 }
 
-// mark is the fake's mark of now, for request r. The moment is read first; the client's run delays
+// mark is the fake's mark of now, for request r. The moment is read first; the client's run delay
 // once runWaiting has named the client, which a request of the client's can only precede by the
 // time runWaiting takes to name it after starting it.
 func (b *waitBroker) mark(r *http.Request) waitMark {
@@ -158,55 +159,54 @@ func (b *waitBroker) mark(r *http.Request) waitMark {
 	select {
 	case pid := <-b.client:
 		b.client <- pid
-		m.client = clientRunDelays(pid)
+		m.client = clientStepThreadDelay(pid)
 	case <-r.Context().Done():
 	}
 	return m
 }
 
-// clientRunDelays is how long each thread of process pid has waited on a CPU's run queue, runnable
-// but not running, since it started, by its thread id (/proc/<pid>/task/<tid>/schedstat, its second
-// field): the time the machine starved that process, which this process's stall meter cannot see.
-// It is empty where /proc does not say, as on platforms other than Linux, so nothing is cleared.
-func clientRunDelays(pid int) map[string]time.Duration {
-	delays := map[string]time.Duration{}
-	dir := filepath.Join("/proc", strconv.Itoa(pid), "task")
-	tasks, err := os.ReadDir(dir)
+// clientStepThreadDelay is how long the main thread of process pid, the thread whose id is pid,
+// has waited on a CPU's run queue, runnable but not running, since it started
+// (/proc/<pid>/task/<pid>/schedstat, its second field): the time the machine starved the thread
+// that carries the client's steps, which this process's stall meter cannot see. runWaiting's build
+// locks the client's main goroutine, which reads each status answer and sends the release, to that
+// thread (backoffHook). It is only that thread's: a sum over every thread of the client counts
+// threads that waited at once, and other threads' waits for work of their own, as the step's, and
+// so clears a step of more than the machine held it up. It is 0 where /proc does not say, as on
+// platforms other than Linux, so nothing is cleared.
+func clientStepThreadDelay(pid int) time.Duration {
+	id := strconv.Itoa(pid)
+	data, err := os.ReadFile(filepath.Join("/proc", id, "task", id, "schedstat"))
 	if err != nil {
-		return delays
+		return 0
 	}
-	for _, task := range tasks {
-		data, err := os.ReadFile(filepath.Join(dir, task.Name(), "schedstat"))
-		if err != nil {
-			continue
-		}
-		if fields := strings.Fields(string(data)); len(fields) >= 2 {
-			if ns, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-				delays[task.Name()] = time.Duration(ns)
-			}
-		}
+	fields := strings.Fields(string(data))
+	if len(fields) < 2 {
+		return 0
 	}
-	return delays
+	ns, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return time.Duration(ns)
 }
 
 // requireClientStep fails t where the client, another process, took from from to to, two of the
 // fake's marks, longer than slack beyond the time either process was held up meanwhile: this
-// process by its stall meter, the client by its threads' run delays (clientRunDelays). It answers
-// how long the step took. what names the step for the failure's text.
+// process by its stall meter, the client by the run delay of the thread that carries its steps
+// (clientStepThreadDelay). It answers how long the step took. what names the step for the
+// failure's text.
 func requireClientStep(t *testing.T, what string, from, to waitMark, slack time.Duration) time.Duration {
 	t.Helper()
 	took := to.at.Sub(from.at)
 	held := to.held - from.held
-	var starved time.Duration
-	for tid, delay := range to.client {
-		starved += delay - from.client[tid]
-	}
+	starved := to.client - from.client
 	late := took - held - starved
 	if late > slack {
-		t.Fatalf("%s took %s; this process was held up %s of that and the client starved %s, so the client was %s late on its own, more than %s",
+		t.Fatalf("%s took %s; this process was held up %s of that and the client's step thread starved %s, so the client was %s late on its own, more than %s",
 			what, took.Round(time.Millisecond), held.Round(time.Millisecond), starved.Round(time.Millisecond), late.Round(time.Millisecond), slack)
 	}
-	t.Logf("on time: %s took %s, %s held up here, the client starved %s, %s late on its own (slack %s)",
+	t.Logf("on time: %s took %s, %s held up here, the client's step thread starved %s, %s late on its own (slack %s)",
 		what, took.Round(time.Millisecond), held.Round(time.Millisecond), starved.Round(time.Millisecond), late.Round(time.Millisecond), slack)
 	return took
 }
@@ -242,7 +242,10 @@ func (b *waitBroker) requireReleaseFromTheGrantedRead(t *testing.T) waitRead {
 // form in (pollBackoff), one line a sleep, the duration it asked.
 const backoffLogEnv = "AGENT_SECRETS_TEST_BACKOFF_LOG"
 
-// backoffHook is the file runWaiting's build of agent-secrets adds to the package: it makes
+// backoffHook is the file runWaiting's build of agent-secrets adds to the package. It locks the
+// main goroutine to the process's main thread (runtime.LockOSThread in an init function runs main
+// on that thread), so the exec form's loop, which reads each status answer and sends the release,
+// runs on that one thread, whose run delay the fake reads (clientStepThreadDelay). And it makes
 // pollBackoff record each sleep in backoffLogEnv's file before it sleeps. No build of agent-secrets
 // but this test's has it.
 const backoffHook = `package main
@@ -250,10 +253,12 @@ const backoffHook = `package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 )
 
 func init() {
+	runtime.LockOSThread()
 	path := os.Getenv("` + backoffLogEnv + `")
 	if path == "" {
 		return
