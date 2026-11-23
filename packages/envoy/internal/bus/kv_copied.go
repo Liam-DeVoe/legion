@@ -30,7 +30,7 @@ func CreateCopiedBucketsOn(conn *nats.Conn) {
 
 // ErrBucketMissing is a bucket a listener copies that an open found missing (EnsureKeyValue). It
 // wraps nats.ErrBucketNotFound, so a caller that reads that error reads this one too.
-var ErrBucketMissing = fmt.Errorf("bucket is missing; only `envoy-infra buckets` creates it: `create --break-glass` while its writers run, or the normal create once every writer of it has ended: %w", nats.ErrBucketNotFound)
+var ErrBucketMissing = fmt.Errorf("bucket is missing; only `envoy-infra buckets create` creates it, with `--break-glass` until the auth service's cutover, and needs no writer stopped: %w", nats.ErrBucketNotFound)
 
 // ErrBucketExists is a bucket a create-only open found there (CreateMissingCopiedBucket): at its
 // lookup, or in the answer "stream name already in use" to its create, when another client made
@@ -38,9 +38,9 @@ var ErrBucketMissing = fmt.Errorf("bucket is missing; only `envoy-infra buckets`
 var ErrBucketExists = errors.New("bucket exists; a create-only open creates only a missing bucket, and leaves one that is there as it is")
 
 // CreateCopiedBucket creates bucket, one a listener copies, with its configuration at replicas
-// copies (CopiedBucketConfig), or opens it as it is when it exists: the operator's creation,
-// `envoy-infra buckets`, and a test fixture's (internal/bus/bustest), on a server of its own. Its
-// waits end with ctx, the caller's, or at the start's hang guard (EnsureKeyValue).
+// copies (CopiedBucketConfig), or opens it as it is when it exists: `envoy-infra buckets
+// recreate`'s create after its delete, and a test fixture's (internal/bus/bustest), on a server of
+// its own. Its waits end with ctx, the caller's, or at the start's hang guard (EnsureKeyValue).
 func CreateCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
 	return openCopiedBucket(ctx, conn, js, bucket, replicas, openOrCreate)
 }
@@ -51,7 +51,7 @@ func CreateCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamC
 // neither opened, raised nor updated (createOnly). As CreateCopiedBucket does, it sends a lookup or
 // a create the server leaves unanswered again (sentAgain), looks the bucket up until the member
 // answering has applied the create, and opens the handle it answers with (awaitBucketApplied,
-// wrapKeyValue). `envoy-infra buckets create --break-glass` calls it.
+// wrapKeyValue). `envoy-infra buckets create` calls it.
 func CreateMissingCopiedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int) (KeyValue, error) {
 	return openCopiedBucket(ctx, conn, js, bucket, replicas, createOnly)
 }
