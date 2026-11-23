@@ -761,6 +761,55 @@ test("another person's write a reload kept goes as the take-up begins, so their 
   });
 });
 
+// W26. Alice's take-up waits for the kinds of write when bob signs in from another tab, which drops
+// what the reload kept of hers. Once the kinds are in, the take-up drops her kept write as hers -
+// the person it began for - and not by taking up bob's in her place: a take-up of whoever is
+// signed in by then would read bob's kept writes, find none, and remove hers from the tab's
+// storage only as an entry of another login, which leaves the page still counting it as out. The
+// page would then ask the reader to confirm leaving for a write it has already let go, and keep
+// asking until it is closed. So the row reads, besides the tab and the sends, whether leaving
+// still asks once the take-up is done: it asked while the take-up waited, since the kept write
+// was then in the tab's storage alone (`WriteStorage.load`).
+test("a take-up waiting when another person signs in drops what the reload kept of the person it began for, and leaving asks for it no more", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const alices = keyMinted(Date.now());
+    keepWrite(tab, alices, { target: "issue:CORE-1" });
+    const unload = new UnloadTarget();
+    const send = spyOn(api, "send").mockResolvedValue(null as never);
+    const kinds = Promise.withResolvers<void>();
+    try {
+      const writes = new Writes(signedIn("alice"), tab.page(unload), memoryFiles());
+      writes.signedIn("alice");
+      writes.resume("alice", () => kinds.promise);
+      await settle();
+      expect(
+        unload.asks(),
+        "leaving asked nothing for the write the take-up waits to take up"
+      ).toBe(true);
+
+      writes.signedIn("bob");
+      kinds.resolve();
+      await tick(60_000);
+      expect(send).not.toHaveBeenCalled();
+      expect(writes.rows()).toEqual([]);
+      expect(tab.kept(alices)).toBeUndefined();
+      expect(writes.unsent("alice")).toEqual([]);
+      expect(
+        unload.asks(),
+        "leaving still asks for the write of alice's the take-up dropped once bob signed in"
+      ).toBe(false);
+    } finally {
+      // Let in whichever step failed, so no take-up is left in the module's `takeUpsWaiting`
+      // for a later row's `kindsRegistered` to end against that row's `api.send`.
+      kinds.resolve();
+      await settle();
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
 // Alice's take-up waits for the kinds of write; bob signs in from another tab, which drops what
 // the reload kept of hers, and presses an upload, which waits for the take-up kept in the tab with
 // its file; then his session lapses, which keeps it for his next sign-in. The take-up then drops

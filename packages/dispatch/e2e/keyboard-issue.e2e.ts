@@ -732,6 +732,13 @@ test.describe("keys typed straight after a key that opens a surface", () => {
   // on to after calling the open off. The late chunk takes no focus from where they are. Before,
   // the dialog opened whenever its download ended - minutes later, after an outage - and took the
   // focus.
+  //
+  // The row goes back twice, because the two moves call the open off in two ways. Back from an
+  // issue tab to the same issue's page, the shell leaves the focus where it is - it moves the focus
+  // to `<main>` only for another issue or another top-level route (`pageIdentity`, `app.tsx`) - so
+  // the box keeps the focus, and only its own close on an address change (`useCloseOnNavigation`
+  // in `asked-surface.tsx`) calls the open off. Back from the issue to the Inbox, the shell moves
+  // the focus to `<main>`, and the box's blur calls it off first.
   test("a create dialog whose chunk lands after the reader went back a page opens nothing there", async ({
     browser,
   }) => {
@@ -749,8 +756,21 @@ test.describe("keys typed straight after a key that opens a surface", () => {
       await expect(
         page.getByTestId("issue-header").getByRole("heading", { level: 1, name: "Went back" })
       ).toBeVisible();
-      await page.locator("body").focus();
 
+      // The tab opens from its own button, as a reader opens it, so the router records the move
+      // under a key of its own: the box's close compares location keys, and `navigateInApp`'s
+      // bare `pushState` gives every address it makes the one key `default`.
+      await page.getByRole("tab", { name: "Conversation" }).click();
+      await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/conversation$`, "u"));
+      await page.locator("body").focus();
+      await page.keyboard.press("c");
+      const box = page.getByRole("textbox", { name: "Loading" });
+      await expect(box).toBeFocused();
+      await page.goBack();
+      await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}$`, "u"));
+      await expect(box, "going back within the issue left the box holding the open").toHaveCount(0);
+
+      await page.locator("body").focus();
       await page.keyboard.press("c");
       await page.goBack();
       await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
