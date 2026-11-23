@@ -164,10 +164,11 @@ func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
 
 // contractsDeclaredAfterCheckStates is every contract declared on top of CheckStatesContract: a
 // contract whose plugin was built with the check states' change, so its tester sends no verdict.
-// None is yet. A change that declares its contract after this one names that contract's constant
-// here, which is how TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt tells it from a
-// contract a base declared before the check states' change.
-var contractsDeclaredAfterCheckStates = []int{}
+// FixBesideReviewContract is the one so far. A change that declares its contract after this one
+// names that contract's constant here, which is how
+// TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt tells it from a contract a base
+// declared before the check states' change.
+var contractsDeclaredAfterCheckStates = []int{FixBesideReviewContract}
 
 // A phase completion naming a verdict from a plugin at CheckStatesContract or above is refused
 // VERDICT_NOT_TAKEN; only a tester's plugin below it has its verdict ignored. A plugin built before
