@@ -1,0 +1,172 @@
+{"conclusion":"failure","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136727190200","id":136727190200,"name":"ci-ok","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726656077","id":136726656077,"name":"agent-harness / session-scripts","status":"completed"}
+{"conclusion":"skipped","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726653187","id":136726653187,"name":"pr-title","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726641113","id":136726641113,"name":"agent-harness / session-settings","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726618340","id":136726618340,"name":"kind / tree-stage4b-move","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726618018","id":136726618018,"name":"kind / runtime-pod-update","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617727","id":136726617727,"name":"kind / runtime-issues","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617599","id":136726617599,"name":"dispatch-browser / alone (webkit-alone)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617582","id":136726617582,"name":"kind / runtime-root","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617512","id":136726617512,"name":"kind / runtime-image","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617497","id":136726617497,"name":"kind / runtime-roles","status":"completed"}
+{"conclusion":"skipped","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617416","id":136726617416,"name":"browser-image / attest","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617411","id":136726617411,"name":"kind / tree-stage4b-restart","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617404","id":136726617404,"name":"kind / tree-stage4b","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617353","id":136726617353,"name":"kind / tree-claude","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617350","id":136726617350,"name":"kind / burstable-and-sweep","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617233","id":136726617233,"name":"kind / shares","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617151","id":136726617151,"name":"tool-fallback / tool-fallback","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617032","id":136726617032,"name":"dispatch-browser / merge","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726617001","id":136726617001,"name":"tool-fallback-arm / tool-fallback-arm","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726616624","id":136726616624,"name":"dispatch-browser / recordings","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726616596","id":136726616596,"name":"claude-envoy / private-names","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726616582","id":136726616582,"name":"kind / image","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726616501","id":136726616501,"name":"dispatch-browser / shard (3)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726616489","id":136726616489,"name":"dispatch-browser / postgres-rows","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726616472","id":136726616472,"name":"dispatch-browser / shard (1)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726616379","id":136726616379,"name":"dispatch-browser / shard (4)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726616217","id":136726616217,"name":"dispatch-browser / alone (firefox-alone)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726616125","id":136726616125,"name":"dispatch-browser / shard (2)","status":"completed"}
+{"conclusion":"failure","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726616024","id":136726616024,"name":"kind / rig","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726615985","id":136726615985,"name":"dispatch-browser / alone (chromium-alone)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726615775","id":136726615775,"name":"docs / private-names","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726614608","id":136726614608,"name":"proof-sdk-offline / proof-sdk-offline","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726614587","id":136726614587,"name":"dispatch-memory / dispatch-memory","status":"completed"}
+{"conclusion":"skipped","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726614513","id":136726614513,"name":"dispatch-two-builds / dispatch-two-builds-same","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726614400","id":136726614400,"name":"envoy-smoke / envoy-smoke","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726614090","id":136726614090,"name":"browser-image / build","status":"completed"}
+{"conclusion":"failure","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726614086","id":136726614086,"name":"ci-filters / ci-filters","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613941","id":136726613941,"name":"envoy-session-stall / envoy-session-stall","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613877","id":136726613877,"name":"envoy-go-race / envoy-go-race","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613859","id":136726613859,"name":"airlock-lean / airlock-lean","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613705","id":136726613705,"name":"envoy-go-docs-finalizers / envoy-go-docs-finalizers","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613697","id":136726613697,"name":"test-fixtures / test-fixtures","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613694","id":136726613694,"name":"broker-multiprocess / broker-multiprocess","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613693","id":136726613693,"name":"dispatch-browser / visual","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613608","id":136726613608,"name":"dispatch-multiprocess / dispatch-multiprocess","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613606","id":136726613606,"name":"envoy-go-checks / envoy-go-checks","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613578","id":136726613578,"name":"dispatch-two-builds / dispatch-two-builds","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613527","id":136726613527,"name":"envoy-e2e-local / envoy-e2e-local","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613516","id":136726613516,"name":"listener-server-change / listener-server-change","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613376","id":136726613376,"name":"daemon-live / daemon-live","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613371","id":136726613371,"name":"envoy-client / envoy-client","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613360","id":136726613360,"name":"envoy-go-race-api / envoy-go-race-api","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613343","id":136726613343,"name":"pi-legion / pi-legion","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613325","id":136726613325,"name":"broker-client / broker-client","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613303","id":136726613303,"name":"dispatch-browser / binaries","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613248","id":136726613248,"name":"pi-shared / pi-shared","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613240","id":136726613240,"name":"envoy-go-race-docs / envoy-go-race-docs","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613232","id":136726613232,"name":"dispatch-browser / multiprocess","status":"completed"}
+{"conclusion":"failure","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613201","id":136726613201,"name":"envoy-go / envoy-go","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613173","id":136726613173,"name":"dispatch-ui / dispatch-ui","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613076","id":136726613076,"name":"typecheck / typecheck","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613073","id":136726613073,"name":"sessions-script / sessions-script","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613021","id":136726613021,"name":"agent-harness / plugin-smokes","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726613017","id":136726613017,"name":"agent-harness / tmux-scripts","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612988","id":136726612988,"name":"agent-harness / pane-drivers","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612971","id":136726612971,"name":"claude-envoy / claude-envoy","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612886","id":136726612886,"name":"text-checks / text-checks","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612850","id":136726612850,"name":"private-names-port / private-names-port","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612790","id":136726612790,"name":"lint / private-names","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612787","id":136726612787,"name":"test / test","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612773","id":136726612773,"name":"plugin-pack / plugin-pack","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612750","id":136726612750,"name":"conflicts-script / conflicts-script","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612726","id":136726612726,"name":"envoy-go-claim-model / envoy-go-claim-model","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612725","id":136726612725,"name":"ci-images / ci-images","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612713","id":136726612713,"name":"dispatch-browser / embedder","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612704","id":136726612704,"name":"envoy-infra-go / envoy-infra-go","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612672","id":136726612672,"name":"pi-envoy / pi-envoy","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612663","id":136726612663,"name":"lint / lint","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612625","id":136726612625,"name":"contracts / contracts","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612613","id":136726612613,"name":"docs / build","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612594","id":136726612594,"name":"daemon-go / daemon-go","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612562","id":136726612562,"name":"agent-harness / nats-callout-sessions","status":"completed"}
+{"conclusion":"skipped","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612527","id":136726612527,"name":"cancel-started","status":"completed"}
+{"conclusion":"skipped","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612499","id":136726612499,"name":"worker-image","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136726612016","id":136726612016,"name":"changes","status":"completed"}
+{"conclusion":"failure","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136705401205","id":136705401205,"name":"ci-ok","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136697854313","id":136697854313,"name":"dispatch-browser / merge","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823275","id":136696823275,"name":"kind / tree-stage4b","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823223","id":136696823223,"name":"kind / tree-stage4b-restart","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823188","id":136696823188,"name":"kind / burstable-and-sweep","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823176","id":136696823176,"name":"kind / tree-stage4b-move","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823139","id":136696823139,"name":"kind / shares","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823138","id":136696823138,"name":"kind / tree-claude","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823132","id":136696823132,"name":"kind / runtime-roles","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823123","id":136696823123,"name":"kind / runtime-root","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823114","id":136696823114,"name":"kind / runtime-pod-update","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823100","id":136696823100,"name":"kind / runtime-image","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823090","id":136696823090,"name":"kind / rig","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136696823068","id":136696823068,"name":"kind / runtime-issues","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692747478","id":136692747478,"name":"claude-envoy / private-names","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692475757","id":136692475757,"name":"docs / private-names","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692212281","id":136692212281,"name":"dispatch-browser / shard (4)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692212245","id":136692212245,"name":"dispatch-browser / shard (2)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692212221","id":136692212221,"name":"dispatch-browser / shard (1)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692212211","id":136692212211,"name":"dispatch-browser / shard (3)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692212154","id":136692212154,"name":"dispatch-browser / alone (firefox-alone)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692212149","id":136692212149,"name":"dispatch-browser / alone (chromium-alone)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692212146","id":136692212146,"name":"dispatch-browser / postgres-rows","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692212130","id":136692212130,"name":"dispatch-browser / alone (webkit-alone)","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136692212111","id":136692212111,"name":"dispatch-browser / recordings","status":"completed"}
+{"conclusion":"skipped","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136691415896","id":136691415896,"name":"browser-image / attest","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136691403845","id":136691403845,"name":"tool-fallback-arm / tool-fallback-arm","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136691403814","id":136691403814,"name":"kind / image","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136691403765","id":136691403765,"name":"tool-fallback / tool-fallback","status":"completed"}
+{"conclusion":"skipped","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688869937","id":136688869937,"name":"dispatch-two-builds / dispatch-two-builds-same","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688869189","id":136688869189,"name":"browser-image / build","status":"completed"}
+{"conclusion":"skipped","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688869152","id":136688869152,"name":"worker-image","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868845","id":136688868845,"name":"envoy-e2e-local / envoy-e2e-local","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868834","id":136688868834,"name":"dispatch-two-builds / dispatch-two-builds","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868825","id":136688868825,"name":"daemon-live / daemon-live","status":"completed"}
+{"conclusion":"failure","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868818","id":136688868818,"name":"ci-filters / ci-filters","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868802","id":136688868802,"name":"broker-multiprocess / broker-multiprocess","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868799","id":136688868799,"name":"envoy-session-stall / envoy-session-stall","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868788","id":136688868788,"name":"proof-sdk-offline / proof-sdk-offline","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868779","id":136688868779,"name":"envoy-go-claim-model / envoy-go-claim-model","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868758","id":136688868758,"name":"sessions-script / sessions-script","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868735","id":136688868735,"name":"conflicts-script / conflicts-script","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868726","id":136688868726,"name":"pi-legion / pi-legion","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868713","id":136688868713,"name":"dispatch-multiprocess / dispatch-multiprocess","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868707","id":136688868707,"name":"dispatch-memory / dispatch-memory","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868673","id":136688868673,"name":"envoy-smoke / envoy-smoke","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868626","id":136688868626,"name":"envoy-go-race-docs / envoy-go-race-docs","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868604","id":136688868604,"name":"airlock-lean / airlock-lean","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868599","id":136688868599,"name":"dispatch-ui / dispatch-ui","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868594","id":136688868594,"name":"envoy-go-docs-finalizers / envoy-go-docs-finalizers","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868592","id":136688868592,"name":"private-names-port / private-names-port","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868574","id":136688868574,"name":"envoy-infra-go / envoy-infra-go","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868561","id":136688868561,"name":"envoy-go-checks / envoy-go-checks","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868557","id":136688868557,"name":"envoy-client / envoy-client","status":"completed"}
+{"conclusion":"failure","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868539","id":136688868539,"name":"envoy-go / envoy-go","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868487","id":136688868487,"name":"broker-client / broker-client","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868484","id":136688868484,"name":"listener-server-change / listener-server-change","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868429","id":136688868429,"name":"claude-envoy / claude-envoy","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868428","id":136688868428,"name":"envoy-go-race-api / envoy-go-race-api","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868421","id":136688868421,"name":"envoy-go-race / envoy-go-race","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868400","id":136688868400,"name":"dispatch-browser / multiprocess","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868361","id":136688868361,"name":"dispatch-browser / embedder","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868351","id":136688868351,"name":"dispatch-browser / binaries","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868338","id":136688868338,"name":"docs / build","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868332","id":136688868332,"name":"text-checks / text-checks","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868320","id":136688868320,"name":"dispatch-browser / visual","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868319","id":136688868319,"name":"test-fixtures / test-fixtures","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868307","id":136688868307,"name":"contracts / contracts","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868306","id":136688868306,"name":"pi-envoy / pi-envoy","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868210","id":136688868210,"name":"pi-shared / pi-shared","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868171","id":136688868171,"name":"agent-harness / nats-callout-sessions","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688868080","id":136688868080,"name":"ci-images / ci-images","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867999","id":136688867999,"name":"typecheck / typecheck","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867986","id":136688867986,"name":"lint / private-names","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867965","id":136688867965,"name":"agent-harness / session-scripts","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867938","id":136688867938,"name":"agent-harness / plugin-smokes","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867934","id":136688867934,"name":"agent-harness / session-settings","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867918","id":136688867918,"name":"daemon-go / daemon-go","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867911","id":136688867911,"name":"agent-harness / tmux-scripts","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867874","id":136688867874,"name":"agent-harness / pane-drivers","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867570","id":136688867570,"name":"lint / lint","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867135","id":136688867135,"name":"plugin-pack / plugin-pack","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136688867094","id":136688867094,"name":"test / test","status":"completed"}
+{"conclusion":"skipped","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136687585020","id":136687585020,"name":"pr-title","status":"completed"}
+{"conclusion":"skipped","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136687584910","id":136687584910,"name":"cancel-started","status":"completed"}
+{"conclusion":"success","details_url":"https://github.com/cybermonklabs/legion/actions/runs/44852710105/job/136687583674","id":136687583674,"name":"changes","status":"completed"}

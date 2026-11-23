@@ -1,0 +1,29 @@
+name: broker-multiprocess
+description: >-
+  The broker-multiprocess leg of ci.yaml's go-envoy job, which carries that old check-run name: the
+  secrets broker's two-process tests, the tests the multiprocess build tag adds to ./cmd/cipherd,
+  against the job's Postgres (BROKER_TEST_DATABASE_URL). The leg runs on ubuntu-24.04-arm. The
+  airlock's check k9 and its lease test, which ran in this job's steps on a merge group or a pull
+  request labelled `full-ci`, are ci.yaml's airlock-arm job, held to those events by its own gate.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/envoy/go.mod
+        cache: false
+    - uses: ./.github/actions/install-gotestsum
+    # Only what the tag adds, its names read off the source at run time by
+    # .github/scripts/go-tagged-tests.sh, under a 20-minute bound of their own.
+    - name: Two-process tests of the secrets broker
+      shell: bash
+      working-directory: packages/envoy
+      env:
+        BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: |
+        pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/cipherd)
+        ../../.github/scripts/go-test.sh --jsonfile go-envoy-broker-multiprocess-two-process.json --packages ./cmd/cipherd -- -tags multiprocess -count=1 -timeout 20m -run "$pattern"
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: go-envoy-broker-multiprocess-two-process

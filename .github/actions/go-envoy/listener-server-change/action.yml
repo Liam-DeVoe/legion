@@ -1,0 +1,35 @@
+name: listener-server-change
+description: >-
+  The listener-server-change leg of ci.yaml's go-envoy job, which carries that old check-run name:
+  the listener's server-change soak, the tests the serverchange build tag adds to ./cmd/listener.
+  The leg runs on ubuntu-24.04-arm.
+runs:
+  using: composite
+  steps:
+    - id: setup-go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/envoy/go.mod
+        cache: false
+    # go-envoy: the test binary, and the listener cmdtest.Build makes from the same packages.
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+        restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+    - uses: ./.github/actions/install-gotestsum
+    # Only what the tag adds, its names read off the source at run time by
+    # .github/scripts/go-tagged-tests.sh. The assignment is a line of its own, so under bash -e an
+    # empty or refused list fails the step instead of running -run "", which matches every test.
+    - name: Server-change soak of the listener
+      shell: bash
+      working-directory: packages/envoy
+      run: |
+        pattern=$(../../.github/scripts/go-tagged-tests.sh serverchange ./cmd/listener)
+        ../../.github/scripts/go-test.sh --jsonfile go-envoy-listener-server-change-soak.json --packages ./cmd/listener -- -tags serverchange -count=1 -timeout 15m -run "$pattern"
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: go-envoy-listener-server-change-soak

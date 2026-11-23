@@ -1,0 +1,82 @@
+name: airlock-lean
+description: >-
+  The airlock-lean leg of ci.yaml's go-envoy job, which carries that old check-run name: the Lean
+  model of the airlock, built, its theorems' axioms printed, the Go airlock compared with it over
+  the seed corpus and fuzzed against it, and each mutant of the airlock and of its proxy caught.
+  The leg runs on ubuntu-24.04-arm. AIRLOCK_MODEL is the built model the two Go runs compare the
+  Go code against: naming no file makes FuzzAirlock, TestModelAgreesOnHostShapes and
+  TestTheModelReadsAHostlessEntryWithGuidance skip
+  (internal/cipher/proxyrules/airlock_fuzz_test.go:32-46), and a skip is a pass, so the build step
+  checks the binary is there before those runs read it.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/envoy/go.mod
+        cache: false
+    # No Go cache family: the proxyrules package imports the standard library and internal/fold,
+    # which imports nothing. The mutants step's proxy patches test internal/cipher/proxy, whose
+    # tests import third-party modules (aws-sdk-go-v2 among them), so that step downloads them
+    # through GOPROXY.
+    #
+    # elan and the Lean toolchain it installs, under the ELAN_HOME .github/actions/install-elan
+    # sets ($RUNNER_TEMP/elan, under the runner's work directory), keyed on the runner's
+    # architecture, since elan and the toolchain are binaries of it, and on the content of the
+    # lean-toolchain the model is built with. No restore-keys: an entry of another toolchain is
+    # exactly what this key keeps out, and `lake` would download the named one anyway.
+    # .github/workflows/ci-caches.yaml fills it on a push to main.
+    - id: elan-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/elan
+        key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/cipher/proxyrules/lean/lean-toolchain') }}
+    - uses: ./.github/actions/install-elan
+    - name: Build the Lean model
+      shell: bash
+      working-directory: packages/envoy/internal/cipher/proxyrules/lean
+      run: |
+        lake build
+        test -x .lake/build/bin/airlock-model
+    # What the three axioms are, and why fewer theorems printed than the model has is a failure,
+    # is in the script, so the rule and the count it holds are written once.
+    - name: Print the theorems' axioms
+      shell: bash
+      run: bash packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/cipher/proxyrules/lean
+    # gotestsum, which the two Go runs below and the mutants' Go tests run under
+    # (.github/scripts/go-test.sh, the mutants' with the retry off, since each is expected to
+    # fail), on PATH for every later step.
+    - uses: ./.github/actions/install-gotestsum
+    # The committed seed corpus (testdata/fuzz/FuzzAirlock): every seed through both sides; the
+    # host shapes a rules file may hold, which no seed decodes to, through both validations; and a
+    # host-less entry carrying guidance, a field the generator never writes.
+    - name: Compare the Go airlock with the model over the seed corpus
+      shell: bash
+      working-directory: packages/envoy
+      env:
+        AIRLOCK_MODEL: ${{ github.workspace }}/packages/envoy/internal/cipher/proxyrules/lean/.lake/build/bin/airlock-model
+      run: ../../.github/scripts/go-test.sh --jsonfile go-envoy-airlock-lean-corpus.json --packages ./internal/cipher/proxyrules/ -- -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelReadsAHostlessEntryWithGuidance)$'
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: go-envoy-airlock-lean-corpus
+    - name: Fuzz the Go airlock against the model
+      shell: bash
+      working-directory: packages/envoy
+      env:
+        AIRLOCK_MODEL: ${{ github.workspace }}/packages/envoy/internal/cipher/proxyrules/lean/.lake/build/bin/airlock-model
+      run: ../../.github/scripts/go-test.sh --jsonfile go-envoy-airlock-lean-fuzz.json --packages ./internal/cipher/proxyrules/ -- -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: go-envoy-airlock-lean-fuzz
+    # Each mutant of the airlock (internal/cipher/proxyrules/testdata/mutants) and of its proxy
+    # (internal/cipher/proxy/testdata/mutants), applied to a copy of packages/envoy: the comparison
+    # against the model built above, the proofs or the tests a proxy patch names must catch each
+    # one, and the script prints one CHECK line per mutant. Its Go tests run under gotestsum
+    # (.github/scripts/go-test.sh) with the retry off, since each is expected to fail.
+    - name: Mutants of the airlock and its proxy
+      shell: bash
+      env:
+        AIRLOCK_MODEL: ${{ github.workspace }}/packages/envoy/internal/cipher/proxyrules/lean/.lake/build/bin/airlock-model
+      run: bash packages/envoy/scripts/airlock-mutants.sh

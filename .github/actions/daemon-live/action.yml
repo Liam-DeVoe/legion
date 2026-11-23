@@ -1,0 +1,105 @@
+name: Run the whole-daemon live tests
+description: >-
+  The steps of ci.yaml's daemon-live job: the ten whole-daemon live tests of internal/daemon that
+  .github/scripts/ci_job_reads.py's DAEMON_LIVE_TESTS names, every test of the ten files its
+  DAEMON_LIVE_FILES names. Each boots the whole daemon through the function `legion start` calls,
+  over the job's PostgreSQL and the package's test NATS server, and drives it through GitHub and
+  Dispatch envelopes, its own HTTP routes and its worker stream, with no agent. The go-daemon race
+  step, which runs their package, skips them by name, so each runs once per run of the router,
+  here, where its reads are this job's inputs: handoff_records_live_test.go, and
+  review_range_live_test.go on its rig, run the real `dispatch` CLI and
+  scripts/e2e/completion-head.ts under bun, and step_records_live_test.go and
+  plan_ratings_live_test.go the CLI, which load the installed workspace, the second also
+  scripts/e2e/plan-ratings-read.sh, and with them in go-daemon a change to the lockfile or to the
+  CLI's sources would run the daemon's whole Go suite.
+
+  Everything here is what those tests need: the job's pgvector Postgres service and
+  LEGION_TEST_PG_DSN, the store every daemon the tests boot migrates and runs on and the server the
+  Dispatch that handoff_records_live_test.go and step_records_live_test.go start makes a database
+  of its own on, whose migrations create the pgvector extension; the NATS image the package's test
+  broker starts (internal/testnats's Image), pulled first, and TESTCONTAINERS_RYUK_DISABLED; git
+  and jj 0.38 or later, which the daemon resolves at boot and refuses to start without (git is the
+  runner image's own, and install-jj gives the jj the worker image ships); Bun and a frozen
+  install, for the CLI and the completion-head driver; setup-go and the go-daemon cache restore;
+  and gotestsum. No tmux, no Oh My Pi and no uv: every claim of these tests is launched by the
+  package's fake runtime, so no agent and no pane runs.
+
+  A failed test leaves its logs: each test writes the daemon's own log at debug, and Dispatch's
+  where it starts one, to a directory named for it under LEGION_TEST_DAEMON_LOG_DIR
+  (internal/daemon/live_proof_test.go's liveLogDir), and the step after the tests uploads that
+  directory when they fail.
+runs:
+  using: composite
+  steps:
+    # handoff_records_live_test.go, review_range_live_test.go on its rig,
+    # step_records_live_test.go and plan_ratings_live_test.go run
+    # `bun packages/envoy-client/bin/dispatch.ts`, and the first also
+    # `bun scripts/e2e/completion-head.ts`, which import the workspace's packages; each fails on
+    # GitHub Actions without bun.
+    - name: Setup Bun
+      uses: ./.github/actions/setup-bun
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    - id: setup-go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/daemon/go.mod
+        cache: false
+
+    # go-daemon, shared with typecheck, go-daemon, plugin-pack and pi-legion: this step compiles the
+    # same package's test binary the plugin-pack job's step does.
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+        restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+    # Every daemon the tests boot resolves git and jj at boot and refuses to start without either:
+    # git is the runner image's own, and this is the jj the worker image ships.
+    - uses: ./.github/actions/install-jj
+
+    # The package's test broker starts testnats.Image (the hub's 2.15.1), pulled first for the
+    # reason the action gives. No test here starts the other two images go-daemon pulls.
+    - name: Pull the NATS test container image
+      uses: ./.github/actions/pull-test-images
+      with:
+        consts: |
+          packages/daemon/internal/testnats/nats.go Image
+
+    - uses: ./.github/actions/install-gotestsum
+
+    # The ten tests, by name, under gotestsum (.github/scripts/go-test.sh). ci_job_reads.py builds
+    # this -run and the go-daemon race step's -skip from DAEMON_LIVE_TESTS. The -timeout is the 20
+    # minutes each test had under the script that drove it, so a hung test prints the goroutine
+    # dump that names it before the runner cancels the job.
+    - name: Run the whole-daemon live tests
+      shell: bash
+      working-directory: packages/daemon
+      env:
+        LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
+        # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
+        # pull a test could fail on.
+        TESTCONTAINERS_RYUK_DISABLED: "true"
+        LEGION_TEST_DAEMON_LOG_DIR: ${{ runner.temp }}/daemon-live-logs
+      run: ../../.github/scripts/go-test.sh --jsonfile daemon-live-daemon-live-run.json --packages ./internal/daemon/ -- -count=1 -timeout 20m -run '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestAConflictKeepsThePhaseAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestHandoffRecordsLive|TestPlanRatingsLive|TestReviewRangeLive|TestStepRecordsLive|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive)$'
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: daemon-live-daemon-live-run
+
+    # A failed test's logs, one directory per test: the daemon's own daemon.log at debug, and
+    # Dispatch's dispatch.log where the test starts one. The name carries no run attempt, and the
+    # upload overwrites, so a re-run's logs replace the failed attempt's.
+    - name: Upload the live tests' logs
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: daemon-live-daemon-live-logs
+        path: ${{ runner.temp }}/daemon-live-logs
+        overwrite: true

@@ -1,0 +1,42 @@
+What leg-verdict.test.sh reads, each file as GitHub's API answered on 2026-11-23, with the command
+that wrote it, run from this directory. Every run is a workflow_dispatch run of ci.yaml on
+legion/INFRA-3411's branch of cybermonklabs/legion.
+
+The jobs of one attempt of a run, as .github/scripts/leg-verdict.sh reads them (the same command,
+with the run and the attempt written in). 50 a page: the command with per_page=100 answered every
+read of 44852710105's attempt 2 with `gh: Server Error (HTTP 502)`, eight times in a row, while
+per_page=50 and per_page=30 each answered with its 86 jobs.
+
+  run-44852710105-attempt-1.jobs, run-44852710105-attempt-2.jobs, at 9d197d9b66: a run whose
+  attempt 2 re-ran one job, `kind / rig`, which failed there and had passed in attempt 1. Attempt
+  2's list holds all 86 jobs, each with run_attempt 2 and an id of its own, the ones it did not
+  re-run with the result they had in attempt 1.
+
+    gh api --paginate 'repos/cybermonklabs/legion/actions/runs/44852710105/attempts/1/jobs?per_page=50' \
+      --jq '.jobs[] | {id, name, run_attempt, status, conclusion}' > run-44852710105-attempt-1.jobs
+    gh api --paginate 'repos/cybermonklabs/legion/actions/runs/44852710105/attempts/2/jobs?per_page=50' \
+      --jq '.jobs[] | {id, name, run_attempt, status, conclusion}' > run-44852710105-attempt-2.jobs
+
+  run-44868985209-attempt-1.jobs, at 70cd65ee80: skipped jobs, the skipped leg
+  `dispatch-two-builds / dispatch-two-builds-same` among them.
+
+    gh api --paginate 'repos/cybermonklabs/legion/actions/runs/44868985209/attempts/1/jobs?per_page=50' \
+      --jq '.jobs[] | {id, name, run_attempt, status, conclusion}' > run-44868985209-attempt-1.jobs
+
+  run-44967572160-attempt-1.jobs, at 360fe13e76: a dispatch run whose skipped pr-title record
+  carries its name: expression's text, `github.event_name == 'workflow_dispatch' &&
+  'pr-title (dispatch)' || 'pr-title'`, and no record named pr-title.
+
+    gh api --paginate 'repos/cybermonklabs/legion/actions/runs/44967572160/attempts/1/jobs?per_page=50' \
+      --jq '.jobs[] | {id, name, run_attempt, status, conclusion}' > run-44967572160-attempt-1.jobs
+
+The check runs at each run's head, every attempt's, which is what Dispatch reads a check of a name
+from (the newest of that name): at 9d197d9b66 the 172 check runs of 44852710105's two attempts,
+each job's id its check run's id.
+
+    gh api --paginate 'repos/cybermonklabs/legion/commits/9d197d9b66dd173953542d27ff47be0dc12ec618/check-runs?filter=all&per_page=100' \
+      --jq '.check_runs[] | {id, name, status, conclusion, details_url}' > commit-9d197d9b66.check-runs
+    gh api --paginate 'repos/cybermonklabs/legion/commits/70cd65ee80176c16c469b2a753951c7bcf10e575/check-runs?filter=all&per_page=100' \
+      --jq '.check_runs[] | {id, name, status, conclusion, details_url}' > commit-70cd65ee80.check-runs
+    gh api --paginate 'repos/cybermonklabs/legion/commits/360fe13e768bb6b8ad6cb5bee449be17695b3346/check-runs?filter=all&per_page=100' \
+      --jq '.check_runs[] | {id, name, status, conclusion, details_url}' > commit-360fe13e76.check-runs

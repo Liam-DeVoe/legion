@@ -1,0 +1,76 @@
+name: Pack the plugin releases and run the prompt probes on the real Oh My Pi
+description: >-
+  The steps of ci.yaml's plugin-pack job: the three tests of internal/daemon that
+  .github/scripts/ci_job_reads.py's PLUGIN_PACK_TESTS names (a fourth test of that package loading
+  a plugin on the real Oh My Pi stays in go-daemon, TestThePromptReferenceProbeOnTheRealOhMyPi).
+  TestTheRealPluginsOnTheRealOhMyPi packs packages/pi-envoy and packages/pi-legion with
+  `bun pm pack` - each pack running that package's prepack, which reads bun.lock and builds the
+  bundle from the installed workspace - installs the two tarballs on the real Oh My Pi and reads
+  back what the daemon's boot gate reads; TestTheAgentModelCheckOnTheRealOhMyPi probes the prompts
+  this checkout ships, laid out as the release lays them out (packages/pi-legion/agents copied and
+  each plugin's partition of skills/ staged with scripts/pi-plugin-prepack.sh itself); and
+  TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName probes a plugin it writes itself. The
+  go-daemon race step skips them by name: their reads are the whole reason that job's filter would
+  name the lockfile and skills/, and a change to either would run the daemon's entire Go suite
+  (dispatch://INFRA-1413). With the tests here, a change to bun.lock or to one skill runs them and
+  no other daemon Go test.
+
+  Everything here is what those tests need: Bun and a frozen install, since `bun pm pack` is the
+  pack test's first act and each prepack builds its bundle from the installed workspace and fails
+  rather than skips without it; Oh My Pi at the pin .omp-pin names, which the tests install their
+  plugins on (internal/testbin's OMP refuses on GitHub Actions without LEGION_TEST_OMP), installed
+  through the mise install-jj leaves at ~/.local/bin/mise; setup-go and the go-daemon cache
+  restore, since the step compiles internal/daemon's test binary, the same build the go-daemon race
+  step makes; and gotestsum. No database, no tmux, no uv and no container image: the tests start
+  none of them.
+runs:
+  using: composite
+  steps:
+    # The pack: `bun pm pack` runs each plugin's prepack, which builds its bundle from the
+    # installed workspace and t.Fatal rather than skips when the pack fails.
+    - name: Setup Bun
+      uses: ./.github/actions/setup-bun
+
+    - name: Install dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    - id: setup-go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/daemon/go.mod
+        cache: false
+
+    # go-daemon, shared with typecheck, go-daemon, daemon-live and pi-legion: this step compiles the
+    # same package's test binary the go-daemon race step does.
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+        restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+
+    # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin through:
+    # no test of this job runs jj.
+    - uses: ./.github/actions/install-jj
+
+    # The tests run the Oh My Pi the worker image ships and refuse on GitHub Actions without one
+    # (internal/testbin's OMP). The pin is read from .omp-pin, the repository's one copy of it,
+    # installed through the mise above (.github/actions/install-omp).
+    - uses: ./.github/actions/install-omp
+
+    - uses: ./.github/actions/install-gotestsum
+
+    # The three tests, by name, under gotestsum (.github/scripts/go-test.sh). ci_job_reads.py
+    # builds this -run and the go-daemon race step's -skip from PLUGIN_PACK_TESTS. The -timeout is
+    # the daemon's plain step's 15 minutes, so a hung pack prints the goroutine dump that names it
+    # before the runner cancels the job.
+    - name: Pack the plugin releases and run the prompt probes on the real Oh My Pi
+      shell: bash
+      working-directory: packages/daemon
+      run: ../../.github/scripts/go-test.sh --jsonfile plugin-pack-plugin-pack-pack.json --packages ./internal/daemon/ -- -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$'
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: plugin-pack-plugin-pack-pack

@@ -662,6 +662,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.unnamed_files_test == 'true'
         run: .github/scripts/unnamed-files.test.sh
 
+      # The carrying jobs' verdict over lists of a run's jobs captured from GitHub
+      # (testdata/leg-verdict). Ungated: the per-file step outputs go with the layout by package
+      # area, whose scripts job runs every harness.
+      - name: Test the verdict of the jobs that carry a split job's old check-run name
+        run: .github/scripts/leg-verdict.test.sh
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

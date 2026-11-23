@@ -158,18 +158,27 @@ AUDITED_SCRIPTS = {
     # those packages, `--race` adds -race, `--skip P` adds -skip P, `--run P` adds -run P,
     # `--timeout D` sets the -timeout, and `--var NAME` and `--jsonfile NAME` decide only whether it
     # runs at all and where its jsonfile goes. With `--report FILE` it reads a report and runs no
-    # test. envoy-go's count step passes the first argument list below, whose command is that run in
-    # the listing form this module reads, and envoy-go-race-api's race step the second. The first's
-    # --skip leaves out the backend count's test of ./internal/cipher/api/.
+    # test. ci.yaml's go-envoy-held job runs it in two kinds of leg, each passing its own share of
+    # the packages' tests as --run, the `$(…)` call of .github/scripts/go-test-split.sh that prints
+    # it, with the leg's number in $LEG: the envoy-go legs' "Count the database broker suites'
+    # skips" step passes the first argument list below, whose command is that run in the listing
+    # form this module reads, and the envoy-go-race-api legs' race step the second. Each command's
+    # -run is the split's, so the legs between them run the packages whole. The first's --skip
+    # leaves out the backend count's test of ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
-            "--timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'":
+            "--timeout 15m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
+            "--run \"$(../../.github/scripts/go-test-split.sh \"$LEG\" 3 ./internal/cipher/... ./cmd/cipherd/)\" "
+            "--jsonfile \"go-envoy-held-envoy-go-$LEG-database-skips.json\"":
                 "go list ./internal/cipher/... ./cmd/cipherd/ | grep -Ev '/internal/cipher/natscallout$' | "
                 "xargs go test -json -count=1 -skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' "
-                "-timeout 20m",
-            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
-                "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
+                "-run \"$(../../.github/scripts/go-test-split.sh)\" -timeout 15m",
+            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 26m "
+            "--run \"$(../../.github/scripts/go-test-split.sh \"$LEG\" \"$LEGS\" -race ./internal/dispatch/api/)\" "
+            "--jsonfile \"go-envoy-held-envoy-go-race-api-$LEG-race.json\" ./internal/dispatch/api/":
+                "go test -json -count=1 -race -run \"$(../../.github/scripts/go-test-split.sh)\" -timeout 26m "
+                "./internal/dispatch/api/",
         },
         sha256="c1eb4ef3970b09b25700aa81a2c94943700b5a46ab31324d4495e030293eecba",
     ),

@@ -1,0 +1,26 @@
+name: Upload a Go step's gotestsum reports
+description: >-
+  Uploads the jsonfile and the rerun report each `.github/scripts/go-test.sh` call of one Go step
+  leaves under $RUNNER_TEMP/go-test-reports, as the artifact go-test-<name>, which ci.yaml's ci-ok
+  job downloads with every other go-test-* artifact to name each test that passed only on its retry
+  (.github/scripts/ci-ok-retries.sh). <name> is the step's job, leg and step, which the step's
+  go-test.sh calls begin their --jsonfile names with, so every file of the step is uploaded and no
+  other step's. The name carries no run attempt and the upload overwrites, so a re-run of one leg
+  replaces what its earlier attempt uploaded. Use it with `if: always()`, so a failed step's
+  reports reach ci-ok too.
+inputs:
+  name:
+    description: The step's job, leg and step, as `<job>-<leg>-<step>`.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: go-test-${{ inputs.name }}
+        path: |
+          ${{ runner.temp }}/go-test-reports/${{ inputs.name }}.json
+          ${{ runner.temp }}/go-test-reports/${{ inputs.name }}.rerun-fails.txt
+          ${{ runner.temp }}/go-test-reports/${{ inputs.name }}-*.json
+          ${{ runner.temp }}/go-test-reports/${{ inputs.name }}-*.rerun-fails.txt
+        overwrite: true

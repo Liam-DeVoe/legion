@@ -1,0 +1,54 @@
+name: dispatch-memory, one leg's share
+description: >-
+  The steps of the dispatch-memory legs of ci.yaml's go-envoy-held job: the Dispatch server's
+  memory tests, the tests the memory build tag adds to ./cmd/dispatch, split between the legs at
+  run time by .github/scripts/go-test-split.sh, so each of them, one added later included, runs in
+  exactly one leg. ci.yaml's dispatch-memory job carries the old check-run name
+  `dispatch-memory / dispatch-memory` and passes only when every leg passed
+  (.github/scripts/leg-verdict.sh). The legs run on ubuntu-24.04-arm, on the job's Postgres
+  (DISPATCH_TEST_DATABASE_URL, which the job gives every step).
+inputs:
+  part:
+    description: This leg's number, 1 to `legs`.
+    required: true
+  legs:
+    description: How many legs run the memory tests.
+    required: true
+  go-timeout:
+    description: >-
+      The step's -timeout: below the leg's timeout-minutes less its set-up, so a hung test prints
+      the dump that names it (ci.yaml gives each leg's).
+    required: true
+  postgres:
+    description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/envoy/go.mod
+        cache: false
+    - uses: ./.github/actions/install-gotestsum
+    - name: Size the service for this lane's Dispatch processes
+      shell: bash
+      env:
+        POSTGRES_CONTAINER: ${{ inputs.postgres }}
+      run: .github/scripts/pg-connection-ceiling.sh "$POSTGRES_CONTAINER"
+    # Only what the tag adds, its names read off the source at run time by
+    # .github/scripts/go-tagged-tests.sh: a `go test -list` of the package under -tags=memory would
+    # list its untagged tests too, which envoy-go's unit step runs, so go-test-split.sh splits the
+    # tagged names alone, handed to it one a line as the listing it reads (GO_TEST_LIST_OUTPUT).
+    # Each assignment is a line of its own, so under bash -e an empty or refused list fails the
+    # step instead of running -run "", which matches every test.
+    - name: Memory tests of the Dispatch server
+      shell: bash
+      working-directory: packages/envoy
+      run: |
+        tagged=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
+        run=$(GO_TEST_LIST_OUTPUT=<(tr '|' '\n' <<<"${tagged:2:-2}") ../../.github/scripts/go-test-split.sh "${{ inputs.part }}" "${{ inputs.legs }}" ./cmd/dispatch)
+        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-dispatch-memory-${{ inputs.part }}-memory.json" --packages ./cmd/dispatch -- -tags memory -count=1 -timeout "${{ inputs.go-timeout }}" -run "$run"
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: go-envoy-held-dispatch-memory-${{ inputs.part }}-memory

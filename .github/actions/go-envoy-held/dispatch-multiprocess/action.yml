@@ -1,0 +1,55 @@
+name: dispatch-multiprocess
+description: >-
+  The dispatch-multiprocess leg of ci.yaml's go-envoy-held job, which carries that old check-run
+  name: the Dispatch server's two-process tests, the tests the multiprocess build tag adds to
+  ./cmd/dispatch, and the outbox's load steps on two Dispatch server processes, on the job's
+  Postgres (DISPATCH_TEST_DATABASE_URL, which the job gives every step). The leg runs on
+  ubuntu-24.04-arm. The two-process step's -timeout 20m, after a minute of setup, is 21; after that
+  step's measured 15 minutes (14 m 56 s in run 44328388948), the load-steps step's own 15 is 31,
+  under the leg's timeout-minutes. The load steps took 280 s on a two-vCPU pod on 2026-11-18, 294 s
+  with their compile.
+inputs:
+  postgres:
+    description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/envoy/go.mod
+        cache: false
+    - uses: ./.github/actions/install-gotestsum
+    - name: Size the service for this lane's Dispatch processes
+      shell: bash
+      env:
+        POSTGRES_CONTAINER: ${{ inputs.postgres }}
+      run: .github/scripts/pg-connection-ceiling.sh "$POSTGRES_CONTAINER"
+    # Every test the multiprocess tag adds, its names read off the source at run time, but the
+    # outbox's load steps, which the step below runs (ci_job_reads.py's OUTBOX_LOAD_TESTS builds
+    # both texts, so the skip and the run cannot come to name different tests).
+    - name: Two-process tests of the Dispatch server
+      shell: bash
+      working-directory: packages/envoy
+      run: |
+        pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)
+        ../../.github/scripts/go-test.sh --jsonfile go-envoy-held-dispatch-multiprocess-two-process.json --packages ./cmd/dispatch -- -tags multiprocess -count=1 -timeout 20m -run "$pattern" -skip '^(TestTheOutboxLoadSteps)$'
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: go-envoy-held-dispatch-multiprocess-two-process
+    # TestTheOutboxLoadSteps: four one-minute load steps, at production's evening rate and ten
+    # times it, on one Dispatch process and then on two, and a burst; every event must reach every
+    # destination within a minute of its step's last write. It runs only with
+    # DISPATCH_OUTBOX_LOAD_STEPS=1, and takes its minutes in a step of its own, so they do not come
+    # out of the two-process step's -timeout.
+    - name: The outbox's load steps on two Dispatch server processes
+      shell: bash
+      working-directory: packages/envoy
+      env:
+        DISPATCH_OUTBOX_LOAD_STEPS: "1"
+      run: ../../.github/scripts/go-test.sh --jsonfile go-envoy-held-dispatch-multiprocess-load-steps.json --packages ./cmd/dispatch -- -tags multiprocess -count=1 -timeout 15m -run '^(TestTheOutboxLoadSteps)$'
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: go-envoy-held-dispatch-multiprocess-load-steps

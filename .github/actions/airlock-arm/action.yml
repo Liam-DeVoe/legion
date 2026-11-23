@@ -1,0 +1,47 @@
+name: The airlock's check k9 and its lease test, on arm64
+description: >-
+  The steps of ci.yaml's airlock-arm job: check k9 of the airlock's verification document
+  (dispatch://INFRA-1352) under ten minutes of generated load, and the airlock stack's pod session
+  outliving its lease (packages/envoy/scripts/dev-airlock-lease.test.sh), both on
+  ubuntu-24.04-arm as the broker-multiprocess job ran them. They ran there behind step gates on
+  `merge_group` and the `full-ci` label; here the job's own gate holds them to the merge queue, to
+  a pull request with `full-ci` and to a dispatched run, as it holds every held suite, and the
+  steps carry no gate of their own. Each stack (packages/envoy/scripts/dev-airlock.sh) makes a
+  database of its own on the job's Postgres through psql, and serves each bound host on port 443
+  of a loopback address of its own, which the runner's user may bind only once the kernel lets it.
+  The stack's database URL is set on each command, not in an env: block.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/envoy/go.mod
+        cache: false
+
+    - name: Install psql for the airlock check
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends postgresql-client
+
+    # Under ten minutes of generated load no call fails, the proxy adds at most 100 ms at the
+    # median, and each broker process stays within half its wall time in CPU and 1 GiB of memory.
+    # It took 899 s in run 44808127763. The script prints one CHECK line per property.
+    - name: Airlock check k9 under load
+      shell: bash
+      env:
+        BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: |
+        sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+        DEV_BROKER_POSTGRES_URL="$BROKER_TEST_DATABASE_URL" bash packages/envoy/scripts/airlock-check.sh k9
+
+    # The stack k9 runs on, with one broker at the shortest lease it starts with, a 30-minute grant
+    # used before and after three leases pass. It prints one PASS: or FAIL: line per property and
+    # takes the stack's start and about five minutes more (285 s in run 44808127763).
+    - name: Airlock session outlives its lease
+      shell: bash
+      env:
+        BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: |
+        sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+        DEV_BROKER_POSTGRES_URL="$BROKER_TEST_DATABASE_URL" bash packages/envoy/scripts/dev-airlock-lease.test.sh

@@ -33,11 +33,11 @@
 variables:
   AIRLOCK_MODEL:
     class: set
-    jobs: [airlock-lean]
-    why: The Lean model's binary, which airlock-lean builds and hands the corpus comparison and the fuzz.
+    jobs: [go-envoy]
+    why: The Lean model's binary, which go-envoy's airlock-lean leg builds and hands the corpus comparison and the fuzz.
   BROKER_TEST_DATABASE_URL:
     class: set
-    jobs: [envoy-go, envoy-go-race-api, broker-multiprocess, daemon-go]
+    jobs: [go-envoy-held, go-envoy, go-daemon]
     why: The Postgres server the broker's store tests make their databases on, a service of each job that runs them.
   DISPATCH_BENCH_DATABASE_URL:
     class: tool
@@ -61,12 +61,12 @@ variables:
     why: The corpus BenchmarkNearCopyRefusalReplay replays.
   DISPATCH_OUTBOX_LOAD_STEPS:
     class: selector
-    jobs: [dispatch-multiprocess]
-    why: Selects TestTheOutboxLoadSteps, which dispatch-multiprocess runs in a step of its own with it set.
+    jobs: [go-envoy-held]
+    why: Selects TestTheOutboxLoadSteps, which go-envoy-held's dispatch-multiprocess leg runs in a step of its own with it set.
   DISPATCH_PREVIOUS_BUILD:
     class: set
-    jobs: [dispatch-two-builds]
-    why: The older build the twobuild suite runs beside this tree's, which dispatch-two-builds builds.
+    jobs: [go-envoy-held]
+    why: The older build the twobuild suite runs beside this tree's, which go-envoy-held's two-build legs build.
   DISPATCH_RECALL_CORPUS:
     class: tool
     why: The duplicate corpus the related-recall benchmarks read.
@@ -78,19 +78,19 @@ variables:
     why: Makes BenchmarkRelatedRecallOnDuplicates fail on any recall loss.
   DISPATCH_RENDER_CORPUS:
     class: set
-    jobs: [envoy-go]
-    why: The repository's markdown corpus envoy-go hands the incremental render test.
+    jobs: [go-envoy-held]
+    why: The repository's markdown corpus go-envoy-held's envoy-go legs hand the incremental render test.
   DISPATCH_TEST_DATABASE_URL:
     class: set
-    jobs: [envoy-go, envoy-go-race, envoy-go-race-api, envoy-go-race-docs, envoy-go-docs-finalizers, dispatch-memory, dispatch-multiprocess, dispatch-two-builds, envoy-session-stall]
+    jobs: [go-envoy-held, go-envoy]
     why: The Postgres server the Dispatch store tests make their databases on, a service of each job that runs them.
   DISPATCH_TEST_NO_CONTAINERS:
     class: opt-out
     why: A box that runs no test containers sets it to skip the S3-compatible server test; no job sets it.
   DISPATCH_TOKEN_CORPUS:
     class: set
-    jobs: [envoy-go-docs-finalizers]
-    why: The repository's markdown corpus envoy-go-docs-finalizers hands TestWriteCorpusReadsOnce; the corpus benchmarks read it as tools.
+    jobs: [go-envoy-held]
+    why: The repository's markdown corpus go-envoy-held's envoy-go-docs-finalizers leg hands TestWriteCorpusReadsOnce; the corpus benchmarks read it as tools.
   GITHUB_ACTIONS:
     class: prerequisite
     why: testprereq.Require skips off GitHub Actions and fails on it.
@@ -103,18 +103,18 @@ variables:
     why: Selects the envoy-client tests against a real NATS container, which envoy-client runs.
   LEGION_E2E_DISPATCH_STACK:
     class: selector
-    jobs: [envoy-session-stall]
-    why: Selects the envoy-client tests that start a Dispatch stack, which envoy-session-stall runs.
+    jobs: [go-envoy]
+    why: Selects the envoy-client tests that start a Dispatch stack, which go-envoy's envoy-session-stall leg runs.
   LEGION_E2E_ENVOY_STACK:
     class: selector
-    jobs: [envoy-session-stall]
-    why: Selects the envoy-client tests that build and start natsd and the listener, which envoy-session-stall runs.
+    jobs: [go-envoy]
+    why: Selects the envoy-client tests that build and start natsd and the listener, which go-envoy's envoy-session-stall leg runs.
   LEGION_SCALE_TEST:
     class: tool
     why: Sizes BenchmarkDismissedScaleHoldsTheInboxsReads.
   LEGION_TEST_CLAUDE:
     class: set
-    jobs: [claude-envoy, agent-harness, envoy-session-stall]
+    jobs: [claude-envoy, agent-harness, go-envoy]
     why: The Claude Code binary install-claude-code puts in the job's environment.
   LEGION_TEST_CODEX:
     class: set
@@ -122,8 +122,8 @@ variables:
     why: The native Codex binary install-codex puts in claude-envoy's environment.
   LEGION_TEST_DRAIN_MEASURE:
     class: set
-    jobs: [daemon-go]
-    why: Turns on the drain test's time bound, which daemon-go measures.
+    jobs: [go-daemon]
+    why: Turns on the drain test's time bound, which go-daemon measures.
   LEGION_TEST_KIND_IMAGE:
     class: set
     jobs: [kind]
@@ -142,16 +142,16 @@ variables:
     why: The NATS service of the job that runs the Oh My Pi extension tests.
   LEGION_TEST_OMP:
     class: set
-    jobs: [daemon-go, plugin-pack, agent-harness, pi-envoy, pi-legion, envoy-session-stall]
+    jobs: [go-daemon, plugin-pack, agent-harness, pi-envoy, pi-legion, go-envoy]
     why: The Oh My Pi binary install-omp puts in the job's environment.
   LEGION_TEST_PG_DSN:
     class: set
-    jobs: [daemon-go, daemon-live, agent-harness, sessions-script, envoy-go, dispatch-browser]
+    jobs: [go-daemon, daemon-live, agent-harness, sessions-script, go-envoy-held, dispatch-browser]
     why: The Postgres server the daemon's tests and the Dispatch harness's make their databases on, a service of each job that runs them.
   LEGION_TEST_UV:
     class: set
-    jobs: [daemon-go]
-    why: The uv binary install-uv puts in daemon-go's environment.
+    jobs: [go-daemon]
+    why: The uv binary install-uv puts in go-daemon's environment.
   LOADTEST_REPLAY_BUNDLE:
     class: tool
     why: The production bundle the loadtest replay benchmarks read.
@@ -160,17 +160,17 @@ variables:
     why: A run against a deployed https Dispatch sets it, and the plain-HTTP rows skip there; no job sets it.
   PMDOC_ANCHOR_CORPUS:
     class: set
-    jobs: [envoy-go]
-    why: The anchor corpus envoy-go hands the pmdoc mark tests.
+    jobs: [go-envoy-held]
+    why: The anchor corpus go-envoy-held's envoy-go legs hand the pmdoc mark tests.
   PMDOC_DIFF_BASE:
     class: set
-    jobs: [envoy-go]
-    why: The base dump differential.sh hands TestDifferentialCompare, in envoy-go's pmdoc differential step.
+    jobs: [go-envoy-held]
+    why: The base dump differential.sh hands TestDifferentialCompare, in the envoy-go leg's pmdoc differential step.
   PMDOC_DIFF_OUT:
     class: set
-    jobs: [envoy-go]
-    why: Where differential.sh has TestDifferentialDump write each side's dump, in envoy-go's pmdoc differential step.
+    jobs: [go-envoy-held]
+    why: Where differential.sh has TestDifferentialDump write each side's dump, in the envoy-go leg's pmdoc differential step.
   PMDOC_WALK_CORPUS:
     class: set
-    jobs: [envoy-go]
-    why: The walk corpus envoy-go hands the pmdoc walk test.
+    jobs: [go-envoy-held]
+    why: The walk corpus go-envoy-held's envoy-go legs hand the pmdoc walk test.

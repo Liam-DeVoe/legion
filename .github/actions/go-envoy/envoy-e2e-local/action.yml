@@ -1,0 +1,59 @@
+name: envoy-e2e-local
+description: >-
+  The envoy-e2e-local leg of ci.yaml's go-envoy job, which carries that old check-run name: the
+  local end-to-end acceptance of e2e-local.sh with its refusal test, and the bucket refill on a real
+  listener and NATS. The leg runs on ubuntu-24.04-arm. A failed run leaves its evidence as the
+  artifact go-envoy-envoy-e2e-local-evidence.
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-bun
+    - shell: bash
+      run: bun install --frozen-lockfile
+    - id: setup-go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: packages/envoy/go.mod
+        cache: false
+    # go-envoy: the listener and natsd e2e-local.sh builds.
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+        restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+    # scripts/e2e-local.test.sh drives the driver's refusals, which the acceptance run below never
+    # reaches: an unknown option, --help, and an E2E_NATS_PORT, E2E_PORT or E2E_SESSION_PORT another
+    # process already holds, which the driver uses as given and fails on rather than replacing it
+    # or running against a server it did not start. It needs the bun and go this leg already has,
+    # and it runs first because it is seconds (INFRA-250).
+    - name: Refusal test for e2e-local.sh
+      shell: bash
+      working-directory: packages/envoy
+      run: bash scripts/e2e-local.test.sh
+    - name: Local end-to-end acceptance
+      shell: bash
+      working-directory: packages/envoy
+      run: bash scripts/e2e-local.sh
+    # The listener keeps its copy of a bucket while it reads the bucket again, and refuses its two
+    # list routes, with no active-sessions sample, while it cannot stand behind that copy
+    # (INFRA-261): five scenarios against a real listener and a NATS server of the script's own,
+    # each one `CHECK <scenario>` line, and a run that missed the window it was there to observe is
+    # a FAIL. Its ports (E2E_REFILL_NATS_PORT, E2E_REFILL_PORT) are its own, and the acceptance run
+    # above has stopped its servers by the time this starts.
+    - name: Bucket refill on a real listener and NATS
+      shell: bash
+      working-directory: packages/envoy
+      run: bash scripts/e2e-refill.sh --out out/e2e-refill
+    # The name carries no run attempt, and the upload overwrites, so a re-run's evidence replaces
+    # the failed attempt's.
+    - if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: go-envoy-envoy-e2e-local-evidence
+        path: |
+          packages/envoy/out/e2e
+          packages/envoy/out/e2e-refill
+          !packages/envoy/out/e2e-refill/bin
+        overwrite: true

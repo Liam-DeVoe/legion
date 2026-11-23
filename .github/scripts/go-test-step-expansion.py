@@ -123,8 +123,8 @@ class Exception_:
 EXCEPTIONS = (
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-smoke.yaml", "Live tests of envoy-infra's host:Listener"),
-            (".github/workflows/ci-job-envoy-infra-go.yaml", "Unit test envoy-infra"),
+            (".github/workflows/ci.yaml", "envoy-smoke"),
+            (".github/workflows/ci.yaml", "envoy-infra-go"),
         }),
         package="github.com/sjawhar/envoy/infra/host",
         functions=None,
@@ -132,14 +132,15 @@ EXCEPTIONS = (
             "R3 (dispatch://INFRA-1408/spec): envoy-smoke's pulumilive step over infra/host keeps "
             "running the whole package, untagged tests included, because envoy-smoke runs on a "
             "Dispatch-only change where envoy-infra-go does not, and in such a run those untagged "
-            "tests would otherwise run nowhere."
+            "tests would otherwise run nowhere. Each is a leg of ci.yaml's (go-envoy-held's and "
+            "go-envoy's), keyed by the step that runs its action."
         ),
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
+            (".github/workflows/ci.yaml", "envoy-go"),
+            (".github/workflows/ci.yaml", "envoy-go-race-docs"),
+            (".github/workflows/ci.yaml", "envoy-go-docs-finalizers"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/docs",
         functions=(
@@ -155,8 +156,8 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow"),
+            (".github/workflows/ci.yaml", "envoy-go"),
+            (".github/workflows/ci.yaml", "envoy-go-race"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
@@ -170,8 +171,8 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
+            (".github/workflows/ci.yaml", "envoy-go-race-docs"),
+            (".github/workflows/ci.yaml", "envoy-go-docs-finalizers"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/docs",
         functions=None,
@@ -186,8 +187,8 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
+            (".github/workflows/ci.yaml", "envoy-go"),
+            (".github/workflows/ci.yaml", "envoy-go-docs-finalizers"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/docs",
         functions=(
@@ -204,8 +205,8 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-dispatch-two-builds.yaml", "Two-build tests of the Dispatch server"),
-            (".github/workflows/ci-job-dispatch-two-builds.yaml", "Two-build tests of the Dispatch server against its own build"),
+            (".github/workflows/ci.yaml", "dispatch-two-builds"),
+            (".github/workflows/ci.yaml", "dispatch-two-builds-same"),
         }),
         package="github.com/sjawhar/envoy/cmd/dispatch",
         functions=None,
@@ -220,20 +221,19 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
-            (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
-            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+            (".github/workflows/ci.yaml", "airlock-lean"),
+            (".github/workflows/ci.yaml", "Count the database broker suites' skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("FuzzAirlock",),
         requirement=(
-            "R3 (dispatch://INFRA-1408/spec): airlock-lean holds the Go airlock to its Lean model, "
-            "and its filter takes files envoy_go's does not - its own job file, "
-            ".github/actions/install-elan/** and packages/envoy/scripts/airlock-lean-axioms.sh - "
-            "so on such a change envoy-go does not run and the seed corpus would run nowhere. Its "
-            "own two steps are the corpus comparison and the 120-second fuzz, which seeds from "
-            "that same corpus, so both name the function. envoy-go's step \"Count the database "
-            "broker suites' skips\" runs every broker package but the race lane's through "
+            "R3 (dispatch://INFRA-1408/spec): airlock-lean holds the Go airlock to its Lean model. "
+            "It is a leg of go-envoy, which runs on every pull request its filter selects, where "
+            "envoy-go is a leg of go-envoy-held, which a pull request runs only with full-ci, so "
+            "on such a pull request the seed corpus would run nowhere else. Its leg's two steps are "
+            "the corpus comparison and the 120-second fuzz, which seeds from that same corpus, so "
+            "both name the function. The envoy-go legs' step \"Count the database broker suites' "
+            "skips\" runs every broker package but the race lane's through "
             "packages/envoy/scripts/database-skips.sh, so a listing counts the function run there "
             "too, but it skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS "
             "records, so the corpus runs only in airlock-lean."
@@ -241,8 +241,8 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
-            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+            (".github/workflows/ci.yaml", "airlock-lean"),
+            (".github/workflows/ci.yaml", "Count the database broker suites' skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestModelAgreesOnHostShapes",),
@@ -259,8 +259,8 @@ EXCEPTIONS = (
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
-            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+            (".github/workflows/ci.yaml", "airlock-lean"),
+            (".github/workflows/ci.yaml", "Count the database broker suites' skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
