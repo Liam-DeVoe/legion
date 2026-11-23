@@ -407,8 +407,9 @@ func printReleasedNames(w io.Writer, answer []byte) error {
 // fresh session, since the session, its workspace and everything the worker knows of its issue
 // stay where they are (api's compact).
 //
-// The request carries no deadline of its own, as no `legion claims` request does: a compaction
-// is a model call over the whole transcript, and the daemon bounds it at ten minutes
+// The request waits as long as `--wait` says, one minute by default, as every `legion claims`
+// request does, and the daemon goes on with a compaction that outlasts it: a compaction is a model
+// call over the whole transcript, and the daemon bounds it at ten minutes
 // (runtime.CompactTimeout). The daemon's answer is printed whether or not the session was
 // compacted — a session too small to compact, or one already compacted, is reported with Oh My
 // Pi's own words for it, and whatever task the claim owed has gone again in either case.
