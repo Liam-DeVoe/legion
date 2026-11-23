@@ -1089,9 +1089,11 @@ function AgentFilterBar({
  * included, and `Clear selection` also empties the selected rows the filters hide. A selected
  * session missing from a list that is not `current` is counted as of unknown state, not as gone,
  * as the composer's chip names it. Clear selection goes with the selection it empties, and the
- * focus it held goes to the select-all checkbox before it, else, while no row matches and that
- * checkbox is disabled, to the search box, each only while the reader can see it, else to the
- * main content's own stop with no scroll (`useFocusPlace`).
+ * focus it held goes to the select-all checkbox before it while the reader can see it
+ * (`useFocusPlace`). While no row matches, that checkbox is disabled and the header holds no
+ * other control, so the page's rescue walks the focus back over the main content to the nearest
+ * control before the header that the reader can see and that takes no typed text: the Filter
+ * button.
  */
 function SelectionHeader({
   current,
@@ -1099,7 +1101,6 @@ function SelectionHeader({
   matching,
   onClear,
   onToggle,
-  searchInputRef,
   selected,
 }: {
   /** Whether the latest read of `listed` succeeded, so that it says who is absent (`useAgents`). */
@@ -1108,7 +1109,6 @@ function SelectionHeader({
   matching: readonly Agent[];
   onClear: () => void;
   onToggle: () => void;
-  searchInputRef: RefObject<HTMLInputElement | null>;
   selected: ReadonlySet<string>;
 }): ReactNode {
   const selection = matchingSelection(listed, matching, selected, current);
@@ -1122,7 +1122,7 @@ function SelectionHeader({
   }, [state]);
   const noteFocus = useFocusPlace(
     () => header.current,
-    () => searchInputRef.current
+    () => null
   );
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only notes which control of the header took the focus, for the hand-off when a commit takes that control away (`useFocusPlace`), so the header needs no role of its own.
@@ -1709,7 +1709,6 @@ export function AgentsPage(): ReactNode {
             matching={matching}
             onClear={() => setSelected(() => new Set())}
             onToggle={() => setSelected((current) => toggleMatching(matching, current))}
-            searchInputRef={searchInputRef}
             selected={selected}
           />
           {matching.length === 0 && current ? (

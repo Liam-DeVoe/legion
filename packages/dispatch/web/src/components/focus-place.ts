@@ -44,23 +44,31 @@ import { ROW_SELECTOR } from "./row-marker";
  *  row holds one as a control either way (`ROW_CONTROL`). */
 const FORM_FIELDS = ["button", "textarea", "input", "select"];
 
-/** A link or a form control the page has not taken out of the Tab order: `tabindex="-1"` is a
- *  page's word that the keyboard does not stop there - a tab of a tab list other than the
- *  selected one, and a control of a row of the issue page's outline while that row holds no Tab
- *  stops (`tabStops`), since the keys move the focus between those rows. A hand-off that counted
- *  them would land where no key could have taken the reader: at 390 px in Chromium, "66 more rows
- *  below" on the outline drew its rows in its place, the rescue landed on the first one's "more ·
- *  106 words", and that row, holding the focus, opened its body and drew its words whole. */
+/** A link, a disclosure's summary or a form control the page has not taken out of the Tab order:
+ *  `tabindex="-1"` is a page's word that the keyboard does not stop there - a tab of a tab list
+ *  other than the selected one, and a control of a row of the issue page's outline while that row
+ *  holds no Tab stops (`tabStops`), since the keys move the focus between those rows. A hand-off
+ *  that counted them would land where no key could have taken the reader: at 390 px in Chromium,
+ *  "66 more rows below" on the outline drew its rows in its place, the rescue landed on the first
+ *  one's "more · 106 words", and that row, holding the focus, opened its body and drew its words
+ *  whole. */
 const IN_TAB_ORDER = ':not([tabindex="-1"])';
 
 /** An element given a Tab stop of its own: any `tabindex` but -1. */
 const TAB_STOP = `[tabindex]${IN_TAB_ORDER}`;
 
-/** What the keyboard focus can reach: a link, a form control that is not `disabled`, each left
- *  in the Tab order (`IN_TAB_ORDER`), or anything given a Tab stop of its own. A control refused
- *  with `aria-disabled` is one, since it keeps its Tab stop. */
+/** A disclosure's summary: the first `<summary>` of a `<details>`, which the keyboard reaches as
+ *  it reaches a button, to open and close its disclosure. The Artifacts tab's references Retry
+ *  draws the Referenced by disclosure in its place once its read answers, and the summary is what
+ *  the press drew there. */
+const SUMMARY = "details > summary:first-of-type";
+
+/** What the keyboard focus can reach: a link, a disclosure's summary, a form control that is not
+ *  `disabled`, each left in the Tab order (`IN_TAB_ORDER`), or anything given a Tab stop of its
+ *  own. A control refused with `aria-disabled` is one, since it keeps its Tab stop. */
 const FOCUSABLE = [
   `a[href]${IN_TAB_ORDER}`,
+  `${SUMMARY}${IN_TAB_ORDER}`,
   ...FORM_FIELDS.map((tag) => `${tag}:not(:disabled)${IN_TAB_ORDER}`),
   TAB_STOP,
 ].join(", ");
@@ -161,7 +169,8 @@ interface Place {
  * passing over every control that takes typed text, as the rescue's walk back does (`walkBack`):
  * the reader never chose such a field, and their next key would be typed into it. Where no other
  * control stands there, the focus goes to what `fallback` names for that container (a table row's
- * fallback is the row itself, and a row that has left the page names none).
+ * fallback is the row itself, and a row that has left the page names none). A fallback that takes
+ * typed text, as a search box does, is passed over by the same rule, so it names no control.
  *
  * The hand-off keeps the rescue's sight rule as well. It passes over each of those controls, the
  * fallback included, that the reader cannot see now (`inSightNow`), and lands the first one in
@@ -173,7 +182,8 @@ interface Place {
  * the focus goes with no scroll to the own stop (`focusOwnStop`) of the region the container is
  * in (`handOffRegionOf`): the dialog or panel holding it, else the shell's main content. Where
  * that region is not in the page and drawn, nothing moves. Nothing moves either where neither the
- * walk nor `fallback` names any control, and the page's rescue answers that loss.
+ * walk nor `fallback` names any control, and the page's rescue answers that loss: its walk back
+ * runs over the whole region, past the container's own controls (`handOn`).
  *
  * The component puts the handler this returns on its root as `onFocus`, which every focus inside
  * it bubbles to, from a portal too, since React bubbles through its own tree. `containerOf` names
@@ -235,7 +245,10 @@ export function useFocusPlace(
       walked = walkBack(controls, index, atPlaceOf(held.rows, held.container));
     }
     const fallbackControl = fallback(held.container);
-    const candidates = fallbackControl === null ? walked : [...walked, fallbackControl];
+    const candidates =
+      fallbackControl === null || takesText(fallbackControl)
+        ? walked
+        : [...walked, fallbackControl];
     if (candidates.length === 0) return;
     // One read of each box's style for the whole hand-off (`clippingBoxes`).
     const clips = new Map<Element, boolean>();
@@ -1123,7 +1136,7 @@ function goneFrom(spot: Spot, within: Element): boolean {
  *  its row goes - the loss is noted at the disable's `focusout` then - and that control keeps its
  *  place in the row. */
 const ROW_CONTROL = [
-  ...["a[href]", ...FORM_FIELDS].map((tag) => `${tag}${IN_TAB_ORDER}`),
+  ...["a[href]", SUMMARY, ...FORM_FIELDS].map((tag) => `${tag}${IN_TAB_ORDER}`),
   TAB_STOP,
 ].join(", ");
 
@@ -1603,9 +1616,10 @@ export function aboveSightNow(
  *  question it shows (`SHOWN_ITEM_ATTRIBUTE`). Where nothing new stands there, or only another
  *  item, and the press took away a row the element was in, the focus lands on the same control
  *  in the row that now stands at that row's place - the row that stood right after it, moved up -
- *  so the reader can go on, else on that row's first control (`controlsOfRowMovedUp`), and that
- *  control is scrolled to its nearest edge where it is partly in sight (`land`). Only where no
- *  row stands there, or that row draws no control to take it, does the focus walk back
+ *  so the reader can go on, else on that row's first control (`controlsOfRowMovedUp`), each taken
+ *  only where the reader can see some of it (`inSightNow`), and scrolled to its nearest edge where
+ *  it is partly in sight (`land`). Only where no row stands there, or that row draws no control
+ *  in sight to take it, does the focus walk back
  *  (`walkBack`): to the control the region now draws at the element's place, which is a control
  *  that moved into the place from the element's own row, card or toolbar (`atPlaceOf`), else the
  *  nearest one before it however many went together, passing over every control that takes typed
@@ -1633,8 +1647,11 @@ export function aboveSightNow(
  *  stood in), else the nearest one before it, by the same walk back. Each of these is taken only
  *  in sight, passing over the controls of another item than the one that control was in. That
  *  place is counted where the control still stands, or off the spot it went from
- *  (`openerPlace`). A dialog opened from the body hands the focus nowhere: the body is where the
- *  reader was. */
+ *  (`openerPlace`). Where none of these is in sight, the own stop of the region that place is
+ *  in takes the focus with no scroll, as for a loss in that region itself: the Inbox's Decline
+ *  dialog goes with its row once the decline lands, and its opener's row and every control
+ *  before it can stand above the window then. A dialog opened from the body hands the focus
+ *  nowhere: the body is where the reader was. */
 function handOn(loss: Loss, main: HTMLElement | null): void {
   const { caused, region } = loss;
   if (!caused) {
@@ -1642,6 +1659,9 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     return;
   }
   let back: HTMLElement[] = [];
+  // The region whose own stop takes the focus where no control in sight does: the one the loss
+  // was in while it stands, else the one its opener's place is in.
+  let answeredIn = region;
   // The item the walk's place was in: the element's, else its opener's. The walk lands on no
   // control of another item.
   let item = loss.item;
@@ -1650,8 +1670,11 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
     for (const control of controlsInPlace(loss, drawn)) {
       if (focusNoScroll(control)) return;
     }
+    // The row that moved up stands where the removed row stood, which can be above the window:
+    // its control takes the focus only where the reader can see it, as a walk's landing does.
+    const shown = new Map<Element, boolean>();
     for (const control of controlsOfRowMovedUp(loss, drawn)) {
-      if (land(control)) return;
+      if (inSightNow(control, shown) && land(control)) return;
     }
     // A control hidden rather than taken away still stands in the page: its place is counted
     // where it stands, among the controls drawn now, since the count made at its `focusout` - one
@@ -1673,14 +1696,21 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
       ),
     ];
     item = opener.item;
+    answeredIn = opener.region;
   }
   const clips = new Map<Element, boolean>();
   for (const candidate of back) {
     if (inAnotherItem(candidate, item) || !inSightNow(candidate, clips)) continue;
     if (land(candidate)) return;
   }
-  if (!present(region) || region === document.body || !(region instanceof HTMLElement)) return;
-  focusOwnStop(region);
+  if (
+    !present(answeredIn) ||
+    answeredIn === document.body ||
+    !(answeredIn instanceof HTMLElement)
+  ) {
+    return;
+  }
+  focusOwnStop(answeredIn);
 }
 
 /** The place among `drawn`, the controls its region draws now, that `opener` - the control a
