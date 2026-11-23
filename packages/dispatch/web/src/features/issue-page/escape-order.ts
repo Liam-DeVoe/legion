@@ -7,6 +7,7 @@ import { useOutlineAddress } from "./document-address";
 import { WORDS_FILTER_ATTRIBUTE } from "./IssuePresets";
 import { presetPath } from "./issue-address";
 import { useAskOutline, useFocusBranch } from "./outline-request";
+import { CONTROL_LABELS } from "./page-words";
 import { useFollowing } from "./slots/following";
 import { nodeRowSelectorOf } from "./tree-focus";
 
@@ -16,6 +17,11 @@ const WORDS_CONTROL = `button[${WORDS_FILTER_ATTRIBUTE}]`;
 
 /** A row of the outline or of a view. */
 const ROW = "[data-node-row]";
+
+/** The stage's own tab stop: the tab-stop row of the outline, or of the view drawn in its place,
+ *  each a tree named as the outline is, which the Contents pane's list is not (`t c` reaches the
+ *  same row, `useIssueKeymap.ts`). */
+const STAGE_TAB_STOP = `[role="tree"][aria-label="${CONTROL_LABELS.tree}"] ${ROW}[tabindex="0"]`;
 
 /** The Verification view's body, which binds no Escape of its own (`VerificationFilterBody.tsx`):
  *  nothing gives a row of it back from a control inside it, so the view's Escape is next there. */
@@ -30,9 +36,9 @@ const VERIFICATION_BODY = "[data-verification-body]";
  * 2. an opened document closes, back to the outline address it was opened from
  *    (`OpenedDocument.tsx`);
  * 3. the focus in the words box leaves it (`words-leave`): for the row it was on before it went
- *    to the box, else - where that row is no longer drawn - for the box's Filter control where
- *    the box holds no words, which then shuts into it, and for the page where it holds words,
- *    which stay;
+ *    to the box, else - where it was on no row, or that row is no longer drawn - for the box's
+ *    Filter control where the box holds no words, which then shuts into it, and for the stage's
+ *    own tab stop where it holds words, which stay; never for the page's body;
  * 4. words in `?q=`, with the focus outside the box, are cleared (`words-clear`), which shuts the
  *    box: the box's own write, a replace marked with the following it was typed in, so the view
  *    stays and the following with it (`slots/following.ts`);
@@ -111,10 +117,16 @@ export function useEscapeOrder({
           back.focus();
           return;
         }
-        // The box shuts as it is left empty, in this press, so its control is there to take the
-        // focus.
-        flushSync(() => box.blur());
-        if (filter === "") document.querySelector<HTMLElement>(WORDS_CONTROL)?.focus();
+        if (filter === "") {
+          // The box shuts as it is left empty, in this press, so its control is there to take
+          // the focus.
+          flushSync(() => box.blur());
+          document.querySelector<HTMLElement>(WORDS_CONTROL)?.focus();
+          return;
+        }
+        // A box that holds words stays open, and the reader goes back to where the stage's keys
+        // work. With no row drawn to take the focus, it stays in the box.
+        document.querySelector<HTMLElement>(STAGE_TAB_STOP)?.focus();
       },
       when: () => document.activeElement?.matches(WORDS_BOX) === true,
     },

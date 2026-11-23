@@ -410,7 +410,7 @@ test("a document open, no caret: one Escape closes it, back to the outline addre
   }
 });
 
-test("the focus in the words box: one Escape leaves the box for the row it was on, else its Filter control, and keeps the words", async () => {
+test("the focus in the words box: one Escape leaves the box for the row it was on, else its Filter control or the stage's tab stop, and keeps the words", async () => {
   const user = userEvent.setup();
   const view = drawPage(`/issues/${KEY}/spec`);
   try {
@@ -443,6 +443,25 @@ test("the focus in the words box: one Escape leaves the box for the row it was o
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus());
     expect(pressed()).toBe("Spec");
+
+    // With no row to go back to, a box that holds words stays open, and the focus goes to the
+    // stage's own tab stop, the view's tab-stop row: never to the page's body.
+    await act(async () => (document.activeElement as HTMLElement | null)?.blur());
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await waitFor(() => expect(box()).toHaveFocus());
+    await user.type(box(), WORDS);
+    await waitFor(() => expect(address()).toBe(`/issues/${KEY}/spec?q=${WORDS}`));
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(document.activeElement, "leaving the box left the focus on the page's body").not.toBe(
+        document.body
+      )
+    );
+    const stop = await rowOf(view, "[data-spec-body]", STATEMENT_NODE);
+    expect(document.activeElement, "the focus did not go to the view's tab stop").toBe(stop);
+    expect(stop).toHaveAttribute("tabindex", "0");
+    expect(box()).toHaveValue(WORDS);
+    expect(address()).toBe(`/issues/${KEY}/spec?q=${WORDS}`);
   } finally {
     view.unmount();
   }
