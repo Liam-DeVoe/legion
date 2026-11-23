@@ -14,14 +14,15 @@ import {
   patchIssue,
   replyToMessageDelivery,
 } from "./api";
-import { inboxPane, selectRow } from "./inbox-pane";
+import { inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { agentRowId, asSession, replyRowId, sessionActor, THREAD_SESSION } from "./inbox-threads";
 import { drawnIds } from "./inbox-view";
+import { frontLiveView } from "./live-views";
 import { inboxRead } from "./pick-writes";
 import { sql } from "./psql";
 import { sqlLiteral } from "./seed";
 import { expandedState } from "./settled";
-import { expect, type Page, type Request, test } from "./test";
+import { expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -70,6 +71,36 @@ function pageRowIds(entries: readonly MeInboxEntry[] | null): string[] {
   });
 }
 
+/** What ties the reader to one node in an answer of the one read, each relation as
+ *  `<kind> <direction>`; undefined where the answer holds no entry for that node. */
+function tiesOf(read: MeInboxResponse, kind: string, id: string): string[] | undefined {
+  return (read.entries ?? [])
+    .find((entry) => entry.node.kind === kind && entry.node.id === id)
+    ?.relations?.map((relation) => `${relation.kind} ${relation.direction}`);
+}
+
+/** The lists the page's rows are items of, each as the ids of its rows top to bottom. A row is an
+ *  item of the nearest list around it (`ul`, `ol` or `role="list"`), so rows drawn in two lists,
+ *  wherever on the page the second one sits, are two entries here. */
+async function rowLists(page: Page): Promise<string[][]> {
+  return page.locator("[data-inbox-row]").evaluateAll((rows) => {
+    const lists = new Map<Element | null, string[]>();
+    for (const row of rows) {
+      const list = row.parentElement?.closest('ul, ol, [role="list"]') ?? null;
+      lists.set(list, [...(lists.get(list) ?? []), row.getAttribute("data-inbox-row") ?? ""]);
+    }
+    return [...lists.values()];
+  });
+}
+
+/** The Conversation turn an item link lands on, marked as the one it names (`useItemLanding`):
+ *  `turn` is the turn's own key, `<kind>:<id>`. */
+function landedTurn(page: Page, turn: string): Locator {
+  return page
+    .getByRole("list", { name: "Conversation turns" })
+    .locator(`li[data-turn="${turn}"][aria-current="true"]`);
+}
+
 /** Narrows the page's own Type filter to the value named `label`, or takes that value off again:
  *  the option toggles. The bar's Filter control and the Type trigger each say whether what they
  *  open is open, read once the page has drawn them (`expandedState`). */
@@ -85,7 +116,12 @@ async function toggleType(page: Page, label: string): Promise<void> {
   await page.keyboard.press("Escape");
 }
 
+// SLOW(>=2s): each of the four rows' links is followed to the page it opens and back, eight page
+// loads, and the rows are read again below the reading column's width.
 test("the inbox lists everything that reached a person in one list", async ({ browser }) => {
+  // A server that has just started serves each of those page loads in about five seconds, which
+  // takes the row past the 60 s budget (`testTimeout`); served warm, the same row takes 30 s.
+  test.setTimeout(180_000);
   // The page reads as a person a reference can name (`named`), so the mention below reaches
   // them; every write of theirs is made as them.
   const asReader = { login: named };
@@ -93,19 +129,22 @@ test("the inbox lists everything that reached a person in one list", async ({ br
   await createProject({ key: "CORE", name: "Core" }, asReader);
   const issue = await createIssue({ project: "CORE", title: "Release checklist" }, asReader);
   const closed = await createIssue({ project: "CORE", title: "Old rollout notes" }, asReader);
-  // An open ask a session asks on the first issue, which waits on the reader, its assignee.
+  // The issue waits on the reader, its assignee, so the ask below does too.
   await patchIssue(issue.key, { assignee: named }, asReader);
-  const ask = await createAsk(issue.key, { question: "Approve the release window?" }, asSession());
   // A comment thread the reader started, with the session's reply under it.
   const comment = await createComment(issue.key, { body: "Is the checklist complete?" }, asReader);
-  await createComment(
+  const commentReply = await createComment(
     issue.key,
     { body: "Two items are still open.", reply_to: comment.id },
     asSession()
   );
+  // An open ask a session asks on the first issue, after the comment thread's reply and before
+  // the message thread's: each row's newest write is newer than the one written before it, so by
+  // time the ask sits between two reply rows.
+  const ask = await createAsk(issue.key, { question: "Approve the release window?" }, asSession());
   // An issue message thread the reader started, with somebody else's reply under it.
   const message = await createMessage(issue.key, { body: "Who owns the rollback step?" }, asReader);
-  await createMessage(
+  const messageReply = await createMessage(
     issue.key,
     { body: "I own the rollback step.", in_reply_to: message.id },
     { login: other }
@@ -118,11 +157,13 @@ test("the inbox lists everything that reached a person in one list", async ({ br
       asReader
     )
   ).id;
-  await replyToMessageDelivery(
+  const directReply = await replyToMessageDelivery(
     direct,
     { attempt: 1, body: "The staging gate is open." },
     sessionActor()
   );
+  // A reply with a body answers the message it stored; a delivery report answers the attempt.
+  if (!("id" in directReply)) throw new Error("the session's reply stored no message");
   // A comment by somebody else that names the reader by the address the text grammar reads
   // (`dispatch://person/<login>`), and one the reader wrote themselves.
   const mention = await createComment(
@@ -154,13 +195,10 @@ test("the inbox lists everything that reached a person in one list", async ({ br
       const url = new URL(request.url());
       if (url.pathname === "/api/v1/me/inbox") oneReads.push(url);
     });
-    const answered = page.waitForResponse((response) => inboxRead(new URL(response.url())));
     await page.goto("/");
-    const entries = ((await (await answered).json()) as MeInboxResponse).entries;
 
     // One list of four rows: the open ask, the session's reply in the comment thread, the reply
-    // in the issue message thread and the session's reply to the direct message, the replies
-    // among the asks.
+    // in the issue message thread and the session's reply to the direct message.
     const rows = {
       ask: ask.id,
       comment: replyRowId(comment.id),
@@ -171,63 +209,127 @@ test("the inbox lists everything that reached a person in one list", async ({ br
     await expect
       .poll(async () => (await drawnIds(page)).sort(), { message: "the rows of the one list" })
       .toEqual(four);
+    // The reply rows sit among the ask rows rather than in a second list: every row is an item of
+    // the one list, and that list orders them by time, newest write first, as it orders every
+    // row. None of the four has a priority, so the default grouping draws them in one band, and
+    // the ask, written between the comment thread's reply and the message thread's, sits between
+    // those two rows.
+    await expect
+      .poll(async () => (await rowLists(page)).length, {
+        message: "the lists the rows are items of: one, the reply rows among the ask rows",
+      })
+      .toBe(1);
+    await expect
+      .poll(() => drawnIds(page), {
+        message: "the one list, newest write first: the ask between the replies either side of it",
+      })
+      .toEqual([rows.direct, rows.message, rows.ask, rows.comment]);
     // Nothing reached the reader that the page does not list: their own comment, the thread on
     // the closed issue and the mention of them are no rows of the page.
     for (const absent of [replyRowId(own.id), replyRowId(closedRoot.id), replyRowId(mention.id)]) {
       await expect(page.locator(`[data-inbox-row="${absent}"]`), absent).toHaveCount(0);
     }
+    // The reader's own comment is out of the list because nothing was delivered to its author:
+    // the one read ties it to them as its author and by no delivery, where the session's reply in
+    // the thread the reader started was delivered to them.
+    const reached = await getMeInbox({}, asReader);
+    const ownTies = tiesOf(reached, "comment", own.id)?.map((tie) => tie.split(" ")[0]);
+    expect(ownTies, "what ties the reader to the comment they wrote themselves").toContain(
+      "authored_by"
+    );
+    expect(ownTies, "a delivery of the reader's own comment to its author").not.toContain(
+      "delivered_to"
+    );
+    expect(
+      tiesOf(reached, "comment", commentReply.id)?.map((tie) => tie.split(" ")[0]),
+      "what ties the reader to the session's reply in the comment thread they started"
+    ).toContain("delivered_to");
 
-    // Each row carries its first line, its author, and a link that opens the thread at its root.
-    const refOf = (id: string) => {
-      const entry = (entries ?? []).find((candidate) => candidate.node.id === id);
-      return entry?.thread?.ref ?? entry?.agent?.ref;
-    };
+    // Each row carries its first line and a link that opens the thread at its root: the link is
+    // followed, and where it lands draws the root, marked as the item the address names.
     const expected: readonly {
       id: string;
       firstLine: string;
-      author: string;
-      href: (href: string) => boolean;
+      path: string;
+      root: (on: Page) => Locator;
     }[] = [
       {
-        author: THREAD_SESSION.title,
         firstLine: "Approve the release window?",
-        href: (href) => href.endsWith(`/asks/${ask.id}`),
         id: rows.ask,
+        path: `/issues/${issue.key}/asks/${ask.id}`,
+        root: (on) => landedTurn(on, `ask:${ask.id}`),
       },
       {
-        author: THREAD_SESSION.title,
         firstLine: "Is the checklist complete?",
-        href: (href) => href === refOf(comment.id) && href.includes(comment.id),
         id: rows.comment,
+        path: `/issues/${issue.key}/comments/${comment.id}`,
+        root: (on) => landedTurn(on, `comment:${comment.id}`),
       },
       {
-        author: other,
         firstLine: "Who owns the rollback step?",
-        href: (href) => href === refOf(message.id) && href.includes(message.id),
         id: rows.message,
+        path: `/issues/${issue.key}/messages/${message.id}`,
+        root: (on) => landedTurn(on, `message:${message.id}`),
       },
       {
-        author: THREAD_SESSION.title,
+        // A direct message's thread is the session's conversation, which the live view draws
+        // with the reader's message in it under that message's own key.
         firstLine: "Please check the staging gate.",
-        href: (href) => href === refOf(direct),
         id: rows.direct,
+        path: `/agents/${THREAD_SESSION.session_id}/live`,
+        root: (on) => frontLiveView(on).locator(`[data-message-id="dispatch:${direct}"]`),
       },
     ];
     for (const row of expected) {
-      const listed = page.locator(`[data-inbox-row="${row.id}"]`);
+      const listed = inboxRow(page, row.id);
       await expect(listed, `${row.id}'s first line`).toContainText(row.firstLine);
       // The owner link names the thread at its root once the row has drawn it, read until it does.
       const owner = listed.locator("[data-inbox-owner]").first();
       await expect
-        .poll(async () => row.href((await owner.getAttribute("href")) ?? ""), {
-          message: `${row.id}'s link opens its thread at the root`,
+        .poll(async () => (await owner.getAttribute("href")) ?? "", {
+          message: `${row.id}'s link names its thread at the root`,
         })
-        .toBe(true);
-      await selectRow(page, row.id);
-      await expect(inboxPane(page), `${row.id}'s author in the reading pane`).toContainText(
-        row.author
+        .toBe(row.path);
+      await owner.click();
+      await expect(page, `${row.id}'s link opens ${row.path}`).toHaveURL(
+        (url) => url.pathname === row.path
       );
+      await expect(row.root(page), `${row.id}'s link opens its thread at the root`).toContainText(
+        row.firstLine
+      );
+      await page.goBack();
+      await expect(inboxRow(page, row.id), `the Inbox again, after ${row.path}`).toBeVisible();
+      // The pointer is where the link it followed was, and back on the list that is a link whose
+      // hover card would open over the next row: it leaves the list before the next click.
+      await page.mouse.move(0, 0);
     }
+
+    // Each row carries its author. Beside the reading column a row is one line of what it is
+    // about and whose it is, so the author is read where the row draws its card, below that
+    // column's width: the asker in the question's card, and each reply's author on that reply's
+    // own turn in the thread the row draws.
+    const wide = page.viewportSize() ?? { height: 720, width: READING_PANE_WIDTH };
+    await page.setViewportSize({ height: wide.height, width: READING_PANE_WIDTH - 1 });
+    for (const row of [
+      { author: THREAD_SESSION.title, id: rows.ask, on: `[data-testid="ask-${ask.id}"]` },
+      {
+        author: THREAD_SESSION.title,
+        id: rows.comment,
+        on: `[data-inbox-thread-turn="${commentReply.id}"]`,
+      },
+      { author: other, id: rows.message, on: `[data-inbox-thread-turn="${messageReply.id}"]` },
+      {
+        author: THREAD_SESSION.title,
+        id: rows.direct,
+        on: `[data-inbox-thread-turn="${directReply.id}"]`,
+      },
+    ]) {
+      await expect(
+        inboxRow(page, row.id).locator(row.on),
+        `${row.id}'s author on the row`
+      ).toContainText(row.author);
+    }
+    await page.setViewportSize(wide);
 
     // The page's own Type filter narrows the one list in the browser: Threads holds the two
     // Reply rows, and Agent message the one Agent row, out of the same list.
@@ -313,29 +415,33 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
   await expectMentioned(named, mentioned.id);
   await patchIssue(issue.key, { status: "done" }, asReader);
 
-  // The one read asked as a caller, for the threads the reader takes part in.
+  // The one read asked as a caller, after the close, for the threads the reader takes part in.
   const taking = await getMeInbox({ kind: "participates_in" }, asReader);
-  const tied = (kind: string, id: string) =>
-    (taking.entries ?? []).find((entry) => entry.node.kind === kind && entry.node.id === id);
   const asks = [answeredByReader, answeredByOther, retracted, declined];
-  const left = asks.find((ask) => tied("ask", ask.id) === undefined);
+  const left = asks.find((ask) => tiesOf(taking, "ask", ask.id) === undefined);
   expect(
     left,
     `the ask "${left?.question}" (${left?.id}) left the threads the reader takes part in`
   ).toBeUndefined();
   for (const ask of asks) {
-    expect(
-      tied("ask", ask.id)?.relations?.map(({ direction, kind }) => `${kind} ${direction}`),
-      `what holds the reader in "${ask.question}"`
-    ).toContain("participates_in outbound");
+    expect(tiesOf(taking, "ask", ask.id), `what holds the reader in "${ask.question}"`).toContain(
+      "participates_in outbound"
+    );
   }
   expect(
-    tied("comment", thread.id)?.relations?.map(({ direction, kind }) => `${kind} ${direction}`),
+    tiesOf(taking, "comment", thread.id),
     "what holds the reader in the thread they wrote in and read"
   ).toContain("participates_in outbound");
+  // The thread they were only mentioned in is the read's answer after the close too: read whole,
+  // it ties the reader to that comment by its mention of them.
+  expect(
+    tiesOf(await getMeInbox({}, asReader), "comment", mentioned.id),
+    "what ties the reader, after the close, to the thread they were only mentioned in"
+  ).toContain("mentions inbound");
 
-  // The page lists neither thread: these are answers of the read for its callers, and the Inbox
-  // lists the rows it lists today, which are the rows its own read answered.
+  // The page lists neither thread and none of the four asks: these are answers of the read for
+  // its callers, and the Inbox lists the rows it lists today, which are the rows its own read
+  // answered.
   const context = await asUser(browser, named);
   try {
     const page = await context.newPage();
@@ -351,6 +457,14 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
     expect(drawn, "the rows the page draws").not.toContain(replyRowId(mentioned.id));
     for (const absent of [replyRowId(thread.id), replyRowId(mentioned.id)]) {
       await expect(page.locator(`[data-inbox-row="${absent}"]`), absent).toHaveCount(0);
+    }
+    // None of the four asks is among the rows the page draws at `/`: the page keeps the rows it
+    // has, and an ask answered, retracted or declined on a closed issue is none of them.
+    const listed = await drawnIds(page);
+    for (const ask of asks) {
+      expect(listed, `the Inbox at / lists the ask "${ask.question}" (${ask.id})`).not.toContain(
+        ask.id
+      );
     }
   } finally {
     await context.close();
