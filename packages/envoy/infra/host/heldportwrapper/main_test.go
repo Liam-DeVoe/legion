@@ -26,10 +26,11 @@ import (
 // envoy-listener of this branch.
 
 // TestMain makes this test process the subreaper of what it starts (becomeSubreaper), so what the
-// wrapper leaves behind stays among the test's descendants, which is all requireTheTestsAlone walks.
+// wrapper leaves behind stays among the test's descendants, which is all requireTheTestsAlone walks,
+// and builds each command the tests run once for the whole test process (cmdtest.Main).
 func TestMain(m *testing.M) {
 	becomeSubreaper()
-	os.Exit(m.Run())
+	os.Exit(cmdtest.Main(m))
 }
 
 // The wrapper takes the socket the test holds and becomes the listener, which serves on it: the
