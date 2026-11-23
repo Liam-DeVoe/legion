@@ -60,6 +60,9 @@ A host that runs them needs GNU findutils 4.9 or later (`find -files0-from`, whi
 
 A proof whose item names no plan an owner gives runs each issue on the project's default steps, `planner implementer tester reviewer acceptance:owner`, or, where its driver seeds an issue with no plan rows, on today's line, which has the same steps in the same order.
 So where a sentence below names a planner, the implementer and its pull request, a tester, a reviewer whose review on GitHub decides its round, the architect's acceptance, the implementer's retro or the merge, it names a step of that plan.
+On those steps the architect's one step of its own is the acceptance, whose App is the review App, the architect's own.
+So where a sentence below names the App a role acts as, it holds of those steps.
+There the implementer and the merger act as the implement App, and every other role as the review App.
 Under another plan the owner can do any step itself, told by an `owner-step` notice and reporting it with `complete_step`, a step `acceptance` with no key is a fresh agent, and a task with no pull request is done when its retro ends, with no merge, as [`owner-does-step.sh`](#owner-does-stepsh) proves.
 
 Each item below names a script, then what it proves.
