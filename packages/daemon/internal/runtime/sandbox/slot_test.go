@@ -160,9 +160,9 @@ func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
 	first, second := "first", "second"
 	lease.Store(&first)
 	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer}), withOptions(func(o *Options) {
-		o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		o.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			app := string(role)
-			if acting, err := appauth.AppRoleFor(role, nil); err == nil {
+			if acting, err := appauth.AppRoleFor(role, nil, appauth.Planned{}); err == nil {
 				app = string(acting)
 			}
 			owner := strings.ToLower(repo.Owner())
@@ -173,7 +173,7 @@ func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
 				"acme": ghconfig.Render("ghs_"+app+"_"+*lease.Load()+"_read", app, staticCredentialExpiry),
 				owner:  ghconfig.Render("ghs_"+app+"_"+*lease.Load(), app, staticCredentialExpiry),
 			}}, nil
-		}
+		})
 	}))
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	slot := roleSecretName(loc.Sandbox.Name, "implementer-2")
