@@ -1044,9 +1044,20 @@ role_handoff() {
   db_value "select p.handoff_commit from phases p join issues i on i.key = p.issue
     where p.issue = '$issue' and p.role = '$role' and p.handoff_commit <> ''${phases:+ and i.phase in ($phases)}"
 }
-# review_round ISSUE prints the implementer's review round: 0 before its first return.
+# review_round ISSUE prints the issue's review round (its returns to implementing): 0 before its
+# first return. The daemon keeps it where it keeps every count of returns (record.ReturnCounts): on
+# the task the plan runs, for an issue with plan rows at its generation, and on the implementer's
+# phases row for one with none.
 review_round() {
-  db_value "select coalesce((select rounds from phases where issue = '$1' and role = 'implementer'), 0)"
+  local planned
+  planned=$(db_value "select exists (select 1 from issue_plans p join issues i on i.key = p.issue and i.generation = p.generation
+    where p.issue = '$1')")
+  if [ "$planned" = t ]; then
+    db_value "select coalesce((select t.rounds from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation
+      where t.issue = '$1' and t.state = 'running'), 0)"
+  else
+    db_value "select coalesce((select rounds from phases where issue = '$1' and role = 'implementer'), 0)"
+  fi
 }
 # handoff_word ROLE prints the word of the Dispatch handoff record ROLE's file-backed phase ends
 # with (the daemon's phase.HandoffFile): plan, implement, test or review.
