@@ -185,10 +185,28 @@ export const DEFAULT_PATTERNS = {
     /record\w*[^.]{0,60}?from (?:the |a |CI's |its )?(?:CI|GitHub)(?:'s)? (?:run|job|check run)|record\w*[^.]{0,40}?(?:result|check)[^.]{0,40}?from (?:the |a )?CI run/i,
 } as const;
 
-/** Words that give a sentence's rule to checks in general: a quantifier on `check`, or `checks`.
- *  A sentence that holds one is a rule on every check, even where it also names one of its own
- *  checks as an example. */
-const ON_EVERY_CHECK = /\b(?:any|each|every|all|no|other)\b[^.;:]{0,40}?\bchecks?\b|\bchecks\b/i;
+/** Words that give a sentence's rule a general subject: a check noun (`check`, `checks`), with or
+ *  without an article or a quantifier, a bare `each`, `every`, `all`, `any` or `other`, or a
+ *  marker that makes a named check an example of a class (`including`, `such as`, `for example`,
+ *  `e.g.`, `like`, `among them`). */
+const GENERAL_SUBJECT =
+  /\bchecks?\b|\b(?:each|every|all|any|others?)\b|\bincluding\b|\bsuch as\b|\bfor example\b|\be\.g\.|\blike\b|\bamong them\b/i;
+
+/** Whether a sentence's rule is on one of the document's own checks alone: it names exactly one
+ *  of them, and holds no general subject once that check's own noun (`check c13`, `c13 check`) is
+ *  taken out. A sentence that names a check only as an example of a rule on checks in general is
+ *  a rule for all checks; where the census cannot tell, the sentence is listed for a reader. */
+function ruleOnOneOwnCheck(sentence: string, ownChecks: ReadonlySet<string>): boolean {
+  const named = [...ownChecks].filter((id) => namesCheck(sentence, new Set([id])));
+  const [id] = named;
+  if (named.length !== 1 || id === undefined) return false;
+  const own = escaped(id);
+  const bound = new RegExp(
+    `\\bcheck\\s+\`?${own}\`?(?![\\w-])|(?<![\\w-])\`?${own}\`?\\s+check\\b`,
+    "gi"
+  );
+  return !GENERAL_SUBJECT.test(sentence.replace(bound, " "));
+}
 
 /** A plan line that gives a check one run at a head, as the measurements' `ONCE` reads it. */
 const ONCE = /\bonce,? at (?:the|that|each) head|\bits only run\b|\bruns? once\b|\bonly once\b/i;
@@ -253,9 +271,10 @@ export interface TextMatch {
 
 /**
  * Each sentence of a text that holds the old rule: first the fixed strings p1 to p6, then the two
- * patterns over the sentences that hold none of them. A pattern hit whose sentence restricts its
- * rule to one of the document's own checks — it names the check and holds no words on checks in
- * general — is the owner's narrower rule for that check, and is not listed.
+ * patterns over the sentences that hold none of them. A pattern hit whose rule is on one of the
+ * document's own checks alone (`ruleOnOneOwnCheck`) is the owner's narrower rule for that check,
+ * and is not listed; a hit that names an own check beside a general subject, or more than one
+ * own check, is listed.
  */
 export function matchesIn(
   markdown: string,
@@ -281,7 +300,7 @@ export function matchesIn(
       const old = patterns.old.exec(sentence);
       const cirec = patterns.cirec.exec(sentence);
       if (old === null && cirec === null) continue;
-      if (namesCheck(sentence, ownChecks) && !ON_EVERY_CHECK.test(sentence)) continue;
+      if (ruleOnOneOwnCheck(sentence, ownChecks)) continue;
       found.push({
         rules: [...(old === null ? [] : ["old-rule"]), ...(cirec === null ? [] : ["ci-recording"])],
         match: (old ?? cirec)?.[0] ?? sentence,

@@ -459,9 +459,9 @@ describe("the text census", () => {
 
 describe("the owner's narrower rule", () => {
   const ownChecks = new Set(["c13"]);
-  const rulesOf = (sentence: string): string[] =>
+  const rulesOf = (sentence: string, own: ReadonlySet<string> = ownChecks): string[] =>
     censusModule
-      .matchesIn(sentence, ownChecks, censusModule.DEFAULT_PATTERNS)
+      .matchesIn(sentence, own, censusModule.DEFAULT_PATTERNS)
       .flatMap((found) => found.rules);
 
   test("a rule on every check is listed", () => {
@@ -477,6 +477,34 @@ describe("the owner's narrower rule", () => {
       ["old-rule"]
     );
   });
+
+  // A rule whose subject is any check, with an own check only as an example, is a class rule.
+  for (const sentence of [
+    "The tester does not run a before_merge check again, including c13.",
+    "The tester does not run each check again, such as c13.",
+    "The tester does not run before_merge checks again, c13 among them.",
+    "The tester does not run a check again, for example c13.",
+    "The tester does not run them all again, c13 too.",
+  ]) {
+    test(`a class rule that names an own check is listed: ${sentence}`, () => {
+      expect(rulesOf(sentence)).toEqual(["old-rule"]);
+    });
+  }
+
+  test("a rule that names two own checks is listed", () => {
+    expect(rulesOf("The tester does not run c13 or c14 again.", new Set(["c13", "c14"]))).toEqual([
+      "old-rule",
+    ]);
+  });
+
+  for (const sentence of [
+    "The tester does not run check c13 again: the implementer owns it.",
+    "The tester does not run the c13 check again.",
+  ]) {
+    test(`a rule on the one own check, by its own noun, stays quiet: ${sentence}`, () => {
+      expect(rulesOf(sentence)).toEqual([]);
+    });
+  }
 });
 
 /** The planted round, as `round.json` holds it, with the changes each control makes. */

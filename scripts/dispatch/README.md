@@ -98,10 +98,15 @@ In each text it looks for the six wordings of the old rule as fixed strings, ove
 bold marks taken out and each run of whitespace folded to one space, so a wording broken across
 lines is still found. Over the sentences that hold none of them it runs the two patterns of the
 measurements: the old rule in other words, and the rule that a role records a check from a CI run.
-A pattern hit whose sentence names one of that document's own checks, and holds no words on checks
-in general (`any`, `each`, `every`, `all`, `no` or `other` before `check`, or `checks`), is the
-owner's narrower rule for that check, and is not listed. Each row names the issue, the document,
-its version and token, the match and its paragraph.
+A pattern hit is not listed only where its rule is on one of that document's own checks alone:
+the sentence names exactly one of them, and holds no general subject once that check's own noun
+(`check c13`, `c13 check`) is taken out. A general subject is a check noun (`check`, `checks`),
+with or without an article or a quantifier; a bare `each`, `every`, `all`, `any` or `other`; or a
+marker that makes the named check an example (`including`, `such as`, `for example`, `e.g.`,
+`like`, `among them`). So "The tester does not run c13 again" is the owner's narrower rule, and
+"The tester does not run a before_merge check again, including c13" is a rule on every check and
+is listed, as is a sentence that names two of the document's checks. Each row names the issue,
+the document, its version and token, the match and its paragraph.
 
 `--limit <n>` reads one page of `n` issues for each status, which is how the control that a short
 list reports UNKNOWN is run. `--break-patterns` makes the two patterns match nothing, which is the
