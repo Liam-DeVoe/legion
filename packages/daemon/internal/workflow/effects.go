@@ -718,6 +718,11 @@ type startMarks struct {
 	// its own (record.SuperviseRequest.FreshSession). Only the operator's `legion claims retry
 	// --fresh-session` asks for it, which reaches the retry of a held phase alone (restart).
 	freshSession bool
+	// refusedPod is the uid of the issue pod whose refusal of the claim's launch queued the start
+	// (record.SuperviseRequest.RefusedPod): the send of an owed entry queueRefusedStart makes sets
+	// it, so the end of that start asks the workflow nothing while that pod still refuses the claim
+	// (the daemon outbox's startRowEnded). Every other door leaves it empty.
+	refusedPod string
 	// reasserts says the start sends work the record already owes the role rather than carrying
 	// a fact new to the record, so it marks no movement of the issue (reassertion, startOrOwe). It
 	// rides on no request: started reads it to tell startOrOwe which movement the start is, and
@@ -765,7 +770,8 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RoundNamed: marks.stored && namesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+		RoundNamed: marks.stored && namesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession,
+		RefusedPod: marks.refusedPod}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks

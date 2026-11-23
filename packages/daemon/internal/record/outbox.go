@@ -2446,6 +2446,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.WakeKind == pods.WakePause && value.Pause == 0 {
 			return fmt.Errorf("a start for a %s wake names the pause that owed it", value.WakeKind)
 		}
+		if value.RefusedPod != "" && value.Op != "start" {
+			return fmt.Errorf("a supervise %s names the refused pod %q; only a start a refused launch queued names one", value.Op, value.RefusedPod)
+		}
 	case RoleMessage:
 		if value.Role == "" {
 			return fmt.Errorf("role message requires role")

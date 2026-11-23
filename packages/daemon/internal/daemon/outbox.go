@@ -467,6 +467,12 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 // launch, so its end tells the workflow nothing; asking there would queue a start the same fence
 // finishes, whose end would ask again, at the database's speed.
 //
+// Nor does a start the refusal itself queued ask again while that refusal stands: it is marked
+// with the pod whose refusal queued it (record.SuperviseRequest.RefusedPod), and while the machine
+// reports that same pod a start queued for it again would end the same way. A start marked with a
+// pod that no longer refuses the claim asks again, as an unmarked start does, for the refusal of
+// the pod that stands now, which the fact carries for the start it queues.
+//
 // It runs on a goroutine of its own, since the read waits out the decision in flight on the
 // claim's machine, which can hold a Sandbox relaunch for minutes, and the lane goes on meanwhile.
 // A fact it cannot apply is logged at ERROR and tried again on a backoff (retryUntilApplied, from
@@ -494,14 +500,18 @@ func (r *outbox) startRowEnded(ctx context.Context, row record.OutboxRow) {
 			return
 		}
 		machine, found := r.supervisor.Machine(token)
-		if !found || machine.RefusedPod() == "" {
+		if !found {
+			return
+		}
+		pod := machine.RefusedPod()
+		if pod == "" || pod == request.RefusedPod {
 			return
 		}
 		held := machine.Claim()
 		if held.LastStartRow != row.ID {
 			return
 		}
-		fact := intake.RefusedStartEnded{Issue: held.Issue, Role: held.Role, Claim: token}
+		fact := intake.RefusedStartEnded{Issue: held.Issue, Role: held.Role, Claim: token, Pod: pod}
 		id := fmt.Sprintf("refused-start-ended:%s:%d", token, row.ID)
 		retryUntilApplied(ctx, r.log, "apply the end of a start row of a claim its pod refused", refusalRetryFirst, refusalRetryMost, func(ctx context.Context) error {
 			_, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...)

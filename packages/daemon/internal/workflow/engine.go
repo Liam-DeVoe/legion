@@ -1944,7 +1944,7 @@ func (e *Engine) refusedStartEnded(ctx context.Context, tx pgx.Tx, fact intake.R
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.startRefusedClaim(ctx, tx, *issue, intake.PodRefusedLaunch{Issue: fact.Issue, Role: fact.Role, Claim: fact.Claim})
+	return intake.Result{}, e.startRefusedClaim(ctx, tx, *issue, intake.PodRefusedLaunch{Issue: fact.Issue, Role: fact.Role, Claim: fact.Claim, Pod: fact.Pod})
 }
 
 // startRefusedClaim queues the start of a claim whose launch its issue's pod refused
@@ -1970,6 +1970,14 @@ func (e *Engine) startRefusedClaim(ctx context.Context, tx pgx.Tx, issue record.
 // none. A claim of a role the deployment lost, or one that runs in the slot of such a role
 // (lostSlot), is queued nothing: its task is stopped (stopLostRoles), no pod the deployment builds
 // has its slot, and its start would wait for one for ever; the skip is logged.
+//
+// Either start is marked with the pod whose refusal queued it (fact.Pod,
+// record.SuperviseRequest.RefusedPod). The end of a start row of a claim whose last launch stands
+// refused asks for the claim's start again (RefusedStartEnded, the daemon outbox's startRowEnded),
+// and the end of a start marked with the pod that still refuses the claim asks nothing: a start
+// queued for that refusal again would end the same way. So a start this queues adds at most one
+// more, whichever fence ends it, and a start of an earlier refusal, whose pod has gone, still asks
+// again where a new pod refuses the launch its own resume raised.
 //
 // Nor is a start queued that the outbox would finish without acting, before it reaches the claim
 // (the daemon outbox's start): the start of the role of a stopped task's step (StoppedStepRole),
@@ -2012,11 +2020,11 @@ func (e *Engine) queueRefusedStart(ctx context.Context, tx pgx.Tx, issue record.
 			return err
 		}
 		if worker == fact.Claim && row.Entry > 0 {
-			return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{resend: true})
+			return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{resend: true, refusedPod: fact.Pod})
 		}
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: fact.Role, Claim: fact.Claim,
-		Generation: issue.Generation})
+		Generation: issue.Generation, RefusedPod: fact.Pod})
 }
 
 // memoryGuardKill tells the role whose process an issue pod's memory guard ended, or a microVM
