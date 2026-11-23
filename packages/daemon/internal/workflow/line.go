@@ -113,10 +113,10 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 
 // AgentAt is the name of the agent that does the work of place on w (record.PlanStep.AgentName), the
 // one place the workflow names a step's agent: for a step, the agent of that step, so the steps of
-// one key name one agent; for the retro, the agent of the task's last step of the type
-// implementation, which runs it. It is "" for the merge, for a walk with no plan rows, for a step
-// of the key owner, whose claim is no name on the issue, and for a place the task does not hold:
-// there the role stands for the agent (Engine.stepToken).
+// one key name one agent; for the retro, the agent of the task's step that does its implementation
+// work there (implementationPlace), which runs it. It is "" for the merge, for a walk with no plan
+// rows, for a step of the key owner, whose claim is no name on the issue, and for a place the task
+// does not hold: there the role stands for the agent (Engine.stepToken).
 func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 	if !w.Stored {
 		return ""
@@ -127,13 +127,44 @@ func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 			return w.Steps[place.Position-1].AgentName()
 		}
 	case record.PlaceRetro:
-		for i := len(w.Steps) - 1; i >= 0; i-- {
-			if w.Steps[i].Type == plan.TypeImplementation {
-				return w.Steps[i].AgentName()
-			}
+		if step, ok := w.implementationPlace(place); ok {
+			return w.Steps[step.Position-1].AgentName()
 		}
 	}
 	return ""
+}
+
+// implementationPlace is the place of the step whose agent does the implementation work of w's
+// task where it stands at place, the one rule of that agent whatever its role is called: the last
+// step of the type implementation (record.PlanStep.Type) at or before place, so a step of that type
+// is its own, and every step stands before the retro and the merge; where none stands there - a
+// task sent back to a step before every step of that type, or a place its line does not hold - the
+// task's last step of that type, whose agent made the head the task stands on. That agent runs the
+// retro (AgentAt), is asked to merge the base forward (mergeForward) and is told what CI said of its
+// head (tellChecks), each on the claim the start of its step names (Engine.implementationAgent).
+// A walk with no plan rows names its implementer's step. ok is false for a task with no step of
+// that type.
+func (w Walk) implementationPlace(place record.TaskPlace) (record.TaskPlace, bool) {
+	reached := len(w.Steps)
+	if place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
+		reached = place.Position
+	}
+	last := 0
+	for i := len(w.Steps) - 1; i >= 0; i-- {
+		if w.Steps[i].Type != plan.TypeImplementation {
+			continue
+		}
+		if i < reached {
+			return record.TaskPlace{Kind: record.PlaceStep, Position: i + 1}, true
+		}
+		if last == 0 {
+			last = i + 1
+		}
+	}
+	if last == 0 {
+		return record.TaskPlace{}, false
+	}
+	return record.TaskPlace{Kind: record.PlaceStep, Position: last}, true
 }
 
 // placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where
