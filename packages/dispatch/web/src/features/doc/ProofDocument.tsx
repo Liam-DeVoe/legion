@@ -107,9 +107,9 @@ declare global {
   interface Window {
     /** What the editor's build awaits between two of its batches in place of its own hand-back
      *  (`@legion/proof-editor`'s `betweenBatches`), read when the editor is constructed. Nothing
-     *  in production sets it: the end-to-end row "two people write in the AHXV6-1-shaped
-     *  document while its editor is built" (`e2e/large-documents-reader.e2e.ts`) does, to hold
-     *  the build at a batch of its choosing. */
+     *  in production sets it: the end-to-end rows of the large-documents family and of
+     *  `e2e/build-typing.e2e.ts` do, only through `holdTheBuild`
+     *  (`e2e/large-documents-build-hold.ts`), to hold the build at a batch of their choosing. */
     __dispatchHoldBuild?: (batchesDone: number) => Promise<void>;
   }
 }

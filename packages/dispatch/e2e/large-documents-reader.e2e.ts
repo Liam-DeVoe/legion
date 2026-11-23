@@ -61,11 +61,8 @@ import {
   sectionHeading,
   smallDocument,
 } from "./large-documents";
-import {
-  theMomentThePageReached,
-  throttleTheCpu,
-  watchTheBuildsWindow,
-} from "./large-documents-page";
+import { holdTheBuild } from "./large-documents-build-hold";
+import { watchTheBuildsWindow } from "./large-documents-page";
 import { watchThePageMove, whileThePageMoves } from "./large-documents-page-moves";
 import {
   aDrawWithinMs,
@@ -86,42 +83,54 @@ import { asUser } from "./users";
 //
 // What the waits `aBuildWithinMs` bounds cost, timed on this pod, one worker on two CPUs
 // (dispatch://INFRA-341), the slower of `chromium` and `iphone`: the linked block in the
-// viewport 16.25 s, the editor open over the reader's typing 19.91 s, the larger document's
-// card 11.50 s and its editor taking edits 14.26 s. So 45 s is more than twice the slowest of
-// them, and a row held only to `aDrawWithinMs` and `aBuildWithinMs` fails within about 60 s and
-// adds at most 90.4 s to its worker.
+// viewport 16.25 s, the editor open over the reader's typing 19.91 s, timed while that row
+// still throttled the renderer, the larger document's card 11.50 s and its editor taking edits
+// 14.26 s. So 45 s is more than twice the slowest of them, and a row held only to
+// `aDrawWithinMs` and `aBuildWithinMs` fails within about 60 s and adds at most 90.4 s to its
+// worker.
 //
-// The two-people row times nothing, so its four bounds are there only to end an attempt that
-// fails, by name. `herBuildHeldWithinMs` bounds the wait for her build to be held, from her
-// socket's release, and `herBuildWithinMs` the wait for her editor once the hold is released:
-// two parts of the one build of the AHXV6-1-shaped document, on a renderer nothing throttles,
-// that the typing row waits for whole at four times the cost inside `aBuildWithinMs`, so each
-// is given the same 45 s. `bothWritesAppliedWithinMs` bounds the wait for both people's writes
-// in her editor while her build is held, when her page has nothing else to do, and
-// `herBuildStallsAfterMs` how long her build may then go without a batch, where a batch aims
-// at 120 ms (`BATCH_BUDGET_MS` in `packages/proof-editor/src/progressive-build.ts`).
-// Measured in build Jobs (dispatch://INFRA-341, round 28), ten runs beside the rows of
-// `large-documents-build.e2e.ts` on three more workers, four CPUs in all, and ten alone on at
-// most three, all passing: her build was held at 665 to 1,181 of its 1,437 blocks, took 1.7 to
-// 7.3 s once released, and went at most 1.6 s without a batch. 45 s is six times the slowest
-// build, and 20 s twelve times the longest gap.
+// The two rows that hold her build, the typing row and the two-people row, time nothing, so
+// their bounds are there only to end an attempt that fails, by name. `herBuildHeldWithinMs`
+// bounds the wait of each for her build to be held, from her socket's release, and
+// `herBuildWithinMs` the two-people row's wait for her editor once the hold is released: two
+// parts of the one build of the AHXV6-1-shaped document, on a renderer nothing throttles, that
+// the typing row waited for whole at four times the cost inside `aBuildWithinMs` while it
+// throttled the renderer, so each is given the same 45 s. The typing row's own wait for her
+// editor once the hold is released is that second part, and it keeps `aBuildWithinMs`, the
+// same 45 s. `bothWritesAppliedWithinMs` bounds the wait for both people's writes in her editor
+// while her build is held, when her page has nothing else to do, `herEditWithinMs` the typing
+// row's wait for her one edit there, which is given the same 20 s for the same reason, and
+// `herBuildStallsAfterMs` how long her build may go without a batch once released, where a
+// batch aims at 120 ms (`BATCH_BUDGET_MS` in `packages/proof-editor/src/progressive-build.ts`).
+// Measured on the two-people row in build Jobs (dispatch://INFRA-341, round 28), ten runs
+// beside the rows of `large-documents-build.e2e.ts` on three more workers, four CPUs in all,
+// and ten alone on at most three, all passing: her build was held at 665 to 1,181 of its 1,437
+// blocks, took 1.7 to 7.3 s once released, and went at most 1.6 s without a batch. 45 s is six
+// times the slowest build, and 20 s twelve times the longest gap. The typing row's hold is at
+// the first boundary of the same build, which comes before any of those.
 //
-// So an attempt of that row that runs out at her editor has spent the 23.0 s the row took on
-// this pod before her socket's release (measured over the whole of this file), 45 s on the
-// hold, his four writes, 20 s on both writes and 45 s on her editor: 133 s and his writes. The
-// row and its retry add at most twice that to the worker, the most a row of this file adds,
-// inside the shard step's 18 minutes.
+// So an attempt of the two-people row that runs out at her editor has spent the 23.0 s the row
+// took on this pod before her socket's release (measured over the whole of this file), 45 s on
+// the hold, his four writes, 20 s on both writes and 45 s on her editor: 133 s and his writes.
+// The row and its retry add at most twice that to the worker, the most a row of this file adds,
+// inside the shard step's 18 minutes. An attempt of the typing row that runs out at her editor
+// spends the same 45 s, 20 s and 45 s after her socket's release, and nothing on writes of his.
 
 /** How long a row waits for a build of the larger document, or for the reader's own typing to
  *  have crossed a build, to end. */
 const aBuildWithinMs = 45_000;
 
-/** How long the two-people row waits for her build to be held, from her socket's release. */
+/** How long the typing row and the two-people row wait for her build to be held, from her
+ *  socket's release. */
 const herBuildHeldWithinMs = 45_000;
 
 /** How long the two-people row waits, with her build held, for both people's writes to be in
  *  her editor. */
 const bothWritesAppliedWithinMs = 20_000;
+
+/** How long the typing row waits, with her build held, for her page to make her one edit in it
+ *  or refuse it. */
+const herEditWithinMs = 20_000;
 
 /** The most the two-people row waits for her editor once her build is released, while it keeps
  *  landing batches. */
@@ -173,10 +182,11 @@ test(`a link to the decision block at the end of ${documentNames.large} lands on
 // on the screen and they take edits, which reach the Yjs document through a window onto the
 // blocks already built (`packages/proof-editor/src/progressive-build.ts`, acceptance A7). The
 // first of them needs no editor at all - a decision the server drew is answered through the
-// shared ask card in the page's own draw. The typing row throttles the renderer as the
-// measurement does, not to time anything but so the build lasts long enough for the page to
-// draw frames while it runs, which is where a reader's edits land, and the two-people row holds
-// its build at a batch instead (`holdHerBuild`).
+// shared ask card in the page's own draw. The rows of the large-documents family and of
+// `build-typing.e2e.ts` hold a build through `holdTheBuild` (`large-documents-build-hold.ts`),
+// and the typing row and the two-people row hold theirs at a batch, not to time anything but so
+// the page draws frames while it runs, which is where a reader's edits land, whatever the
+// machine's speed.
 
 test("a reader answers a decision block the server drew, with the editor's socket held @phone", async ({
   browser,
@@ -384,17 +394,35 @@ test(`typing in ${documentNames.small}'s first block while it is built reaches t
   try {
     const page = await alice.newPage();
     await readerEditsTheBuild(page, typing);
+    // Her build is held at its first boundary where her editor holds the title, and let go once
+    // her page has made her edit in a frame of that hold, or refused it: the hold makes the
+    // window her typing falls in, whatever the machine's speed. The title is the document's
+    // first block, so that is the boundary after the first batch, 8 of its 202 top-level blocks.
+    const hold = await holdTheBuild(page, { at: { texts: [title] } });
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
       { timeout: aDrawWithinMs }
     );
 
-    // Throttled here and not before the load: the build this row reads begins with the release
-    // below, and the boot and draw above it are setup (`throttleTheCpu`).
-    await throttleTheCpu(page);
-
     await transport.release();
+    await hold.held(herBuildHeldWithinMs);
+    try {
+      await expect
+        .poll(
+          () =>
+            page.evaluate(
+              () => window.__readerEditsRefused !== undefined || window.__readerEdits?.length === 1
+            ),
+          {
+            message: "her page never made her edit while her build was held",
+            timeout: herEditWithinMs,
+          }
+        )
+        .toBe(true);
+    } finally {
+      hold.release();
+    }
     await expect(documentEditor(page)).toBeVisible({ timeout: aBuildWithinMs });
     const whole = await blocksBuilt(page);
     const made = await editsMade(page, typing);
@@ -449,109 +477,8 @@ async function framesOfHerBuild(page: Page): Promise<void> {
   });
 }
 
-declare global {
-  interface Window {
-    /** What Alice's page says of the hold `holdHerBuild` puts on her build: how many blocks her
-     *  editor held when the build was held, answered once the row lets the build go on, or
-     *  `null` once her editor is named with no hold made. */
-    __herBuildHeld?: (blocks: number | null) => Promise<void>;
-  }
-}
-
-/** What `holdHerBuild` answers: a wait for the hold, and its release. */
-interface HerBuildHold {
-  /** Resolves with how many blocks her editor held, at whatever depth, when her build was held;
-   *  fails by name where the build ended without a hold, or was not held inside `timeoutMs`. */
-  readonly held: (timeoutMs: number) => Promise<number>;
-  /** Lets her build go on from the batch it is held at, or past the hold before it is reached. */
-  readonly release: () => void;
-}
-
-/**
- * Holds `page`'s editor build at the first boundary between two batches where the editor holds
- * every block `edits` name, until the row releases it, and has the page say through a binding
- * that it is held, with how many blocks the editor holds. Every other boundary answers today's
- * hand-back, a timer (`endOfTask` in `packages/proof-editor/src/progressive-build.ts`). The hold
- * is `window.__dispatchHoldBuild`, which `web/src/features/doc/ProofDocument.tsx` reads as the
- * editor is constructed and hands the build as `betweenBatches`, so install before the
- * navigation.
- *
- * A block is found by the text its edit finds its selection by, and the hold is taken in the
- * task the batch landed in, before a frame of the page can make an edit in it: the paste, the
- * last of them, takes away the very text it is found by. The build asks only with blocks still
- * to place, so a hold always leaves part of the document unbuilt.
- *
- * Over the AHXV6-1-shaped document such a boundary always comes before the end. The batches
- * count its 202 top-level blocks, and the last block the edits name is the 46th. A first batch
- * of 8 and a second of at most four times that, 32, stop short of it; a third of at most 128
- * ends by the 168th; and a later one began by the 45th, after a batch of at most 37, so it ends
- * by the 193rd. Her Enter, where she made it first, adds a block before the 46th, and the same
- * sums end by the 198th of 203. A build that ends with no hold anyway is said when her editor
- * is named, and the row fails by that name.
- */
-async function holdHerBuild(page: Page, edits: readonly ReaderEdit[]): Promise<HerBuildHold> {
-  const said = Promise.withResolvers<number | null>();
-  const released = Promise.withResolvers<void>();
-  await page.exposeFunction("__herBuildHeld", async (blocks: number | null) => {
-    said.resolve(blocks);
-    await released.promise;
-  });
-  await page.addInitScript(
-    (quotes: readonly string[]) => {
-      let held = false;
-      window.__dispatchHoldBuild = () => {
-        const root = document.querySelector(".proof-editor[data-write-path='live']");
-        const text = root?.querySelector('[contenteditable="true"]')?.textContent ?? "";
-        const say = window.__herBuildHeld;
-        if (
-          held ||
-          root === null ||
-          say === undefined ||
-          !quotes.every((quote) => text.includes(quote))
-        ) {
-          const { promise, resolve } = Promise.withResolvers<void>();
-          setTimeout(resolve, 0);
-          return promise;
-        }
-        held = true;
-        return say(root.querySelectorAll("[data-block-id]").length);
-      };
-      // The end of a build that was never held, which no boundary can say: the build asks
-      // nothing after its last batch.
-      const look = () => {
-        if (held) return;
-        if (document.querySelector('[role="textbox"][aria-label="Document editor"]') !== null) {
-          void window.__herBuildHeld?.(null);
-          return;
-        }
-        requestAnimationFrame(look);
-      };
-      requestAnimationFrame(look);
-    },
-    edits.map((edit) => edit.quote)
-  );
-  return {
-    held: async (timeoutMs) => {
-      const blocks = await theMomentThePageReached(
-        said.promise,
-        timeoutMs,
-        "her build was never held: no batch of it left her editor holding every block her " +
-          "edits name"
-      );
-      if (blocks === null) {
-        throw new Error(
-          "her build ended without being held: her editor was named before any boundary of it " +
-            "found every block her edits name, so Bob had no build to write into"
-        );
-      }
-      return blocks;
-    },
-    release: () => released.resolve(),
-  };
-}
-
 // The row below holds her build at a batch rather than throttling her renderer to make it last:
-// the hold makes the window his writes fall in, whatever the machine's speed (`holdHerBuild`),
+// the hold makes the window his writes fall in, whatever the machine's speed (`holdTheBuild`),
 // and the row reads where each write fell and times nothing.
 
 test(`two people write in ${documentNames.small} while its editor is built @phone`, async ({
@@ -589,7 +516,19 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
     const page = await alice.newPage();
     await readerEditsTheBuild(page, reading);
     await framesOfHerBuild(page);
-    const hold = await holdHerBuild(page, reading);
+    // Her build is held at the first boundary between two batches where her editor holds every
+    // block her edits name, each found by the text its edit finds its selection by. The hold is
+    // taken in the task the batch landed in, before a frame of her page can make an edit in it:
+    // the paste, the last of them, takes away the very text it is found by.
+    //
+    // Over the AHXV6-1-shaped document such a boundary always comes before the end. The batches
+    // count its 202 top-level blocks, and the last block the edits name is the 46th. A first
+    // batch of 8 and a second of at most four times that, 32, stop short of it; a third of at
+    // most 128 ends by the 168th; and a later one began by the 45th, after a batch of at most
+    // 37, so it ends by the 193rd. Her Enter, where she made it first, adds a block before the
+    // 46th, and the same sums end by the 198th of 203. A build that ends with no hold anyway is
+    // said when her editor is named, and the row fails by that name.
+    const hold = await holdTheBuild(page, { at: { texts: reading.map((edit) => edit.quote) } });
     const build = await watchTheBuildsWindow(page);
     const transport = await documentTransport(page, { holding: true });
     const moving = await watchThePageMove(page);
@@ -617,7 +556,7 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
     // a wait of the machine's own length: on a GitHub runner it outlasted all four of his
     // writes, so her editor held none of the document at the last of them and the run said
     // nothing about two people writing into one build (run 42988104355). Her page says when
-    // its build is held, in the task its batch landed in (`holdHerBuild`), and his first
+    // its build is held, in the task its batch landed in (`holdTheBuild`), and his first
     // keystroke follows that.
     //
     // Where in her build each of his writes falls is her page's own frames, paired with the
@@ -636,7 +575,7 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
       hisWrites.push(Date.now());
     };
     await transport.release();
-    const heldAt = await hold.held(herBuildHeldWithinMs);
+    const heldAt = (await hold.held(herBuildHeldWithinMs)).blocks;
     try {
       // His two words go in as one `Input.insertText` each rather than as one round trip per
       // character: what ProseMirror reads a word by is the DOM mutation its observer picks up,

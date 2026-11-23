@@ -386,10 +386,10 @@ and each command runs there.
 
 - `window.__dispatchHoldBuild` is what the editor's build awaits between two of its batches:
   `web/src/features/doc/ProofDocument.tsx` reads it as the editor is constructed and passes it
-  to `@legion/proof-editor` as `betweenBatches`. The row "two people write in the
-  AHXV6-1-shaped document while its editor is built" (`e2e/large-documents-reader.e2e.ts`) sets
-  it, to hold the build at a batch of its choosing, and nothing else may set it, in a test or in
-  production.
+  to `@legion/proof-editor` as `betweenBatches`. The end-to-end rows of the large-documents
+  family (`e2e/large-documents-*.e2e.ts`) and `e2e/build-typing.e2e.ts` set it, only through
+  `holdTheBuild` (`e2e/large-documents-build-hold.ts`), to hold the build at a batch of their
+  choosing, and nothing else may set it, in a test or in production.
 
 - A harness test drops a database it made with `dropDatabase` from `e2e/psql.ts`, never with
   `drop database … with (force)`, which refuses a login that is not a superuser, as CI's is not,

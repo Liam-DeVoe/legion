@@ -36,10 +36,13 @@
 // and its build is `large-documents-page.ts`, the steps a page takes on its way to an open
 // editor, which `large-documents-long-build.e2e.ts` waits on (`watchThePageMove`,
 // `whileThePageMoves`), are `large-documents-page-moves.ts`, which stood at the end of
-// `large-documents-page.ts` until that file passed 1,000 lines, and the probe two of the
+// `large-documents-page.ts` until that file passed 1,000 lines, the probe two of the
 // wall-clock rows read a build through (`whatTheBuildServes`) is
 // `large-documents-build-probe.ts`, which stood at the end of this file until the two together
-// passed 1,000 lines.
+// passed 1,000 lines, and the hold a row puts on its editor's build between two batches
+// (`holdTheBuild`), which the rows of this family and of `build-typing.e2e.ts` hold or pace a
+// build through, is `large-documents-build-hold.ts`, which would have taken
+// `large-documents-page.ts` past 1,000 lines.
 import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import { expect, type Page } from "@playwright/test";
 import * as Y from "yjs";
