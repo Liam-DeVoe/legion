@@ -66,7 +66,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"`implementerProof` (`{how}` alone)",
 			"or with `--verdict fail` and an entry in `failures` for one that fails",
 			"The daemon reads no handoff's `failures`: your fail is what sends the issue back to the implementer.",
-			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
+			"Never run a lane again as a whole", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on"}},
 		// The merge the merger is told to run names the head GitHub must match, on a queue base and
@@ -320,13 +320,15 @@ func TestTheComposedPromptsSayTheStatesDecideAndNoCompletionCarriesAVerdict(t *t
 	}{
 		{claim.RoleTester, false,
 			[]string{"and no `verdict`", "The daemon moves the issue by Dispatch's state of each `before_merge` check at the head your test record names",
-				"whichever role recorded the pass", "say in your `test` handoff's `implementerProof.how` how you judged those results",
-				"The daemon reads no handoff's `failures`: your fail is what sends the issue back to the implementer."},
+				"whichever role recorded the pass", "The daemon reads no handoff's `failures`: your fail is what sends the issue back to the implementer.",
+				"You read no CI, and wait for none.", "except the tester, which reads no CI"},
 			[]string{`verdict: "pass"`, `verdict: "fail"`, "the verdict lets the daemon choose", "implementerProof.verdict", `"verified" | "rejected"`,
 				"record the verdict in your `test` handoff", "a pass from one role alone is no pass", "complete the phase as a failure",
 				"back to the implementer at once", "even while another still waits", "and so does a check Dispatch could not read",
 				"record no result of your own for it", "its state there is no", "its `observed` saying that the implementer left no result at that head",
-				"does not read yes from the implementer is a test failure", "a pass of yours already at that head does not stand in its way"}},
+				"does not read yes from the implementer is a test failure", "a pass of yours already at that head does not stand in its way",
+				"say in your `test` handoff's `implementerProof.how` how you judged those results", "read CI for everything static",
+				"A lane still running is read as running", "a CI run still going"}},
 		// A check carrying ci_check that fails at the pull request's head is the implementer's at
 		// once, in a message to it alone (workflow's tellCIFailure).
 		{claim.RoleImplementer, false,

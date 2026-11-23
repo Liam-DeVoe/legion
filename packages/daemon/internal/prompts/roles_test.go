@@ -126,7 +126,7 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 		readSource       = "read the code that already does the nearest thing"
 		noDefer          = "Nothing needed for correctness is deferred"
 		fastChecks       = "run the repository's fast local checks"
-		testerRunsTheApp = "read CI for everything static"
+		testerRunsTheApp = "Never run a lane again as a whole"
 		redTest          = "the test itself is not theirs to change"
 		dontModify       = "make the tester's red test pass; do not modify it"
 	)
@@ -148,8 +148,8 @@ func TestSharedRulesSitInCommonOnceAndRoleRulesInTheirCores(t *testing.T) {
 	contains("core/oracle.md", readSource, true)
 	contains("core/oracle.md", noDefer, false)
 	// The implementer runs the repository's fast local checks before a push; the tester runs the
-	// application and reads CI for the static lanes (dispatch://LEGION-631), so the rule to rerun
-	// them is the implementer's alone.
+	// application and its own checks, never a lane as a whole, and reads no CI, so the rule to rerun
+	// a lane is the implementer's alone.
 	contains("core/implementer.md", fastChecks, true)
 	contains("core/tester.md", fastChecks, false)
 	contains("core/tester.md", testerRunsTheApp, true)
@@ -631,7 +631,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
 	for _, pin := range []struct{ file, rule string }{
 		{"tester.md", "A `before_merge` check reads yes at the head you test when a pass of it counts at that commit and no fail does, whichever role recorded the pass: that is Dispatch's rule, so the implementer's pass alone already reads yes, and your own run and record of each check with no `ci_check` are still owed before you complete."},
-		{"tester.md", "A pass and a fail at any open head make the check not known; count it as a test failure and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
+		{"tester.md", "A pass and a fail at any open head make the check not known; count it as a test failure and do not wait for a later result."},
 		{"reviewer.md", "A pass and a fail at any open head make the check not known: request changes at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
 		{"architect.md", "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
 		{"architect-root.md", "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
