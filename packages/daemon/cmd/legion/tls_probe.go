@@ -654,11 +654,6 @@ type tlsCommandClient struct {
 	// keepStdout keeps it apart (tlsCommandRun.stdout) for Chromium, whose dumped page is its
 	// answer (tlsChromiumClient).
 	readStdout, keepStdout bool
-	// limitClock, when set, gives each run the context its own limit ends, with the cause
-	// errTLSRunLimit, from a moment of the clock's choosing rather than from before the command
-	// starts. Only a test sets it, to count a stand-in's limit from the stand-in's own start, which
-	// no load can move past the limit (tls_probe_test.go's standInLog); nil is runLimit's own clock.
-	limitClock func(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc)
 }
 
 func (c tlsCommandClient) name() string { return c.clientName }
@@ -791,7 +786,7 @@ func (r tlsCommandRun) outcome(terms tlsRunTerms, accepted, refused bool, detail
 func (c tlsCommandClient) run(ctx context.Context, site tlsSite, limit time.Duration) tlsCommandRun {
 	program, args, env := c.commandLine(site)
 	started := time.Now()
-	commandCtx, cancel := c.runLimit(ctx, limit)
+	commandCtx, cancel := context.WithTimeoutCause(ctx, limit, errTLSRunLimit)
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, program, args...)
 	cmd.Env = env
@@ -823,16 +818,6 @@ func (c tlsCommandClient) run(ctx context.Context, site tlsSite, limit time.Dura
 		r.ending = tlsSignalEnded
 	}
 	return r
-}
-
-// runLimit is the context one run of c's command runs under: ctx, ended with the cause
-// errTLSRunLimit once limit has passed from before the command starts, or as limitClock ends it
-// where a test set one.
-func (c tlsCommandClient) runLimit(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
-	if c.limitClock != nil {
-		return c.limitClock(ctx, limit)
-	}
-	return context.WithTimeoutCause(ctx, limit, errTLSRunLimit)
 }
 
 // tlsOptionalClient is a command client for a program the image need not carry (workerTLSClients
@@ -1238,9 +1223,6 @@ type tlsClientSpec struct {
 	// way, and at a site the probe's server serves, a client with no proxy (redis-cli, socat) or
 	// with a proxy setting of its own (Chromium) names the server's address (tlsSite.via) itself.
 	command func(site tlsSite, stateDir, invocation string) (args, set []string)
-	// limitClock is the limit clock of the client build makes (tlsCommandClient.limitClock): nil,
-	// the limit counted from before each command starts, except where a test sets one.
-	limitClock func(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc)
 }
 
 // build makes the client spec names, under env, with stateDir as its working directory and a HOME
@@ -1251,7 +1233,7 @@ func (spec tlsClientSpec) build(invocation string, env []string, stateDir string
 	home := "HOME=" + filepath.Join(stateDir, spec.name)
 	client := tlsCommandClient{
 		clientName: spec.name, env: env, workDir: stateDir, timeout: spec.timeout,
-		applicationSeen: spec.applicationSeen, publicRefusal: spec.publicRefusal, readStdout: spec.readStdout, limitClock: spec.limitClock,
+		applicationSeen: spec.applicationSeen, publicRefusal: spec.publicRefusal, readStdout: spec.readStdout,
 		command: func(site tlsSite) (string, []string, []string) {
 			args, set := spec.command(site, stateDir, invocation)
 			return spec.program, args, slices.Concat([]string{home}, tlsProxyEnvironment(site), set)
