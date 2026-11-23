@@ -178,6 +178,44 @@ func TestAnEventThatWouldLetTheProcessGoWaitsForTheTurnsCopyItsHeldStopWaitsFor(
 	}
 }
 
+// A credit the stale-plugin pass posts with a claim whose held stop waits for its turn's copy goes
+// back to the gate at the end of that decision. The guard raises no relaunch (turnCopyHolds), so
+// no refresh wake of the claim's waits, and the decision's end gives the credit the machine took
+// back (endRefreshLane): a gate that counts (NewRefreshGate at wakeRate) grants its whole share
+// again once the post is decided, and still does once the copy's end has run the stop. A credit
+// kept past the decision would leave the gate one short until a sweep's correction took it back,
+// and a credit given back twice would leave it one over. The harness's own gate counts nothing,
+// so the row puts a counting one in its place.
+//
+// The control is endRefreshLane's release taken out: the gate is then one short after the post.
+func TestACreditPostedOverAStopHeldForTheTurnsCopyGoesBackToTheGate(t *testing.T) {
+	for _, window := range copyWindows() {
+		t.Run(window.name, func(t *testing.T) {
+			h, copies, begin := window.open(t)
+			speaksAnOlderContract(h)
+			gate := NewRefreshGate(wakeRate)
+			h.m.deps.RefreshGate = gate
+			share := freeCredits(gate)
+			if share != wakeRate {
+				t.Fatalf("a fresh gate grants %d, want its share of %d", share, wakeRate)
+			}
+			loc := h.locator()
+
+			h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: gate.Admit()})
+
+			waitsOnItsProcess(t, h, loc)
+			if got := freeCredits(gate); got != share {
+				t.Fatalf("once the post over a stop held for the turn's copy is decided, the gate grants %d, want %d: the credit the post carried did not come back once", got, share)
+			}
+			begin()
+			stopsOnceAfterTheCopy(t, h, copies, 0, window.by)
+			if got := freeCredits(gate); got != share {
+				t.Fatalf("once the copy's end has run the stop, the gate grants %d, want %d", got, share)
+			}
+		})
+	}
+}
+
 // parkStaleRelaunch raises a stale-plugin relaunch over h's claim, idle or ready on its process,
 // which the pacing parks over that process.
 func parkStaleRelaunch(t *testing.T, h *harness) {
