@@ -370,8 +370,11 @@ func requireOneInboxHistoryInTheStore(t *testing.T, database *store.Store) {
 //     made: the connection the plans are made on holds no planner setting its database, its role,
 //     its parameters or its session set (oneInboxHeldPlannerSettings); the request makes the planner
 //     settings meInboxSettings make, each before the read's statement, and no other, and carries no
-//     planner hint comment; and the read's generic plan made under none of meInboxSettings scans
-//     neither table where the plan under them does not, so no setting of theirs hides a scan.
+//     planner hint comment; and the read's plan made under the generic plan alone
+//     (plan_cache_mode = force_generic_plan, which explainDismissedScaleGeneric always sets, as
+//     meInboxGenericPlan does), without meInboxSettings' other settings, scans neither table where
+//     the plan under all of meInboxSettings does not, so no setting of theirs beside the generic
+//     plan hides a scan.
 func explainOneInboxRead(t *testing.T, here *oneInboxHere) {
 	t.Helper()
 	ctx := context.Background()
@@ -430,7 +433,7 @@ func explainOneInboxRead(t *testing.T, here *oneInboxHere) {
 		}
 		args := ran[at].args
 		plan, text := explainDismissedScaleGeneric(t, connection, read, statement, args, meInboxSettings...)
-		bare, bareText := explainDismissedScaleGeneric(t, connection, read+" under none of meInboxSettings", statement, args)
+		bare, bareText := explainDismissedScaleGeneric(t, connection, read+" under the generic plan alone", statement, args)
 		over := map[string]map[string]float64{"asks": {}, "events": {}}
 		for _, node := range explaintest.Nodes(t, plan) {
 			if scanned, held := over[node.Relation]; held {
@@ -451,10 +454,11 @@ func explainOneInboxRead(t *testing.T, here *oneInboxHere) {
 					printed = true
 				}
 			case explaintest.SeqScansRelation(t, bare, relation):
-				hints = append(hints, fmt.Sprintf("%s scans %s sequentially under its generic plan made under none of "+
-					"meInboxSettings and not under them: a setting of theirs hides the scan", read, relation))
+				hints = append(hints, fmt.Sprintf("%s scans %s sequentially under the generic plan alone, without meInboxSettings' "+
+					"other settings, and not under all of them: a setting of theirs beside the generic plan hides the scan", read, relation))
 				if !printedBare {
-					plans = append(plans, fmt.Sprintf("the generic plan of %s under none of meInboxSettings:\n%s", read, bareText))
+					plans = append(plans, fmt.Sprintf("the generic plan of %s under plan_cache_mode = force_generic_plan alone, "+
+						"without meInboxSettings' other settings:\n%s", read, bareText))
 					printedBare = true
 				}
 			}
@@ -478,13 +482,6 @@ func explainOneInboxRead(t *testing.T, here *oneInboxHere) {
 // the one read the scan rule explains (oneInboxTracer.read), which meInboxStatements does not count.
 type oneInboxKept struct{}
 
-// oneInboxStatement is one statement a kept request ran, each statement of a batch on its own, with
-// the arguments it was sent with.
-type oneInboxStatement struct {
-	sql  string
-	args []any
-}
-
 // oneInboxTracer is the tracer of this build's traced store: meInboxStatements, which records what
 // a request marked countedRead runs, and beside it every statement of a request oneInboxKept marks,
 // so the scan rule explains the read's statement with the arguments its request sent and the hint
@@ -492,7 +489,7 @@ type oneInboxStatement struct {
 type oneInboxTracer struct {
 	*meInboxStatements
 	mu   sync.Mutex
-	kept []oneInboxStatement
+	kept []sentStatement
 }
 
 func (r *oneInboxTracer) keep(ctx context.Context, sql string, args []any) {
@@ -501,7 +498,7 @@ func (r *oneInboxTracer) keep(ctx context.Context, sql string, args []any) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.kept = append(r.kept, oneInboxStatement{sql: sql, args: args})
+	r.kept = append(r.kept, sentStatement{sql: sql, args: args})
 }
 
 func (r *oneInboxTracer) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
@@ -518,7 +515,7 @@ func (r *oneInboxTracer) TraceBatchStart(ctx context.Context, conn *pgx.Conn, da
 
 // read sends the dashboard's request of the one read (oneInboxOneRead, display trees beside it) as
 // login through handler, on a context oneInboxKept marks, and answers every statement it ran.
-func (r *oneInboxTracer) read(t *testing.T, handler http.Handler, login string) []oneInboxStatement {
+func (r *oneInboxTracer) read(t *testing.T, handler http.Handler, login string) []sentStatement {
 	t.Helper()
 	r.mu.Lock()
 	r.kept = nil
@@ -634,7 +631,6 @@ func oneInboxPercentiles(readings []time.Duration) (string, time.Duration) {
 // oneInboxReadBound times the base build's.
 func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInboxSide) {
 	t.Helper()
-	const one = oneInboxOneRead
 	replaced := []string{"/api/v1/inbox?assignee=me", "/api/v1/me/replies?kind=reply,agent&state=inbox"}
 	for _, session := range reader.sessions {
 		replaced = append(replaced, "/api/v1/agents/"+session+"/messages")
@@ -652,7 +648,7 @@ func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInb
 		return oneInboxExpect(t, side.name+": "+path+" of "+reader.shape, side.server.read(t, reader.login, path), http.StatusOK)
 	}
 	readOne := func(reading int) {
-		answer := get(this, reading, one)
+		answer := get(this, reading, oneInboxOneRead)
 		if reading == 0 {
 			var read meInboxResponse
 			if err := json.Unmarshal(answer.body, &read); err != nil {
@@ -710,7 +706,7 @@ func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInb
 	ratio := float64(thisP50) / float64(baseP50)
 	t.Logf("c-p99: read %s (%s): this build GET %s %s entries=%d | the base build, its %d reads in turn, %s asks=%d rows=%d "+
 		"(%s) | p50 ratio=%.2f bound=%.2f n=%d taken_at=%s",
-		reader.shape, reader.login, one, thisFigures, entries, len(replaced), baseFigures, asks, rows,
+		reader.shape, reader.login, oneInboxOneRead, thisFigures, entries, len(replaced), baseFigures, asks, rows,
 		strings.Join(each, "; "), ratio, oneInboxReadBound, len(ones), oneInboxNow())
 	if ratio > oneInboxReadBound {
 		t.Errorf("the one read of %s has p50 %.2fms, %.2f times the base build's %.2fms for the reads it replaces, above R11's %.2f",

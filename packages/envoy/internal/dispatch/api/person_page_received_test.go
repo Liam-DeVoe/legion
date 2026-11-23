@@ -111,7 +111,9 @@ func TestAPersonPageListsWhatWasDeliveredToTheirOwnNode(t *testing.T) {
 	onlyHidden := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Only for alice, though it names " + mention(dave) + "."}, "alice")
 	for _, reached := range []struct{ comment, person string }{{hidden.ID, carol}, {onlyHidden.ID, dave}} {
 		requireDeliveredToPerson(t, database, graphstore.KindComment, reached.comment, reached.person)
-		reserveForItsAuthor(t, database, reached.comment)
+		if err := reserveForItsAuthor(ctx, database, reached.comment); err != nil {
+			t.Fatalf("reserve comment %s for its author: %v", reached.comment, err)
+		}
 	}
 	hiddenRow := personNode{Kind: graphstore.KindComment, ID: hidden.ID,
 		Relations: []string{graphstore.TupleDeliveredTo}, Href: "/issues/" + issue.Key + "/comments/" + hidden.ID}
@@ -263,24 +265,16 @@ func TestAPersonPageSkipsACommentOnAnAgentConversationsFile(t *testing.T) {
 // person login's own node: the tuple the page is read for, so a page without it proves nothing.
 func requireDeliveredToPerson(t *testing.T, database *store.Store, kind, id, login string) {
 	t.Helper()
-	delivered, err := graphstore.CurrentOut(context.Background(), database.Pool, kind, id, []string{graphstore.TupleDeliveredTo})
-	if err != nil {
-		t.Fatalf("read the deliveries of %s %s: %v", kind, id, err)
-	}
-	if !slices.ContainsFunc(delivered, func(tuple graphstore.Tuple) bool {
-		return tuple.ToKind == graphstore.KindPerson && tuple.ToID == login
-	}) {
-		t.Fatalf("%s %s is delivered to %+v, want %s's own node among them", kind, id, delivered, login)
+	if reached := meInboxDeliveredTo(t, database, kind, id); !slices.Contains(reached, graphstore.KindPerson+":"+login) {
+		t.Fatalf("%s %s is delivered to %v, want %s's own node among them", kind, id, reached, login)
 	}
 }
 
 // reserveForItsAuthor moves the comment's node to visibility author, as a later release's
 // author-private write marks one: the store's own writer writes the node as it stands with that
-// visibility (graphstore.Write), and states the attribute beside it.
-func reserveForItsAuthor(t *testing.T, database *store.Store, comment string) {
-	t.Helper()
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+// visibility (graphstore.Write), and states the attribute beside it, in one transaction.
+func reserveForItsAuthor(ctx context.Context, database *store.Store, comment string) error {
+	return pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		node, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindComment, comment)
 		if err != nil {
 			return err
@@ -290,9 +284,7 @@ func reserveForItsAuthor(t *testing.T, database *store.Store, comment string) {
 		}
 		node.Visibility = graphstore.VisibilityAuthor
 		return graphstore.Write(ctx, tx, []graphstore.Node{node}, nil)
-	}); err != nil {
-		t.Fatalf("reserve comment %s for its author: %v", comment, err)
-	}
+	})
 }
 
 // requirePersonRows fails unless read, one answer of the person page, is want and nothing else, in

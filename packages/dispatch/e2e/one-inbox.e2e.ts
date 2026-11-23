@@ -47,13 +47,8 @@ const named = "person-1@example.com";
 async function expectMentioned(login: string, commentId: string): Promise<void> {
   await expect
     .poll(
-      async () => {
-        const read = await getMeInbox({ kind: "mentions" }, { login });
-        const entry = (read.entries ?? []).find(
-          (candidate) => candidate.node.kind === "comment" && candidate.node.id === commentId
-        );
-        return entry?.relations?.map(({ direction, kind }) => `${kind} ${direction}`) ?? [];
-      },
+      async () =>
+        tiesOf(await getMeInbox({ kind: "mentions" }, { login }), "comment", commentId) ?? [],
       {
         message: `the one read ties ${login} to comment ${commentId} by its mention of them (a reference names a person by an email-shaped login alone)`,
       }
@@ -71,12 +66,21 @@ function pageRowIds(entries: readonly MeInboxEntry[] | null): string[] {
   });
 }
 
+/** The relations that tie the reader to one node in an answer of the one read, each with its
+ *  kind and direction; undefined where the answer holds no entry for that node. */
+function relationsOf(
+  read: MeInboxResponse,
+  kind: string,
+  id: string
+): MeInboxEntry["relations"] | undefined {
+  return (read.entries ?? []).find((entry) => entry.node.kind === kind && entry.node.id === id)
+    ?.relations;
+}
+
 /** What ties the reader to one node in an answer of the one read, each relation as
  *  `<kind> <direction>`; undefined where the answer holds no entry for that node. */
 function tiesOf(read: MeInboxResponse, kind: string, id: string): string[] | undefined {
-  return (read.entries ?? [])
-    .find((entry) => entry.node.kind === kind && entry.node.id === id)
-    ?.relations?.map((relation) => `${relation.kind} ${relation.direction}`);
+  return relationsOf(read, kind, id)?.map((relation) => `${relation.kind} ${relation.direction}`);
 }
 
 /** The lists the page's rows are items of, each as the ids of its rows top to bottom. A row is an
@@ -233,7 +237,7 @@ test("the inbox lists everything that reached a person in one list", async ({ br
     // the one read ties it to them as its author and by no delivery, where the session's reply in
     // the thread the reader started was delivered to them.
     const reached = await getMeInbox({}, asReader);
-    const ownTies = tiesOf(reached, "comment", own.id)?.map((tie) => tie.split(" ")[0]);
+    const ownTies = relationsOf(reached, "comment", own.id)?.map((relation) => relation.kind);
     expect(ownTies, "what ties the reader to the comment they wrote themselves").toContain(
       "authored_by"
     );
@@ -241,7 +245,7 @@ test("the inbox lists everything that reached a person in one list", async ({ br
       "delivered_to"
     );
     expect(
-      tiesOf(reached, "comment", commentReply.id)?.map((tie) => tie.split(" ")[0]),
+      relationsOf(reached, "comment", commentReply.id)?.map((relation) => relation.kind),
       "what ties the reader to the session's reply in the comment thread they started"
     ).toContain("delivered_to");
 
