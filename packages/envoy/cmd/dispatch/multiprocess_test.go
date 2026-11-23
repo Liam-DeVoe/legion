@@ -3641,8 +3641,10 @@ func waitForDurableDrained(t *testing.T, pair *dispatchPair, js natsgo.JetStream
 // message, so the 404 is redelivered to nobody and neither process logs a delivery error for the
 // durable, which this row requires, as the one-binder row does.
 //
-// The delivery reconcile runs its pass as each process starts (DISPATCH_TEST_RECONCILE_AT_START),
-// long before this row's envelope is published, and no pass after that. A later pass would read
+// Each process tries the delivery reconcile's pass as it starts (DISPATCH_TEST_RECONCILE_AT_START),
+// on a goroutine of its own; one runs it and the other finds the lease held or the period served.
+// The row waits for both of those first ticks before it publishes the envelope, so the pass has
+// run before the envelope is published, and no pass runs after that. A later pass would read
 // again the pull request the envelope names: the envelope names no head repository, so the intake
 // writes that pull request's head row unread (Intake.recordPullRequestHead), and a pass re-reads
 // every merged head row no read has reached (ListStalePullRequestHeads). A pass inside the second
@@ -3677,6 +3679,10 @@ func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testi
 	env["DISPATCH_TEST_RECONCILE_AT_START"] = "1"
 	env["DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL"] = staggeredSweepPeriod.String()
 	pair.start(t, env)
+	// Each first tick writes its line only once its pass, or its skip, has ended (duty.Exclusive),
+	// on the reconcile's goroutine, so the row waits for the lines rather than reading them once.
+	waitForLease(t, pair, leaseRan, "delivery-reconcile")
+	waitForLeaseTickInEach(t, pair, "delivery-reconcile")
 
 	conn := testnats.Connect(t, pair.nats)
 	js, err := conn.JetStream(testnats.MaxWait(t))
@@ -3781,23 +3787,18 @@ func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testi
 	// than at the interval DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL gives serves the
 	// four-and-a-half-minute bucket its tick fell in, which lets a later pass land in the counting
 	// second again. A skip that found the lease held names no period, so only the skips that found
-	// the period served are read.
+	// the period served are read. The row waited for a pass line after the start, so there is at
+	// least one line to read.
 	firstBucket := time.Unix(0, 0).UTC().Format(time.RFC3339Nano)
-	ran := 0
 	for _, process := range []*dispatchProcess{pair.a, pair.b} {
-		passes := process.wholeLogLines(leaseRan, "lease=delivery-reconcile")
-		ran += len(passes)
-		for _, line := range slices.Concat(passes, process.wholeLogLines(leaseSkipped, "lease=delivery-reconcile", "period=")) {
+		ticks := slices.Concat(process.wholeLogLines(leaseRan, "lease=delivery-reconcile"),
+			process.wholeLogLines(leaseSkipped, "lease=delivery-reconcile", "period="))
+		for _, line := range ticks {
 			if period := leasePeriodOf(t, line); period != firstBucket {
 				t.Errorf("%s's delivery-reconcile tick was in the period starting %s, want %s, the first bucket of staggeredSweepPeriod: "+
 					"the reconcile did not run at the interval DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL gave it: %s", pair.name(process), period, firstBucket, line)
 			}
 		}
-	}
-	// The pass at start (DISPATCH_TEST_RECONCILE_AT_START) ran on one process, so there is a line
-	// to read; with none, the check above would hold nothing.
-	if ran == 0 {
-		t.Errorf("neither process logged a delivery-reconcile pass, though each runs one as it starts:\n%s", pair.buffers())
 	}
 	pair.requireRunning(t)
 }
