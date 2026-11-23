@@ -145,10 +145,11 @@ has no pull request
 `accepting`: its last step passing starts the retro, or holds a parent before its retro. At a step
 `acceptance` with no key, its fresh agent, not you, reads the work in `accepting` and ends the step
 with its verdict.
-A parent whose task does not end with an acceptance step gets no reading of its finished whole
-from you: Legion holds it before its retro while issues beneath it are still in the workflow
-(`retro-held`) and starts the retro once they have left, so give a parent whose finished whole
-you want to read yourself the step `acceptance:owner` as its last step.
+A parent whose task does not end with an acceptance step can pass its last step while issues
+beneath it are still in the workflow, and Legion then holds it before its retro (`retro-held`) and
+starts the retro once they have left, so give a parent whose finished whole you want to read
+yourself, with their work in it, the step `acceptance:owner` as its last step, whose sign-off
+Legion refuses while any of them is still in the workflow.
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, and the pull request's body and diff where the issue has one,
 else the handoffs of its steps; `wait` for its report, and answer
