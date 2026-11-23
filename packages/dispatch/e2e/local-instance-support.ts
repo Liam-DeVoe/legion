@@ -39,13 +39,25 @@ export function interruptedBefore(fact: string, since: number): Interrupted {
   return new Interrupted(`interrupted ${seconds} s into the wait, before ${fact}`);
 }
 
-/** Writes, as a wait of a harness start begins, one line naming what it waits for: `who` is the
- *  module waiting, `fact` what will end the wait. Those waits have no bound of their own, so when
- *  the caller's deadline ends one with a SIGKILL that leaves no message - a test's bounded child,
- *  a CI step's limit - the last such line of the run's output is the one that names the hang. It
- *  is written to fd 2 at once, as a SIGKILL would lose a line still queued for a stream. */
-export function announceWait(who: string, fact: string): void {
+/** Writes, as a wait of a harness start begins, one line naming what it waits for, and returns the
+ *  function that writes the line saying the wait is over, which the wait calls however it ends (a
+ *  `finally`). `who` names the waiter: the module, and the stack it starts for where a caller
+ *  starts more than one (`HarnessOptions.label` in e2e/harness-start.ts; a stack's Postgres is
+ *  named in `fact`). `fact` is what will end the wait.
+ *
+ *  Those waits have no bound of their own, so when the caller's deadline ends one with a SIGKILL
+ *  that leaves no message - a test's bounded child, a CI step's limit - these lines are the account
+ *  of the hang: the wait it was in is the one whose `waiting` line has no `no longer waiting` line
+ *  after it. The last line of the output need not be that one, since a pool starts its stacks at
+ *  once and their lines interleave. Both lines are written to fd 2 at once, as a SIGKILL would lose
+ *  a line still queued for a stream. */
+export function announceWait(who: string, fact: string): () => void {
+  const since = Date.now();
   writeSync(2, `${who}: waiting, with no bound of its own, until ${fact}\n`);
+  return () => {
+    const seconds = ((Date.now() - since) / 1000).toFixed(1);
+    writeSync(2, `${who}: no longer waiting (after ${seconds} s) until ${fact}\n`);
+  };
 }
 
 interface Running {

@@ -310,7 +310,12 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
         if (url !== "") own.DATABASE_URL = url;
         const bucket = await stackBucket(index, count, env);
         if (bucket !== undefined) own.DISPATCH_E2E_FILE_STORE_BUCKET = bucket;
-        const harness = await startHarness({ env: own, logDir, signal: stopping.signal });
+        const harness = await startHarness({
+          env: own,
+          label: `stack ${index}`,
+          logDir,
+          signal: stopping.signal,
+        });
         stacks.push({ database, env: { ...own, ...harness.env }, harness, index, logDir });
       } catch (error) {
         await database?.stop(true);

@@ -8,11 +8,13 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 
 // What e2e/harness-postgres.ts's wait for a stack's Postgres (`ready`) does while the server
 // refuses `select 1`, as one still starting up does. The wait has no bound of its own, so it ends
-// on the server's answer, on the caller's abort, with an Interrupted that names the server it
-// waited for, or on the server's end, which the caller hands it (`gone`), with a refusal that says
-// so. Each row runs the wait in a child of its own, with a stand-in `psql` first on its PATH that
-// answers each query as a server starting up does and exits 2, until it has refused
-// `PSQL_ANSWER_AFTER` of them, where that is set, and then answers `1`. The stand-in sends its
+// on the server's answer; on the caller's abort, with an Interrupted that names the server it
+// waited for; on the server's end, which the caller hands it (`gone`), with a refusal that says
+// so; or on a psql that cannot be started at all, with a refusal that names psql and why. It
+// writes a line as it begins and another as it ends (`announceWait`). Each row runs the wait in a
+// child of its own, with a stand-in `psql` first on its PATH that answers each query as a server
+// starting up does and exits 2, until it has refused `PSQL_ANSWER_AFTER` of them, where that is
+// set, and then answers `1`; the psql row's PATH holds no psql at all. The stand-in sends its
 // parent, the child, SIGUSR2 the first time it runs, so an abort lands while the wait is under way.
 const module = (name: string) => fileURLToPath(new URL(`../${name}`, import.meta.url));
 const stubs = temporaryDirectory("harness-postgres-");
@@ -92,7 +94,11 @@ test(
     );
     // The wait named what it waited for as it began, which is what a run killed outright leaves.
     expect(stderr).toContain(
-      "e2e/harness-postgres.ts: waiting, with no bound of its own, until the stand-in's Postgres answers select 1"
+      "e2e/harness-postgres.ts: waiting, with no bound of its own, until the stand-in's Postgres answers select 1\n"
+    );
+    // And wrote that it ended once the abort ended it.
+    expect(stderr).toMatch(
+      /e2e\/harness-postgres\.ts: no longer waiting \(after \d+\.\d s\) until the stand-in's Postgres answers select 1\n/
     );
   },
   rowLimit("short")

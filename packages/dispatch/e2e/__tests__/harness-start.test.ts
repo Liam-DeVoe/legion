@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -8,17 +8,18 @@ import { rowLimit, runBounded, watch, whether } from "./bounded-subprocess";
 
 // How e2e/harness-start.ts's start ends. Its wait for each listener has no bound of its own
 // (`serving`): it ends on the listener's report, on the listener's exit or its failure to start
-// at all, or on the caller's abort, whose Interrupted names the listener it waited for. Each row
-// runs the start in a child of its own, as a deployed run's (`PLAYWRIGHT_BASE_URL`, read as the
-// table is built), which starts the fake Envoy first, then the plain-HTTP proxy, and no server or
-// database. The child prints what the start answered or threw.
+// at all, or on the caller's abort, whose Interrupted names the listener it waited for, and each
+// wait writes a line as it begins and another as it ends (`announceWait`). Each row but the
+// SIGTERM row runs the start in a child of its own, as a deployed run's (`PLAYWRIGHT_BASE_URL`,
+// read as the table is built), which starts the fake Envoy first, then the plain-HTTP proxy, and
+// no server or database. The child prints what the start answered or threw.
 const module = (name: string) => fileURLToPath(new URL(`../${name}`, import.meta.url));
 const stubs = temporaryDirectory("harness-start-");
 /** A `bun` that holds the fake Envoy's start for good, once it has sent its parent, the child,
  *  SIGUSR2, and runs every other bun command as the real bun. */
 const heldBun = join(stubs, "held");
-/** The same hold, which only writes `HELD_MARK` before it holds, for a parent that handles no
- *  SIGUSR2 (e2e/harness-up.ts). */
+/** The same hold, which writes its pid into `HELD_MARK` before it holds rather than signal its
+ *  parent, for a parent that handles no SIGUSR2 (e2e/harness-up.ts). */
 const quietlyHeldBun = join(stubs, "held-quietly");
 /** A directory holding nothing, for a PATH on which no `bun` is found. */
 const noBun = join(stubs, "empty");
@@ -34,7 +35,7 @@ beforeAll(() => {
     join(quietlyHeldBun, "bun"),
     `#!/bin/sh
 case "$1" in
-  */e2e/fake-envoy.ts) : > "$HELD_MARK"; exec sleep 600 ;;
+  */e2e/fake-envoy.ts) echo $$ > "$HELD_MARK"; exec sleep 600 ;;
 esac
 exec "$REAL_BUN" "$@"
 `
@@ -97,9 +98,10 @@ test(
     expect(read.message, stderr).toMatch(
       /^interrupted \d+\.\d s into the wait, before the fake Envoy reported its port$/
     );
-    // The wait named what it waited for as it began, which is what a run killed outright leaves.
+    // The wait named what it waited for as it began, which is what a run killed outright leaves,
+    // and wrote that it ended once the abort ended it.
     expect(stderr).toMatch(
-      /e2e\/harness-start\.ts: waiting, with no bound of its own, until the fake Envoy \(pid \d+\) reports its port/
+      /e2e\/harness-start\.ts: waiting, with no bound of its own, until the fake Envoy \(pid \d+\) reports its port\n(.*\n)*e2e\/harness-start\.ts: no longer waiting \(after \d+\.\d s\) until the fake Envoy \(pid \d+\) reports its port\n/
     );
   },
   rowLimit("short")
@@ -109,7 +111,9 @@ test(
 // job's limit send it: the pool stops the start and ends the process by the signal, which it
 // raises again, so the start's failure is written by the pool before that, not left to a report of
 // the rejection that the signal would cut short. The fake Envoy's start is held, and the SIGTERM is
-// sent once the stand-in has written that it holds it.
+// sent once the stand-in has written that it holds it. harness-up starts the pool's one stack, so
+// its waits' lines name `stack 0`. The row signals harness-up while it runs, so it starts it
+// outside `runBounded` (`bounded-subprocess.ts` lists it), under the row's own limit.
 test(
   "a SIGTERM to e2e/harness-up.ts while a listener has not reported writes what the start waited for",
   async () => {
@@ -138,12 +142,32 @@ test(
       run.kill("SIGTERM");
       expect(await whether(ended), "harness-up still ran after its SIGTERM").toBe(true);
       await stdout;
-      expect(await stderr).toMatch(
+      const written = await stderr;
+      expect(written).toMatch(
         /e2e\/harness-pool\.ts: the start ended: interrupted \d+\.\d s into the wait, before the fake Envoy reported its port/
+      );
+      expect(written).toMatch(
+        /e2e\/harness-start\.ts: stack 0: waiting, with no bound of its own, until the fake Envoy \(pid \d+\) reports its port\n/
+      );
+      expect(written).toMatch(
+        /e2e\/harness-start\.ts: stack 0: no longer waiting \(after \d+\.\d s\) until the fake Envoy \(pid \d+\) reports its port\n/
       );
       expect(run.signalCode, `harness-up ended ${run.exitCode}`).toBe("SIGTERM");
     } finally {
-      if (!ended()) run.kill("SIGKILL");
+      if (!ended()) {
+        run.kill("SIGKILL");
+        // harness-up killed outright stops nothing it started, and the held stand-in leads a
+        // process group of its own, so it would sleep on for its 600 s. Its pid is the one it
+        // wrote; harness-up stops it on any other ending.
+        const held = existsSync(mark) ? Number(readFileSync(mark, "utf8").trim()) : Number.NaN;
+        if (Number.isInteger(held) && held > 0) {
+          try {
+            process.kill(held, "SIGKILL");
+          } catch {
+            // gone already
+          }
+        }
+      }
     }
   },
   rowLimit("short", "short")
@@ -154,13 +178,18 @@ test(
 test(
   "a listener whose command is not on PATH is refused at once, naming why it could not start",
   async () => {
-    const { named, read, stdout } = await started(noBun);
+    const { named, read, stderr, stdout } = await started(noBun);
     expect(read.interrupted, `${named} printed ${stdout}`).toBe(false);
     expect(read.message).toStartWith(
       "The Dispatch e2e harness cannot start: the fake Envoy could not be started: "
     );
     // Bun says `Executable not found in $PATH: "bun"`, and Node `spawn bun ENOENT`.
     expect(read.message).toMatch(/Executable not found in \$PATH: "bun"|spawn bun ENOENT/);
+    // A process that never started has no pid, and its wait's line names none.
+    expect(stderr).toContain(
+      "e2e/harness-start.ts: waiting, with no bound of its own, until the fake Envoy reports its port\n"
+    );
+    expect(stderr).not.toContain("(pid undefined)");
   },
   rowLimit("short")
 );
@@ -173,6 +202,14 @@ test(
     const { named, read, stderr, stdout } = await started(process.env.PATH ?? "", leapingClock);
     expect(read.message, `${named} printed ${stdout}:\n${stderr}`).toBeUndefined();
     expect(read.started).toEqual(["FAKE_ENVOY_PORT", "PLAIN_HTTP_PORT"]);
+    // Each listener's wait wrote that it began and that it ended.
+    for (const listener of ["the fake Envoy", "the plain-HTTP proxy"]) {
+      expect(stderr).toMatch(
+        new RegExp(
+          `no longer waiting \\(after \\d+\\.\\d s\\) until ${listener} \\(pid \\d+\\) reports its port\\n`
+        )
+      );
+    }
   },
   rowLimit("short")
 );

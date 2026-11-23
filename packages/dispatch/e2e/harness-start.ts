@@ -94,6 +94,11 @@ export interface HarnessOptions {
    *  (`e2e/harness-pool.ts`), so one process can start a harness per stack. Absent, the harness
    *  is this process's environment, which is what every other starter gives it. */
   readonly env?: Readonly<Record<string, string>>;
+  /** The stack this harness starts for, as the pool numbers it (`stack 2`), which every line its
+   *  waits write carries (`announceWait`): the pool starts its stacks at once, and their lines
+   *  interleave. Unset, the lines name no stack, which is what a caller that starts one harness
+   *  needs. */
+  readonly label?: string;
   /** A directory for each process's output, as `<id>.log`; unset, it goes to this process's
    *  stderr. */
   readonly logDir?: string;
@@ -184,6 +189,12 @@ function refusal(watched: Watched, given: number, what: string): Error {
   );
 }
 
+/** ` (pid N)` for a process that started, and nothing for one that could not be started, whose
+ *  `pid` Bun leaves undefined. */
+function pidOf(child: ChildProcess): string {
+  return child.pid === undefined ? "" : ` (pid ${child.pid})`;
+}
+
 /** Waits for the listener's report and, for a listener with a health path, for that path to
  *  answer 200, and returns the port it serves on. It fails as soon as the process exits, so a
  *  server whose build failed is reported at once.
@@ -195,8 +206,13 @@ function refusal(watched: Watched, given: number, what: string): Error {
  *  to start at all (`failedToStart`), or the caller's abort (`signal`), and the caller's deadline is
  *  the only hang guard: a test's bounded child (`e2e/__tests__/bounded-subprocess.ts`), a CI job's
  *  limit, a person's Ctrl-C. An abort names the process the start was waiting for
- *  (`interruptedBefore`). */
-async function serving(watched: Watched, given: number, supervisor: Supervisor): Promise<number> {
+ *  (`interruptedBefore`), and each wait writes when it begins and ends, as `who` (`announceWait`). */
+async function serving(
+  watched: Watched,
+  given: number,
+  supervisor: Supervisor,
+  who: string
+): Promise<number> {
   const { child, listener } = watched;
   const since = Date.now();
   const check = async (fact: string) => {
@@ -221,27 +237,38 @@ async function serving(watched: Watched, given: number, supervisor: Supervisor):
     }
   };
   let port = watched.reported();
-  if (port === undefined)
-    announceWait(named, `${listener.name} (pid ${child.pid}) reports its port`);
-  while (port === undefined) {
-    await check("reported its port");
-    port = watched.reported();
+  if (port === undefined) {
+    const waited = announceWait(who, `${listener.name}${pidOf(child)} reports its port`);
+    try {
+      while (port === undefined) {
+        await check("reported its port");
+        port = watched.reported();
+      }
+    } finally {
+      waited();
+    }
   }
   if (listener.health === undefined) return port;
   const url = `http://127.0.0.1:${port}${listener.health}`;
   const answered = `answered 200 at ${url}`;
-  announceWait(named, `${listener.name} answers 200 at ${url}`);
-  for (;;) {
-    try {
-      const response = await supervisor.untilInterrupted(
-        fetch(url, { signal: AbortSignal.timeout(5000) })
-      );
-      if (response.ok) return port;
-    } catch {
-      if (supervisor.signal.aborted) throw interruptedBefore(`${listener.name} ${answered}`, since);
-      // not answering yet
+  const waited = announceWait(who, `${listener.name} answers 200 at ${url}`);
+  try {
+    for (;;) {
+      try {
+        const response = await supervisor.untilInterrupted(
+          fetch(url, { signal: AbortSignal.timeout(5000) })
+        );
+        if (response.ok) return port;
+      } catch {
+        if (supervisor.signal.aborted) {
+          throw interruptedBefore(`${listener.name} ${answered}`, since);
+        }
+        // not answering yet
+      }
+      await check(answered);
     }
-    await check(answered);
+  } finally {
+    waited();
   }
 }
 
@@ -254,12 +281,13 @@ interface Kept {
 /** Starts a `held-port.py keep` in `dir` that holds a port the OS chose for `listener` until the
  *  harness stops, and returns once the keeper has written the port. Like `serving`, it waits with
  *  no bound of its own: until the port file, the keeper's exit or its failure to start at all, or
- *  the caller's abort. */
+ *  the caller's abort, and writes when that wait begins and ends, as `who`. */
 async function keepPort(
   listener: HarnessListener,
   dir: string,
   supervisor: Supervisor,
-  environment: NodeJS.ProcessEnv
+  environment: NodeJS.ProcessEnv,
+  who: string
 ): Promise<Kept> {
   const name = `the port keeper for ${listener.name}`;
   const portFile = join(dir, `${listener.id}.port`);
@@ -278,28 +306,32 @@ async function keepPort(
   const stderr = text(child.stderr).catch(() => "");
   text(child.stdout).catch(() => "");
   const since = Date.now();
-  announceWait(named, `${name} (pid ${child.pid}) holds a port`);
-  // The keeper writes the file through a rename once it serves its socket, so a file that exists
-  // holds the whole port.
-  while (!existsSync(portFile)) {
-    const failed = failedToStart();
-    if (failed !== undefined) {
-      throw new Error(
-        `The Dispatch e2e harness cannot start: ${name} could not be started: ${failed.message}`
-      );
+  const waited = announceWait(who, `${name}${pidOf(child)} holds a port`);
+  try {
+    // The keeper writes the file through a rename once it serves its socket, so a file that
+    // exists holds the whole port.
+    while (!existsSync(portFile)) {
+      const failed = failedToStart();
+      if (failed !== undefined) {
+        throw new Error(
+          `The Dispatch e2e harness cannot start: ${name} could not be started: ${failed.message}`
+        );
+      }
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(
+          `The Dispatch e2e harness cannot start: ${name} exited ` +
+            `${child.exitCode ?? child.signalCode}: ${(await stderr).trim()}`
+        );
+      }
+      try {
+        await supervisor.untilInterrupted(sleep(100));
+      } catch (error) {
+        if (error instanceof Interrupted) throw interruptedBefore(`${name} held a port`, since);
+        throw error;
+      }
     }
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(
-        `The Dispatch e2e harness cannot start: ${name} exited ` +
-          `${child.exitCode ?? child.signalCode}: ${(await stderr).trim()}`
-      );
-    }
-    try {
-      await supervisor.untilInterrupted(sleep(100));
-    } catch (error) {
-      if (error instanceof Interrupted) throw interruptedBefore(`${name} held a port`, since);
-      throw error;
-    }
+  } finally {
+    waited();
   }
   return { port: Number(readFileSync(portFile, "utf8").trim()), socket };
 }
@@ -315,6 +347,8 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
   const given = harnessPorts(environment);
   const listeners = targetedListeners();
   if (options.logDir !== undefined) mkdirSync(options.logDir, { recursive: true });
+  // What each wait's lines are written as: this module, and the stack where the caller named one.
+  const who = options.label === undefined ? named : `${named}: ${options.label}`;
   const supervisor = new Supervisor();
   const interrupt = () => supervisor.interrupt();
   options.signal?.addEventListener("abort", interrupt, { once: true });
@@ -331,7 +365,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     for (const listener of listeners) {
       if (listener.heldAhead === undefined || given[listener.key].port !== 0) continue;
       keeperDir ??= mkdtempSync(join(tmpdir(), "dispatch-e2e-held-"));
-      const held = await keepPort(listener, keeperDir, supervisor, environment);
+      const held = await keepPort(listener, keeperDir, supervisor, environment, who);
       kept.set(listener, held);
       env[harnessVariables[listener.key]] = String(held.port);
     }
@@ -352,7 +386,7 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
       const watched = watch(running, listener, options.logDir);
       processes.push(watched);
       env[harnessVariables[listener.key]] = String(
-        await serving(watched, given[listener.key].port, supervisor)
+        await serving(watched, given[listener.key].port, supervisor, who)
       );
     }
   } catch (error) {
