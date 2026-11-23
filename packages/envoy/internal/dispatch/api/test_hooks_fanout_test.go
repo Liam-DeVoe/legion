@@ -207,7 +207,7 @@ func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	}
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), deps)
-	t.Cleanup(served.waitBackground)
+	t.Cleanup(func() { waitBackgroundOf(t, served) })
 	listening := testwait.Context(t)
 	if _, err := served.testHooks.awaitOwnLock(listening); err != nil {
 		t.Fatalf("the second process's test-hook listener did not take its lock: %v", err)
