@@ -353,7 +353,9 @@ func withProofSpend(ctx context.Context, spend *proofSpend) context.Context {
 // release gives the proof back: it deletes the record this request's create made, and no other,
 // since the delete is made against that create's revision. The proof can then be presented once
 // more inside its window, as the first presentation could. It runs on a context the request's own
-// end does not cancel, bounded by proofReleaseBudget, and a spend with no record is no call.
+// end does not cancel, bounded by proofReleaseBudget, and a spend with no record is no call. The
+// delete goes through the handle given that context (bus.KeyValue.Within), so none of it is sent
+// once the budget has run out.
 func (s *proofSpend) release(ctx context.Context) error {
 	if s.key == "" {
 		return nil
@@ -361,7 +363,7 @@ func (s *proofSpend) release(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proofReleaseBudget)
 	defer cancel()
 	_, _, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, s.kv.Delete(s.key, nats.LastRevision(s.revision))
+		return struct{}{}, s.kv.Within(ctx).DeleteFenced(s.key, s.revision)
 	})
 	s.key = ""
 	return err
