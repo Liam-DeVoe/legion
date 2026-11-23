@@ -71,8 +71,9 @@ function sectionsOf(legion: boolean, delivery: boolean): Section[] {
 
 /** The line the header shows for a project with no delivery settings (spec R5, plan D3):
  *  "Delivery: not set up", linking to the project's settings, where its delivery is set up
- *  (dispatch://INFRA-978); or, with no Legion daemon either (`everySource`), one line naming both
- *  settings, each linked, the daemon's on the Settings page. */
+ *  (dispatch://INFRA-978); or, where every source is missing (`everySource`: no Legion daemon, and
+ *  no settings row or delivery off), one line naming both settings, each linked, the daemon's on
+ *  the Settings page. */
 function MissingSources({
   everySource,
   project,
@@ -189,7 +190,8 @@ function drawSection(
  * decides whether the Legion section and cards show, and its delivery settings, which decide
  * whether the delivery and CI sections, cards and targets show: with no settings row or delivery
  * off they do not, though Dispatch's eval reads still hold those evals, and with no row the header
- * says delivery is not set up; with no daemon either, the tab shows that one line and no section.
+ * says delivery is not set up; with no daemon either, every source is missing, and the tab shows
+ * one line naming both settings and no section.
  * Until each read answers its sections show, so their views are opened with the others rather
  * than after them. The merge timeline opens no view until the reader opens it (spec R13); its
  * brush sets the target cards' days and its Repository facet the repository every number reads
@@ -209,9 +211,10 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
   const daemon = useQuery(legionDaemonQuery(project));
   const settings = useQuery(projectDeliverySettingsQuery(project));
   const legion = daemon.data !== null;
-  // Off for no settings row (null) and for delivery off; on until the read answers.
+  // Off for no settings row (null) and for delivery off, which is also how a row with no deploy
+  // source reads, since Dispatch saves delivery on only with one; on until the read answers.
   const delivery = settings.data === undefined || settings.data?.delivery === true;
-  const everySourceMissing = daemon.data === null && settings.data === null;
+  const everySourceMissing = daemon.data === null && !delivery;
   const { cards: cardsScope, scope } = useTabScopes(
     project,
     state,
@@ -224,7 +227,7 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
         <LiveHeader kinds={kinds} onChange={setState} scope={scope} state={state} />
-        {settings.data === null ? (
+        {everySourceMissing || settings.data === null ? (
           <MissingSources everySource={everySourceMissing} project={project} />
         ) : null}
       </div>
