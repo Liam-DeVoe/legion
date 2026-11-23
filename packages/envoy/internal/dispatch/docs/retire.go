@@ -50,14 +50,16 @@ func (e *RetiredDocumentError) Error() string {
 func (e *RetiredDocumentError) Unwrap() error { return ErrDocumentRetired }
 
 // retiredWriteRefusal refuses a write into artifactID, whose owner lockArtifactOwner read in the
-// write's transaction: a RetiredDocumentError, logged naming the document, where the read found it
-// retired (artifactOwner.Retired), and nil where it stands. The retirement takes the same lock, so
-// it committed before that read or waits for the write's transaction.
+// write's transaction: a RetiredDocumentError, logged at Info naming the document, where the read
+// found it retired (artifactOwner.Retired), and nil where it stands. The refusal is an input a
+// route answers with a documented 409 in ordinary use - an agent that still holds a retired
+// decisions document's address writes to it - and no fault, so it logs no warning. The retirement
+// takes the same lock, so it committed before that read or waits for the write's transaction.
 func retiredWriteRefusal(artifactID string, owner artifactOwner) error {
 	if !owner.Retired {
 		return nil
 	}
-	slog.Warn("dispatch: refuse a write into a retired document", "document", artifactID)
+	slog.Info("dispatch: refuse a write into a retired document", "document", artifactID)
 	return &RetiredDocumentError{ID: artifactID, Name: owner.Name, Slug: owner.Slug, IssueKey: owner.IssueKey}
 }
 

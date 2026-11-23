@@ -56,6 +56,7 @@ import (
 // in, as a docs test's is, lists none and holds no other build either.
 //
 // kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
 func anotherBuildServes(ctx context.Context, q processes.Querier) (bool, error) {
 	live, err := processes.Live(ctx, q)
 	if err != nil {
@@ -77,7 +78,11 @@ func anotherBuildServes(ctx context.Context, q processes.Querier) (bool, error) 
 // version, so the rule reads as R10 and H5 word it - no process below this build's schema version
 // - and a later schema keeps that since as it keeps every element's, so the number does not move
 // with the build reading it. A manifest that declares no `decision` type - only one a test
-// installs in place of this build's - bounds the fleet at its own version.
+// installs in place of this build's - bounds the fleet at its own version. It serves
+// anotherBuildServes alone, and goes with it.
+//
+// kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
 func answersLeftTheMarkdown() int {
 	if versions, declared := (pmdoc.Element{Kind: pmdoc.TypedBlockElement, Name: "decision"}).Versions(); declared {
 		return versions.Since
@@ -176,8 +181,11 @@ func withoutUnkeptAskAttributes(node *pmdoc.Node) bool {
 }
 
 // onItsNode is ask, a row of the asks table, with its state and answer as its node holds them
-// (askNodeAnswers, read into nodes by ask id): the values keptAskState writes once the fleet is one
-// build, each one the node holds no value of left empty, so the write takes it off the block.
+// (askNodeAnswers, read into nodes by ask id), each one the node holds no value of left empty, so
+// a write takes it off the block: what the carry reads a version's ask blocks against
+// (asksAgreeWithTheirNodes), what the decisions step's restore writes, which runs only after a
+// catch-up that went through (restoredAskBlock), and what settlement and an issue's ask-state
+// writes keep once the fleet is one build wherever the node is not behind the row (keptFromItsNode).
 //
 // kept for one release: stored-ask-state
 func onItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
@@ -188,6 +196,30 @@ func onItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
 		ask.Answer = &model.AskAnswer{User: held.answeredBy, At: at, Selected: held.selected, Text: held.answer}
 	}
 	return ask
+}
+
+// keptFromItsNode is ask, a row of the asks table, as a write on a fleet of one build keeps it on
+// the ask's blocks (keptAskState): as its node holds it (onItsNode), but as the row holds it where
+// the node is behind the row. The one writer of an answer state writes the row and the node in one
+// transaction (asks.Settle), so the two differ only where a process of the release before wrote
+// the row alone, before the decisions step's catch-up states it on the node at its next tick: an
+// answer, a resolution or a reopen that release wrote into the row of an ask whose node holds
+// another state, or none - an ask this build opened, or one that release made, whose row names no
+// node until the step's backfill marks it. There the row is the newer of the two, and a node that
+// holds no answer state, or another state than the row's that no change the transaction plans
+// puts there (askNodeAnswer.planned), is behind it. That release's last process can leave the
+// fleet before the tick, and a version written in between keeps the state, the answerer and the
+// time that release recorded, which its CLI and pages read off the version (R10), where the node's
+// would take them off for good, since the catch-up writes no version. Once the node is caught up
+// it holds the row's state, and the node decides (R3).
+//
+// kept for one release: stored-ask-state
+// kept for one release: catch-up
+func keptFromItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
+	if held, stated := nodes[ask.ID]; !stated || held.state != ask.State && !held.planned {
+		return ask
+	}
+	return onItsNode(ask, nodes)
 }
 
 // rollWindowAskAttributes is the write that keeps the attributes of an ask block in step with
@@ -274,10 +306,17 @@ func rollWindowAskWrite(ask model.Ask, copied string, words bool) func(*pmdoc.No
 // answerWords are the attributes of an ask block that carry an answer's caller text: the options
 // it selects, whose labels are the asker's text, and its words. Who answered and when are the
 // server's, and stay on a block whose answer the document has no room for
-// (rollWindowAskAttributesWithheld).
+// (rollWindowAskAttributesWithheld). The roll window's writes and the form a version keeps once
+// the fleet is one build (withoutUnkeptAskAttributes, holdsKeptAskAttribute) read them, so they go
+// with the last of those.
+//
+// kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
 var answerWords = [...]string{"selected", "answer"}
 
 // holdsAnswerWords reports whether node, an ask block, carries an answer's words (answerWords).
+//
+// kept for one release: roll-window-attributes
 func holdsAnswerWords(node *pmdoc.Node) bool {
 	for _, name := range answerWords {
 		if _, held := node.Attrs[name]; held {
@@ -291,6 +330,8 @@ func holdsAnswerWords(node *pmdoc.Node) bool {
 // same block with other attributes, adds to the block's own rendering. An answer's words lengthen
 // the block's directive line, which carries every attribute quoted, and make no element, so the
 // document is measured as it was.
+//
+// kept for one release: roll-window-attributes
 func grownBy(document rendering, from, to *pmdoc.Node) (rendering, error) {
 	was, err := renderTree(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{from}})
 	if err != nil {
@@ -306,6 +347,8 @@ func grownBy(document rendering, from, to *pmdoc.Node) (rendering, error) {
 // answerHasRoom reports whether the document tree, which holds block, has room for block with
 // attrs, the attributes an answer's words are written into (rollWindowAskAttributes), by what one
 // upload may hold (weigh).
+//
+// kept for one release: roll-window-attributes
 func answerHasRoom(tree, block *pmdoc.Node, attrs pmdoc.Attrs) (bool, error) {
 	markdown, err := renderTree(tree)
 	if err != nil {
@@ -323,6 +366,8 @@ func answerHasRoom(tree, block *pmdoc.Node, attrs pmdoc.Attrs) (bool, error) {
 
 // withoutIndexes is items but those at the indexes dropped names, in their order, in items' own
 // array.
+//
+// kept for one release: roll-window-attributes
 func withoutIndexes[T any](items []T, dropped map[int]bool) []T {
 	if len(dropped) == 0 {
 		return items
@@ -338,7 +383,12 @@ func withoutIndexes[T any](items []T, dropped map[int]bool) []T {
 
 // sameAskAttribute reports whether got, an attribute value an ask block holds, is want: a list
 // of strings equals another of the same items in the same order whichever of []string and []any
-// holds it, as a tree read from the room holds a list another tree holds as []string.
+// holds it, as a tree read from the room holds a list another tree holds as []string. It and
+// askStringItems serve the roll window's write and the form a version keeps (rollWindowAskWrite),
+// so they go with the last of those.
+//
+// kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
 func sameAskAttribute(got, want any) bool {
 	gotItems, gotIsItems := askStringItems(got)
 	wantItems, wantIsItems := askStringItems(want)
@@ -348,6 +398,10 @@ func sameAskAttribute(got, want any) bool {
 	return reflect.DeepEqual(got, want)
 }
 
+// askStringItems is value as a list of strings, and whether it is one (sameAskAttribute).
+//
+// kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
 func askStringItems(value any) ([]string, bool) {
 	switch items := value.(type) {
 	case []string:

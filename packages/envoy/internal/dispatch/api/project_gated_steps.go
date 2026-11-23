@@ -51,12 +51,18 @@ type projectGatedSteps struct {
 // pointer so that an absent list and an explicit `[]` are told apart, and the enum is the steps
 // model.GatedStepsKnown names with the retired `decisions`, which the write admits and drops.
 type projectGatedStepsInput struct {
+	// kept for one release: steps-write-admits
 	Steps *[]string    `json:"steps" required:"true" enum:"decisions,criteria,spec"`
 	Actor *model.Actor `json:"actor"`
 }
 
 // retiredDecisionsStep is the design-gate step the release before gated, a root issue's
-// decisions document. This build stores it nowhere.
+// decisions document. This build stores it nowhere. The writes that admit and drop it and the
+// reads that take a stored list of it alone as [spec] (gatedStepsWithout, supersededApprovalGates)
+// name it, so it goes with the last of those.
+//
+// kept for one release: steps-write-admits
+// kept for one release: check-narrowings
 const retiredDecisionsStep = "decisions"
 
 // gatedStepsWithout is a list of gated steps without retiredDecisionsStep: the list the write
@@ -65,6 +71,7 @@ const retiredDecisionsStep = "decisions"
 // alone is [spec], never the empty list, which would gate nothing.
 //
 // kept for one release: steps-write-admits
+// kept for one release: check-narrowings
 func gatedStepsWithout(steps []string) []string {
 	if !slices.Contains(steps, retiredDecisionsStep) {
 		return steps
@@ -99,6 +106,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		steps = []string{}
 	}
 	for index, step := range steps {
+		// kept for one release: steps-write-admits
 		if step != retiredDecisionsStep && !slices.Contains(model.GatedStepsKnown, step) {
 			writeError(w, "INVALID_PROJECT", http.StatusBadRequest, fmt.Sprintf(
 				"%q is not a design-gate step: steps names %s", step, strings.Join(model.GatedStepsKnown, ", ")))

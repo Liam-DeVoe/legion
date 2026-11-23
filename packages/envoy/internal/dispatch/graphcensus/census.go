@@ -217,6 +217,8 @@ type StoreReport struct {
 	// Decisions is what the decisions step's third phase still owes (DecisionsCensus), set by the
 	// census command from docs' reader of the decisions documents' sections, nil where no caller
 	// read it. It refuses nothing.
+	//
+	// kept for one release: decisions-documents-fn
 	Decisions *DecisionsCensus
 	// KeywordCutFirstBodies is how many comment.created versions of the keyword table keep their
 	// event's cut text although revision 1 of the comment's blocks proves the comment's own
@@ -2257,6 +2259,7 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 	}
 	if !r.Absent {
 		writeMoves(w, r.Dangling, r.Collisions, verbose)
+		// kept for one release: decisions-documents-fn
 		if r.Decisions != nil {
 			writeDecisions(w, *r.Decisions)
 		}

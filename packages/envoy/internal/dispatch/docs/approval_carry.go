@@ -182,10 +182,12 @@ var attributeRemovalCase = carryCase{
 // (pointerLinesTaken); a block an agent wrote into the part is no part of it, and neither is a
 // heading A held, empty or not. Where the approved version held the ask's block already, under
 // the id it stands at now, the block is taken out of both versions only where it is byte for byte
-// the block the person approved (restoredAskBlocks), so a restore that returns other words, or
-// the same words in other bytes, than the approved ones is a difference no case carries. It holds
-// for the restore's own write alone (decisionStepCases.restore): an agent's write that makes the
-// same change carries nothing by it.
+// the block the person approved (restoredAskBlocks), its `shaped` pointers among its bytes but for
+// what the restore's own write did to them (decisionStepCases.restoredShaped), so a restore that
+// returns other words, the same words in other bytes, or a pointer an agent gave the block since,
+// than the approved ones is a difference no case carries. It holds for the restore's own write
+// alone (decisionStepCases.restore): an agent's write that makes the same change carries nothing
+// by it.
 //
 // kept for one release: decisions-step
 var restoreCase = carryCase{
@@ -256,13 +258,14 @@ var carryCases = [...]carryCase{readingCase, attributeRemovalCase, restoreCase, 
 // decisionStepCases names the phases of the decisions step whose own write a version is - the
 // restore (restoreCase) and the conversion (conversionCase) - and what that write added to the
 // document, which is all those two cases take out of a version: the block id of each answered ask
-// block the restore wrote (restored), of each decision the conversion wrote (decisions), the
-// `shaped` pointers it gave an answered ask block the document held already, by that block's id
-// (shaped), whether it added the `## Decisions` heading to a document that held no such part
-// (headingAdded), and the markdown of each pointer line the write took out of the document's
-// `## Decisions` part (pointerLines, blockMarkdown), which is what those cases take out of the
-// approved version. Only the step sets it, through a mark on its write's context no route can put
-// there (withDecisionStepWrite), and SnapshotVersion carries it on the version's write
+// block the restore wrote (restored), with what it did to the `shaped` pointers of each
+// (restoredShaped), of each decision the conversion wrote (decisions), the `shaped` pointers it
+// gave an answered ask block the document held already, by that block's id (shaped), whether it
+// added the `## Decisions` heading to a document that held no such part (headingAdded), and the
+// markdown of each pointer line the write took out of the document's `## Decisions` part
+// (pointerLines, blockMarkdown), which is what those cases take out of the approved version. Only
+// the step sets it, through a mark on its write's context no route can put there
+// (withDecisionStepWrite), and SnapshotVersion carries it on the version's write
 // (versionWrite.steps); every other version write leaves it zero, and its carry weighs the reading
 // case and the attribute-removal case alone.
 //
@@ -270,6 +273,7 @@ var carryCases = [...]carryCase{readingCase, attributeRemovalCase, restoreCase, 
 type decisionStepCases struct {
 	restore, conversion bool
 	restored, decisions map[string]bool
+	restoredShaped      map[string]restoredShape
 	shaped              map[string][]string
 	headingAdded        bool
 	pointerLines        []string
@@ -311,11 +315,16 @@ type carryInput struct {
 	version      *pmdoc.Node
 	agrees       bool
 	answered     map[string]bool
-	decided      map[string]bool
-	restored     map[string]bool
-	steps        decisionStepCases
+	// kept for one release: decisions-step
+	decided map[string]bool
+	// kept for one release: decisions-step
+	restored map[string]bool
+	// kept for one release: decisions-step
+	steps decisionStepCases
 	// pointersLeft is, within one pass of the cases over the two versions (neutral), the pointer
 	// lines of the step's write that no case has taken out of A yet (pointerLinesTaken).
+	//
+	// kept for one release: decisions-step
 	pointersLeft *[]string
 }
 
@@ -328,6 +337,8 @@ type carryInput struct {
 // out - one citing the decisions document among other words or citing a block of it, which the
 // restore keeps (isPointerLine), or a second copy of the pointer line - stays in A. The answer is
 // a drop for one call of withoutDecisionsPartBlocks, which it walks in order.
+//
+// kept for one release: decisions-step
 func (input carryInput) pointerLinesTaken(approved bool) func(*pmdoc.Node) bool {
 	if !approved || input.pointersLeft == nil || len(*input.pointersLeft) == 0 {
 		return func(*pmdoc.Node) bool { return false }
@@ -492,7 +503,7 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 		decided: decidedAskBlocks(shown), steps: steps,
 	}
 	if steps.restore {
-		input.restored = restoredAskBlocks(approved, tree, steps.restored)
+		input.restored = restoredAskBlocks(approved, tree, steps.restored, steps.restoredShaped)
 	}
 	change, carried, err := carryVerdict(input)
 	if err != nil {
@@ -736,19 +747,22 @@ func askAgreesWithItsNode(node *pmdoc.Node, ask, onNode model.Ask) bool {
 // provenance among it - as one of the writes that put them there leaves it, so that it changes
 // nothing: none of the seven attributes a version can store, as a version an upload wrote holds;
 // the ones a version keeps once the fleet is one build (keptAskState), written from onNode, the
-// ask as its node holds it, as every write on a fleet of one build writes them (onItsNode) - which
+// ask as its node holds it (onItsNode), as every write on a fleet of one build writes them - which
 // differs from the row only while the decisions step's catch-up has not yet stated on the node what
-// a process of the release before wrote into the row; the roll window's write without the
+// a process of the release before wrote into the row, when such a write keeps the row's instead
+// (keptFromItsNode), the next form for an ask that is not open; the roll window's write without the
 // answer's words (rollWindowAskAttributesWithheld, the same form as keptAskState) from the row; or
 // the roll window's write with them (rollWindowAskAttributes) from the row, as a version written
 // while two builds serve, or by the release before, holds. Only a block every one of them would
-// change shows a state neither the row nor the node holds.
-//
-// kept for one release: roll-window-attributes
-// kept for one release: stored-ask-state
+// change shows a state neither the row nor the node holds. Its first form is R10's, which stays;
+// each other goes with the kept thing that writes it.
 func showsItsAsksState(node *pmdoc.Node, ask, onNode model.Ask, copied string) bool {
-	return !withoutStoredAskAttributes(attributesOf(node)) || !keptAskState(onNode, copied)(attributesOf(node)) ||
+	return !withoutStoredAskAttributes(attributesOf(node)) ||
+		// kept for one release: stored-ask-state
+		!keptAskState(onNode, copied)(attributesOf(node)) ||
+		// kept for one release: roll-window-attributes
 		!rollWindowAskAttributesWithheld(ask, copied)(attributesOf(node)) ||
+		// kept for one release: roll-window-attributes
 		!rollWindowAskAttributes(true, ask, copied)(attributesOf(node))
 }
 
