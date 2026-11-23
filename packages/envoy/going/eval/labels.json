@@ -410,16 +410,15 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "The chart has eight bars, from the week of 2026-09-28 (W40) through the week of 2026-11-16 (W47), so it does not have one bar per ISO week from W40 to W46."
+          "why": "The chart has eight bars, and the eighth (the week of 2026-11-16) is ISO week 2026-W47, so the answer contradicts the fact's \"seven bars\" and \"no bar for another week\"."
         },
         {
           "by": "gpt",
-          "label": "pass",
-          "why": "The chart contains one bar for each ISO week from 2026-W40 through 2026-W46, with an additional bar for the following week."
+          "label": "fail",
+          "why": "The chart has eight bars including 2026-W47, contradicting the requirement for exactly seven bars covering W40-W46 and no other week."
         }
       ],
-      "label": "pass",
-      "discussion": "claude labelled it fail because the chart draws eight bars, W40 to W47, so it does not have one bar for each week from W40 to W46; gpt pointed out that the chart has one bar for every week W40 to W46 and that the fact does not say those are the only weeks, while the rule lets an answer state a fact with more beside it. claude agreed: the extra W47 bar adds to the fact without contradicting it. Agreed: pass."
+      "label": "fail"
     },
     {
       "task": "find-03",

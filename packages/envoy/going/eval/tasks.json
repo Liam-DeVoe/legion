@@ -904,7 +904,7 @@
     "mode": "ask",
     "level": "standard",
     "grade": {
-      "facts": ["The chart has one bar for each ISO week from 2026-W40 to 2026-W46."],
+      "facts": ["The chart has seven bars, one for each ISO week from 2026-W40 to 2026-W46, and no bar for another week."],
       "chart": {
         "from": "issues",
         "where": { "project": "DEMO", "status": ["done"] },
