@@ -51,6 +51,7 @@ var (
 // no node, from the old arms alone; and a document's refs row from the refs arm, which this child
 // leaves to the work that moves a document's citations.
 func TestItemBodyBlocksAreBlockNodesWithTheirLinksAndCitations(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	cited := createInteractionIssue(t, handler, "IBLC", "The cited issue", "Cited.\n")

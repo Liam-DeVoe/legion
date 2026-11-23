@@ -508,6 +508,7 @@ func seedWaitingOn(t *testing.T, handler http.Handler) waitingOnFixture {
 // names, whom a hand-on moves - and the same asks the Inbox's ?assignee=<login> answers for them,
 // whatever the casing the login is written in.
 func TestOpenAsksWaitingOnALoginAnswersTheAsksThatWaitOnThatPerson(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	seeded := seedWaitingOn(t, handler)
 	for _, test := range []struct {
@@ -539,6 +540,7 @@ func TestOpenAsksWaitingOnALoginAnswersTheAsksThatWaitOnThatPerson(t *testing.T)
 // narrows to one person and to nobody else), and `me`, which the read does not take, since it
 // answers about any person and the caller's own mail is the one read's (GET /api/v1/me/inbox).
 func TestOpenAsksRefuseABadWaitingOn(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	seedWaitingOn(t, handler)
 	for _, query := range []url.Values{
@@ -563,6 +565,7 @@ func TestOpenAsksRefuseABadWaitingOn(t *testing.T) {
 // The author the node is reserved for reads it, so what keeps it from the other reader is that
 // predicate and nothing else of the read.
 func TestOpenAsksWithNeitherScopeAnswerEveryVisibleProjectAndNoInvisibleAsk(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	test := createInteractionIssue(t, handler, "TEST", "A TEST issue", "A spec")
 	other := createInteractionIssue(t, handler, "OTHER", "An OTHER issue", "A spec")
@@ -599,6 +602,9 @@ func TestOpenAsksWithNeitherScopeAnswerEveryVisibleProjectAndNoInvisibleAsk(t *t
 // it. The ask carries a reply in its thread and the reader's snooze, so the row is not mostly
 // nulls.
 func TestTheOpenAskRowOfTheThreeReadsIsBuiltOnce(t *testing.T) {
+	// Not parallel: it reads GET /api/v1/me/inbox for what its writes through the routes stated,
+	// and that read answers only what stands at or below the event horizon (sinceHorizon), which a
+	// test beside it holding a transaction id on the cluster (holdClusterTransactionID) holds back.
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "One row", "A spec")
 	askID := createIssueAsk(t, handler, issue.Key, "Which row?")

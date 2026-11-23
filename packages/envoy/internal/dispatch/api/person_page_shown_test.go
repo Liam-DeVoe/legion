@@ -72,6 +72,7 @@ func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testin
 // pmdoc.ReadForDisplay makes of exactly the line the row answers, the first line of the node's
 // text and not the rest. The route table's 200 schema declares it.
 func TestAPersonPageRowCarriesTheTreeOfItsFirstLine(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "LINE", "A person's page lines", "Spec.\n")
 	createThreadComment(t, handler, issue.Key,

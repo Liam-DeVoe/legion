@@ -92,6 +92,7 @@ const oneInboxOwedWorkHere = `
 // TestOneInboxParticipantSetOfTheCorpus is measurement one: the corpus seeded on a database of the
 // test's own through this build's handler, and R11's three statements read over it.
 func TestOneInboxParticipantSetOfTheCorpus(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to take the participant set of the one-inbox corpus", dismissedScaleEnv)
 	}
@@ -132,6 +133,7 @@ func TestOneInboxParticipantSetOfTheCorpus(t *testing.T) {
 // migration has run, through its pool and through the base build's API; and every write path R11
 // names timed against it, 200 readings each.
 func TestOneInboxWriteBaseline(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to take the one-inbox write baseline", dismissedScaleEnv)
 	}

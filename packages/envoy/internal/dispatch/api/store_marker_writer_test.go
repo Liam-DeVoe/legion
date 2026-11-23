@@ -51,6 +51,7 @@ func markerWriterSetting(t *testing.T, q interface {
 // the row back to the backfill as an insert of that build's would (migration 20261116150000), and
 // the same update through this build's pool keeps the node the row names.
 func TestAnOlderBuildsUpdateOfAMarkedAttemptRowNamesNoNode(t *testing.T) {
+	t.Parallel()
 	listener, _ := newMentionListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Second})
 	older := olderBuild(t, database)
@@ -158,6 +159,7 @@ func restoreAsAnOlderBuild(t *testing.T, conn execer, database *store.Store, id,
 // answered by neither arm until this build's next revision, which reads such a row as naming no
 // node (storedItemBlocks) and states the node live.
 func TestARestoredItemBlockIsAnsweredOnceThroughout(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RSTR", "Restored blocks", "before")
 	older := olderBuild(t, database)
@@ -210,6 +212,7 @@ func TestARestoredItemBlockIsAnsweredOnceThroughout(t *testing.T) {
 // An ask's answer part is whoever answered: its node, the part_of that places it in the ask and
 // the base attributes its node write stated name the answerer, not the session that asked.
 func TestAnAnswerPartsNodeAndTuplesNameWhoAnswered(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "ANSW", "Answer parts", "before")
 	ask := createPartAsk(t, handler, issue.Key, "Ship it?", map[string]string{"label": "Yes"}, map[string]string{"label": "No"})

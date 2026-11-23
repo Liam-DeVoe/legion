@@ -26,6 +26,7 @@ import (
 // before the person nodes and tuples it appends in one statement, which is the step graph_tuples
 // is held at.
 func TestEveryMoveOfWhoAnAskWaitsOnTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
 	for _, writer := range []storeWriter{

@@ -742,6 +742,9 @@ func TestDismissedPagesFromItsCursor(t *testing.T) {
 // read with no state) gives its node, its dismissal among them, though under this state the walk
 // reads the page's own nodes alone (meInboxBuild's page_nodes).
 func TestTheOneReadsDismissedViewPagesFromItsCursor(t *testing.T) {
+	// Not parallel: it reads GET /api/v1/me/inbox for what its writes through the routes stated,
+	// and that read answers only what stands at or below the event horizon (sinceHorizon), which a
+	// test beside it holding a transaction id on the cluster (holdClusterTransactionID) holds back.
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	rows := []string{

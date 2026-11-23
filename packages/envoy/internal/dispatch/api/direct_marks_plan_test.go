@@ -21,6 +21,7 @@ import (
 // each kind. Each of the three ways a read names its sessions is held to it: every session, one
 // session, and every session through the narrowed read with no session named.
 func TestTheDirectMarksReadTwoProbesASession(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const sessions, marks = 5, 10000

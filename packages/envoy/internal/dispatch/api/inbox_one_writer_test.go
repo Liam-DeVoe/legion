@@ -28,6 +28,7 @@ import (
 // keeps: the one way a relation reaches a person, and never from a node reserved for its author to
 // anybody else.
 func TestTheOneWriterRecordsParticipationAndDelivery(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// A listener that holds s1 live, so a direct message to s1 is delivered and s1 may answer it.
 	live := true

@@ -57,6 +57,7 @@ const (
 // name was bound to an argument on every shape, the generic plan took the Reply arm to keep one
 // row, read the whole arm through a bitmap and sorted it (meInboxPageRows).
 func TestTheDismissedPageReadsOnePageUnderTheGenericPlan(t *testing.T) {
+	t.Parallel()
 	piles := []*dismissedScaleShape{seedDismissedPagePile(t, dismissedPageFewer), seedDismissedPagePile(t, dismissedPageMore)}
 	page := func() url.Values {
 		return url.Values{"state": {myRepliesStateDismissed}, "limit": {fmt.Sprint(dismissedScalePage)}}

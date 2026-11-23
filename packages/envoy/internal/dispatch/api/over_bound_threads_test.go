@@ -28,6 +28,7 @@ import (
 //
 // Dropped, the triggers write nothing, so every row the test reads is the Go writer's.
 func TestAWritePastTheStoresBoundRecordsItsThreadsRows(t *testing.T) {
+	t.Parallel()
 	for _, dropped := range []bool{true, false} {
 		name := "with the user_threads triggers in place"
 		if dropped {

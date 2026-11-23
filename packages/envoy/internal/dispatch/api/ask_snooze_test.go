@@ -405,6 +405,7 @@ func TestAskSnoozeRefusesBadInputAndACredentialWithoutThePersonScope(t *testing.
 // writes them - and sends the third on a server of one connection, whose backend it reads queued
 // behind that hold before the hold commits.
 func TestTwoSnoozesOfOneRowLeaveItAndItsTupleAgreeing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "SNZR", "Racing snoozes", "A spec")

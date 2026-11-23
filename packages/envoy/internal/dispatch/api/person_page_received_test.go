@@ -43,6 +43,7 @@ import (
 //   - the page reads the current tuple: moving the issue to bob retracts carol's delivery of the
 //     ask (inboxwrite.QueueMoveWaiting), and the ask leaves her page for his.
 func TestAPersonPageListsWhatWasDeliveredToTheirOwnNode(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	live := true
 	sent := []map[string]any{}
@@ -183,6 +184,7 @@ func TestAPersonPageListsWhatWasDeliveredToTheirOwnNode(t *testing.T) {
 // comment to, and alice's, which its authored_by ties it to, each answer 200 with the issue's
 // comment alone.
 func TestAPersonPageSkipsACommentOnAnAgentConversationsFile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database := newTestHandlerWithStore(t)
 	const (

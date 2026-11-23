@@ -1353,6 +1353,7 @@ func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testin
 // every read of an answer does (TestEveryReadOfAnAnswerCarriesTheTreeOfEachLabelItChose): the
 // Decisions tab draws each chosen label from it. The route table's 200 schema declares the list.
 func TestADecisionsEntryCarriesTheTreeOfEachLabelItsAskChose(t *testing.T) {
+	t.Parallel()
 	handler, issueKey, askID := chosenLabelAsk(t)
 	target := "/api/v1/issues/" + issueKey + "/decisions"
 	raw, held := valueAt(t, treesRequest(t, handler, target, false), "entries")

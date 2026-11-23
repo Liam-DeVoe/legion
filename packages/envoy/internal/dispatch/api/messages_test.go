@@ -913,6 +913,7 @@ func TestAgentConversationReplyStaysInThatAgentsConversation(t *testing.T) {
 // a delivered_to tuple: an attempt the listener has not taken states none (R7 of
 // the spec).
 func TestTheConversationReadAnswersTheRowsTheMessagesReadAnswers(t *testing.T) {
+	t.Parallel()
 	taking := true
 	const session = `{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1014,6 +1015,7 @@ func TestTheConversationReadAnswersTheRowsTheMessagesReadAnswers(t *testing.T) {
 // The conversation read admits exactly the callers the messages read admits, each the same way
 // (expectSameCallersAsConversationRead), since it answers the same rows.
 func TestTheConversationReadAdmitsExactlyTheCallersTheMessagesReadAdmits(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	expectSameCallersAsConversationRead(t, rig, "GET /api/v1/agents/s1/conversation", "s1", "/api/v1/agents/s1/conversation")
 }

@@ -36,6 +36,7 @@ var commentPointerKinds = []string{graphstore.TupleAnswers, graphstore.TuplePart
 // answering it. refs.BacklinkCounts counts each node both ways answer at exactly as the view lists
 // them.
 func TestACommentWritesItsPointersAsTuples(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -193,6 +194,7 @@ func TestACommentWritesItsPointersAsTuples(t *testing.T) {
 // own node, and the comment answers that one spelling. A comment that mentions a session reads the
 // ask's routes before its transaction (readCommentRoutes), by that same one spelling.
 func TestACommentNamesItsAskByOneSpellingOfItsID(t *testing.T) {
+	t.Parallel()
 	listener, _ := newMentionListener(t)
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: time.Second})
 	issue := createInteractionIssue(t, handler, "CASK", "Ask id spellings", "The spec.\n")

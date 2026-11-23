@@ -32,6 +32,7 @@ import (
 // that does not grow with the asks moved, and in that write's own transaction. A closed issue
 // moves nothing until its reopen.
 func TestTheAssigneeArmFollowsWhoAnAskWaitsOn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	trace := &sentStatements{}
@@ -318,6 +319,7 @@ func TestTheAssigneeArmFollowsWhoAnAskWaitsOn(t *testing.T) {
 // them, unless a comment of theirs in the thread holds them there; and a move back by somebody
 // else then delivers the ask to them.
 func TestAPersonsOwnMoveOfAnAskDeliversThemNothing(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedPeople(t, database, "carol", "dana")
 
@@ -497,6 +499,7 @@ func issueEventCount(t *testing.T, database *store.Store, key, eventType string)
 // that answered on a lock would leave the first write's delivery standing to the person the move
 // replaced.
 func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, "carol", "erin")
@@ -608,6 +611,7 @@ func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *
 // the ask.opened that records the restore, and is retracted for the person it stood to, with
 // their part in the thread, which nothing else holds.
 func TestASettlementsRestoreMovesTheAskToWhoItWaitsOnNow(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := blockAskHandlerWithDocuments(t)
 	seedPeople(t, database, "dana")
 	issue := createInteractionIssue(t, handler, "TEST", "A retracted ask comes back", "Context\n")
@@ -660,6 +664,7 @@ func TestASettlementsRestoreMovesTheAskToWhoItWaitsOnNow(t *testing.T) {
 // request (openApprovalAsk), whose person its insert read (Write.WaitingOn). Each reaches the
 // issue's assignee, who takes part in its thread, under its ask.opened, and its asker takes part.
 func TestEveryAskCreateReachesWhoItWaitsOn(t *testing.T) {
+	t.Parallel()
 	t.Run("a settlement's block ask", func(t *testing.T) {
 		handler, database, _ := blockAskHandlerWithDocuments(t)
 		issue := createInteractionIssue(t, handler, "TEST", "A block ask waits on bob", "Context\n")
@@ -739,6 +744,7 @@ func requireOneStandingDelivery(t *testing.T, database *store.Store, askID, want
 // user_threads_message never did (it returns on a message on no issue); and a session's reply
 // under a message on an issue reaches nobody by that arm.
 func TestASessionsReplyReachesWhoStartedItsDirectConversation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	live := true
 	sent := []map[string]any{}

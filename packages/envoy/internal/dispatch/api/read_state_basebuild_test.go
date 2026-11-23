@@ -83,6 +83,7 @@ type readStateMarks struct {
 // moment. Last, no node of a read-state kind exists, and each of the six tables - the base build's
 // rows and this build's - holds exactly the marks its tuples project.
 func TestReadStateIsTuplesFromThePersonAndSixProjections(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	databaseURL := baselineDatabaseURL(t, readStateDatabaseEnv, readStateDatabase)
 	binary, commit := buildBaseline(t, filepath.Join(testtmp.Dir(t, readStateWorktree), readStateWorktree))
