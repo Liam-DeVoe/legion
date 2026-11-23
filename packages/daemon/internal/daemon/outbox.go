@@ -2414,10 +2414,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return nil
 		}
 		// A start names the phase it was queued for, and at the phase step, which every role the
-		// deployment defines runs as, the role names which step: a start of one step's role that
-		// waited on its row's backoff while the task went back to another step of the phase reads
-		// the same phase, generation and entry, and is not the work of the step that runs
-		// (record.Issue.HoldsQueued, the rule the admission pass and the supervisor ask too).
+		// deployment defines runs as, the role names the step's role: a start of one step's role
+		// that waited on its row's backoff while the task went to the step of another role of the
+		// phase reads the same phase, generation and entry, and is not the work of the step that
+		// runs (record.Issue.HoldsQueued, the rule the admission pass and the supervisor ask too).
+		// Two steps of one role read the same here: the entry fence below tells them apart, for a
+		// start that carries an entry (record.StartLeft).
 		if payload.Phase != "" && !issue.HoldsQueued(payload.Role, payload.Phase) {
 			r.log.Info("outbox start serves a phase or a step the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
 				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role, "stepRole", issue.StepRole)
@@ -3150,8 +3152,9 @@ func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, is
 // until its machine is available, and otherwise finishes without acting. The claim is the one the
 // row names, else the claim of the worker on the role's step (workerToken), as reservedTreeClose
 // reads it: two claims of one issue can hold one role — the agent of a key on a step of another
-// role, beside that role's own claim of an earlier version of the plan — so the role's own token
-// could stop the other one, or wait for its machine, and leave this claim running in the old tree.
+// role, beside that role's own claim of an earlier version of the plan, or two agents at two steps
+// of the role — so the role's own token could stop the other one, or wait for its machine, and
+// leave this claim running in the old tree.
 // This row and a new-tree start run on the issue's lifecycle lane, so the claim cannot be
 // re-pointed between this check and the suspension. A stop this call completes wakes the old
 // tree's close rows; this row releases no tree resources itself.
