@@ -173,3 +173,43 @@ func TestTheBaseOfATaskReadsAMergedNeedAsTheDefaultBranch(t *testing.T) {
 	}
 	check(t, stored, want{"d", []StartBranch{a, main("b")}, "main", false})
 }
+
+// The base of a task that has started is the base its start fixed (PlanTask.Base), whether or not
+// the plan in force merges it: of d, which needs a and c, holding the base legion/LEGION-208.d.join,
+// BaseOf answers that, join true, with d needed by e and with no task needing it, where the plan
+// alone gives main. With no base fixed, a task that has not started or that a release before
+// started, it answers the plan's base (PlannedBase).
+//
+// The fault it catches is a base that a later version moves within a task's run (its control: BaseOf
+// as PlannedBase alone, the revision before, under which d without e reads main).
+func TestTheBaseOfAStartedTaskIsTheBaseItsStartFixed(t *testing.T) {
+	issue := Issue{Key: planIssue, DefaultBranch: "main"}
+	for _, withE := range []bool{true, false} {
+		tasks := []baseTask{{"a", nil, "", []string{"implementer"}}, {"c", nil, "legion/LEGION-208.c", []string{"implementer"}},
+			{"d", []string{"a", "c"}, "legion/LEGION-208.d", []string{"implementer", "reviewer"}}}
+		if withE {
+			tasks = append(tasks, baseTask{"e", []string{"d"}, "legion/LEGION-208.e", []string{"implementer"}})
+		}
+		stored := basePlan(tasks...)
+		planned, _, err := stored.PlannedBase(issue, "d")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, row := range stored.Tasks {
+			if row.Task == "d" {
+				stored.Tasks[i].Base = "legion/LEGION-208.d.join"
+			}
+		}
+		if base, join, err := stored.BaseOf(issue, "d"); err != nil || base != "legion/LEGION-208.d.join" || !join {
+			t.Errorf("BaseOf(d) with e %t and the base its start fixed = %s, %t, %v, want legion/LEGION-208.d.join, true", withE, base, join, err)
+		}
+		for i, row := range stored.Tasks {
+			if row.Task == "d" {
+				stored.Tasks[i].Base = ""
+			}
+		}
+		if base, _, err := stored.BaseOf(issue, "d"); err != nil || base != planned {
+			t.Errorf("BaseOf(d) with e %t and no base fixed = %s, %v, want the plan's base %s", withE, base, err, planned)
+		}
+	}
+}
