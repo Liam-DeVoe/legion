@@ -51,13 +51,17 @@ export const LegionInstant = timestamp.regex(
 );
 
 /** `api.Phase` — the state an admitted issue sits in, in the transition table's own order. Not
- * the role working it: `workers` is keyed by role, each of `LEGION_ROLES` or a role of the
- * deployment. `awaiting_person` is a root that keeps its admission slot while its architect waits
- * on a person's answer (`waitingOn` on the issue record). `step` runs each step of a role the
- * deployment defines, which the issue names in `stepRole` (contract 221). `accepting` is the
- * architect's acceptance between the reviewer's approval and retro: no worker runs it. The merger
- * merges in `merging`, and the daemon closes the issue when it reads that merge (`done`); the
- * production check after the close is no phase (`check` on the issue record). */
+ * the role working it: `workers` is keyed by role, each of `LEGION_ROLES`, the role acceptance, or
+ * a role of the deployment or of the plan, and `placeRole` names the role that works the issue's
+ * place. `awaiting_person` is a root that keeps its admission slot while its architect waits on a
+ * person's answer (`waitingOn` on the issue record). `step` runs each step of a role the
+ * deployment or the plan defines, which the issue names in `stepRole` (contract 221). A task's
+ * steps run in any order. `accepting` runs a step of acceptance: the architect's own, where its key
+ * is `owner` or the issue has no plan rows, which no worker runs; otherwise the agent its key
+ * names, or a fresh agent of the role acceptance where it has no key. Where the issue has a pull
+ * request, the merger merges in `merging`, and the daemon closes the issue when it reads that merge
+ * (`done`); an issue with none is `done` when its retro ends, with no merge. The production check
+ * after a merge's close is no phase (`check` on the issue record). */
 export const LEGION_WORKFLOW_PHASES = [
   "admitted",
   "awaiting_person",
@@ -366,11 +370,13 @@ const legionHandoffRecordView = z.object({
   version: z.number().int().positive().optional(),
 });
 
-/** `api.PhaseView` — one phase worker's claim, the handoff of its current phase (the commit its
+/** `api.PhaseView` — the claim on one role's phases row (a phase worker's, or the architect's for a
+ * step of that role whose key is `owner`), the handoff of its current phase (the commit its
  * completion reported, the Dispatch handoff record it named), and the three counts the phase
  * carries: `pass`, the passes it has made through its stretch of the workflow, which every
- * backward move counts one of, `rounds`, the review rounds, which only a review that requested
- * changes counts, and `backwardMoves`, the counts of the moves back that made those rounds. */
+ * backward move counts one of, `rounds`, the review rounds, which a review that requested changes
+ * counts and so does the fail of a review step that is not the owner's, and `backwardMoves`, the
+ * counts of the moves back that made those rounds. */
 const legionPhaseView = z.object({
   claim: legionClaimView.optional(),
   handoffCommit: nonEmptyString.optional(),
@@ -402,11 +408,13 @@ const legionMergeState = z.enum([
 ]);
 
 /** `api.PullRequestView` — the pull request as the daemon observes it from GitHub.
- * `reviewDecision` is the latest review round's decision, the one the workflow ends the round on
- * when the reviewer completes. It shows from the review that decided it until the next round
- * opens or a new generation clears it, so a request for changes stays through implementing and
- * testing, and an approval through retro and every phase after it; absent until a review in a
- * round decides. `state` is always present: a recorded pull request is open, merged or closed.
+ * `reviewDecision` is the latest review round's decision on GitHub, the one the workflow ends the
+ * round on when the reviewer completes, where a review on GitHub decides the round: at a review
+ * step the owner does, the owner's verdict ends the step and no review on GitHub decides it. It
+ * shows from the review that decided it until the next round opens or a new generation clears it,
+ * so a request for changes stays through the steps the task runs again, and an approval through
+ * retro and every phase after it; absent until a review in a round decides. `state` is always
+ * present: a recorded pull request is open, merged or closed.
  * No CI verdict and no fix-attempt count ride here: a CI result moves no issue, so the daemon
  * keeps neither (dispatch://INFRA-714/spec R1), and `mergeState` is what says whether a check the
  * repository requires holds the head. `fixAttempts` counted the heads pushed onto a red verdict
@@ -742,11 +750,12 @@ const legionIssue = z.object({
   key: nonEmptyString.optional(),
   generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
-  /** The role of the deployment that works the issue's running step, where the issue stands at
-   * `step` or its hold took it out of `step` (contract 221): no phase names such a role, so the
-   * phase alone does not say who works the issue. Absent at every other phase, whose role the
-   * phase names, and from every issue of the body the route serves a caller before 221, which is
-   * served an issue at `step` as `implementing`. */
+  /** The role of the deployment or of the plan whose step the issue's task runs, where the issue
+   * stands at `step` or its hold took it out of `step` (contract 221): no phase names such a role.
+   * It is the step's role: the step's agent works it, unless the step's key is `owner`, where the
+   * owner does (`placeRole` names the role that works the place). Absent at every other phase, and
+   * from every issue of the body the route serves a caller before 221, which is served an issue at
+   * `step` as `implementing`. */
   stepRole: stepRole.optional(),
   /** The role of the claim that works the place where the issue's task stands (contract 227),
    * read from its plan rows: `architect` at a step or a retro the owner does, `acceptance` for
@@ -844,8 +853,9 @@ const legionIssue = z.object({
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
-  /** The entry the role of the issue's current phase stands on, and the entry that role was last
-   * given a task of (contract 94). The daemon sends the entry's own work to a role whose given
+  /** The entry the role that works the issue's current place stands on (its `placeRole` where the
+   * issue names one, else its phase's role, or `stepRole` at `step`), and the entry that role was
+   * last given a task of (contract 94). The daemon sends the entry's own work to a role whose given
    * number is below the entry its row names, on every admission pass and on a sweep of its own
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
    * has still to reach. A root carries them as a child does, since the architect is the role
@@ -863,7 +873,7 @@ const legionIssue = z.object({
    * outlast the task, which the end of the confirming turn retires. A tree's own root carries its
    * architect's handshake whatever phase it stands in — through `awaiting_person` and the phases
    * a phase role works, where `phaseEntry` and `givenEntry` are that role's — and any other issue
-   * the handshake of the role of its current phase. Both are absent where no entry was queued to
+   * the handshake of the role that works its current place. Both are absent where no entry was queued to
    * that claim in the issue's current generation — a role the daemon holds no claim row of, a
    * re-admitted root whose new architect entry is not queued yet, and a root of the release
    * before contract 146, which carries the two numbers and no handshake — and `entryConfirmedAt`
@@ -2017,9 +2027,11 @@ export function legionPlanRatingLoneField(
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
- * `verdict` is `pass`
- * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
- * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
+ * `verdict` is `pass` or `fail` for the completion of the tester's step, of a step of a role of the
+ * deployment or of the plan or of the role acceptance (`STEP_VERDICT_REQUIRED`), and of a
+ * reviewer's step on an issue with no pull request record, which also sends the commit it read;
+ * `pass`, `pending` or `fail` for a check report (`CHECK_VERDICT_REQUIRED`); and the empty string
+ * for every other completion, the retro's among them; it stays a string
  * on the wire, as the Go field is. `wakeAt` is the check report's alone (contract 54): when the
  * checking agent asks to be woken for its next look, which a pending report on a look that is not
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
@@ -2106,7 +2118,8 @@ export const LegionWaveReleaseRequest = z.strictObject({
 });
 
 /** `api.PhaseBackwardRequest`, a request to return an issue to an earlier phase: a phase worker's
- * on its own issue, or an architect's on an issue it owns, from `accepting`. An architect may own
+ * on its own issue, or an architect's on an issue it owns, from a step it does itself (its
+ * acceptance in `accepting`, or a step whose key is `owner`). An architect may own
  * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
  * grant's (`ISSUE_NOT_GRANTS`). */
@@ -2142,18 +2155,19 @@ export const LegionEscalateRequest = z.strictObject({
 });
 
 /** `api.SignOffRequest`, the owning architect's acceptance of an issue in `accepting`, which moves
- * it to `retro`; the daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). From
+ * its task to its next step, or to its retro where the acceptance is the task's last step; the
+ * daemon refuses it in every other phase (`SIGNOFF_OUTSIDE_ACCEPTING`). From
  * contract 211 the daemon judges it again when it applies it, and refuses it, changing nothing,
  * where the architect no longer owns the issue (`ISSUE_NOT_OWNED`, or `ISSUE_OUTSIDE_TREE` once
  * the issue left its tree), where the run of the issue it read has ended
  * (`SIGNOFF_STALE_GENERATION`), and where the run of `accepting` it read has ended
  * (`SIGNOFF_STALE_ENTRY`). Since
  * contract 51 it is also refused while an issue beneath that one is still in the workflow
- * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): children are accepted and merged before their
- * parent, whose own head proves their merged work (dispatch://INFRA-980). From contract 227 it is
- * refused too where the acceptance the issue's task stands at is not its owner's own step, a step
- * `acceptance` with no key, whose fresh agent ends it with its own verdict
- * (`SIGNOFF_NOT_THE_OWNERS`). */
+ * (`SIGNOFF_CHILD_IN_WORKFLOW`, naming them): each child is done, merged where it has a pull
+ * request, before its parent, whose own head proves their merged work (dispatch://INFRA-980). From
+ * contract 227 it is refused too where the acceptance the issue's task stands at is not its owner's
+ * own step: a step `acceptance` with no key, whose fresh agent ends it with its own verdict, or
+ * with another key, whose agent does (`SIGNOFF_NOT_THE_OWNERS`). */
 export const LegionSignOffRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
@@ -2169,7 +2183,8 @@ export const LegionSignOffRequest = z.strictObject({
  * `pass` or `fail` of a step that reports one, the commit, the handoff record of a phase that ends
  * with one, `returnTo` with a fail, and the rating of the plan on the retro. The owner's
  * acceptance passes as its sign-off and fails as a move back, to `returnTo` or to the task's first
- * implementation step before it. */
+ * implementation step before it; where neither names a step, its fail is the acceptance's own
+ * failed completion, which stops the task. */
 export const LegionCompleteStepRequest = z
   .strictObject({
     grantId: nonEmptyString,

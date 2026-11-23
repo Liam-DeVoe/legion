@@ -928,10 +928,12 @@ test("a backward move rejects future read-only phases", () => {
 });
 
 // Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
-// person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
-// before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
-// `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
-// check after the close is no phase, so no phase follows `integrating` but the close itself.
+// person, follows `admitted`, and no backward move reaches it. Contract 33: `accepting`, a step of
+// acceptance, stands between `reviewing` and `retro` in this list, whatever order a task's steps
+// run in; where the issue has a pull request the merger merges in `merging` and the daemon closes
+// the issue when it reads that merge (`done`), an issue with none is `done` when its retro ends,
+// and the production check after a merge's close is no phase, so no phase follows `integrating`
+// but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
   expect(LEGION_WORKFLOW_PHASES).toEqual([
     "admitted",
@@ -972,9 +974,10 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 });
 
 // Contract 221: a step of a role of the deployment runs as the phase `step`, and the issue names
-// the role that works it, `stepRole`, at `step` and while a hold keeps it out of that step. An
-// issue whose pod was built before that role names it in `startWaitsForPod` and holds no claim of
-// it; a held issue keeps the failed claim of that role as its worker.
+// that step's role, `stepRole`, at `step` and while a hold keeps it out of that step (the step's
+// agent works it, or the owner where its key is `owner`). An issue whose pod was built before that
+// role names it in `startWaitsForPod` and holds no claim of it; a held issue keeps the failed
+// claim of that role as its worker.
 test("the state golden carries an issue at step and the role of the deployment that works it", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   const atStep = state.issues["LEGION-240"];
@@ -1320,8 +1323,9 @@ test("wakeAt refuses a time with no seconds, as the daemon's decode does", () =>
 });
 
 // A file-backed phase's completion names the Dispatch handoff record the worker wrote: the
-// planner, tester and reviewer report it alone, the implementer with the commit it pushed. A record
-// is named by a non-empty id and a positive version.
+// planner and tester report it alone, the reviewer too where a review on GitHub decides its round
+// (else beside its verdict and the commit it read), and the implementer with the commit it pushed.
+// A record is named by a non-empty id and a positive version.
 test("a phase completion names its handoff record", () => {
   const planner = {
     grantId: "grant-208",
@@ -1846,8 +1850,8 @@ test("the state says which contract it was built at", () => {
   expect(LegionStateResponse.parse(wrong).contract).toEqual({ caller: daemonApiVersion });
 });
 
-// An architect's backward move names the issue it moves from accepting; a phase worker's may
-// leave it out, since its grant names its own.
+// An architect's backward move names the issue it moves back from a step it does itself; a phase
+// worker's may leave it out, since its grant names its own.
 test("a backward move may name its issue", () => {
   const move = { grantId: "grant-208", to: "testing", reason: "the proof is thin" };
   expect(LegionPhaseBackwardRequest.safeParse(move).success).toBeTrue();
