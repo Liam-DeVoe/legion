@@ -939,7 +939,8 @@ function answerEvent(
     // A bodiless 204 or 205 carries no row, so it is no answer of a write whose callers read one:
     // every keyed route Dispatch declares answers JSON (`dispatch-write-rows.test.ts`).
     const value = answer.json?.value;
-    if (answer.json !== undefined && answerNotKept(status, answer.replayed, value)) return "applied";
+    if (answer.json !== undefined && answerNotKept(status, answer.replayed, value))
+      return "applied";
     return row.safeParse(value).success ? "applied" : "body-malformed";
   }
   if (status === 409 && answer.code === IDEMPOTENCY_KEY_COMMITTED && notThisCalls) {
