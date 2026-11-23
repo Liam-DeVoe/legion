@@ -154,6 +154,8 @@ function focusedRow(page: Page): Promise<string | null> {
 /** Scrolls `box` down, as far as a person's scroll goes at a time, until row `id` is no longer
  *  in the page, and answers where the box was left. */
 async function scrollUntilGone(page: Page, within: Page | Locator, box: Locator, id: string) {
+  // Each read after the first follows a scroll and `frameAndTask`. A read taken before the list
+  // redraws only costs one more step, and the line after the loop waits for the row to go.
   for (let step = 0; step < 40 && (await row(within, id).count()) > 0; step += 1) {
     await box.evaluate((scroller) => {
       scroller.scrollTop += 400;
@@ -404,6 +406,7 @@ test("a focused row scrolled out of the window is no loss of focus", async ({ br
     // At each of the row's own stops it stays drawn; once the focus is on the next row's
     // checkbox, the view draws it no more, and the other rows keep their order.
     await tabTo(page, mark(page, next), "the next row's checkbox", 120, async () => {
+      // A Tab press moves the focus before it resolves, so one read here is the stop it reached.
       if ((await focusedRow(page)) === third) await expect(row(page, third)).toHaveCount(1);
     });
     await expect(row(page, third)).toHaveCount(0);
