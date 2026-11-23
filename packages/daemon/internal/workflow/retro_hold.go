@@ -188,6 +188,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.status(ctx, tx, parent, status, ""); err != nil {
 		return err
 	}
+	from := record.StandsAt(parent)
 	parent.Phase, parent.Hold, parent.Status = phase.Retro, nil, status
 	if err := e.WriteIssue(ctx, tx, parent); err != nil {
 		return err
@@ -209,9 +210,8 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 		return err
 	}
 	// The release moves the parent into its retro as the pass into the retro would have
-	// (transition), so it queues the reconcile of its tree's news as that pass does
-	// (queueMovedNews). The hold owed the parent nothing (record.OwedNews names a held issue
-	// UntoldHeld), so a version approved while it was held can reach its retro's holder with no
-	// change set recorded, which the retro's start cannot carry and the reconcile records and sends.
-	return e.queueMovedNews(ctx, tx, parent)
+	// (transition), so it does what that pass does after its start (releasedIntoPhase): the
+	// reconcile of its tree's news, which the hold owed the parent nothing of, and the merge
+	// forward of the move.
+	return e.releasedIntoPhase(ctx, tx, parent, w, from)
 }

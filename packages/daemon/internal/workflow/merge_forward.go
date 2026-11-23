@@ -34,9 +34,10 @@ import (
 // role first asked of a head keeps that merge until it lands and two roles are never sent to merge
 // one base forward. The one exception is an ask made in implementing, which covers implementing
 // only: an implementer that completes at that head without the merge leaves the issue's next phase
-// to ask again, with its hold and its notice. An ask of the implementer that has not landed when
-// the issue reaches merging stays the implementer's, and the merger is held instead
-// (mergeForwardOnEntry).
+// to ask again, with its hold and its notice, where a step of the task still runs there before the
+// merge, and the move into merging to ask the merger where none does (mergeForwardOnEntry). An ask
+// of the implementer made after implementing that has not landed when the issue reaches merging
+// stays the implementer's, and the merger is held instead (mergeForwardOnEntry).
 //
 // The ask replaces the one the record holds, and keeps what that one kept of the merge forwards
 // that landed before it in the same stretch of work (record.MergeForward.Earlier), with that ask
@@ -132,13 +133,17 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     asks nothing either: the conflict was decided by R0's reasons where it was confirmed, and
 //     the step goes on at the head as a tester or a reviewer after the implementer does.
 //   - At such a head, a move into a phase after implementing on the task's line (Walk.MovesBack: a
-//     planning after the implementer too, a planning before it never), while the record's ask of
-//     that head is still the one made in implementing, asks again for the reason it was asked for
+//     planning after the implementer too, a planning before it never) where a step of the task
+//     still runs before the merge (not classify.MergeComesNext), while the record's ask of that
+//     head is still the one made in implementing, asks again for the reason it was asked for
 //     (record.MergeForward.Why): an ask made there covers implementing alone, so an implementer
 //     that completes at that head without the merge leaves the next phase to ask, with its hold
-//     and its notice. It is keyed on the ask, not on the phase the move left, so no phase after
-//     implementing starts at that head with the ask of implementing alone. A parent held before
-//     its retro is such a phase (holdBeforeRetro).
+//     and its notice. It is keyed on the ask, not on the phase the move left, so no such phase
+//     starts at that head with the ask of implementing alone. A move to where the merge comes next
+//     asks nothing, as any move there at a conflicting head does: a plan with no tester and no
+//     reviewer step moves out of implementing into its retro, or into an acceptance no step
+//     follows, the ask of implementing stays on the record, and the move into merging asks the
+//     merger. A parent held before its retro is such a move (holdBeforeRetro).
 //
 // mergeForward asks once for each head, so a move into merging at a head the merger was already
 // asked of asks nothing more.
@@ -158,7 +163,7 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 		}
 		return e.mergeForward(ctx, tx, issue, w.Line, pr, record.ConflictMergeNext)
 	case asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing &&
-		w.MovesBack(record.StandsAt(issue), phase.Implementing):
+		w.MovesBack(record.StandsAt(issue), phase.Implementing) && !classify.MergeComesNext(issue, w.Line):
 		return e.mergeForward(ctx, tx, issue, w.Line, pr, asked.Why)
 	}
 	return nil
@@ -227,7 +232,8 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // head they merge. The architect and the role asked are told nothing more: the architect's
 // checks-red notice already said the merge was asked for, and the role asked pushed it; in merging
 // that role is the merger, which the landed reaches as the worker of merging, since it tells it to
-// merge the new head only once the reviewer's approval of it is on the pull request. A tree that
+// merge the new head only once the reviewer's approval of it is on the pull request, where the
+// task has a reviewer step, and to go on at the new head where it has none. A tree that
 // lingers (record.TreeLingers, where every role is suspended) records and tells nothing.
 func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
 	asked := pr.MergeForward

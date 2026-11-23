@@ -23,7 +23,13 @@ var stepClock = time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
 // stepEngine is the engine the step record tests drive: testEngine with no design gate, the fixed
 // clock stepClock, and agent as the daemon's read of a step's agent (nil reads none).
 func stepEngine(agent func(claim.Token) StepAgent) *Engine {
-	engine := testEngine(config.DesignGateOff, nil)
+	return gatedStepEngine(config.DesignGateOff, agent)
+}
+
+// gatedStepEngine is stepEngine on a deployment whose design gate is policy, as the daemon builds
+// its engine at boot.
+func gatedStepEngine(policy config.DesignGate, agent func(claim.Token) StepAgent) *Engine {
+	engine := testEngine(policy, nil)
 	engine.cfg.Clock = func() time.Time { return stepClock }
 	if agent != nil {
 		engine.cfg.StepAgent = func(_ context.Context, _ pgx.Tx, token claim.Token) StepAgent { return agent(token) }

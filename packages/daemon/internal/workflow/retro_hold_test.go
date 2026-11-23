@@ -407,8 +407,9 @@ func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *tes
 // reconcile of the tree's news as that pass does (queueMovedNews), which records what changed and
 // sends it to the retro's holder: the retro's start carries no item whose change set is not
 // recorded. The control is the same release of a parent whose holder took the approved version
-// already, which is owed nothing and queues no reconcile. No reconcile stands queued before the
-// release, so the count is the release's own.
+// already, which is owed nothing and queues no reconcile. The deployment gates the spec of each
+// root, and the root's gate stands open at version 3 from the start; no reconcile stands queued
+// before the release, so the count is the release's own.
 func TestTheReleaseOfAHeldParentQueuesTheReconcileOfNewsItsHoldOwedNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -420,8 +421,9 @@ func TestTheReleaseOfAHeldParentQueuesTheReconcileOfNewsItsHoldOwedNothing(t *te
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			engine, _ := loggedEngine()
+			engine := gatedStepEngine(config.DesignGateRootIssues, nil)
 			root := stepRoot(t, pool, phase.Admitted)
+			seedGate(t, pool, record.DesignGate{Issue: root.Key, ArtifactID: gateDoc, LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
 			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 			stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
@@ -431,9 +433,7 @@ func TestTheReleaseOfAHeldParentQueuesTheReconcileOfNewsItsHoldOwedNothing(t *te
 				t.Fatalf("%s after the approval stands in %s with hold %+v, want held from retro for its children", root.Key, held.Phase, held.Hold)
 			}
 			// A person approves version 4 of the spec while the parent is held: the hold owes it
-			// nothing, so no reconcile stands for it. The deployment gates the spec of each root
-			// from here on, so the tree is gated on that step.
-			engine.cfg.Steps = config.DesignGateRootIssues.Steps()
+			// nothing, so no reconcile stands for it.
 			seedGate(t, pool, record.DesignGate{Issue: root.Key, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(4), EverOpened: true})
 			seedTold(t, pool, root.Key, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: tc.took})
 			seedTold(t, pool, root.Key, record.AudienceArchitect, map[record.DesignStep]int{record.DesignStepSpec: 4})

@@ -11,7 +11,7 @@ The architect's acceptance precedes it only where the task names `acceptance:own
 Run every step, even on a mechanical change.
 
 Retro commits nothing and pushes nothing: the merger merges the branch's head, and a push would put a commit above the head the last worker step passed.
-No Legion check compares the head that merges with a review's head, so whether a push after a review needs a new review is the repository's own rule.
+Outside a forward merge of the base, no Legion check compares the head that merges with a review's head.
 Never rebase the branch or make another branch or bookmark.
 Retro writes no handoff.
 In the workspace it changes nothing; outside it, it writes only step 4's `mktemp -d` directory, the PR body, the Dispatch comment and message, and, with no reviewer step, the review-thread replies and resolutions of step 1.

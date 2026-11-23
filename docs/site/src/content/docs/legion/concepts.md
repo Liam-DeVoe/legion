@@ -420,10 +420,10 @@ A worker's completion names its record, and the daemon reads that record back fr
 it moves the issue: it refuses a record another session wrote, one of another issue, phase or
 version, and the record the role named for its previous phase. No handoff is a commit, so the
 issue branch carries only work, every push gets its own CI, and the merge brings no handoff onto
-the default branch. Retro commits nothing, so the head that merges is the head the issue's last
-step passed — the head the reviewer approved, where its plan has a review step — and nothing in
-Legion compares the two in any case: a repository that wants a later push reviewed says so in its
-own rulesets, and GitHub holds the merge to them.
+the default branch. Retro commits nothing, so nothing of retro's sits above the head the issue's
+last step passed — the head the reviewer approved, where its plan has a review step — and, outside
+a forward merge of the base, nothing in Legion compares the head that merges with it: a repository
+that wants a later push reviewed says so in its own rulesets, and GitHub holds the merge to them.
 
 ## Review signalling
 
@@ -540,7 +540,8 @@ Legion uses GitHub's own review mechanisms rather than labels:
   entry of `hooks:` in [legion.yaml](/legion/legion/running-legion/#legionyaml): the moves it
   selects, how many of them fire it, the roles it writes to, and the words. A move back the hook
   selects fires it when the counts of the moves it selects, added up, are then a whole multiple
-  of that number. The daemon writes the words to each role the hook names, between its own
+  of that number; a move back made while the head conflicts with its base fires none. The daemon
+  writes the words to each role the hook names, between its own
   header — the hook and the move — and its own counts of the moves back, and posts
   `Legion hook <name> fired at <N> moves back: <from> to <to>. Prompted: <role>, <role>.` on the
   issue. It gates nothing: the phase the move opened starts its worker whether a hook fired or
@@ -640,7 +641,7 @@ request, the merge commit, what it drove and what failed. A defect with a clear 
 controller, which gives it to the tree that owns that code and files an issue only when none does.
 One that needs a decision is a Dispatch ask on Legion's
 daily report issue, so you decide whether it needs an issue.
-The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message, and refuses every other write.
+The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
 
 Nothing waits for the deploy, and the agent names its own next look. A `pending` on any look but
 the check's last carries `wake_at`, an RFC 3339 time: when the agent wants to look again. The

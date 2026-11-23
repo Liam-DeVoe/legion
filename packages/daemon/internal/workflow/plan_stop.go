@@ -224,8 +224,11 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // issue stood in ended when the task stopped (stopTask), so none is ended here. A task that ran
 // raises its pass, so that a completion of this run takes a key of its own (the completion key
 // names the task and its pass), and no pair, round or hook is counted, since no step failed; a
-// new task keeps its counts of zero. The act is task_restarted, which the log line names: no row
-// of the table moves a held issue.
+// new task keeps its counts of zero. After the start, the restart does what a move does after its
+// start (releasedIntoPhase): it queues the reconcile of the tree's news, which the hold owed the
+// issue nothing of, and acts on the pull request's merge forward as a move into step 1's phase
+// does. The act is task_restarted, which the log line names: no row of the table moves a held
+// issue.
 //
 // Its callers hand it a stopped task, or the new task of a later version, waiting: a task held
 // for its stop is never done or left, since each write of done or left clears the issue's hold in
@@ -274,9 +277,12 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err != nil {
 		return err
 	}
-	return e.start(ctx, tx, issue, w, role, func(at Standing) string {
+	if err := e.start(ctx, tx, issue, w, role, func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reason)
-	}, true)
+	}, true); err != nil {
+		return err
+	}
+	return e.releasedIntoPhase(ctx, tx, issue, w, from)
 }
 
 // waitForFirstStep ends the stop of w's task of issue, a task stopped before its first step went

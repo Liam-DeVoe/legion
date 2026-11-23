@@ -82,7 +82,7 @@ func leave(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, status 
 
 // A6, the recorded departure. A child the daemon itself holds at admitted beneath an ancestor it
 // has already accepted does not refuse that ancestor's sign-off. Without the exclusion the rules
-// deadlock: the child is pinned at admitted until the ancestor closes, and the ancestor cannot
+// deadlock: the child is pinned at admitted while the ancestor is accepted, and the ancestor cannot
 // be accepted or closed while the child is in the workflow. Decided by this tree's architect on
 // dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
 func TestAChildHeldUnderAnAcceptedAncestorDoesNotRefuseThatAncestorsSignOff(t *testing.T) {
@@ -203,8 +203,7 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 // the plan `implementer tester`, which has no reviewer step, in the other; the text is one.
 func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
 	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
-		"so LEGION-300 is recorded at admitted and nothing starts it until LEGION-208 closes. " +
-		"Take LEGION-208 back with a backward move to run LEGION-300 under it now, unless the pull request of LEGION-208 has merged, or leave LEGION-300 where it is and it starts once LEGION-208 has closed."
+		"so LEGION-300 is recorded at admitted and nothing starts it while LEGION-208 stands in retro or merging."
 	for _, tc := range []struct {
 		name  string
 		steps []string

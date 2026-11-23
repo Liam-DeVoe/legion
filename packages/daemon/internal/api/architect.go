@@ -270,11 +270,9 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 // no issue beneath it is still in the workflow, so nothing enters the workflow beneath an issue
 // already accepted. The head is the one the last step of the ancestor's task passed, which is what
 // record.Accepted means for every plan (a plan with no reviewer step has no reviewed head).
-// operation is what the caller would do again once the ancestor has closed. The backward move it
-// names is refused once the ancestor's pull request has merged (record.Accepted holds merging,
-// and merged work never moves back), so the sentence says so.
+// operation is what the caller would do again once the ancestor has closed.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%[1]s is beneath %[2]s, whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath %[2]s now would let it merge a head that does not carry that work; %[3]s once %[2]s has closed, or take %[2]s back with a backward move first, unless the pull request of %[2]s has merged",
+	return fmt.Sprintf("%[1]s is beneath %[2]s, whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath %[2]s now would let it merge a head that does not carry that work; %[3]s once %[2]s has closed, where %[2]s is not the tree's root",
 		child, ancestor, operation)
 }
 

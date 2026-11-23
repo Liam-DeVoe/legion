@@ -46,7 +46,7 @@ const (
 	// work starts while they stand open (LineFacts.ChildWaits).
 	HeldChildrenFirst HeldReason = "children_first"
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
-	// nothing of it starts before that ancestor closes (HeldUnderAccepted).
+	// nothing of it starts while that ancestor stands in retro or merging (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
 	// HeldChildrenBeforeRetro is a parent whose task's last step is not the owner's acceptance, held before its retro
 	// while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
