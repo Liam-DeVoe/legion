@@ -587,7 +587,9 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 
 // healthzHandler is the listener's /healthz. It answers 200 "starting" until main publishes deps
 // once the durable consumer binds, which during a rolling deploy waits out the task being replaced
-// while /v1 already serves; 200 "healthy" with the durable consumer's lag once every dependency
+// while /v1 already serves, except that in the fresh naming mode a start whose selection state
+// refuses every call answers 503 "not_ready" instead (startingSelectionHealth), since its durable
+// never binds; 200 "healthy" with the durable consumer's lag once every dependency
 // answers; 503 "unhealthy" when NATS is unavailable, the durable subscription is inactive, a
 // cache's watcher has stopped, the durable consumer is gone, a bus check did not answer within
 // healthzBudget, or the durable consumer is

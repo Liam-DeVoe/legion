@@ -1717,8 +1717,10 @@ from its first answer, so there the probe passes at that answer. Readiness and l
 hub, which every pod shares, neither takes the one pod out of the Service nor restarts it. Only
 30 seconds of no answer at all takes the pod out of the Service (readiness, every 10 seconds, 3
 failures allowed), and a minute of it restarts the container (liveness, every 10 seconds, 6
-failures allowed). No probe reads `/healthz`, which the listener answers 200 `starting` from its
-first answer, before its `/v1` opens.
+failures allowed). No probe reads `/healthz`, whose status does not say whether `/v1` serves: the
+listener answers it 200 `starting` from its first answer, before its `/v1` opens, or, with
+`ENVOY_CONSUMER_NAMES=fresh`, `503` `not_ready` while the selection bucket refuses every consumer
+call (`startingSelectionHealth` in `cmd/listener`).
 The PodDisruptionBudget `<n>-listener` allows one unavailable pod, so a node drain or an
 Autopilot upgrade moves the pod rather than stalling on it. The pod-down alert below names this
 pod and its container.
