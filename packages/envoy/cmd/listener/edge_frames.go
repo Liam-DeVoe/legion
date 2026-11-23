@@ -78,7 +78,9 @@ func frameAnswerUnknownVerdict() frameVerdict {
 // frame of the message stored on subject with data, and why. Every field of data it judges by is
 // read by its exact top-level key, as the session's plugin reads the frame (exactFrameField), and
 // a frame that holds such a field under more than one key, or under a key that differs from the
-// field's name only in case, is withheld: readers disagree on which of those keys a field is.
+// field's name only in case, is withheld: readers disagree on which of those keys a field is. A
+// frame with a top-level "__proto__" key is withheld too, on every branch: the plugin reads that
+// key's fields as the envelope's own (errPrototypeFrameKey).
 //
 //   - a GitHub event is the repository rule's (relayVerdict), with no reader withheld
 //     answer_unknown, and one whose envelope names a topic that is no GitHub event's is withheld;
@@ -154,7 +156,8 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 // answers errAmbiguousFrameKey for a frame whose topic readers disagree on: the session's plugin
 // reads the last "topic" key (JSON.parse), and encoding/json, which the edge read the topic with
 // before, the last key equal to "topic" ignoring case, so a later "Topic" key passed a frame under
-// one topic that the session then read under another.
+// one topic that the session then read under another. It answers errPrototypeFrameKey for a frame
+// with a top-level "__proto__" key, whose "topic" the plugin reads when the frame holds none.
 func exactFrameTopic(data []byte) (string, bool, error) {
 	return exactFrameField(data, "topic")
 }
@@ -188,6 +191,14 @@ var frameByteOrderMark = []byte("\xef\xbb\xbf")
 // one top-level key, or under a key that differs from the field's name only in case.
 var errAmbiguousFrameKey = errors.New("a frame names the field under more than one key, or under a key that differs from its name in case")
 
+// errPrototypeFrameKey is exactFrameField's answer for a frame with a top-level key that reads as
+// "__proto__", however its escapes spell it. The plugin's envelope read
+// (packages/envoy-client/src/delivery.ts, InboundEnvelopeSchema, a zod object with .passthrough())
+// copies each key the schema does not name onto the envelope by assignment, so that key's value
+// becomes the envelope's prototype, and every field the frame does not hold itself - the topic, the
+// payload - is read through it: a field no reader of the frame's own keys can see.
+var errPrototypeFrameKey = errors.New(`a frame holds a "__proto__" key, whose fields the plugin reads as the envelope's own`)
+
 // exactFrameField is the string value of the top-level field key of the JSON object that data
 // holds past one leading byte order mark, as the plugins read a frame, and whether data names it
 // (exactJSONString).
@@ -202,11 +213,16 @@ func exactFrameField(data []byte, key string) (string, bool, error) {
 // ignoring case as encoding/json matches a key into a struct field (strings.EqualFold) and is not
 // key, is errAmbiguousFrameKey whatever its values: JSON.parse takes the last key, encoding/json
 // the last of any case, and another reader the first, so no read of such a field is the one
-// every reader of the frame makes.
+// every reader of the frame makes. A doc with a top-level "__proto__" key is errPrototypeFrameKey,
+// whichever field is asked for.
 func exactJSONString(doc []byte, key string) (string, bool, error) {
 	var value []byte
-	found, ambiguous := false, false
+	found, ambiguous, prototype := false, false, false
 	readable := topLevelJSONFields(doc, func(name string, raw []byte) {
+		if name == "__proto__" {
+			prototype = true
+			return
+		}
 		if !strings.EqualFold(name, key) {
 			return
 		}
@@ -219,6 +235,8 @@ func exactJSONString(doc []byte, key string) (string, bool, error) {
 	switch {
 	case !readable:
 		return "", false, nil
+	case prototype:
+		return "", false, errPrototypeFrameKey
 	case ambiguous:
 		return "", false, errAmbiguousFrameKey
 	case !found:

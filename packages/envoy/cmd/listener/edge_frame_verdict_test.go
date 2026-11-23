@@ -86,9 +86,11 @@ func TestEdgeFrameVerdict(t *testing.T) {
 // key that differs from its name only in case, is withheld on every branch: the probe frame, which
 // encoding/json read as the session's own message and the plugin as another project's event,
 // repeated keys, and "Topic", "TOPIC" and "tOpIc" beside "topic" on the generic, GitHub and role
-// branches. The controls, each with one exact key, get the verdict main gives them. A row that
-// names goTopic, goRole or goRepo first checks that encoding/json, the read main judged by, reads
-// the frame that way, so no row passes on a frame that does not split the readers as it says.
+// branches. So is a frame with a top-level "__proto__" key, in either spelling, whose fields the
+// plugin's zod read takes as the envelope's own. The controls, each with one exact key, get the
+// verdict main gives them. A row that names goTopic, goRole or goRepo first checks that
+// encoding/json, the read main judged by, reads the frame that way, so no row passes on a frame
+// that does not split the readers as it says.
 func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 	const session = "ses_v"
 	own := contracts.LegacyAgentSubject(session)
@@ -194,6 +196,9 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 		{name: "a GitHub payload with repeated repo keys, the last of the token's repository", subject: github,
 			data: object(field{"topic", text(github)}, field{"payload", payload(field{"repo", text("acme/secret")}, field{"repo", text("acme/pub")})}), want: notInProject, goRepo: "acme/pub"},
 
+		{name: "a GitHub payload whose __proto__ key holds the token's repository", subject: github,
+			data: object(field{"topic", text(github)}, field{"payload", payload(field{"__proto__", string(object(field{"repo", text("acme/pub")}))})}), want: notInProject},
+
 		{name: "control: a topic of the token's project", subject: ownIssue,
 			data: object(field{"topic", text(ownIssue)}), want: framePasses()},
 		{name: "control: a topic of a project the token does not list", subject: otherIssue,
@@ -233,6 +238,21 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 				data: object(field{"topic", text(pubLane)}, field{variant, text(privLane)}), want: notHeld, goTopic: privLane},
 			row{name: "agent: another project's topic and a later " + variant + " naming the session's own subject", subject: own,
 				data: object(field{"topic", text(otherIssue)}, field{variant, text(own)}), want: notHeld, goTopic: own},
+		)
+	}
+	// The plugin's zod read copies a "__proto__" key onto the envelope by assignment, so the key's
+	// fields become the envelope's through its prototype; the second spelling decodes to the same key.
+	for _, proto := range []string{"__proto__", `\u005f\u005fproto__`} {
+		holding := func(fields ...field) string { return string(object(fields...)) }
+		rows = append(rows,
+			row{name: "generic: a " + proto + " key holding another project's topic under the token's project", subject: ownIssue,
+				data: object(field{"source", text("dispatch")}, field{proto, holding(field{"topic", text(otherIssue)})}), want: notHeld},
+			row{name: "GitHub: a " + proto + " key holding another project's topic beside the token's repository", subject: github,
+				data: object(field{"source", text("github")}, field{proto, holding(field{"topic", text(otherIssue)})}, field{"payload", pubRepo}), want: notHeld},
+			row{name: "role: a " + proto + " key holding another project's role mark under the session's own topic", subject: own,
+				data: object(field{"topic", text(own)}, field{proto, holding(field{"role", text(pubRole)})}), want: notHeld},
+			row{name: "agent: a " + proto + " key holding another project's topic beside the session's own topic", subject: own,
+				data: object(field{"topic", text(own)}, field{proto, holding(field{"topic", text(otherIssue)})}), want: notHeld},
 		)
 	}
 

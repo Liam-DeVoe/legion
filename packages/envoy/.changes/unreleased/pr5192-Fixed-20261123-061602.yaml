@@ -8,8 +8,9 @@ body: |-
   subject passed as the session's own message, and the plugin showed it as that project's event.
   A later `Payload` or `Repo` key passed another repository's GitHub event the same way. A frame
   that names such a field under more than one key, or under a key that differs from its name only
-  in case, is now withheld. A frame with a byte order mark or a value nested deeper than 10,000,
-  which `encoding/json` refused, is judged by the topic the plugin reads.
+  in case, is now withheld, and so is a frame with a top-level `__proto__` key, whose fields the
+  plugin reads as the envelope's own. A frame with a byte order mark or a value nested deeper than
+  10,000, which `encoding/json` refused, is judged by the topic the plugin reads.
 time: 2026-11-23T06:16:02Z
 custom:
     Issue: pr5192
