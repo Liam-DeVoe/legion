@@ -77,3 +77,51 @@ func TestALaunchItsPodRefusesLeavesTheClaimSuspendedUntilAnotherPodStands(t *tes
 		t.Fatalf("after the resume once another pod stands the claim records no process: %+v", c)
 	}
 }
+
+// A runtime that cannot read which pod the issue's Sandbox holds now (runtime.IssuePodReader's
+// read false) has not said the refusing pod is gone, so a resume while it cannot read is refused
+// as one while that pod stands: nothing is launched and nothing of the claim written, and the
+// telling comes again only after an hour, where forgetting the pod would launch into it at each
+// try, be refused there again, write the claim and tell the issue and the controller each time.
+// Once the runtime reads another pod, the next resume launches the claim.
+func TestAResumeWhileTheRuntimeCannotReadTheIssuesPodIsRefusedAsWhileThePodStands(t *testing.T) {
+	h := newHarness(t)
+	var told []string
+	h.deps.PodRefused = func(_ Claim, pod, _ string, _ bool) { told = append(told, pod) }
+	h.restart()
+	issue := h.claim().Issue
+	h.rt.ScriptIssuePod(issue, "pod-1")
+	refusal := runtime.AwaitsPodUpdate{Pod: "pod-1", Reason: "launch " + string(testToken) + ": the pod pod-1 of " + issue + " was built without checker, the role of its step"}
+	h.rt.ScriptSpawn(fake.SpawnResult{Err: refusal})
+	if err := h.handle(RequestSpawn{Claim: testToken}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+		t.Fatalf("the spawn answered %v, want the runtime's refusal", err)
+	}
+
+	h.rt.ScriptIssuePodUnread(issue)
+	writes := 0
+	h.store.onPut = func(Claim) { writes++ }
+	for range 3 {
+		h.advance(testProbe)
+		if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's step"}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+			t.Fatalf("a resume while the runtime cannot read the issue's pod answered %v, want a refusal that is runtime.ErrAwaitsPodUpdate", err)
+		}
+	}
+	h.wantCalls("Spawn", 1)
+	h.wantState(StateSuspended)
+	if writes != 0 || len(told) != 1 {
+		t.Fatalf("the resumes while the runtime cannot read the pod wrote the claim %d times and told %q; want no write and the one report", writes, told)
+	}
+	h.advance(time.Hour)
+	if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's step"}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+		t.Fatalf("a resume an hour later answered %v, want a refusal that is runtime.ErrAwaitsPodUpdate", err)
+	}
+	if len(told) != 2 || told[1] != "pod-1" || writes != 0 {
+		t.Fatalf("an hour later the reports are %q and the claim was written %d times; want a second report of pod-1 and no write", told, writes)
+	}
+
+	h.rt.ScriptIssuePod(issue, "pod-2")
+	if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's step"}); err != nil {
+		t.Fatalf("the resume once another pod stands = %v, want the claim launched", err)
+	}
+	h.wantCalls("Spawn", 2)
+}

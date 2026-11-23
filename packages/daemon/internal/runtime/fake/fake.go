@@ -230,6 +230,14 @@ func (r *Runtime) ScriptIssuePod(issue, pod string) {
 	r.issuePods[issue] = pod
 }
 
+// ScriptIssuePodUnread makes every later IssuePod of issue answer read false, as the Sandbox
+// runtime answers an issue whose Sandbox it cannot read, until a ScriptIssuePod names it again.
+func (r *Runtime) ScriptIssuePodUnread(issue string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.issuePods, issue)
+}
+
 // ScriptKeptVolume makes every later IssueKeepsVolume of issue answer as the Sandbox runtime
 // answers an issue Sandbox that owns a kept volume, carries no reset mark, has the disk shape that
 // the configuration renders and was made at created: true for a since whose second is after
