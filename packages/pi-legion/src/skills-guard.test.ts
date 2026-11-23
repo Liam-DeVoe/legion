@@ -930,20 +930,43 @@ test("every file of the Legion role skills fits the skill budget", () => {
 // A worker copies the `dispatch handoff-read` command a role skill gives, and the command takes
 // the issue and the phase it reads (`dispatch_handoff_read` in packages/contracts'
 // dispatch-tools.ts: `issue` and `phase`, `version` optional), so each such command names both: one
-// without `--issue` answers a usage error before it reads the report. The worker skill gives the
-// command for each earlier step's report once, in that form.
+// without `--issue` answers a usage error before it reads the report. A `--phase` fragment of the
+// command is held to the same form, since a worker copies it as it stands. The worker skill gives
+// the command once, with `<word>` and `<v>` from its task's `reported:` lines, and says what to
+// read where the task has none.
 test("every dispatch handoff-read a Legion role skill gives names the issue and the phase", () => {
   const skillFiles = files(staged).filter((file) =>
     /^legion-[a-z-]+\/(SKILL|references\/[^/]+)\.md$/.test(path.relative(staged, file))
   );
   const commands = skillFiles.flatMap((file) =>
-    [...readFileSync(file, "utf8").matchAll(/`(dispatch handoff-read\b[^`]*)`/g)].map(
-      (match) => `${path.relative(staged, file)}: ${match[1]}`
-    )
+    [...readFileSync(file, "utf8").matchAll(/`([^`\n]*)`/g)]
+      .filter((match) => /dispatch handoff-read\b|--phase\b/.test(match[1]))
+      .map((match) => `${path.relative(staged, file)}: ${match[1]}`)
   );
   expect(commands.length).toBeGreaterThan(4);
-  expect(commands.filter((command) => !/ --issue <[^>]+> --phase \S/.test(command))).toEqual([]);
-  countedOncePerFile("`dispatch handoff-read --issue <issue> --phase <word> [--version <v>]`", [
-    "skills/legion-worker/SKILL.md",
-  ]);
+  expect(
+    commands.filter(
+      (command) => !/: dispatch handoff-(?:read|write) --issue <[^>]+> --phase \S/.test(command)
+    )
+  ).toEqual([]);
+  countedOncePerFile(
+    "Read the report each `Step <j> (<step>) reported: <word> version <v>.` line of your task names: `dispatch handoff-read --issue <issue> --phase <word> --version <v>`.",
+    ["skills/legion-worker/SKILL.md"]
+  );
+  expect(
+    lacks("legion-worker/SKILL.md", [
+      /With none, `dispatch steps --issue <issue>` lists the step runs; without `--version` the command reads a phase's newest report/,
+    ])
+  ).toEqual([]);
+});
+
+// An architect's `envoy_publish` reaches only a claim that runs, and a step that has not run has
+// no claim yet, so a child's own architect tells of the children it filed only the agents of its
+// plan's steps that have run.
+test("a child's architect tells only the agents that have run and hold its plan", () => {
+  expect(
+    lacks("legion-architect/references/decomposition.md", [
+      /send one `envoy_publish` to each agent that has run and holds its plan/,
+    ])
+  ).toEqual([]);
 });

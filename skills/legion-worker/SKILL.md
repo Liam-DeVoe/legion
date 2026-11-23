@@ -5,14 +5,15 @@ description: Use when dispatched as a per-process Legion phase worker — planne
 
 # Legion Phase Worker
 
-Your role prompt gives the workspace, the push, the handoff, `handoff_complete`, the waits and the pod release; this skill adds the rest.
-Where it disagrees with the code or a command's `--help`, follow those and tell your architect which line is wrong.
+Your role prompt gives the workspace, push, handoff, `handoff_complete`, waits and pod release; this skill adds the rest.
+Where it disagrees with the code or a `--help`, follow those and tell your architect which line is wrong.
 
 ## Every phase
 
 1. Read the issue, then its `open-items.md` where one exists (`dispatch doc-read --issue <issue> --artifact open-items-md`):
-   the architect records decisions there that it does not message.
-   Read each earlier step's report, the version your task names: `dispatch handoff-read --issue <issue> --phase <word> [--version <v>]`.
+   the architect records there what it does not message.
+   Read the report each `Step <j> (<step>) reported: <word> version <v>.` line of your task names: `dispatch handoff-read --issue <issue> --phase <word> --version <v>`.
+   With none, `dispatch steps --issue <issue>` lists the step runs; without `--version` the command reads a phase's newest report.
    A record beats your memory.
 
 2. Before the turn's first `jj new`, list `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only` and `jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only`.
@@ -28,7 +29,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
    A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after.
    A run whose output you did not capture can be neither confirmed nor cleared.
 
-6. A codebase-wide rename or deletion leaves historical records (transcripts, test snapshots, changelog entries) unchanged.
+6. A codebase-wide rename or deletion leaves history (transcripts, test snapshots, changelog entries) unchanged.
 
 ## Stop rules
 
@@ -41,7 +42,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
   - `HANDOFF_STALE_ENTRY`: end the turn without completing; the daemon sends the new entry's task by itself.
     Do what it asks at the head it names, with a handoff of its own.
 
-  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or your completion names no head; nothing was recorded.
+  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or it names no head; nothing was recorded.
     Read the merge (`skill://legion-worker/references/conflicts-and-rewrites.md`), then complete again at the new head with a handoff that names it.
 
   - `HANDOFF_NOT_CURRENT_PHASE`: report it; do not retry that completion.
@@ -55,7 +56,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
   - retro on the architect's answer to a defect it reported;
 
-  - a pushing role whose second push still did not carry the pull request onto its commit.
+  - a pushing role whose second push still left the pull request off its commit.
 
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 
@@ -64,7 +65,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 - A released pod is not a stop.
   Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
 
-- When another role's topic answers 404, read that step's report as item 1 says.
+- Another role's topic answers 404: read that step's report (item 1).
 
 ## Commits and pushes
 
@@ -91,8 +92,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
 
-- A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
-  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
+- A Dispatch comment or message never carries that footer: Dispatch records the session that wrote it.
 
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
   a set variable outranks the gh directory the daemon refreshes.

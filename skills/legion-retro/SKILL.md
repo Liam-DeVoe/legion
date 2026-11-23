@@ -28,8 +28,9 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 ## Steps
 
-1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the handoff of each implementer step (`--phase implement`).
-   Also read the handoff of each tester step where it has one (`dispatch handoff-read --issue <issue> --phase test` reads the newest, `--version <n>` an earlier one, and `dispatch steps --issue <issue>` gives when each step ran), and the review of each reviewer step where it has one: the one at the version your task's `Handoff:` line names (`--phase review --version <n>`), and an earlier step's at an earlier version.
+1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the handoff of each implementer step (`dispatch handoff-read --issue <issue> --phase implement`).
+   Also read the handoff of each tester step where it has one (`dispatch handoff-read --issue <issue> --phase test`), and the review of each reviewer step where it has one (`dispatch handoff-read --issue <issue> --phase review`): each command reads the newest record of its phase, the last such step's, `--version <n>` an earlier one, and `dispatch steps --issue <issue>` gives when each step ran.
+   Your task's `Handoff:` line, where it has one, names its last worker step's handoff.
    A pass must stand at the last worker step's head for every `before_merge` check, and the body's `Checks` block carries each.
 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
@@ -80,7 +81,8 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    EOF
    ```
 
-   A Dispatch comment or message never carries the `<!-- legion: … -->` footer. Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
+   A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
+   Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the architect.
    In the same call, rate the plan the issue ran (its steps and the role that worked each, not the planner's `plan.md`):
