@@ -829,7 +829,7 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
   expect(merger).toMatch(/Wait, and tell the owner of the task[^.]*which review is missing/);
 });
 
-test("an issue runs the default steps unless its architect registers a plan before its first step and its experiment's group takes one", () => {
+test("an issue runs the default steps unless its architect registers a plan before its first step", () => {
   expect([
     ...lacks("legion-architect/SKILL.md", [
       /references\/plan\.md`[^.;]*before `register_gate`[^.;]*before `release_children`/,

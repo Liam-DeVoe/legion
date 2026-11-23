@@ -13,13 +13,10 @@ import (
 // lists each role with the type of its step, the owner's own acceptance step, the two operations
 // that give and stop a plan, a stop's answers by their codes and that a stop before an issue's
 // first step settles the plan that step would walk, the notices that a stopped task, a parent
-// held before its retro and a plan of an earlier owner send it, an issue whose experiment's group
-// takes no plan from its owner (register_plan and stop_task answered PLAN_NOT_TAKEN, and the
-// plan-not-taken notice of such an issue, which offers no register_plan), the two stops a
-// task-stopped notice tells of (a failed step's, and another architect's stop_task, whose notice
-// names that architect) and the stop it is not sent for (its own), when a plan must be given and
-// how a plan replaces the default steps once the work started, and the answers a later version
-// gets from the
+// held before its retro and a plan of an earlier owner send it, the two stops a task-stopped
+// notice tells of (a failed step's, and another architect's stop_task, whose notice names that
+// architect) and the stop it is not sent for (its own), when a plan must be given and how a plan
+// replaces the default steps once the work started, and the answers a later version gets from the
 // workflow (workflow.planGiven): the running task's block, its text included, is refused and the
 // unchanged block taken, each refusal names its cause and changes nothing so the same version can
 // be given again, and an issue that started its work before Legion took plans takes none. A new
@@ -69,7 +66,6 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				"`ISSUE_OUTSIDE_TREE`",
 				"`TASK_STALE_GENERATION`",
 				"`TASK_AWAITING_PERSON`",
-				"`PLAN_NOT_TAKEN`",
 				"settles the plan",
 				// sign_off's answers when the record moved under it, by their codes.
 				"`ISSUE_NOT_OWNED`",
@@ -99,12 +95,6 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// that started before plans takes none.
 				{"changes nothing", "given again"},
 				{"started its work before Legion took plans", "`PLAN_REFUSED`"},
-				// An issue whose experiment's group runs the default steps takes no plan from its
-				// owner: register_plan and stop_task are answered PLAN_NOT_TAKEN, and its
-				// plan-not-taken notice offers no register_plan.
-				{"experiment", "default steps", "takes no plan from you", "register_plan", "`PLAN_NOT_TAKEN`"},
-				{"every task of an issue whose experiment's group runs the project's default steps", "`PLAN_NOT_TAKEN`"},
-				{"experiment's group", "took none of", "offers no register_plan"},
 				// Another architect's stop names it in the notice; one's own stop sends none.
 				{"`stop_task`", "`stoppedBy`"},
 				{"no notice", "200", "`stop_task`"},
