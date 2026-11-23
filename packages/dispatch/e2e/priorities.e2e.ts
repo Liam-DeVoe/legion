@@ -1078,22 +1078,63 @@ const BASE_GROUP_BY = [
 ];
 const BASE_PRIORITIES_GROUP_BY = ["Nothing", "Owner", "Newest event"];
 
-/** Every text the page's main content holds that holds the word parked, which no text of the
- *  priority pages uses (dispatch://INFRA-2947/ask/3cdc235c-aadd-402d-ad50-73bde8950d2a): every
- *  text node, the ones only a screen reader reads included, and the names and hints its elements carry
- *  (`aria-label`, `title`, `placeholder`), each read once the page is drawn. */
-async function parkedTexts(page: Page): Promise<string[]> {
-  return page.getByTestId("main-content").evaluate((main) => {
-    const found: string[] = [];
-    const text = main.textContent ?? "";
-    if (/parked/i.test(text)) found.push(`text: ${text.match(/.{0,60}parked.{0,60}/i)}`);
-    for (const element of main.querySelectorAll("*"))
-      for (const name of ["aria-label", "title", "placeholder"]) {
-        const value = element.getAttribute(name);
-        if (value !== null && /parked/i.test(value)) found.push(`${name}: ${value}`);
+/** Every text the page holds that holds the word park, which no text of the priority pages uses
+ *  (dispatch://INFRA-2947/ask/3cdc235c-aadd-402d-ad50-73bde8950d2a; k17 matches /park/i): every
+ *  text node of the main content, the ones only a screen reader reads included, and the names and
+ *  hints its elements carry (`aria-label`, `title`, `placeholder`), read once the page is drawn;
+ *  then each filter's choices, the Filters panel, the display menu and the Columns menu of every
+ *  table, each opened in turn; then the tooltip of every sort button and of every Queue number,
+ *  each focused in turn (k17, found by INFRA-3221's tester). */
+async function parkTexts(page: Page): Promise<string[]> {
+  const parkHitsIn = (scope: Locator) =>
+    scope.evaluateAll((nodes) => {
+      const found: string[] = [];
+      for (const node of nodes) {
+        const text = node.textContent ?? "";
+        if (/park/i.test(text)) found.push(`text: ${text.match(/.{0,60}park.{0,60}/i)}`);
+        for (const element of [node, ...node.querySelectorAll("*")])
+          for (const name of ["aria-label", "title", "placeholder"]) {
+            const value = element.getAttribute(name);
+            if (value !== null && /park/i.test(value)) found.push(`${name}: ${value}`);
+          }
       }
-    return found;
-  });
+      return found;
+    });
+  const main = page.getByTestId("main-content");
+  const found = await parkHitsIn(main);
+  const popups = page.locator('[role="dialog"], [role="listbox"], [role="menu"]');
+  // The callers' waits drew every table of the page with its controls, so one read lists them.
+  const openers = await main
+    .getByRole("button", { name: /^(?:Filter |Filters\b|Columns$|Group by$)/ })
+    .filter({ visible: true })
+    .all();
+  for (const opener of openers) {
+    const name = await opener.evaluate(
+      (node) => node.getAttribute("aria-label") ?? node.textContent ?? "a control"
+    );
+    await opener.click();
+    await expect(popups.first(), `${name} opens its choices`).toBeVisible();
+    found.push(...(await parkHitsIn(popups)).map((text) => `${name}: ${text}`));
+    await page.keyboard.press("Escape");
+    await expect(popups).toHaveCount(0);
+  }
+  const tooltip = page.getByRole("tooltip");
+  // The pointer rests on no control, so the one tooltip drawn is the focused anchor's.
+  await page.mouse.move(0, 0);
+  await expect(tooltip).toHaveCount(0);
+  // The same waits drew every sort button and every Queue number of the page.
+  const tipped = await main
+    .locator('thead th button:not([aria-label^="Filter"]), [data-queue-place]')
+    .filter({ visible: true })
+    .all();
+  for (const anchor of tipped) {
+    await anchor.focus();
+    await expect(tooltip).toBeVisible();
+    found.push(...(await parkHitsIn(tooltip)).map((text) => `tooltip: ${text}`));
+    await page.keyboard.press("Escape");
+    await expect(tooltip).toHaveCount(0);
+  }
+  return found;
 }
 
 /** One table of the page as k17 reads it. */
@@ -1257,11 +1298,11 @@ async function menuChoices(page: Page, scope: Locator, control: string): Promise
 }
 
 // SLOW(>=2s): the seed, then /priorities read at two widths with a priority row opened and each
-// table's menus opened.
+// table's menus, filters and sort tooltips opened, before and after the row opens.
 test("on /priorities at 1280 and 390 px each heading reads its name and one count, the priorities table reads Active and Triage, Todo with the base's counts, and every other read equals the base's but the widths the check names", async ({
   browser,
 }) => {
-  test.setTimeout(150_000);
+  test.setTimeout(300_000);
   const seed = await seedPriorities();
   const context = await asUser(browser, "alice");
   try {
@@ -1301,7 +1342,7 @@ test("on /priorities at 1280 and 390 px each heading reads its name and one coun
       await expect(page.locator('section[aria-label="In flight under no priority"]')).toHaveCount(
         0
       );
-      expect(await parkedTexts(page), `${where}: a text that says parked`).toEqual([]);
+      expect(await parkTexts(page), `${where}: a text that says park`).toEqual([]);
 
       // The priorities table: its headers, at most 16 characters, its widths, the counts under
       // Active and Triage, Todo, and its grouping control.
@@ -1394,18 +1435,20 @@ test("on /priorities at 1280 and 390 px each heading reads its name and one coun
         "Todo, 1 issue",
         "Needs review, 1 issue",
       ]);
+      // The opened row's work table: its filters, its menus and its tooltips too.
+      expect(await parkTexts(page), `${where}: a text that says park, a row opened`).toEqual([]);
     }
   } finally {
     await context.close();
   }
 });
 
-// SLOW(>=2s): the seed, then a priority's page read at two widths, a header dragged and the page
-// reloaded at each.
+// SLOW(>=2s): the seed, then a priority's page read at two widths, with its table's menus,
+// filters and sort tooltips opened, a header dragged and the page reloaded at each.
 test("a priority's own page at 1280 and 390 px has no line of counts or of order, links Open in its project, draws its table in the phone layout as the base does but for Key, and draws a dragged Title where the base draws it after a reload", async ({
   browser,
 }) => {
-  test.setTimeout(150_000);
+  test.setTimeout(300_000);
   const seed = await seedPriorities();
   const context = await asUser(browser, "alice");
   try {
@@ -1422,7 +1465,7 @@ test("a priority's own page at 1280 and 390 px has no line of counts or of order
       await expect(table.locator("tr[data-issue-row]").first()).toBeVisible();
       const header = page.getByTestId("main-content").locator("header").first();
       await expect(header).not.toContainText(/dragged|·|In flight|waiting/);
-      expect(await parkedTexts(page), `${where}: a text that says parked`).toEqual([]);
+      expect(await parkTexts(page), `${where}: a text that says park`).toEqual([]);
       await expect(page.getByRole("link", { name: "Open in WEB" })).toBeVisible();
       await expect(page.getByText(/Leave this scope/)).toHaveCount(0);
       // The row wait above drew the one table of this page, which draws all of its rows at once.
