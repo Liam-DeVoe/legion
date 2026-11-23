@@ -27,6 +27,7 @@ import (
 // with its authored_by tuple to carol's person node. bob reads her page as a login nobody holds,
 // and carol reads it 200, listing the comment.
 func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "PAGE", "A person's page", "# Spec\n\nA passage.\n")
 	const first, second, nobodyLogin = "bob", "carol", "nobody-at-all"
@@ -71,6 +72,7 @@ func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testin
 // pmdoc.ReadForDisplay makes of exactly the line the row answers, the first line of the node's
 // text and not the rest. The route table's 200 schema declares it.
 func TestAPersonPageRowCarriesTheTreeOfItsFirstLine(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "LINE", "A person's page lines", "Spec.\n")
 	createThreadComment(t, handler, issue.Key,

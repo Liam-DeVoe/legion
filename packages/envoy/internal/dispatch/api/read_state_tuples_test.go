@@ -27,6 +27,7 @@ import (
 // older build's update of a marked row unmarks it; and an older build's prune of a reply read by
 // id, which leaves its tuple standing, reads as the row would have (unreadDirectRepliesCTE).
 func TestEveryReadStateWriteIsATupleFromThePerson(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 

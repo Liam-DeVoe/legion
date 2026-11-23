@@ -1796,19 +1796,21 @@ func meInboxPageReads(args *meInboxArgs, slots meInboxSlots) (meInboxReads, erro
 
 // meInboxGateReads reads the approval gate of each issue a row of the page belongs to, once for the
 // page, over the ids askIDs and threadIDs name: the issues of the Ask rows (their asks' issue_key)
-// and of the Reply rows (their user_threads rows' issue_key), each with whether it is its tree's
-// root, its project's stored gated steps, and its primary and its Verification document, each
-// named as the issue read names it (issueRowStatement); each of those documents that the issue's
-// list holds - one not retired, as issueArtifactsStatement lists them - with its latest version,
-// one probe of artifact_versions' unique (artifact_id, number) rather than a read of its version
-// rows; and their latest reviews and open approval requests, by the statements the document reads
-// run (latestReviewsStatement, openApprovalAsksStatement). Its columns come in the order
-// meInboxOnceColumns reads them, and readApprovalGates reads them.
+// and of the Reply rows (their user_threads rows' issue_key), each with whether it is a root of its
+// project - no parent, or a parent whose key's project, the part before its first hyphen, is
+// another project, gateRoot's rule read off the issue's own row - its project's stored gated
+// steps, and its primary and its Verification document, each named as the issue read names it
+// (issueRowStatement); each of those documents that the issue's list holds - one not retired, as
+// issueArtifactsStatement lists them - with its latest version, one probe of artifact_versions'
+// unique (artifact_id, number) rather than a read of its version rows; and their latest reviews
+// and open approval requests, by the statements the document reads run (latestReviewsStatement,
+// openApprovalAsksStatement). Its columns come in the order meInboxOnceColumns reads them, and
+// readApprovalGates reads them.
 func meInboxGateReads(askIDs, threadIDs string) (string, []string) {
 	documentIDs := `(select ids from gate_documents)`
 	ctes := `,
 	gate_issues(key, root, steps, primary_id, verification_id) as materialized (
-		select i.key, i.parent_key is null, p.gated_steps,
+		select i.key, i.parent_key is null or split_part(i.parent_key, '-', 1) <> i.project_key, p.gated_steps,
 		       (select a.id from artifacts a where a.issue_key = i.key and a.is_primary),
 		       (select a.id from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `)
 		from issues i

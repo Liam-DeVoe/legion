@@ -110,6 +110,7 @@ func seedDecisionsDocument(t *testing.T, database *store.Store, service *docs.Se
 // pointers written by an agent's upload, which is no conversion, carry nothing by the conversion's
 // case, and that upload supersedes the approval.
 func TestTheConversionCarriesTheApprovalAcrossTheShapedPointersItGivesAnAsk(t *testing.T) {
+	t.Parallel()
 	handler, database, service := settlingCarryDocuments(t, 20*time.Millisecond)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "TEST project",

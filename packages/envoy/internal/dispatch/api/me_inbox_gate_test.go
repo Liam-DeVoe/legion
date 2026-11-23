@@ -33,7 +33,8 @@ type gateSeededLine struct {
 
 // gateSeed is how one issue is seeded: its project and parent, whether the project gates
 // [criteria, spec], and the state of its spec and of its Verification document (missing for an
-// issue that holds none).
+// issue that holds none). Only a parent of the issue's own project makes it a child: under an
+// issue of another project it is a root of its own project, and stands in that project's gate.
 type gateSeed struct {
 	project, parent    string
 	gated              bool
@@ -88,7 +89,7 @@ func seedGateIssue(t *testing.T, handler http.Handler, seed gateSeed, title stri
 	}
 
 	primary := gateSeededLine{document: issue.PrimaryArtifactID, state: seed.spec}
-	if !seed.gated || seed.parent != "" {
+	if !seed.gated || strings.HasPrefix(seed.parent, seed.project+"-") {
 		return gateSeeded{issue: issue, lines: []gateSeededLine{primary}}
 	}
 	criteria := gateSeededLine{step: model.GatedStepCriteria, document: verification, state: seed.verification}
@@ -325,5 +326,81 @@ func TestTheOneReadCarriesTheGateInItsOneStatement(t *testing.T) {
 	}
 	if !t.Failed() {
 		t.Logf("the 3-row read and the 12-row read each ran one statement, and neither names artifact_versions beside the max(number) probe")
+	}
+}
+
+// An issue whose parent is an issue of another project is a root of its own project (gateRoot):
+// a parent of another project passes nothing on, so the issue stands in its own project's gate
+// and answers one line for each step that project gates, while an issue whose parent is of its
+// own project is a child and answers the one line for its primary document. The issue read and
+// the one read, whose statement spells the rule in SQL (meInboxGateReads), answer each issue the
+// same gate. GATE gates [criteria, spec] and FREE nothing, so an issue of FREE under an issue of
+// GATE is a root of FREE and answers the one line too: the steps are its own project's, never its
+// parent's.
+func TestAnIssueUnderAnIssueOfAnotherProjectIsARootOfItsOwnProjectsGate(t *testing.T) {
+	handler := newMeInboxRig(t).handler
+	createReferenceAPIProject(t, handler, "GATE")
+	publishGatedSteps(t, handler, "GATE", []string{model.GatedStepCriteria, model.GatedStepSpec})
+	createReferenceAPIProject(t, handler, "FREE")
+
+	steps := []string{model.GatedStepCriteria, model.GatedStepSpec}
+	elsewhere := seedGateIssue(t, handler, gateSeed{project: "FREE", spec: "approved", verification: "missing"}, "A parent in another project")
+	own := seedGateIssue(t, handler, gateSeed{project: "GATE", gated: true, spec: "approved", verification: "approved"}, "A parent in its own project")
+	cases := []struct {
+		seeded gateSeeded
+		steps  []string
+		is     string
+	}{
+		{elsewhere, []string{""}, "an issue of FREE with no parent"},
+		{own, steps, "an issue of GATE with no parent"},
+		{seedGateIssue(t, handler, gateSeed{project: "GATE", gated: true, parent: elsewhere.issue.Key, spec: "awaiting", verification: "draft"}, "A root under another project's issue"),
+			steps, "an issue of GATE under an issue of FREE"},
+		{seedGateIssue(t, handler, gateSeed{project: "GATE", gated: true, parent: own.issue.Key, spec: "changes_requested", verification: "draft"}, "A child under its own project's issue"),
+			[]string{""}, "an issue of GATE under an issue of GATE"},
+		{seedGateIssue(t, handler, gateSeed{project: "FREE", parent: own.issue.Key, spec: "draft", verification: "missing"}, "An ungated issue under the gating project's issue"),
+			[]string{""}, "an issue of FREE under an issue of GATE"},
+	}
+
+	rows := map[string][]approvalGateLine{}
+	for _, entry := range readMeInboxAs(t, handler, "alice", url.Values{"state": {myRepliesStateInbox}}).Entries {
+		switch {
+		case entry.Ask != nil && entry.Ask.Issue != nil:
+			rows[entry.Ask.Issue.Key] = entry.ApprovalGate
+		case entry.Thread != nil && entry.Thread.Issue != nil:
+			rows[entry.Thread.Issue.Key] = entry.ApprovalGate
+		}
+	}
+	for _, want := range cases {
+		key := want.seeded.issue.Key
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
+		}
+		issueGate := decodeBody[struct {
+			ApprovalGate []approvalGateLine `json:"approval_gate"`
+		}](t, response).ApprovalGate
+		rowGate, held := rows[key]
+		if !held {
+			t.Errorf("alice's Inbox holds no row of %s, %s", key, want.is)
+			continue
+		}
+		for _, read := range []struct {
+			name string
+			gate []approvalGateLine
+		}{{"the issue read", issueGate}, {"the one read", rowGate}} {
+			named := make([]string, len(read.gate))
+			for index, line := range read.gate {
+				named[index] = line.Step
+			}
+			if !slices.Equal(named, want.steps) {
+				t.Errorf("%s answers %s, %s, the gate of steps %q, want %q", read.name, key, want.is, named, want.steps)
+			}
+			if got := gateLinesOf(read.gate); !slices.Equal(got, want.seeded.lines) {
+				t.Errorf("%s answers %s, %s, the gate %+v, want the seeded %+v", read.name, key, want.is, got, want.seeded.lines)
+			}
+		}
+		if !reflect.DeepEqual(issueGate, rowGate) {
+			t.Errorf("%s's issue read answers the gate %+v, and its Inbox row carries %+v", key, issueGate, rowGate)
+		}
 	}
 }

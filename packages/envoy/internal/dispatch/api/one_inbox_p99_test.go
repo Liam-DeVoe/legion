@@ -162,6 +162,9 @@ type oneInboxHere struct {
 }
 
 func TestOneInboxP99HoldsTheReadsAndTheWrites(t *testing.T) {
+	// Not parallel: it holds the one read's p50 to oneInboxReadBound and each write's to its bound
+	// in oneInboxWriteBounds times the base build's p50, round trips on loopback timed in this run,
+	// wall clock that the load of the tests beside it can push past.
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to take c-p99's measurement", dismissedScaleEnv)
 	}

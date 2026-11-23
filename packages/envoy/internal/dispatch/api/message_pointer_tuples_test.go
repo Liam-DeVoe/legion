@@ -34,6 +34,7 @@ var messagePointerKinds = []string{
 // arms over messages for a row an older build wrote, which names none. refs.BacklinkCounts counts
 // the message both ways answer at, and at its blocks, exactly as the view lists them.
 func TestAMessageWritesItsPointersAsTuples(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)

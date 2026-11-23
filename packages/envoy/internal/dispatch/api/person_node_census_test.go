@@ -19,6 +19,7 @@ import (
 // the answerer is somebody other than the person the ask last waited on. The census then reads no
 // difference over any kind, and the person kind compared rows.
 func TestTheCensusHoldsEveryPersonAWriteOfThisChildNamed(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "PROJ", "Who answers this?",
 		"# Spec\n\nA passage an ask hangs under.\n")

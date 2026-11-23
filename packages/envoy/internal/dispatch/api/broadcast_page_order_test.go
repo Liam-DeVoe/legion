@@ -23,6 +23,7 @@ import (
 // and once the hold went the first would take the held page and wait on the second, which waits on
 // it: Postgres would end one of them (40P01) and its request would fail.
 func TestBroadcastsNamingTheirRecipientsInOppositeOrdersBothCommit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	listener, _ := newBroadcastListener(t, broadcastSessions)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})

@@ -40,6 +40,7 @@ import (
 // tuples the outbox appended for each event (outbox.deliveredGraph), driven with
 // runOutboxUntilSettled as comment_delivery_fallback_copy_test.go drives it.
 func TestMentionsAreTuplesAndEveryAttemptIsANode(t *testing.T) {
+	t.Parallel()
 	t.Run("a mention is a tuple to the person, session or role it points at", mentionsAreTuples)
 	t.Run("every attempt is one delivery_attempt node", func(t *testing.T) {
 		t.Run("a mention is opened, given back, taken, resolved, sent, reported failed and answered", attemptOfAMentionFromOpenToAnswer)

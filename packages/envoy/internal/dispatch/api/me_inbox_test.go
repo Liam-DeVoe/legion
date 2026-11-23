@@ -275,6 +275,11 @@ func meInboxKinds(entry meInboxEntry) []string {
 // five, a sixth node by a kind no writer of this build appends, and a placement moves under one of
 // them. Last, the read answers at the horizon notifications read at (meInboxAtTheHorizon).
 func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
+	// Not parallel: its case at the horizon (meInboxAtTheHorizon) holds a transaction id on the
+	// cluster, which holds back the event horizon of every test beside it, and needs the read after
+	// a comment written while no other transaction holds an id to answer that comment, which a test
+	// beside it creating or dropping its database (storetest.Open) can keep from it past
+	// referencesSinceWait.
 	rig := newMeInboxRig(t)
 	seed := meInboxSeed{t: t, database: rig.database}
 	alice, bob := "alice", "bob"
@@ -623,6 +628,7 @@ func meInboxHolds(answer meInboxResponse, kind, id string) bool {
 // own nodes. So a relation into the session is the person's, while none of the person's own nodes
 // is an entry, and an identity tuple is no relation of any entry, whichever person it ends at.
 func TestTheOneReadTakesAProvedSessionAsThePersonsOwnNode(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	alice, bob := "alice", "bob"
 	writer := model.Actor{Kind: "user", ID: "carol"}
@@ -725,6 +731,7 @@ func TestTheOneReadTakesAProvedSessionAsThePersonsOwnNode(t *testing.T) {
 // read must then leave it holding. Each setting is named from the read's own text, `set local
 // <name> = <value>` (or `set <name> = <value>`, which is the leak this test is for).
 func TestTheOneReadsSettingsEndWithItsTransaction(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	deps.Store = storetest.SingleConnection(t, database)
 	served := directServer(deps)

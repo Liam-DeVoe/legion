@@ -138,9 +138,10 @@ export function IssuePropertiesRow({
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
   const agentsTurn = openAsks.length - waitingOnHuman(openAsks).length;
   // The steps come from the issue read's own approval gate (`approval_gate`), which the server
-  // computes and the issue's events refresh: a root issue of a gated project has one line for
-  // each step, and every other issue a line with no step, which draws none
-  // (`approvalGateSteps`). An issue read with no gate draws its one chip.
+  // computes and the issue's events refresh: a root of the issue's project (no parent, or a
+  // parent of another project) in a gated project has one line for each step, and every other
+  // issue a line with no step, which draws none (`approvalGateSteps`). An issue read with no gate
+  // draws its one chip.
   const entries = approvalGateSteps(issue);
   // Which document each step reviews is the gate's line to say, so the chip asks the drawn
   // entries rather than the step words: a gate that names no step for the primary document

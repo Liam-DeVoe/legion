@@ -64,6 +64,7 @@ func namesTheExpression(node ast.Node) bool {
 // both of them read one rule (asks.AskedOfPersonExpression). The precedent for reading the source
 // rather than the behaviour is api/lock_level_test.go.
 func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	declarations := map[string]ast.Node{}
 	for _, source := range sources {

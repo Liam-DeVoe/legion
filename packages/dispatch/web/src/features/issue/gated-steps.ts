@@ -26,9 +26,10 @@ export interface StepEntry {
 /**
  * The design-gate steps the issue's header draws: one for each line of the issue read's approval
  * gate (`approval_gate`) that names a step, in the gate's order, which is the order the
- * deployment published the steps in. The server decides the lines: a root issue of a project that
- * gates steps has one line for each step, and every other issue one line with no step, for its
- * primary document. Each step's document is the issue details' own row the line names by its id.
+ * deployment published the steps in. The server decides the lines: a root of its project - an
+ * issue with no parent, or whose parent is an issue of another project - in a project that gates
+ * steps has one line for each step, and every other issue one line with no step, for its primary
+ * document. Each step's document is the issue details' own row the line names by its id.
  *
  * It is empty - which leaves the header its one chip for the issue's primary document - for an
  * issue whose gate names no step, and for an issue read with no gate at all, which a Dispatch

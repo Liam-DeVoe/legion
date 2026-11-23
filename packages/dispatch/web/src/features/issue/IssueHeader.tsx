@@ -263,9 +263,10 @@ export function IssueHeader({
         : `Waiting on agents (${waitingOnAgents})`;
   const approvalRequestOpen = openAsks.some((ask) => ask.kind === "approval");
   // The steps come from the issue read's own approval gate (`approval_gate`), which the server
-  // computes: a root issue of a gated project has one line for each step, and every other issue
-  // a line with no step, which draws none (`approvalGateSteps`). So a child issue, and an issue
-  // read with no gate at all, draws the single chip.
+  // computes: a root of the issue's project (no parent, or a parent of another project) in a
+  // gated project has one line for each step, and every other issue a line with no step, which
+  // draws none (`approvalGateSteps`). So a child issue, and an issue read with no gate at all,
+  // draws the single chip.
   const entries = approvalGateSteps(issue);
   // Which document each step reviews is the gate's line to say, so the chip asks the drawn
   // entries rather than the step words: a gate that names no step for the primary document
@@ -837,7 +838,8 @@ export function IssueHeader({
             Cancel
           </button>
           <span className="sr-only" id="issue-parent-help">
-            Parent issue key in {issue.project}; leave empty to clear the parent.
+            Parent issue key, in {issue.project} or another project; leave empty to clear the
+            parent.
           </span>
         </form>
       ) : null}

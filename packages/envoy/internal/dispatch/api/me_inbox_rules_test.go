@@ -103,6 +103,9 @@ func insertTupleAround(t *testing.T, database *store.Store, tuple graphstore.Tup
 // see is absent from every row, kind, moment, near end and count, exactly as though its tuple had
 // never been appended; and no write appends such a tuple to a person who is not its author.
 func TestTheOneReadDropsANodeItsCallerMayNotSee(t *testing.T) {
+	// Not parallel: it compares two servers' reads of GET /api/v1/me/inbox whole, the event horizon
+	// each answers (sinceHorizon) among them, and a test beside it holding a transaction id on the
+	// cluster (holdClusterTransactionID) can leave the two answering at different horizons.
 	type seededStore struct {
 		handler  http.Handler
 		database *store.Store
@@ -912,6 +915,9 @@ func meInboxWalkDepthCase(t *testing.T) {
 // by its node's own project, and an issue keeps the page's rows of that issue alone, since no
 // attribute every node carries says which issue it belongs to.
 func TestTheOneReadsNarrowingsKeepOnlyWhatTheyCanJudge(t *testing.T) {
+	// Not parallel: it reads GET /api/v1/me/inbox for what its writes through the routes stated,
+	// and that read answers only what stands at or below the event horizon (sinceHorizon), which a
+	// test beside it holding a transaction id on the cluster (holdClusterTransactionID) holds back.
 	handler, database := newTestHandlerWithStore(t)
 	here := createTestIssue(t, handler, "NARA", "The issue the read is narrowed to")
 	there := createTestIssue(t, handler, "NARB", "Another issue")
@@ -943,6 +949,7 @@ func TestTheOneReadsNarrowingsKeepOnlyWhatTheyCanJudge(t *testing.T) {
 // The handler holds its query to meInboxQuery, the struct the document reads the route's keys
 // from: the two lists are one list.
 func TestTheOneReadsDeclaredKeysAreItsParamsStruct(t *testing.T) {
+	t.Parallel()
 	structure := reflect.TypeOf(meInboxQuery{})
 	declared := make([]string, 0, structure.NumField())
 	for index := range structure.NumField() {
@@ -959,6 +966,7 @@ func TestTheOneReadsDeclaredKeysAreItsParamsStruct(t *testing.T) {
 // declares, with a value or with none, and the refusal carries no entry. A read under each key the
 // route declares answers the caller as its person, and no entry of another person's.
 func TestTheOneReadAnswersForItsCallerAlone(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seed := meInboxSeed{t: t, database: database}
 	writer := model.Actor{Kind: "user", ID: "carol"}
@@ -1042,6 +1050,9 @@ func TestTheOneReadAnswersForItsCallerAlone(t *testing.T) {
 // line, which no table holds and which is read where it stands (shapeBuilt). The second read is
 // the first one's texts again, by then stored back.
 func TestTheOneReadCarriesTheDisplayTreesThePageAsksFor(t *testing.T) {
+	// Not parallel: it reads GET /api/v1/me/inbox for what its writes through the routes stated,
+	// and that read answers only what stands at or below the event horizon (sinceHorizon), which a
+	// test beside it holding a transaction id on the cluster (holdClusterTransactionID) holds back.
 	handler, _, root, reply, _ := directConversationFrom(t, "alice")
 	decodeBody[model.Message](t, reply("An answer with **weight**."))
 	issue := createTestIssue(t, handler, "TREES", "Trees on every row")

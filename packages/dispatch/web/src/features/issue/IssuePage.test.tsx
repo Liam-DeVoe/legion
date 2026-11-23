@@ -2474,6 +2474,48 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
   }
 });
 
+test("IssuePage draws the steps of a root whose parent is in another project", async () => {
+  // CORE-1 under OTHR-6 is a root of CORE: a parent of another project passes nothing on, so the
+  // server answers the issue's read with a line for each step CORE gates, and the header draws
+  // them from that gate alone: the project list, which the page may still read for other things,
+  // says CORE gates nothing here, and the steps are drawn all the same.
+  const awaiting = { latest_version: 1, state: "awaiting" };
+  const restore = stubIssuePage({
+    ...issue,
+    approval_gate: [
+      { approval: null, artifact_id: null, step: "criteria" },
+      { approval: awaiting, artifact_id: issue.primary_artifact_id, step: "spec" },
+    ],
+    artifacts: [{ ...issue.artifacts[0], approval: awaiting }],
+    parent: "OTHR-6",
+  });
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([
+    {
+      created_at: "2026-09-09T00:00:00Z",
+      gated_steps: [],
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+    },
+  ]);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["criteria", "spec"]);
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage keeps the primary document's chip when no gated step reviews it", async () => {
   // A deployment may gate the Verification document and not the spec; the spec still has an
   // approval to answer, and only the header's own chip can answer it.

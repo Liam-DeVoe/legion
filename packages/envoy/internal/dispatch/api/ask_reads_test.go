@@ -24,6 +24,7 @@ type askIdentity struct {
 }
 
 func TestAskReadsAttachCanonicalOpenedEventID(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask read identity", "A spec")
 	openResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -189,6 +190,7 @@ func listOpenAsks(t *testing.T, handler http.Handler, sessionID string, since st
 }
 
 func TestListOpenAsksForSession(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Open-ask owner", "A spec")
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n")
@@ -329,6 +331,7 @@ func TestListOpenAsksForSession(t *testing.T) {
 }
 
 func TestListOpenAsksRejectsInvalidSelectors(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, target := range []string{
 		"/api/v1/asks/open?waiting_on=%20%20",
@@ -355,6 +358,7 @@ func listProjectOpenAsks(t *testing.T, handler http.Handler, project string) ope
 // ask on an unlinked project document (artifacts.project_key) — for every author, and stops at
 // the project boundary.
 func TestListOpenAsksForProject(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Project-scope owner", "A spec")
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n")
@@ -415,6 +419,7 @@ func TestListOpenAsksForProject(t *testing.T) {
 // names nothing, and is refused by name rather than read as the key left out, which would widen a
 // caller's read to every project.
 func TestListOpenAsksTakesAtMostOneScope(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, test := range []struct {
 		target string
@@ -503,6 +508,7 @@ func seedWaitingOn(t *testing.T, handler http.Handler) waitingOnFixture {
 // names, whom a hand-on moves - and the same asks the Inbox's ?assignee=<login> answers for them,
 // whatever the casing the login is written in.
 func TestOpenAsksWaitingOnALoginAnswersTheAsksThatWaitOnThatPerson(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	seeded := seedWaitingOn(t, handler)
 	for _, test := range []struct {
@@ -534,6 +540,7 @@ func TestOpenAsksWaitingOnALoginAnswersTheAsksThatWaitOnThatPerson(t *testing.T)
 // narrows to one person and to nobody else), and `me`, which the read does not take, since it
 // answers about any person and the caller's own mail is the one read's (GET /api/v1/me/inbox).
 func TestOpenAsksRefuseABadWaitingOn(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	seedWaitingOn(t, handler)
 	for _, query := range []url.Values{
@@ -558,6 +565,7 @@ func TestOpenAsksRefuseABadWaitingOn(t *testing.T) {
 // The author the node is reserved for reads it, so what keeps it from the other reader is that
 // predicate and nothing else of the read.
 func TestOpenAsksWithNeitherScopeAnswerEveryVisibleProjectAndNoInvisibleAsk(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	test := createInteractionIssue(t, handler, "TEST", "A TEST issue", "A spec")
 	other := createInteractionIssue(t, handler, "OTHER", "An OTHER issue", "A spec")
@@ -594,6 +602,9 @@ func TestOpenAsksWithNeitherScopeAnswerEveryVisibleProjectAndNoInvisibleAsk(t *t
 // it. The ask carries a reply in its thread and the reader's snooze, so the row is not mostly
 // nulls.
 func TestTheOpenAskRowOfTheThreeReadsIsBuiltOnce(t *testing.T) {
+	// Not parallel: it reads GET /api/v1/me/inbox for what its writes through the routes stated,
+	// and that read answers only what stands at or below the event horizon (sinceHorizon), which a
+	// test beside it holding a transaction id on the cluster (holdClusterTransactionID) holds back.
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "One row", "A spec")
 	askID := createIssueAsk(t, handler, issue.Key, "Which row?")
@@ -684,6 +695,7 @@ func compactJSON(t *testing.T, raw json.RawMessage) []byte {
 }
 
 func TestTargetedReadsRejectNonUUIDIDsWithA400(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Short ids", "A spec")
 	for _, test := range []struct {
@@ -710,6 +722,7 @@ func TestTargetedReadsRejectNonUUIDIDsWithA400(t *testing.T) {
 // an ask's, a comment's and a message's own routes must answer as the canonical id answers — the
 // item when it exists, and that route's own 404 when nothing carries it.
 func TestTargetedReadsReadAUrnUuidIDAsTheCanonicalID(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "URN ids", "A spec")
 	askID := createIssueAsk(t, handler, issue.Key, "Which store do we use?")
@@ -739,6 +752,7 @@ func TestTargetedReadsReadAUrnUuidIDAsTheCanonicalID(t *testing.T) {
 // spelling answers that route's own refusal. Each pair below is measured over live HTTP: the
 // canonical id's answer first, which is what the URN spelling must give too.
 func TestRoutesThatResolveNoPrefixReadAUrnUuidIDAsTheCanonicalID(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	const unknown = "00000000-0000-4000-8000-000000000000"
 	if response := sessionRequest(t, handler, http.MethodGet, "/api/v1/handoffs/urn:uuid:"+unknown, nil); response.Code != http.StatusNotFound {
@@ -760,6 +774,7 @@ func TestRoutesThatResolveNoPrefixReadAUrnUuidIDAsTheCanonicalID(t *testing.T) {
 }
 
 func TestResolveAskRejectsNumberedIDWithClientGuidance(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/3/resolve", map[string]any{
 		"kind": "resolved", "reason": "Resolved elsewhere", "actor": sessionActor(),
@@ -773,6 +788,7 @@ func TestResolveAskRejectsNumberedIDWithClientGuidance(t *testing.T) {
 // Every ask indexed from a document block names that document on the wire, however many
 // asks the issue detail lists at once.
 func TestIssueDetailAttachesTheBlockArtifactToEveryBlockAsk(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})

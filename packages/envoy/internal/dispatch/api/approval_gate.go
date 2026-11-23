@@ -1,6 +1,8 @@
 package api
 
 import (
+	"strings"
+
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -36,11 +38,11 @@ func (document approvalGateDocument) line(step string) approvalGateLine {
 }
 
 // approvalGate is the gate of an issue, the one function both reads compute it with. A root issue
-// (root: no parent) of a project that gates steps has one line for each step, in the order the
-// project publishes them: `spec` names the primary document and `criteria` the Verification
-// document. Every other issue has one line with no step, for its primary document. steps is the
-// project's stored list, read as the project list reads it (gatedStepsWithout), so a stored
-// `decisions` is no line.
+// (gateRoot: no parent, or a parent of another project) of a project that gates steps has one line
+// for each step, in the order the project publishes them: `spec` names the primary document and
+// `criteria` the Verification document. Every other issue has one line with no step, for its
+// primary document. steps is the project's stored list, read as the project list reads it
+// (gatedStepsWithout), so a stored `decisions` is no line.
 func approvalGate(root bool, steps []string, primary, verification approvalGateDocument) []approvalGateLine {
 	steps = gatedStepsWithout(steps)
 	if !root || len(steps) == 0 {
@@ -74,7 +76,23 @@ func issueApprovalGate(issue model.Issue, steps []string, artifacts []model.Arti
 		}
 		return approvalGateDocument{}
 	}
-	return approvalGate(issue.Parent == nil, steps, document(issue.PrimaryArtifactID), document(issue.VerificationArtifactID))
+	return approvalGate(gateRoot(issue.Project, issue.Parent), steps, document(issue.PrimaryArtifactID), document(issue.VerificationArtifactID))
+}
+
+// gateRoot is whether an issue of project with parent (nil for none) is a root of its project, the
+// issue that stands in the project's design gate: it has no parent, or its parent is an issue of
+// another project, which passes nothing on (a parent of another project ends each of the server's
+// parent walks as a root does, refs.IssueRepoTerms and legionWalkSQL among them). An issue key's
+// project is the part before its first hyphen, since a key is its project's key, which holds no
+// hyphen (contracts.ProjectKeyPattern), a hyphen and a number (createIssue), so the rule reads the
+// issue's own row and not its parent's. The one read spells the same rule in SQL
+// (meInboxGateReads), so both reads answer one gate.
+func gateRoot(project string, parent *string) bool {
+	if parent == nil {
+		return true
+	}
+	parentProject, _, _ := strings.Cut(*parent, "-")
+	return parentProject != project
 }
 
 // issueGatedStepsStatement reads the gated steps of the project of the issue $1 names, as stored;
