@@ -697,13 +697,14 @@ func main() {
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
 	//     suggestion outcomes (api.EventsChannel), the delivery settings both intakes route by
-	//     (delivery.SettingsChannel), the Legion facts (legionfacts.Run, whose due times are a pass
-	//     legionfacts.PassRetry after one that failed and one soon after one whose safe horizon
-	//     held an event back) and the eval day rows (evals.Store.RunRefresher, woken by
-	//     api.EventsChannel and delivery.ChangesChannel, whose due time is evals.RefresherGap after
-	//     the last pass that began a batch of the walks while a walk has days left, else the
-	//     earlier of the next UTC midnight and the next prune of the change log, and one soon after
-	//     a pass whose safe horizon held an event back, evals.RefresherGap after one that failed).
+	//     (delivery.SettingsChannel, and api.EventsChannel for a moved default repository), the
+	//     Legion facts (legionfacts.Run, whose due times are a pass legionfacts.PassRetry after one
+	//     that failed and one soon after one whose safe horizon held an event back) and the eval day
+	//     rows (evals.Store.RunRefresher, woken by api.EventsChannel and delivery.ChangesChannel,
+	//     whose due time is evals.RefresherGap after the last pass that began a batch of the walks
+	//     while a walk has days left, else the earlier of the next UTC midnight and the next prune
+	//     of the change log, and one soon after a pass whose safe horizon held an event back,
+	//     evals.RefresherGap after one that failed).
 	//     Neither of those two holds a pass a change woke: it starts as soon as the pass running
 	//     when the change came ends.
 	//     The four leased ones, reference-excerpts, edit-notices, legion-facts and eval-days, take
@@ -949,7 +950,7 @@ func main() {
 			return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
 		},
 	}
-	var embeddingsWake, settingsWake, gitHubReadsWake <-chan struct{}
+	var embeddingsWake, settingsWake, settingsProjectsWake, gitHubReadsWake <-chan struct{}
 	if backgroundEmbedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
@@ -968,8 +969,13 @@ func main() {
 	// (evals.Store.RunRefresher).
 	daysEventsWake := listenerHub.Wake(api.EventsChannel)
 	daysChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	// The delivery settings cache both intakes route by reads two feeds, each with a wake of its
+	// own: a save of a project's delivery settings (delivery.SettingsChannel), and the events, among
+	// which a project.updated whose default repository moved moves the repository of each deploy
+	// source that names none (delivery.StartIntakes).
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
+		settingsProjectsWake = listenerHub.Wake(api.EventsChannel)
 	}
 	if appCfg != nil {
 		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
@@ -1176,7 +1182,7 @@ func main() {
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture(), attributor)
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, settingsProjectsWake, appCtx.Architecture(), attributor)
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)

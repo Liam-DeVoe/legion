@@ -14,7 +14,9 @@ import (
 // readDeliveryDay) one UTC day's (ListPullRequestsInWindow, and ReadApplyRows and ReadDeploys of
 // each repository the rows are kept for as the deploy repository), so a route and a day row count
 // the same rows by the same rules, and a deploy's shipped pull requests by the same rule
-// (Deploys.ShippedBy).
+// (Deploys.ShippedBy). Every read of runs takes one source repository's rule (a DeliverySettings of
+// DeployRules, dispatch://INFRA-978) and reads that repository's runs by it alone, so a reader of
+// several repositories reads each under its own rule.
 //
 // The reads an answer makes from the evals' day rows (api's evals items) take q, the pool or a
 // read-only transaction whose one snapshot the answer reads (evals.Store.BeginSnapshot). A read of

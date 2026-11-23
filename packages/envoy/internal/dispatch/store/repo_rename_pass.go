@@ -20,7 +20,7 @@ import (
 //
 // The fields are the lines of repoRenameLines, read from the schema, and the pass writes them in
 // that order. Each line is one transaction, so a line that fails leaves the lines before it
-// written and does not stop the lines after it. A field matches by one of three rules:
+// written and does not stop the lines after it. A field matches by one of four rules:
 //
 //   - a name matches when its lower case is the pair's old name, and the pass writes the new
 //     name;
@@ -28,7 +28,10 @@ import (
 //     one and keeps every other character;
 //   - a token of delivery_reconcile_progress.scope matches the old name, in any case, after the
 //     start, a space, `=` or `,` and before the end, a space or `,`. That is how delivery's
-//     searchProgressScope and runsProgressScope write a repository into a scope.
+//     searchProgressScope and runsProgressScope write a repository into a scope;
+//   - a run step's name in delivery_reconcile_progress.step matches when it begins `runs/` or
+//     `backfill/` and ends with `/` and the old name, in any case, and the pass writes the new name
+//     in place of that end. That is how delivery's repoStep names one repository's run step.
 //
 // The pass writes no other column, updated_at included, and appends no event. It never writes
 // repo_projects, the event log, the text of documents, comments, asks and messages, the reference
@@ -409,6 +412,30 @@ func excludedNamed(r repoRename) string {
 	return `exists (select 1 from unnest(excluded_repos) e(repo) where ` + r.named("e.repo") + `)`
 }
 
+// excludedWrite rewrites each excluded repository of table that is the old name, in its place, and
+// drops none, so the search scope that lists them (delivery's searchProgressScope) stays the scope
+// the progress line writes into the stored progress.
+func excludedWrite(r repoRename, table string) repoRenameStep {
+	where := excludedNamed(r)
+	return repoRenameStep{table: table, where: where, write: "excluded_repos", sql: `
+		update ` + table + ` set excluded_repos = array(
+			select case when ` + r.named("e.repo") + ` then ` + r.to() + ` else e.repo end
+			from unnest(excluded_repos) with ordinality e(repo, n) order by e.n)
+		where ` + where}
+}
+
+// stepNamed is true where column, a step of delivery_reconcile_progress, is a run step of the old
+// name (delivery's repoStep): it begins `runs/` or `backfill/` and ends with `/` and the old name.
+func stepNamed(r repoRename, column string) string {
+	end := QuoteLiteral("/" + r.From)
+	return `((starts_with(` + column + `, 'runs/') or starts_with(` + column + `, 'backfill/')) and right(lower(` + column + `), length(` + end + `)) = ` + end + `)`
+}
+
+// renamedStep is column, a run step of the old name, with the new name in place of its end.
+func renamedStep(r repoRename, column string) string {
+	return `left(` + column + `, length(` + column + `) - length(` + r.from() + `)) || ` + r.to()
+}
+
 // repoRenameLines are the stored repository fields of Dispatch, in the order the pass writes them,
 // one transaction for each line. They are each column of the schema that holds a repository name
 // or a URL that names one, but for those the package comment says the pass never writes.
@@ -522,33 +549,56 @@ var repoRenameLines = []repoRenameLine{
 	},
 	nameLine("delivery_changes", "repo"),
 	{
-		// Each excluded repository is rewritten in its place, and none is dropped, so the scope
-		// searchProgressScope writes from the settings stays the scope the line after this one
-		// writes into the stored progress.
 		fields: "delivery_settings.deploy_repo, .excluded_repos",
 		steps: func(r repoRename) []repoRenameStep {
-			where := excludedNamed(r)
 			return []repoRenameStep{
 				nameWrite(r, "delivery_settings", "deploy_repo"),
-				{table: "delivery_settings", where: where, write: "excluded_repos", sql: `
-					update delivery_settings set excluded_repos = array(
-						select case when ` + r.named("e.repo") + ` then ` + r.to() + ` else e.repo end
-						from unnest(excluded_repos) with ordinality e(repo, n) order by e.n)
-					where ` + where},
+				excludedWrite(r, "delivery_settings"),
 			}
 		},
 	},
 	{
-		// The scope says which settings a step's stored progress was measured against, and the
-		// reconcile backfills a step afresh when its scope differs from the one it writes now. So
-		// the scope gets the new name wherever the settings got it, and the progress stays.
-		fields: "delivery_reconcile_progress.scope",
+		// A project's github_workflow sources read one repository each
+		// (project_deploy_sources_one_per_repo), so a source under the old name whose project has
+		// one under the new name is deleted, and that one stays. A source that names none reads its
+		// project's default repository, which the projects line writes.
+		fields: "project_deploy_sources.repo",
 		steps: func(r repoRename) []repoRenameStep {
-			where := `scope ~* ` + r.token()
-			return []repoRenameStep{{table: "delivery_reconcile_progress", where: where, write: "scope", sql: `
-				update delivery_reconcile_progress
-				set scope = regexp_replace(scope, ` + r.token() + `, ` + r.tokenReplacement() + `, 'gi')
-				where ` + where}}
+			return []repoRenameStep{
+				collisions(r, "project_deploy_sources", "project_key"),
+				nameWrite(r, "project_deploy_sources", "repo"),
+			}
+		},
+	},
+	{
+		fields: "project_delivery_settings.excluded_repos",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{excludedWrite(r, "project_delivery_settings")}
+		},
+	},
+	{
+		// A run step's name carries its repository (delivery's repoStep) and its scope names it
+		// too, and the reconcile backfills a step afresh when it finds no row under the step's name
+		// or a row whose scope differs from the one it writes now. So the step's name and the scope
+		// get the new name wherever the settings got it, and the progress stays: the renamed
+		// repository imports nothing again. step is the table's key, so a step of the old name
+		// whose new name a row holds already is deleted, and the row under the new name stays.
+		fields: "delivery_reconcile_progress.step, .scope",
+		steps: func(r repoRename) []repoRenameStep {
+			named, scoped := stepNamed(r, "step"), `scope ~* `+r.token()
+			return []repoRenameStep{
+				{table: "delivery_reconcile_progress", where: named, deletes: true, sql: `
+					delete from delivery_reconcile_progress d
+					where ` + stepNamed(r, "d.step") + `
+					  and exists (select 1 from delivery_reconcile_progress t where t.step = ` + renamedStep(r, "d.step") + `)
+					returning jsonb_build_object('step', d.step)::text`},
+				{table: "delivery_reconcile_progress", where: named, write: "step", sql: `
+					update delivery_reconcile_progress set step = ` + renamedStep(r, "step") + ` where ` + named},
+				{table: "delivery_reconcile_progress", where: scoped, write: "scope", sql: `
+					update delivery_reconcile_progress
+					set scope = regexp_replace(scope, ` + r.token() + `, ` + r.tokenReplacement() + `, 'gi')
+					where ` + scoped},
+			}
 		},
 	},
 	{

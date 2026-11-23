@@ -19,8 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -426,12 +426,13 @@ type pushBus struct {
 // startPushBus starts a NATS server of the test's own and the real intakes on it, with importer
 // as what the delivery intake hands a push of a branch to, and returns once that intake has bound
 // its durable, so a push published after it is delivered at once. The delivery intake binds its
-// durable, and so routes a push, only while its settings cache holds settings (delivery's
-// Intake.Run), and the cache StartIntakes makes reads delivery_settings once, as it starts, since
-// no wake is given: so a settings row is saved first. A push's handler reads none of its fields
-// (delivery's handlePushEnvelope), and its deploy repository is acme/widgets, not archRepo: a push
-// of archRepo is routed whatever repository the settings name. The intakes read GitHub through
-// the importer's own App client, as the server's do, and a push costs them no call of theirs.
+// durable, and so routes a push, only while its settings cache holds the rule of a source
+// repository (delivery's Intake.Run), and the cache StartIntakes makes reads the projects' delivery
+// settings once, as it starts, since no wake is given: so a project's settings with one deploy
+// source are saved first. A push's handler reads none of its fields (delivery's
+// handlePushEnvelope), and the source's repository is acme/widgets, not archRepo: a push of archRepo
+// is routed whatever repository the settings name. The intakes read GitHub through the importer's
+// own App client, as the server's do, and a push costs them no call of theirs.
 // architecture.Run is not started, so no timer pass imports anything: every import the test sees
 // is one a push or the test itself started. The intakes stop before the importer closes, and the
 // pool with it, because newImporterFixture registered its cleanups first.
@@ -451,16 +452,22 @@ func startPushBus(t *testing.T, importer *Importer, database *store.Store) *push
 	if err != nil {
 		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
 	}
-	if _, err := delivery.PutSettings(t.Context(), database.Pool, delivery.DeliverySettings{
+	if _, err := database.Pool.Exec(t.Context(), `
+		insert into projects (key, name, default_assignee, default_repo) values ('DLVY', 'Delivery', 'alice', 'acme/widgets')
+		on conflict (key) do update set default_repo = excluded.default_repo
+	`); err != nil {
+		t.Fatalf("save the project whose deploy source the intakes read: %v", err)
+	}
+	if _, err := deliverytest.SaveRules(t.Context(), database.Pool, "DLVY", delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
-	}, model.Actor{Kind: "system", ID: "architecture-test"}); err != nil {
+	}); err != nil {
 		t.Fatalf("save the delivery settings: %v", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	stop, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, leases, importer.github, events.NewBroker(), nil, importer, delivery.NewAttributor(refs.Renames{}))
+	}, database.Pool, leases, importer.github, events.NewBroker(), nil, nil, importer, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)

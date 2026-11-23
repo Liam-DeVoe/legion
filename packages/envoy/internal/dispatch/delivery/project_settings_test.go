@@ -182,40 +182,132 @@ func TestASaveKeepsAnUnchangedSourceAndClearsAChangedOnesProgress(t *testing.T) 
 	}
 }
 
-// A source is reconciled through the earliest of its repository's two run listings, and through
-// nothing until both have a row: a reader waiting for the import does not read a repository whose
-// pull-request checks have not been listed yet.
+// A source is reconciled through the earliest of its repository's two run listings and of every
+// installation's merged-pull-request search, and through nothing until each listing has a row and
+// every installation's search row was recorded under the search's current scope: a reader waiting
+// for the import does not read a repository whose pull-request checks have not been listed yet, nor
+// one whose pull requests the search has not stored under the population and the source
+// repositories in force.
 func TestReconciledThroughWaitsForEveryStepOfTheRepository(t *testing.T) {
 	pool, ctx := settingsStore(t)
-	rule := DeliverySettings{DeployRepo: "acme/deploys", DeployWorkflowPath: "deploy.yaml", PRChecksWorkflowPath: "ci.yaml"}
+	saved, err := save(t, ctx, pool, ProjectSettingsInput{Project: "ACME", Delivery: true, PopulationAuthors: []string{"octocat"},
+		Sources: []SourceInput{{Kind: SourceKindGitHubWorkflow, Repo: new("acme/deploys"), DeployWorkflowPath: new("deploy.yaml"),
+			ProductionJobNames: []string{"production"}, PRChecksWorkflowPath: new("ci.yaml")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := saved.Rules()[0]
 	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through != nil {
 		t.Fatalf("with no progress: %v (%v), want nil", through, err)
 	}
-	deployed, checked := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC), time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)
-	if err := RecordReconcileProgress(ctx, pool, repoStep(runsStep(DeliveryRunKindDeploy), rule.DeployRepo), "acme/deploys deploy.yaml", deployed); err != nil {
+	deployed, checked, searched := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC), time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC), time.Date(2026, 11, 22, 7, 0, 0, 0, time.UTC)
+	if err := RecordReconcileProgress(ctx, pool, runsStep(DeliveryRunKindDeploy, rule.DeployRepo), "acme/deploys deploy.yaml", deployed); err != nil {
 		t.Fatal(err)
 	}
 	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through != nil {
 		t.Fatalf("with the deploy listing alone: %v (%v), want nil", through, err)
 	}
-	if err := RecordReconcileProgress(ctx, pool, repoStep(runsStep(DeliveryRunKindPRChecks), rule.DeployRepo), "acme/deploys ci.yaml", checked); err != nil {
+	if err := RecordReconcileProgress(ctx, pool, runsStep(DeliveryRunKindPRChecks, rule.DeployRepo), "acme/deploys ci.yaml", checked); err != nil {
 		t.Fatal(err)
 	}
-	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through == nil || !through.Equal(checked) {
-		t.Fatalf("with both listings: %v (%v), want the earlier, %v", through, err, checked)
+	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through != nil {
+		t.Fatalf("with both listings and no search: %v (%v), want nil", through, err)
+	}
+	rules, err := ReadSourceRules(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := searchProgressScope(rules)
+	if err := RecordReconcileProgress(ctx, pool, mergedPullRequestsStep(1), current, searched); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordReconcileProgress(ctx, pool, mergedPullRequestsStep(2), "authors=octocat excluded= deploy=acme/other", deployed); err != nil {
+		t.Fatal(err)
+	}
+	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through != nil {
+		t.Fatalf("with one installation's search under an old scope: %v (%v), want nil", through, err)
+	}
+	if err := RecordReconcileProgress(ctx, pool, mergedPullRequestsStep(2), current, deployed); err != nil {
+		t.Fatal(err)
+	}
+	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through == nil || !through.Equal(searched) {
+		t.Fatalf("with both listings and every search: %v (%v), want the earliest, %v", through, err, searched)
 	}
 }
 
 // A source whose pull-request checks run in its deploy workflow has one listing, which the
-// reconcile records under the deploy step alone, so that one row is how far it is reconciled.
+// reconcile records under the deploy step alone, so that row and the search's are how far it is
+// reconciled.
 func TestReconciledThroughOfOneWorkflowWaitsForItsOneListing(t *testing.T) {
 	pool, ctx := settingsStore(t)
 	rule := DeliverySettings{DeployRepo: "acme/one", DeployWorkflowPath: "ci.yaml", PRChecksWorkflowPath: "ci.yaml"}
 	listed := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
-	if err := RecordReconcileProgress(ctx, pool, repoStep(runsStep(DeliveryRunKindDeploy), rule.DeployRepo), "acme/one ci.yaml", listed); err != nil {
+	if err := RecordReconcileProgress(ctx, pool, runsStep(DeliveryRunKindDeploy, rule.DeployRepo), "acme/one ci.yaml", listed); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ReadSourceRules(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordReconcileProgress(ctx, pool, mergedPullRequestsStep(1), searchProgressScope(rules), listed.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if through, err := ReconciledThrough(ctx, pool, rule); err != nil || through == nil || !through.Equal(listed) {
 		t.Fatalf("one workflow listed through %v: %v (%v)", listed, through, err)
+	}
+}
+
+// A source repository the rename pass renames (store.RewriteRenamedRepositories) keeps its
+// progress (dispatch://INFRA-978, T6): the reconcile reads its run steps and the search's progress
+// under the names and the scopes it writes now, so the renamed source is reconciled through what it
+// was before the rename, as is the project's other source, and the reconcile imports nothing again.
+func TestARenamedSourceRepositoryKeepsItsProgress(t *testing.T) {
+	pool, ctx := settingsStore(t)
+	if _, err := save(t, ctx, pool, ProjectSettingsInput{Project: "ACME", Delivery: true, PopulationAuthors: []string{"octocat"},
+		ExcludedRepos: []string{"acme/playground"}, Sources: []SourceInput{workflowSource(nil, "deploy.yaml"), workflowSource(new("acme/old"), "ship.yaml")}}); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ReadSourceRules(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	through := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	for _, rule := range rules.All() {
+		for kind, path := range map[DeliveryRunKind]string{DeliveryRunKindDeploy: rule.DeployWorkflowPath, DeliveryRunKindPRChecks: rule.PRChecksWorkflowPath} {
+			if err := RecordReconcileProgress(ctx, pool, runsStep(kind, rule.DeployRepo), runsProgressScope(rule.DeployRepo, path), through); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := RecordReconcileProgress(ctx, pool, mergedPullRequestsStep(1), searchProgressScope(rules), through); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `insert into repo_projects (repo, project, created_by, renamed_to)
+		values ('acme/old', 'ACME', '{"kind":"user","id":"alice"}', 'acme/new')`); err != nil {
+		t.Fatal(err)
+	}
+	pairs, err := store.ReadRepoRenames(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pass := store.RewriteRenamedRepositories(ctx, pool, pairs); pass.Err() != nil {
+		t.Fatalf("the rename pass = %+v: %v", pass, pass.Err())
+	}
+
+	renamed, err := ReadSourceRules(ctx, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := renamed.For("acme/old"); ok {
+		t.Fatalf("after the rename a source still reads acme/old: %+v", renamed.All())
+	}
+	for _, repo := range []string{"acme/new", "acme/widgets"} {
+		rule, ok := renamed.For(repo)
+		if !ok {
+			t.Fatalf("after the rename no source reads %s: %+v", repo, renamed.All())
+		}
+		if got, err := ReconciledThrough(ctx, pool, rule); err != nil || got == nil || !got.Equal(through) {
+			t.Errorf("after the rename %s is reconciled through %v (%v), want %v as before it", repo, got, err, through)
+		}
 	}
 }

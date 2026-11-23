@@ -41,7 +41,7 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 			clients = append(clients, client)
 		}
 		return client, err
-	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, nil, unrenamed())
+	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -95,7 +95,7 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	})
 	publishGitHubEnvelope(t, publisher, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
 	waitFor(t, 20*time.Second, func() bool {
-		settings, err := GetSettings(ctx, pool)
+		settings, err := getTestRule(ctx, pool)
 		return err == nil && settings.LastEventAt != nil
 	}, func() string {
 		return "the intake never handled the pull request published to it: " + consumers()
@@ -152,7 +152,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -232,7 +232,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, nil, unrenamed())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -270,7 +270,7 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 	stop, err := StartIntakes(t.Context(), func(string) (*bus.Client, error) {
 		t.Error("connected a client for intakes that have no GitHub App")
 		return nil, errors.New("no connection here")
-	}, nil, IntakeLeases{}, nil, nil, nil, nil, unrenamed())
+	}, nil, IntakeLeases{}, nil, nil, nil, nil, nil, unrenamed())
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -289,8 +289,8 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 // TestIntakesWhoseSecondConnectFailsStartNeither: the job intake's connect failing returns its
 // error with neither intake started and the intake's client closed, so no durable is bound.
 func TestIntakesWhoseSecondConnectFailsStartNeither(t *testing.T) {
-	// A real pool rather than none: the intakes' settings cache reads delivery_settings through
-	// it, and their reservations of its lease pool are what they take their holds on.
+	// A real pool rather than none: the intakes' settings cache reads the projects' delivery
+	// settings through it, and their reservations of its lease pool are what they take their holds on.
 	pool, _ := deliveryTestPool(t)
 	publisher := intakeTestClient(t)
 	natsURL := testnats.URL(t)
@@ -303,7 +303,7 @@ func TestIntakesWhoseSecondConnectFailsStartNeither(t *testing.T) {
 		var err error
 		first, err = bus.Connect([]string{natsURL})
 		return first, err
-	}, pool, deliveryTestIntakeLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, nil, unrenamed())
+	}, pool, deliveryTestIntakeLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, nil, nil, unrenamed())
 	if !errors.Is(err, refused) {
 		t.Fatalf("start the intakes = %v, want the job intake's connect error", err)
 	}

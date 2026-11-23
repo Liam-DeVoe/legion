@@ -2367,19 +2367,19 @@ func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
 	pool := rig.database.Pool
 
 	for range 2 {
-		if err := delivery.RecordReconcileSuccess(t.Context(), pool, clock.Now()); err != nil {
+		if err := delivery.RecordReconcileSuccess(t.Context(), pool, "acme/widgets", clock.Now()); err != nil {
 			t.Fatalf("record a reconcile: %v", err)
 		}
 		conn.none(t, time.Second, "a reconcile that changed no verdict")
 	}
-	if err := delivery.RecordReconcileError(t.Context(), pool, "GitHub answered 502"); err != nil {
+	if err := delivery.RecordReconcileError(t.Context(), pool, "acme/widgets", "GitHub answered 502"); err != nil {
 		t.Fatalf("record a reconcile error: %v", err)
 	}
 	failed := conn.freshness(t, 3*time.Second, "the freshness frame naming the error")
 	if failed.Freshness.LastError == nil || *failed.Freshness.LastError != "GitHub answered 502" || len(failed.Stale) != 0 {
 		t.Fatalf("the error's freshness frame = %+v, want last_error \"GitHub answered 502\" and nothing stale", failed)
 	}
-	if err := delivery.RecordReconcileSuccess(t.Context(), pool, clock.Now()); err != nil {
+	if err := delivery.RecordReconcileSuccess(t.Context(), pool, "acme/widgets", clock.Now()); err != nil {
 		t.Fatalf("record the next reconcile: %v", err)
 	}
 	cleared := conn.freshness(t, 3*time.Second, "the freshness frame clearing the error")
@@ -2441,7 +2441,7 @@ func TestASubscriptionAfterAVerdictChangeIsSentThatVerdict(t *testing.T) {
 	page.none(t, time.Second, "the first snapshot, whose verdict is set silently")
 	rig.waitConnected(t)
 
-	if err := delivery.RecordReconcileError(t.Context(), rig.database.Pool, "GitHub answered 502"); err != nil {
+	if err := delivery.RecordReconcileError(t.Context(), rig.database.Pool, "acme/widgets", "GitHub answered 502"); err != nil {
 		t.Fatalf("record a reconcile error: %v", err)
 	}
 	requireVerdict := func(conn *fakeLiveConn, what string) {
@@ -2558,7 +2558,7 @@ func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
 func TestAReconcilePassThatFindsNothingNewSendsNothing(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
-	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, rig.clock.Now()); err != nil {
+	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, "acme/widgets", rig.clock.Now()); err != nil {
 		t.Fatalf("record a reconcile: %v", err)
 	}
 	now := rig.clock.Now()
@@ -2576,7 +2576,7 @@ func TestAReconcilePassThatFindsNothingNewSendsNothing(t *testing.T) {
 		upsertPR(t, rig.database, pr)
 	}
 	upsertDeploy(t, rig.database, 100, now.Add(-29*time.Hour), now.Add(-28*time.Hour))
-	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, rig.clock.Now()); err != nil {
+	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, "acme/widgets", rig.clock.Now()); err != nil {
 		t.Fatalf("record the pass: %v", err)
 	}
 	conn.none(t, 5*time.Second, "a reconcile pass that found nothing new")
