@@ -15,10 +15,10 @@ that differs (pin_difference, name_list_difference) or by both directories, or s
 it (an env name outside ENV_ALLOWED, a shell, a container, an environment write that reaches it)
 can change what it compiles or which tests it runs. The pin is also the table's word for which
 tests the step runs, and reading everything says nothing where a filter selects every Go file
-already. What surrounds a go command is read over the steps whose writes reach it: a pinned step
-the steps before it, a claimed simple command the steps up to and including its own (job_up_to),
-and a script's go command each job's steps up to the last one whose run: starts the script
-(names_script, SCRIPT_START), or every step of a job that names it nowhere (around_job).
+already. What surrounds a go command is read over the steps whose writes may reach it: a pinned
+step the steps before it, a claimed simple command the steps up to and including its own
+(job_up_to), and a script's go command every step of each job that may run the script
+(around_job), since which step starts a script is nothing this check can prove.
 check-ci-filters.sh's header says why, gives the remedies - the step's own script line, or
 ENV_ALLOWED for a name with which go compiles the same files and runs the same tests - and gives
 the recipe that runs it as CI does, GOROOT unset.
@@ -1217,16 +1217,19 @@ def reduce_line(line: str) -> tuple:
 # The only env: names a step, its job or the workflow may set while a go command of the step stays
 # reduced, or a step an exact entry pins stays unrefused: names that cannot change what the command
 # compiles or which tests it runs. Any other name falls to everything, or refuses the pinned step,
-# among them GO* and CGO_*, BASH_ENV and ENV (which bash sources before the script), HOME and
-# XDG_CONFIG_HOME (go reads its env file, GOFLAGS among it, from $XDG_CONFIG_HOME/go/env or else
-# $HOME/.config/go/env) and PATH (which chooses the go binary). Add a name here only when go
-# compiles the same files with it set as without, and runs the same tests.
+# among them every other GO* name and CGO_*, BASH_ENV and ENV (which bash sources before the
+# script), HOME and XDG_CONFIG_HOME (go reads its env file, GOFLAGS among it, from
+# $XDG_CONFIG_HOME/go/env or else $HOME/.config/go/env) and PATH (which chooses the go binary).
+# Add a name here only when go compiles the same files with it set as without, and runs the same
+# tests.
 #
-# GOPROXY is the one name go itself reads that is here. It says where a module's bytes come from,
-# never which version: the module files this check already reads decide that, and go.sum holds
-# each module's hash whichever source serves it. This check's own go commands run with
-# GOPROXY=off over an empty module cache (Go.env below), so a workflow's value never reaches
-# them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN and CI_OK_EXEMPT are
+# GOPROXY and GOCACHE are the two names go itself reads that are here. GOCACHE says where go
+# keeps what it built (its line below says why that changes nothing go compiles). GOPROXY says
+# where a module's bytes come from, never which version: the module files this check already
+# reads decide that, and go.sum holds each module's hash whichever source serves it. This check's
+# own go commands run with GOPROXY=off over an empty module cache (Go.env below), so a workflow's
+# value never reaches them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN
+# and CI_OK_EXEMPT are
 # ci.yaml's ci-ok classes: ci-ok-report.sh reads the first three out of that file and hands them
 # to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
 # LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
@@ -1236,15 +1239,28 @@ ENV_ALLOWED = frozenset({
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
     "DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
-    "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
+    "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL",
+    # Read at run time by storetest's xid window rig (XidRequireGapsEnv): it turns a run that
+    # cannot judge gaps from shape alone into a failure, and go compiles the same files and runs
+    # the same tests with it set as without.
+    "DISPATCH_XID_REQUIRE_GAP_JUDGMENT",
+    "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
-    # around_job reads the env of every step up to the one that runs go-release-notices.sh, that
-    # step among them, so without this name here every go command of that script would count as
-    # unreduced and go_notices would have to match every Go file of the repository again. go reads
-    # it nowhere.
+    # around_job reads the env of every step of the job that runs go-release-notices.sh, so
+    # without this name here every go command of that script would count as unreduced and
+    # go_notices would have to match every Go file of the repository again. go reads it nowhere.
     "GH_TOKEN",
+    # Where go keeps what it compiled and the test results it caches, both found by a hash of
+    # their inputs, so go compiles the same files and runs the same tests whatever directory it
+    # names. envoy-go-checks' darwin vet sets it in its step's env, so that vet's darwin objects
+    # land in a directory of their own, which the go-envoy-darwin-vet cache family holds.
+    "GOCACHE",
     "GOPROXY",
+    # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
+    # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
+    # run go commands among them, and around_job reads a job's env. go reads it nowhere.
+    "JOB_TIMEOUT_MINUTES",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:
@@ -1325,29 +1341,6 @@ def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
     return job if at is None else {**job, "steps": steps[:at + 1] if including else steps[:at]}
 
 
-# What may come before a script's path where a step starts it: the start of a line, a space, a
-# quote, an `=`, a `(` or a backtick; `./` after one of those; or a `/` after a variable
-# (`$NAME`), a `}` or a `)`, which end `${NAME}`, `${{ ... }}` and `$(...)`. A `/` after anything
-# else ends a directory of another path, so `tools/scripts/e2e-local.sh` is not
-# `packages/envoy/scripts/e2e-local.sh` run from `packages/envoy`.
-SCRIPT_START = r"(?:^|[\s'\"=(`]|(?:^|[\s'\"=(`])\./|(?:\$[A-Za-z_][A-Za-z0-9_]*|[})])/)"
-
-
-def names_script(holder: dict, job: dict, step: dict, source: str) -> bool:
-    """Whether a run: step names the repository script `source`: by its path from the repository
-    root, or from the directory the step runs in, as a whole word of its run: text after one of
-    SCRIPT_START's starts - `"$GITHUB_WORKSPACE/<script>"`, `${{ github.workspace }}/<script>`,
-    `$(<script> ...)`, a backticked call, `$(git rev-parse --show-toplevel)/<script>` and
-    `./<script>` among them. The script's own parent directories before its path from the step's
-    directory make its path from the root, which is read as that; any other directory before it
-    names another script. Nothing that goes on the path after it (`.bak`, `-old`, a longer name)
-    counts."""
-    run = str(step.get("run", ""))
-    workdir = step_workdir(holder, job, step)
-    paths = {source, os.path.relpath(source, workdir)} if workdir != "." else {source}
-    return any(re.search(rf"{SCRIPT_START}{re.escape(p)}(?![\w.-])", run) for p in paths)
-
-
 def around_reason(document: dict, job: dict, steps: list) -> str:
     """The first thing outside a go command's line that can change what it compiles: an env:,
     a step writing the job's environment, a shell or a container; or ''. `steps` are the steps
@@ -1404,21 +1397,16 @@ def owner_steps(units: list, owner: str) -> list:
     return [s for own, _, _, _, job in units if own == owner for s in job.get("steps") or []]
 
 
-def around_job(units: list, owner: str, source: str) -> str:
-    """The first thing around a ci.yaml job that can change what a go command its script `source`
-    holds compiles, over its own steps and those of a workflow it calls, each read under the env:,
-    defaults and container of the file that holds it; or ''. A job some step of which names the
-    script (names_script) is read up to and including the last such step, since a step after it
-    runs after the script. A job that names it nowhere is read whole, since it may start the
-    script some way this check does not see - in a form names_script does not read, by another
-    script, or by a test it compiles."""
+def around_job(units: list, owner: str) -> str:
+    """The first thing around a ci.yaml job that can change what a go command of a script it runs
+    compiles, over every step of the job and of each job of a workflow it calls, each read under
+    the env:, defaults and container of the file that holds it; or ''. Every step, since which one
+    starts the script is nothing this check can prove: a step can start it through another
+    script, from another directory or by a test it compiles, and a step that names its path may
+    only chmod or lint it. So a write after the last step that shows a start still counts: the
+    check errs wide, never narrow."""
     for own, _, _, holder, job in units:
-        if own != owner:
-            continue
-        steps = job.get("steps") or []
-        naming = [i for i, s in enumerate(steps) if "run" in s and names_script(holder, job, s, source)]
-        read = {**job, "steps": steps[:naming[-1] + 1]} if naming else job
-        reason = around_reason(holder, read, read.get("steps") or [])
+        reason = around_reason(holder, job, job.get("steps") or []) if own == owner else ""
         if reason:
             return reason
     return ""
@@ -1645,11 +1633,10 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                                                                           f"runs `{r.text}`; update or remove the Run"))
     # A script's go command is held exact rather than reduced: the line holding the pinned text is
     # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
-    # job or its steps, no container: and no environment write of the job can move it - each job's
-    # steps up to the last one naming the script, or all of them where it names the script nowhere
-    # (around_job), since the check does not otherwise know which step starts it. A job that calls
-    # a workflow runs the script from that workflow's jobs, so each of them is read the same way.
-    # Its variables are the Run author's.
+    # job or its steps, no container: and no environment write of the job can move it - over every
+    # step of the job (around_job), since the check cannot prove which step starts the script. A
+    # job that calls a workflow runs the script from that workflow's jobs, so each of them is read
+    # the same way. Its variables are the Run author's.
     for g in data.GATES:
         for r in g.runs:
             if not r.source:
@@ -1665,7 +1652,7 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 continue
             lines = source_text.split("\n")
             held = [i for i, line in enumerate(lines) if r.text in line]
-            reason = around_job(units, g.job, r.source) or ("" if held else "its text spans lines")
+            reason = around_job(units, g.job) or ("" if held else "its text spans lines")
             for i in held:
                 line = lines[i].strip(" \t")
                 if not reason and line != r.text:
@@ -1759,12 +1746,15 @@ DISPATCH_NAMES = {
     "pr-title": "${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}",
 }
 # The verdict job's step that sets every other ci-ok on the head to its conclusion, and the one
-# `if:` it carries: it runs after a failed verdict (always()) and on no dispatch but one of
-# exactly refs/heads/main, since every other ci-ok on such a head is a pull request's or the
-# queue's.
+# `if:` it carries: it runs after a failed verdict (always()), on no dispatch but one of exactly
+# refs/heads/main, since every other ci-ok on such a head is a pull request's or the queue's, and
+# not where the hold step runs (HOLD_TERM): a merge group's first attempt whose verdict failed,
+# where every ci-ok posted on the head is failure already and the hold must be the job's last
+# step (.github/scripts/ci-ok-hold.sh's header).
 RECONCILE_STEP = "Set every other ci-ok on this head to this job's conclusion"
+HOLD_TERM = "steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1'"
 RECONCILE_IF = (f"${{{{ always() && (github.event_name != 'workflow_dispatch' || "
-                f"needs.changes.outputs.{REF_OUTPUT} == 'true') }}}}")
+                f"needs.changes.outputs.{REF_OUTPUT} == 'true') && !({HOLD_TERM}) }}}}")
 
 
 def dispatch_name(job_id: str) -> str:
@@ -1902,9 +1892,10 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
         if isinstance(step, dict) and step.get("name") == RECONCILE_STEP and str(step.get("if", "")) != RECONCILE_IF:
             problems.append(error(WORKFLOW, f"job {VERDICT_JOB}'s step \"{RECONCILE_STEP}\" carries `if: "
                                             f"{squash(str(step.get('if', '')))}`: give it `if: {RECONCILE_IF}`, so that "
-                                            f"it runs after a failed verdict and on no workflow_dispatch run but one of "
+                                            f"it runs after a failed verdict, on no workflow_dispatch run but one of "
                                             f"exactly refs/heads/main, since any other dispatch's verdict is no pull "
-                                            f"request's and must set none of a pull request's ci-ok check runs"))
+                                            f"request's and must set none of a pull request's ci-ok check runs, and not "
+                                            f"after the hold step, which must end the job"))
     # The output the name and the reconcile step read, and the one step that writes it.
     changes = jobs.get("changes") or {}
     have_output = (changes.get("outputs") or {}).get(REF_OUTPUT)
@@ -2733,10 +2724,11 @@ def check_vet_tags(session: Session, data, problems: list) -> list:
     `./...` walks), never go list's own package list, which leaves out a package whose every file
     a missing tag excludes. go list then says, under each Run's platform and tags, which of them
     it compiles. For each file none compiles that names a tag (go_build_tags.is_tag: no platform
-    or architecture feature name, none the toolchain sets), every choice of its own tags is
-    tried, and go list says again whether the file is compiled under it: one that is, is a miss,
-    named with the tags that build it. go decides each answer; this rule's own reading of a
-    constraint only chooses which tags to try, and it reads a name in any script Go accepts."""
+    or architecture feature name, none of its NOT_TAGS, which the toolchain or only a patched
+    build sets), every choice of its own tags is tried, and go list says again whether the file
+    is compiled under it: one that is, is a miss, named with the tags that build it. go decides
+    each answer; this rule's own reading of a constraint only chooses which tags to try, and it
+    reads a name in any script Go accepts."""
     groups: dict = defaultdict(list)
     for g in data.GATES:
         for r, step in [(r, r.step) for r in g.runs] + [(r, e.step) for e in g.exact for r in e.runs]:

@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/distinct"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // appendUniqueByScan is how delivery kept each value once before distinct.Strings: a scan of the
@@ -69,7 +71,7 @@ func TestUniqueStringsAnswersAsTheScanDid(t *testing.T) {
 		}
 		trailerTexts++
 	}
-	if uniqueKeys("") == nil || sessionTrailers(nil) == nil || citedIssues("acme/widgets", "") == nil {
+	if uniqueKeys("") == nil || sessionTrailers(nil) == nil || citedIssues(refs.Renames{}, "acme/widgets", citebody.New("", nil)) == nil {
 		t.Errorf("a reading that finds nothing answers nil, want an empty list: a nil stored input means it was never read")
 	}
 	t.Logf("%d sequences, %d key texts, %d trailer texts compared with the scan", sequences, keyTexts, trailerTexts)
