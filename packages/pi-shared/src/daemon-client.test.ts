@@ -737,6 +737,76 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(waits).toEqual([]);
 });
 
+/** A daemon behind a proxy whose first answer is the proxy's own page with `status`, which
+ *  carries no code, and every later one the daemon's coded refusal. */
+function behindAProxy(status: number): { client: LegionDaemonClient; attempts: () => number } {
+  let attempts = 0;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async (_input, _init) => {
+      attempts += 1;
+      return attempts === 1
+        ? new Response(`<html>${status}</html>`, {
+            status,
+            headers: { "Content-Type": "text/html" },
+          })
+        : Response.json(
+            { code: "GATE_UNAPPROVED", error: "the gate is not approved" },
+            { status: 409 }
+          );
+    }) as typeof fetch,
+  });
+  return { client, attempts: () => attempts };
+}
+
+// An outage with no code (`@legion/contracts/http-status`) is no answer of the daemon's, so the
+// restart retry waits it out. The daemon writes no 408 and no 429, so a proxy sent either before
+// it forwarded anything: that attempt reached nothing. After a 5xx it may have, so the daemon's
+// refusal that follows says the earlier attempt may have been applied.
+test.each([
+  [408, "refused"],
+  [429, "refused"],
+  [500, "dropped"],
+  [502, "dropped"],
+  [503, "dropped"],
+  [504, "dropped"],
+] as const)("a %i with no code is an outage the restart retry waits out, %s", async (status, reading) => {
+  const { client, attempts } = behindAProxy(status);
+  const first = await client.state().catch((error: unknown) => error);
+  expect(first).toMatchObject({ status, code: undefined });
+  expect(daemonUnreachable(first)).toBe(reading);
+
+  const proxied = behindAProxy(status);
+  let clock = 0;
+  const refused = (await retryWhileDaemonRestarts(
+    "handoff_complete",
+    () => proxied.client.state(),
+    {
+      now: () => clock,
+      sleep: async (ms: number) => {
+        clock += ms;
+      },
+    }
+  ).catch((error: unknown) => error)) as LegionDaemonApiError;
+  expect(attempts()).toBe(1);
+  expect(proxied.attempts()).toBe(2);
+  expect(refused).toMatchObject({ status: 409, code: "GATE_UNAPPROVED" });
+  expect(refused.message.includes("may have been applied")).toBe(reading === "dropped");
+});
+
+test("a coded refusal of an outage's status, and a 4xx with no code, are the daemon's answer", () => {
+  for (const [status, code] of [
+    [500, "STORE_FAILED"],
+    [503, "PAUSE_UNAVAILABLE"],
+    [429, "SOME_CODE"],
+    [404, undefined],
+    [409, undefined],
+  ] as const) {
+    const refusal = new LegionDaemonApiError("POST", "/legion/v1/x", status, code, "refused");
+    expect([status, daemonUnreachable(refusal)]).toEqual([status, undefined]);
+  }
+});
+
 /** A daemon that answers `body` with `contract` in its `Legion-Daemon-Contract` header, and
  * states no contract where `contract` is undefined. */
 function stating(body: unknown, contract: number | undefined, status = 200): typeof fetch {

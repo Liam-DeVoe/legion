@@ -1651,8 +1651,9 @@ export const LegionControllerCredentialResponse = z.object({
 /** Claim routes refuse with only a sentence; credential and workflow routes add a stable code.
  * One object with an optional `code`, not a union of a sentence-only shape and a coded one: now
  * that the answer side ignores unknown keys, a union matches its first member and drops `code`,
- * and `daemonUnreachable` in `packages/pi-shared/src/daemon-client.ts` reads a 502 with no code as
- * a restarting daemon and retries it for ten minutes, so a coded refusal must keep its code. */
+ * and `daemonUnreachable` in `packages/pi-shared/src/daemon-client.ts` reads an outage with no
+ * code (a 5xx, a 408 or a 429) as a restarting daemon and retries it for ten minutes, so a coded
+ * refusal must keep its code. */
 export const LegionErrorResponse = z.object({
   error: nonEmptyString,
   code: nonEmptyString.optional(),

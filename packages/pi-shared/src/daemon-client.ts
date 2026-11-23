@@ -351,16 +351,18 @@ export const DAEMON_RESTART_BUDGET_MS = 10 * 60_000;
 const DAEMON_RESTART_FIRST_DELAY_MS = 500;
 const DAEMON_RESTART_MAX_DELAY_MS = 30_000;
 
-/** Why a request got no answer from the daemon: `refused` never reached it (nothing was sent);
- * `dropped` may have reached it (a connection reset or closed before a response, or a 502 or 503
- * from a proxy in front of it, whose body is not the daemon's refusal shape). Undefined for an
- * answer the daemon gave, which is never retried: a 4xx above all, and the daemon's own 502/503,
- * which carry a code. */
+/** Why a request got no answer from the daemon: `refused` never reached it (nothing was sent: a
+ * refused connection, or a 408 or a 429 with no code, which the daemon writes neither of, so a
+ * proxy in front of it sent one before it forwarded anything); `dropped` may have reached it (a
+ * connection reset or closed before a response, or a 5xx with no code: a proxy's page in front
+ * of it, or a claim route's sentence, which names no code). Each of those statuses is an outage
+ * (`outage`). Undefined for an answer the daemon gave, which is never retried: a 4xx other than
+ * those two above all, and any refusal that carries a code, whatever its status, such as the
+ * daemon's own 502 `DISPATCH_FAILED`. */
 export function daemonUnreachable(error: unknown): "refused" | "dropped" | undefined {
   if (error instanceof LegionDaemonApiError) {
-    return (error.status === 502 || error.status === 503) && error.code === undefined
-      ? "dropped"
-      : undefined;
+    if (error.code !== undefined || !outage(error.status)) return undefined;
+    return error.status === 408 || error.status === 429 ? "refused" : "dropped";
   }
   if (!(error instanceof Error)) return undefined;
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;

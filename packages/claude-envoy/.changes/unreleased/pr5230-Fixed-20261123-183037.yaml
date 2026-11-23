@@ -5,7 +5,10 @@ body: |-
     logged and rejects without stopping the pane, which the daemon's registration deadline then
     covers. The daemon writes neither, so only a proxy between the session and the daemon sends
     one. `envoy-send` and every Envoy listener call send a 408 once more, as a 5xx; a send answered
-    408 on every attempt is that refusal, not "may or may not have arrived".
+    408 on every attempt is that refusal, not "may or may not have arrived". A `handoff_complete`
+    that waits out a daemon restart now waits out every outage with no code, a 408, a 429 or any
+    5xx, where it waited out only a 502 or a 503; a refusal that carries a code is still the
+    daemon's answer.
 time: 2026-11-23T18:30:37.667107260Z
 custom:
     Issue: pr5230

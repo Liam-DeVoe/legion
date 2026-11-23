@@ -6,7 +6,10 @@ body: |-
     covers. The daemon writes neither, so only a proxy between the session and the daemon sends
     one. An Envoy listener call answered 408 is sent once more, and a send answered 408 on every
     attempt is that refusal, not "may or may not have arrived". The skill-scenario scripts read a
-    408 again too.
+    408 again too. A daemon call that waits out a restart (`handoff_complete`, `sign_off`,
+    `register_gate`, `claims/turn-outcome`) now waits out every outage with no code, a 408, a 429
+    or any 5xx, where it waited out only a 502 or a 503; a refusal that carries a code is still
+    the daemon's answer.
 time: 2026-11-23T18:30:36.665070081Z
 custom:
     Issue: pr5230
