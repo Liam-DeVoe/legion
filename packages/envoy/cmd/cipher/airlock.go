@@ -491,9 +491,9 @@ func readTrustFile(environ []string, key string) ([]byte, bool) {
 }
 
 // wgetrcFor is the wgetrc the child gets: the lines of an inherited WGETRC, when it names a file
-// that can be read (readTrustSource, so a named pipe is read as its writer sends it and never
-// waited on), and then the bundle. wget reads none of the bundle variables, so this file is the
-// only way the proxy's certificate reaches it.
+// that can be read (readTrustSource, so a named pipe is read as its writer sends it, and one with
+// no writer reads as empty rather than being waited on), and then the bundle. wget reads none of
+// the bundle variables, so this file is the only way the proxy's certificate reaches it.
 func wgetrcFor(environ []string, bundle string) []byte {
 	var out []byte
 	if named := envValue(environ, "WGETRC"); named != "" {
@@ -582,7 +582,7 @@ func proxyRootsTrusted(environ []string, caPEM string, system func() *x509.CertP
 		return false
 	}
 	// One file is often named by several of these, as the system bundle is, and is read once.
-	var named []string
+	named := make([]string, 0, len(airlockBundleVars))
 	for _, key := range airlockBundleVars {
 		if path := envValue(environ, key); path != "" && (key != "NODE_EXTRA_CA_CERTS" || !nodeReadsTheStore(environ)) {
 			named = append(named, path)
@@ -707,9 +707,9 @@ const (
 
 // certDirTrustsEvery reports whether the certificate directory dir holds every root. It reads the
 // directory's regular files alone (readBoundedFile), so a device, a named pipe or a socket there
-// cannot stall or flood agent-secrets before the command runs. A file it skips adds nothing, and
-// a directory of more than proxyCertDirMaxFiles entries, or one this process cannot read, is one
-// it cannot vouch for.
+// when it looks cannot stall or flood agent-secrets before the command runs. A file it skips adds
+// nothing, and a directory of more than proxyCertDirMaxFiles entries, or one this process cannot
+// read, is one it cannot vouch for.
 func certDirTrustsEvery(dir string, roots []*x509.Certificate) bool {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return false
@@ -734,8 +734,8 @@ func certDirTrustsEvery(dir string, roots []*x509.Certificate) bool {
 
 // readBoundedFile is the regular file at path, read whole, and false where path names no regular
 // file (a symbolic link is followed to what it names) or one of more than proxyCertFileMaxBytes.
-// It looks before it opens, so it opens no named pipe, device or socket, and sizes its buffer
-// from the look, so a file is read into one allocation.
+// It looks before it opens, so it opens no named pipe, device or socket that is there when it
+// looks, and sizes its buffer from the look, so a file is read into one allocation.
 func readBoundedFile(path string) ([]byte, bool) {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() > proxyCertFileMaxBytes {
@@ -761,10 +761,10 @@ var errNotRegular = errors.New("not a regular file")
 // readRegularFile is the regular file at path, read whole however large (a symbolic link is
 // followed to what it names), for the system bundle and the files the skip decision reads, where
 // a file it will not read only means the bundle is written. It looks before it opens, so it opens
-// no named pipe, device or socket: opening a named pipe for reading waits for a writer that may
-// never come. The bundle writer reads those kinds too (readTrustSource). Its error is the look's
-// where that fails, so a path that is not there answers os.ErrNotExist, and errNotRegular where
-// the path names something else.
+// no named pipe, device or socket that is there when it looks: opening a named pipe for reading
+// waits for a writer that may never come. The bundle writer reads those kinds too (readTrustSource).
+// Its error is the look's where that fails, so a path that is not there answers os.ErrNotExist,
+// and errNotRegular where the path names something else.
 func readRegularFile(path string) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -804,9 +804,9 @@ func proxyRoots(caPEM string) []*x509.Certificate {
 	return roots
 }
 
-// poolTrustsEvery reports whether a verifier holding pool as its roots trusts each of roots: the
-// pool holds it, or a certificate of the same name and key that signs it. A nil pool trusts
-// nothing here, where Verify would read it as the system's own.
+// poolTrustsEvery reports whether each of roots verifies against pool as its roots
+// (x509.Certificate.Verify): it chains to a certificate the pool holds, and is within its validity
+// period. A nil pool trusts nothing here, where Verify would read it as the system's own.
 func poolTrustsEvery(pool *x509.CertPool, roots []*x509.Certificate) bool {
 	if pool == nil {
 		return false

@@ -1352,10 +1352,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// What each GitHub profile's token leaves out is said before anything runs, and never a token.
 	reportLeftOut(stderr, values.GitHubLeftOut)
 
-	// The airlock's files, where the command needs them (prepareAirlock), are written before
-	// anything is said or run: without the trust bundle such a command cannot verify the proxy,
-	// and a command that cannot reach its secret is better refused here than failed halfway
-	// through its own work.
+	// The airlock's files, where the command needs them (prepareAirlock), are written before the
+	// line that names the released secrets and before the command runs: without the trust bundle
+	// such a command cannot verify the proxy, and a command that cannot reach its secret is better
+	// refused here than failed halfway through its own work.
 	var files airlockFiles
 	if values.Airlock != nil {
 		if files, err = prepareAirlock(os.Environ(), values.Airlock, *grantID, values.ExpiresAt); err != nil {
