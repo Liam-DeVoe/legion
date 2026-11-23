@@ -69,7 +69,8 @@ func tasksWaitingOn(stored *record.StoredPlan, task string) []string {
 // start puts it (Walk.startPlace): its first step, or the parts of a task with a sub-owner, where
 // its sub-owner acts. The task runs there (moveTask, which writes that its step waits for its
 // join); startReady writes the issue (putScope) and starts the step's role through Engine.start,
-// the start of every step, which gives the task its branch and joins its needs (startTaskCopy). A
+// the start of every step, which gives the task its branch and joins its needs (startTaskCopy). At
+// the parts no step's role works the task (Walk.RoleAt), so that start only joins its needs. A
 // part of a task (record.PlanTask.PartOf) starts only while that task runs at its parts and waits
 // for nothing (partsStart), so a part never starts before the join of its task's needs ended: the
 // end of that join starts it (taskJoined). Where a task started at its parts with no wait, its

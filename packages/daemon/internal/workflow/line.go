@@ -125,18 +125,18 @@ func walksOf(key string, stored *record.StoredPlan) []Walk {
 func walkOfTask(key string, stored *record.StoredPlan, task record.PlanTask, merging string) Walk {
 	steps, merges := stored.Steps[task.Task], task.Task == merging
 	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
-		Line: lineOf(task, steps, merges), Merges: merges, OwnerRole: task.OwnerRole, State: task.State, Place: task.Place,
+		Line: lineOf(task.OwnerRole, steps, merges), Merges: merges, OwnerRole: task.OwnerRole, State: task.State, Place: task.Place,
 		StoppedReason: task.StoppedReason, HoldReason: task.HoldReason, Wait: task.StepWait, WaitSince: task.StepWaitSince,
 		StartReason: task.StartReason, Version: stored.Version}
 }
 
-// lineOf is the line of task, whose steps are steps, as its walk reads it: the phase each step
+// lineOf is the line of a task whose steps are steps, as its walk reads it: the phase each step
 // runs as, then Legion's own retro and merge where merges says the task merges (plan.Line). A task
-// with a sub-owner has no steps, and its line starts with planning, which no plan names: the phase
-// of its sub-owner's act at its parts (PlaceOf).
-func lineOf(task record.PlanTask, steps []record.PlanStep, merges bool) []phase.Phase {
+// with a sub-owner (ownerRole) has no steps, and its line starts with planning, which no plan
+// names: the phase of its sub-owner's act at its parts (linePlace).
+func lineOf(ownerRole string, steps []record.PlanStep, merges bool) []phase.Phase {
 	line := plan.Line(namedSteps(steps), merges)
-	if task.OwnerRole == "" {
+	if ownerRole == "" {
 		return line
 	}
 	return slices.Insert(line, 0, phase.Planning)
@@ -153,10 +153,10 @@ func namedSteps(steps []record.PlanStep) []plan.Step {
 	return named
 }
 
-// PlaceOf is the first place of w's line that runs as p: the step of the line that runs as p, at
-// its place from 1, or the retro or the merge at place 0. A task with a sub-owner has no step: its
-// planning is its parts, at place 0, where its sub-owner acts. A phase the line does not hold has
-// no place. Two steps that run as step are two places, so a reader of where the task stands reads
+// PlaceOf is the first place of w's line that runs as p (linePlace): the step of the line that
+// runs as p, at its place from 1, the retro or the merge at place 0, or the parts of a task with a
+// sub-owner for its planning, where its sub-owner acts. A phase the line does not hold has no
+// place. Two steps that run as step are two places, so a reader of where the task stands reads
 // placeIn, and PlaceOf serves a phase that stands once in its line.
 func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 	switch p {
@@ -169,32 +169,25 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 		}
 		return record.TaskPlace{Kind: record.PlaceMerge}, true
 	}
-	if w.OwnerRole != "" {
-		if p == phase.Planning && slices.Contains(w.Line, p) {
-			return record.TaskPlace{Kind: record.PlaceParts}, true
-		}
-		return record.TaskPlace{}, false
-	}
 	if at := slices.Index(w.steps(), p); at >= 0 {
-		return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}, true
+		return w.linePlace(at), true
 	}
 	return record.TaskPlace{}, false
 }
 
 // startPlace is the place a start of w's task moves it to, and the phase it stands in there: the
-// place of the first phase of its line (PlaceOf), which is its first step, or the parts of a task
-// with a sub-owner. ok is false for a line that holds no phase before its retro.
+// place of the first phase of its line (linePlace), which is its first step, or the parts of a
+// task with a sub-owner. ok is false for a line that holds no phase before its retro.
 func (w Walk) startPlace() (phase.Phase, record.TaskPlace, bool) {
-	steps := w.steps()
-	if len(steps) == 0 {
+	if len(w.steps()) == 0 {
 		return "", record.TaskPlace{}, false
 	}
-	place, ok := w.PlaceOf(steps[0])
-	return steps[0], place, ok
+	return w.Line[0], w.linePlace(0), true
 }
 
-// linePlace is where w's task stands at position at of its line (placeAt), but at the planning of
-// a task with a sub-owner, which is its parts (PlaceOf).
+// linePlace is where w's task stands at position at of its line: placeAt's place, but the parts of
+// a task with a sub-owner at its planning, which is no step. It is the one map of a position of a
+// walk's line to a place, which PlaceOf, startPlace, backwardPlace and the table read.
 func (w Walk) linePlace(at int) record.TaskPlace {
 	if w.OwnerRole != "" && w.Line[at] == phase.Planning {
 		return record.TaskPlace{Kind: record.PlaceParts}
@@ -662,8 +655,10 @@ func (w Walk) planStepAt(place record.TaskPlace) (record.PlanStep, bool) {
 // RoleAt is the role that works the step of w's task at place: for a step, the worker of the
 // phase its role runs as (phase.RoleFor of plan.RunsAs: the architect for the owner's acceptance),
 // and the role itself where it runs as step, a role the deployment defines; the implementer at the
-// retro and the merger at the merge; and "" at no act or at a place the task does not hold. On a
-// task whose roles are Legion's own it answers phase.RoleFor of the phase the place derives.
+// retro and the merger at the merge; and "" at no act, at a place the task does not hold, and at
+// the parts and the report of a task with a sub-owner, which no step's worker works, so a start of
+// the task there (Engine.start) starts no role. On a task whose roles are Legion's own it answers
+// phase.RoleFor of the phase the place derives.
 func (w Walk) RoleAt(place record.TaskPlace) claim.Role {
 	switch place.Kind {
 	case record.PlaceRetro:
@@ -739,11 +734,12 @@ func (w Walk) table() []Row {
 		return Table
 	}
 	rows := StoredTableOf(w.Line)
-	at := slices.Index(w.Line, phase.Planning)
-	if w.OwnerRole == "" || at < 0 {
+	if w.OwnerRole == "" {
 		return rows
 	}
-	step, parts := placeAt(w.Line, at), w.linePlace(at)
+	// The line of a task with a sub-owner starts with its planning (lineOf), which placeAt puts at
+	// step 1 and linePlace at the parts.
+	step, parts := placeAt(w.Line, 0), w.linePlace(0)
 	for i := range rows {
 		if rows[i].FromPlace == step {
 			rows[i].FromPlace = parts

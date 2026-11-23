@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -19,16 +18,14 @@ import (
 var atParts = record.TaskPlace{Kind: record.PlaceParts}
 
 // ownedTask is one task of a plan these tests write through the store (putOwnedVersion): its id,
-// each of its steps as `role` or `role:key` with the name of the step's agent beside it, the role
-// its block names as `owner` (a task with a sub-owner, which has no steps), the task it is a part
-// of, the tasks it needs, and where it stands.
+// the role of its one step ("" for none), the role its block names as `owner` (a task with a
+// sub-owner, which has no steps), the task it is a part of, the tasks it needs, and where it
+// stands.
 type ownedTask struct {
-	id, owner, partOf string
-	steps             []string
-	agents            []claim.Agent
-	needs             []string
-	state             record.TaskState
-	place             record.TaskPlace
+	id, role, owner, partOf string
+	needs                   []string
+	state                   record.TaskState
+	place                   record.TaskPlace
 }
 
 // subOwned is task id with a sub-owner of the role architect, needing needs, waiting at no act.
@@ -36,11 +33,9 @@ func subOwned(id string, needs ...string) ownedTask {
 	return ownedTask{id: id, owner: "architect", needs: needs, state: record.TaskWaiting}
 }
 
-// stepped is task id with one step of role, whose agent is `<role>-<id>`, needing needs, waiting at
-// no act.
+// stepped is task id with one step of role, needing needs, waiting at no act.
 func stepped(id, role string, needs ...string) ownedTask {
-	return ownedTask{id: id, steps: []string{role + ":" + id}, agents: []claim.Agent{claim.Agent(role + "-" + id)}, needs: needs,
-		state: record.TaskWaiting}
+	return ownedTask{id: id, role: role, needs: needs, state: record.TaskWaiting}
 }
 
 // part is task id, a part of task of, with one implementer's step and no needs, waiting at no act.
@@ -57,8 +52,9 @@ func (t ownedTask) at(state record.TaskState, place record.TaskPlace) ownedTask 
 }
 
 // putOwnedVersion writes version of the plan of key at generation, given by givenBy, holding tasks,
-// in tx (record.Store.PutPlan): each task's block is "Do <id>.", and each step takes the type its
-// role has among Legion's own roles. A task the generation holds already keeps where it stands.
+// in tx (record.Store.PutPlan): each task's block is "Do <id>.", and its one step, where it has
+// one, is `<role>:<id>`, of the type its role has among Legion's own roles, done by the agent
+// `<role>-<id>`: each step of these plans has an agent of its own.
 func putOwnedVersion(ctx context.Context, tx pgx.Tx, key string, generation uint64, version int, givenBy claim.Token, tasks ...ownedTask) error {
 	v := record.PlanVersion{Issue: key, Generation: generation, Version: version, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 		GivenBy: givenBy, GivenAt: stepClock}
@@ -68,10 +64,9 @@ func putOwnedVersion(ctx context.Context, tx pgx.Tx, key string, generation uint
 	for _, task := range tasks {
 		rows = append(rows, record.PlanTask{Issue: key, Generation: generation, Task: task.id, PlanVersion: version, BlockText: "Do " + task.id + ".",
 			Needs: task.needs, PartOf: task.partOf, OwnerRole: task.owner, State: task.state, Place: task.place})
-		for i, word := range task.steps {
-			role, agentKey, _ := strings.Cut(word, ":")
-			steps = append(steps, record.PlanStep{Issue: key, Generation: generation, Task: task.id, Position: i + 1, Role: role, AgentKey: agentKey,
-				Type: roles[role].Type, Agent: task.agents[i]})
+		if task.role != "" {
+			steps = append(steps, record.PlanStep{Issue: key, Generation: generation, Task: task.id, Position: 1, Role: task.role, AgentKey: task.id,
+				Type: roles[task.role].Type, Agent: claim.Agent(task.role + "-" + task.id)})
 		}
 	}
 	return record.NewStore().PutPlan(ctx, tx, v, rows, steps)
