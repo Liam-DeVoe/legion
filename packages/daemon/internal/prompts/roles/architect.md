@@ -160,9 +160,10 @@ write the request into this child's spec, and have the architect above you revie
 `criteria` step where it is gated.
 Retro (`skill://legion-retro`) is mandatory and runs before the merger's merge: the daemon starts
 the implementer on it once you sign off, or, on a task with no `acceptance:owner` step, once its
-last step passes (on a parent, once the issues beneath it have left, `retro-held`). Every started role keeps its
-session until its issue closes, so an `envoy_publish` to a role that finished its phase still
-reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
+last step passes (on a parent, once the issues beneath it have left, `retro-held`). Every started agent keeps its
+session until its issue closes, so an `envoy_publish` to the topic of the agent that worked a
+finished step still reaches that agent's session, and wakes it when the daemon released its idle
+pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
 session and on the pull request, and asks nothing of you. A tester completion that rejects the
 implementer's results goes back to the implementer, or to the earlier step its completion names;
@@ -170,7 +171,7 @@ a worker that reports
 no surface reaches the changed path gets the surface built in this tree
 (`skill://legion-architect`, wake routing,
 `phase-finished`), and waits, with its phase and its task kept, until you tell it to continue
-(`envoy_publish` to its role topic, which wakes it when its idle pod was released): once that
+(`envoy_publish` to its agent's topic, which wakes it when its idle pod was released): once that
 child closes, or at once when the surface folds into an open pull request of this tree and a
 backward move to `implementing` builds it there.
 
