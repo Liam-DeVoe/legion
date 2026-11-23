@@ -1,5 +1,5 @@
 import { expect } from "bun:test";
-import { connect, ErrorCode, type KV, NatsError } from "nats";
+import { connect, type KV } from "nats";
 import { z } from "zod";
 import { deliverSubject } from "../src/consumer-delivery";
 import { STORED_WHILE_AWAY_SUFFIX } from "../src/delivery-ledger";
@@ -8,6 +8,15 @@ import type { StallProxy } from "./stall-proxy";
 
 /** The spec's bound: a session finds a path that answers within a minute of the freeze. */
 export const RECOVERY_BOUND_MS = 60_000;
+
+/**
+ * The session's `ENVOY_HEARTBEAT_MS` for this scenario: an hour between heartbeats, past the limit
+ * of each row that runs it and the 20-minute job that runs those rows. After the start's
+ * registration no heartbeat registers within a row, so the reconnect's registration is the only
+ * one that can carry a new epoch. `envoySettings` takes any finite number above zero and holds it
+ * under 2 147 483 647 ms (`resolvedInterval`, `src/envoy-settings.ts`), so the hour stands.
+ */
+export const FREEZE_HEARTBEAT_MS = "3600000";
 
 /** A session plugin under test, registered, whose NATS path `proxy` fronts. */
 export interface FreezeScenarioHost {
@@ -57,21 +66,6 @@ async function sessionEntry(
   const entry = await sessions.get(sessionID);
   if (entry === null || entry.operation !== "PUT") return undefined;
   return SessionEntrySchema.parse(entry.json());
-}
-
-/**
- * `read`'s answer, or false when nats.js gave up waiting for natsd's answer to it: a JetStream
- * request whose timeout passed fails with `ErrorCode.Timeout`, and so does each request still
- * pending when the observer's connection closes. The wait polling `read` then polls it again,
- * until its row ends or a process of the stack exits. Any other error fails the wait.
- */
-async function falseOnTimeout(read: () => Promise<boolean>): Promise<boolean> {
-  try {
-    return await read();
-  } catch (error) {
-    if (error instanceof NatsError && error.code === ErrorCode.Timeout) return false;
-    throw error;
-  }
 }
 
 /**
@@ -144,14 +138,13 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
       .views.kv("envoy_sessions", { bindOnly: true });
     let firstEpoch: string | undefined;
     await waitFor(
-      () =>
-        falseOnTimeout(async () => {
-          const entry = await sessionEntry(sessions, sessionID);
-          if (entry === undefined) return false;
-          firstEpoch = entry.delivery === "consumer" ? entry.epoch : undefined;
-          if (firstEpoch === undefined) return false;
-          return await subscribedSince(stack.monitorUrl, sessionSubject, 0);
-        }),
+      async () => {
+        const entry = await sessionEntry(sessions, sessionID);
+        if (entry === undefined) return false;
+        firstEpoch = entry.delivery === "consumer" ? entry.epoch : undefined;
+        if (firstEpoch === undefined) return false;
+        return await subscribedSince(stack.monitorUrl, sessionSubject, 0);
+      },
       undefined,
       "the session's registration answered consumer, with its relay subject subscribed"
     );
@@ -191,11 +184,10 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
     // deadline: a session that never registers one ends at the row's limit, which names the row.
     let renewed: z.infer<typeof SessionEntrySchema> | undefined;
     await waitFor(
-      () =>
-        falseOnTimeout(async () => {
-          renewed = await sessionEntry(sessions, sessionID);
-          return renewed?.delivery === "consumer" && renewed.epoch !== firstEpoch;
-        }),
+      async () => {
+        renewed = await sessionEntry(sessions, sessionID);
+        return renewed?.delivery === "consumer" && renewed.epoch !== firstEpoch;
+      },
       undefined,
       "the session's registration of a new epoch"
     );

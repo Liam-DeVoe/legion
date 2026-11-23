@@ -39,7 +39,7 @@ export interface EnvoyStack {
  * both logs — and returns its path.
  *
  * Every test file that starts a stack calls this once per stack, at its own module scope, as
- * `const stackDirectory = useEnvoyStackDirectory()`, and hands the path to `startEnvoyStack`.
+ * `const stackDirectory = useEnvoyStackDirectory()`, and hands the path to the stack's start.
  * Two calls reserve two directories, which is what a file that starts two stacks needs.
  *
  * The call cannot live in this module's body: `temporaryDirectory` registers the `beforeAll`
@@ -88,8 +88,9 @@ export interface EnvoyStackOptions {
   readonly portChosen?: PortChosen;
   /**
    * Aborted to stop a start still in progress: the start ends the build or the wait it is in,
-   * stops each process it started, and rejects. A live describe's `afterAll` aborts it, so a
-   * `beforeAll` its limit cut off leaves no natsd or listener running.
+   * stops each process it started, and rejects. A live describe's `afterAll` aborts it through
+   * {@link startStoppableEnvoyStack}, so a `beforeAll` its limit cut off leaves no natsd or
+   * listener running.
    */
   readonly signal?: AbortSignal;
 }
@@ -110,7 +111,7 @@ export interface GoBuild {
   readonly stack: string;
   /** What that same error says the rig would have built ("natsd and the listener"). */
   readonly binaries: string;
-  /** Aborted to stop the build: `go` is sent SIGTERM, and the build throws. */
+  /** Aborted to stop the build: `go` is sent SIGINT, and the build throws. */
   readonly signal?: AbortSignal;
 }
 
@@ -126,7 +127,8 @@ export async function buildGoBinaries(build: GoBuild): Promise<void> {
     stdout: "pipe",
     stderr: "pipe",
     // Left out when unset: claude-envoy compiles this file with exactOptionalPropertyTypes.
-    ...(build.signal === undefined ? {} : { signal: build.signal }),
+    // SIGINT, not SIGTERM: cmd/go handles it, waiting for its compile and link and removing $WORK.
+    ...(build.signal === undefined ? {} : { signal: build.signal, killSignal: "SIGINT" }),
   });
   const [stderr, code] = await Promise.all([new Response(spawned.stderr).text(), spawned.exited]);
   if (build.signal?.aborted === true) {
@@ -223,6 +225,12 @@ export function tail(file: string, lines: number): string {
 function exitOf(what: string, child: Subprocess, log: string, lines: number): string | undefined {
   if (child.exitCode === null && child.signalCode === null) return undefined;
   return `${what} exited (${child.exitCode ?? child.signalCode}): ${tail(log, lines)}`;
+}
+
+/** Throws `${doing}: <the exit>` once `stack.exited()` names natsd or the listener as exited. */
+export function throwIfExited(stack: EnvoyStack, doing: string): void {
+  const exited = stack.exited();
+  if (exited !== undefined) throw new Error(`${doing}: ${exited}`);
 }
 
 /**
@@ -443,6 +451,29 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     await stop();
     throw error;
   }
+}
+
+/**
+ * Starts a stack ({@link startEnvoyStack}) and keeps the start with its stop, for a live
+ * describe: its `beforeAll` starts the stack and awaits `started`, and its `afterAll` calls
+ * `stop`. A `beforeAll` its limit cut off leaves the start running and the stack unset, and `stop`
+ * aborts the start, which ends the build or the wait it is in, stops what it started and rejects.
+ * A start that resolved is stopped. So nothing the start began runs on past the describe.
+ */
+export function startStoppableEnvoyStack(options: Omit<EnvoyStackOptions, "signal">): {
+  readonly started: Promise<EnvoyStack>;
+  stop(): Promise<void>;
+} {
+  const stopStart = new AbortController();
+  const started = startEnvoyStack({ ...options, signal: stopStart.signal });
+  return {
+    started,
+    stop: async () => {
+      stopStart.abort();
+      const stack = await started.catch(() => undefined);
+      await stack?.stop();
+    },
+  };
 }
 
 /**

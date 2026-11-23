@@ -64,11 +64,11 @@ import { subjectsOverlap } from "@legion/envoy-client/stream-topics";
 import {
   type EnvoyStack,
   envoyStackEnabled,
-  startEnvoyStack,
+  startStoppableEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
-import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
+import { FREEZE_HEARTBEAT_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery, projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
@@ -892,14 +892,15 @@ beforeEach(() => {
 
 /**
  * What stops each thing a row started that would run on past it: a log sink the row registered
- * (`rowLogSink`), so a row its limit abandoned collects nothing from the rows after it, and the
- * shutdown of a session the row booted (`rowShutdown`). A session left running would act inside
- * whatever row runs then. A placed session's place cache reads tmux on a real `setInterval` at its
- * lifetime, which would add a reading to `tmuxPlaceState.calls`. A session whose background
- * confirmation asks every few milliseconds would add to the shared `natsState.flushes`. The file's
- * `afterEach` runs every stop left here, a row its limit abandoned included, while that row's
- * fetch still answers a session's deregistration, and `resetFileState` runs the ones an
- * `afterEach` bun skipped left (`runRowStops`).
+ * (`rowLogSink`), so a row its limit abandoned collects nothing from the rows after it, and
+ * something the row started that must end with it (a session's shutdown, a stall proxy's close:
+ * `rowShutdown`). A session left running would act inside whatever row runs then. A placed
+ * session's place cache reads tmux on a real `setInterval` at its lifetime, which would add a
+ * reading to `tmuxPlaceState.calls`. A session whose background confirmation asks every few
+ * milliseconds would add to the shared `natsState.flushes`. The file's `afterEach` runs every stop
+ * left here, a row its limit abandoned included, while that row's fetch still answers a session's
+ * deregistration, and `resetFileState` runs the ones an `afterEach` bun skipped left
+ * (`runRowStops`).
  */
 const rowStops = new Set<() => unknown>();
 
@@ -928,17 +929,18 @@ function rowLogSink(sink: logger.LogSink): () => void {
 }
 
 /**
- * Registers `shutdown`, the shutdown of a session the row running now booted, in `rowStops`, and
- * answers what runs it. It runs once: the first call starts it, and every later call answers that
- * same run. The row's own `finally` calls it. The file's `afterEach` calls it too, a row its limit
- * abandoned included, while that row's fetch still answers the deregistration, and waits for it
- * before it puts shared state back. So a `finally` the abandoned body reaches late starts no
- * shutdown inside the row after its own, and the session is not left running, as a `finally`
- * guarded by `ownRow()` alone would leave it. A body its limit abandoned that gets here only after
- * its row ended throws, so it boots no session inside the row after it.
+ * Registers `shutdown` in `rowStops`, the end of something the row running now started that must
+ * end with it (a session's shutdown, a stall proxy's close), and answers what runs it. It runs
+ * once: the first call starts it, and every later call answers that same run. The row's own
+ * `finally` calls it. The file's `afterEach` calls it too, a row its limit abandoned included,
+ * while that row's fetch still answers a session's deregistration, and waits for it before it
+ * puts shared state back. So a `finally` the abandoned body reaches late starts no shutdown
+ * inside the row after its own, and what it ends is not left running, as a `finally` guarded by
+ * `ownRow()` alone would leave it. A body its limit abandoned that gets here only after its row
+ * ended throws, so it starts nothing more inside the row after it.
  */
 function rowShutdown(shutdown: () => unknown): () => Promise<unknown> {
-  stillOn(rowCheck(), "registering a session's shutdown");
+  stillOn(rowCheck(), "registering the end of something the row started that must end with it");
   let running: Promise<unknown> | undefined;
   const stop = () => {
     running ??= Promise.resolve(shutdown());
@@ -1798,7 +1800,8 @@ function onTestClock<T>(
 }
 
 /** What a row on `onPassClock` holds and moves the test's clock with. Once the row has ended, at
- *  its limit included, every hold, wait and move throws, naming what it was at (`onPassClock`). */
+ *  its limit included, every hold, wait and move throws, naming what it was at, and `waitOn` does
+ *  so once its promise settles (`onPassClock`). */
 interface PassClock {
   /** Lets the code's own work run on real turns (`settle`), which move no clock, until `done()`
    *  holds or `turns` of them (10_000 by default) run out. */
@@ -1812,10 +1815,12 @@ interface PassClock {
    *  abandons the row, the file's hooks advance `rowGeneration`, and the wait throws, naming
    *  `what`, rather than spinning on beside the rows after it. */
   readonly wait: (what: string, done: () => boolean) => Promise<void>;
-  /** Holds as `wait` does until `pending` settles, and answers what it settled to: for work that
-   *  reads a file or waits on another process, such as a trade, which first reads the pod's token
-   *  from disk (`projectedToken`'s `readFile`). It has no bound of turns and ends with its row,
-   *  as `wait` does. */
+  /** Holds the clock until `pending` settles, then lets one `settle` of real turns run, and
+   *  answers what `pending` settled to: for work that reads a file or waits on another process,
+   *  such as a trade, which first reads the pod's token from disk (`projectedToken`'s `readFile`).
+   *  It runs no turns while it waits, so it takes no core from that work, and it has no bound.
+   *  Once its row has ended, a body parked here throws when `pending` settles, naming `what`, and
+   *  stays parked if `pending` never settles. */
   readonly waitOn: <T>(what: string, pending: Promise<T> | T) => Promise<T>;
   /** Each `AbortSignal.timeout` the code armed since the clock was installed, in order, by its
    *  length: where a bound the row reads starts. */
@@ -1858,8 +1863,9 @@ interface PassClock {
  * move of the clock throws, naming what it was waiting for and saying the row ended, and so does
  * this call: a row its limit abandoned is over, and the file's `beforeEach` has put real timers
  * and `AbortSignal.timeout` back for the row after it, which may hold a fake clock of its own by
- * then. So the abandoned body stops at its next wait rather than move that clock, and its end
- * leaves the timers and `AbortSignal.timeout` as that row has them.
+ * then. A body parked in `waitOn` throws so once its promise settles, and stays parked if the
+ * promise never settles. So the abandoned body stops at its next wait rather than move that
+ * clock, and its end leaves the timers and `AbortSignal.timeout` as that row has them.
  */
 async function onPassClock<T>(body: (clock: PassClock) => Promise<T>): Promise<T> {
   const ownRow = rowCheck();
@@ -1884,10 +1890,6 @@ async function onPassClock<T>(body: (clock: PassClock) => Promise<T>): Promise<T
     jest.advanceTimersByTime(ms);
     await settleFor(what);
   };
-  const waitFor = async (what: string, done: () => boolean): Promise<void> => {
-    stillOn(ownRow, `waiting for ${what}`);
-    while (!done()) await settleFor(`waiting for ${what}`);
-  };
   const clock: PassClock = {
     hold: (done, turns = 10_000) =>
       holdFor("holding the test's clock for the code's work", done, turns),
@@ -1901,14 +1903,19 @@ async function onPassClock<T>(body: (clock: PassClock) => Promise<T>): Promise<T
       if (!settled) throw new Error(`${what} did not settle with the test's clock held`);
       return await watched;
     },
-    wait: (what, done) => waitFor(what, done),
+    wait: (what, done) => holdFor(`waiting for ${what}`, done, Number.POSITIVE_INFINITY),
     waitOn: async (what, pending) => {
-      let settled = false;
-      const watched = Promise.resolve(pending).finally(() => {
-        settled = true;
-      });
-      watched.catch(() => undefined);
-      await waitFor(what, () => settled);
+      const at = `waiting for ${what}`;
+      const watched = Promise.resolve(pending);
+      // Handled before the row's check, so a `pending` that rejects after that check threw is
+      // not left unhandled.
+      const settled = watched.then(
+        () => undefined,
+        () => undefined
+      );
+      stillOn(ownRow, at);
+      await settled;
+      await settleFor(at);
       return await watched;
     },
     armed,
@@ -8345,6 +8352,9 @@ console.log(JSON.stringify(args));
       holdStart?: boolean;
     } = {}
   ) => {
+    // The row the fixture is made in: once it has ended, `tick` throws rather than run the
+    // heartbeat inside the row after it (`stillOn`).
+    const ownRow = rowCheck();
     const claims: string[] = [];
     // Each claim as `<role>@<session it was sent for>`.
     const claimSessions: string[] = [];
@@ -8614,6 +8624,7 @@ console.log(JSON.stringify(args));
     };
     const context = host();
     const tick = () => {
+      stillOn(ownRow, "ticking the heartbeat");
       if (heartbeat === undefined) throw new Error("no heartbeat was registered");
       heartbeat();
     };
@@ -9706,7 +9717,6 @@ console.log(JSON.stringify(args));
     // A pass for the second resume hands the claim back, during which the host rolls back; the
     // pass after converges to the session the host is on again.
     for (let ticks = 0; ticks < 2; ticks += 1) {
-      stillOn(rowCheck(), "ticking the heartbeat");
       tick();
       for (let step = 0; step < 10; step += 1) await drain();
     }
@@ -9749,7 +9759,6 @@ console.log(JSON.stringify(args));
     manager.id = "ses_uk_s";
     manager.branch = () => [...ownS, ...fixture.entries.slice(returned)];
     for (let ticks = 0; ticks < 3; ticks += 1) {
-      stillOn(rowCheck(), "ticking the heartbeat");
       tick();
       for (let step = 0; step < 10; step += 1) await drain();
     }
@@ -9791,7 +9800,6 @@ console.log(JSON.stringify(args));
     manager.id = "ses_rr0";
     manager.branch = () => [...own, ...fixture.entries.slice(returned)];
     for (let ticks = 0; ticks < 2; ticks += 1) {
-      stillOn(rowCheck(), "ticking the heartbeat");
       tick();
       for (let step = 0; step < 10; step += 1) await drain();
     }
@@ -9859,7 +9867,6 @@ console.log(JSON.stringify(args));
       );
     });
     for (let ticks = 0; ticks < 2; ticks += 1) {
-      stillOn(rowCheck(), "ticking the heartbeat");
       tick();
       for (let step = 0; step < 10; step += 1) await drain();
     }
@@ -9987,7 +9994,6 @@ console.log(JSON.stringify(args));
     const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
     const ticks = async (count: number) => {
       for (let each = 0; each < count; each += 1) {
-        stillOn(rowCheck(), "ticking the heartbeat");
         tick();
         for (let step = 0; step < 10; step += 1) await drain();
       }
@@ -10207,7 +10213,6 @@ console.log(JSON.stringify(args));
       held.release();
       await switched;
       for (let ticks = 0; ticks < 3; ticks += 1) {
-        stillOn(rowCheck(), "ticking the heartbeat");
         tick();
         for (let step = 0; step < 10; step += 1) await drain();
       }
@@ -10445,7 +10450,6 @@ console.log(JSON.stringify(args));
       const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
       const ticks = async (count: number) => {
         for (let each = 0; each < count; each += 1) {
-          stillOn(rowCheck(), "ticking the heartbeat");
           tick();
           for (let step = 0; step < 10; step += 1) await drain();
         }
@@ -10867,7 +10871,6 @@ console.log(JSON.stringify(args));
           // The claim confirmed the hold, so later ticks only re-register.
           const confirmed = claimSessions.length;
           for (let ticks = 0; ticks < 2; ticks += 1) {
-            stillOn(rowCheck(), "ticking the heartbeat");
             tick();
             for (let step = 0; step < 10; step += 1) {
               await new Promise<void>((r) => setImmediate(r));
@@ -11269,7 +11272,6 @@ console.log(JSON.stringify(args));
         // Later passes hand both back: the abandoned loop left reviewer pending and recorded
         // legion-controller's failure, so neither is lost.
         for (let each = 0; each < 3; each += 1) {
-          stillOn(rowCheck(), "ticking the heartbeat");
           tick();
           for (let step = 0; step < 10; step += 1) await drain();
         }
@@ -11336,7 +11338,6 @@ console.log(JSON.stringify(args));
 
       // The passes that follow in ses_lk_b leave the role with the live session that holds it.
       for (let each = 0; each < 3; each += 1) {
-        stillOn(rowCheck(), "ticking the heartbeat");
         tick();
         for (let step = 0; step < 10; step += 1) await drain();
       }
@@ -11406,7 +11407,6 @@ console.log(JSON.stringify(args));
       const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
       const ticks = async (count: number) => {
         for (let each = 0; each < count; each += 1) {
-          stillOn(rowCheck(), "ticking the heartbeat");
           tick();
           for (let step = 0; step < 10; step += 1) await drain();
         }
@@ -11774,7 +11774,6 @@ console.log(JSON.stringify(args));
     manager.id = "ses_fr";
     manager.branch = () => [...own, ...fixture.entries.slice(returned)];
     for (let ticks = 0; ticks < 2; ticks += 1) {
-      stillOn(rowCheck(), "ticking the heartbeat");
       tick();
       for (let step = 0; step < 10; step += 1) await drain();
     }
@@ -11799,7 +11798,6 @@ console.log(JSON.stringify(args));
     manager.id = "ses_ra";
     manager.branch = () => own;
     for (let ticks = 0; ticks < 2; ticks += 1) {
-      stillOn(rowCheck(), "ticking the heartbeat");
       tick();
       for (let step = 0; step < 10; step += 1) await drain();
     }
@@ -12145,7 +12143,6 @@ console.log(JSON.stringify(args));
                 }
                 await drain();
                 for (let tick = 0; tick < ticksInWindow; tick += 1) {
-                  stillOn(rowCheck(), "ticking the heartbeat");
                   h.tick();
                   await drain();
                 }
@@ -12156,7 +12153,6 @@ console.log(JSON.stringify(args));
                 await drain(10);
                 afterRelease();
                 for (let tick = 0; tick < 3; tick += 1) {
-                  stillOn(rowCheck(), "ticking the heartbeat");
                   h.tick();
                   await drain(10);
                 }
@@ -22496,6 +22492,15 @@ console.log(JSON.stringify(args));
   }
 
   /**
+   * Moves the test's clock (`onPassClock`) 10 ms at a time, at most 100 times, while `done()` does
+   * not hold, and throws `failure` once 1 s of the clock has passed without it.
+   */
+  async function stepUntil(clock: PassClock, done: () => boolean, failure: string): Promise<void> {
+    for (let step = 0; step < 100 && !done(); step += 1) await clock.advance(10);
+    if (!done()) throw new Error(`${failure} within 1 s of the test's clock`);
+  }
+
+  /**
    * Moves the test's clock (`onPassClock`) through the own resubscribe delay of the relay or of
    * the agent stream's control subject, 10 ms here (`ENVOY_RESUBSCRIBE_DELAY_MS`), 10 ms at a
    * time, until that subject's redial has begun: the stand-in records its connect as it begins,
@@ -22506,12 +22511,7 @@ console.log(JSON.stringify(args));
    * of the clock passes, and a redial not begun by then fails the row here.
    */
   async function redialParked(clock: PassClock): Promise<void> {
-    for (let step = 0; step < 100 && natsState.connectedNames.length < 2; step += 1) {
-      await clock.advance(10);
-    }
-    if (natsState.connectedNames.length < 2) {
-      throw new Error("no redial began within 1 s of the test's clock");
-    }
+    await stepUntil(clock, () => natsState.connectedNames.length >= 2, "no redial began");
   }
 
   test("a registration sent right after the connection closed names the close", async () => {
@@ -22651,12 +22651,11 @@ console.log(JSON.stringify(args));
         await onPassClock(async (clock) => {
           natsState.failSubscribes = 1;
           first?.fail(NatsError.errorForCode(ErrorCode.Disconnect));
-          for (let step = 0; step < 100 && natsState.failSubscribes > 0; step += 1) {
-            await clock.advance(10);
-          }
-          if (natsState.failSubscribes > 0) {
-            throw new Error("the relay did not resubscribe within 1 s of the test's clock");
-          }
+          await stepUntil(
+            clock,
+            () => natsState.failSubscribes <= 0,
+            "the relay did not resubscribe"
+          );
           const reason = "because its relay subject could not be opened: DISCONNECT";
           expect(await clock.run("the follow", session.follow("team.relay-errored"))).toContain(
             reason
@@ -23190,8 +23189,7 @@ console.log(JSON.stringify(args));
         throw new Error("the retry's trade did not begin in 20 s, and the start did not settle");
       }
       await clock.wait("the second trade", () => trades() > 1 || settled);
-      await clock.wait("the start", () => settled);
-      await starting;
+      await clock.waitOn("the start", starting);
     });
     expect(
       natsState.presented.map((token) => minted.get(token)),
@@ -23203,12 +23201,13 @@ console.log(JSON.stringify(args));
     ).toBe(false);
     await fixture.handlers.get("session_shutdown")?.({}, context);
     // A hang guard, not a bound on work: what can hang is a wait for a trade's read of the pod's
-    // token from disk or for the start's dial (`clock.wait`), which has no bound of turns: the read
-    // is real I/O. Worst measured cost: 16 611.29 ms over 20 runs at the 96 rung in the Job
-    // infra-1580-krows-j4-2w4bc of the cluster's `builds` namespace, two CPUs and 8 GiB (257 busy
-    // loops, at which row A's runs took 53.6 s against the calibration's 31.2 s), 2026-11-21T19:27Z
-    // to 19:46Z; 8 494.35 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod
-    // of 2026-11-19 18:40Z, 2026-11-21T14:32Z to 14:48Z. 120_000 is 7.2 times the worst.
+    // token from disk or for the start's dial (`clock.wait`, `clock.waitOn`), which has no bound
+    // of turns: the read is real I/O. Worst measured cost: 16 611.29 ms over 20 runs at the 96
+    // rung in the Job infra-1580-krows-j4-2w4bc of the cluster's `builds` namespace, two CPUs and
+    // 8 GiB (257 busy loops, at which row A's runs took 53.6 s against the calibration's 31.2 s),
+    // 2026-11-21T19:27Z to 19:46Z; 8 494.35 ms over 20 runs at 16 busy loops (the 96 rung) on the
+    // two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-21T14:32Z to 14:48Z. 120_000 is 7.2 times
+    // the worst.
   }, 120_000);
 
   test("a first NATS dial whose broker token the hub refuses twice drops it, starts another trade, and says so", async () => {
@@ -23304,19 +23303,15 @@ console.log(JSON.stringify(args));
     // and a trade first reads the pod's token from disk, real I/O that runs off the event loop,
     // which no count of turns measures. So the row runs on the test's clock (`onPassClock`) from
     // the start on, where none of those timers moves, held while the start and the follow's trade
-    // run (`wait`). The clock moves once, 1 ms, which ends none of those bounds, after the follow
-    // has asked the connection to come back, its trade done: the stand-in server answers that on
-    // a 0 ms timer, which only a move of the clock runs. On the real clock a host slow enough to
-    // stretch a trade past its bound would fail the row.
+    // run (`waitOn`, `wait`). The clock moves once, 1 ms, which ends none of those bounds, after
+    // the follow has asked the connection to come back, its trade done: the stand-in server
+    // answers that on a 0 ms timer, which only a move of the clock runs. On the real clock a host
+    // slow enough to stretch a trade past its bound would fail the row.
     await onPassClock(async (clock) => {
-      let started = false;
-      const starting = Promise.resolve(
+      await clock.waitOn(
+        "the start",
         fixture.handlers.get("session_start")?.({}, sessionContext("ses_switch_from"))
-      ).finally(() => {
-        started = true;
-      });
-      await clock.wait("the start", () => started);
-      await starting;
+      );
       // Each CONNECT presented a token the broker minted for the session it names here.
       expect(natsState.presented.map((token) => minted.get(token))).toEqual(["ses_switch_from"]);
       expect(natsState.controls.get("notifications.agent.ses_switch_from")?.active()).toBe(true);
@@ -23333,8 +23328,7 @@ console.log(JSON.stringify(args));
         () => natsState.timeline.includes("reconnect") || switched
       );
       await clock.advance(1);
-      await clock.wait("the switch", () => switched);
-      await switching;
+      await clock.waitOn("the switch", switching);
       expect(natsState.presented.map((token) => minted.get(token))).toEqual([
         "ses_switch_from",
         "ses_switch_to",
@@ -23350,8 +23344,8 @@ console.log(JSON.stringify(args));
     });
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_switch_to"));
     // A hang guard, not a bound on work: what can hang is the wait for the start, the follow's
-    // reconnect or the switch (`clock.wait`), which has no bound of turns, because the start's
-    // and the follow's trades read the pod's token from disk, real I/O.
+    // reconnect or the switch (`clock.waitOn`, `clock.wait`), which has no bound of turns, because
+    // the start's and the follow's trades read the pod's token from disk, real I/O.
     // Worst measured cost: 16 302.04 ms over 20 runs at the 96 rung in the Job
     // infra-1580-krows-k6-fhhlx of the cluster's `builds` namespace, two CPUs and 8 GiB (224 busy
     // loops, at which row A's runs took 37.5 s against the calibration's 31.2 s), 2026-11-22T10:52Z
@@ -23584,7 +23578,8 @@ console.log(JSON.stringify(args));
     // MEASUREMENT-PROVISIONAL
   }, 150_000);
 
-  // Ordered: the viewer's replay settles on promises alone, before the 50 ms sleep ends.
+  // Not decided by the host's speed: the viewer's replay settles on promises alone, so it has run
+  // before the 50 ms sleep ends.
   test("after a rollback with no event, a viewer of the session left is replayed nothing of the one returned to", async () => {
     // Two sessions of one host: it switches from A to B, B's viewer attaches, and the host then
     // returns to A with no event. Until the next pass runs, A's control subject is closed and B's
@@ -23655,10 +23650,10 @@ console.log(JSON.stringify(args));
     // the deregistration's own trade, which its credential waits for 500 ms of the shutdown's 1 s
     // (`SHUTDOWN_DEADLINE_MS`) before the DELETE goes without it. So the host's speed decided the
     // row, and it runs on the test's clock (`onPassClock`). The clock is held through the start
-    // (`wait`, which no count of turns bounds) but for one move of 1 ms: the start's pass follows
-    // the session (`followNatsCredential`), which with two-second tokens trades and reconnects,
-    // and the stand-in server answers the reconnect on a 0 ms timer, which only a move of the
-    // clock runs, made once the follow's trade is done. All the keeper then waits on is its
+    // (`wait`, `waitOn`, which no count of turns bounds) but for one move of 1 ms: the start's
+    // pass follows the session (`followNatsCredential`), which with two-second tokens trades and
+    // reconnects, and the stand-in server answers the reconnect on a 0 ms timer, which only a move
+    // of the clock runs, made once the follow's trade is done. All the keeper then waits on is its
     // timer: the clock moves 100 ms at a time until the keeper's renewal arms its bound, and is
     // held from that step on, through the renewal's read and the reconnect. The session shuts
     // down there, the clock still held: the keeper's next renewal is a second away, so none is in
@@ -23685,8 +23680,7 @@ console.log(JSON.stringify(args));
         () => natsState.timeline.includes("reconnect") || started
       );
       await clock.advance(1);
-      await clock.wait("the start", () => started);
-      await starting;
+      await clock.waitOn("the start", starting);
       const [first] = minted;
       expect(first).toBeString();
       expect(natsState.presented[0]).toBe(first);
@@ -23702,14 +23696,10 @@ console.log(JSON.stringify(args));
       expect(natsState.timeline).toContain("reconnect");
       expect(natsState.presented.length).toBeGreaterThan(before);
       expect(natsState.presented.at(-1)).not.toBe(natsState.presented[before - 1]);
-      let shut = false;
-      const shutting = Promise.resolve(
+      await clock.waitOn(
+        "the shutdown",
         fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_kept"))
-      ).finally(() => {
-        shut = true;
-      });
-      await clock.wait("the shutdown", () => shut);
-      await shutting;
+      );
       // Stopped, it trades and reconnects no more.
       const reconnects = natsState.timeline.filter((entry) => entry === "reconnect").length;
       const traded = minted.length;
@@ -23718,12 +23708,12 @@ console.log(JSON.stringify(args));
       expect(minted).toHaveLength(traded);
     });
     // A hang guard, not a bound on work: what can hang is the wait for the start's follow, the
-    // start, the keeper's reconnect or the shutdown (`clock.wait`), which has no bound of turns,
-    // because each waits on a trade that reads the pod's token from disk, real I/O. Worst measured
-    // cost: 21 887.67 ms over 20 runs at the 96 rung in the Job infra-1580-krows-k6-fhhlx of the
-    // cluster's `builds` namespace, two CPUs and 8 GiB (224 busy loops, at which row A's runs took
-    // 37.5 s against the calibration's 31.2 s), 2026-11-22T10:04Z to 10:17Z. 150_000 is 6.9 times
-    // the worst.
+    // start, the keeper's reconnect or the shutdown (`clock.wait`, `clock.waitOn`), which has no
+    // bound of turns, because each waits on a trade that reads the pod's token from disk, real
+    // I/O. Worst measured cost: 21 887.67 ms over 20 runs at the 96 rung in the Job
+    // infra-1580-krows-k6-fhhlx of the cluster's `builds` namespace, two CPUs and 8 GiB (224 busy
+    // loops, at which row A's runs took 37.5 s against the calibration's 31.2 s), 2026-11-22T10:04Z
+    // to 10:17Z. 150_000 is 6.9 times the worst.
   }, 150_000);
 
   test("rebinds the direct subscription after an in-process session switch", async () => {
@@ -24396,16 +24386,9 @@ console.log(JSON.stringify(args));
     let registryDown = false;
     let registrations = 0;
     let attempted = 0;
-    // A listener call this client gives up on has been attempted twice (`DEFAULT_TIMEOUT_MS`,
-    // two attempts), so a pass is over once its last attempt has been answered and the
-    // microtasks behind it have drained. The row waits on the attempts, never on a duration.
+    // The registration attempt the row waits for (`afterAttempts`), which the stub below resolves
+    // once that attempt is made.
     let reached = { at: 0, ...Promise.withResolvers<void>() };
-    const afterAttempts = async (clock: PassClock, at: number): Promise<void> => {
-      reached = { at, ...Promise.withResolvers<void>() };
-      if (attempted >= at) reached.resolve();
-      await clock.stepping(`registration attempt ${at}`, reached.promise, 1_000);
-      await settle();
-    };
     globalThis.fetch = async (input, init) => {
       const registering = new URL(input.toString()).pathname === "/v1/interests/subscribe";
       if (registering) {
@@ -24427,6 +24410,15 @@ console.log(JSON.stringify(args));
       });
     };
     await onPassClock(async (clock) => {
+      // A listener call this client gives up on has been attempted twice (`DEFAULT_TIMEOUT_MS`,
+      // two attempts), so a pass is over once its last attempt has been answered and the
+      // microtasks behind it have drained. The row waits on the attempts, never on a duration.
+      const afterAttempts = async (at: number): Promise<void> => {
+        reached = { at, ...Promise.withResolvers<void>() };
+        if (attempted >= at) reached.resolve();
+        await clock.stepping(`registration attempt ${at}`, reached.promise, 1_000);
+        await settle();
+      };
       const { default: envoyExtension } = await clock.waitOn(
         "the extension's module",
         import("./envoy.ts?heartbeat-retry")
@@ -24483,7 +24475,7 @@ console.log(JSON.stringify(args));
       // the listener again, so a session that keeps failing costs it one extra call per interval.
       const beforeRetry = attempted;
       await clock.run("the extra call", scheduled[0]?.run());
-      await afterAttempts(clock, beforeRetry + 2);
+      await afterAttempts(beforeRetry + 2);
       expect(scheduled).toHaveLength(1);
       expect(registrations).toBe(1);
 
@@ -24493,7 +24485,7 @@ console.log(JSON.stringify(args));
       warned = Promise.withResolvers<void>();
       const beforeHealthy = attempted;
       intervals[0]?.();
-      await afterAttempts(clock, beforeHealthy + 1);
+      await afterAttempts(beforeHealthy + 1);
       expect(registrations).toBe(2);
       expect(scheduled).toHaveLength(1);
 
@@ -24913,7 +24905,8 @@ console.log(JSON.stringify(args));
     expect(notifications[0]).toContain("ses_live");
   });
 
-  // Ordered: what the tick starts settles on promises alone, before the 20 ms wait ends.
+  // Not decided by the host's speed: what the tick starts settles on promises alone, so it has run
+  // before the 20 ms wait ends.
   test("the heartbeat heals a stale registration when the session ID drifts", async () => {
     const registered: string[] = [];
     globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
@@ -26463,13 +26456,11 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
   // below is sized for one hang, that hook or row at its limit and every other at its worst, and
   // keeps 30 s for the `afterAll`'s stop (worst 4.7 s) and the teardown.
   let stack: EnvoyStack | undefined;
-  // The start, kept with its stop: a `beforeAll` its limit cut off leaves the start running and
-  // `stack` unset, and the `afterAll` aborts the start, which stops what it started.
-  const stopStart = new AbortController();
-  let starting: Promise<EnvoyStack> | undefined;
+  let stopStack: (() => Promise<void>) | undefined;
   beforeAll(async () => {
-    starting = startEnvoyStack({ work: stackDirectory, signal: stopStart.signal });
-    stack = await starting;
+    const start = startStoppableEnvoyStack({ work: stackDirectory });
+    stopStack = start.stop;
+    stack = await start.started;
     // A hang guard: what can hang is the stack's start, which builds natsd and the listener with
     // `go build` and waits for each to serve. Worst measured cost: 249 197.32 ms over 20 runs at
     // the 96 rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace, two
@@ -26479,11 +26470,7 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     // room decides: 879 s less the 30 s kept is 849 s, and 840_000 is 3.4 times the worst.
   }, 840_000);
   afterAll(async () => {
-    // A start still running ends the build or the wait it is in, stops what it started and
-    // rejects; a start that resolved is stopped here.
-    stopStart.abort();
-    const started = await starting?.catch(() => undefined);
-    await started?.stop();
+    await stopStack?.();
     // A hang guard: what can hang is the stop of natsd or the listener, which a start cut off
     // makes too. Worst measured cost of the stop: 4 703.96 ms over the same 20 runs, so 60_000
     // is 12.8 times the worst.
@@ -26549,12 +26536,7 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     });
     const proxy = await proxyStarted;
     stillOn(rowCheck(), "setting the stall's environment");
-    // An hour between heartbeats, past this row's limit and the 20-minute job that runs it: after
-    // the start's registration no heartbeat registers within the row, so the reconnect's
-    // registration is the only one that can carry a new epoch. `envoySettings` takes any finite
-    // number above zero and holds it under 2 147 483 647 ms (`resolvedInterval`,
-    // `@legion/envoy-client/envoy-settings`), so the hour stands.
-    process.env.ENVOY_HEARTBEAT_MS = "3600000";
+    process.env.ENVOY_HEARTBEAT_MS = FREEZE_HEARTBEAT_MS;
     process.env.ENVOY_URL = envoyUrl;
     process.env.ENVOY_NATS_URL = proxy.url;
     globalThis.fetch = originalFetch;

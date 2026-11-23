@@ -3,7 +3,8 @@ import { connect, Events, StringCodec } from "nats";
 import {
   type EnvoyStack,
   envoyStackEnabled,
-  startEnvoyStack,
+  startStoppableEnvoyStack,
+  throwIfExited,
   useEnvoyStackDirectory,
 } from "../../test/envoy-stack";
 import { startStallProxy } from "../../test/stall-proxy";
@@ -18,21 +19,29 @@ const stackDirectory = useEnvoyStackDirectory();
 
 describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () => {
   let stack: EnvoyStack | undefined;
-  // The start, kept with its stop: a `beforeAll` its limit cut off leaves the start running and
-  // `stack` unset, and the `afterAll` aborts the start, which stops what it started.
-  const stopStart = new AbortController();
-  let starting: Promise<EnvoyStack> | undefined;
+  let stopStack: (() => Promise<void>) | undefined;
 
   beforeAll(async () => {
-    starting = startEnvoyStack({ work: stackDirectory, signal: stopStart.signal });
-    stack = await starting;
-  }, 120_000);
+    const start = startStoppableEnvoyStack({ work: stackDirectory });
+    stopStack = start.stop;
+    stack = await start.started;
+    // A hang guard: what can hang is the stack's start, which builds natsd and the listener with
+    // `go build` and waits for each to serve. It is the start the live describes of pi-envoy and
+    // claude-envoy make. Worst measured cost of that start: 249 197.32 ms over 20 runs at the 96
+    // rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace, two CPUs and
+    // 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the calibration's 31.2 s),
+    // 2026-11-22T08:32Z to 09:41Z. The room one hang has in this file's step of the
+    // `envoy-session-stall` job (`.github/workflows/ci-job-envoy-session-stall.yaml`) is 1 130 s:
+    // the job's `timeout-minutes: 20`, less the 68 s from the job's start to this step's in the
+    // slowest of its twelve green runs on this branch from d62604fd to a467c066 (the run at
+    // b202d173), and less 2 s for the steps that run after a failed step (the ci-ok report, which
+    // runs `if: always()`, and the post steps). The steps after this one are not counted: a step
+    // that fails skips them. Six times the worst is 1 495 s, past that room, so the room decides:
+    // 1 130 s less the 30 s kept for the `afterAll` is 1 100 s, and 1_100_000 is 4.4 times the
+    // worst.
+  }, 1_100_000);
   afterAll(async () => {
-    // A start still running ends the build or the wait it is in, stops what it started and
-    // rejects; a start that resolved is stopped here.
-    stopStart.abort();
-    const started = await starting?.catch(() => undefined);
-    await started?.stop();
+    await stopStack?.();
   }, 60_000);
 
   for (const { row, slug, stalledRedials, unackedBytes } of [
@@ -115,8 +124,7 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
           arrivedAt === undefined && Date.now() - frozenAt < RECOVERY_BOUND_MS;
           attempt += 1
         ) {
-          const exited = stack.exited();
-          if (exited !== undefined) throw new Error(`waiting for a publish to arrive: ${exited}`);
+          throwIfExited(stack, "waiting for a publish to arrive");
           publisher.publish(subject, codec.encode(`after-${attempt}`));
           await publisher.flush();
           await Bun.sleep(250);
@@ -144,10 +152,7 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         // real clock, and fails by name once natsd or the listener has exited.
         for (const hung of redials.slice(0, stalledRedials)) {
           while (hung.closedAt === undefined && Date.now() - hung.acceptedAt < 30_000) {
-            const exited = stack.exited();
-            if (exited !== undefined) {
-              throw new Error(`waiting for the client to close a hung redial: ${exited}`);
-            }
+            throwIfExited(stack, "waiting for the client to close a hung redial");
             await Bun.sleep(250);
           }
           console.log(

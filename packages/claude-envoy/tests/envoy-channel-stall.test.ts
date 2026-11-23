@@ -4,11 +4,16 @@ import { join, resolve } from "node:path"
 import {
   type EnvoyStack,
   envoyStackEnabled,
-  startEnvoyStack,
+  STOP_GRACE_MS,
+  startStoppableEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack"
 import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
-import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
+import {
+  FREEZE_HEARTBEAT_MS,
+  RECOVERY_BOUND_MS,
+  runFreezeScenario,
+} from "@legion/envoy-client/test/stall-scenario"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
@@ -49,8 +54,10 @@ interface ChannelServer {
   ): Promise<void>
   /** Ends the host's row (`ended`) and releases what the host holds, the last taken first: the
    *  fake mod; the server (SIGTERM, then SIGKILL after 10 s), whose release ends once it has
-   *  exited or been sent that SIGKILL, whichever comes first; the home; the proxy. A call made
-   *  while another runs waits for it, then releases whatever was taken since. */
+   *  exited or been sent that SIGKILL, whichever comes first; the home; the proxy. Every release
+   *  runs even when one fails, and the call then throws that failure, or an `AggregateError` of
+   *  them all where several failed. A call made while another runs waits for it to settle, then
+   *  releases whatever was taken since. */
   stop(): Promise<void>
 }
 
@@ -76,11 +83,22 @@ async function startChannelServer(
   const stop = (): Promise<void> => {
     openHosts.delete(stop)
     ended.abort(new Error("the row ended"))
-    stopping = stopping.then(async () => {
-      for (let release = releases.pop(); release !== undefined; release = releases.pop()) {
-        await release()
-      }
-    })
+    stopping = stopping
+      .catch(() => undefined)
+      .then(async () => {
+        const failures: unknown[] = []
+        for (let release = releases.pop(); release !== undefined; release = releases.pop()) {
+          try {
+            await release()
+          } catch (error) {
+            failures.push(error)
+          }
+        }
+        if (failures.length === 1) throw failures[0]
+        if (failures.length > 1) {
+          throw new AggregateError(failures, `${failures.length} of the host's releases failed`)
+        }
+      })
     return stopping
   }
   openHosts.add(stop)
@@ -108,12 +126,7 @@ async function startChannelServer(
         CLAUDE_PLUGIN_DATA: home,
         // The base the server and the mod below both resolve the link's socket from.
         XDG_RUNTIME_DIR: home,
-        // An hour between heartbeats, past each row's limit here and the 20-minute job that runs
-        // the rows: after the start's registration no heartbeat registers within a row, so the
-        // reconnect's registration is the only one that can carry a new epoch. `envoySettings`
-        // takes any finite number above zero and holds it under 2 147 483 647 ms
-        // (`resolvedInterval`, `@legion/envoy-client/envoy-settings`), so the hour stands.
-        ENVOY_HEARTBEAT_MS: "3600000",
+        ENVOY_HEARTBEAT_MS: FREEZE_HEARTBEAT_MS,
       },
       stdin: "pipe",
       stdout: "pipe",
@@ -125,7 +138,7 @@ async function startChannelServer(
       const killer = setTimeout(() => {
         server.kill("SIGKILL")
         killed.resolve()
-      }, 10_000)
+      }, STOP_GRACE_MS)
       // A process sent SIGKILL runs no more of its own code, so from then on nothing it does
       // needs the proxy or writes into the home: their releases wait on no exit that may not come.
       await Promise.race([server.exited, killed.promise])
@@ -248,28 +261,22 @@ describe.skipIf(!envoyStackEnabled)(
     // (worst 4.7 s) and the teardown (a host's stop: up to 10 s before its server's SIGKILL, then
     // the home's removal and the proxy's close).
     let stack: EnvoyStack | undefined
-    // The start, kept with its stop: a `beforeAll` its limit cut off leaves the start running and
-    // `stack` unset, and the `afterAll` aborts the start, which stops what it started.
-    const stopStart = new AbortController()
-    let starting: Promise<EnvoyStack> | undefined
+    let stopStack: (() => Promise<void>) | undefined
     beforeAll(async () => {
-      starting = startEnvoyStack({ work: stackDirectory, signal: stopStart.signal })
-      stack = await starting
+      const start = startStoppableEnvoyStack({ work: stackDirectory })
+      stopStack = start.stop
+      stack = await start.started
       // A hang guard: what can hang is the stack's start, which builds natsd and the listener with
       // `go build` and waits for each to serve. It is the start pi-envoy's live describe makes
-      // (`startEnvoyStack`). Worst measured cost of that start: 249 197.32 ms over 20 runs at the
-      // 96 rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace, two
-      // CPUs and 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the
+      // (`startStoppableEnvoyStack`). Worst measured cost of that start: 249 197.32 ms over 20 runs
+      // at the 96 rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace,
+      // two CPUs and 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the
       // calibration's 31.2 s), 2026-11-22T08:32Z to 09:41Z. Six times the worst is 1 495 s, past
       // the room above, so the room decides: 847 s less the 30 s kept is 817 s, and 810_000 is
       // 3.3 times the worst.
     }, 810_000)
     afterAll(async () => {
-      // A start still running ends the build or the wait it is in, stops what it started and
-      // rejects; a start that resolved is stopped here.
-      stopStart.abort()
-      const started = await starting?.catch(() => undefined)
-      await started?.stop()
+      await stopStack?.()
       // A hang guard: what can hang is the stop of natsd or the listener, which a start cut off
       // makes too. Worst measured cost of the stop: 4 703.96 ms over the same 20 runs, so 60_000
       // is 12.8 times the worst.
