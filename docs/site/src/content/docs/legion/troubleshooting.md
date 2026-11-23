@@ -1608,7 +1608,9 @@ so an answer that waited behind a newer one never releases a first read or clear
 forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
 and no completion, the phase's worker is told to stop writing the workspace and not to complete
 its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
-names both heads. A completion of the phase the issue stands in that names a head a merge
+names both heads.
+At `step`, a role the deployment no longer defines is told neither, since its task stays stopped until the role is defined again.
+A completion of `testing`, `reviewing`, `step` or `retro`, the phase the issue stands in, that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
