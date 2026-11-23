@@ -61,6 +61,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
@@ -86,6 +87,10 @@ type bootConfig struct {
 	// AgentTokens is DISPATCH_AGENT_TOKEN parsed: every value the API accepts as the shared agent
 	// token, the first the current one.
 	AgentTokens *auth.SharedAgentTokens
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
+	// the boot makes the owner of every project with no owner (store.EnsureProjectOwners); empty
+	// gives none, and the boot then refuses to serve while a project has no owner.
+	ProjectOwnerFallback string
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
 	// words carries, and the session that issue is routed to and its first message is sent to.
@@ -463,6 +468,14 @@ func main() {
 		slog.Warn("dispatch: count the anchored asks left out of asks_anchor_artifact_id", "error", err)
 	} else if outside > 0 {
 		slog.Warn("dispatch: anchored asks left out of asks_anchor_artifact_id: their anchor's artifact_id is not a lower-case document id, so settlement records no mark for them", "count", outside)
+	}
+
+	// Every project has an owner: a project the access migration left with none is given to
+	// DISPATCH_PROJECT_OWNER_FALLBACK's full member, and while one still has none the boot
+	// refuses, naming each and both repairs.
+	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback); err != nil {
+		slog.Error("dispatch: give every project an owner", "error", err)
+		os.Exit(1)
 	}
 
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
@@ -1439,6 +1452,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	boot := bootConfig{
 		DatabaseURL:           strings.TrimSpace(env.get("DATABASE_URL")),
+		ProjectOwnerFallback:  strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
@@ -1459,6 +1473,11 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
+	}
+	if fallback := boot.ProjectOwnerFallback; fallback != "" {
+		if err := principal.CheckPersonLogin(fallback); err != nil {
+			return bootConfig{}, fmt.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email, the one a full member signed in with; got a value of %d characters", len(fallback))
+		}
 	}
 	if boot.EnvoyAccountTokenFile != "" && boot.EnvoyGoogleAudience != "" {
 		return bootConfig{}, errors.New("ENVOY_ACCOUNT_TOKEN_FILE and ENVOY_ACCOUNT_GOOGLE_AUDIENCE each name Dispatch's identity at the Envoy listener; set one of them")

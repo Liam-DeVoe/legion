@@ -165,6 +165,8 @@ An issue imported from GitHub (`POST /api/v1/issues` with `external`) names its 
 No setting seeds a default repository or chooses the project of an import.
 A boot that still sets one of the two settings that did is refused, naming what replaced it (`removedSettings` in `cmd/dispatch/settings.go`).
 
+Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
+
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
@@ -3069,6 +3071,37 @@ It reports locks, sizes and counts — what a migration would wait behind and ho
 that one-release gap is the author's to reason about, and the two-build test (Two builds at once, above) boots the previous release on this tree's schema and drives it.
 The five-second `pgmigrate.LockTimeout` also bites harder under a rolling update than under `Recreate`, which stops the previous pods before the new one boots:
 while a deployment rolls, the old build's connections are still open and still holding locks on the tables the migration wants, so a migration that applies cleanly against an idle database can fail the new pod's boot.
+
+### Giving a project to another owner
+
+Every project has one owner, the full member who changes its access list and whether it is public or private (`projects.owner`).
+An operator gives any project to another full member with the database credential alone, with no server running if need be:
+
+```sh
+envoy-dispatch project-owner <KEY> <email>
+```
+
+It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` with change `owner`, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
+Who owned the project before, and whether that person is still a member, makes no difference.
+It exits 0 once the change commits;
+2 for a key no project holds, for an email that is not a full member's (a restricted member, or a login nobody has signed in with), and for arguments that are not exactly a key and an email, writing nothing;
+and 1 when the database cannot be opened or written.
+No write clears an owner: an update that would is refused with `check_violation` (`23514`, the trigger `projects_owner_kept`).
+
+Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in.
+An insert that names no owner, every project create included, takes its default assignee as owner (`projects_owner_from_default`).
+A project whose default assignee had never signed in when the migration ran keeps no owner, and the boot refuses to serve while any project has none, naming each one by its key, and both repairs, and no person's email, since it writes the refusal to its log (`store.EnsureProjectOwners`, run at boot, before the server serves):
+set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project;
+or give each one an owner with the command above.
+The migration's census answers `0`, because a census that counts refuses the deploy and these projects are repaired after it.
+So read them before the deploy, on the release still serving, with the query `20261116015736_project_access.census.sql`'s header gives:
+
+```sql
+select key, default_assignee from projects p
+where not exists (select 1 from people where email = p.default_assignee);
+```
+
+When it names any project, set `DISPATCH_PROJECT_OWNER_FALLBACK` for the deploy.
 
 ### Pre-deploy census
 
