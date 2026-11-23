@@ -296,7 +296,14 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 	}
 	database := &Store{Pool: NewPool(shared)}
 	t.Cleanup(database.Pool.Close)
+	// The release is deferred before the first take, so a take that fails gives back what the loop
+	// already holds and the pool's Close, a cleanup, does not wait on it.
 	held := make([]*pgxpool.Conn, 0, database.Pool.Config().MaxConns)
+	defer func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	}()
 	for range database.Pool.Config().MaxConns {
 		conn, err := database.Pool.Acquire(ctx)
 		if err != nil {
@@ -304,11 +311,6 @@ func TestListenerIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		}
 		held = append(held, conn)
 	}
-	defer func() {
-		for _, conn := range held {
-			conn.Release()
-		}
-	}()
 	if stat := database.Pool.Stat(); stat.AcquiredConns() != stat.MaxConns() {
 		t.Fatalf("shared pool holds %d of %d connections, want all", stat.AcquiredConns(), stat.MaxConns())
 	}
@@ -475,7 +477,13 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 	}
 	database := &Store{Pool: NewPool(shared)}
 	t.Cleanup(database.Pool.Close)
+	// The release is deferred before the first take, as the listener's row defers it.
 	held := make([]*pgxpool.Conn, 0, database.Pool.Config().MaxConns)
+	defer func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	}()
 	for range database.Pool.Config().MaxConns {
 		conn, err := database.Pool.Acquire(ctx)
 		if err != nil {
@@ -483,11 +491,6 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		}
 		held = append(held, conn)
 	}
-	defer func() {
-		for _, conn := range held {
-			conn.Release()
-		}
-	}()
 	if stat := database.Pool.Stat(); stat.AcquiredConns() != stat.MaxConns() {
 		t.Fatalf("shared pool holds %d of %d connections, want all", stat.AcquiredConns(), stat.MaxConns())
 	}

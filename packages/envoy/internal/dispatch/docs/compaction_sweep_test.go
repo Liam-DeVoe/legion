@@ -353,20 +353,27 @@ func docUpdatesTuplesRead(t *testing.T, database *store.Store) int64 {
 	if err != nil {
 		t.Fatalf("open the compaction pool: %v", err)
 	}
+	// Each connection's release is kept as it is taken, before its flush, and run on every path out,
+	// so a take or a flush that fails gives back what is held and the pool's Close does not wait on it.
 	var held []func()
+	releaseHeld := func() {
+		for _, release := range held {
+			release()
+		}
+		held = nil
+	}
+	defer releaseHeld()
 	for range pool.Config().MaxConns {
 		conn, err := pool.Acquire(ctx)
 		if err != nil {
 			t.Fatalf("acquire a compaction connection: %v", err)
 		}
+		held = append(held, conn.Release)
 		if _, err := conn.Exec(ctx, `select pg_stat_force_next_flush()`); err != nil {
 			t.Fatalf("flush a compaction connection's statistics: %v", err)
 		}
-		held = append(held, conn.Release)
 	}
-	for _, release := range held {
-		release()
-	}
+	releaseHeld()
 	if _, err := database.Pool.Exec(ctx, `select pg_stat_force_next_flush()`); err != nil {
 		t.Fatalf("flush the test connection's statistics: %v", err)
 	}
