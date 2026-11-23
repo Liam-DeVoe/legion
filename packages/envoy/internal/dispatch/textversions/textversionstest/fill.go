@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -28,7 +27,7 @@ type Fill struct {
 // its own: on a context Stop ends, with the events wake Wake signals and the logger whose lines
 // the Fill reads, both of which start puts in its Config. start answering an error fails the test.
 // The fill is stopped once the test ends.
-func StartFill(t testing.TB, start func(ctx context.Context, wake <-chan struct{}, logger *slog.Logger) error) *Fill {
+func StartFill(t *testing.T, start func(ctx context.Context, wake <-chan struct{}, logger *slog.Logger) error) *Fill {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	fill := &Fill{events: make(chan struct{}, 1), logs: &logtest.Buffer{}, cancel: cancel, stopped: make(chan struct{})}
@@ -52,16 +51,19 @@ func (f *Fill) Wake() {
 	}
 }
 
-// Stop ends the fill's context, as a serving process's stop does, and waits for Run to return. It
-// fails the test where Run has not returned within 30 s.
-func (f *Fill) Stop(t testing.TB) {
+// Stop ends the fill's context, as a serving process's stop does, and waits, through the shared
+// wait, for Run to return. Its failure carries the fill's log.
+func (f *Fill) Stop(t *testing.T) {
 	t.Helper()
 	f.cancel()
-	select {
-	case <-f.stopped:
-	case <-time.After(30 * time.Second):
-		t.Fatalf("the keyword fill did not return within 30 s of its stop:\n%s", f.Log())
-	}
+	testwait.Until(t, "the keyword fill to return after its stop", func() (string, bool) {
+		select {
+		case <-f.stopped:
+			return "", true
+		default:
+			return f.Log(), false
+		}
+	})
 }
 
 // Log is every line the fill has logged, for a failure to show.
