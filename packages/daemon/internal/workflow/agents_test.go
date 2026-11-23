@@ -599,8 +599,9 @@ func TestEachStartNamesTheClaimItWasQueuedFor(t *testing.T) {
 	named("the held retro's retry", claim.RoleImplementer, keyB)
 }
 
-// completesAs is completes under the claim token, the agent's own, as the route names the claim
-// whose grant reported, which the completion writes on the role's row.
+// completesAs applies role's completion of its step of LEGION-208 with the handoff record word-n
+// at version n under the claim token, the agent's own, as the route names the claim whose grant
+// reported, which the completion writes on the role's row.
 func completesAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, token claim.Token, word string, n int) {
 	t.Helper()
 	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: token,
