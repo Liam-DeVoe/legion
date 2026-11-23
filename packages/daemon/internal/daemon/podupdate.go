@@ -1730,14 +1730,13 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 		add(drift)
 	}
 	if slots, ok := s.runtime.(runtime.PlanSlotsDrift); ok && first != nil {
-		drift, err := slots.PodSlotsDrift(ctx, *first)
-		if err != nil {
-			if ctx.Err() == nil {
-				s.log.Warn("supervise: read whether this issue's pod lacks a slot of its plan; this sweep decides on the pod's other reasons, and the next reads the plan again",
-					"issue", issue, "claim", first.Claim, "error", err)
-			}
+		switch drift, err := slots.PodSlotsDrift(ctx, *first); {
+		case err == nil:
+			add(drift)
+		case ctx.Err() == nil:
+			s.log.Warn("supervise: read whether this issue's pod lacks a slot of its plan; this sweep decides on the pod's other reasons, and the next reads the plan again",
+				"issue", issue, "claim", first.Claim, "error", err)
 		}
-		add(drift)
 	}
 	return reasons, podRead
 }
