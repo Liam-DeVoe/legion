@@ -207,14 +207,7 @@ const issueDetailsOpen: LayoutState = {
 const issueGroupsExpanded: LayoutState = {
   act: async (page) => {
     await openIssueHeaderDetails(page);
-    const closed = page.locator(
-      'button[data-layout-more][aria-expanded="false"], [data-layout-more] > button[aria-expanded="false"]'
-    );
-    // Each press redraws its group, so the next closed control is looked up afresh.
-    for (let pressed = 0; (await closed.count()) > 0; pressed += 1) {
-      if (pressed > 50) throw new Error("a +N control did not open its group");
-      await closed.first().click();
-    }
+    await openCappedGroups(page);
   },
   name: "groups-expanded",
   requiredGroups: ISSUE_DETAILS_GROUPS,
