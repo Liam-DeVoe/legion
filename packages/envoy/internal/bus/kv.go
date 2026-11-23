@@ -291,7 +291,8 @@ func invalidKey(key any, err error) error {
 
 // Get reads key's latest value from the bucket.
 //
-// The read is a direct get, as every read of this build's buckets is: nats.go sends a KV get
+// The read is a direct get, as every read of this build's buckets is but an edge listener's, which
+// is a get from the stream's leader (WithStreamMessageReads): nats.go sends a KV get
 // to the stream's $JS.API.DIRECT.GET subject whenever that stream carries AllowDirect, and every
 // bucket here carries it. A start creates its buckets with AllowDirect set, as nats.go's
 // CreateKeyValue does (bucketStreamConfig), and nats.KeyValueConfig holds no field that unsets it;
@@ -307,20 +308,20 @@ func invalidKey(key any, err error) error {
 // bucket's leader. No test here reads a lagging copy: that takes a cluster, and these tests run
 // one server.
 //
-// A read the stream's leader answers exists, and this build makes none: js.GetLastMsg(stream,
-// subject) without nats.DirectGet is a STREAM.MSG.GET, which the leader answers, and the
-// listener's grant holds $JS.API.STREAM.MSG.GET.KV_<bucket> for every bucket it opens but the
-// listener state bucket (natsgrant.KVWrite; natsgrant.ListenerState grants that bucket the direct
-// get of each key family it reads and no other read), so for those it is this build's choice and
-// not its permissions. What that read answers is a raw stream message rather than a KV entry, so
-// each caller would decode the KV operation markers nats.go's KV decodes for it today -- the
-// KV-Operation header's DEL and PURGE, which the legacy kvs.get and the jetstream package's own
-// kvs.get both answer ErrKeyDeleted for -- to tell a deleted record from a live one, in each of
-// the two reads the repair makes (session.SessionRegistry.Refresh, store.Registry.RefreshAt). The
-// window the direct get leaves is one write wide and is closed without that decoding: a delete and
-// a registration each repair the session's consumer from the bucket's newest record and row
-// (cmd/listener's registeredTarget, which states what a copy behind costs that repair), and the
-// session's next heartbeat registers again.
+// A read the stream's leader answers exists, and Get makes none outside an edge listener:
+// js.GetLastMsg(stream, subject) without nats.DirectGet is a STREAM.MSG.GET, which the leader
+// answers, and the listener's grant holds $JS.API.STREAM.MSG.GET.KV_<bucket> for every bucket it
+// opens but the listener state bucket (natsgrant.KVWrite; natsgrant.ListenerState grants that
+// bucket the direct get of each key family it reads and no other read), so for those it is this
+// build's choice and not its permissions. What that read answers is a raw stream message rather
+// than a KV entry, so each caller would decode the KV operation markers nats.go's KV decodes for
+// it today -- the KV-Operation header's DEL and PURGE, which the legacy kvs.get and the jetstream
+// package's own kvs.get both answer ErrKeyDeleted for -- to tell a deleted record from a live
+// one, in each of the two reads the repair makes (session.SessionRegistry.Refresh,
+// store.Registry.RefreshAt). The window the direct get leaves is one write wide and is closed
+// without that decoding: a delete and a registration each repair the session's consumer from the
+// bucket's newest record and row (cmd/listener's registeredTarget, which states what a copy behind
+// costs that repair), and the session's next heartbeat registers again.
 func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 	if err := kv.check(key, getOverhead(kv.Bucket())); err != nil {
 		return nil, err
