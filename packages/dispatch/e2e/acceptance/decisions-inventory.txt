@@ -1352,6 +1352,7 @@ docs/solutions/testing/a-divergence-test-drives-the-source-through-the-path-only
 sha256:0ff3cd755432e6a83afd1f81916c18a00a98251b431b6f2cd900db8407042466	no
 docs/solutions/testing/a-docker-run-line-is-proven-from-a-pod-with-no-container-runtime-as-a-two-container-job-whose-client-ships-in-the-image-pr2498.md	no
 docs/solutions/testing/a-documented-command-is-proven-by-running-it-and-feeding-its-artifact-to-the-real-consumer-pr2545.md	no
+docs/solutions/testing/a-durable-created-where-a-failed-stream-delete-kept-its-directory-restores-the-old-durables-position-pr4895.md	no
 docs/solutions/testing/a-duration-measured-before-the-change-is-a-bound-and-the-term-nobody-re-reads-is-setup-pr2726.md	no
 docs/solutions/testing/a-failed-measurement-read-is-unknown-never-zero-pr2369.md	no
 docs/solutions/testing/a-failing-deep-equality-on-a-fake-that-holds-dom-or-an-editor-can-print-a-diff-that-oom-kills-the-pod-pr2472.md	no
