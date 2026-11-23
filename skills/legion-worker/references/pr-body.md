@@ -62,7 +62,8 @@ A stale `Outcome` is a finding against the implementer; the merger rewrites noth
 
 ## The simplify pass and the `Thermo` line
 
-- The implementer runs `skill://simplify-settled-diff` once per pull request, in its first round, after its own results and before it completes, whatever the diff touches, a docs-only diff included.
+- The implementer runs `skill://simplify-settled-diff` once per pull request, in its first round, after its own results and before it completes.
+  It runs it whatever the diff touches, a docs-only diff included.
   Applied: rerun the fast local checks and the issue's checks the simplify diff touches, and record them at the applied head.
   A defect the pass reports is fixed outside the pass and the results recorded again, never dropped as out of scope;
   the `Thermo` line names the count and the fixing commit.
