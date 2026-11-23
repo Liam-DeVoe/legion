@@ -183,6 +183,12 @@ function handOverFocus(container: HTMLElement | null, giveBackTo: HTMLElement | 
 export interface UseDialogOptions {
   /** Element to focus first instead of the container's first focusable descendant. */
   initialFocusRef?: RefObject<HTMLElement | null>;
+  /** Asked once as the dialog closes, on every close: true when the update that closed it has
+   *  already put the focus where the reader goes next, so this close leaves the focus where it
+   *  is and gives none back. The margin sheet answers true when a comment's end closes it, having
+   *  put the caret back in the commented document. Without it, or with false, the focus goes back
+   *  as `useDialog` says. */
+  keepFocusOnClose?: () => boolean;
   onClose: () => void;
   open: boolean;
 }
@@ -204,12 +210,17 @@ export interface DialogHandle<T extends HTMLElement> {
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
+  keepFocusOnClose,
   onClose,
   open,
 }: UseDialogOptions): DialogHandle<T> {
   const containerRef = useRef<T>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  // Read by the cleanup that closes the dialog, in the commit that closes it, after the render
+  // that set it.
+  const keepFocusOnCloseRef = useRef(keepFocusOnClose);
+  keepFocusOnCloseRef.current = keepFocusOnClose;
   useKeymapScope(open ? DIALOG_SCOPE : null);
   // Outside any gate around the dialog (`KeymapGateContext`): its `when` is the whole rule, so the
   // Decline box a card of the Inbox drawer opens closes on Escape while the drawer's keys, gated
@@ -362,7 +373,9 @@ export function useDialog<T extends HTMLElement>({
       stopBeingFocusable();
       scrollLock.release();
       const giveBackTo = record?.giveBackTo ?? null;
-      if (handOverFocus(container, giveBackTo)) {
+      // Asked before the hand-over, so every close asks it once, whoever takes the focus.
+      const keepFocus = keepFocusOnCloseRef.current?.() === true;
+      if (handOverFocus(container, giveBackTo) || keepFocus) {
         return;
       }
       if (giveBackTo !== null && document.contains(giveBackTo)) {

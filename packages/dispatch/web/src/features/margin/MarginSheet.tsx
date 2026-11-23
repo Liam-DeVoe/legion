@@ -126,6 +126,10 @@ export interface MarginSheetModel {
      *  draft and a refusal with it, as a Conversation phone thread's do. */
     closeThread: () => void;
     expanded: boolean;
+    /** Asked once as the sheet's dialog closes (`useDialog`'s `keepFocusOnClose`): true when a
+     *  comment's end closed it, having put the caret back in the commented document, which then
+     *  keeps it. Every other close gives the focus back to what held it as the sheet opened. */
+    keepFocusOnClose: () => boolean;
     /** That reply is out: Back holds. */
     replySending: boolean;
     thread: Thread | undefined;
@@ -208,6 +212,7 @@ export function MarginSheet({
   const sheetDragOrigin = useRef<number | undefined>(undefined);
   const sheetDragMoved = useRef(false);
   const dialog = useDialog<HTMLElement>({
+    keepFocusOnClose: sheet.keepFocusOnClose,
     onClose: () => sheet.toggle(false),
     open: sheet.expanded && compactSheet,
   });

@@ -2,7 +2,7 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
@@ -17,6 +17,7 @@ import { heldSends } from "../conversation/held-sends";
 import { SendMovedError } from "../conversation/send-request";
 import type { RetypeOutcome } from "../doc/editor";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
+import { KeymapProvider } from "../shell/KeymapProvider";
 import { SendStoppedError } from "../writes/keyed-write";
 import { Margin } from "./Margin";
 import {
@@ -1092,23 +1093,28 @@ function marginQueryClient(): QueryClient {
   });
 }
 
-function renderMarginWithBridge(
-  bridge: DocumentBridge,
-  reopened?: DocumentBridge,
-  queryClient = marginQueryClient()
-) {
+/** Seeds `queryClient` with the issue and a margin that holds nothing yet, and answers the reads
+ *  a send from this margin makes - the issue, its inbox and its comments - with that set, so the
+ *  margin stays as the test set it up. Returns those reads, for the test to restore. */
+function seedEmptyMargin(queryClient: QueryClient) {
   queryClient.setQueryData(["issue", issue.key], issue);
   queryClient.setQueryData(["inbox"], []);
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
-  // A send from this margin refetches the issue, its inbox and its comments; each answers the
-  // seeded set, so the margin stays as the test set it up.
-  const reads = [
+  return [
     spyOn(api, "getIssue").mockResolvedValue(issue),
     spyOn(api, "getInbox").mockResolvedValue([]),
     spyOn(api, "listComments").mockResolvedValue([]),
   ];
+}
+
+function renderMarginWithBridge(
+  bridge: DocumentBridge,
+  reopened?: DocumentBridge,
+  queryClient = marginQueryClient()
+) {
+  const reads = seedEmptyMargin(queryClient);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
@@ -1231,7 +1237,7 @@ test("the margin removes the composer's mark when the composer is cancelled or r
 });
 
 /** Lets the page draw one frame: below 1280 px the margin puts the caret back in the document once
- *  more a frame after a comment ends, once the sheet's dialog has put back the focus it took. */
+ *  more a frame after a comment ends, where the focus is still on nothing then. */
 function nextFrame(): Promise<void> {
   return act(() => {
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -1318,7 +1324,9 @@ test("a compose while the document's composer is open puts the caret in the new 
 // while the composer's box is still in the page, so the box's going leaves the page's focus rescue
 // no loss to answer: a frame can come later than the rescue waits for one, and the rescue would
 // put the focus on a control of the margin before it. Below 1280 px the sheet closes too, and its
-// dialog gives the focus to the body as the box goes, so the next frame puts the caret back again.
+// dialog leaves the focus where the comment's end put it, not on the press that opened the sheet.
+// This bridge moves no focus, so the box's going leaves it on the body, and the next frame puts the
+// caret back again.
 for (const { frame, name, width } of [
   { frame: [], name: "at 1440 px", width: DESKTOP_WIDTH },
   {
@@ -1437,8 +1445,8 @@ test("a comment whose send lands after the reader went elsewhere leaves the focu
 // once the reader has closed it: the compose keeps its draft under the closed sheet, and the next
 // compose opens the sheet again with the caret in its own field and that draft offered beside it.
 // The comment's end closes the sheet over the document and puts the caret back there: at once,
-// with the box still there, and again on the next frame, once the sheet's dialog has put the focus
-// on the body as the box went.
+// with the box still there, and again on the next frame, with the focus still on the body the
+// box's going left it on. The sheet's dialog leaves it there, not on the press that opened it.
 test("below 1280 px each compose puts the caret in the sheet's composer, and Escape in the empty box closes the sheet for the document", async () => {
   const user = userEvent.setup();
   const restoreViewport = stubViewport(PHONE_WIDTH);
@@ -1476,6 +1484,410 @@ test("below 1280 px each compose puts the caret in the sheet's composer, and Esc
     expect(fake.focuses).toEqual(["with the box", "after the box"]);
   } finally {
     view.unmount();
+    restoreViewport();
+  }
+});
+
+// R19's close path, a row of t22's state table each below: what a comment's end, and every other
+// close of the margin, does with the focus, on the commented document's editor and the selection
+// bar's Comment as `ProofDocument` draws them.
+
+/** The commented document's editor. */
+const documentEditor = () => screen.getByRole("textbox", { name: "Document" });
+
+/** The selection bar's Comment. */
+const barComment = () =>
+  within(screen.getByRole("toolbar", { name: "Selection" })).getByRole("button", {
+    name: "Comment",
+  });
+
+/** The commented document: its editor, where Ctrl+Alt+M comments on the words the reader
+ *  selected, and the selection bar's Comment, which comments on them too. Each comment is on new
+ *  words, `words 1` and on, as the reader selects other words for each. */
+function CommentedDocument(): ReactNode {
+  const { composeForMark } = useMargin();
+  const comments = useRef(0);
+  const comment = () => {
+    comments.current += 1;
+    const anchor = {
+      artifact: specArtifact.id,
+      mark_id: `m-${comments.current}`,
+      quote: `words ${comments.current}`,
+    };
+    void composeForMark({ anchor, kind: "comment" }).catch(() => {});
+  };
+  return (
+    <>
+      <textarea
+        aria-label="Document"
+        onKeyDown={(event) => {
+          if (event.ctrlKey && event.altKey && event.key.toLowerCase() === "m") {
+            event.preventDefault();
+            comment();
+          }
+        }}
+      />
+      <div aria-label="Selection" role="toolbar">
+        <button onClick={comment} type="button">
+          Comment
+        </button>
+      </div>
+    </>
+  );
+}
+
+/** `fakeBridge` to `CommentedDocument`, whose `focus` also puts the focus in the editor, as
+ *  `ProofDocument`'s `view.focus()` does at the selection the editor kept. */
+function editorBridge(): { bridge: DocumentBridge; readonly focuses: readonly CaretReturn[] } {
+  const fake = fakeBridge((markId, kind) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: "selected",
+  }));
+  return {
+    bridge: {
+      ...fake.bridge,
+      focus() {
+        fake.bridge.focus();
+        documentEditor().focus();
+      },
+    },
+    focuses: fake.focuses,
+  };
+}
+
+/** Renders the margin of `issue` beside `CommentedDocument`, with `bridge` as the document's, under
+ *  the keymap, which the sheet's own Escape is bound in. */
+function renderCommentedDocument(bridge: DocumentBridge) {
+  const queryClient = marginQueryClient();
+  const reads = seedEmptyMargin(queryClient);
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <MarginProvider>
+            <RegisterBridge bridge={bridge} />
+            <CommentedDocument />
+            <Margin />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return {
+    ...view,
+    unmount: () => {
+      view.unmount();
+      for (const read of reads) read.mockRestore();
+    },
+  };
+}
+
+/** What starts a comment: Ctrl+Alt+M in the editor, or the selection bar's Comment. */
+type CommentOpener = "Ctrl+Alt+M" | "the bar's Comment";
+
+/** What ends one: Escape in its empty box, or its send landing. */
+type CommentEnd = "Escape" | "a landed send";
+
+/** Starts a comment on new words: a press in the editor stands for the reader's selection there,
+ *  and `opener` comments on it. Resolves with the new compose's field once the caret is in it. */
+async function startComment(user: UserEvent, opener: CommentOpener): Promise<HTMLElement> {
+  await user.click(documentEditor());
+  if (opener === "Ctrl+Alt+M") {
+    await user.keyboard("{Control>}{Alt>}m{/Alt}{/Control}");
+  } else {
+    await user.click(barComment());
+  }
+  return waitFor(() => {
+    const field = screen.getByRole("textbox", { name: "Comment" });
+    expect(field, `${opener} put the caret in no comment box`).toHaveFocus();
+    return field;
+  });
+}
+
+/** Ends the comment whose box holds the caret, by `end`, with a send that lands at once, and
+ *  resolves once the box is gone. */
+async function endComment(user: UserEvent, end: CommentEnd): Promise<void> {
+  if (end === "Escape") {
+    await user.keyboard("{Escape}");
+  } else {
+    await user.paste("Why?");
+    await user.click(
+      within(screen.getByRole("form", { name: "Comment composer" })).getByRole("button", {
+        name: "Send",
+      })
+    );
+  }
+  await waitFor(() =>
+    expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
+  );
+}
+
+// At 1280 px and wider the margin is beside the document, and a comment's end puts the caret back
+// in the editor at the commented words, whichever press began the comment.
+for (const { end, name, opener } of [
+  {
+    end: "Escape",
+    name: "Escape in the empty composer puts the caret back in the document",
+    opener: "Ctrl+Alt+M",
+  },
+  {
+    end: "a landed send",
+    name: "a sent comment puts the caret back in the document",
+    opener: "the bar's Comment",
+  },
+  {
+    end: "Escape",
+    name: "Escape after the bar's Comment puts the caret back in the document",
+    opener: "the bar's Comment",
+  },
+  {
+    end: "a landed send",
+    name: "a sent comment after Ctrl+Alt+M puts the caret back in the document",
+    opener: "Ctrl+Alt+M",
+  },
+] satisfies readonly { end: CommentEnd; name: string; opener: CommentOpener }[]) {
+  test(name, async () => {
+    const user = userEvent.setup();
+    const restoreViewport = stubViewport(DESKTOP_WIDTH);
+    const createComment = spyOn(api, "createComment").mockResolvedValue({
+      ...comment,
+      body: "Why?",
+    });
+    const fake = editorBridge();
+    const view = renderCommentedDocument(fake.bridge);
+
+    try {
+      await startComment(user, opener);
+      await endComment(user, end);
+      await nextFrame();
+      expect(document.activeElement, `${end} after ${opener} left the editor`).toBe(
+        documentEditor()
+      );
+      expect(fake.focuses).toEqual(["with the box"]);
+    } finally {
+      view.unmount();
+      createComment.mockRestore();
+      restoreViewport();
+    }
+  });
+}
+
+// Below 1280 px the sheet's dialog gives the focus back to what held it as the sheet opened
+// (`useDialog`), and after the selection bar's Comment that is the button. A comment's end closes
+// the sheet with the caret back in the editor at the commented words, and the dialog leaves it
+// there.
+test("below 1280 px a compose from the bar's Comment gives the caret back to the document, not the button", async () => {
+  const user = userEvent.setup();
+  const restoreViewport = stubViewport(SHEET_WIDTH);
+  const createComment = spyOn(api, "createComment").mockResolvedValue({
+    ...comment,
+    body: "Why?",
+  });
+  const fake = editorBridge();
+  const view = renderCommentedDocument(fake.bridge);
+
+  try {
+    const sheet = screen.getByTestId("margin-sheet");
+    for (const end of ["Escape", "a landed send"] as const) {
+      await startComment(user, "the bar's Comment");
+      expect(sheet, "the bar's Comment opened no sheet").toHaveAttribute("data-expanded", "true");
+      await endComment(user, end);
+      await nextFrame();
+      expect(
+        {
+          bar: document.activeElement === barComment(),
+          editor: document.activeElement === documentEditor(),
+          sheet: sheet.dataset.expanded,
+        },
+        `${end} after the bar's Comment`
+      ).toEqual({ bar: false, editor: true, sheet: "false" });
+    }
+    expect(fake.focuses).toEqual(["with the box", "with the box"]);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+    restoreViewport();
+  }
+});
+
+/** Below 1280 px, a comment by Ctrl+Alt+M whose draft the sheet's close control keeps, and a
+ *  second one on other words, whose box offers that draft beside its empty field. Resolves with
+ *  the sheet, the caret in the second box. */
+async function commentOverAKeptDraft(user: UserEvent): Promise<HTMLElement> {
+  const sheet = screen.getByTestId("margin-sheet");
+  await startComment(user, "Ctrl+Alt+M");
+  await user.paste("Half a thought");
+  await user.click(within(sheet).getByRole("button", { name: /^Close review panel/ }));
+  await waitFor(() => expect(sheet).toHaveAttribute("data-expanded", "false"));
+  await startComment(user, "Ctrl+Alt+M");
+  await within(sheet).findByText(offerLine("words 1"));
+  return sheet;
+}
+
+// The kept draft offered beside the box (`Use my draft`, `Discard my draft`) leaves that box not
+// yet empty, so Escape there asks `Discard draft?` and ends nothing: the sheet stays open with the
+// focus in it (main's kept-draft offer, cybermonklabs/legion#3000).
+test("Escape over a kept draft asks before it closes", async () => {
+  const user = userEvent.setup();
+  const restoreViewport = stubViewport(SHEET_WIDTH);
+  const fake = editorBridge();
+  const view = renderCommentedDocument(fake.bridge);
+
+  try {
+    const sheet = await commentOverAKeptDraft(user);
+    await user.keyboard("{Escape}");
+    await within(sheet).findByText("Discard draft?");
+    await nextFrame();
+    expect({
+      box: within(sheet).queryByRole("form", { name: "Comment composer" }) !== null,
+      focusInSheet: sheet.contains(document.activeElement),
+      sheet: sheet.dataset.expanded,
+    }).toEqual({ box: true, focusInSheet: true, sheet: "true" });
+    expect(fake.focuses).toEqual([]);
+  } finally {
+    view.unmount();
+    restoreViewport();
+  }
+});
+
+// Discard my draft leaves the box empty with nothing offered, and Escape in it then ends the
+// comment: the sheet closes with the caret back in the editor at the commented words.
+test("after Discard my draft, Escape gives the caret back to the document", async () => {
+  const user = userEvent.setup();
+  const restoreViewport = stubViewport(SHEET_WIDTH);
+  const fake = editorBridge();
+  const view = renderCommentedDocument(fake.bridge);
+
+  try {
+    const sheet = await commentOverAKeptDraft(user);
+    await user.keyboard("{Escape}");
+    await within(sheet).findByText("Discard draft?");
+    await user.click(within(sheet).getByRole("button", { name: "Discard my draft" }));
+    await waitFor(() => expect(within(sheet).queryByText(offerLine("words 1"))).toBeNull());
+    await user.click(within(sheet).getByRole("textbox", { name: "Comment" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(sheet).toHaveAttribute("data-expanded", "false"));
+    await nextFrame();
+    expect(document.activeElement, "Escape in the empty box left the editor").toBe(
+      documentEditor()
+    );
+    expect(fake.focuses).toEqual(["with the box"]);
+  } finally {
+    view.unmount();
+    restoreViewport();
+  }
+});
+
+// The sheet's other closes - its close control with the box keeping its draft, its backdrop, and
+// its own Escape over a kept draft - end no comment, so each gives the focus back to what held it
+// as the sheet opened, by #4985's rule (`useDialog`), and so after a comment's end closed it.
+test("closing the sheet keeps #4985's return", async () => {
+  const user = userEvent.setup();
+  const restoreViewport = stubViewport(SHEET_WIDTH);
+  const fake = editorBridge();
+  const view = renderCommentedDocument(fake.bridge);
+  const sheet = screen.getByTestId("margin-sheet");
+  const closed = async (close: string) => {
+    await waitFor(() =>
+      expect(sheet, `${close} left the sheet open`).toHaveAttribute("data-expanded", "false")
+    );
+    await nextFrame();
+    return document.activeElement;
+  };
+
+  try {
+    await startComment(user, "Ctrl+Alt+M");
+    await endComment(user, "Escape");
+    expect(await closed("the comment's end"), "the comment's end").toBe(documentEditor());
+
+    await startComment(user, "the bar's Comment");
+    await user.paste("Half a thought");
+    await user.click(within(sheet).getByRole("button", { name: /^Close review panel/ }));
+    expect(await closed("the close control"), "the close control").toBe(barComment());
+
+    await startComment(user, "Ctrl+Alt+M");
+    const backdrop = sheet.previousElementSibling;
+    if (!(backdrop instanceof HTMLElement)) throw new Error("the open sheet drew no backdrop");
+    await user.click(backdrop);
+    expect(await closed("the backdrop"), "the backdrop").toBe(documentEditor());
+
+    await startComment(user, "the bar's Comment");
+    expect(within(sheet).getByRole("button", { name: "Use my draft" })).toBeTruthy();
+    await user.click(within(sheet).getByRole("tab", { name: "Comments" }));
+    await user.keyboard("{Escape}");
+    expect(await closed("the sheet's Escape"), "the sheet's Escape").toBe(barComment());
+    expect(fake.focuses).toEqual(["with the box"]);
+  } finally {
+    view.unmount();
+    restoreViewport();
+  }
+});
+
+// A send can land long after the press. Below 1280 px the reader may have moved the focus to
+// another control of the sheet by then, or closed the sheet and gone on; the landing takes neither
+// the sheet nor the focus from them.
+test("a late send never takes the focus", async () => {
+  const user = userEvent.setup();
+  const restoreViewport = stubViewport(SHEET_WIDTH);
+  // Each send's answer, which the row gives when it lands that send.
+  const sends: { promise: Promise<Comment>; resolve: (sent: Comment) => void }[] = [];
+  const createComment = spyOn(api, "createComment").mockImplementation(() => {
+    const send = Promise.withResolvers<Comment>();
+    sends.push(send);
+    return send.promise;
+  });
+  const fake = editorBridge();
+  const view = renderCommentedDocument(fake.bridge);
+  const sheet = screen.getByTestId("margin-sheet");
+  const send = async () => {
+    const sent = sends.length;
+    await user.paste("Why?");
+    await user.click(
+      within(screen.getByRole("form", { name: "Comment composer" })).getByRole("button", {
+        name: "Send",
+      })
+    );
+    await waitFor(() => expect(sends).toHaveLength(sent + 1));
+  };
+  const land = async () => {
+    const landing = sends.at(-1);
+    await act(async () => {
+      landing?.resolve({ ...comment, body: "Why?" });
+      await landing?.promise;
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
+    );
+    await nextFrame();
+  };
+
+  try {
+    await startComment(user, "Ctrl+Alt+M");
+    await send();
+    const tab = within(sheet).getByRole("tab", { name: "Comments" });
+    await user.click(tab);
+    await land();
+    expect(
+      { tab: document.activeElement === tab, sheet: sheet.dataset.expanded },
+      "a send that landed with the focus on the sheet's tab"
+    ).toEqual({ tab: true, sheet: "true" });
+    await user.click(within(sheet).getByRole("button", { name: /^Close review panel/ }));
+    await waitFor(() => expect(sheet).toHaveAttribute("data-expanded", "false"));
+
+    await startComment(user, "the bar's Comment");
+    await send();
+    await user.click(within(sheet).getByRole("button", { name: /^Close review panel/ }));
+    await waitFor(() => expect(sheet).toHaveAttribute("data-expanded", "false"));
+    await land();
+    expect(
+      { bar: document.activeElement === barComment(), sheet: sheet.dataset.expanded },
+      "a send that landed after the reader closed the sheet"
+    ).toEqual({ bar: true, sheet: "false" });
+    expect(fake.focuses).toEqual([]);
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
     restoreViewport();
   }
 });

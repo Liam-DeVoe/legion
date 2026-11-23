@@ -402,6 +402,17 @@ export function useMarginSheet(): MarginSheetModel {
     },
     [closeThread, ownerId, sheetExpanded]
   );
+  // Whether the sheet's dialog is closing for a comment's end that put the caret back in the
+  // commented document (`closeComposer`): that close leaves the focus there. Every other close of
+  // the sheet - its close control, its backdrop, its own Escape - gives the focus back to what
+  // held it as the sheet opened (`useDialog`). Set only as the sheet's dialog closes, and read
+  // once, by that close (`keepFocusOnClose`), so it never reaches a later one.
+  const sheetClosedForDocument = useRef(false);
+  const keepFocusOnSheetClose = useCallback(() => {
+    const keep = sheetClosedForDocument.current;
+    sheetClosedForDocument.current = false;
+    return keep;
+  }, []);
   // The composer's Close, Escape and Discard, and its send landing. The open compose ends
   // unsaved; a refusal the store holds for the document goes, its draft and its mark with it
   // (`MarginProvider` takes the mark). A draft the compose offered beside its field the
@@ -413,29 +424,36 @@ export function useMarginSheet(): MarginSheetModel {
   // going leaves no loss of focus for the page's rescue to answer (`useFocusRescue`). The rescue
   // reads a loss on the next frame, or after `FRAME_WAIT_MS` where no frame comes; with a frame
   // later than that, it would take the loss for the reader's, whose press is still live, and put
-  // the focus on a control of the margin. Below 1280 px the sheet over the document closes too,
-  // and its dialog gives the focus back to what held it as the sheet opened (`useDialog`): that
-  // was the box, which is gone, so it focuses the body. That loss is not the reader's, whose
-  // press was in the box, and the rescue leaves the focus there; a frame later, with the focus
-  // still on nothing, the editor takes the caret again. Only while the reader is still at the
-  // comment, the focus in its composer or on nothing and no phone thread over it: a send that
-  // lands after they went on elsewhere takes neither the sheet nor the focus from them.
+  // the focus on a control of the margin. Below 1280 px the sheet over the document closes too.
+  // Its dialog would give the focus back to what held it as the sheet opened (`useDialog`): the
+  // editor after Ctrl+Alt+M, but the selection bar's Comment after a press on it, which would take
+  // the caret off the words. So this close leaves the focus where the editor took it
+  // (`sheetClosedForDocument`). A frame later, with the focus still on nothing - the editor did
+  // not take it, and the box's going left it on the body - the editor takes the caret again. Only
+  // while the reader is still at the comment, the focus in its composer or on nothing and no phone
+  // thread over it: a send that lands after they went on elsewhere takes neither the sheet nor the
+  // focus from them.
   const closeComposer = useCallback(
     (composer: MarginComposer) => {
       if (composer.seq !== undefined) cancelCompose(composer.anchor.artifact, composer.seq);
       store.discard(marginComposeSendKey(composer.anchor.artifact));
       if (sheetThreadKey !== undefined || !focusAtComposer()) return;
       const compact = window.matchMedia(COMPACT_VIEWPORT_QUERY).matches;
-      if (compact) setExpandedOwnerId(undefined);
       const bridge = documentBridge;
-      if (bridge?.artifactId !== composer.anchor.artifact) return;
+      const toDocument = bridge?.artifactId === composer.anchor.artifact;
+      if (compact) {
+        // The sheet's dialog is open while the sheet is expanded, outside Details (`MarginSheet`).
+        sheetClosedForDocument.current = toDocument && sheetExpanded && drawer === undefined;
+        setExpandedOwnerId(undefined);
+      }
+      if (!toDocument) return;
       bridge.focus();
       if (!compact) return;
       window.requestAnimationFrame(() => {
         if (focusAtComposer()) bridge.focus();
       });
     },
-    [cancelCompose, documentBridge, sheetThreadKey, store]
+    [cancelCompose, documentBridge, drawer, sheetExpanded, sheetThreadKey, store]
   );
   // Each compose the margin shows - a new one, one a newer selection-bar action had to wait on, or
   // one held for the document the reader came back to - is shown on the Comments tab, and on a
@@ -774,6 +792,7 @@ export function useMarginSheet(): MarginSheetModel {
     sheet: {
       closeThread,
       expanded: sheetExpanded,
+      keepFocusOnClose: keepFocusOnSheetClose,
       replySending: sheetReplySending,
       thread: sheetThreadKey === undefined ? undefined : threadsByKey.get(sheetThreadKey),
       toggle: toggleSheet,

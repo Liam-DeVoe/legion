@@ -88,6 +88,7 @@ test("an issue margin offers Comments and Pinned, Comments first", () => {
         sheet: {
           closeThread: () => {},
           expanded: false,
+          keepFocusOnClose: () => false,
           replySending: false,
           thread: undefined,
           toggle: () => {},
@@ -199,6 +200,7 @@ test("a document owner shows the Comments tab and comment composer only", () => 
           sheet: {
             closeThread: () => {},
             expanded: true,
+            keepFocusOnClose: () => false,
             replySending: false,
             thread: undefined,
             toggle: () => {},
@@ -340,6 +342,7 @@ test("MarginSheet shows the selected phone thread in a full-height view with a B
                 closed = true;
               },
               expanded: true,
+              keepFocusOnClose: () => false,
               replySending: false,
               thread: {
                 anchor: root.anchor,
@@ -504,6 +507,7 @@ test("the standalone document phone sheet shows each suggestion's diff and Accep
             sheet: {
               closeThread: () => {},
               expanded: true,
+              keepFocusOnClose: () => false,
               replySending: false,
               thread: undefined,
               toggle: () => {},
