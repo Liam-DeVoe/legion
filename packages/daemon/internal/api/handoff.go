@@ -36,8 +36,10 @@ import (
 // (intake.BehindEntryClause). The workflow refuses a record the role already named for its previous
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
 // pull request on its branch, or a merged one recorded (implementationPullRequest:
-// HANDOFF_NO_PULL_REQUEST). A check report carries no commit and no record (nothing was pushed or
-// written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail.
+// HANDOFF_NO_PULL_REQUEST), and for a task of a plan of several to an open one against the base
+// the plan gives the task (HANDOFF_PULL_REQUEST_BASE). A check report carries no commit and no
+// record (nothing was pushed or written) and a Verdict of pass, pending or fail; a tester's
+// completion a Verdict of pass or fail.
 // WakeAt is the check report's alone: on a pending it is when the checking agent asks to be woken
 // for its next look, which no other verdict and no phase completion carries (checkReport). It is a
 // pointer so that a report naming no time is told from one naming a time at all: with the field
@@ -444,7 +446,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// The phase's last handoff is stored text, so what this completion reports is compared as the
 	// store would keep it (storetext.Text).
 	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && storetext.Text(reported) != position.lastHandoff {
-		if !s.implementationPullRequest(w, r, issue, position.branch, position.pullRequest, eventID) {
+		if !s.implementationPullRequest(w, r, position, eventID) {
 			return
 		}
 	}
@@ -639,17 +641,22 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // completion moves its issue to testing only on a pull request recorded open or merged for it
 // (workflow's TriggerImplementationReady), and only the opened webhook, or the daemon's per-issue
 // read standing in for one that webhook lost (readIssuePullRequest), records one open. So before
-// the completion is applied, the open pull request on branch, the branch of the completion's task
-// (the issue's own, claim.IssueBranch, but for a task of a plan of several, completionPosition), is
-// read as the implement App, minted for the owner of the issue's repository in GitHub's spelling
-// (record.Issue.GitHubRepo, which the webhook's facts name it by), and it says whether the
-// completion goes on:
+// the completion is applied, the open pull request on the branch of the completion's task
+// (position.branch: the issue's own, claim.IssueBranch, but for a task of a plan of several,
+// completionPosition), is read as the implement App, minted for the owner of the issue's
+// repository in GitHub's spelling (record.Issue.GitHubRepo, which the webhook's facts name it by),
+// and it says whether the completion goes on:
 //
-//   - one open: when the record does not already hold it open, the intake.PullRequestOpened its
-//     webhook would have carried is applied first, a reopen when the record holds the same pull
-//     request closed, under the read's stable id (intake.OpenedRead). The completion then
-//     moves the issue to testing. A failure to apply it is FACT_APPLY_FAILED, with the completion
-//     not applied.
+//   - one open against the base the plan gives the task (position.base, record.StoredPlan.BaseOf),
+//     or against any base where none is read (a plan of one task, or none): when the record does
+//     not already hold it open, the intake.PullRequestOpened its webhook would have carried is
+//     applied first, a reopen when the record holds the same pull request closed, under the
+//     read's stable id (intake.OpenedRead). The completion then moves the issue to testing. A
+//     failure to apply it is FACT_APPLY_FAILED, with the completion not applied.
+//   - one open against another base: HANDOFF_PULL_REQUEST_BASE, 409, naming the task's base and
+//     the command that sets it, and nothing is applied. Legion merges no task's work into a base
+//     the plan does not give, and the review of the task reads its pull request, which against
+//     another base shows work that is not the task's.
 //   - none, with the record holding the pull request merged: the completion is applied and moves
 //     the issue to testing. The work landed, its merge told the architect (pr-merged), and the
 //     workflow runs on.
@@ -666,7 +673,8 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // for one that is not already applied (eventID, its key, read with intake.Applied), whose tree does
 // not linger and whose handoff record is not the one the implementer named for its previous phase
 // (workflow's HANDOFF_NOT_NEW). It returns false when it wrote the answer.
-func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Request, issue *record.Issue, branch string, recorded *record.PullRequest, eventID string) bool {
+func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Request, position completionPosition, eventID string) bool {
+	issue, branch, recorded := position.issue, position.branch, position.pullRequest
 	ctx := r.Context()
 	applied, err := intake.Applied(ctx, s.pool, "api", []string{eventID})
 	if err != nil {
@@ -730,6 +738,12 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 			message += fmt.Sprintf(" pull request #%d is closed; your architect was told and decides this issue's phase.", recorded.Number)
 		}
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_NO_PULL_REQUEST", message)
+		return false
+	}
+	if position.base != "" && pull.Base.Ref != position.base {
+		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_PULL_REQUEST_BASE", fmt.Sprintf(
+			"pull request #%d on %s is against %s, and the base of task %s is %s: set it with gh pr edit %d --base %s, then complete again.",
+			pull.Number, branch, pull.Base.Ref, position.ofTask, position.base, pull.Number, position.base))
 		return false
 	}
 	if recorded != nil && recorded.State == record.PullRequestOpen && recorded.Number == pull.Number {
