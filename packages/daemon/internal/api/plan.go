@@ -146,7 +146,7 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 			"Dispatch shows %s at version %d, not %d; give register_plan a version that Dispatch has", artifactID, approval.LatestVersion, req.Version))
 		return
 	}
-	given, ok := s.planAt(w, r, artifactID, req.Version, req.Issue)
+	given, ok := s.planAt(w, r, artifactID, documentReference(req.Issue, approval), req.Version, req.Issue)
 	if !ok {
 		return
 	}
@@ -243,11 +243,14 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
-// read as the plan of issue (plan.FromBlocks), so a need that is a reference into another issue is
-// no need of a task of this plan. A block the plan's grammar cannot read is a refused plan whose
-// one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at all.
-// Every refusal records nothing.
-func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID string, version int, issue string) (plan.Plan, bool) {
+// each task block's Parent read from its `parent` (plan.ParentOf) against reference, the document
+// as a reference to one of its blocks names it (documentReference), then read as the plan of issue
+// (plan.FromBlocks). So a need that is a reference into another issue is no need of a task of this
+// plan, and a `parent` puts a block under a block of this document alone. A block the plan's
+// grammar cannot read, a `parent` that is not one reference among them, is a refused plan whose one
+// reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at all. Every
+// refusal records nothing.
+func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID, reference string, version int, issue string) (plan.Plan, bool) {
 	document, err := s.dispatch.PlanDocument(r.Context(), artifactID, version)
 	switch {
 	case errors.Is(err, dispatch.ErrNoBlocks):
@@ -265,6 +268,15 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 	blocks := make([]plan.Block, len(document.Blocks))
 	for i, block := range document.Blocks {
 		blocks[i] = plan.Block{ID: block.ID, Type: block.Type, Attributes: block.Attributes, Text: block.Text}
+		if block.Type != plan.TaskBlockType {
+			continue
+		}
+		parent, err := plan.ParentOf(block.Attributes["parent"], reference)
+		if err != nil {
+			s.writeRefusal(w, r, intake.PlanRefused([]plan.Refusal{{Reason: fmt.Sprintf("task block %s: %v.", block.ID, err)}}))
+			return plan.Plan{}, false
+		}
+		blocks[i].Parent = parent
 	}
 	given, err := plan.FromBlocks(issue, artifactID, version, blocks)
 	if err != nil {
@@ -272,6 +284,17 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 		return plan.Plan{}, false
 	}
 	return given, true
+}
+
+// documentReference is the document approval reads, a document of issue, as a reference to one of
+// its blocks names it before its `#b-`, as Dispatch writes one (FormatBlockRef in
+// packages/envoy/internal/dispatch/text): `dispatch://<issue>/spec` for the issue's primary
+// document, and `dispatch://<issue>/artifact/<slug>` for any other.
+func documentReference(issue string, approval dispatch.Approval) string {
+	if approval.Primary {
+		return "dispatch://" + issue + "/spec"
+	}
+	return "dispatch://" + issue + "/artifact/" + approval.Slug
 }
 
 // registeredPlan is given as register_plan answers it.

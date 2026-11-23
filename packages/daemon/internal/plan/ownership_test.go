@@ -65,7 +65,7 @@ func TestThePartsOfATaskAndTheWriterOfEach(t *testing.T) {
 func TestEachTaskIsItsWritersToChange(t *testing.T) {
 	ownersReason := func(id, task string) string {
 		return "task " + id + " is a part of task " + task + ", and only the sub-owner of task " + task + " changes the parts of " + task +
-			". Leave the parts of " + task + " to its sub-owner, which writes them, or write this work as tasks of your own, with needs and no part_of."
+			". Leave the parts of " + task + " to its sub-owner, which writes them, or write this work as tasks of your own, with needs, outside task " + task + "."
 	}
 	subOwnersReason := func(id, task string) string {
 		return "task " + id + " is not a part of task " + task + ", and the sub-owner of task " + task + " changes only the parts of " + task + "."

@@ -17,9 +17,13 @@ const noTask = "the plan has no task block, so it gives Legion no work."
 // notYet ends each reason of Supported: what a later release carries out.
 const notYet = " This release of Legion does not carry it out yet."
 
-// Validate is what Legion cannot carry out in any release: a plan with no task; for each task,
-// each `needs` word that names no task of the plan, in the block's order (Task.Unresolved, which
-// FromBlocks fills), then each `needs` word that is a `dispatch://` reference not of the plan's
+// Validate is what Legion cannot carry out in any release: a plan with no task; each task block
+// whose `parent` names an id of the plan's document that no typed block of the version holds
+// (Task.MissingParent), in the document's order; each element that names `steps`, `owner` or
+// `merges` (Element.Names), in the document's order, since Legion does not carry out an element;
+// for each task, each `needs` word that names no task of the plan, in the block's order
+// (Task.Unresolved, which FromBlocks fills), then each `needs` word that names an element
+// (Task.ElementNeeds), then each `needs` word that is a `dispatch://` reference not of the plan's
 // issue, in the block's order (Task.OutsideIssue), one into another issue naming that issue and one
 // that starts with no issue key as naming none, and each step that names a role neither d nor the
 // plan's own role blocks define, refused once for each role at the first step that names it; then
@@ -37,8 +41,32 @@ func Validate(p Plan, d Deployment) []Refusal {
 	}
 	var refusals []Refusal
 	for _, task := range p.Tasks {
+		if task.MissingParent != "" {
+			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf("task block %s names %s as its parent, which no typed block of version %d of the plan holds. "+
+				"Name a typed block of this version in parent, or leave parent out.", task.ID, task.MissingParent, p.Version)})
+		}
+	}
+	elements := make(map[string]Element, len(p.Elements))
+	for _, element := range p.Elements {
+		elements[element.ID] = element
+		if len(element.Names) == 0 {
+			continue
+		}
+		under := fmt.Sprintf("%s, which names no sub-owner", element.Under)
+		if element.Under != element.Of {
+			under = fmt.Sprintf("%s, an element of %s", element.Under, element.Of)
+		}
+		refusals = append(refusals, Refusal{Task: element.ID, Reason: fmt.Sprintf("task block %s is an element of task %s: it stands under %s. "+
+			"Legion does not carry out an element, so an element names no steps, owner or merges, and %s names %s.",
+			element.ID, element.Of, under, element.ID, wordList(element.Names))})
+	}
+	for _, task := range p.Tasks {
 		for _, word := range task.Unresolved {
 			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf("task %s needs %s, which names no task of this plan.", task.ID, word)})
+		}
+		for _, word := range task.ElementNeeds {
+			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf("task %s needs %s, which is an element of task %s. "+
+				"Legion does not carry out an element, so a task cannot need one.", task.ID, word, elements[neededID(word)].Of)})
 		}
 		for _, word := range task.OutsideIssue {
 			var reason string
@@ -69,6 +97,14 @@ func Validate(p Plan, d Deployment) []Refusal {
 		refusals = append(refusals, Refusal{Task: cycle[0], Reason: fmt.Sprintf("task %s needs itself: %s.", cycle[0], strings.Join(chain, ", "))})
 	}
 	return refusals
+}
+
+// wordList is words joined as a sentence lists them: "a", "a and b", "a, b and c".
+func wordList(words []string) string {
+	if len(words) < 2 {
+		return strings.Join(words, "")
+	}
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
 }
 
 // cycles is the cycles of the tasks' needs that a reason names: for each need that lies on a
@@ -134,10 +170,10 @@ func shortestPath(needs map[string][]string, from, to string) []string {
 
 // Supported is what this release does not carry out yet: more than one task that no task needs
 // (Sinks, over the task ids FromBlocks reads), whose work would each merge by itself where this
-// release merges an issue's work as one change, a role block, and, for each task, `owner` and
-// `part_of`, the key owner on a role but acceptance, acceptance with a key but owner or with none,
-// a role named at two steps, no implementer, each step of a role that reads the
-// implementer's pull request with no implementer step before it, and each step after the
+// release merges an issue's work as one change, a role block, and, for each task, `owner`, a task
+// that is a part of another (Places), the key owner on a role but acceptance, acceptance with a key
+// but owner or with none, a role named at two steps, no implementer, each step of a role that reads
+// the implementer's pull request with no implementer step before it, and each step after the
 // implementer's whose role d gives the type implementation, since Legion's retro is done by the
 // implementer. A plan of several tasks, and a task's `needs`, are taken: each task runs once the
 // tasks it needs are done. Any other key is taken: it names the agent of its steps (AgentOf). Its
@@ -169,7 +205,7 @@ func taskReasons(t Task, d Deployment) []string {
 		reasons = append(reasons, fmt.Sprintf("task %s names owner.", t.ID))
 	}
 	if t.PartOf != "" {
-		reasons = append(reasons, fmt.Sprintf("task %s names part_of.", t.ID))
+		reasons = append(reasons, fmt.Sprintf("task %s is a part of task %s.", t.ID, t.PartOf))
 	}
 	if t.NamesSteps() {
 		reasons = append(reasons, stepReasons(t, d)...)
