@@ -7545,6 +7545,16 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
       await nextFrames(page);
       // One instant is the point: where the list and the window stand just before the press.
       const before = await landing();
+      // One instant is the point here too: where the row marked last stands on screen and where
+      // the list's box stands in the page, just before the press.
+      const stood = await page.evaluate((id) => {
+        const frame = document.querySelector('[data-testid="inbox-list"]');
+        const row = document.querySelector(`[data-inbox-row="${CSS.escape(id)}"]`);
+        return {
+          listTop: (frame?.getBoundingClientRect().top ?? 0) + window.scrollY,
+          rowTop: row?.getBoundingClientRect().top ?? null,
+        };
+      }, marked[0] as string);
       await page.keyboard.press("Enter");
       for (const id of marked) await expect(inboxRowOf(id)).toHaveCount(0);
       await expect(bar).toHaveCount(0);
@@ -7566,8 +7576,35 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
           `${where}: the focus is on ${now.name}, not on "${afterName}", the row now at the marked row's place (${numbers})`
         );
       }
-      if (now.scrollY !== before.scrollY || now.scrollTop !== before.scrollTop) {
-        wrong.push(`${where}: the press scrolled, with the focus on ${now.name}: ${numbers}`);
+      // The landing's row stands where the row marked last stood on screen, and the window moved
+      // by the height that closed above the list in the press's commit and no more: below `sm`,
+      // Mark all read's line, which goes with the last unread threads. One read of the list's box
+      // and the landing's row: every hand-off of the press has run, and nothing else moves them.
+      const placed = await page.evaluate(() => {
+        const frame = document.querySelector('[data-testid="inbox-list"]');
+        const row = document.activeElement?.closest("[data-inbox-row]");
+        return {
+          listTop: (frame?.getBoundingClientRect().top ?? 0) + window.scrollY,
+          rowTop: row?.getBoundingClientRect().top ?? null,
+        };
+      });
+      const closed = stood.listTop - placed.listTop;
+      if (
+        placed.rowTop === null ||
+        stood.rowTop === null ||
+        Math.abs(placed.rowTop - stood.rowTop) > 1
+      ) {
+        wrong.push(
+          `${where}: the row of ${now.name} stands at ${placed.rowTop} px, not where the row marked last stood, at ${stood.rowTop} px (${numbers})`
+        );
+      }
+      if (
+        Math.abs(before.scrollY - now.scrollY - closed) > 1 ||
+        now.scrollTop !== before.scrollTop
+      ) {
+        wrong.push(
+          `${where}: the press scrolled by more than the ${Math.round(closed)} px that closed above the list, with the focus on ${now.name}: ${numbers}`
+        );
       }
     }
   }

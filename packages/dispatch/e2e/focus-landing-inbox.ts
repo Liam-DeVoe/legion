@@ -184,6 +184,67 @@ const threadDismiss: Arrange = async (context) => {
   };
 };
 
+/**
+ * `e` on the last unread thread's row at 390 px, with the row standing just under the window's
+ * top. Every thread the row's earlier cases seeded is marked read first, so the case's own thread
+ * is the list's one unread row and its newest, first in one band (`?group=none`). The row goes,
+ * and Mark all read with it: below `sm` its line in the control row closes, above the list. The
+ * row after the thread moves up into its place, and the window scrolls up by the line that closed,
+ * so that row stands where the thread's row stood (`view kept (shrunk above)`). The press is
+ * answered once the row and Mark all read have gone, the control row is shorter, and the row
+ * after the thread stands where the thread's row stood, within a pixel.
+ */
+const lastUnreadKeyed: Arrange = async ({ n, page }) => {
+  await markInboxRead({ read_through: new Date().toISOString() });
+  const issue = await createIssue({ project: "CORE", title: `Last unread thread ${n}` });
+  await seedCommentThread(issue.key, `Is the last mirror caught up (${n})?`, "It is.");
+  await page.goto("/?group=none");
+  const row = page.locator("[data-inbox-row]").filter({ hasText: `last mirror caught up (${n})` });
+  await expect(row).toHaveCount(1);
+  const line = controlRow(page.getByTestId("main-content"));
+  const markAll = line.getByRole("button", { exact: true, name: "Mark all read" });
+  await expect(markAll).toBeVisible();
+  // One read of the row after the thread: the waits above found the list drawn, and nothing moves
+  // it before the press.
+  const nextId = await row.evaluate((node) => {
+    let after = node.nextElementSibling;
+    while (after !== null && !after.hasAttribute("data-inbox-row")) {
+      after = after.nextElementSibling;
+    }
+    return after?.getAttribute("data-inbox-row") ?? "";
+  });
+  expect(nextId, "no row stands after the case's own thread").not.toBe("");
+  const next = inboxRow(page, nextId);
+  await row.focus();
+  await scrollTo(row, 0.03);
+  // One read each of where the thread's row stands and how tall the control row is: the scroll
+  // above is the last thing that moves either before the press.
+  const stood = (await row.boundingBox())?.y ?? Number.NaN;
+  const tall = (await line.boundingBox())?.height ?? 0;
+  return {
+    answered: async () => {
+      await expect(row).toHaveCount(0);
+      await expect(markAll).toHaveCount(0);
+      await expect
+        .poll(
+          async () => (await line.boundingBox())?.height ?? tall,
+          "Mark all read's line did not close in the control row"
+        )
+        .toBeLessThan(tall - 1);
+      await expect
+        .poll(
+          async () => Math.abs(((await next.boundingBox())?.y ?? Number.NaN) - stood),
+          "the row after the thread does not stand where the thread's row stood"
+        )
+        .toBeLessThanOrEqual(1);
+    },
+    cause: () => page.keyboard.press("e"),
+    caused: true,
+    control: row,
+    staged: { rule: "moved-up" },
+  };
+};
+
 /** A thread's Dismiss pressed offline: its write is held past the request deadline. */
 const threadDismissOffline: Arrange = async (context) => {
   const { dismiss } = await threeThreads(context);
@@ -647,6 +708,8 @@ function recipientRemoval(label: "Unfollow" | "Unsubscribe"): Arrange {
 const ONE_WIDTH_ONLY = {
   approve:
     "below 1280 px the Inbox draws no reading column, so there is no head of it to approve from",
+  keyedLastUnread:
+    "from sm up the control row's first line is one line, so Mark all read's going closes no line above the list",
   markAllAbove:
     "below 1280 px the Inbox's list scrolls in the window under its control row, so Mark all read leaves the reader's sight before any row goes above the view",
 };
@@ -660,6 +723,10 @@ export const INBOX_SCENE: Scene = {
       what: "the reader's press on a row",
       cases: {
         "thread-dismiss": { arrange: threadDismiss },
+        "keyed-last-unread": {
+          arrange: lastUnreadKeyed,
+          only: { none: ONE_WIDTH_ONLY.keyedLastUnread, width: 390 },
+        },
         "mark-all-above": {
           arrange: markAllAbove,
           only: { none: ONE_WIDTH_ONLY.markAllAbove, width: 1440 },

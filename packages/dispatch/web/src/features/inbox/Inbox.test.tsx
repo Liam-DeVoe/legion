@@ -3911,10 +3911,10 @@ test("a bulk Dismiss of marked threads that all stood above the view hands the f
 // The bar's Dismiss over the list's last two unread threads, on a phone. **Mark all read** is
 // offered only while the list holds an unread thread, so it goes in the commit that takes the
 // threads away, and below `sm` the header's line it stood on goes with it: 52 px, the button's 44
-// and the row's 8 px gap. That shrink is the press's doing as much as the threads' going, so the
-// rows after them move up by both: the window stays where it was, and the focused row stands in
-// sight.
-test("a bulk Dismiss of the last unread threads, whose going takes Mark all read's line out of the header, scrolls nothing", async () => {
+// and the row's 8 px gap. The threads free their space, and that line is made up for as any other
+// change above the list is: the window scrolls up by the line, and the row after the threads,
+// which holds the focus, stands where the row marked last stood.
+test("a bulk Dismiss of the last unread threads, whose going takes Mark all read's line out of the header, makes up for that line, and the row after them stands at their place", async () => {
   const user = userEvent.setup();
   // Six questions newer than the threads and six older, so the threads stand between them.
   const asks = Array.from({ length: 12 }, (_, index) =>
@@ -3942,14 +3942,15 @@ test("a bulk Dismiss of the last unread threads, whose going takes Mark all read
     // The upper thread is marked last, as a reader marking upward does.
     for (const id of [...marked].reverse()) await user.click(markOf(id));
     await screen.findByText("2 selected");
+    const place = markOf(marked[0] as string).getBoundingClientRect().top;
 
     await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
     await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
     expect(document.querySelector("[data-inbox-mark-all]")).toBeNull();
     const landing = markOf(order[8] as string);
     await waitFor(() => expect(landing).toHaveFocus());
-    expect(window.scrollY).toBe(5 * LAID_ROW_PX);
-    expect(landing.getBoundingClientRect().top).toBe(LAID_ROW_PX);
+    expect(window.scrollY).toBe(5 * LAID_ROW_PX - MARK_ALL_LINE);
+    expect(landing.getBoundingClientRect().top).toBe(place);
     expect(moves.scrolled.length).toBe(0);
   } finally {
     await act(async () => {
