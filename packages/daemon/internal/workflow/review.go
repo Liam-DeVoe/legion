@@ -19,9 +19,10 @@ import (
 )
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
-// it says (tellChecks). It moves nothing: a failed CI check is information the worker holding the
-// phase decides on - rerun, wait, or fix - and not the daemon's to read the semantics of
-// (dispatch://INFRA-714/spec R1).
+// it says (tellChecks). It moves nothing: a failed CI check is information, not the daemon's to
+// read the semantics of (dispatch://INFRA-714/spec R1), and the message asks no role to act on it:
+// the tester reads no CI, the implementer is told of a failed check a CI job runs by its own
+// message (tellCIFailure, INFRA-4843 R15a), and the reviewer and the architect read CI's state.
 //
 // It runs for every settlement fact, after the wake (wakeOnSettlement), and each settlement it
 // does not apply is named by one INFO line once the fact commits, since a pull request whose head
@@ -502,8 +503,9 @@ func namedStatuses(statuses []record.CommitStatus) string {
 }
 
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
-// request's head says (settledChecks), and moves nothing: the daemon passes the CI result on, and
-// the worker that holds the phase decides whether to re-run, wait or fix
+// request's head says (settledChecks), and moves nothing: the daemon passes the CI result on and
+// asks nobody anything of it, no re-run, no wait and no fix, since the tester reads no CI
+// (INFRA-4843 R17a) and each other role's prompt says what it does with CI's state
 // (dispatch://INFRA-714/spec R1). One message goes to three roles - the worker holding the issue's
 // phase, the implementer, whose code the checks ran on, and the architect that owns the issue
 // (owningArchitect) - each on its own role topic (record.RoleMessage), the way the daemon reaches
@@ -558,7 +560,7 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	if err != nil {
 		return err
 	}
-	body := fmt.Sprintf("Pull request #%d: %s. Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", pr.Number, settled)
+	body := fmt.Sprintf("Pull request #%d: %s. Nothing moved on it.", pr.Number, settled)
 	for _, to := range addressed {
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
 			return err
