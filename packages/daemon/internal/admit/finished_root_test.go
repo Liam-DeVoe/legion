@@ -449,11 +449,10 @@ func TestTheOutboxsConsumptionOfAHandOverIsLogged(t *testing.T) {
 	}
 }
 
-// A carried root's workers resume from what the carry kept. A carried merger is told the head the
-// carried review round approved, the one head its READY may name, so it does not send the round
-// back to review. A carried root held from a phase starts no worker, and the only held notice went
-// to the old tree's architect, so its own architect is told of the hold at promotion, to retry or
-// escalate it.
+// A carried root's workers resume from what the carry kept. A carried merger is resumed into
+// merging and told no approved head (below). A carried root held from a phase starts no worker,
+// and the only held notice went to the old tree's architect, so its own architect is told of the
+// hold at promotion, to retry or escalate it.
 func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 	for _, tc := range []struct {
 		name string
