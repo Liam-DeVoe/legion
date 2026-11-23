@@ -6,6 +6,7 @@
  * through the real API wherever this harness can reach it, and in SQL exactly where it cannot -
  * each such place is named where it is written, with what writes it in a deployment.
  */
+import { type Body, routePath } from "../web/src/api/paths";
 import { setLiveSessions } from "./agents";
 import {
   createComment,
@@ -74,16 +75,18 @@ function writeThroughTheTab(
   name: string,
   markdown: string
 ): Promise<{ body: string; status: number }> {
+  const route = routePath("post", "/api/v1/issues/{key}/artifacts", { key: issueKey });
+  const upload: Body<"/api/v1/issues/{key}/artifacts", "post"> = { content: markdown, name };
   return page.evaluate(
-    async ([key, documentName, content]) => {
-      const response = await fetch(`/api/v1/issues/${key}/artifacts`, {
-        body: JSON.stringify({ content, name: documentName }),
+    async ([url, body]) => {
+      const response = await fetch(url, {
+        body: JSON.stringify(body),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
       return { body: await response.text(), status: response.status };
     },
-    [issueKey, name, markdown] as const
+    [route, upload] as const
   );
 }
 

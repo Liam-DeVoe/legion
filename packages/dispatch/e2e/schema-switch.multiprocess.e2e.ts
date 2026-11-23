@@ -15,6 +15,7 @@
  * then reads which process is behind. Both processes hold an editor socket opened before the
  * change, so whichever turns out to be the second one has the socket the last step needs.
  */
+import { type Body, routePath } from "../web/src/api/paths";
 import {
   baseUrl,
   createIssue,
@@ -86,8 +87,14 @@ async function uploadThrough(
   markdown: string
 ): Promise<{ body: string; status: number }> {
   const precondition = await documentBase(artifact, { process: target });
-  const response = await fetch(new URL(`/api/v1/issues/${issueKey}/artifacts`, baseUrl), {
-    body: JSON.stringify({ content: markdown, name, precondition }),
+  const upload: Body<"/api/v1/issues/{key}/artifacts", "post"> = {
+    content: markdown,
+    name,
+    precondition,
+  };
+  const path = routePath("post", "/api/v1/issues/{key}/artifacts", { key: issueKey });
+  const response = await fetch(new URL(path, baseUrl), {
+    body: JSON.stringify(upload),
     headers: {
       ...(await userHeaders("alice", target)),
       ...pinnedTo(target),
