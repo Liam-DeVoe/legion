@@ -16,6 +16,7 @@ import {
   type DispatchClient,
   DispatchGatewayError,
   DispatchServiceError,
+  DispatchWriteKept,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
 } from "../dispatch-http";
@@ -39,7 +40,7 @@ import {
   stringArg,
 } from "./context";
 import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
-import { heldFor, heldWriteLine } from "./held";
+import { heldFor, heldWriteLine, keptWriteResult } from "./held";
 import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { formatCheckResults } from "./render-results";
@@ -250,6 +251,45 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   }
 }
 
+/** A closing reason `dispatch issue-update` posted before its close: the message's id, its
+ *  reference, and `held` where the reviewer holds it. */
+interface ClosingNote {
+  readonly id: string;
+  readonly ref: string;
+  readonly held: HeldState | undefined;
+}
+
+/** What `dispatch issue-update` prints for its update Dispatch kept beside a held issue: the line
+ *  every kept write prints (`keptWriteResult`), then, for a close, where its reason is, landed or
+ *  held, so the caller never posts it again. */
+function keptUpdateResult(
+  kept: DispatchWriteKept,
+  issueKey: string,
+  note: ClosingNote | undefined
+): DispatchToolResult {
+  const result = keptWriteResult(kept);
+  if (note === undefined) return result;
+  return {
+    text: [
+      result.text,
+      note.held === undefined
+        ? `The closing reason of ${issueKey} landed as message ${note.id} (${note.ref}).`
+        : heldWriteLine(
+            note.held,
+            "message",
+            note.id,
+            ` (${note.ref}), the closing reason of ${issueKey}`
+          ),
+    ].join("\n"),
+    details: {
+      ...result.details,
+      issue: issueKey,
+      message: note.id,
+      ...(note.held === undefined ? {} : { message_held: note.held }),
+    },
+  };
+}
+
 /** `dispatch issue-update`: change one issue's fields, posting a closing reason first. */
 export async function issueUpdateCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, issue } = context;
@@ -297,9 +337,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       `${issueKey} closed at ${before.closed_at}, so the reason was not posted and the close was not sent`
     );
   }
-  let closingNote:
-    | { readonly id: string; readonly ref: string; readonly held: HeldState | undefined }
-    | undefined;
+  let closingNote: ClosingNote | undefined;
   if (reason !== undefined) {
     try {
       const message = await client.message(issueKey, { body: reason, actor });
@@ -369,6 +407,10 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     // The update is this call's own last write: one that landed without its answer is the
     // call's landing, which the caller reports as done.
     if (error instanceof DispatchWriteLandedError) throw error;
+    // Dispatch kept the update beside a held issue its body names (`--blocked-by`, `--parent`,
+    // `--before`, `--after`), to run right after that issue posts: it was accepted, so the call
+    // did what it was asked, a close with its reason included.
+    if (error instanceof DispatchWriteKept) return keptUpdateResult(error, issueKey, closingNote);
     // A URL links exactly one issue. A server from before EXTERNAL_LINK_TAKEN answers the
     // unique-index violation with 500 INTERNAL, which names nothing; say what it means. A
     // gateway's 500 page is not that answer, and gets no such reading. A 500 can also come after

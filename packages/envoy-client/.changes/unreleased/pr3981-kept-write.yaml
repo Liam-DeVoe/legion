@@ -15,8 +15,11 @@ body: |-
   and so does `dispatch issue-update` of a posted issue whose `--blocked-by`, `--parent`, `--before`
   or `--after` names a held issue. Given a `dispatch://` reference those four read the text first,
   as `dispatch issue-update` and `dispatch follow --action follow` always do, and Dispatch answers a
-  session's read of a held text `409 HELD_TEXT`, so they send no write. A picture that Dispatch
-  keeps fails its call before the call's own write, and says that the picture was not uploaded yet.
+  session's read of a held text `409 HELD_TEXT`, so they send no write. Where that kept
+  `dispatch issue-update` closes the issue with `--reason`, the reason is posted first, and the
+  line after the kept one says where it is: the message it landed as, or the held line of the
+  message the reviewer holds. A picture that Dispatch keeps fails its call before the call's own
+  write, and says that the picture was not uploaded yet.
   Three kinds of write are not kept: a new ask, comment or message on a held issue, and a new issue
   under a held issue or blocked by one, which the reviewer holds under an id of its own and answers
   `201` in its whole shape; a reply to a delivered message or mention, and a delivery's resend or

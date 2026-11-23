@@ -22,7 +22,9 @@ import { DispatchClient } from "../dispatch-http";
 // read that as an answer of something in Dispatch's place. Its Markdown round trip carries its key back first. `dispatch
 // issue-update` reads the issue before its write, and Dispatch answers
 // a session's read of a held issue 409 HELD_TEXT (`answerHeldRead`, held_routes.go), so its
-// update is never sent. Each row drives the `dispatch` command against a stub Dispatch that
+// update is never sent; an update of a posted issue whose body names a held one (`blocked_by`,
+// `parent`, `rank`) is kept beside that one (`heldBodyNames`), its closing reason posted or held
+// before it. Each row drives the `dispatch` command against a stub Dispatch that
 // answers as Dispatch does, as `dispatch-review.test.ts` does; the last rows read the client
 // alone. Dispatch keeps such a write only for a client that says it reads that 202, with
 // `Dispatch-Accepts-Kept-Write: 1`, which `DispatchClient` sends on every write, and answers any
@@ -142,6 +144,38 @@ const server = Bun.serve({
           },
           { status: 201, headers: echo }
         );
+      // A posted issue, whose update names the held one: Dispatch keeps the update beside it
+      // (`heldBodyNames`). Its closing reason, a message on the posted issue, is no write Dispatch
+      // keeps: it posts (DSP-2) or the reviewer holds it under its own id (DSP-3).
+      case "GET /api/v1/issues/DSP-2":
+      case "GET /api/v1/issues/DSP-3":
+        return Response.json({
+          key: pathname.slice("/api/v1/issues/".length),
+          title: "Native workspace release",
+          status: "in_progress",
+          closed_at: null,
+          labels: [],
+          route: null,
+          external_links: [],
+        });
+      case "PATCH /api/v1/issues/DSP-2":
+      case "PATCH /api/v1/issues/DSP-3":
+        return kept(request, echo);
+      case "POST /api/v1/issues/DSP-2/messages":
+        return Response.json(
+          { id: "message-8", issue_key: "DSP-2", body: body.body },
+          { status: 201, headers: echo }
+        );
+      case "POST /api/v1/issues/DSP-3/messages":
+        return Response.json(
+          {
+            id: "message-9",
+            issue_key: "DSP-3",
+            body: body.body,
+            held: { state: "reviewing", deadline: null },
+          },
+          { status: 201, headers: echo }
+        );
     }
     return Response.json({ error: `unexpected ${route}` }, { status: 500 });
   },
@@ -257,6 +291,74 @@ describe("a write Dispatch keeps beside a held text", () => {
     expect(stderr).toBe("");
     expect(code).toBe(1);
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/issues/DSP-1" }]);
+  });
+
+  // A posted issue's update that names a held issue is kept beside it: the command prints the
+  // kept line, as every kept write does.
+  test("dispatch issue-update of a posted issue blocked by a held one prints the kept line and exits 0", async () => {
+    const { code, stdout, stderr } = await run([
+      "issue-update",
+      "--issue",
+      "DSP-2",
+      "--blocked-by",
+      HELD_ISSUE,
+    ]);
+
+    expect(stderr).toBe("");
+    expect(stdout).toBe(`${KEPT_LINE}\n`);
+    expect(code).toBe(0);
+    expect(writes()).toEqual(["PATCH /api/v1/issues/DSP-2"]);
+  });
+
+  // The close's reason posts first, then Dispatch keeps the close: the close is accepted, and
+  // will run, so the command prints the kept line and the message its reason landed as, and
+  // exits 0. Before, the close's error path read the kept write as one that may or may not have
+  // landed, and the command failed saying to read the issue's status before retrying.
+  test("a kept close says the message its reason landed as, and exits 0", async () => {
+    const { code, stdout, stderr } = await run([
+      "issue-update",
+      "--issue",
+      "DSP-2",
+      "--status",
+      "done",
+      "--reason",
+      "Shipped in the native workspace release.",
+      "--blocked-by",
+      HELD_ISSUE,
+    ]);
+
+    expect(stderr).toBe("");
+    expect(stdout).toBe(
+      `${KEPT_LINE}\nThe closing reason of DSP-2 landed as message message-8 (dispatch://DSP-2/message/message-8).\n`
+    );
+    expect(code).toBe(0);
+    expect(writes()).toEqual(["POST /api/v1/issues/DSP-2/messages", "PATCH /api/v1/issues/DSP-2"]);
+  });
+
+  // A reason the reviewer holds is not on the issue yet: the line after the kept one says it is
+  // held, under the id it posts as, as the close's own answer would.
+  test("a kept close says its reason is held, and exits 0", async () => {
+    const { code, stdout, stderr } = await run([
+      "issue-update",
+      "--issue",
+      "DSP-3",
+      "--status",
+      "done",
+      "--reason",
+      "Shipped in the native workspace release.",
+      "--blocked-by",
+      HELD_ISSUE,
+    ]);
+
+    expect(stderr).toBe("");
+    expect(stdout).toBe(
+      `${KEPT_LINE}\nHeld for review (reviewing): message message-9 ` +
+        "(dispatch://DSP-3/message/message-9), the closing reason of DSP-3. No person sees it " +
+        "until it posts. `dispatch held message-9` reads it and what the reviewer found; a " +
+        "finding also reaches you as a message of its own.\n"
+    );
+    expect(code).toBe(0);
+    expect(writes()).toEqual(["POST /api/v1/issues/DSP-3/messages", "PATCH /api/v1/issues/DSP-3"]);
   });
 
   // A DELETE goes through the client's path for a PUT or a DELETE, not the write loop of a POST

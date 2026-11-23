@@ -928,8 +928,11 @@ unfollow` and `resolve-comment` when given the text's full id, and so does `issu
 posted issue whose `--blocked-by`, `--parent`, `--before` or `--after` names a held issue. Given a
 `dispatch://` reference those four read the text first, as `issue-update` and `follow --action
 follow` always do, and Dispatch answers a session's read of a held text `409 HELD_TEXT`, so they
-send no write. A picture upload ahead of the command's own write that is kept fails the command,
-saying the picture was not uploaded yet, since the call's text has no address for it until it is.
+send no write. Where that kept `issue-update` closes the issue with `--reason`, the reason is
+posted first, and the line after the kept one says where it is: the message it landed as, or the
+held line of the message the reviewer holds. A picture upload ahead of the command's own write
+that is kept fails the command, saying the picture was not uploaded yet, since the call's text
+has no address for it until it is.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
