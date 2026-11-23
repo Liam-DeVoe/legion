@@ -1346,9 +1346,11 @@ A pod that holds another session store than a pod created now would holds a move
 Under `postgres` the image probe's container is told `OMP_SESSION_SQL_DSN_FILE` too, so `legion probe-image`, which reads the providers directory as the shim does, never exports the URL into Oh My Pi's environment;
 under `cloudsql-iam` the probe's pod mounts no session key and is told no pointer at all (`sessionDSNPointer`, `manifest.go`).
 
-A resumed session also restores the model it last used, and the Oh My Pi `.omp-pin` names refuses, in `--mode rpc`, to resume one whose model the profile no longer has (`Could not restore model <provider>/<model>`, exit 1).
-So a change to the pods' model route (`runtime.kubernetes.pod`, `provider_keys`) that drops a model fails the launch of every agent resuming a session on it until the route offers that model again.
-Keep the route unchanged across the copy below in particular: there every session outlives the volume it was written on.
+A resumed Oh My Pi session runs the model its launch names, not the one it last used.
+Every launch of a pod's Oh My Pi names one with `--model`: the `model` of a role of `roles`, or `@default` (`agentArgv`, `internal/runtime/sandbox/manifest.go`).
+The Oh My Pi `.omp-pin` names restores a session's saved model only for a launch that names none (read in its `sdk.ts`, not run).
+Only such a launch is refused, in `--mode rpc`, when the profile no longer has that model (`Could not restore model <provider>/<model>`, exit 1).
+So a change to the pods' model route (`runtime.kubernetes.pod`, `provider_keys`) that drops a model a session last used fails none of its resumes.
 
 ### What `cloudsql-iam` puts in a pod
 
