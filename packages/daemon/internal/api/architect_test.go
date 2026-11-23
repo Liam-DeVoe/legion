@@ -40,7 +40,6 @@ func TestArchitectFactRoutesRejectMissingGrantID(t *testing.T) {
 		"/legion/v1/phase/backward",
 		"/legion/v1/phase/retry",
 		"/legion/v1/signoff",
-		"/legion/v1/children/park",
 		"/legion/v1/children/rerun",
 	} {
 		t.Run(route, func(t *testing.T) {
@@ -56,6 +55,15 @@ type factRecorder struct {
 	mu      sync.Mutex
 	facts   []intake.Fact
 	refusal *intake.Refusal
+	// told is each issue and task the completion route's hook was told of (HandoffCompleted), in
+	// order.
+	told []toldCompletion
+}
+
+// toldCompletion is one call of the completion route's hook: the issue, and the task of the plan
+// whose step completed ("" for an issue with no plan rows).
+type toldCompletion struct {
+	issue, task string
 }
 
 func (r *factRecorder) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (intake.Result, error) {
@@ -69,6 +77,20 @@ func (r *factRecorder) recorded() []intake.Fact {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]intake.Fact(nil), r.facts...)
+}
+
+// completed is the completion route's hook (Options.HandoffCompleted), which records what it is told.
+func (r *factRecorder) completed(issue, task string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.told = append(r.told, toldCompletion{issue: issue, task: task})
+}
+
+// completions is each call of the completion route's hook, in order.
+func (r *factRecorder) completions() []toldCompletion {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]toldCompletion(nil), r.told...)
 }
 
 type statusWrite struct {
@@ -453,7 +475,7 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 
 	retryGrant := architect.grant(t)
 	retry := h.request(http.MethodPost, "/legion/v1/phase/retry", map[string]any{
-		"grantId": retryGrant, "issue": "LEGION-209", "decision": "retry",
+		"grantId": retryGrant, "issue": "LEGION-209", "decision": "retry", "task": "b",
 	}, nil)
 	if retry.Code != http.StatusOK {
 		t.Fatalf("phase retry = %d: %s", retry.Code, retry.Body)
@@ -461,7 +483,7 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 
 	signoffGrant := architect.grant(t)
 	signoff := h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
-		"grantId": signoffGrant, "issue": "LEGION-208",
+		"grantId": signoffGrant, "issue": "LEGION-208", "task": "a",
 	}, nil)
 	if signoff.Code != http.StatusOK {
 		t.Fatalf("signoff = %d: %s", signoff.Code, signoff.Body)
@@ -495,10 +517,10 @@ func TestArchitectAndPhaseRoutesApplyTheRequiredFacts(t *testing.T) {
 		t.Fatalf("gate fact = %#v", got[0])
 	}
 	if fact, ok := got[1].(intake.RetryOrEscalate); !ok || fact.Issue != "LEGION-209" ||
-		fact.Decision != intake.RetryDecision {
+		fact.Decision != intake.RetryDecision || fact.Task != "b" {
 		t.Fatalf("retry fact = %#v", got[1])
 	}
-	if fact, ok := got[2].(intake.SignOff); !ok || fact.Issue != "LEGION-208" {
+	if fact, ok := got[2].(intake.SignOff); !ok || fact.Issue != "LEGION-208" || fact.Task != "a" {
 		t.Fatalf("signoff fact = %#v", got[2])
 	}
 	if fact, ok := got[3].(intake.BackwardMove); !ok || fact.Issue != "LEGION-208" ||
@@ -832,48 +854,42 @@ func TestWaveReleaseOfAChildNamedTwiceWritesItOnce(t *testing.T) {
 	}
 }
 
-// An architect parks a child of its tree and runs a parked or signed-off child again by the same
-// Dispatch status a human would move it by: backlog, then todo. Each route applies its own write in
-// the request, as the write's event, at the sequence Dispatch answered it with and with the daemon's
-// own actor, so it takes the human move's path through the workflow, which parks the child (leave)
-// or starts its next run under the live tree (reenterChild), without waiting for the event. The
-// tree root is never a child, a child already out of the workflow has nothing to park, a running
-// child is parked before it runs again, a lingering tree runs nothing more, and a refused write
-// applies nothing.
-func TestParkAndRerunMoveAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
+// An architect runs a child that is out of the workflow again by the same Dispatch status a person
+// would move it by: todo. The route applies its own write in the request, as the write's event, at
+// the sequence Dispatch answered it with and with the daemon's own actor, so it takes the person's
+// move's path through the workflow, which starts the child's next run under the live tree
+// (reenterChild), without waiting for the event. The tree root is never a child, a running child
+// is refused until its owning architect writes backlog on it, an issue of another tree is outside
+// the architect's, a lingering tree runs nothing more, and a refused write applies nothing.
+func TestRerunMovesAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
 	h, facts, statuses := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209", "LEGION-210")
 	setIssue(t, h, "LEGION-210", func(issue *record.Issue) { issue.Phase, issue.Status = phase.Done, "done" })
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
-	child := func(route, issue string) *httptest.ResponseRecorder {
-		return h.request(http.MethodPost, "/legion/v1/children/"+route, map[string]any{"grantId": architect.grant(t), "issue": issue}, nil)
+	rerun := func(issue string) *httptest.ResponseRecorder {
+		return h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": issue}, nil)
 	}
 
-	if recorder := child("park", "LEGION-209"); recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "{}" {
-		t.Fatalf("park = %d %s, want 200 {}", recorder.Code, recorder.Body)
-	}
-	if recorder := child("rerun", "LEGION-210"); recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "{}" {
+	if recorder := rerun("LEGION-210"); recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "{}" {
 		t.Fatalf("rerun = %d %s, want 200 {}", recorder.Code, recorder.Body)
 	}
-	want := []statusWrite{{issue: "LEGION-209", status: "backlog"}, {issue: "LEGION-210", status: "todo"}}
-	if len(statuses.writes) != 2 || statuses.writes[0] != want[0] || statuses.writes[1] != want[1] {
+	want := statusWrite{issue: "LEGION-210", status: "todo"}
+	if len(statuses.writes) != 1 || statuses.writes[0] != want {
 		t.Fatalf("Dispatch writes = %#v, want %#v", statuses.writes, want)
 	}
 
 	for _, tc := range []struct {
-		route, issue string
-		status       int
-		code         string
+		issue  string
+		status int
+		code   string
 	}{
-		{route: "park", issue: "LEGION-208", status: http.StatusForbidden, code: "CHILD_REQUIRED"},
-		{route: "rerun", issue: "LEGION-208", status: http.StatusForbidden, code: "CHILD_REQUIRED"},
-		{route: "park", issue: "LEGION-210", status: http.StatusConflict, code: "CHILD_NOT_RUNNING"},
-		{route: "rerun", issue: "LEGION-209", status: http.StatusConflict, code: "CHILD_RUNNING"},
-		{route: "park", issue: "LEGION-777", status: http.StatusNotFound, code: "ISSUE_NOT_FOUND"},
-		{route: "rerun", issue: "not a key", status: http.StatusBadRequest, code: "INVALID_ISSUE"},
+		{issue: "LEGION-208", status: http.StatusForbidden, code: "CHILD_REQUIRED"},
+		{issue: "LEGION-209", status: http.StatusConflict, code: "CHILD_RUNNING"},
+		{issue: "LEGION-777", status: http.StatusNotFound, code: "ISSUE_NOT_FOUND"},
+		{issue: "not a key", status: http.StatusBadRequest, code: "INVALID_ISSUE"},
 	} {
-		t.Run(tc.route+" "+tc.issue, func(t *testing.T) {
-			recorder := child(tc.route, tc.issue)
+		t.Run(tc.issue, func(t *testing.T) {
+			recorder := rerun(tc.issue)
 			if tc.status != http.StatusBadRequest && tc.status != http.StatusNotFound && !strings.Contains(recorder.Body.String(), tc.issue) {
 				t.Fatalf("refusal %s does not name %s", recorder.Body, tc.issue)
 			}
@@ -881,8 +897,8 @@ func TestParkAndRerunMoveAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
 		})
 	}
 	foreign := newLiveClaim(t, h, "LEGION-999", claim.RoleArchitect)
-	refused(t, h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{
-		"grantId": foreign.grant(t), "issue": "LEGION-209",
+	refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{
+		"grantId": foreign.grant(t), "issue": "LEGION-210",
 	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
 	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{
@@ -891,23 +907,20 @@ func TestParkAndRerunMoveAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
 
 	until := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Phase, issue.LingerUntil = phase.Done, &until })
-	refused(t, child("rerun", "LEGION-210"), http.StatusConflict, "TREE_LINGERING")
+	refused(t, rerun("LEGION-210"), http.StatusConflict, "TREE_LINGERING")
 	setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Phase, issue.LingerUntil = phase.Implementing, nil })
 
 	statuses.err = &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}
-	refused(t, child("rerun", "LEGION-210"), http.StatusBadGateway, "UNAVAILABLE")
+	refused(t, rerun("LEGION-210"), http.StatusBadGateway, "UNAVAILABLE")
 	statuses.err = errors.New("connection refused")
-	refused(t, child("park", "LEGION-209"), http.StatusBadGateway, "DISPATCH_FAILED")
+	refused(t, rerun("LEGION-210"), http.StatusBadGateway, "DISPATCH_FAILED")
 
-	if len(statuses.writes) != 2 {
-		t.Fatalf("Dispatch writes after refusals = %#v, want only the park and the re-run", statuses.writes)
+	if len(statuses.writes) != 1 {
+		t.Fatalf("Dispatch writes after refusals = %#v, want only the rerun", statuses.writes)
 	}
-	var wantFacts []intake.Fact
-	for _, write := range want {
-		wantFacts = append(wantFacts, intake.DispatchIssue{Key: write.issue, Seq: 1, Type: "issue.updated", Status: write.status, DaemonActor: true, StatusMove: true, ClaimKnown: true})
-	}
+	wantFacts := []intake.Fact{intake.DispatchIssue{Key: want.issue, Seq: 1, Type: "issue.updated", Status: want.status, DaemonActor: true, StatusMove: true, ClaimKnown: true}}
 	if got := facts.recorded(); !reflect.DeepEqual(got, wantFacts) {
-		t.Fatalf("facts = %#v, want each route's own write, as its event, and nothing for a refused write: %#v", got, wantFacts)
+		t.Fatalf("facts = %#v, want the route's own write, as its event, and nothing for a refused write: %#v", got, wantFacts)
 	}
 }
 

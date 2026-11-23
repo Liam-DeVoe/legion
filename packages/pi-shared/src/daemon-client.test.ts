@@ -335,6 +335,10 @@ test("a state from a daemon a release ahead parses without its unknown top-level
         daemon: client,
         claim,
         build: { name: "@sjawhar/pi-shared", version: "0.0.0", pluginContract: CONTRACT },
+        env: {
+          LEGION_WORKSPACE: "/state/workspaces/acme/widgets/legion-208",
+          LEGION_ISSUE: "LEGION-208",
+        },
         handoffReport: async () => ({ commit: "a".repeat(40) }),
         branchHead: async () => {
           throw new Error("no branch-head lookup expected");
@@ -382,7 +386,6 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly phaseBackward: (body: object) => Promise<unknown>;
     readonly phaseRetry: (body: object) => Promise<unknown>;
     readonly signOff: (body: object) => Promise<unknown>;
-    readonly childPark: (body: object) => Promise<unknown>;
     readonly childRerun: (body: object) => Promise<unknown>;
     readonly planRegister: (body: object) => Promise<unknown>;
     readonly taskStop: (body: object) => Promise<unknown>;
@@ -409,7 +412,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       },
       "handoff-complete.json",
     ],
-    // A tester's fail names the step its task returns to (contract 211).
+    // A tester's fail names the step its task returns to (contract 219).
     [
       "handoffComplete",
       "/legion/v1/handoff/complete",
@@ -490,18 +493,12 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "signoff.json",
     ],
     [
-      "childPark",
-      "/legion/v1/children/park",
-      { grantId: "grant-208", issue: "LEGION-209" },
-      "child-park.json",
-    ],
-    [
       "childRerun",
       "/legion/v1/children/rerun",
       { grantId: "grant-208", issue: "LEGION-209" },
       "child-rerun.json",
     ],
-    // The owner's plan (contract 211): register_plan answers the plan it took, stop_task nothing.
+    // The owner's plan (contract 219): register_plan answers the plan it took, stop_task nothing.
     [
       "planRegister",
       "/legion/v1/plans/register",

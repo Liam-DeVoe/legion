@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"slices"
@@ -15,10 +16,10 @@ import (
 )
 
 // The commands the daemon asks this shim for: the working copy's adoption, answered in a
-// goroutine of its own (answer), and the context every such command runs on, which the shim ends
-// at its own end and waits out before Run returns (endCommands, drainCommands). The release's save
-// is a command of this kind too and lives in bundle.go, which is long enough to be a file of its
-// own.
+// goroutine of its own (answer), the context every such command runs on, which the shim ends at
+// its own end and waits out before Run returns (endCommands, drainCommands), and the start of
+// every command that runs in the role's workspace (openWorkspace). The release's save is a
+// command of this kind too and lives in bundle.go, which is long enough to be a file of its own.
 
 // answer runs one frame's answer — the adoption, the release's save — in a goroutine of its own,
 // so the connection's reader never waits on the git and jj it starts, and counts it so that Run
@@ -113,9 +114,55 @@ func (s *shim) drainCommands() {
 	}
 }
 
+// openedWorkspace is what one request of the daemon's runs its commands with in the workspace
+// its role works in (openWorkspace): the workspace, the jj of PATH, and run, which runs one
+// command there with the request's environment and within its budget, with stdin fed to it, and
+// answers its trimmed standard output (workspace.RunCommand). runIn is run in another directory,
+// with the same environment, context and budget: the adoption's, in the working copy of a task
+// beside the issue's (adoptionDir). ctx is the request's command context, bounded by its budget,
+// for work beside the commands run runs (workspace.ProvisionTask of a task's working copy).
+type openedWorkspace struct {
+	dir   string
+	jj    string
+	run   func(stdin []byte, args ...string) (string, error)
+	runIn func(dir string, stdin []byte, args ...string) (string, error)
+	ctx   context.Context
+}
+
+// openWorkspace is the one start of every request a shim answers in its role's workspace: the
+// save (runBundle), the read (readWorkspaceWork) and the adoption (runAdoption). The workspace is
+// the one the shim's environment names in LEGION_WORKSPACE, which the runtime sets on every role,
+// and the jj is the one of PATH, which the pane's or pod's own shell runs, since no runtime pins it
+// on a pane or a pod. env is the environment the request's commands run with: the shim's own
+// (s.cfg.Env) for the save and the read, and for the adoption that environment with the requested
+// identity added (JJ_USER, JJ_EMAIL). The budget is a bound on the shim's command context
+// (s.commands) rather than a context of its own, so the shim's own end ends the request's commands
+// at once and a command that outlives the budget is still reported as a timeout. The caller calls
+// done once its commands have run. verb is what the caller does to the workspace ("bundle",
+// "read", "adopt"), which both refusals name: "no workspace to <verb>" for a shim with no
+// LEGION_WORKSPACE, and "no jj to <verb> the workspace with" for a PATH with no jj.
+func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (opened openedWorkspace, done context.CancelFunc, err error) {
+	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
+	if dir == "" {
+		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: LEGION_WORKSPACE is not set; no workspace to %s", verb)
+	}
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		return openedWorkspace{}, nil, fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to %s the workspace with", os.Getenv("PATH"), verb)
+	}
+	ctx, cancel := context.WithTimeout(s.commands, budget)
+	started := time.Now()
+	runIn := func(at string, stdin []byte, args ...string) (string, error) {
+		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, at, stdin, args)
+	}
+	run := func(stdin []byte, args ...string) (string, error) { return runIn(dir, stdin, args...) }
+	return openedWorkspace{dir: dir, jj: jj, run: run, runIn: runIn, ctx: ctx}, cancel, nil
+}
+
 // adopt answers `adopt-working-copy` (the adoption branch of createShimBridge's onLine,
 // worker-shim.ts). A request the shim cannot act on is answered with the reason when it names an
-// id to answer.
+// id to answer. The answer goes out as one line, so a refusal carries at most maxAnswerErrorBytes
+// of its reason (cutAnswerError): jj's standard error has no bound of its own.
 func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	result := shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -123,9 +170,9 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 			s.log.Printf("[worker-shim] refusing an adopt-working-copy frame: %v", err)
 			return
 		}
-		result.OK, result.Error = false, err.Error()
+		result.OK, result.Error = false, cutAnswerError(err.Error())
 	} else if err := s.runAdoption(request); err != nil {
-		result.OK, result.Error = false, err.Error()
+		result.OK, result.Error = false, cutAnswerError(err.Error())
 	}
 	s.toDaemon(result)
 }
@@ -143,37 +190,37 @@ func describedArgs(jj, dir string) []string {
 	return []string{jj, "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", dir}
 }
 
-// runAdoption runs the adoption with PATH's jj — the one the pane's own shell runs, since no
-// runtime pins a jj on a pane or pod — on the workspace the shim's environment names in
-// LEGION_WORKSPACE, which the runtime sets on every pane, under the requested identity and
-// budget. Every role of an issue shares the workspace, so a working copy the previous role left
-// described (its pushed commit) is kept as it is, and the incoming role starts on a fresh one of
-// its own (`jj new`): otherwise its work would land in the previous role's commit, authored by the
-// previous role's App. One read decides which of the two changes the working copy needs, and only
-// that one runs. Both commands run in the workspace itself, never in the shim's own directory: jj
-// reads the repository of the directory it runs in, whatever -R names, and migrates that
-// repository's legacy configuration (workspace.RunCommand). A failure is reported the way the
-// shipped runner does (commandFailure, packages/workspace/src/workspace.ts): the daemon decides
-// what a failed adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and
-// refuses (runWorkingCopyAdoption, worker-shim.ts); a PATH without jj refuses naming jj and the
-// PATH searched. The budget is a bound on the shim's command context (s.commands) rather than a
-// context of its own, so the shim's own end ends this jj at once and a jj that outlives the budget
-// is still reported as a timeout.
+// runAdoption runs the adoption under the requested identity and budget, with PATH's jj
+// (openWorkspace): the one the pane's own shell runs, since no runtime pins a jj on a pane or pod.
+// It runs in the working copy of the task whose branch the request names (adoptionDir): the
+// workspace the shim's environment names in LEGION_WORKSPACE, which the runtime sets on every
+// pane, for the issue's own branch, and the task's working copy beside it otherwise, made first
+// when it is not there. Every role of a task shares its working copy, so a working copy the
+// previous role left described (its pushed commit) is kept as it is, and the incoming role starts
+// on a fresh one of its own (`jj new`): otherwise its work would land in the previous role's
+// commit, authored by the previous role's App. One read decides which of the two changes the
+// working copy needs, and only that one runs. Both commands run in the working copy itself, never
+// in the shim's own directory: jj reads the repository of the directory it runs in, whatever -R
+// names, and migrates that repository's legacy configuration (workspace.RunCommand). A failure is
+// reported the way the shipped runner does (commandFailure, packages/workspace/src/workspace.ts):
+// the daemon decides what a failed adoption means. A shim without LEGION_WORKSPACE was not started
+// by a runtime, and refuses (runWorkingCopyAdoption, worker-shim.ts); a PATH without jj refuses
+// naming jj and the PATH searched.
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
-	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
-	if dir == "" {
-		return errors.New("worker-shim: LEGION_WORKSPACE is not set; no workspace to adopt")
-	}
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		return fmt.Errorf("worker-shim: jj is not on PATH (%s); no jj to adopt the working copy with", os.Getenv("PATH"))
-	}
-	budget := time.Duration(request.TimeoutMs) * time.Millisecond
-	ctx, cancel := context.WithTimeout(s.commands, budget)
-	defer cancel()
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
-	started := time.Now()
-	described, err := workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, nil, describedArgs(jj, dir))
+	budget := time.Duration(request.TimeoutMs) * time.Millisecond
+	opened, done, err := s.openWorkspace("adopt", env, budget)
+	if err != nil {
+		return err
+	}
+	defer done()
+	jj := opened.jj
+	dir, err := s.adoptionDir(opened.ctx, budget, jj, opened.dir, request.Branch)
+	if err != nil {
+		return err
+	}
+	run := func(stdin []byte, args ...string) (string, error) { return opened.runIn(dir, stdin, args...) }
+	described, err := run(nil, describedArgs(jj, dir)...)
 	if err != nil {
 		return err
 	}
@@ -181,6 +228,41 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	if described != "" {
 		change = []string{jj, "new", "-R", dir}
 	}
-	_, err = workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, nil, change)
+	_, err = run(nil, change...)
 	return err
+}
+
+// adoptionDir is the working copy the adoption of branch runs in, derived from the issue's own
+// working copy issue (LEGION_WORKSPACE) and the branch, never from a path the daemon sends: issue
+// itself for "" — the frame of a daemon before the branch — and for the issue's own branch, and
+// the task's working copy beside it otherwise (workspace.TaskDir), a branch of another issue
+// refused. A task's working copy that is not there yet is made here, a workspace of the issue's
+// clone on the task's branch as origin has it (workspace.ProvisionTask, under the clone's lock
+// across processes), with the git and jj of PATH and the adoption's budget for each command. Each
+// task's working copy is warmed for CodeGraph as the issue's is (warmCodegraphOf).
+func (s *shim) adoptionDir(ctx context.Context, budget time.Duration, jj, issue, branch string) (string, error) {
+	if branch == "" {
+		return issue, nil
+	}
+	dir, err := workspace.TaskDir(issue, branch)
+	if err != nil {
+		return "", fmt.Errorf("worker-shim: the working copy of %s: %w", branch, err)
+	}
+	if dir == issue {
+		return issue, nil
+	}
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		git, err := exec.LookPath("git")
+		if err != nil {
+			return "", fmt.Errorf("worker-shim: git is not on PATH (%s); no git to make the working copy of %s with", os.Getenv("PATH"), branch)
+		}
+		run := workspace.NewRunner(budget, map[string]string{"git": git, "jj": jj})
+		if _, err := workspace.ProvisionTask(ctx, run, issue, branch, func(line string) { s.log.Printf("[worker-shim] %s", line) }); err != nil {
+			return "", fmt.Errorf("worker-shim: make the working copy of %s: %w", branch, err)
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("worker-shim: the working copy of %s: %w", branch, err)
+	}
+	s.warmCodegraphOf(dir)
+	return dir, nil
 }

@@ -102,7 +102,8 @@ type Config struct {
 	// Argv is the wrapped OMP invocation.
 	Argv []string
 	// Env is the shim's own environment (os.Environ()). OMP and the adoption command inherit it,
-	// and the adoption rewrites the workspace its LEGION_WORKSPACE names.
+	// and the adoption rewrites the working copy of the step's task: the workspace its
+	// LEGION_WORKSPACE names, or a task's working copy beside it (runAdoption).
 	Env []string
 	// ProviderEnv is NAME=value pairs for OMP's environment only (--provider-env-dir).
 	ProviderEnv []string
@@ -110,7 +111,8 @@ type Config struct {
 	// tmux pane, which is never enrolled.
 	AgentSecrets *AgentSecrets
 	// WarmCodegraph, when set, is started once with the workspace the shim's LEGION_WORKSPACE
-	// names, on the first line the wrapped process writes: Oh My Pi's `ready` frame comes once its
+	// names, on the first line the wrapped process writes, and once with each task's working copy
+	// beside it, on the first adoption there: Oh My Pi's `ready` frame comes once its
 	// extensions are loaded and its RPC loop serves, so the index build the pod needs starts
 	// behind the launch, never on it (`legion worker-shim --warm-codegraph`,
 	// workspace.WarmCodegraphIndex). It runs in its own goroutine under a context the shim ends
@@ -265,14 +267,21 @@ type shim struct {
 	// Run's deferred Wait before it returns.
 	renewers sync.WaitGroup
 
-	// warmed guards cfg.WarmCodegraph: called on the child's first line and never again, not for
-	// a later frame and not when a redialled connection finds the child already running. warmUps
-	// is that one goroutine, which Run waits for (drainWarmUp) before returning. warmStarted is
-	// set once by warmCodegraph before its goroutine starts and read by drainWarmUp, which
-	// otherwise returns at once, so a shim that never warmed registers no wait on its clock.
+	// warmed guards the warm-up of LEGION_WORKSPACE: started on the child's first line and never
+	// again, not for a later frame and not when a redialled connection finds the child already
+	// running. The working copy of each task the shim adopts in is warmed once more, on its first
+	// adoption (warmCodegraphOf). warmUps is those goroutines, which Run waits for (drainWarmUp)
+	// before returning. warmStarted is set by warmCodegraphOf before its first goroutine starts
+	// and read by drainWarmUp, which otherwise returns at once, so a shim that never warmed
+	// registers no wait on its clock. warmMu holds warmedDirs, each directory a warm-up was
+	// started for, and warmsOver, which drainWarmUp sets before it waits, so no warm-up starts
+	// once that wait has begun.
 	warmed      sync.Once
 	warmUps     sync.WaitGroup
 	warmStarted atomic.Bool
+	warmMu      sync.Mutex
+	warmedDirs  map[string]bool
+	warmsOver   bool
 
 	once sync.Once
 	code int
@@ -367,7 +376,7 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -384,6 +393,9 @@ func (s *shim) fromDaemon(line []byte) {
 		return
 	case shimwire.BundleWorkspace:
 		s.answer(func() { s.bundleWorkspace(f) })
+		return
+	case shimwire.WorkspaceWork:
+		s.answer(func() { s.workspaceWork(f) })
 		return
 	case shimwire.AgentSecretsEnrollment:
 		s.enroll(f)
@@ -553,10 +565,8 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 }
 
 // warmCodegraph starts cfg.WarmCodegraph for the workspace LEGION_WORKSPACE names, once the
-// wrapped process has written its first line (pump), under s.warm: the warm-up's build ends when
-// the child is told to stop or has exited, and Run waits for its return (drainWarmUp). The command
-// refuses --warm-codegraph without the variable (cmd/legion/worker_shim.go), so an empty value
-// here is a Config built by hand.
+// wrapped process has written its first line (pump). The command refuses --warm-codegraph without
+// the variable (cmd/legion/worker_shim.go), so an empty value here is a Config built by hand.
 func (s *shim) warmCodegraph() {
 	if s.cfg.WarmCodegraph == nil {
 		return
@@ -566,6 +576,26 @@ func (s *shim) warmCodegraph() {
 		s.log.Printf("[worker-shim] no CodeGraph warm-up: LEGION_WORKSPACE is unset")
 		return
 	}
+	s.warmCodegraphOf(dir)
+}
+
+// warmCodegraphOf starts cfg.WarmCodegraph for the working copy at dir, in a goroutine of its own
+// under s.warm, once for each directory over the shim's life: the build ends when the child is
+// told to stop or has exited, and Run waits for its return (drainWarmUp). A warm-up asked for
+// once that wait has begun is not started.
+func (s *shim) warmCodegraphOf(dir string) {
+	if s.cfg.WarmCodegraph == nil {
+		return
+	}
+	s.warmMu.Lock()
+	defer s.warmMu.Unlock()
+	if s.warmsOver || s.warmedDirs[dir] {
+		return
+	}
+	if s.warmedDirs == nil {
+		s.warmedDirs = map[string]bool{}
+	}
+	s.warmedDirs[dir] = true
 	s.warmStarted.Store(true)
 	s.warmUps.Add(1)
 	go func() {
@@ -582,6 +612,9 @@ func (s *shim) warmCodegraph() {
 // before the launcher's kill. A shim whose warm-up never started has nothing to drain and
 // registers no wait on its clock.
 func (s *shim) drainWarmUp() {
+	s.warmMu.Lock()
+	s.warmsOver = true
+	s.warmMu.Unlock()
 	if !s.warmStarted.Load() {
 		return
 	}

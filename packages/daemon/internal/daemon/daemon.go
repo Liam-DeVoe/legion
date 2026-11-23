@@ -1,7 +1,7 @@
 // Package daemon runs one legion: it opens the store its configuration names, brings the schema
-// forward, records the boot, supervises every role claim — the worker stream the shims dial, the
-// runtime their processes run under, one machine per claim — serves the API, and stops in the
-// order the durable record needs.
+// forward, records the boot, supervises every claim, one agent of an issue or the controller —
+// the worker stream the shims dial, the runtime their processes run under, one machine per claim —
+// serves the API, and stops in the order the durable record needs.
 package daemon
 
 import (
@@ -42,7 +42,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -551,6 +550,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		st.Close()
 		return err
 	}
+	// The Sandbox runtime's launches read the update round over a pod they would keep through the
+	// supervision, which exists only now; the runtime was built inside openSupervision before it
+	// (launchRounds). No machine exists yet, so no launch has asked.
+	if plan.launchRounds != nil {
+		plan.launchRounds.bind(s.roundPodEndsAtLaunch)
+	}
 	if plan.probe != nil {
 		report, err := plan.probe(ctx, s.runtime)
 		if err != nil {
@@ -881,7 +886,7 @@ type plan struct {
 	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
 	// supervisor's predicates; nil without a workflow, where every delivery is sent as it was
 	// queued and every tree closes.
-	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	phaseHolds   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
@@ -897,6 +902,12 @@ type plan struct {
 	// factory built before the workflow opens and the boot that fills it once it has hold the
 	// one holder. Nil under tmux, and for a replaced runtime, where no launcher reports.
 	volumeReports *volumeTrimReports
+	// launchRounds is how the Kubernetes runtime's launches read the update round over a pod
+	// they would keep (launchRounds, prepareSandbox, sandbox.Options.RoundPodEnds): a pointer, so
+	// the runtime built inside openSupervision and the boot that fills it once the supervision is
+	// open hold the one holder. Nil under tmux, whose panes run in no pod, and for a replaced
+	// runtime, which is handed no such reading.
+	launchRounds *launchRounds
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
 	// sessionLost and sessionStoreFault tell the workflow that a claim forgot its recorded session
@@ -1022,12 +1033,21 @@ type plan struct {
 // none, and its addressing names no owner. GitHubDirs itself names nothing until a bundle of
 // those Apps is built, since no pod may be compared against the boot's read, so it is not what
 // this asks.
-func (p plan) appOwners(runtimeName string) func(claim.Role) []string {
+//
+// deployed is the App of each role the deployment defines (deploymentApps): such a role's own App
+// is the one its github_app names, and an issue pod runs those roles beside Legion's. A role that
+// acts as no App (appauth.ErrRoleNotDefined) holds no bundle, so its addressing names no owner.
+func (p plan) appOwners(runtimeName string, deployed appauth.DeploymentApps) func(claim.Role) []string {
 	return func(role claim.Role) []string {
-		app := appauth.AppRoleFor(role)
+		app, err := appauth.AppRoleFor(role, deployed)
+		if err != nil {
+			return nil
+		}
 		apps := []appauth.AppRole{app}
 		if runtimeName == "kubernetes" {
-			apps = sandbox.PodAppRoles(role)
+			if apps, err = sandbox.PodAppRoles(role, deployed); err != nil {
+				return nil
+			}
 		}
 		owners, read := p.installed.Owners(app)
 		for _, other := range apps {
@@ -1212,7 +1232,8 @@ func prepareTmux(cfg config.Config, log *slog.Logger, o overrides, dispatchToken
 }
 
 // checkPaneRoleOverlays is the boot gate's read of the overlays each role names beyond the
-// operator's own, as that role's pane will start Oh My Pi: its PI_CONFIG_FILES,
+// operator's own (overlayRoles: Legion's, then each role the deployment defines), as that role's
+// pane will start Oh My Pi: its PI_CONFIG_FILES,
 // runtime.tmux.pi_config_files then the role's own files (role_config_files) and, for a workflow
 // role of a project that declares an arm naming overlays, that arm's files after them
 // (runtime.RoleOverlayValues, which the image probe's manifest builds its values with too), each
@@ -1236,7 +1257,7 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 	}
 	declared := experiment.DeclaredVariants(cfg.ExperimentsDeclared())
 	reads := capabilities.OverlayReads{}
-	for _, role := range config.RoleConfigRoles {
+	for _, role := range overlayRoles(cfg) {
 		own := cfg.RoleConfigFiles[role]
 		ownField := "role_config_files." + string(role)
 		for _, value := range runtime.RoleOverlayValues(role, own, declared) {
@@ -1297,14 +1318,15 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // tmuxRuntime builds the tmux runtime over the worker stream: the listener is its connection
 // directory, and the listener's address is the `--connect` every pane's shim is started with;
 // providerEnvDir, when set, is the `--provider-env-dir` beside it. The workflow's App tokens, when
-// the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential) and the
-// controller pane's own (appauth.ControllerCredential), which its refresh asks by the default
-// owner its launch recorded, both built over the owner accounts each App is installed on, which
-// the bundle reads at every build (appauth.Manager.InstalledOwners: from GitHub each time under
-// the App's JWT; in token mode the App's token_command's release of every installation, which may
-// be that of a run that finished up to appauth's finishedRunKeep before) and no repository list
-// bounds, and over served, the rename rule's answer of whether a repository is served
-// (repositories.servesRepository), with gh, the real gh boot resolved
+// the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential, minted as the
+// App the pane's role acts as, a role the deployment defines acting as the App its github_app
+// names: deploymentApps) and the controller pane's own (appauth.ControllerCredential), which its
+// refresh asks by the default owner its launch recorded, both built over the owner accounts each
+// App is installed on, which the bundle reads at every build (appauth.Manager.InstalledOwners:
+// from GitHub each time under the App's JWT; in token mode the App's token_command's release of
+// every installation, which may be that of a run that finished up to appauth's finishedRunKeep
+// before) and no repository list bounds, and over served, the rename rule's answer of whether a
+// repository is served (repositories.servesRepository), with gh, the real gh boot resolved
 // (daemonTools), the one each pane's `legion gh` runs, and the repository each claim's issue
 // works (claimRepository over the workflow's repository), which a pane adopted after a restart
 // holds its write token for; a daemon with no GitHub Apps hands the runtime none, and its panes
@@ -1323,9 +1345,10 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			// projects nothing and nothing compares one against left — a directory left out
 			// of one pane's bundle is left out of the next pane's by the mint, not by a
 			// record — so the addressing is this runtime's one reader of it.
-			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, log), gh
+			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, served, cfg.RepositoryRenames, installed, left, deploymentApps(cfg.Roles), log), gh
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, served, cfg.RepositoryRenames, installed, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
+			opts.ClaimRole = st.ClaimRole
 		}
 		rt, err := tmux.New(opts)
 		if err != nil {
@@ -1483,13 +1506,14 @@ type supervision struct {
 	reportMu     sync.Mutex
 	reportedGaps []string
 	reports      map[claim.Token]capabilities.Report
-	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, the whole of what the update-round
-	// sweep keeps between ticks (reconcilePodUpdates): when this daemon last opened a pod round,
-	// and the rounds it has opened whose claims have not recorded one yet, by issue. The two pace
-	// the sweep's openings under `pod_update_rounds_per_minute` and `pod_update_max_open_rounds`;
-	// nothing of either is in the store, because neither decides a round, and a daemon that has
-	// just booted opens its first round at its first sweep. The sweep is one goroutine, and the
-	// mutex is what makes that a fact of this code rather than of its caller.
+	// podUpdateMu guards podUpdateOpenedAt and podUpdateOpened, what the update-round sweep keeps
+	// between ticks to pace its openings (reconcilePodUpdates): when this daemon last opened a pod
+	// round, and the rounds it has opened whose claims have not recorded one yet, by issue. The two
+	// pace the sweep's openings under `pod_update_rounds_per_minute` and
+	// `pod_update_max_open_rounds`; nothing of either is in the store, because neither decides a
+	// round, and a daemon that has just booted opens its first round at its first sweep. The sweep
+	// is one goroutine, and the mutex is what makes that a fact of this code rather than of its
+	// caller.
 	podUpdateMu       sync.Mutex
 	podUpdateOpenedAt time.Time
 	podUpdateOpened   map[string]string
@@ -1502,6 +1526,50 @@ type supervision struct {
 	// neither waits on what the other is doing.
 	podUpdateRoundsMu sync.Mutex
 	podUpdateRounds   api.PodUpdateRounds
+	// podUpdateWorkspaceMu guards podUpdateWorkspace, what the update-round sweep keeps between
+	// ticks of a round's read of its issue's workspace: the one read that a round made before its
+	// pod's replacement (readRoundWorkspace), by issue, naming the round it was made for and
+	// holding the answer or the read's error. A replacement the read stood in front of can be
+	// refused under the pod's launch turn or can fail, and the next sweep that reaches the same
+	// round's replacement reuses the answer rather than read again, so the round reads the
+	// workspace once and its line and message name that read. The entry goes where the sweep ends
+	// the round (endPodUpdates) and where the sweep finds the issue in another round or in none
+	// (forgetWorkspaceReads). Nothing of it is in the store, because it decides nothing: the
+	// replacement is made whatever the read found. A restart forgets it, and the round's next
+	// replacement reads the workspace again. A mutex of its own, because it has nothing to do with
+	// the pace podUpdateMu guards; the sweep is its one goroutine all the same.
+	podUpdateWorkspaceMu sync.Mutex
+	podUpdateWorkspace   map[string]workspaceRead
+	// podUpdateEndedMu guards podUpdateEnded, what the update-round sweep keeps between ticks of
+	// the rounds it has ended: by issue, the round whose end the sweep last posted to the round's
+	// members (endPodUpdates). The post is asynchronous (supervisor.post), and a member whose
+	// machine is in a relaunch takes it only once that relaunch is done, so its claim records the
+	// round until then. While a claim of the issue records that round, the sweep reads the claim
+	// as the end leaves it and decides nothing of that round again (reconcileIssuePodUpdate), and
+	// the round holds no open-round slot (beginPodUpdateSweep). The entry goes at the first sweep
+	// where no claim of the issue records the round (endedRounds). Within one daemon a post to a
+	// machine's queue is never lost (inbox), so the end reaches every member. Nothing of it is in
+	// the store: a restart forgets it with the posts not taken yet, and the next boot makes the end
+	// once more for a claim the store still holds in the round (dispatch://INFRA-3276 R5). A mutex
+	// of its own, for the reason podUpdateWorkspaceMu has one.
+	podUpdateEndedMu sync.Mutex
+	podUpdateEnded   map[string]string
+	// podUpdateLaunchMu guards podUpdateLaunchReplaced, what the launches into an issue's pod
+	// decided of the update round open over it (roundPodEndsAtLaunch, launchRound): by issue, the
+	// round, whether a launch replaced its pod as the round's own replacement and what that launch
+	// read of the round's end, and each claim whose launch into the pod the hook kept the pod for.
+	// The hook writes it inside a launching machine's decision and under the pod's launch turn; the
+	// next launch into the pod reads the claims it kept the pod for (dispatch://INFRA-4109 R7), and
+	// the sweep that reads a replaced pod gone, or another pod in its place, ends the round as the
+	// replacement the round made (endRoundALaunchReplaced). The entry goes where the sweep ends the
+	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
+	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
+	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
+	// replaced as a pod gone, whose message names the same members. A mutex of its own, never held
+	// across a runtime call, because the hook runs on a launching machine's goroutine beside the
+	// sweep.
+	podUpdateLaunchMu       sync.Mutex
+	podUpdateLaunchReplaced map[string]*launchRound
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore
@@ -1719,8 +1787,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
+			roles:    cfg.Roles,
 			identity: p.identity, repository: p.launchRepository, owner: p.owner,
-			appOwners:   p.appOwners(cfg.Runtime.Name),
+			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
 			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
@@ -2182,7 +2251,7 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // contract is as unreachable by an install as one below it, and the next bump would walk exactly
 // that claim to failed. Nothing here can move such a worker's plugin; a new image can, which is
 // what the pod round replaces the pod for. So it is left running and is asked its round like any
-// other worker, on its role's own Envoy topic (supervision.openPodUpdate). staleRegistration
+// other worker, on the Envoy topic of its claim (supervision.openPodUpdate). staleRegistration
 // accepts such a registration and charges it nothing, for the same reason
 // (supervise.Deps.NoPluginInstall).
 //
@@ -2704,7 +2773,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var tokens appauth.Source
 	var grants *credential.Grants
 	var claimReady func(supervise.Claim)
-	var handoffCompleted func(string)
+	var handoffCompleted func(issue, task string)
 	var roleHoldersChanged func(context.Context, supervise.Claim) error
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
@@ -2774,6 +2843,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		OperatorToken:      p.operatorToken,
 		Controller:         st,
 		Steps:              cfg.Gates.Steps(),
+		Deployment:         cfg.Deployment(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
@@ -2787,7 +2857,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		PrepareRepository:  prepare,
 		RepositoryUnread:   unread,
 		AwaitRecovery:      await,
-		RoleFor:            phase.RoleFor,
 		Record:             records,
 		Dispatch:           client,
 		Tokens:             tokens,

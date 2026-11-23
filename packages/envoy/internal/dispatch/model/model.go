@@ -301,15 +301,22 @@ var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepS
 // State is `live` or `gone` — a delete writes `gone` and removes no row, so a reader of a
 // priority somebody deleted is told that rather than told nothing. MadeAt and MadeBy stay as
 // the first write left them however often the priority is written again.
+//
+// DescriptionTree is the ProseMirror tree Description is shown as, present only for a caller
+// that sent `Dispatch-Trees: 1` and only for a description that is not empty. It stands on this
+// row rather than on a read shape of the api package's own (display_trees.go), because no event
+// payload carries a priority: `priority.updated` names the id and the change alone
+// (PriorityEventPayload).
 type Priority struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Owner       string    `json:"owner"`
-	Rank        string    `json:"rank"`
-	State       string    `json:"state"`
-	MadeAt      time.Time `json:"made_at"`
-	MadeBy      Actor     `json:"made_by"`
+	ID              string      `json:"id"`
+	Title           string      `json:"title"`
+	Description     string      `json:"description"`
+	DescriptionTree DisplayTree `json:"description_tree,omitempty"`
+	Owner           string      `json:"owner"`
+	Rank            string      `json:"rank"`
+	State           string      `json:"state"`
+	MadeAt          time.Time   `json:"made_at"`
+	MadeBy          Actor       `json:"made_by"`
 }
 
 // PriorityAct is one act of a priority's own history, as GET /api/v1/priorities/{id}/history
@@ -3359,9 +3366,9 @@ type HandoffRecordedEventPayload struct {
 // run's start and at its end (PUT /api/v1/issues/{key}/steps/{id}) and as the read of the issue
 // lists it. Task is the plan's task, `default` for an issue whose owner gave no plan; Step is the
 // step's place in the task from 1, and 0 for a retro and a merge, which Kind tells apart. Type is
-// "" for those two kinds, Agent the claim token of the role that ran it ("" for a merge GitHub
-// made), Session the claim's session and Model `<provider>/<model>`, or the model alone where the
-// agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
+// "" for those two kinds, Agent the claim token of the step's agent, the claim that ran it ("" for
+// a merge GitHub made), Session the claim's session and Model `<provider>/<model>`, or the model
+// alone where the agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
 // Attempt, which no write stores, the place of this run among the issue's runs of the same task,
 // step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
 // ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and
@@ -3391,25 +3398,49 @@ type StepRecord struct {
 	RatingReason *string    `json:"rating_reason"`
 }
 
-// StepTask is one task of an issue with every run of its steps, in the order they ran.
+// StepTask is one task of an issue: what the issue's newest plan says of it, and every run of its
+// steps, in the order they ran. Needs are the tasks of that plan this task needs, each by its id,
+// as the plan node records them, [] for a task that needs none; null where the node did not record
+// them (a daemon of the release before wrote the plan, or a Dispatch of the release before took the
+// write and dropped its needs) and for a task the plan does not hold. Planned are the steps that
+// plan gives the task, in order, each with where it stands; absent for a task the plan does not
+// hold, which only its runs show. Steps are [] for a task of the plan none of whose steps ran.
 type StepTask struct {
-	Task  string       `json:"task"`
-	Steps []StepRecord `json:"steps"`
+	Task    string        `json:"task"`
+	Needs   []string      `json:"needs"`
+	Planned []PlannedStep `json:"planned,omitempty"`
+	Steps   []StepRecord  `json:"steps"`
 }
 
-// IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
-// task in the order of each task's first run. An issue Legion never ran answers no task; a key no
-// issue carries answers 404 NOT_FOUND, and no IssueSteps.
+// PlannedStep is one step a plan gives a task, as the steps read answers it: its place in the task,
+// from 1, the plan's word for it (a role or `role:key`), and where it stands in the run of the
+// issue the plan is of, read from that run's records alone: `not started` where none of them is a
+// run of the step, `running` while the newest such run has no end, and that run's result
+// (`passed`, `failed` or `stopped`) once it has one.
+type PlannedStep struct {
+	Step  int    `json:"step"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
+// IssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan, in the
+// plan's order, each with its needs, its planned steps and every run of them; then every other
+// task with a run, in the order of each such task's first run. An issue with no plan and no run
+// answers no task; a key no issue carries answers 404 NOT_FOUND, and no IssueSteps.
 type IssueSteps struct {
 	Issue string     `json:"issue"`
 	Tasks []StepTask `json:"tasks"`
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
-// an issue whose owner gave no plan), and its steps in order, each a role or `role:key`.
+// an issue whose owner gave no plan), its steps in order, each a role or `role:key`, and the tasks
+// of the plan it needs, each by its id, [] for a task that needs none and null where the write that
+// recorded the plan carried no needs. It has the fields of workflowstore.PlanTask, which the route
+// converts it from.
 type PlanTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID    string    `json:"id"`
+	Steps []string  `json:"steps"`
+	Needs *[]string `json:"needs"`
 }
 
 // PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that

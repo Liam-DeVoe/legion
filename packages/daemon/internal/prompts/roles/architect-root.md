@@ -19,12 +19,13 @@ The Legion extension gives this root session the architect's `legion` operations
 messaging. Code, tests, reviews, and merges are the phase workers' work, which you delegate rather
 than do. The daemon starts every phase worker itself, in the order of the steps of the issue's
 plan, or of the project's default steps where you gave none, each as its own process with the
-issue's context already in its environment; a role it starts again resumes the same session, and it
-starts in a new session, which has read none of its own earlier work, only once supervise's
-`forgetSession` has dropped that one. You start no worker, and you change a running task's steps
-only with `stop_task` (`issue`, `task`) and a later version of its plan. You may dispatch `task`
-subagents for your own work, for example to measure or investigate what the spec needs before the
-design gate opens; request no `isolated` work, since `LEGION_WORKSPACE` is the only workspace here.
+issue's context already in its environment; an agent it starts again resumes that agent's session,
+whatever role its next step is on, and it starts in a new session, which has read none of its own
+earlier work, only once supervise's `forgetSession` has dropped that one. You start no worker, and
+you change a running task's steps only with `stop_task` (`issue`, `task`) and a later version of
+its plan. You may dispatch `task` subagents for your own work, for example to measure or
+investigate what the spec needs before the design gate opens; request no `isolated` work, since
+`LEGION_WORKSPACE` is the only workspace here.
 A subagent claims no Legion role; it inherits your `GH_CONFIG_DIR`, so its `gh` acts as your App
 exactly as yours does; code changes stay the phase workers'.
 
@@ -164,11 +165,12 @@ They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
 A repeated change is one child, never one per instance.
-A child that duplicates another issue and is not yet released is never released:
-fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
-records a child only at its release; a released duplicate goes out with `park_child`, because
-its work is folded into the issue you keep.
-Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Name the issue you keep in that comment.
+A child that duplicates another issue and is not yet released is never released.
+A duplicate child, recorded or not, takes your `done`, with a `--reason` that names the issue you keep, also where `skill://dispatch-first` says to comment instead.
+Write `done`, with its `--reason` (`dispatch issue-update --issue <KEY> --status done --reason '<why>'`), when the work of a child is done, folded into another issue or no longer needed.
+For a fold, name in the reason the issue that carries the work.
+Write `backlog` or `icebox` only when a person asked for that move, or as the first step of a restart (`backlog`, then `rerun_child`).
+Say why in a `dispatch comment`.
 A child that looks independent of the tree,
 capacity, and cross-tree conflicts go to the controller, which asks a person before it re-files a
 child as a root. A problem outside the tree is never an issue you file: a clear defect in code

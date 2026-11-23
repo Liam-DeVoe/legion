@@ -478,6 +478,12 @@ func servedAt(t *testing.T, body []byte, contract int) []byte {
 			}
 		}
 	}
+	if contract < strandedTokenContract {
+		strandedWithoutTokens(served)
+	}
+	if contract < tasksContract {
+		issuesWithoutTasks(served)
+	}
 	servedShape(served, contract)
 	encoded, err := json.Marshal(served)
 	if err != nil {
@@ -584,6 +590,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// from the same entries. No pod's claims place a caller at it (callerKind.reaches), so the
 		// rows served it are the three this daemon serves its own body.
 		repos bool
+		// roles is whether the caller is served the roles a deployment defines
+		// (deploymentRolesContract). No pod's claims place a caller at it (callerKind.reaches), so
+		// the rows served it are the three this daemon serves its own body.
+		roles bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -649,18 +659,19 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		{name: "a pod at repositoryAppsContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryAppsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: repositoryAppsContract, assigned: true, times: true, apps: true},
 		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract - 1, assigned: true, times: true, apps: true},
 		// The band from pauseContract to below shapedAnswersContract: the project's pause is served
-		// too, and the claim views' keys of contract 193 and the repositories block this daemon
-		// writes, which is served in contract 152's shape, are the two bands left above it.
+		// too, and the claim views' keys of contract 193, the repositories block this daemon
+		// writes, which is served in contract 152's shape, and the roles of the deployment, served
+		// with the step issue at work, are the bands left above it.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract, assigned: true, times: true, apps: true, pause: true},
 		// A pod whose claims record shapedAnswersContract, from which every build states its
 		// contract in the header. Such a pod is in no pod reading: podContracts leaves out a claim
 		// at shapedAnswersContract or above, for that reason. So the reading falls through to the
 		// body this daemon writes, which carries every key, the repositories block this contract
-		// writes among them, and the row names DaemonAPIVersion: a later contract than
-		// shapedAnswersContract has landed, so the two are no longer equal.
-		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true},
+		// writes and the roles of the deployment among them, and the row names DaemonAPIVersion: a
+		// later contract than shapedAnswersContract has landed, so the two are no longer equal.
+		{name: "a pod at the first contract whose builds state it", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, roles: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, roles: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, roles: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -742,6 +753,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.pause {
 					want = withoutPausedKey(t, want)
 				}
+				if !tc.roles {
+					want = withoutDeploymentRoleKeys(t, want)
+				}
 				want = servedAt(t, want, tc.contract)
 				if withoutLowestContract(t, body) != withoutLowestContract(t, want) {
 					t.Fatalf("state = %s, want the state as this row's contract is served it, %s", body, want)
@@ -797,6 +811,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			var want, got map[string]any
 			if err := json.Unmarshal(withRepositoriesAt152(t, full), &want); err != nil {
 				t.Fatal(err)
+			}
+			if !tc.roles {
+				servedWithoutDeploymentRoles(want)
 			}
 			if !tc.wakes {
 				delete(want, "wakesWaiting")
@@ -878,6 +895,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// Every row that reaches here is below repositoryAppsContract too, so no entry of the
 			// repositories it is served carries `apps`.
 			stripRepositoryApps(want)
+			// And below strandedTokenContract, so no claim nothing will wake carries its `token`
+			// (withoutStrandedTokens), and below tasksContract, so no issue carries its `tasks`
+			// (withoutTasks).
+			strandedWithoutTokens(want)
+			issuesWithoutTasks(want)
 			// Every row that reaches here is below supervise.PodUpdateContract, which is below
 			// both of the contracts servedShape reads: such a caller is served each check
 			// without `role` and both fix-attempt stand-ins.
@@ -916,6 +938,24 @@ func strandedWithoutRetired(t *testing.T, stranded any) []any {
 		kept = append(kept, row)
 	}
 	return kept
+}
+
+// strandedWithoutTokens takes `token` off each entry of a baseline body's `strandedClaims`, the
+// report a pod below strandedTokenContract is served (api's withoutStrandedTokens).
+func strandedWithoutTokens(body map[string]any) {
+	rows, _ := body["strandedClaims"].([]any)
+	for _, row := range rows {
+		delete(row.(map[string]any), "token")
+	}
+}
+
+// issuesWithoutTasks takes `tasks` off each issue of a baseline body, the issues a caller below
+// tasksContract is served (api's withoutTasks).
+func issuesWithoutTasks(body map[string]any) {
+	issues, _ := body["issues"].(map[string]any)
+	for _, issue := range issues {
+		delete(issue.(map[string]any), "tasks")
+	}
 }
 
 // withoutLowestContract is a state body as a string with `lowestPluginContract` and the
@@ -1028,9 +1068,14 @@ func strandedServed(t *testing.T, body []byte) (stranded []map[string]string, ca
 func TestTheStateRouteServesAPodItsPluginContractsStrandedClaims(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(retiredStrandedContract-1))
 	every, carried := strandedServed(t, full)
+	// A pod below retiredStrandedContract is below deploymentRolesContract too, so its entries are
+	// those of Legion's six roles alone (withoutDeploymentRoleClaims) whose state it knows, and
+	// below strandedTokenContract, so none carries its `token` (withoutStrandedTokens).
 	var kept []map[string]string
 	for _, entry := range every {
-		if entry["state"] != string(supervise.StateRetired) {
+		if entry["state"] != string(supervise.StateRetired) && claim.IsBuiltin(claim.Role(entry["role"])) {
+			entry = maps.Clone(entry)
+			delete(entry, "token")
 			kept = append(kept, entry)
 		}
 	}

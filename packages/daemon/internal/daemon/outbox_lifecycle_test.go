@@ -310,6 +310,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 
 	// A person closes the issue: its tree lingers, and the close suspends the planner, keeping its
 	// session for a re-admission to resume.
+	storeSupervisedClaims(t, pool, sup, planner, implementer)
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-done", intake.DispatchIssue{Key: issue.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.closed", Status: "done", Title: issue.Title, Rank: "U"}, engine); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
@@ -377,6 +378,7 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 		return rows, attempts
 	}
 
+	storeSupervisedClaims(t, pool, sup, planner)
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "ev-done", intake.DispatchIssue{Key: issue.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.closed", Status: "done", Title: issue.Title, Rank: "U"}, engine); err != nil {
 		t.Fatalf("close the issue: %v", err)
 	}
@@ -405,9 +407,11 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 
 // The tester's own backward move while it is in a turn — running a tool, its phase not completed —
 // takes the phase back to implementing with nobody's completion. The implementer's start runs at
-// once, as at every other phase change: it waits for no turn to end, and hands the implementer the
-// move's task while the tester is still working. The tester's turn is its own — nothing interrupts
-// it and nothing stops it — and it keeps its launch, its session and its capability.
+// once, as at every phase change that starts a claim on the role it holds: it waits for no turn to
+// end, and hands the implementer the move's task while the tester is still working. (Only a start
+// that would give a claim another role waits for that claim's turn to end, the outbox's
+// reroleForStep; each claim here is named for its role.) The tester's turn is its own — nothing
+// interrupts it and nothing stops it — and it keeps its launch, its session and its capability.
 func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -741,6 +745,9 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 	// that no slot can reach and take the whole tree out of it, which is not what this test moves.
 	openTree(t, pool, "LEGION", "LEGION-208")
 	holdSlot(t, pool, "LEGION-208", "LEGION-209")
+	// The child ran each role, so the daemon's store holds a claim of each, which the leave reads
+	// (record.Store.IssueClaims) to write one suspend for each.
+	storeRoleClaims(t, pool, "LEGION-208", "LEGION-209")
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "acme/widgets", Number: 90, Branch: "legion/LEGION-209", HeadSHA: "sha",
 			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}})
@@ -758,7 +765,7 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 		t.Fatal(err)
 	}
 	if suspends != len(claim.Roles) {
-		t.Fatalf("suspend rows for the backlogged child = %d, want one per role (%d)", suspends, len(claim.Roles))
+		t.Fatalf("suspend rows for the backlogged child = %d, want one per stored claim, a claim of each role (%d)", suspends, len(claim.Roles))
 	}
 	if _, err := pool.Exec(ctx, "delete from outbox"); err != nil {
 		t.Fatal(err)
@@ -1050,6 +1057,7 @@ func TestARootLeavingTheWorkflowSuspendsEveryWorkerOfItsTree(t *testing.T) {
 		return machine
 	}
 	rootWorker, childWorker := ready(root.Key), ready(child.Key)
+	storeSupervisedClaims(t, pool, sup, rootWorker.Claim().Token, childWorker.Claim().Token)
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), project: "legion", log: quietLogger(), now: time.Now,
 		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "backlog"}}, notices: &outboxPublisher{}, handlers: []intake.Handler{engine}}

@@ -1,6 +1,6 @@
 ---
 name: legion-architect
-description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, an issue's plan, releasing or parking children, a delivered wake, a worker's escalation, or accepting an issue's head."
+description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, an issue's plan, releasing children, a delivered wake, a worker's escalation, or accepting an issue's head."
 ---
 
 # Legion architect
@@ -65,10 +65,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
   Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
   Never block a child on its own parent, which merges last.
 
-- On each `child-closed`, read the child's handoff, edit the specs of open children it changes, and `park_child` each child it makes unneeded.
-
-- Before you park a child for good, take it off each sibling's `--blocked-by` list (`--clear-blocked-by` where it was the only one), or park that sibling too:
-  a parked child is not `done`, and its dependents stay held with no notice.
+- On each `child-closed`, read the child's handoff, edit the specs of open children it changes.
 
 ## 3. Children complete
 

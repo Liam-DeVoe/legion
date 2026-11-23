@@ -1,10 +1,15 @@
-import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import {
+  GATED_STEPS,
+  isLegionRole,
+  isStepRole,
+  LEGION_ROLES,
+  type LegionStepRole,
+} from "@legion/contracts";
 import {
   LEGION_PHASES,
   LegionGateRegisterRequest,
   type LegionGrant,
   type LegionIssue,
-  type LegionPhase,
   LegionPlanRegisterRequest,
   type LegionState,
 } from "@legion/contracts/legion-api";
@@ -13,7 +18,7 @@ import {
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
 } from "@legion/pi-shared/daemon-client";
-import type { HandoffReport } from "@legion/pi-shared/handoff-record";
+import type { HandoffReport, StepCopy } from "@legion/pi-shared/handoff-record";
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -32,8 +37,9 @@ import pkg from "../package.json";
 
 /** This plugin's own build, which `read_build` answers with: the manifest of the module this
  * process loaded, never a path on the image. A relaunch installs the plugin pair fresh under
- * the role's state home and loads it with `--extension`, so `/opt/legion/pi-legion` is another
- * build on every pod made from an older image. */
+ * the state home of its claim's agent, the same whatever role the agent's step is on, and loads
+ * it with `--extension`, so `/opt/legion/pi-legion` is another build on every pod made from an
+ * older image. */
 const BUILD = pluginBuildOf(pkg);
 
 export type LegionToolRole = "architect" | "phase-worker" | "controller";
@@ -68,7 +74,6 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "retry_or_escalate",
     "sign_off",
     "close_root",
-    "park_child",
     "rerun_child",
     "read_record",
     "read_release_records",
@@ -104,10 +109,9 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_plan: ["issue", "artifactId", "version"],
   stop_task: ["issue", "task"],
   release_children: ["issues"],
-  retry_or_escalate: ["issue", "decision", "reason"],
-  sign_off: ["issue"],
+  retry_or_escalate: ["issue", "decision", "reason", "task"],
+  sign_off: ["issue", "task"],
   close_root: ["issue", "reason"],
-  park_child: ["issue"],
   rerun_child: ["issue"],
   read_build: [],
   read_state: ["issue", "issues", "phase", "settings"],
@@ -284,7 +288,10 @@ function stateSummary(state: LegionState): string {
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
-    for (const role of LEGION_ROLES) {
+    // Each worker of the issue's map: Legion's six in their workflow order, then each role of the
+    // deployment (contract 221) in the map's order.
+    const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
+    for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
       if (claim !== undefined) claims.push([role, claim]);
     }
@@ -368,17 +375,17 @@ function toolSchema(pi: PiApi): unknown {
     task: z
       .string()
       .describe(
-        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps"
+        "stop_task's task: the id of its plan_task block in the plan Legion runs for the issue, default for the project's default steps. sign_off, retry_or_escalate and request_backward_move take it too, naming the task of the plan the call is of where two or more tasks stand at that act"
       )
       .optional(),
     to: phaseOp.to,
     // The why of the operations that take one, a string as the phase op's own `reason` is.
-    // Agents sent it to park_child too, whose daemon route keeps no why, so the field says where
+    // Agents sent it to rerun_child too, whose daemon route keeps no why, so the field says where
     // that why goes.
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why. No other operation takes it. rerun_child takes only issue: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -392,7 +399,13 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    role: z.enum(LEGION_ROLES).optional(),
+    // A claim's role, one of Legion's six or a role of the deployment (contract 221): the role
+    // grammar of Dispatch's step record. The operation's own check (`isStepRole`) also refuses the
+    // controller, whose claim holds no issue.
+    role: z
+      .string()
+      .regex(/^[a-z][a-z0-9-]{0,31}$/)
+      .optional(),
   });
 }
 
@@ -407,18 +420,29 @@ function requiredString(
   return value;
 }
 
+/** The task of the issue's plan an owner's call names (contract 224), `{}` where it names none:
+ * the daemon reads the one task at the act the call answers, and answers TASK_REQUIRED where two
+ * or more stand there. One named is passed on as given; a blank one is refused before any grant. */
+function namedTask(
+  parameters: Record<string, unknown>,
+  operation: string
+): { readonly task?: string } {
+  return parameters.task === undefined
+    ? {}
+    : { task: requiredString(parameters, operation, "task") };
+}
+
 /** Refuses every field `operation` does not take, in the phase ops' wording
- * (`unknownFieldsRefusal`). A `reason` refused on park_child or rerun_child also says where its
- * why goes: agents send one there, and the daemon keeps no why for either. */
+ * (`unknownFieldsRefusal`). A `reason` refused on rerun_child also says where its why goes:
+ * agents send one there, and the daemon keeps no why for it. */
 function assertOperationInput(parameters: Record<string, unknown>, operation: string): void {
   const fields = OPERATION_FIELDS[operation];
   if (fields === undefined) throw new Error(`Unsupported legion operation: ${operation}`);
   const refused = Object.keys(parameters).filter((name) => name !== "op" && !fields.includes(name));
   if (refused.length === 0) return;
   const refusal = unknownFieldsRefusal(operation, refused, fields);
-  const childOperation = operation === "park_child" || operation === "rerun_child";
   throw new Error(
-    childOperation && refused.includes("reason")
+    operation === "rerun_child" && refused.includes("reason")
       ? `${refusal}. Say why in a dispatch comment on the child`
       : refusal
   );
@@ -442,20 +466,23 @@ export function createLegionTool(deps: {
   /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
    * update message on its pod, and its phase stays open. */
   readonly onUpdateAnswered: (context: SessionContext) => void;
-  /** What a completion by `role` reports beside its summary while the issue stands at `phase`
-   * (`findHandoffReport`): for a file-backed phase the role works or, once the issue has moved
-   * on, the one it left, the newest Dispatch handoff record of that phase and the head its body
-   * names under `head`, which for the implementer's round, while the issue stands in
-   * implementing, must be the commit its workspace stands on, pushed to `legion/<issue>@origin`;
-   * otherwise, and for a left phase with no record or an implementer's left record naming no head,
-   * the commit the workspace stands on, alone. Throws
-   * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
-   * in implementing, the implementer's record names no head, the commit its workspace stands on
-   * is not pushed, or its record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
-  /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
+  /** The pane's environment: LEGION_WORKSPACE and LEGION_ISSUE, from which a completion and an
+   * update signal read the working copy and the branch of the step the claim's agent runs. */
+  readonly env: NodeJS.ProcessEnv;
+  /** What a completion by `role` of `step` reports beside its summary (`findHandoffReport`): for
+   * a file-backed phase the role works or, once the step has moved on, the one it left, the
+   * newest Dispatch handoff record of that phase and the head its body names under `head`, which
+   * for the implementer's round, while its step stands in implementing, must be the commit its
+   * working copy stands on, pushed to the step's branch at origin; otherwise, and for a left
+   * phase with no record or an implementer's left record naming no head, the commit the working
+   * copy stands on, alone. Throws naming the remedy when the phase the role works has no record,
+   * Dispatch does not answer, or, in implementing, the implementer's record names no head, the
+   * commit its working copy stands on is not pushed, or its record's head is not that pushed
+   * commit. */
+  readonly handoffReport: (step: StepCopy, role: LegionStepRole) => Promise<HandoffReport>;
+  /** The head of `step`'s branch at origin an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
-  readonly branchHead: () => Promise<string>;
+  readonly branchHead: (step: StepCopy) => Promise<string>;
   /** The id of the document `issue` carries under `reference` (`spec`, a slug, or a filename),
    * looked up in Dispatch as a `dispatch` command's `--artifact` is; throws naming the reference
    * when none matches, or when it names two documents. */
@@ -470,6 +497,7 @@ export function createLegionTool(deps: {
     controllerGrant,
     onPhaseCompleted,
     onUpdateAnswered,
+    env,
     handoffReport,
     branchHead,
     resolveDocument,
@@ -486,6 +514,12 @@ export function createLegionTool(deps: {
     // retry_or_escalate, its register_plan and stop_task, its sign_off and the controller's
     // operations: the text tools.test.ts pins, stop_task's and sign_off's by their terms and the
     // rest exactly, so a change to the shared template cannot reach an Oh My Pi agent unnoticed.
+    // The rules for ending a child are the words of the daemon's record.EndChildRule, and the
+    // sentence after them is the daemon's record.StatusNotTakenYet (both in
+    // packages/daemon/internal/record/project.go). These tests hold the copies together: the
+    // daemon's TestTheEndChildRuleGolden writes both texts to
+    // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
+    // description to that file.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -502,7 +536,8 @@ export function createLegionTool(deps: {
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
-        "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
+        "(PLAN_REFUSED, which also refuses a version that changes a running task or moves the base of a started task's pull request: " +
+        "stop it with stop_task first, and a plan of an issue " +
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
         "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
@@ -525,11 +560,30 @@ export function createLegionTool(deps: {
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
         "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
         "is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged " +
-        "work: run each one to done, and sign off again. " +
-        "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
-        "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
+        "work. " +
+        "Sign off again when each of them has left the workflow. " +
+        "The daemon takes the owning architect's done, backlog, icebox or triage on a child as it takes a person's move. " +
+        "End a child with your own status write in Dispatch. " +
+        "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
+        "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+        "For a fold, name the carrier in the reason: the issue that carries the work. " +
+        "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
+        "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
+        "Before done on a running child, have its worker push the work that the carrier needs. " +
+        "Done ends the worker's turn and the pod at once. " +
+        "Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
+        "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
+        "Do this before done, or at once after a done that you wrote first. " +
+        "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+        "A restart is backlog, then rerun_child. " +
+        "Say why in a dispatch comment. " +
+        "Write no status on a child that is already done, because a move out of done ends an open production check. " +
+        "After each move, read the child back (dispatch read --issue <KEY>). " +
+        "When the daemon set the move back, write it again. " +
+        "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it. " +
+        "When a child can neither finish nor take one of these moves, ask the person. Hold the acceptance until they answer. " +
         "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
-        "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
+        "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
@@ -538,7 +592,7 @@ export function createLegionTool(deps: {
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
         "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +
-        "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
+        "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
         "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
         "controller's report issue's icebox, because that issue holds no work. " +
         "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
@@ -620,7 +674,15 @@ export function createLegionTool(deps: {
         }
         if (active.kind !== "controller" && isPhaseOp(operation)) {
           const answer = await executePhaseOp(
-            { daemon: daemon(), claim: active, build: BUILD, handoffReport, branchHead, restart },
+            {
+              daemon: daemon(),
+              claim: active,
+              build: BUILD,
+              env,
+              handoffReport,
+              branchHead,
+              restart,
+            },
             parameters
           );
           // A call that returned without throwing: a completion, and a backward move, which hands
@@ -662,9 +724,11 @@ export function createLegionTool(deps: {
           // minted.
           const issue = requiredString(parameters, operation, "issue");
           if (operation === "fresh_session" || operation === "compact") {
-            const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
-            if (role === undefined) {
-              throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
+            const role = parameters.role;
+            if (typeof role !== "string" || !isStepRole(role)) {
+              throw new Error(
+                `${operation} requires role ${LEGION_ROLES.join(", ")} or a role of the deployment`
+              );
             }
             const { grantId } = await controllerGrant(active.sessionID);
             if (operation === "compact") {
@@ -794,21 +858,25 @@ export function createLegionTool(deps: {
               parameters.reason === undefined
                 ? {}
                 : { reason: requiredString(parameters, operation, "reason") };
+            const task = namedTask(parameters, operation);
             const grantId = await mintClaimGrant(client, active);
             await client.phaseRetry({
               grantId,
               issue: requiredString(parameters, operation, "issue"),
               decision,
               ...reason,
+              ...task,
             });
             return jsonSuccess({});
           }
           case "sign_off": {
             // A repeat after a sign-off that landed finds the issue in retro and changes nothing.
             const issue = requiredString(parameters, operation, "issue");
+            const task = namedTask(parameters, operation);
             await retryWhileDaemonRestarts(
               "sign_off",
-              async () => client.signOff({ grantId: await mintClaimGrant(client, active), issue }),
+              async () =>
+                client.signOff({ grantId: await mintClaimGrant(client, active), issue, ...task }),
               restart
             );
             return jsonSuccess({});
@@ -822,13 +890,12 @@ export function createLegionTool(deps: {
             });
             return jsonSuccess({});
           }
-          case "park_child":
           case "rerun_child": {
             const grantId = await mintClaimGrant(client, active);
-            const request = { grantId, issue: requiredString(parameters, operation, "issue") };
-            await (operation === "park_child"
-              ? client.childPark(request)
-              : client.childRerun(request));
+            await client.childRerun({
+              grantId,
+              issue: requiredString(parameters, operation, "issue"),
+            });
             return jsonSuccess({});
           }
           default:
