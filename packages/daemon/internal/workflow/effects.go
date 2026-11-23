@@ -191,9 +191,9 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // step of a role of the deployment read last, so a kind of task added later cannot be queued
 // without them.
 //
-// Only a start of the reviewer or of a role of the deployment (namesTheRound) that carries a task and does not hold the sentences already is
+// Only a start of the reviewer or of a role of the deployment (NamesTheRound) that carries a task and does not hold the sentences already is
 // named, so no other row reads the record for them. Such a start reads the phase its issue stands
-// in and the reviewer's row as tx holds them, which is the row's commit and entry at the moment
+// in and the starting role's row as tx holds them, which is the row's commit and entry at the moment
 // the task is queued, and it then carries the typed fact that its task ends with the daemon's
 // sentences (record.SuperviseRequest.RoundNamed), which the claim's send reads, so it adds none.
 // A start whose task is the stored task of its entry - the start of the transition that raised
@@ -203,10 +203,10 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // reading of the task's text, which can quote either sentence, a retry's reason among it.
 func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload, at time.Time) (record.OutboxRow, error) {
 	start, ok := payload.(record.SuperviseRequest)
-	if !ok || start.Op != "start" || start.Task == "" || !namesTheRound(start.Role) || start.RoundNamed {
+	if !ok || start.Op != "start" || start.Task == "" || !NamesTheRound(start.Role) || start.RoundNamed {
 		return record.NewOutboxRow(issue, payload, at)
 	}
-	named, err := ReviewerTask(ctx, tx, store, issue, start.Task)
+	named, err := RoundTask(ctx, tx, store, issue, start.Role, start.Task)
 	if err != nil {
 		return record.OutboxRow{}, err
 	}
@@ -214,19 +214,19 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 	return record.NewOutboxRow(issue, start, at)
 }
 
-// ReviewerTask is task as the reviewer of issue is given it now: task followed by the daemon's two
-// sentences of its review round (namingTheReviewRound), read from the phase the issue stands in and
-// the reviewer's phases row as tx holds them. The queue names each reviewer's start it queues
-// through it (queuedRow), and the daemon's start executor names a start of the reviewer queued for
-// news alone through it, which carries no task for the queue to name and is composed only when it
-// runs (the daemon's newsForStart).
-func ReviewerTask(ctx context.Context, tx pgx.Tx, store record.Store, issue, task string) (string, error) {
+// RoundTask is task as role, the reviewer or a role of the deployment (NamesTheRound), is given
+// it now on issue: task followed by the daemon's sentences of its review round
+// (namingTheReviewRound), read from the phase the issue stands in and role's own phases row as tx
+// holds them. The queue names each such start it queues through it (queuedRow), and the daemon's
+// start executor names such a start queued for news alone through it, which carries no task for
+// the queue to name and is composed only when it runs (the daemon's newsForStart).
+func RoundTask(ctx context.Context, tx pgx.Tx, store record.Store, issue string, role claim.Role, task string) (string, error) {
 	standing, err := store.Issue(ctx, tx, issue)
 	if err != nil {
 		return "", err
 	}
-	// An issue the record does not hold stands in no phase and holds no row, so its reviewer's
-	// task names neither a commit nor an entry.
+	// An issue the record does not hold stands in no phase and holds no row, so the task names
+	// neither a commit nor an entry.
 	var standsIn phase.Phase
 	var row record.PhaseRow
 	if standing != nil {
@@ -234,9 +234,9 @@ func ReviewerTask(ctx context.Context, tx pgx.Tx, store record.Store, issue, tas
 		if err != nil {
 			return "", err
 		}
-		standsIn, row = standing.Phase, record.PhaseRowOf(rows, claim.RoleReviewer)
+		standsIn, row = standing.Phase, record.PhaseRowOf(rows, role)
 	}
-	return namingTheReviewRound(task, claim.RoleReviewer, standsIn, row), nil
+	return namingTheReviewRound(task, role, standsIn, row), nil
 }
 
 // status queues the Dispatch write for a status the workflow has just given issue. reason is the
@@ -701,7 +701,7 @@ type startMarks struct {
 	// transition's start and the promotion's start of a mid-phase worker, each sending what enter
 	// answers (start, StartPromotedWorker), and the send of an owed entry whose row stores a task
 	// (sendOwedEntry). A task composed for the start is given the sentences whatever its text holds.
-	// Only the tasks of the reviewer and of a role of the deployment hold them (namesTheRound), so
+	// Only the tasks of the reviewer and of a role of the deployment hold them (NamesTheRound), so
 	// only their starts carry the fact the mark makes (started): the stored task of any other role
 	// names no review round.
 	stored bool
@@ -768,7 +768,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RoundNamed: marks.stored && namesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+		RoundNamed: marks.stored && NamesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks

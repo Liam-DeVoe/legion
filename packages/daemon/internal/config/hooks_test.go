@@ -109,16 +109,18 @@ func TestAHookNamesAMoveOfAnyOrder(t *testing.T) {
 }
 
 // A hook that names a move no task's line makes back would never fire, so the loader refuses it,
-// naming the move: each step phase to retro or to merging, and retro to merging, since the retro
-// and the merge end every line; and implementing to testing, reviewing or accepting, since every
-// tester, reviewer and acceptance step comes after the implementer's. These 14 are written out
-// here, not read from the code under test. The twin: each of the other 28 pairs of two different
-// workflow phases loads, a move back of today's line and one of another order alike.
+// naming the move: each step phase, step among them, to retro or to merging, and retro to merging,
+// since the retro and the merge end every line; and implementing to testing, reviewing or
+// accepting, since every tester, reviewer and acceptance step comes after the implementer's. These
+// 16 are written out here, not read from the code under test. The twin: each of the other 41
+// pairs of MovePairs loads, a move back of today's line, one of another order and one of a step of
+// a role the deployment defines alike.
 func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
 	never := []string{
 		"planning-retro", "implementing-retro", "testing-retro", "reviewing-retro", "accepting-retro",
 		"planning-merging", "implementing-merging", "testing-merging", "reviewing-merging", "accepting-merging",
 		"retro-merging", "implementing-testing", "implementing-reviewing", "implementing-accepting",
+		"step-retro", "step-merging",
 	}
 	loaded := 0
 	for _, move := range phase.MovePairs() {
@@ -135,7 +137,7 @@ func TestAHookNamingAMoveNoLineMakesBackIsRefused(t *testing.T) {
 			t.Errorf("Load(moves: [%s]) error = %v, want %q", move, err, want)
 		}
 	}
-	if loaded != 28 {
-		t.Errorf("%d pairs were read as moves back, want 28", loaded)
+	if loaded != 41 {
+		t.Errorf("%d pairs were read as moves back, want 41", loaded)
 	}
 }
