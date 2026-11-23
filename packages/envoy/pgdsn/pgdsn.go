@@ -40,12 +40,13 @@ import (
 //   - a URL whose query holds a key of no such shape (queryKeyMalformed), read as pgx reads it,
 //     the spaces at its ends dropped (`&https://u:<pw>%40h=1`): pgx sends it to the server as a
 //     parameter's name, which the server prints;
-//   - a value of any key but password and sslpassword holding "://" and then an "@" anywhere after
-//     it, a URL with a user name or a password (valueHoldsURLCredential), as pgx reads it from a
-//     keyword DSN or, decoded, from a URL's query: the server echoes a runtime parameter's value it
-//     refuses, given as a keyword (`datestyle=https://u:<pw>@h`) or inside options
-//     (`options='-c datestyle=https://u:<pw>@h'`), and the four values below are printed. Nothing
-//     after the "://" ends it: a password holding a "/", "?" or "#" (`https://u:<head>/<tail>@h`,
+//   - a value of any key but a password (password, sslpassword) and the four printed values below,
+//     holding "://" and then an "@" anywhere after it, a URL with a user name or a password
+//     (valueHoldsURLCredential), as pgx reads it from a keyword DSN or, decoded, from a URL's
+//     query: the server echoes a runtime parameter's value it refuses, given as a keyword
+//     (`datestyle=https://u:<pw>@h`) or inside options (`options='-c datestyle=https://u:<pw>@h'`);
+//     the four printed values are refused for `://` alone (valueHoldsURL, below). Nothing after
+//     the "://" ends the URL: a password holding a "/", "?" or "#" (`https://u:<head>/<tail>@h`,
 //     its `%2F` in a URL's query, a quoted "?" or "#") or a space (`%20`, a tab, an escaped or quoted
 //     space) reaches the server whole, and the rule cannot tell such a password's tail from the
 //     URL's path. So a URL value with an "@" in its path (`https://ci.example/@team`) and two
@@ -146,7 +147,7 @@ const (
 // A URL's query is refused, before its printed values, for a key that is no keyword's shape.
 // Both forms' printed values are held to the one rule set (printedRefusal).
 func refusalOf(dsn string) refusal {
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+	if _, _, _, isURL := cutURL(dsn); isURL {
 		if atPastUserinfo(dsn) {
 			return atPast
 		}
@@ -242,7 +243,9 @@ func hostList(value string) bool {
 // the rule every split of this repository's DSN readers holds to (pg-url.json).
 var keywordShape = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.$]*$`)
 
-// keywordSetting is one key=value pair of a keyword DSN, as pgx reads it.
+// keywordSetting is one key=value pair of a DSN as pgx reads it: of a keyword DSN
+// (keywordSettings), or of a URL, its user info, host list, database and query each read as the
+// keyword it stands for (urlSettings).
 type keywordSetting struct{ key, value string }
 
 // keywordSettings reads dsn's key=value pairs as pgx does (parseKeywordValueSettings): leading
@@ -295,21 +298,17 @@ func keywordSettings(dsn string) []keywordSetting {
 }
 
 // urlSettings reads the URL dsn's settings as pgx does (parseURLSettings), each percent-decoded:
-// the user and the password of its user info (the text before the first "@" ahead of the first
-// "/", split at its first ":"), its host list (each entry up to a ":", "/", "?" or "," outside
-// brackets, an IPv6 address in brackets, a port after a ":" left out), the database its path names
-// up to a "?", and every key=value pair of its query, split at "&" and then at "=". A part that
-// does not decode is read as written: pgx refuses such a DSN, and ConnectError prints none of it.
+// the user and the password of its user info (cutURL's, split at its first ":"), its host list
+// (each entry up to a ":", "/", "?" or "," outside brackets, an IPv6 address in brackets, a port
+// after a ":" left out), the database its path names up to a "?", and every key=value pair of its
+// query, split at "&" and then at "=". A part that does not decode is read as written: pgx
+// refuses such a DSN, and ConnectError prints none of it.
 func urlSettings(dsn string) []keywordSetting {
-	rest, ok := strings.CutPrefix(dsn, "postgresql://")
-	if !ok {
-		rest, _ = strings.CutPrefix(dsn, "postgres://")
-	}
+	userinfo, hasUserinfo, rest, _ := cutURL(dsn)
 	var settings []keywordSetting
-	if i := strings.IndexAny(rest, "@/"); i >= 0 && rest[i] == '@' {
-		user, password, _ := strings.Cut(rest[:i], ":")
+	if hasUserinfo {
+		user, password, _ := strings.Cut(userinfo, ":")
 		settings = append(settings, keywordSetting{"user", urlDecoded(user)}, keywordSetting{"password", urlDecoded(password)})
-		rest = rest[i+1:]
 	}
 	var hosts []string
 	for {
@@ -383,16 +382,27 @@ func urlDecoded(part string) string {
 // (databaseHoldsAt). A "?" or "#" in a password stands before its "@", which pgx reads as the
 // password's.
 func atPastUserinfo(dsn string) bool {
-	rest, ok := strings.CutPrefix(dsn, "postgresql://")
-	if !ok {
-		if rest, ok = strings.CutPrefix(dsn, "postgres://"); !ok {
-			return false
+	_, _, rest, isURL := cutURL(dsn)
+	return isURL && strings.Contains(rest, "@")
+}
+
+// cutURL is dsn cut as pgx cuts a URL (parseURLSettings): whether it is one, a value that begins
+// at its first byte with a lower-case postgres:// or postgresql://; its user info, the text after
+// the scheme up to the first "@" ahead of the first "/", and whether it has one (only a "/" stops
+// that search); and the rest, after that "@", or after the scheme when it has none. It is the one
+// cut refusalOf, atPastUserinfo, urlSettings and dsnSecrets read, so they cannot disagree on where
+// the user info ends.
+func cutURL(dsn string) (userinfo string, hasUserinfo bool, rest string, isURL bool) {
+	rest, isURL = strings.CutPrefix(dsn, "postgresql://")
+	if !isURL {
+		if rest, isURL = strings.CutPrefix(dsn, "postgres://"); !isURL {
+			return "", false, "", false
 		}
 	}
 	if i := strings.IndexAny(rest, "@/"); i >= 0 && rest[i] == '@' {
-		rest = rest[i+1:]
+		return rest[:i], true, rest[i+1:], true
 	}
-	return strings.Contains(rest, "@")
+	return "", false, rest, true
 }
 
 // ConnectError is err, a failure to parse, open or reach the Postgres dsn names, as an operator
@@ -479,7 +489,7 @@ var passwordSetting = regexp.MustCompile(`(?i)(password\s*=\s*)(?:'(?:''|\\[\s\S
 // before password=), which pgx and the server print as part of the user or the database.
 func dsnSecrets(dsn string) []string {
 	settings := keywordSettings(dsn)
-	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+	if _, _, _, isURL := cutURL(dsn); isURL {
 		settings = urlSettings(dsn)
 	}
 	var secrets []string
