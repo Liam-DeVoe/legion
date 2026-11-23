@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -1714,7 +1715,7 @@ func TestTLSProbeCurlReadsNoCurlrc(t *testing.T) {
 
 	bin := t.TempDir()
 	record := filepath.Join(bin, "first-arguments")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + record + "'\nexit 0\n"
+	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> " + shellprefix.Literal(record) + "\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2336,7 +2337,7 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 	standIn := func(name, hold, refusal string) string {
 		path := filepath.Join(stubs, name)
 		script := "#!/bin/sh\n" +
-			"if [ \"$LEGION_TLS_URL\" = '" + emSignTLSSite.url + "' ] && [ ! -e '" + path + ".released' ]; then : >'" + path + ".released'; " + hold + "; fi\n" +
+			"if [ \"$LEGION_TLS_URL\" = '" + emSignTLSSite.url + "' ] && [ ! -e " + shellprefix.Literal(path+".released") + " ]; then : >" + shellprefix.Literal(path+".released") + "; " + hold + "; fi\n" +
 			"[ \"$LEGION_TLS_URL\" != '" + controlTLSSite.url + "' ] || exit 0\n" +
 			"echo '" + refusal + "' >&2\nexit 1\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
@@ -2397,8 +2398,8 @@ func TestTLSProbeRunsEveryImageClientAgainAfterItsLimitAtAReachedSite(t *testing
 	t.Run("the positive controls get no second run", func(t *testing.T) {
 		path := filepath.Join(stubs, "positive-control")
 		script := "#!/bin/sh\n" +
-			"printf '%s\\n' \"$LEGION_TLS_URL\" >>'" + path + ".runs'\n" +
-			"if [ ! -e '" + path + ".ran' ]; then : >'" + path + ".ran'; : >'" + path + ".held'; exec sleep 86400; fi\n" +
+			"printf '%s\\n' \"$LEGION_TLS_URL\" >>" + shellprefix.Literal(path+".runs") + "\n" +
+			"if [ ! -e " + shellprefix.Literal(path+".ran") + " ]; then : >" + shellprefix.Literal(path+".ran") + "; : >" + shellprefix.Literal(path+".held") + "; exec sleep 86400; fi\n" +
 			"[ \"$LEGION_TLS_URL\" != '" + controlTLSSite.url + "' ] || { echo 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2; exit 60; }\n"
 		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
@@ -2677,7 +2678,7 @@ func TestTLSProbeFailsAPositiveControlThatPassesItsLimit(t *testing.T) {
 	dir := t.TempDir()
 	runs, held := filepath.Join(dir, "runs"), filepath.Join(dir, "held")
 	limitOnceHeld(t, func(string, tlsSite) string { return held })
-	img.install(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"$LEGION_TLS_URL\" >>'"+runs+"'\n: >'"+held+"'\nexec sleep 86400\n")
+	img.install(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"$LEGION_TLS_URL\" >>"+shellprefix.Literal(runs)+"\n: >"+shellprefix.Literal(held)+"\nexec sleep 86400\n")
 	previous := tlsPositiveControlSpec.timeout
 	t.Cleanup(func() { tlsPositiveControlSpec.timeout = previous })
 	tlsPositiveControlSpec.timeout = time.Second
