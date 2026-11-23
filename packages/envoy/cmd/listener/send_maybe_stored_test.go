@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -77,7 +76,7 @@ func TestASendWhosePublishWasNeverAcknowledgedIsReadAsMaybeStored(t *testing.T) 
 		client := rig.harness.client
 		server.Stop(t)
 		t.Cleanup(func() { server.Start(t) })
-		waitFor(t, 10*time.Second, "the listener's connection to reconnect after its server stopped", func() bool {
+		testwait.Eventually(t, "the listener's connection to reconnect after its server stopped", func() bool {
 			return !client.Connected() && client.Connection().IsReconnecting()
 		})
 		status, body, err := sendThroughDispatch(t, rig.mux, target)
