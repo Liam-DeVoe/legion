@@ -4063,6 +4063,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         const [minted] = markersIn(g.store);
         expect(minted?.outcome).toBe("rebuttal");
         // Real bash runs the command the gate handed back, with the consuming stand-in on PATH.
+        stillOn(rowCheck(), "running the command the gate handed back");
         const shell = Bun.spawnSync({
           cmd: ["bash", "-c", ran],
           env: { PATH: `${consumingBin}:${process.env.PATH}`, ASKGATE_STORE: g.store },
@@ -5210,6 +5211,7 @@ describe("eval cells that run the dispatch CLI (A1)", () => {
       expect(g.calls).toHaveLength(0);
       expect(g.entries).toHaveLength(0);
       expect(markersIn(g.store)).toEqual([]);
+      stillOn(rowCheck(), "handing cells to a gate that did not load");
       const refuse = core.loadFailureGate(
         new Error("a host module did not load"),
         { env: { OMP_ASKGATE: mode }, configFile: CONFIG_FILE },
@@ -5981,6 +5983,7 @@ describe("askgate.ts, the entry", () => {
         );
         expect(result?.reason).toContain(`set askgate.enabled to false in ${CONFIG_FILE}`);
       }
+      stillOn(rowCheck(), "handing the unloaded gate a device call");
       const device = await gate?.(
         { type: "tool_call", toolName: "dispatch_comment", toolCallId: "d1", input: COMMENT },
         mainCtx()
