@@ -6203,10 +6203,11 @@ for form in honest missing; do
     esac
 done
 
-# 199. A pattern, any part holding `|` or `*` that is no path, is read as an extended regular
-# expression a line of its file matches (the architect's class of round 49). The live rows
-# d-29 and m-tel-semconv-module cite `consensus|majority|quorum` and `GEN_AI_*`, and no case
-# held the form. The case writes the fixture's row f-our-1, which cites
+# 199. A pattern holding `|`, a part that is no path, is read as an extended regular
+# expression a line of its file matches (the architect's class of round 49; one holding `(`,
+# `[` or `\` is one too, case 207, and any other holding `*` or `?` is a glob of names, cases
+# 204, 205 and 206). The live row d-29 cites `consensus|majority|quorum`, and no case held
+# the form. The case writes the fixture's row f-our-1, which cites
 # packages/daemon/internal/api/handoff.go, with the symbol 'TesterVerdict(Required|Missing)',
 # then 'TesterVerdict(Absent|Missing)', running --citations over each: the first must pass
 # citation-our-code; the second must fail it, naming the part.
@@ -6415,6 +6416,112 @@ for form in gen-ai-other gen-ai-dot-other gen-ai-honest gen-ai-dot-honest; do
             "citation-our-code: f-our-1 cites .*gen_ai\\.\\*" "$out"
         ;;
     *) honest_result "a glob $symbol cited in a file that holds a name it covers passes citation-our-code" citation-our-code "$out" ;;
+    esac
+done
+
+# 205. A glob with a `*` inside it covers a name that starts and ends as the glob does, a whole
+# token (the tester's finding of round 49 on form 8, case 204). Read as an extended regular
+# expression, `a*_total` is any number of a and then _total, which every name ending in
+# _total holds, so at d75ea1dc it held in a file whose only such name is ba_requests_total,
+# whose a follows a letter, or a_requests_totals, whose _total runs on: no name the glob
+# covers. The case commits packages/daemon/internal/api/metrics.go, one name in a string, and
+# writes the fixture's row f-our-1 as citing that file with the symbol 'a*_total' (symbol_plant)
+# over a file holding a_requests_total, then ba_requests_total, then a_requests_totals, running
+# --citations over each: the first must pass citation-our-code; the other two must fail it,
+# naming the part.
+for form in honest start end; do
+    case "$form" in
+    honest) name='a_requests_total' ;;
+    start) name='ba_requests_total' ;;
+    end) name='a_requests_totals' ;;
+    esac
+    dir="$(symbol_plant "symbol-glob-middle-$form" packages/daemon/internal/api/metrics.go 'a*_total' \
+        packages/daemon/internal/api/metrics.go "package api"$'\n\n'"const metric = \"$name\""$'\n')" &&
+        [ "$(grep -c '_total' "$dir/repo/packages/daemon/internal/api/metrics.go")" = 1 ] &&
+        grep -qF "\"$name\"" "$dir/repo/packages/daemon/internal/api/metrics.go" || {
+        printf 'FAIL the glob a*_total over %s could not be planted in the fixture row f-our-1\n' "$name"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    honest) honest_result "a glob a*_total cited in a file that holds a_requests_total, a name it covers, passes citation-our-code" citation-our-code "$out" ;;
+    *)
+        case_result "a glob a*_total cited in a file whose only name ending in _total is $name, which it does not cover, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol a\\*_total, which packages/daemon/internal/api/metrics\\.go does not hold" "$out"
+        ;;
+    esac
+done
+
+# 206. A glob's `?` stands for exactly one character of a name (the architect's condition of
+# round 50 on form 8: the part's text alone decides which patterns are globs and which are
+# extended regular expressions). At d75ea1dc a part holding `?` and neither `|` nor `*`, as
+# `v?_total`, was in no form of the grammar and failed by name as no symbol form, whatever
+# its file held. The case commits packages/daemon/internal/api/metrics.go, one name in a
+# string, and writes the fixture's row f-our-1 as citing that file with the symbol 'v?_total'
+# (symbol_plant) over a file holding v1_total, then v10_total, whose run between v and _total
+# is two characters, then xv1_total, whose v follows a letter, running --citations over
+# each: the first must pass citation-our-code; the other two must fail it, naming the part.
+for form in honest long start; do
+    case "$form" in
+    honest) name='v1_total' ;;
+    long) name='v10_total' ;;
+    start) name='xv1_total' ;;
+    esac
+    dir="$(symbol_plant "symbol-glob-one-$form" packages/daemon/internal/api/metrics.go 'v?_total' \
+        packages/daemon/internal/api/metrics.go "package api"$'\n\n'"const metric = \"$name\""$'\n')" &&
+        [ "$(grep -c '_total' "$dir/repo/packages/daemon/internal/api/metrics.go")" = 1 ] &&
+        grep -qF "\"$name\"" "$dir/repo/packages/daemon/internal/api/metrics.go" || {
+        printf 'FAIL the glob v?_total over %s could not be planted in the fixture row f-our-1\n' "$name"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    honest) honest_result "a glob v?_total cited in a file that holds v1_total, a name it covers, passes citation-our-code" citation-our-code "$out" ;;
+    *)
+        case_result "a glob v?_total cited in a file whose only name ending in _total is $name, which it does not cover, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol v\\?_total, which packages/daemon/internal/api/metrics\\.go does not hold" "$out"
+        ;;
+    esac
+done
+
+# 207. A pattern holding `(`, `[` or `\` is an extended regular expression, read as written,
+# and no glob, though it holds `*` or `?` (the architect's condition of round 50 on form 8).
+# `v(1)?_total` and `v[0-9]?_total` each name a v, an optional digit and _total; read as
+# globs, they would ask for the text `v(1)` or `v[0-9]` and hold in no file that writes only
+# v1_total. `\bv1_total\b` holds neither `|`, `*` nor `?`, and is a pattern by its `\`. At
+# d75ea1dc each was in no form of the grammar and failed by name as no symbol form. The case
+# commits packages/daemon/internal/api/metrics.go, one name in a string, and writes the
+# fixture's row f-our-1 as citing that file (symbol_plant; jq writes the symbol, whose `\`
+# the plant's sed would read) with 'v(1)?_total, v[0-9]?_total, \bv1_total\b' over a file
+# holding v1_total, then with 'v(1)?_total' and with 'v[0-9]?_total' over one holding
+# vx_total, then with '\bv1_total\b' over one holding xv1_total, whose v follows a letter,
+# running --citations over each: the first must pass citation-our-code; each other must fail
+# it, naming the part.
+for form in honest paren bracket backslash; do
+    case "$form" in
+    honest) symbol='v(1)?_total, v[0-9]?_total, \bv1_total\b' name='v1_total' ;;
+    paren) symbol='v(1)?_total' name='vx_total' detail='v\(1\)\?_total' ;;
+    bracket) symbol='v[0-9]?_total' name='vx_total' detail='v\[0-9\]\?_total' ;;
+    backslash) symbol='\bv1_total\b' name='xv1_total' detail='\\bv1_total\\b' ;;
+    esac
+    dir="$(symbol_plant "symbol-pattern-ere-$form" packages/daemon/internal/api/metrics.go metric \
+        packages/daemon/internal/api/metrics.go "package api"$'\n\n'"const metric = \"$name\""$'\n')" &&
+        evidence_copy="$dir/repo/docs/research/internet-of-cognition" &&
+        jq -c --arg s "$symbol" 'if .id == "f-our-1" then .evidence.symbol = $s else . end' \
+            "$evidence_copy/claims.jsonl" >"$dir/claims.jsonl" && mv "$dir/claims.jsonl" "$evidence_copy/claims.jsonl" &&
+        jq -e --arg s "$symbol" 'select(.id == "f-our-1") | .evidence.symbol == $s' "$evidence_copy/claims.jsonl" >/dev/null &&
+        [ "$(grep -c '_total' "$dir/repo/packages/daemon/internal/api/metrics.go")" = 1 ] &&
+        grep -qF "\"$name\"" "$dir/repo/packages/daemon/internal/api/metrics.go" || {
+        printf 'FAIL the pattern %s over %s could not be planted in the fixture row f-our-1\n' "$symbol" "$name"
+        exit 1
+    }
+    out="$(fixture_run "$dir" --citations)"
+    case "$form" in
+    honest) honest_result "patterns $symbol, extended regular expressions a line holding v1_total matches, pass citation-our-code" citation-our-code "$out" ;;
+    *)
+        case_result "a pattern $symbol cited in a file whose only name ending in _total is $name, which it does not match, fails --citations, naming the part" \
+            "citation-our-code: f-our-1 cites the symbol $detail, which packages/daemon/internal/api/metrics\\.go does not hold" "$out"
+        ;;
     esac
 done
 

@@ -6141,6 +6141,40 @@ token_held() {
     git -C "$root" grep -qP -- "$(whole_token "$token")" "$commit" -- "$@" 2>/dev/null
 }
 
+# GLOB_CHAR is what a `?` of a glob of names stands for (glob_token), and a `*` any run of it,
+# the empty run among them: one letter, digit, `_`, `.` or `-`, the characters the names the
+# live rows' globs cover are written in, as GEN_AI_REQUEST_MODEL and gen_ai.usage.input_tokens
+# are.
+GLOB_CHAR='[A-Za-z0-9_.-]'
+
+# glob_token <glob>; prints the Perl-compatible regular expression that finds a name a glob of
+# names covers as a whole token, by which form 8 of the symbol grammar reads a pattern holding
+# `*` or `?` and none of `|`, `(`, `[` and `\`: each `*` is any run of GLOB_CHAR, each `?` one
+# GLOB_CHAR, and every other character stands for itself, quoted as whole_token quotes a token
+# (a glob holds no `\`, so no \E stands in it); and whole_token's rule bounds the name: its
+# first character, where the glob starts with a word character, a `*` or a `?`, follows no
+# word character, and its last, where the glob ends with one, is followed by none. So
+# `GEN_AI_*` finds GEN_AI_MODEL and not GEN_AIRPORT, `gen_ai.*` finds gen_ai.request.model
+# and not gen_aix_total, `a*_total` finds a_requests_total and neither ba_requests_total nor
+# a_requests_totals, and `v?_total` finds v1_total and neither v10_total nor xv1_total.
+glob_token() {
+    local glob="$1" rest="$1" piece pattern=""
+    while :; do
+        piece="${rest%%[*?]*}"
+        [ -z "$piece" ] || pattern="$pattern\\Q$piece\\E"
+        rest="${rest#"$piece"}"
+        case "$rest" in
+        '') break ;;
+        '*'*) pattern="$pattern$GLOB_CHAR*" ;;
+        *) pattern="$pattern$GLOB_CHAR" ;;
+        esac
+        rest="${rest#?}"
+    done
+    [[ "$glob" == [A-Za-z0-9_*?]* ]] && pattern="(?<![A-Za-z0-9_])$pattern"
+    [[ "$glob" == *[A-Za-z0-9_*?] ]] && pattern="$pattern(?![A-Za-z0-9_])"
+    printf '%s' "$pattern"
+}
+
 # prefix_held <family> <id> <part> <separator> <here name> <root> <commit> <path>...; holds
 # to the paths a part that resolved only by its local part, the text after its last
 # <separator>, a colon or a dot, as `Engine.match` resolves on `match`. The part's prefix,
@@ -6195,7 +6229,7 @@ symbol_form() {
         printf prefixed
     elif [[ "$part" =~ $path_form ]]; then
         printf path
-    elif [[ "$part" == *[*\|]* ]]; then
+    elif [[ "$part" == *['|*?\']* ]]; then
         printf pattern
     else
         return 1
@@ -6247,8 +6281,9 @@ symbol_refused() {
 #     no line of a file and is a figure of the prose: it is not read.
 #  2. A part in words, any part holding a space: `the title line`,
 #     `kind: Deployment|StatefulSet|Job` (case 193). It holds as text here holds; else,
-#     holding a colon, by the readings of a prefixed name (6); else, holding `|` or `*`, as a
-#     pattern (8); else it names a part of the file a reader judges, and it is not checked. A
+#     holding a colon, by the readings of a prefixed name (6); else, holding `|`, `*`, `?` or
+#     `\`, as a pattern, an extended regular expression or a glob by the rules of 8, which its
+#     text decides; else it names a part of the file a reader judges, and it is not checked. A
 #     path inside it, as in `skills/x/SKILL.md lines 22-23`, is not read as a path.
 #  3. A quoted string, in double quotes, single quotes or backquotes, holding no space:
 #     `'strict'` (case 194). It holds as text here holds, its quotes among it, or the part
@@ -6309,10 +6344,26 @@ symbol_refused() {
 #     in 5c; and as a path, a directory or a glob the commit holds (paths_at), from the root or
 #     below a directory or a glob the citation names, a glob's `*` within one path element, and
 #     never as a pattern over text; else the part fails.
-#  8. A pattern, any other part holding `|` or `*`: `GEN_AI_*`, `consensus|majority|quorum`
-#     (case 199). It holds as text here holds, or as an extended regular expression a line of
-#     here matches, read as its author wrote it, since it says itself what it matches; else
-#     the part fails.
+#  8. A pattern, any other part holding `|`, `*`, `?` or `\`. It holds as text here holds;
+#     else its text alone decides how it is read, by two rules:
+#     - one holding `|`, `(`, `[` or `\` is an extended regular expression, and holds where a
+#       line of here matches it, read as its author wrote it, as grep -E reads it:
+#       `consensus|majority|quorum` (case 199); `v(1)?_total` and `v[0-9]?_total` hold in
+#       v1_total and not in vx_total, and `\bv1_total\b` holds in v1_total and not in
+#       xv1_total (case 207);
+#     - any other, holding `*` or `?`, is a glob of names, and holds where here holds, as a
+#       whole token, a name the glob covers (glob_token): each `*` stands for any run, the
+#       empty run among them, of letters, digits, `_`, `.` and `-`, each `?` for exactly one
+#       of them, and every other character, `.` and `_` among them, for itself; the name's
+#       first character, where the glob starts with a word character, a `*` or a `?`, follows
+#       no word character, and its last, where the glob ends with one, is followed by none, by
+#       whole_token's rule. So `GEN_AI_*` holds in GEN_AI_MODEL and not in GEN_AIRPORT, and
+#       `gen_ai.*` in gen_ai.request.model and not in gen_aix_total (case 204); `a*_total`
+#       holds in a_requests_total, and neither in ba_requests_total nor in a_requests_totals
+#       (case 205); `v?_total` holds in v1_total, and neither in v10_total nor in xv1_total
+#       (case 206);
+#     else the part fails. A `(` or a `[` makes no part a pattern: `match(row)`, holding none
+#     of `|`, `*`, `?` and `\`, is in no form (case 200).
 #
 # A part in none of these forms, as `match(row)`, `$row` or `Engine::match`, fails by name,
 # "<id> cites the symbol part '<part>', which is not a symbol form the gate reads", and is
@@ -6489,15 +6540,21 @@ resolve_symbol() {
             [ "$held" -eq 0 ] && continue
             ;;
         esac
-        # 8, and 2 where it holds `|` or `*`: an extended regular expression a line of here
-        # matches.
+        # 8, and 2 where it holds `|`, `*`, `?` or `\`: a pattern holding `|`, `(`, `[` or `\`
+        # is an extended regular expression a line of here matches; any other is a glob of
+        # names, which holds where here holds a name it covers as a whole token (glob_token).
         case "$form" in
         pattern | words)
-            case "$part" in
-            *'|'* | *'*'*)
-                git -C "$root" grep -qE -- "$part" "$commit" -- "${here[@]}" 2>/dev/null && continue
-                ;;
-            esac
+            if [[ "$part" == *['|*?\']* ]]; then
+                case "$part" in
+                *['|([\']*)
+                    git -C "$root" grep -qE -- "$part" "$commit" -- "${here[@]}" 2>/dev/null && continue
+                    ;;
+                *)
+                    git -C "$root" grep -qP -- "$(glob_token "$part")" "$commit" -- "${here[@]}" 2>/dev/null && continue
+                    ;;
+                esac
+            fi
             ;;
         esac
         # 2: a part in words no reading found names a part of the file a reader judges, and
