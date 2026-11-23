@@ -323,3 +323,41 @@ func TestARestartDoesWhatAMoveDoesAfterItsStart(t *testing.T) {
 		}
 	})
 }
+
+// The release of any other hold puts the issue back in the phase the hold is from and starts that
+// phase's worker again (retryPhase), and the hold owed the issue nothing either (record.OwedNews
+// names every held issue UntoldHeld), so the release queues the reconcile of the tree's news as the
+// restart above does (queueMovedNews): a version approved while the issue was held reaches the
+// restarted worker with its change set recorded. The control is a holder that took the approved
+// version, which queues no reconcile. The release is a person's todo on a root with no plan rows
+// that a failed claim holds; the deployment gates the spec of each root.
+func TestTheReleaseOfAHeldPhaseQueuesTheReconcileOfNewsItsHoldOwedNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		took int
+		want int
+	}{
+		{name: "a holder that took the version before the approved one", took: 3, want: 1},
+		{name: "control: a holder that took the approved version", took: 4, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := gatedStepEngine(config.DesignGateRootIssues, nil)
+			root := stepRoot(t, pool, phase.Held)
+			root.Hold = &record.Hold{From: phase.Implementing}
+			seedIssue(t, pool, root)
+			seedGate(t, pool, record.DesignGate{Issue: root.Key, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(4), EverOpened: true})
+			seedTold(t, pool, root.Key, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: tc.took})
+			seedTold(t, pool, root.Key, record.AudienceArchitect, map[record.DesignStep]int{record.DesignStepSpec: 4})
+			assertOutboxCount(t, pool, "design_changes", 0)
+
+			if result := applyFacts(t, pool, engine)("todo", personsTodo(root.Key)); result.Refusal != nil {
+				t.Fatalf("the todo was refused: %+v", result.Refusal)
+			}
+			if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Implementing || issue.Hold != nil {
+				t.Fatalf("%s after the todo stands in %s with hold %+v, want implementing with no hold", root.Key, issue.Phase, issue.Hold)
+			}
+			assertOutboxCount(t, pool, "design_changes", tc.want)
+		})
+	}
+}

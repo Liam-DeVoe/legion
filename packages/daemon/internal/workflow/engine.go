@@ -2136,9 +2136,16 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), func(at Standing) string {
+	if err := e.restart(ctx, tx, issue, phase.RoleFor(from), func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reason)
-	}, freshSession)
+	}, freshSession); err != nil {
+		return "", err
+	}
+	// The release puts the issue back in a phase, and a hold owed it nothing (record.OwedNews names
+	// a held issue UntoldHeld), so it queues the reconcile of the tree's news as a move does after
+	// its start (queueMovedNews). It puts the issue back in the phase the hold is from, which is no
+	// move between phases, so the merge forward stands as the hold left it.
+	return from, e.queueMovedNews(ctx, tx, issue)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
