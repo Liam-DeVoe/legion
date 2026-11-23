@@ -504,13 +504,14 @@ func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	}
 }
 
-// R5: an architect gets no backstop. OpenRoleOf is the one statement of "the worker of the open
-// phase" — which role a CI settlement wakes and which live claim has a phase reminder armed in it,
-// and, read from the phase alone (OpenPhaseRole), which role a release arms a backstop for — and it
-// answers none where the architect works the issue's place and none for a phase no role works. By
-// the phase alone (phase.RoleFor), as for an issue with no plan rows, admitted and accepting are
-// the two the architect works; with plan rows a step or a retro the owner does is the architect's
-// too, and a step acceptance with no key is the fresh agent's (record.Issue.RoleAt).
+// R5: an architect gets no backstop as the worker of an open phase. OpenRoleOf is the one statement
+// of "the worker of the open phase" — which role a CI settlement wakes, which live claim has a
+// phase reminder armed in it and which role a release arms a backstop for — and it answers none
+// where the architect works the issue's place and none for a phase no role works (the owner's own
+// backstop at its own place is TestTheBackstopWakesTheReleasedOwnerAtItsOwnStep's). By the phase
+// alone (OpenRoleAt with no role of a plan), as for an issue with no plan rows, admitted and
+// accepting are the two the architect works; with plan rows a step or a retro the owner does is
+// the architect's too, and a step acceptance with no key is the fresh agent's (record.Issue.RoleAt).
 func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -525,8 +526,8 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 		{name: "done", p: phase.Done},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := OpenPhaseRole(tc.p); got != tc.want {
-				t.Fatalf("OpenPhaseRole(%s) = %q, want %q", tc.p, got, tc.want)
+			if got := OpenRoleAt(tc.p, "", ""); got != tc.want {
+				t.Fatalf("OpenRoleAt(%s) = %q, want %q", tc.p, got, tc.want)
 			}
 		})
 	}
@@ -885,6 +886,31 @@ func TestASettlementWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
 	}
 	if told := roleMessageTokens(t, rig.pool); slices.Contains(told, string(owner)) {
 		t.Fatalf("the settlement's role messages = %v, want none to the owner %s: its wake task names the settlement", told, owner)
+	}
+}
+
+// R5 at the owner's own place: the backstop a release arms for the owner at its own step
+// (internal/daemon's armBackstops) brings the owner back when it comes due, for a step that waits
+// on something no CI settlement reports, a deploy say: the backstop of the role architect wakes the
+// owner's released claim (record.OwnerClaim), whatever run its claim served last, with the
+// backstop's task.
+func TestTheBackstopWakesTheReleasedOwnerAtItsOwnStep(t *testing.T) {
+	rig := newWakeRig(t)
+	owner := wakeToken(t, claim.RoleArchitect)
+	setWakeIssuePhase(t, rig.pool, phase.Admitted)
+	seedTreeLifecycle(t, rig.pool, "LEGION-208")
+	seedStepsPlan(t, rig.pool, "LEGION-208", wakeIssueGeneration, "implementer:owner", "tester")
+	move(t, rig.pool, rig.engine, "LEGION-208", TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	if _, err := rig.pool.Exec(context.Background(), `update claims set serving_generation = 0 where token = $1`, string(owner)); err != nil {
+		t.Fatalf("leave the owner's claim serving no run: %v", err)
+	}
+	id := armBackstop(t, rig.pool, claim.RoleArchitect, wakeAt.Add(-time.Minute))
+
+	rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleArchitect})
+
+	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeBackstop, "backstop")
+	if starts := superviseRowsOf(t, rig.pool, "LEGION-208", "start"); len(starts) != 1 || starts[0].Claim != owner {
+		t.Fatalf("the backstop's starts = %+v, want the one wake naming the owner's claim %s", starts, owner)
 	}
 }
 

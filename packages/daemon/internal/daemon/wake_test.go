@@ -262,6 +262,71 @@ func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 	}
 }
 
+// The release of an issue's pod at the owner's own step arms the owner's backstop: the owner does
+// that step as a worker of its role would, and may wait on something no CI settlement reports, a
+// deploy say, so the backstop is what brings it back. On `implementer:owner tester` at step 1 the
+// released owner (record.OwnerClaim), matched by its token whatever run its claim served last,
+// gets the backstop, and the released implementer, which works no step there, gets none. The
+// control is the release as it was, which armed the worker of the open phase alone
+// (workflow.OpenRoleOf), none at the owner's place.
+func TestTheReleaseOfAPodAtTheOwnersStepArmsTheOwnersBackstop(t *testing.T) {
+	const key = "LEGION-208"
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: key, Title: "root", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: key, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: mustClaimToken(t, key, claim.RoleArchitect), GivenAt: time.Now().UTC()}
+		task := record.PlanTask{Issue: key, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
+		steps := []record.PlanStep{
+			{Issue: key, Generation: 2, Task: "a", Position: 1, Role: "implementer", AgentKey: "owner", Type: "implementation"},
+			{Issue: key, Generation: 2, Task: "a", Position: 2, Role: "tester", Type: "testing"},
+		}
+		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
+			return err
+		}
+		return records.MoveTask(ctx, tx, key, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning)
+	}); err != nil {
+		t.Fatalf("seed the plan of %s at the owner's implementer step: %v", key, err)
+	}
+	st := outboxTreeStore(t, pool, key)
+	for _, released := range []struct {
+		role    claim.Role
+		serving uint64
+	}{{claim.RoleImplementer, 2}, {claim.RoleArchitect, 0}} {
+		if err := st.PutClaim(ctx, supervise.Claim{Token: mustClaimToken(t, key, released.role), Project: "legion", Tree: key,
+			Issue: key, Role: released.role, TreeEpoch: 1, Generation: 2, ServingGeneration: released.serving,
+			State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
+			Session: "ses-" + string(released.role), SessionFile: "/tmp/" + string(released.role) + ".jsonl",
+			PluginContract: api.DaemonAPIVersion}); err != nil {
+			t.Fatalf("seed the released %s: %v", released.role, err)
+		}
+	}
+	runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", trees: st,
+		backstop: time.Hour, log: quietLogger(), now: time.Now}
+
+	issue, err := runner.issue(ctx, key)
+	if err != nil {
+		t.Fatalf("read %s as the teardown does: %v", key, err)
+	}
+	if err := runner.armBackstops(ctx, issue); err != nil {
+		t.Fatalf("arm the backstops of %s's release: %v", key, err)
+	}
+	rows, err := pool.Query(ctx, `select role from pod_wake_backstops where issue = $1 and not fired order by role`, key)
+	if err != nil {
+		t.Fatalf("read the backstops of %s: %v", key, err)
+	}
+	armed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the backstops of %s: %v", key, err)
+	}
+	if want := []string{string(claim.RoleArchitect)}; !slices.Equal(armed, want) {
+		t.Fatalf("the release of %s's pod at the owner's step armed the backstops of %v, want %v", key, armed, want)
+	}
+}
+
 // backstopHandler is the workflow engine's backstop arm as this test needs it: it counts the
 // facts it is handed and fires the row conditionally, as the engine does, so a backstop two
 // passes read is seen to fire once.

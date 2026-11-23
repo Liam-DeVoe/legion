@@ -422,11 +422,12 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
-// worker of the pod's open phase (workflow.OpenRoleOf: at step the role of the running step, read
-// with the issue, and none at a step or a retro the issue's owner does). An architect gets none,
-// at its own step too, where the owner-step notice is what tells it its work; elsewhere nothing of
-// its own is due, and a sub-architect woken for nothing would hold a pod open for the backstop
-// period. Neither does an issue whose phase no role works.
+// one released claim the workflow names (workflow.BackstopClaim): at the owner's own place (a step
+// or a retro the issue's owner does) the owner, which may wait there on something no CI settlement
+// reports, a deploy say; at any other place the worker of the pod's open phase
+// (workflow.OpenRoleOf: at step the role of the running step, read with the issue). An architect
+// off its own place gets none: nothing of its own is due, and a sub-architect woken for nothing
+// would hold a pod open for the backstop period. Neither does an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.
@@ -437,23 +438,19 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if r.backstop <= 0 {
 		return nil
 	}
-	role := workflow.OpenRoleOf(issue)
-	if role == "" {
-		return nil
-	}
 	released, err := r.trees.ReleasedClaimsIn(ctx, r.project, issue.Key)
 	if err != nil {
 		return err
 	}
 	for _, c := range released {
-		if c.Role != role || c.ServingGeneration != issue.Generation {
+		if !workflow.BackstopClaim(issue, c) {
 			continue
 		}
 		due := r.now().UTC().Add(r.backstop)
 		r.log.Info("wake: the release of an issue's pod arms its open phase's backstop",
-			"issue", issue.Key, "role", role, "due", due.Format(time.RFC3339))
+			"issue", issue.Key, "role", c.Role, "due", due.Format(time.RFC3339))
 		return r.trees.ArmPodBackstop(ctx, store.PodWakeBackstop{Project: r.project, Issue: issue.Key,
-			Role: role, DueAt: due})
+			Role: c.Role, DueAt: due})
 	}
 	return nil
 }

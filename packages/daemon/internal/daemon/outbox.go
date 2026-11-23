@@ -3928,12 +3928,11 @@ func (r *outbox) issueSandboxName(issue string) string {
 //
 // A cancel while the project is paused queues no resume: the store records each role the release
 // had stopped as stopped by the pause, holds the pod, and arms the open phase's worker's backstop
-// as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop is the
-// idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
-// (workflow.OpenPhaseRole).
+// as the stop transaction arms one (decision 12 of dispatch://INFRA-3759), with what
+// releaseCancelPause gives it.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, r.releaseResume(issue, tree), record.OutOfWorkflow,
-		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
+		releaseCancelPause(r.now(), r.backstop))
 	if err != nil {
 		return err
 	}
@@ -3954,6 +3953,16 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 	}
 	r.recordPodHold(ctx, issue, hold)
 	return nil
+}
+
+// releaseCancelPause is the paused half of every cancel of a release the outbox makes
+// (store.ReleaseCancelPause): the moment at the stops are stamped with, the idle release's
+// backstop, and the workflow's rule of which role works the place an issue's task stands at,
+// read from the issue's phase and the two roles its plan rows give it (workflow.OpenRoleAt), so a
+// paused cancel arms the backstop the stop transaction arms (projectPause.stopTx, which reads
+// workflow.OpenRoleOf of the issue's record).
+func releaseCancelPause(at time.Time, backstop time.Duration) store.ReleaseCancelPause {
+	return store.ReleaseCancelPause{At: at, Backstop: backstop, OpenRole: workflow.OpenRoleAt}
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the
