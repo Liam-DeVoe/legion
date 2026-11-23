@@ -89,6 +89,7 @@ func TestACreateOfAnAbsentBucketTakesNoWriterProof(t *testing.T) {
 	for _, flags := range [][]string{
 		{"--host", "box-1"},
 		{"--kube-context", "prod"},
+		{"--namespace", "envoy"},
 		{"--this-machine"},
 		{"--connz", "http://127.0.0.1:8222"},
 		{"--first-deployment"},

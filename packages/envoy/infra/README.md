@@ -3395,22 +3395,23 @@ envoy-dispatch when `envoy_ci_state` is among the buckets. `create` takes no suc
 only a bucket that is absent, which holds no write to lose.
 
 **The check is best effort.** Every `recreate` and `check` prints so first, on standard error. A
-writer gets past it four ways: a host or dev box you do not name, a binary renamed to a name the
-check does not know, a writer that starts between the final scan and the create, and a restore
-after `check` that nothing holds. So before every `recreate` or `check`, stop every listener of
-the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it
-has ended; the check confirms what you did, and does not replace it. `create` needs no listener
-stopped and prints no warning.
+writer gets past it five ways: a host or dev box you do not name, a binary renamed to a name the
+check does not know, a pod deleted with `--force` whose containers still run (a cluster is read
+through its API, not its nodes' runtimes), a writer that starts between the final scan and the
+create, and a restore after `check` that nothing holds. So before every `recreate` or `check`, stop
+every listener of the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on
+each host that it has ended; the check confirms what you did, and does not replace it. `create`
+needs no listener stopped and prints no warning.
 The coming server-side hold will exclude writers at the server instead: while it holds,
 the auth callout refuses every connection but the operator's, every other connection is kicked,
-every server's connz shows the operator alone, and a server it cannot reach stops the hold. Four
+every server's connz shows the operator alone, and a server it cannot reach stops the hold. Five
 tests (`TestBestEffort...`) assert today's outcome of each way, and must be inverted when the
 hold leaves no writer a connection.
 
 ```sh
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets create --nats nats://<hub>:4222 --replicas 3
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets recreate --bucket envoy_sessions \
-  --nats nats://<hub>:4222 --kube-context <cluster> --host <machine>
+  --nats nats://<hub>:4222 --kube-context <cluster> --namespace envoy --namespace dispatch --host <machine>
 NATS_NKEY_SEED_FILE=buckets.seed envoy-infra buckets check --nats nats://<hub>:4222 --host <machine>
 ```
 
@@ -3471,12 +3472,20 @@ restore`.
 `recreate` and `check` need an inventory of every place a writer runs, and refuse with exit 2
 without one:
 
-- `--kube-context <ctx>`, once for each cluster (an empty value is kubectl's current context): no
-  pod the API lists, in any namespace, runs a container named `listener` or `envoy-listener` (or
-  `envoy-dispatch`) that has not terminated, and no node's kubelet runtime list
-  (`/api/v1/nodes/<node>/proxy/runningpods/`) holds one, since a pod deleted with `--force` keeps
-  its containers running after the API forgets it. A node whose runtime list does not answer
-  blocks, and so does an empty node list.
+- `--kube-context <ctx>`, once for each cluster (an empty value is kubectl's current context), with
+  `--namespace <ns>` once for each namespace where the deployment's writers run, such as `envoy` and
+  `dispatch`; each needs the other. For each namespace the check reads the namespace (one the API
+  does not hold blocks, since its pod list would be empty) and its pods through the Kubernetes API,
+  which GKE Autopilot allows, and blocks on each container that has not terminated and writes one
+  of the buckets named. Which buckets a container writes is read from its configuration: a listener
+  (one that sets `ENVOY_MACHINE_ID`, or is named or runs as `listener` or `envoy-listener`) writes
+  `envoy_interests`, `envoy_roles`, `envoy_sessions` and `envoy_known_sessions`, and
+  `envoy_ci_state` too when its `ENVOY_WEBHOOKS` names `github` or comes from a Secret or a
+  ConfigMap; `envoy-dispatch` writes `envoy_ci_state`; no other container writes any. A pod of
+  another namespace is never read, so an Actions runner's container named `listener` does not
+  block. No node's kubelet runtime list is read (Autopilot refuses `nodes/proxy`), so a pod deleted
+  with `--force` whose containers still run gets past the check: that is the fifth way the warning
+  names, and `--connz` still sees its open connection.
 - `--host <target>`, once for each machine, through `ssh -o BatchMode=yes` (`--ssh <program>`
   names another program taking ssh's arguments, such as a wrapper over SSM): no process on the
   machine runs under a name this repository runs a writer as - `envoy-listener`, `listener`, the
