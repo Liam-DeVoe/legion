@@ -307,10 +307,10 @@ func recordBackfillHorizon(ctx context.Context, database *store.Store, rule int)
 // read to decide what a row should say, nor a row to mend the store.
 
 // runOwed is the from and the where of the runs whose row names no interaction node, which
-// backfillRuns reads in batches and counts once it is done, $1 the interaction kind.
+// backfillRuns reads in batches and counts once it is done.
 const runOwed = `
 		from going_requests r
-		where not exists (select 1 from graph_nodes n where n.kind = $1 and n.id = r.id::text)`
+		where not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindInteraction + `' and n.id = r.id::text)`
 
 // runRowless is the from and the where of the interaction nodes of the source going_requests
 // (graphstore.SourceGoingRequests), not gone, whose row is gone (graphstore.RowlessRunSQL), which
@@ -321,6 +321,32 @@ var runRowless = `
 		from graph_nodes n
 		where ` + graphstore.RowlessRunSQL("n")
 
+// owedBatches reads, by read, the keys a pass owes past after, in batches of backfillBatch, and
+// hands each batch that holds a key to write, until a batch comes back short. read is one text
+// column in the order the keys compare in, past $1 and at most $2 of them, so the last key of a
+// batch is where the next one starts. what names the keys in the error of a read that fails.
+func owedBatches(ctx context.Context, database *store.Store, read, what, after string, write func(owed []string) error) error {
+	for {
+		rows, err := database.Pool.Query(ctx, read, after, backfillBatch)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", what, err)
+		}
+		owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return fmt.Errorf("read %s: %w", what, err)
+		}
+		if len(owed) > 0 {
+			if err := write(owed); err != nil {
+				return err
+			}
+		}
+		if len(owed) < backfillBatch {
+			return nil
+		}
+		after = owed[len(owed)-1]
+	}
+}
+
 // backfillRuns gives every run going_requests holds and the store holds no interaction node of its
 // node, through the one writer of such a node from its row (graphstore.WriteRun): the node, its
 // author's node and tuples, and a frame value of every frame its row holds, in the shape the going
@@ -329,16 +355,11 @@ var runRowless = `
 // there, so a run the frame path or another backfill gave its node meanwhile is left as it is.
 func backfillRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.KindInteraction}
-	after := uuid.Nil.String()
-	for {
-		owed, err := readOwedRuns(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
+	err := owedBatches(ctx, database, owedRunsRead, "the runs the store holds no node of", uuid.Nil.String(), func(owed []string) error {
 		for _, id := range owed {
 			written, err := writeOwedRun(ctx, database, id)
 			if err != nil {
-				return done, err
+				return err
 			}
 			if written.Nodes > 0 {
 				done.Rows++
@@ -346,35 +367,24 @@ func backfillRuns(ctx context.Context, database *store.Store) (KindBackfill, err
 				done.Tuples += written.Tuples
 			}
 		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
+		return nil
+	})
+	if err != nil {
+		return done, err
 	}
-	if err := database.Pool.QueryRow(ctx, `select count(*)`+runOwed, graphstore.KindInteraction).Scan(&done.Remaining); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select count(*)`+runOwed).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the runs the store holds no node of: %w", err)
 	}
 	done.Complete = done.Remaining == 0
 	return done, nil
 }
 
-// readOwedRuns reads the runs past after, in id order, whose row names no interaction node, at
-// most limit of them.
-func readOwedRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select r.id::text`+runOwed+` and r.id > $2::uuid
+// owedRunsRead reads the runs past $1, in id order, whose row names no interaction node, at most
+// $2 of them (owedBatches).
+const owedRunsRead = `
+		select r.id::text` + runOwed + ` and r.id > $1::uuid
 		order by r.id
-		limit $3
-	`, graphstore.KindInteraction, after, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the runs the store holds no node of: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the runs the store holds no node of: %w", err)
-	}
-	return owed, nil
-}
+		limit $2`
 
 // writeOwedRun writes the node of one run in a transaction of its own (graphstore.WriteRun).
 func writeOwedRun(ctx context.Context, database *store.Store, id string) (graphstore.RunWritten, error) {
@@ -400,25 +410,21 @@ func writeOwedRun(ctx context.Context, database *store.Store, id string) (graphs
 // values, one each, with what graphstore.WriteRun stated of a run that had no node by then.
 func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.AttributeFrame}
-	after := uuid.Nil.String()
-	for {
-		owed, err := readOwedFrameRuns(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
-		for _, run := range owed {
-			frames, written, err := writeRunFrames(ctx, database, run)
-			if err != nil {
-				return done, err
+	err := owedBatches(ctx, database, owedFrameRunsRead, "the runs holding a frame the store holds no value of", uuid.Nil.String(),
+		func(owed []string) error {
+			for _, run := range owed {
+				frames, written, err := writeRunFrames(ctx, database, run)
+				if err != nil {
+					return err
+				}
+				done.Rows += frames
+				done.Tuples += frames + written.Tuples
+				done.Nodes += written.Nodes
 			}
-			done.Rows += frames
-			done.Tuples += frames + written.Tuples
-			done.Nodes += written.Nodes
-		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
+			return nil
+		})
+	if err != nil {
+		return done, err
 	}
 	var left int64
 	if err := database.Pool.QueryRow(ctx, `select count(*) from going_events e where not `+graphstore.FrameHeldSQL).Scan(&left); err != nil {
@@ -429,26 +435,16 @@ func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill
 	return done, nil
 }
 
-// readOwedFrameRuns reads the runs past after, in id order, that hold a frame the store holds no
-// value of, at most limit of them. The runs are grouped and ordered by the uuid itself, the order
-// `after` compares in, so the read takes going_events' (request_id, sequence) key in its order.
-func readOwedFrameRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
+// owedFrameRunsRead reads the runs past $1, in id order, that hold a frame the store holds no
+// value of, at most $2 of them (owedBatches). The runs are grouped and ordered by the uuid itself,
+// the order $1 compares in, so the read takes going_events' (request_id, sequence) key in its
+// order.
+const owedFrameRunsRead = `
 		select e.request_id::text from going_events e
-		where e.request_id > $1::uuid and not `+graphstore.FrameHeldSQL+`
+		where e.request_id > $1::uuid and not ` + graphstore.FrameHeldSQL + `
 		group by e.request_id
 		order by e.request_id
-		limit $2
-	`, after, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the runs holding a frame the store holds no value of: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the runs holding a frame the store holds no value of: %w", err)
-	}
-	return owed, nil
-}
+		limit $2`
 
 // writeRunFrames states, in one transaction, a frame value of each frame of run the store holds no
 // value of, and answers how many. It takes the run's interaction node row first
@@ -500,26 +496,21 @@ func writeRunFrames(ctx context.Context, database *store.Store, run string) (int
 // row as no difference.
 func backfillGoneRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "interaction_gone"}
-	after := ""
-	for {
-		owed, err := readRowlessRuns(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
+	err := owedBatches(ctx, database, rowlessRunsRead, "the runs whose row is gone", "", func(owed []string) error {
 		for _, id := range owed {
 			stated, err := writeGoneRun(ctx, database, id)
 			if err != nil {
-				return done, err
+				return err
 			}
 			if stated {
 				done.Rows++
 				done.Tuples++
 			}
 		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
+		return nil
+	})
+	if err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*)`+runRowless).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the runs whose row is gone: %w", err)
@@ -528,23 +519,12 @@ func backfillGoneRuns(ctx context.Context, database *store.Store) (KindBackfill,
 	return done, nil
 }
 
-// readRowlessRuns reads the interaction nodes past after, in id order, not gone and whose row is
-// gone, at most limit of them.
-func readRowlessRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select n.id`+runRowless+` and n.id > $1
+// rowlessRunsRead reads the interaction nodes past $1, in id order, not gone and whose row is
+// gone, at most $2 of them (owedBatches).
+var rowlessRunsRead = `
+		select n.id` + runRowless + ` and n.id > $1
 		order by n.id
-		limit $2
-	`, after, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
-	}
-	return owed, nil
-}
+		limit $2`
 
 // writeGoneRun states the interaction node id gone where its row is still gone, in a transaction
 // of its own, and answers whether it did. It takes the node's row first, as a frame of the run
@@ -615,24 +595,18 @@ func endedChecks(narrow string) string {
 // Tuples count the tuples it retracted.
 func backfillEndedPreventions(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "prevented_by_retracted"}
-	after := ""
-	for {
-		owed, err := readEndedPreventionDocuments(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
-		if len(owed) > 0 {
+	err := owedBatches(ctx, database, endedPreventionDocumentsRead, "the documents holding a check nobody runs that a risk is prevented by", "",
+		func(owed []string) error {
 			retracted, err := writeEndedPreventions(ctx, database, owed)
 			if err != nil {
-				return done, err
+				return err
 			}
 			done.Rows += retracted
 			done.Tuples += retracted
-		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
+			return nil
+		})
+	if err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, refs.CurrentPreventionsSQL(`count(*)`, endedChecks(`true`))).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the prevented_by tuples at checks nobody runs: %w", err)
@@ -641,23 +615,12 @@ func backfillEndedPreventions(ctx context.Context, database *store.Store) (KindB
 	return done, nil
 }
 
-// readEndedPreventionDocuments reads the ref_keys past after, in order, of the documents that hold
-// an ended check a risk is prevented by now, at most limit of them.
-func readEndedPreventionDocuments(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
-		`+refs.CurrentPreventionsSQL(`distinct split_part(checked.to_id, '#', 1)`, endedChecks(`split_part(p.to_id, '#', 1) > $1`))+`
+// endedPreventionDocumentsRead reads the ref_keys past $1, in order, of the documents that hold
+// an ended check a risk is prevented by now, at most $2 of them (owedBatches).
+var endedPreventionDocumentsRead = `
+		` + refs.CurrentPreventionsSQL(`distinct split_part(checked.to_id, '#', 1)`, endedChecks(`split_part(p.to_id, '#', 1) > $1`)) + `
 		order by 1
-		limit $2
-	`, after, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the documents holding a check nobody runs that a risk is prevented by: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the documents holding a check nobody runs that a risk is prevented by: %w", err)
-	}
-	return owed, nil
-}
+		limit $2`
 
 // writeEndedPreventions retracts, in one transaction, every prevented_by the store asserts now at an
 // ended check of documents, a batch's ref_keys, and answers how many. It takes the owner lock
