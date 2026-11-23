@@ -12,6 +12,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -302,5 +304,50 @@ func TestTheKeptCopysHandoverAsksTheHoldersSight(t *testing.T) {
 	}
 	if _, err := holderSeesTheCopy(context.Background(), Deps{}, roleHolder, contracts.Envelope{Payload: `{"project":"TT"}`}); !errors.Is(err, errNoSightReader) {
 		t.Fatalf("a handover with no store answered %v, want errNoSightReader", err)
+	}
+}
+
+// TestAWithheldDestinationIsRecordedNowhereAReaderSees: an event the outbox publishes with a
+// session's copy withheld (destinations.withheld) records nothing for that session - its
+// published_destinations hold the issue's topic alone, and the session's list of what people
+// wrote that reached it (sessionanswers.List, GET /api/v1/agents/{session_id}/answers) is empty -
+// while the event itself is published. The control in the same run is the same scan with TT's list
+// naming the session's person: the session's topic is recorded and the comment is listed.
+func TestAWithheldDestinationIsRecordedNowhereAReaderSees(t *testing.T) {
+	const session = "session-outside"
+	for _, visible := range []bool{false, true} {
+		ctx := context.Background()
+		database := storetest.Open(t)
+		broker := events.NewBroker()
+		route := "session:" + session
+		seedIssue(t, database, "T-1", &route)
+		seedSightProject(t, database, visible)
+		tieSession(t, database, session, sightOutsider)
+		alice := model.Actor{Kind: "user", ID: "alice"}
+		commentID := seedComment(t, database, "T-1", alice, "Is the order right?", nil)
+		event := appendEvent(t, database, broker, model.Event{
+			IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
+			Payload: model.CommentEventPayload{Comment: model.Comment{ID: commentID, IssueKey: new("T-1"), Body: "Is the order right?"}},
+		})
+		deps := Deps{Store: database, Publisher: &recordingPublisher{}}
+		if _, err := scanBatch(ctx, deps, unfenced{}, holding(t, deps).instance); err != nil {
+			t.Fatalf("scan batch: %v", err)
+		}
+		var destinations []string
+		if err := database.Pool.QueryRow(ctx, `select published_destinations from events where id = $1 and published_at is not null`,
+			event.ID).Scan(&destinations); err != nil {
+			t.Fatalf("read the published event's destinations (visible %v): %v", visible, err)
+		}
+		items, err := sessionanswers.List(ctx, database.Pool, refs.VisibilityArg(model.ServerReader), session, time.Now().Add(-time.Hour))
+		if err != nil {
+			t.Fatalf("list what reached %s: %v", session, err)
+		}
+		recorded := slices.Contains(destinations, contracts.LegacyAgentSubject(session))
+		switch {
+		case !visible && (recorded || len(items) != 0):
+			t.Fatalf("a copy withheld from %s, which does not see TT: destinations %v, answers %d; want neither to name it", session, destinations, len(items))
+		case visible && (!recorded || len(items) != 1):
+			t.Fatalf("a copy %s took, which sees TT: destinations %v, answers %d; want its topic and the comment", session, destinations, len(items))
+		}
 	}
 }
