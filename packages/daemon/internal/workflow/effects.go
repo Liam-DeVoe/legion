@@ -631,17 +631,16 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // agent's session.
 func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token, row record.PhaseRow,
 	marks startMarks) error {
-	task := row.EntryTask
-	marks.stored = task != ""
-	if task == "" {
-		var err error
-		if task, err = e.ResumeTask(ctx, tx, issue); err != nil {
-			return err
-		}
-	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err
+	}
+	task := row.EntryTask
+	marks.stored = task != ""
+	if task == "" {
+		if task, err = e.resumeTaskOn(ctx, tx, issue, w); err != nil {
+			return err
+		}
 	}
 	to, err := e.claimReach(issue, w, role, token)
 	if err != nil {
@@ -1325,9 +1324,9 @@ func resumeText(issue record.Issue, at Standing) string {
 // ResumeTask is the resume task of the worker of issue's phase, standing where the record holds
 // its work (standingPart): the working copy the runtime gives it (Config.WorkspaceDir) and, for an
 // issue with plan rows, its task and its step. It is the one place every resume the engine sends
-// is composed: the promotion's start of a mid-phase worker (StartPromotedWorker, through
-// resumeTaskOn), an owed entry sent with no task (sendOwedEntry), the boot's resume by rule, the
-// cutover's repair of a merger, the catch-up's resume and the silence repair.
+// is composed: the promotion's start of a mid-phase worker (StartPromotedWorker) and an owed entry
+// sent with no task (sendOwedEntry), each through resumeTaskOn on the walk it read, the boot's
+// resume by rule, the cutover's repair of a merger, the catch-up's resume and the silence repair.
 //
 // It is exported for the tests of other packages that hold a start's task to the resume task
 // (internal/admit's re-admission cases, internal/daemon's resume, silence and upgrade cases), as
