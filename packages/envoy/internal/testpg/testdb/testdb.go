@@ -1,10 +1,9 @@
 // Package testdb is the half of internal/testpg that needs no container runtime: DatabaseOn makes
-// an empty Postgres database of a test's own on a server the test already holds, and
-// ProcessDatabaseOn one of the test binary's own, which Main drops after the binary's tests. It
-// imports no testcontainers package, so a test helper every Postgres-backed test links (the
-// broker's storetest among them) does not pay testcontainers' package init, which walks every
-// process on the machine before any test runs. internal/testpg keeps the container path and calls
-// this.
+// an empty Postgres database of a test's own on a server the test already holds, and DatabaseURL
+// names a database on such a server. It imports no testcontainers package, so a test helper every
+// Postgres-backed test links (the broker's storetest among them) does not pay testcontainers'
+// package init, which walks every process on the machine before any test runs. internal/testpg
+// keeps the container path and calls this.
 package testdb
 
 import (
@@ -21,7 +20,7 @@ import (
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
-// test ends, and returns a URL of that database (databaseURL: adminURL with its path replaced by
+// test ends, and returns a URL of that database (DatabaseURL: adminURL with its path replaced by
 // it, and its query's pairs kept byte for byte but for any dbname or database). The name is
 // prefix, an underscore and eight random bytes in hex: it is random because every test of every
 // package sharing one server takes a name there.
@@ -56,7 +55,7 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	// the role, which nothing in the database then holds (internal/dispatch/store's
 	// dropRoleAfterTestDatabase).
 	t.Cleanup(func() { adminExec(t, adminURL, server.Host, "drop database if exists "+name+" with (force)") })
-	return databaseURL(*server, name)
+	return DatabaseURL(*server, name)
 }
 
 // newDatabaseName is prefix, an underscore and eight random bytes in hex.
@@ -68,14 +67,23 @@ func newDatabaseName(prefix string) (string, error) {
 	return prefix + "_" + hex.EncodeToString(suffix[:]), nil
 }
 
-// databaseURL is server's URL naming database in every field pgx selects a database by: its path
-// is replaced by database, and its query loses each dbname or database pair, which pgx reads over
-// the path, so a server URL that carried one would put every caller in the one database it names.
-// Every other pair is kept byte for byte, as are the pairs' order and escapes: re-encoding the
-// query (url.Values.Encode) would write a space as a plus, which pgx reads as a plus, so an
-// options pair such as -c%20statement_timeout%3D5000 would stop connecting. An empty pair is
-// dropped.
-func databaseURL(server url.URL, database string) string {
+// DatabaseURL is server's URL naming database in every field pgx selects a database by, with each
+// of set, a raw key=value query pair, added: its path is replaced by database, and its query loses
+// each dbname or database pair, which pgx reads over the path, so a server URL that carried one
+// would put every caller in the one database it names, and each pair of a key set names, which
+// set's pair replaces (a test's search_path or pool size). Every other pair is kept byte for byte,
+// as are the pairs' order and escapes: re-encoding the query (url.Values.Encode) would write a
+// space as a plus, which pgx reads as a plus, so an options pair such as
+// -c%20statement_timeout%3D5000 would stop connecting. An empty pair is dropped, and set's pairs
+// follow the kept ones, in set's order.
+func DatabaseURL(server url.URL, database string, set ...string) string {
+	replaced := map[string]bool{"dbname": true, "database": true}
+	for _, pair := range set {
+		key, _, _ := strings.Cut(pair, "=")
+		if name, err := url.PathUnescape(key); err == nil {
+			replaced[name] = true
+		}
+	}
 	server.Path, server.RawPath = "/"+database, ""
 	var kept []string
 	for _, pair := range strings.Split(server.RawQuery, "&") {
@@ -83,12 +91,12 @@ func databaseURL(server url.URL, database string) string {
 			continue
 		}
 		key, _, _ := strings.Cut(pair, "=")
-		if name, err := url.PathUnescape(key); err == nil && (name == "dbname" || name == "database") {
+		if name, err := url.PathUnescape(key); err == nil && replaced[name] {
 			continue
 		}
 		kept = append(kept, pair)
 	}
-	server.RawQuery = strings.Join(kept, "&")
+	server.RawQuery = strings.Join(append(kept, set...), "&")
 	return server.String()
 }
 
