@@ -113,12 +113,18 @@ const stallTick = 5 * time.Millisecond
 // CPU quota or a frozen cgroup holds the whole process up, the code a row times with it, and the
 // meter counts that time; code that is late on its own does not move it. Code in another process
 // the row started shares the machine, so a machine that holds every process up is counted; one
-// that starves that process alone and not this one is not, and only lateSlack covers it.
+// that starves that process alone and not this one is not, and only lateSlack covers it. It keeps
+// each stall too (heldAround), for a step of another process, which this process's hold-ups delay
+// only where they fall on a moment this process marks.
 type stallMeter struct {
 	mu       sync.Mutex
 	held     time.Duration
 	lastWake time.Time
+	stalls   []stall
 }
+
+// stall is one sleep of a stallMeter that ran past stallTick: the span past it, from start to end.
+type stall struct{ start, end time.Time }
 
 // startStallMeter starts a stallMeter, which runs until t ends.
 func startStallMeter(t *testing.T) *stallMeter {
@@ -139,6 +145,7 @@ func startStallMeter(t *testing.T) *stallMeter {
 			now := time.Now()
 			if over := now.Sub(m.lastWake) - stallTick; over > 0 {
 				m.held += over
+				m.stalls = append(m.stalls, stall{start: now.Add(-over), end: now})
 			}
 			m.lastWake = now
 			m.mu.Unlock()
@@ -161,6 +168,34 @@ func (m *stallMeter) heldUp() time.Duration {
 	held := m.held
 	if over := time.Since(m.lastWake) - stallTick; over > 0 {
 		held += over
+	}
+	return held
+}
+
+// markWindow is how near a mark a stall must reach to count as holding that mark up (heldAround):
+// two of the meter's ticks, so the stall in progress when the mark is taken, and the one the meter
+// ends just before the code that takes the mark runs, both count.
+const markWindow = 2 * stallTick
+
+// heldAround is how long this process was held up in the stalls that reach within markWindow of
+// at, the sleep the meter is in now included: the hold that can have made late a moment this
+// process marked at at (a fake's mark of a request it got to only once the process ran again).
+// A stall elsewhere, while this process only waited, delayed no mark, and is not in it.
+func (m *stallMeter) heldAround(at time.Time) time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lo, hi := at.Add(-markWindow), at.Add(markWindow)
+	var held time.Duration
+	reaches := func(s stall) {
+		if s.end.After(lo) && s.start.Before(hi) {
+			held += s.end.Sub(s.start)
+		}
+	}
+	for _, s := range m.stalls {
+		reaches(s)
+	}
+	if now := time.Now(); now.Sub(m.lastWake) > stallTick {
+		reaches(stall{start: m.lastWake.Add(stallTick), end: now})
 	}
 	return held
 }
