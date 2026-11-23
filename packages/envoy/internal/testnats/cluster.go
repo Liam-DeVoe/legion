@@ -290,6 +290,70 @@ func (c *Cluster) streamApplied(account, stream string, commit *uint64) error {
 	return nil
 }
 
+// AwaitStreamStored waits, for as long as the test may run (testDeadline), until copies running
+// members each store stream of account through sequence seq, read from each member's own store
+// (Jsz), not from the stream's leader. A follower stores a committed message only once it applies
+// it, which can be after the leader acknowledged the message's publish, so a member that hosts the
+// stream can lag the leader's last sequence; a member that does not host it counts for nothing.
+func (c *Cluster) AwaitStreamStored(t testing.TB, account, stream string, copies int, seq uint64) {
+	t.Helper()
+	bound := boundOf(t)
+	for {
+		err := c.streamStored(account, stream, copies, seq)
+		if err == nil {
+			return
+		}
+		if bound.over() {
+			t.Fatalf("stream %s was not stored through sequence %d by %d members by %s, short of the test's deadline: %v", stream, seq, copies, bound, err)
+		}
+		bound.pause()
+	}
+}
+
+// streamStored reports why fewer than copies running members store stream of account through seq,
+// naming each hosting member short of it and its last sequence; nil once copies of them do.
+func (c *Cluster) streamStored(account, stream string, copies int, seq uint64) error {
+	stored := 0
+	var short []string
+	for i, server := range c.Servers {
+		srv := server.natsServer()
+		if srv == nil {
+			continue
+		}
+		last, hosted, err := storedLast(srv, account, stream)
+		switch {
+		case err != nil:
+			short = append(short, fmt.Sprintf("%s unread: %v", c.Name(i), err))
+		case !hosted:
+		case last >= seq:
+			stored++
+		default:
+			short = append(short, fmt.Sprintf("%s at %d", c.Name(i), last))
+		}
+	}
+	if stored < copies {
+		return fmt.Errorf("%d of %d copies store sequence %d (short: %s)", stored, copies, seq, strings.Join(short, "; "))
+	}
+	return nil
+}
+
+// storedLast is the last sequence srv's own store of stream of account holds, and whether srv hosts
+// the stream at all, read from the server's own state (Jsz) with no connection to it.
+func storedLast(srv *natsserver.Server, account, stream string) (uint64, bool, error) {
+	info, err := srv.Jsz(&natsserver.JSzOptions{Account: account, Streams: true})
+	if err != nil {
+		return 0, false, err
+	}
+	for _, detail := range info.AccountDetails {
+		for _, held := range detail.Streams {
+			if held.Name == stream {
+				return held.State.LastSeq, true, nil
+			}
+		}
+	}
+	return 0, false, nil
+}
+
 const (
 	// muteAfter is how long AwaitReady listens for a running member before it restarts it. A
 	// working member is heard sooner whether or not the meta group has a leader: a leader hears

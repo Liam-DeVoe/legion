@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -23,7 +24,10 @@ import (
 // or deletes it and creates it again. The package has no build before this one to run the rows
 // against, so each row's control is that build's order run raw on the same servers first: a delete
 // and a create of one name under the same held write, which must lose the acknowledged state's
-// messages.
+// messages. Before each create by start sequence a row waits until every copy of the stream stores
+// its last message (forcedorder.Servers.AwaitEveryCopyStored), which only nats-server 2.10.29 needs:
+// its replicas clamp a start past their own last sequence
+// (TestForcedOrderACreateByStartSequenceWaitsForEveryCopyOfTheStream).
 
 const (
 	protocolMessages = 30
@@ -176,6 +180,7 @@ func (r *protocolRig) sameNameControl(t *testing.T) {
 	name := "control"
 	config := jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy, AckWait: time.Minute, FilterSubject: subject,
 		DeliverPolicy: jetstream.DeliverByStartSequencePolicy, OptStartSeq: seqs[0]}
+	r.AwaitEveryCopyStored(t, r.live.conn, testStream)
 	if _, err := r.live.js.CreateConsumer(ctx, testStream, config); err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +190,7 @@ func (r *protocolRig) sameNameControl(t *testing.T) {
 		t.Fatal(err)
 	}
 	config.OptStartSeq = seqs[protocolAcked+1]
+	r.AwaitEveryCopyStored(t, r.live.conn, testStream)
 	if _, err := r.live.js.CreateConsumer(ctx, testStream, config); err != nil {
 		t.Fatal(err)
 	}
@@ -229,6 +235,7 @@ func TestForcedOrderAReplacementThroughTheProtocolUnderAHeldWriteDeliversEveryMe
 			ctx := context.Background()
 			seqs := r.publish(t, "names.replace")
 			names := r.live.names("p1")
+			r.AwaitEveryCopyStored(t, r.live.conn, testStream)
 			sel, _, err := names.Ensure(ctx, "ses-replace", CreateRequest{Create: r.live.family.create("ses-replace"), First: first(seqs[0])})
 			if err != nil {
 				t.Fatal(err)
@@ -238,6 +245,7 @@ func TestForcedOrderAReplacementThroughTheProtocolUnderAHeldWriteDeliversEveryMe
 			if err != nil {
 				t.Fatal(err)
 			}
+			r.AwaitEveryCopyStored(t, r.live.conn, testStream)
 			mark := r.Hooks.Mark()
 			replaced, err := names.Replace(ctx, sel, seqs[protocolAcked+1], r.live.family.create("ses-replace"))
 			if err != nil {
@@ -260,6 +268,7 @@ func TestForcedOrderADeleteThenEnsureThroughTheProtocolUnderAHeldWriteDeliversEv
 			ctx := context.Background()
 			seqs := r.publish(t, "names.delete")
 			names := r.live.names("p1")
+			r.AwaitEveryCopyStored(t, r.live.conn, testStream)
 			sel, _, err := names.Ensure(ctx, "ses-delete", CreateRequest{Create: r.live.family.create("ses-delete"), First: first(seqs[0])})
 			if err != nil {
 				t.Fatal(err)
@@ -269,6 +278,7 @@ func TestForcedOrderADeleteThenEnsureThroughTheProtocolUnderAHeldWriteDeliversEv
 			if err != nil || floor != seqs[protocolAcked] {
 				t.Fatalf("Delete = %d, %v; want the floor %d", floor, err, seqs[protocolAcked])
 			}
+			r.AwaitEveryCopyStored(t, r.live.conn, testStream)
 			mark := r.Hooks.Mark()
 			again, _, err := names.Ensure(ctx, "ses-delete", CreateRequest{Create: r.live.family.create("ses-delete"), First: first(seqs[0])})
 			if err != nil {
@@ -301,6 +311,7 @@ func TestForcedOrderAConsumerEnsureAnsweredBeforeItIsLedIsFetchedOnceItIs(t *tes
 		holds = append(holds, r.Hooks.Hold(testnats.MetaApply, testnats.OnServer(srv), testnats.Stream(testStream), fresh))
 	}
 	names := r.live.names("p1")
+	r.AwaitEveryCopyStored(t, r.live.conn, testStream)
 	sel, _, err := names.Ensure(ctx, "ses-unled", CreateRequest{Create: r.live.family.create("ses-unled"), First: first(seqs[0])})
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
@@ -319,6 +330,96 @@ func TestForcedOrderAConsumerEnsureAnsweredBeforeItIsLedIsFetchedOnceItIs(t *tes
 	t.Cleanup(func() { released.Stop() })
 	held := r.heldConsumer(t, sel.Record.Current, seqs)
 	r.ReleaseAndLand(t, held)
+}
+
+// On nats-server 2.10.29 a replica that creates a consumer with no stored state clamps a start past
+// its own last stream sequence to that sequence plus one, and writes it as the consumer's state
+// (forcedorder.ClampsStartToReplicaLast); once that replica leads the consumer it delivers from
+// there, as the replacement row's R3 topology did at a load of about 1,100 (created at 52, it
+// delivered 31..60 after the restart). The wait the rows make before each create by start sequence
+// (forcedorder.Servers.AwaitEveryCopyStored) closes that. Held here, on R3: one follower's store
+// of the stream's next message. The control, run first: with the follower held under 30 messages,
+// a consumer created at the 22nd of them writes, as its start, the follower's own last sequence
+// there, and the sequence before the 22nd on the other two members. Then, with the follower held
+// again under 30 more, the wait returns only once the hold is released, and a consumer created
+// after it writes the sequence before its start on every member.
+func TestForcedOrderACreateByStartSequenceWaitsForEveryCopyOfTheStream(t *testing.T) {
+	if !forcedorder.ClampsStartToReplicaLast() {
+		t.Skipf("nats-server %s's replicas take a consumer's start sequence as its create gives it, so no create waits for them", natsserver.VERSION)
+	}
+	r := newProtocolRig(t, forcedorder.Topologies[2])
+	ctx := context.Background()
+	stored := r.publish(t, "names.lag")
+	stream, err := r.live.js.Stream(ctx, testStream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leader := ""
+	if info := stream.CachedInfo(); info.Cluster != nil {
+		leader = info.Cluster.Leader
+	}
+	var follower *testnats.Server
+	for _, srv := range r.Servers.Servers {
+		if leader != "" && srv.Name() != leader {
+			follower = srv
+			break
+		}
+	}
+	if follower == nil {
+		t.Fatalf("%s names no leader that leaves a follower among the members: %+v", testStream, stream.CachedInfo().Cluster)
+	}
+	// lagging holds the follower's store of the message after last, publishes protocolMessages more,
+	// and answers their sequences once the hold is reached.
+	lagging := func(last uint64) ([]uint64, *testnats.Hold) {
+		hold := r.Hooks.Hold(testnats.StreamApply, testnats.OnServer(follower), testnats.Stream(testStream),
+			testnats.Where(fmt.Sprintf("sequence %d", last+1), func(e testnats.Event) bool { return e.Seq == last+1 && !e.Recovering }))
+		seqs := r.publish(t, "names.lag")
+		t.Logf("held %s", hold.Reached(t))
+		return seqs, hold
+	}
+	create := func(name string, start uint64) {
+		if _, err := r.live.js.CreateConsumer(ctx, testStream, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy,
+			FilterSubject: "names.lag", DeliverPolicy: jetstream.DeliverByStartSequencePolicy, OptStartSeq: start}); err != nil {
+			t.Fatalf("create %s at %d: %v", name, start, err)
+		}
+	}
+	// written is the start srv wrote as consumer's state at its creation: its first state write's
+	// delivered stream sequence, the sequence before the first it will deliver.
+	written := func(srv *testnats.Server, consumer string) uint64 {
+		e := r.Hooks.Await(t, testnats.WritePreIO, testnats.OnServer(srv), testnats.Consumer(consumer))
+		if e.State == nil {
+			t.Fatalf("%s's first state write on %s carries no state: %s", consumer, srv.Name(), e)
+		}
+		return e.State.Delivered.Stream
+	}
+
+	seqs, hold := lagging(stored[len(stored)-1])
+	create("lagged", seqs[protocolAcked+1])
+	if got, want := written(follower, "lagged"), stored[len(stored)-1]; got != want {
+		t.Fatalf("control: created at %d while %s had stored through %d, the consumer's start there is after %d, want after %d: this server did not clamp it, so the row judges nothing",
+			seqs[protocolAcked+1], follower.Name(), want, got, want)
+	}
+	for _, srv := range r.Servers.Servers {
+		if got, want := written(srv, "lagged"), seqs[protocolAcked+1]-1; srv != follower && got != want {
+			t.Fatalf("control: created at %d, the consumer's start on %s, which stored every message, is after %d, want after %d", seqs[protocolAcked+1], srv.Name(), got, want)
+		}
+	}
+	t.Logf("control: created at %d while %s had stored through %d, its start there is after %d", seqs[protocolAcked+1], follower.Name(), stored[len(stored)-1], stored[len(stored)-1])
+	hold.Release()
+
+	seqs2, hold := lagging(seqs[len(seqs)-1])
+	released := time.AfterFunc(2*time.Second, hold.Release)
+	t.Cleanup(func() { released.Stop() })
+	r.AwaitEveryCopyStored(t, r.live.conn, testStream)
+	if !hold.Released() {
+		t.Fatalf("the wait returned while %s's store of %d was held, short of the stream's last %d", follower.Name(), seqs[len(seqs)-1]+1, seqs2[len(seqs2)-1])
+	}
+	create("waited", seqs2[protocolAcked+1])
+	for _, srv := range r.Servers.Servers {
+		if got, want := written(srv, "waited"), seqs2[protocolAcked+1]-1; got != want {
+			t.Fatalf("created at %d after the wait, the consumer's start on %s is after %d, want after %d", seqs2[protocolAcked+1], srv.Name(), got, want)
+		}
+	}
 }
 
 // led reports whether info, a consumer's info as the server conn is connected to answers it, shows

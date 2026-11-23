@@ -66,6 +66,43 @@ func Start(t *testing.T, topo Topology) *Servers {
 	return s
 }
 
+// clampsStartToReplicaLast are the hooked nats-server versions whose replicas clamp a consumer's
+// start sequence past their own last stream sequence to that sequence plus one: v2.10.29's
+// selectStartingSeqNo (server/consumer.go:4929-4935), which every replica runs when it creates a
+// consumer with no stored state (:962-970) and whose start it writes as the consumer's state
+// (:4945-4947). v2.15.1 clamps only a consumer with no start sequence (consumer.go:6463), and on a
+// cluster proposes the start when a replica becomes the consumer's leader (:6480-6488).
+var clampsStartToReplicaLast = map[string]bool{"2.10.29": true}
+
+// ClampsStartToReplicaLast reports whether the linked nats-server's replicas clamp a consumer's
+// start sequence to their own last stream sequence plus one (clampsStartToReplicaLast).
+func ClampsStartToReplicaLast() bool { return clampsStartToReplicaLast[natsserver.VERSION] }
+
+// AwaitEveryCopyStored is the wait a row makes before each create by start sequence on a server
+// whose replicas clamp such a start (ClampsStartToReplicaLast): it reads stream's last sequence on
+// conn, from the stream's leader, and waits until every copy of stream stores it
+// (testnats.Cluster.AwaitStreamStored). Without it a replica that has not yet stored the stream's
+// last messages when it creates the consumer starts it at its own last sequence plus one, and once
+// it leads the consumer delivers from there: messages before the start again, never fewer, which a
+// row's exact assertion reads as a failure (nats-server's, not the protocol's). It waits for
+// nothing on one copy, and nothing on a server that takes the start as the create gives it
+// (v2.15.1), whose rows keep creating while a replica lags.
+func (s *Servers) AwaitEveryCopyStored(t *testing.T, conn *natsgo.Conn, stream string) {
+	t.Helper()
+	if !ClampsStartToReplicaLast() || s.Topology.Replicas < 2 {
+		return
+	}
+	js, err := conn.JetStream(natsgo.MaxWait(30 * time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := js.StreamInfo(stream)
+	if err != nil {
+		t.Fatalf("read %s's last sequence: %v", stream, err)
+	}
+	s.Cluster.AwaitStreamStored(t, natsserver.DEFAULT_GLOBAL_ACCOUNT, stream, s.Topology.Replicas, info.State.LastSeq)
+}
+
 // Hosts are the servers that store consumer on stream: the lone server, or the members its cluster
 // information names, its leader and its replicas, read on conn. A consumer created a moment ago can
 // answer its info before its replica group has formed, with no cluster information or no leader,
