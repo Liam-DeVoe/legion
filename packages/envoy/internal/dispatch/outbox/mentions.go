@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
@@ -1673,6 +1674,13 @@ func (s fallbackSend) send(ctx context.Context, deps Deps, sender bus.Sender, ha
 // work names reaches it nowhere (destinations.addWorkingSession, resolveUnpinnedRoleMentions).
 // What doubles still is a session this read named as a role's holder and the sender pinned
 // another mention to, the residual resolveUnpinnedRoleMentions holds.
+//
+// The session the copy would reach - the row's own session, or the holder a forward of a role
+// destination names - is judged once more, as the batch judged it when it held the row
+// (destinations.withheld, withholdUnseenHolders): one that may not be shown the event's project
+// now, its person taken off the project since or the row held before this rule was, settles the
+// row with nothing published, logged at Info. A copy kept for a role nobody holds reaches no
+// session here; the handover behind its keep judges the holder it reaches (handOverKeptCopy).
 func decideFallbackCopy(
 	ctx context.Context, deps Deps, held fallbackCopy, event fallbackEvent,
 ) (fallbackDecision, fallbackSend, error) {
@@ -1753,6 +1761,17 @@ func decideFallbackCopy(
 	// and holds nothing of its own back: the owner's later events go on. The pass counts and
 	// reports what it waits on (heldCopies).
 	key := fallbackCopyKey(held.destination, forward)
+	if session, ofASession := strings.CutPrefix(key, contracts.AgentTopicPrefix); ofASession && event.event.Project != "" {
+		sees, err := access.SessionSeesProject(ctx, deps.Store.Pool, session, event.event.Project)
+		if err != nil {
+			return 0, fallbackSend{}, err
+		}
+		if !sees {
+			slog.Info("dispatch outbox: a destination is withheld: its session does not see the event's project",
+				"event", held.eventID, "project", event.event.Project, "session", session, "comment_id", held.commentID)
+			return fallbackSettles, fallbackSend{}, nil
+		}
+	}
 	if by, err := copyHolder(ctx, deps, held.eventID, key, strings.TrimPrefix(key, contracts.AgentTopicPrefix)); err != nil {
 		return 0, fallbackSend{}, err
 	} else if by != nil {

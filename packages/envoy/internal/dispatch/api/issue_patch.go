@@ -127,9 +127,25 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Route != nil && *input.Route != "" {
-		if _, err := model.ParseRoute(*input.Route); err != nil {
+		route, err := model.ParseRoute(*input.Route)
+		if err != nil {
 			writeError(w, "ROUTE_INVALID", http.StatusBadRequest, "invalid route")
 			return
+		}
+		// A session route sends the session every event of the issue that notifies (the outbox's
+		// addRoute), so it is refused, 403 SESSION_OUTSIDE_PROJECT, for a session the caller sees
+		// that may not be shown the issue's project (refuseVisibleSessionOutsideProject), before any
+		// of the write is made - the settlement a close runs first among it. An issue the caller
+		// does not see answers no project here and is the missing row loadIssue answers below.
+		if route.Kind == "session" {
+			project, err := issueProjectSeenBy(r.Context(), s.deps.Store.Pool, who, r.PathValue("key"))
+			if err == nil {
+				err = s.refuseVisibleSessionOutsideProject(r.Context(), who, route.ID, project, "be routed this issue")
+			}
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 	}
 	var labels, labelsAdd []string

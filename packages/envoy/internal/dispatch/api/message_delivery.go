@@ -931,6 +931,13 @@ func (s *server) deliverMessageResuming(
 	// A direct message is written to the session it names and invites its answer; nothing about
 	// one says a reply is unwanted. A copy Dispatch queues for its session says the same.
 	wanted := contracts.ExpectsReplyOptional
+	// The project the message is of, its issue's, which every try's session and the session a
+	// queued copy is stored for must see (sendResolvedDelivery, queueForUnknownSession); a direct
+	// message has none.
+	project, err := s.deliveryProject(ctx, message.IssueKey, nil)
+	if err != nil {
+		return model.MessageDelivery{}, err
+	}
 	takeover := s.newTakeoverRetry()
 	var outcome sendOutcome
 	// held is whether this sender still holds the attempt's claim when its tries end. A renew that
@@ -940,7 +947,7 @@ func (s *server) deliverMessageResuming(
 	err = takeover.retry(ctx,
 		func() string {
 			outcome = s.sendResolvedDelivery(
-				ctx, pending.resolved, messageTarget(message.Target), message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly,
+				ctx, pending.resolved, messageTarget(message.Target), message.Body, key, pending.urgency, wanted, pending.frame, connectedOnly, project,
 			)
 			return outcome.failure
 		},
@@ -962,7 +969,7 @@ func (s *server) deliverMessageResuming(
 			return model.MessageDelivery{}, err
 		}
 		if queue {
-			outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure)
+			outcome = s.queueForUnknownSession(ctx, message, pending, key, wanted, outcome.failure, project)
 		}
 	}
 	return s.completeMessageDelivery(ctx, message, actor, pending, outcome)
