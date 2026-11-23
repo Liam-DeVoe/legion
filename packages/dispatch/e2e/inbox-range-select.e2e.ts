@@ -659,8 +659,8 @@ test("a shift-click selects no text and keeps the focus on its checkbox", async 
 
     // A click, a click in the third row's quoted words, and a shift-click ten rows from the
     // first: both checkbox presses landed, and no text is selected. The click in the words puts
-    // the caret in text, as a reader's earlier click does, so a shift-click the page did not stop
-    // would select the text from that caret to the checkbox.
+    // the caret in text, as a reader's earlier click does, so the read below sees any text a
+    // shift-click selects from that caret to the checkbox.
     await mark(page, drawn[0] ?? "").click();
     await words.click();
     await mark(page, drawn[10] ?? "").click({ modifiers: ["Shift"] });
