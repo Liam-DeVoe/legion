@@ -677,6 +677,15 @@ tree-stage4b-restart without the listener's move 37.2 (38). The two new tree leg
 their own yet; from their parts' times, tree-stage4b-controller 36.8 (37) and tree-stage4b-address
 36.3 (37).
 
+Each leg fetches what the rig runs as the runner's user first (kind's build, gVisor's release,
+the node and registry images, the kind network, the Go modules) and then runs its test step as
+legion-test, whose outbound connections reach loopback and the kind network alone
+(.github/scripts/test-user.sh); the step after it prints the connections that rule refused and
+Docker's image events since it began, and fails on either, since Docker pulls as root, outside
+the rule. The node's containerd pulls from ghcr.io and the rig's registry alone, and CoreDNS
+answers NXDOMAIN for every name outside cluster.local and the rig's stand-ins, which the rig's
+teardown names (scripts/e2e/lib/kind-sandbox.sh).
+
 The chain `changes` → `ci-images` → `kind-image` → the longest leg → `ci-ok` was 32.2 to 34.0
 minutes in those runs: 10.2 of it the jobs before and after the leg, 9.3 of that the image job,
 whose builder's removal (1.7 minutes on average) cleanup: false leaves to the runner's end, and
@@ -1100,7 +1109,19 @@ empty or refused list fails the step instead of running -run "", which matches e
 ## The airlock-arm job
 
 The airlock's check k9 and its lease test (.github/actions/airlock-arm), held as the slow suites
-are, on arm64 as broker-multiprocess ran them, under the 70 minutes that job held them to.
+are, on arm64 as broker-multiprocess ran them. The job is a matrix of two legs, `airlock-arm / k9`
+and `airlock-arm / lease`, each its own job of up to 45 minutes: the two together took 24.6 to
+24.8 minutes in one job, against R9's 25-minute mean, before each stack started in a step of its
+own and the scripts ran fenced. Its old check-run name, `airlock-arm / airlock-arm`, goes with
+the one job; neither leg is a split of one suite, so no carrier stands for the two.
+
+Each leg starts its stacks as the runner's user, one step each, and runs the script against the
+running stack (--stack-log) as legion-test, whose outbound connections reach loopback and the
+job's Postgres container alone (.github/scripts/test-user.sh); the last step prints what that
+rule refused. k9's stack serves github.com from a stand-in of its own (dev-airlock.sh
+--git-stand-in, `dev-airlock-stands git` on 127.0.0.6:443), which k9's shallow clone reads and
+must hold the commit of, and its negative control runs on a second stack once the first is gone,
+since the two bind the same loopback addresses.
 
 ## The Lean model of the airlock, and why its fuzz run is two minutes
 

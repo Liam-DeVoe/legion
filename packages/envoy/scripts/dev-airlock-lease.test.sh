@@ -24,12 +24,35 @@
 # the exit status is 0 or 1. No line it prints is a credential: a value is compared by its
 # SHA-256 (the first 16 hex digits) and its length.
 #
-# Usage: packages/envoy/scripts/dev-airlock-lease.test.sh
+# Usage: packages/envoy/scripts/dev-airlock-lease.test.sh [--stack-log FILE]
+#
+# --stack-log FILE runs it on a stack already up, which another user may own, whose dev-airlock.sh
+# output FILE holds, and starts none: the stack's starter gives it the one broker and the short
+# lease (BROKER_LEASE_SECONDS=91 dev-airlock.sh --one-broker), and the first property fails on a
+# stack with any other lease. CI starts the stack as the runner's user and runs this as a user
+# whose connections reach loopback and the stack's containers alone (.github/scripts/test-user.sh).
 #
 # Needs what dev-airlock.sh needs: bash, curl, jq, go and psql, a Postgres server named by
 # DEV_BROKER_POSTGRES_URL (or Docker for dev-postgres.sh), and loopback port 443 for the
-# stand-in services. It takes the stack's start-up time plus about five minutes.
+# stand-in services. It takes the stack's start-up time plus about five minutes. A usage error
+# exits 2.
 set -euo pipefail
+
+GIVEN_STACK_LOG=""
+case "${1:-}" in
+"") ;;
+--stack-log)
+  if [ $# -ne 2 ] || [ ! -f "$2" ]; then
+    echo "dev-airlock-lease: --stack-log wants the file a running stack's dev-airlock.sh writes its output to" >&2
+    exit 2
+  fi
+  GIVEN_STACK_LOG="$2"
+  ;;
+*)
+  echo "dev-airlock-lease: unexpected argument $1 (usage: dev-airlock-lease.test.sh [--stack-log FILE])" >&2
+  exit 2
+  ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The shortest lease config.Load accepts beside the default BROKER_SWEEP_SECONDS of 5
@@ -68,24 +91,33 @@ judge() { # <0 for a pass> <property> <what was seen>
 
 # --- The stack, with the short lease. dev-airlock.sh starts each broker with its own
 # environment and these settings on top, so a BROKER_LEASE_SECONDS set here reaches them. ---
-echo "dev-airlock-lease: starting the stack with BROKER_LEASE_SECONDS=$LEASE_SECONDS..." >&2
-BROKER_LEASE_SECONDS="$LEASE_SECONDS" bash "$SCRIPT_DIR/dev-airlock.sh" --one-broker >"$STACK_LOG" 2>&1 &
-STACK_PID=$!
-ready=false
-for _ in $(seq 1 1800); do
-  if grep -q '^dev-airlock: ready\.$' "$STACK_LOG" 2>/dev/null; then
-    ready=true
-    break
+if [ -n "$GIVEN_STACK_LOG" ]; then
+  STACK_LOG="$GIVEN_STACK_LOG"
+  if ! grep -q '^dev-airlock: ready\.$' "$STACK_LOG"; then
+    echo "dev-airlock-lease: $STACK_LOG holds no 'dev-airlock: ready.' banner, so no stack is up there to run on" >&2
+    exit 1
   fi
-  if ! kill -0 "$STACK_PID" 2>/dev/null; then
-    break
+  echo "dev-airlock-lease: using the running stack whose output is $STACK_LOG" >&2
+else
+  echo "dev-airlock-lease: starting the stack with BROKER_LEASE_SECONDS=$LEASE_SECONDS..." >&2
+  BROKER_LEASE_SECONDS="$LEASE_SECONDS" bash "$SCRIPT_DIR/dev-airlock.sh" --one-broker >"$STACK_LOG" 2>&1 &
+  STACK_PID=$!
+  ready=false
+  for _ in $(seq 1 1800); do
+    if grep -q '^dev-airlock: ready\.$' "$STACK_LOG" 2>/dev/null; then
+      ready=true
+      break
+    fi
+    if ! kill -0 "$STACK_PID" 2>/dev/null; then
+      break
+    fi
+    sleep 0.5
+  done
+  if [ "$ready" != true ]; then
+    echo "dev-airlock-lease: the stack did not come up; see $STACK_LOG" >&2
+    tail -n 20 "$STACK_LOG" >&2 || true
+    exit 1
   fi
-  sleep 0.5
-done
-if [ "$ready" != true ]; then
-  echo "dev-airlock-lease: the stack did not come up; see $STACK_LOG" >&2
-  tail -n 20 "$STACK_LOG" >&2 || true
-  exit 1
 fi
 eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
 echo "dev-airlock-lease: the stack is up (work directory $AIRLOCK_DIR)" >&2

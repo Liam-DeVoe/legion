@@ -781,10 +781,10 @@ jobs:
   airlock-arm:
     needs: changes
     if: needs.changes.outputs.airlock-arm == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ matrix.name }}
+    name: ${{ format('airlock-arm / {0}', matrix.leg) }}
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 70
-    strategy: {fail-fast: false, matrix: {name: [airlock-arm / airlock-arm]}}
+    timeout-minutes: 45
+    strategy: {fail-fast: false, matrix: {leg: [k9, lease]}}
     services:
       postgres:
         image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
@@ -794,8 +794,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - name: airlock-arm
-        uses: ./.github/actions/airlock-arm
+      - {uses: ./.github/actions/airlock-arm, with: {leg: '${{ matrix.leg }}'}}
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
   # why: .github/ci-notes/ci.md#the-text-checks-job

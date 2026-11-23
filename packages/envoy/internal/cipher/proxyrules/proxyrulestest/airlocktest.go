@@ -142,6 +142,36 @@ func (a *Authority) WriteFiles(dir string) (certFile, keyFile string, err error)
 	return certFile, keyFile, nil
 }
 
+// ReadAuthority reads back an authority WriteFiles wrote, so another process of the same stack
+// signs its own certificates with it: what a client holding certFile trusts, it trusts.
+func ReadAuthority(certFile, keyFile string) (*Authority, error) {
+	certPEM, err := os.ReadFile(certFile)
+	if err != nil {
+		return nil, fmt.Errorf("read the stand-in authority's certificate: %w", err)
+	}
+	keyPEM, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read the stand-in authority's key: %w", err)
+	}
+	certBlock, _ := pem.Decode(certPEM)
+	keyBlock, _ := pem.Decode(keyPEM)
+	if certBlock == nil || certBlock.Type != "CERTIFICATE" || keyBlock == nil || keyBlock.Type != "EC PRIVATE KEY" {
+		return nil, fmt.Errorf("%s and %s are not a certificate and an EC key in PEM, as WriteFiles writes them", certFile, keyFile)
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("the stand-in authority's certificate: %w", err)
+	}
+	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("the stand-in authority's key: %w", err)
+	}
+	if !cert.IsCA || !key.PublicKey.Equal(cert.PublicKey) {
+		return nil, fmt.Errorf("%s is not the authority certificate of the key in %s", certFile, keyFile)
+	}
+	return &Authority{cert: cert, key: key, certPEM: certPEM, keyPEM: keyPEM}, nil
+}
+
 // Leaf signs one server certificate for hosts, each of them a DNS name or an IP address, and
 // answers it with its PEM bytes, which is what a service's own certificate file holds.
 func (a *Authority) Leaf(hosts []string) (*tls.Certificate, []byte, error) {

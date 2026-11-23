@@ -39,9 +39,9 @@ worker-image:
   - &wiw .github/workflows/worker-image.yaml # own
 kind: # kind-image and kind. build: kind-image builds worker.Dockerfile as worker-image.yaml's build
   # does; pkg+mod: kind's go test in packages/daemon; test: kind-sandbox.sh, operator-route/*.yml,
-  # the leak guard step; own
+  # the leak guard step; own, and the test user's fence
   [*pd, *pe, *gw, *ni, *b1, *b2, *b3, *b4, *b5, *b6, *b7, *b8, *c1, *c2, *c3, *p1, *p2, *cc, *cl, *sk, *pp, *tpn, *omp, *di,
-   *lg, &e2l scripts/e2e/lib/**, &k8s deploy/kubernetes/**, &o1 .github/actions/kind/**]
+   *lg, &e2l scripts/e2e/lib/**, &k8s deploy/kubernetes/**, &o1 .github/actions/kind/**, &tu .github/scripts/test-user.sh]
 go-daemon:
   - &dm [*pd, *pe, *gw, *ni] # pkg+mod go-test.sh ./... in packages/daemon, which requires packages/envoy
   - [*omp, *b3] # test install-omp, setup-bun
@@ -66,7 +66,7 @@ agent-harness:
   - &o5 .github/actions/agent-harness/** # own
 airlock-arm:
   - [*pe, *gw, *ni, &dgo packages/daemon/go.*] # mod dev-broker.sh builds packages/envoy in the go.work workspace
-  - &o6 .github/actions/airlock-arm/** # own
+  - &o6 [.github/actions/airlock-arm/**, *tu] # own, and the test user's fence
 go-envoy-held:
   - &ew [*pe, *gw, *dgo] # pkg+mod go test ./... in packages/envoy, infra/host
   - [*dsp, *tsp, *cc, *bun] # pkg+ws dispatch-two-builds in packages/dispatch

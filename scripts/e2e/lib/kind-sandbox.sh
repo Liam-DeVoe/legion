@@ -13,7 +13,18 @@
 # beside its CRD in packages/daemon/internal/runtime/sandbox/testdata (the manifest's own header
 # says how it differs from the release); and gVisor's dated release by sha512.
 #
+# The rig's fetches are kind_sandbox_fetch's alone, so a caller that runs it in a set-up step
+# leaves the process that runs the rest nothing to fetch: the kind job runs it as the runner's
+# user, and its tests as a user whose outbound connections reach loopback and the kind network
+# alone (.github/scripts/test-user.sh). The cluster pulls only from the local registry and
+# ghcr.io (kind_sandbox_create), and its pods resolve no name outside cluster.local and the rig's
+# stand-ins (kind_sandbox_route_stand_ins).
+#
 # kind_sandbox_install_kind DIR builds the pinned kind into DIR and makes it kind_bin.
+# kind_sandbox_fetch DIR fetches what the rig runs: the pinned kind into DIR/kind
+# (kind_sandbox_install_kind), gVisor's release into DIR/gvisor.tar.zstd, held to its sha512, and
+# the node and registry images into Docker; and it makes the kind network the cluster joins, as
+# kind makes it, so a rule naming the network's addresses can stand before the cluster does.
 # kind_sandbox_use NAME WORK names the cluster NAME and its files in WORK for the functions below,
 # with no cluster made: a caller that runs each function in a shell of its own (internal/kindtest)
 # calls it first in each.
@@ -23,25 +34,29 @@
 # on, and the cluster has the legion namespace and kind's standard storage class. With API_PORT,
 # the API server listens on 127.0.0.1:API_PORT, and its service-account issuer is
 # https://127.0.0.1:API_PORT, whose discovery document and keys anyone may read, so a process of
-# the host verifies a pod's service-account token as a broker does. kind_k runs kubectl against
-# that file and context alone, so the caller's kubeconfig and its current context are never read.
+# the host verifies a pod's service-account token as a broker does. Its node's containerd pulls
+# from ghcr.io and from no other registry (/etc/containerd/certs.d/_default points every other
+# one at kind_no_registry, an address of the node's own where nothing listens), which
+# kind_sandbox_start_registry adds the local registry to. kind_k runs kubectl against that file
+# and context alone, so the caller's kubeconfig and its current context are never read.
 # kind_sandbox_start_registry PORT starts a registry container on the kind network
 # (kind_registry), published on the host at 127.0.0.1:PORT, from which the node pulls
 # localhost:PORT/<image>: an image pushed there has a registry digest, which
 # runtime.kubernetes.image requires.
 # kind_sandbox_install_agent_sandbox applies Agent Sandbox's CRD and manifest and waits for its
 # controller.
-# kind_sandbox_install_gvisor WORK installs gVisor's dated release into the node's containerd as
-# the runsc handler with a gvisor RuntimeClass, and holds a runtimeClassName: gvisor pod to gVisor's
-# kernel.
+# kind_sandbox_install_gvisor FETCHED WORK installs gVisor's release, which kind_sandbox_fetch
+# left in FETCHED, unpacked in WORK, into the node's containerd as the runsc handler with a gvisor
+# RuntimeClass, and holds a runtimeClassName: gvisor pod to gVisor's kernel.
 # kind_sandbox_load_image IMAGE pulls IMAGE, a reference by digest, into the node's containerd under
 # that digest, so a pod's start never waits on a registry.
 # kind_sandbox_route_stand_ins ADDRESS GITHUB_PORT SITES_PORT SITE... sends the cluster's pods to
 # ADDRESS:GITHUB_PORT for github.com and api.github.com, and to ADDRESS:SITES_PORT for each SITE,
 # the public TLS sites the image probe reaches: for each, a selectorless Service on 443 whose one
-# endpoint is that address, and a CoreDNS hosts rule naming its cluster IP (kind_github_address,
-# kind_sites_address). The rule reaches pods alone: the node, and containerd's pulls, resolve
-# through Docker's DNS.
+# endpoint is that address, and a CoreDNS answer naming its cluster IP (kind_github_address,
+# kind_sites_address). CoreDNS (kind_corefile) answers NXDOMAIN for every other name outside
+# cluster.local, with no forward to the runner's resolver, and logs each such answer. The rule
+# reaches pods alone: the node, and containerd's pulls, resolve through Docker's DNS.
 # kind_sandbox_start_nfs_server SEED starts an NFS server in the cluster (NFS-Ganesha, as the
 # Kubernetes SIG Storage's nfs-provisioner image ships it), exporting /team, which holds seed.txt
 # with SEED, and /scratch, and sets kind_nfs_server to its Service's cluster IP once the node
@@ -50,12 +65,12 @@
 # the services: Postgres of CI's other jobs), whose superuser postgres has PASSWORD, on a Service
 # the cluster's pods reach at its cluster IP and this host reaches at the node's address on the
 # kind network and the Service's node port, once it accepts connections.
-# kind_sandbox_teardown STATUS EVIDENCE writes, when STATUS is not 0, what the cluster held (its
-# nodes and pods, the legion namespace's Sandboxes and volume claims, its pods' descriptions and
-# container logs and the nfs and postgres namespaces', every event, and the Agent Sandbox
-# controller's log) to EVIDENCE, then deletes the cluster and the registry. It does nothing before
-# kind_sandbox_use or kind_sandbox_create has named a cluster, and deletes nothing once the
-# cluster is gone.
+# kind_sandbox_teardown STATUS EVIDENCE prints each name CoreDNS answered NXDOMAIN for, then,
+# when STATUS is not 0, writes what the cluster held (its nodes and pods, the legion namespace's
+# Sandboxes and volume claims, its pods' descriptions and container logs and the nfs and postgres
+# namespaces', every event, and the Agent Sandbox controller's log) to EVIDENCE, and deletes the
+# cluster and the registry. It does nothing before kind_sandbox_use or kind_sandbox_create has
+# named a cluster, and deletes nothing once the cluster is gone.
 #
 # LEGION_E2E_KIND names the kind binary when kind_sandbox_install_kind has not run in this shell.
 
@@ -86,15 +101,41 @@ kind_agent_sandbox_crd=$kind_root/packages/daemon/internal/runtime/sandbox/testd
 kind_agent_sandbox_manifest=$kind_root/packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml
 kind_gvisor_url=https://storage.googleapis.com/gvisor/releases/release/20261012.0/x86_64/gvisor.tar.zstd
 kind_gvisor_sha512=ce2e1aeb853c104e854dea6644333a1dba0fbc9dd1646af97e1d013fdf810da6d4176dd96f2139d7b055e5382117c0d7c4567ebd64ed9bef47fdd15f80fd67ab
+# The kind network, as kind v0.33 makes it when none is there (pkg/cluster/internal/providers/
+# docker/network.go): a bridge that masquerades, the default bridge's MTU, and the IPv6 subnet
+# kind derives from the name "kind".
+kind_network=kind
+kind_network_ipv6_subnet=fc00:f853:ccd:e793::/64
+# Where the node's containerd sends a pull from a registry the rig does not name: its own loopback,
+# on a port nothing listens on, so the pull is refused on the node and no packet leaves it.
+kind_no_registry=127.0.0.1:1
 
 kind_k() { kubectl --kubeconfig "$kind_kubeconfig" --context "$kind_context" "$@"; }
 
 kind_sandbox_install_kind() {
   # `go install <module>@<version>` builds the release from its own go.mod, outside any workspace,
   # and reads no file of this repository.
-  GOBIN=$1 GOWORK=off GOFLAGS= go install "sigs.k8s.io/kind@$kind_version"
+  GOBIN=$1 GOWORK=off GOFLAGS='' go install "sigs.k8s.io/kind@$kind_version"
   kind_bin=$1/kind
   note "$("$kind_bin" version)"
+}
+
+kind_sandbox_fetch() {
+  local dir=$1 mtu
+  mkdir -p "$dir"
+  kind_sandbox_install_kind "$dir"
+  curl -fsSLo "$dir/gvisor.tar.zstd" "$kind_gvisor_url"
+  echo "$kind_gvisor_sha512  $dir/gvisor.tar.zstd" | sha512sum -c -
+  docker pull --quiet "$kind_node_image" >/dev/null
+  docker pull --quiet "$kind_registry_image" >/dev/null
+  note "pulled the node image $kind_node_image and the registry image $kind_registry_image"
+  if ! docker network inspect "$kind_network" >/dev/null 2>&1; then
+    mtu=$(docker network inspect bridge --format '{{index .Options "com.docker.network.driver.mtu"}}' 2>/dev/null || true)
+    local options=(-o com.docker.network.bridge.enable_ip_masquerade=true)
+    [[ ! $mtu =~ ^[1-9][0-9]*$ ]] || options+=(-o "com.docker.network.driver.mtu=$mtu")
+    docker network create -d=bridge "${options[@]}" --ipv6 --subnet "$kind_network_ipv6_subnet" "$kind_network" >/dev/null
+  fi
+  note "the $kind_network network: $(docker network inspect "$kind_network" --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}')"
 }
 
 kind_sandbox_use() {
@@ -128,6 +169,13 @@ kind_sandbox_create() {
 EOF
   } >"$config"
   "$kind_bin" create cluster --name "$kind_cluster" --config "$config" --kubeconfig "$kind_kubeconfig" --wait 180s
+  # containerd reads a registry's hosts.toml under /etc/containerd/certs.d at each pull, and the
+  # _default directory's for every registry with no directory of its own: ghcr.io keeps its own
+  # server, and every other registry is sent to kind_no_registry, where the pull is refused.
+  docker exec "$kind_node" sh -c 'mkdir -p /etc/containerd/certs.d/_default /etc/containerd/certs.d/ghcr.io &&
+    printf "server = \"http://%s\"\n" "$1" >/etc/containerd/certs.d/_default/hosts.toml &&
+    printf "server = \"https://ghcr.io\"\n" >/etc/containerd/certs.d/ghcr.io/hosts.toml' sh "$kind_no_registry"
+  note "the node's containerd pulls from ghcr.io and sends a pull from any other registry to $kind_no_registry"
   kind_k label node "$kind_node" legion.dev/pool=legion
   kind_k create namespace legion
   kind_k get storageclass standard -o name
@@ -180,13 +228,14 @@ kind_sandbox_install_agent_sandbox() {
 }
 
 kind_sandbox_install_gvisor() {
-  curl -fsSLo "$1/gvisor.tar.zstd" "$kind_gvisor_url"
-  echo "$kind_gvisor_sha512  $1/gvisor.tar.zstd" | sha512sum -c -
-  mkdir -p "$1/gvisor"
-  tar --zstd -xf "$1/gvisor.tar.zstd" -C "$1/gvisor"
+  local archive=$1/gvisor.tar.zstd
+  echo "$kind_gvisor_sha512  $archive" | sha512sum -c - ||
+    fail "$archive is not gVisor's pinned release; fetch it with kind_sandbox_fetch"
+  mkdir -p "$2/gvisor"
+  tar --zstd -xf "$archive" -C "$2/gvisor"
   local part
   for part in runsc containerd-shim-runsc-v1 gvisor-bin; do
-    docker cp "$1/gvisor/$part" "$kind_node:/usr/local/bin/$part"
+    docker cp "$2/gvisor/$part" "$kind_node:/usr/local/bin/$part"
   done
   docker exec "$kind_node" sh -c 'chown -R root:root /usr/local/bin/gvisor-bin &&
     printf "\n[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runsc]\n  runtime_type = \"io.containerd.runsc.v1\"\n" >>/etc/containerd/config.toml &&
@@ -247,22 +296,78 @@ EOF
   printf '%s\n' "$ip"
 }
 
+# kind_corefile GITHUB_IP SITES_IP SITE... prints the Corefile kind_sandbox_route_stand_ins gives
+# CoreDNS. Its first server block is kind's own for cluster.local and the reverse zones, without
+# the forward to the node's resolver and without the kubernetes plugin's fallthrough to it, so a
+# name there that the cluster does not hold is NXDOMAIN. The second takes every other name:
+# github.com and api.github.com are GITHUB_IP and each SITE is SITES_IP, any other record of
+# those names is none, and every other name is NXDOMAIN, which its log plugin logs (the
+# refusals kind_sandbox_teardown prints). That block is templates alone: CoreDNS runs its
+# template plugin before hosts, and hosts answers a name it does not hold SERVFAIL, not NXDOMAIN.
+kind_corefile() {
+  local github=$1 sites=$2 site pattern=
+  shift 2
+  for site in "$@"; do pattern+="${pattern:+|}${site//./[.]}"; done
+  cat <<EOF
+cluster.local:53 in-addr.arpa:53 ip6.arpa:53 {
+    errors
+    health {
+       lameduck 5s
+    }
+    ready
+    kubernetes cluster.local in-addr.arpa ip6.arpa {
+       pods insecure
+       ttl 30
+    }
+    prometheus :9153
+    cache 30 {
+       disable success cluster.local
+       disable denial cluster.local
+    }
+    loop
+    reload
+    loadbalance
+}
+.:53 {
+    errors
+    log . {
+       class denial
+    }
+    template IN A github.com api.github.com {
+       match "^(?:api[.])?github[.]com[.]\$"
+       answer "{{ .Name }} 30 IN A $github"
+       fallthrough
+    }
+    template IN A $* {
+       match "^(?:$pattern)[.]\$"
+       answer "{{ .Name }} 30 IN A $sites"
+       fallthrough
+    }
+    template ANY ANY github.com api.github.com $* {
+       match "^(?:api[.])?github[.]com[.]\$"
+       match "^(?:$pattern)[.]\$"
+       rcode NOERROR
+       authority "{{ .Zone }} 30 IN SOA ns.kind-rig.invalid. hostmaster.kind-rig.invalid. 1 30 30 30 30"
+       fallthrough
+    }
+    template ANY ANY {
+       rcode NXDOMAIN
+       authority ". 30 IN SOA ns.kind-rig.invalid. hostmaster.kind-rig.invalid. 1 30 30 30 30"
+    }
+}
+EOF
+}
+
 kind_sandbox_route_stand_ins() {
-  local address=$1 github_port=$2 sites_port=$3 corefile hosts
+  local address=$1 github_port=$2 sites_port=$3 corefile
   shift 3
   [ "$#" -gt 0 ] || fail "kind_sandbox_route_stand_ins names no TLS site to route"
   kind_github_address=$(kind_stand_in_service fake-github github "$address" "$github_port")
   kind_sites_address=$(kind_stand_in_service tls-sites sites "$address" "$sites_port")
   corefile=$(kind_k -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}')
   [[ $corefile == *".:53 {"* ]] || fail "CoreDNS's Corefile has no .:53 server block to route the stand-ins in: $corefile"
-  [[ $corefile != *"hosts {"* ]] || fail "CoreDNS's Corefile holds a hosts block already, and the rig routes the stand-ins once: $corefile"
-  hosts=".:53 {
-    hosts {
-       $kind_github_address github.com api.github.com
-       $kind_sites_address $*
-       fallthrough
-    }"
-  corefile=${corefile/".:53 {"/"$hosts"}
+  [[ $corefile != *"template "* ]] || fail "CoreDNS's Corefile holds a template already, and the rig routes the stand-ins once: $corefile"
+  corefile=$(kind_corefile "$kind_github_address" "$kind_sites_address" "$@")
   kind_k -n kube-system create configmap coredns --from-literal=Corefile="$corefile" --dry-run=client -o yaml |
     kind_k replace -f -
   # A restart rather than CoreDNS's reload, which waits on the ConfigMap volume's sync and then
@@ -271,6 +376,7 @@ kind_sandbox_route_stand_ins() {
   kind_k -n kube-system rollout status deployment/coredns --timeout=180s
   note "github.com and api.github.com resolve, for the cluster's pods, to $kind_github_address:443, whose endpoint is $address:$github_port"
   note "$* resolve, for the cluster's pods, to $kind_sites_address:443, whose endpoint is $address:$sites_port"
+  note "CoreDNS answers NXDOMAIN for every other name outside cluster.local, and forwards nothing to the node's resolver"
 }
 
 kind_sandbox_start_nfs_server() {
@@ -356,11 +462,20 @@ EOF
 }
 
 kind_sandbox_teardown() {
-  local status=$1 evidence=$2 namespace pod clusters
+  local status=$1 evidence=$2 namespace pod clusters refused
   [ -n "$kind_cluster" ] || return 0
   # Read whole, not piped into grep -q, whose early exit is the pipeline's failure under pipefail.
   clusters=$("$kind_bin" get clusters 2>/dev/null || true)
   if grep -qx -- "$kind_cluster" <<<"$clusters"; then
+    # Each name CoreDNS's catch-all answered NXDOMAIN for, from the log plugin of the server block
+    # that holds every name outside cluster.local (kind_corefile), with how many queries asked it.
+    refused=$(kind_k -n kube-system logs -l k8s-app=kube-dns --tail=-1 2>/dev/null |
+      sed -n 's/.*"[A-Z0-9]* IN \([^ ]*\) [a-z]* [^"]*" NXDOMAIN .*/\1/p' | sort | uniq -c || true)
+    if [ -n "$refused" ]; then
+      while read -r count name; do note "CoreDNS refused $name: NXDOMAIN to $count queries"; done <<<"$refused"
+    else
+      note "CoreDNS refused no name"
+    fi
     if [ "$status" -ne 0 ]; then
       mkdir -p "$evidence"
       {

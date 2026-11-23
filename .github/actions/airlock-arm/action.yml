@@ -1,15 +1,30 @@
-name: The airlock's check k9 and its lease test, on arm64
+name: The airlock's check k9 or its lease test, on arm64
 description: >-
-  The steps of ci.yaml's airlock-arm job: check k9 of the airlock's verification document
-  (dispatch://INFRA-1352) under ten minutes of generated load, and the airlock stack's pod session
-  outliving its lease (packages/envoy/scripts/dev-airlock-lease.test.sh), both on
-  ubuntu-24.04-arm as the broker-multiprocess job ran them. They ran there behind step gates on
-  `merge_group` and the `full-ci` label; here the job's own gate holds them to the merge queue, to
-  a pull request with `full-ci` and to a dispatched run, as it holds every held suite, and the
-  steps carry no gate of their own. Each stack (packages/envoy/scripts/dev-airlock.sh) makes a
-  database of its own on the job's Postgres through psql, and serves each bound host on port 443
-  of a loopback address of its own, which the runner's user may bind only once the kernel lets it.
-  The stack's database URL is set on each command, not in an env: block.
+  The steps of one leg of ci.yaml's airlock-arm job: k9, check k9 of the airlock's verification
+  document (dispatch://INFRA-1352) under ten minutes of generated load, and its negative control;
+  or lease, the airlock stack's pod session outliving its lease
+  (packages/envoy/scripts/dev-airlock-lease.test.sh). Both run on ubuntu-24.04-arm as the
+  broker-multiprocess job ran them. They ran there behind step gates on `merge_group` and the
+  `full-ci` label; here the job's own gate holds them to the merge queue, to a pull request with
+  `full-ci` and to a dispatched run, as it holds every held suite, and the steps carry no gate of
+  their own but the leg's.
+
+  Each stack (packages/envoy/scripts/dev-airlock.sh) starts as the runner's user in a step of its
+  own, which builds its binaries and so fills the module cache, and stays up for the steps after
+  it: k9's with github.com's stand-in (--git-stand-in), which k9's shallow clone reads, then the
+  control's with --idle-seconds 60, each broker under GOMAXPROCS=1 as k9 measures it; and the
+  lease test's with one broker and a 91-second lease. Each makes a database of its own on the
+  job's Postgres through psql, and serves each bound host on port 443 of a loopback address of
+  its own, which the runner's user may bind only once the kernel lets it. The check and the test
+  run against the running stack (--stack-log) as legion-test, through the step shell
+  legion-test-shell (.github/scripts/test-user.sh): its outbound connections reach loopback and
+  the job's Postgres container alone, and every other one is logged and refused. It reads the
+  stack's directories, and stops a broker and reads its environment as the runner's user, which
+  the fence lets it do for kill and cat alone. The last step prints the rule's refusals.
+inputs:
+  leg:
+    description: The leg of ci.yaml's airlock-arm job, k9 or lease, the part of its check-run name after `airlock-arm / `.
+    required: true
 runs:
   using: composite
   steps:
@@ -18,30 +33,107 @@ runs:
         go-version-file: packages/envoy/go.mod
         cache: false
 
-    - name: Install psql for the airlock check
+    - name: Install psql for the airlock stack
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends postgresql-client
 
+    # legion-test reads the checkout and the runner's temporary directory, where each step's
+    # script and each stack's output are; each stack's own directories are granted as it starts.
+    - id: fence
+      name: Fence the check's process to loopback and the job's Postgres container
+      shell: bash
+      run: |
+        sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
+        containers=()
+        for id in $(docker ps -q); do containers+=(--container "$id"); done
+        .github/scripts/test-user.sh fence --signal-as "$(id -un)" "${containers[@]}" --read "$GITHUB_WORKSPACE" --read "$RUNNER_TEMP"
+
+    # Each stack's dev-airlock.sh runs in a session of its own with its output in
+    # $RUNNER_TEMP/airlock-<stack>.log and its pid beside it; the step ends once its banner says
+    # ready, and grants legion-test the airlock's work directory and dev-broker.sh's. The leg's
+    # own stack first: k9's, with github.com's stand-in and each broker under GOMAXPROCS=1, or
+    # the lease test's, with one broker at the shortest lease it starts with.
+    - name: Start the leg's stack
+      shell: bash
+      env:
+        STACK: ${{ inputs.leg }}
+      run: |
+        case "$STACK" in
+          k9) export GOMAXPROCS=1; options=(--git-stand-in) ;;
+          lease) export BROKER_LEASE_SECONDS=91; options=(--one-broker) ;;
+          *) echo "::error::no stack is named $STACK"; exit 1 ;;
+        esac
+        log=$RUNNER_TEMP/airlock-$STACK.log
+        DEV_BROKER_POSTGRES_URL='postgres://postgres:ci@localhost:5432/postgres?sslmode=disable' \
+          setsid bash packages/envoy/scripts/dev-airlock.sh "${options[@]}" >"$log" 2>&1 </dev/null &
+        echo "$!" >"$log.pid"
+        timeout 900 bash -c 'until grep -q "^dev-airlock: ready\.$" "$1"; do kill -0 "$2" || exit 1; sleep 1; done' _ "$log" "$!" ||
+          { tail -n 40 "$log"; echo "::error::the $STACK stack did not come up (dev-airlock.sh ${options[*]})"; exit 1; }
+        sed -n '/^dev-airlock: ready\.$/,$p' "$log"
+        mapfile -t dirs < <(sed -n 's/^  export \(AIRLOCK_DIR\|DEV_BROKER_DIR\)=//p' "$log")
+        .github/scripts/test-user.sh grant "${dirs[@]}"
+
     # Under ten minutes of generated load no call fails, the proxy adds at most 100 ms at the
     # median, and each broker process stays within half its wall time in CPU and 1 GiB of memory.
-    # It took 899 s in run 44808127763. The script prints one CHECK line per property.
+    # k9 with its control took 899 s in run 44808127763. The script prints one CHECK line per
+    # property.
     - name: Airlock check k9 under load
-      shell: bash
-      env:
-        BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      run: |
-        sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
-        DEV_BROKER_POSTGRES_URL="$BROKER_TEST_DATABASE_URL" bash packages/envoy/scripts/airlock-check.sh k9
+      if: inputs.leg == 'k9'
+      shell: legion-test-shell {0}
+      run: bash packages/envoy/scripts/airlock-check.sh k9 --stack-log "$RUNNER_TEMP/airlock-k9.log"
 
-    # The stack k9 runs on, with one broker at the shortest lease it starts with, a 30-minute grant
-    # used before and after three leases pass. It prints one PASS: or FAIL: line per property and
-    # takes the stack's start and about five minutes more (285 s in run 44808127763).
+    # A 30-minute grant used before and after three leases pass. It prints one PASS: or FAIL:
+    # line per property and takes about five minutes (285 s with its stack in run 44808127763).
     - name: Airlock session outlives its lease
+      if: inputs.leg == 'lease'
+      shell: legion-test-shell {0}
+      run: bash packages/envoy/scripts/dev-airlock-lease.test.sh --stack-log "$RUNNER_TEMP/airlock-lease.log"
+
+    # SIGTERM, whose EXIT trap in dev-airlock.sh stops the stack's processes and drops its
+    # databases, and the end of that.
+    - name: Stop the leg's stack
+      if: always()
       shell: bash
       env:
-        BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+        STACK: ${{ inputs.leg }}
       run: |
-        sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443
-        DEV_BROKER_POSTGRES_URL="$BROKER_TEST_DATABASE_URL" bash packages/envoy/scripts/dev-airlock-lease.test.sh
+        pid=$(cat "$RUNNER_TEMP/airlock-$STACK.log.pid" 2>/dev/null) || exit 0
+        kill "$pid" 2>/dev/null || exit 0
+        timeout 120 tail --pid="$pid" -f /dev/null
+
+    # k9's negative control on a stack of its own, which binds the same loopback addresses and so
+    # starts once k9's stack is gone: its proxy cuts an idle connection at 60 seconds.
+    - name: Start the stack of k9's negative control
+      if: inputs.leg == 'k9'
+      shell: bash
+      run: |
+        log=$RUNNER_TEMP/airlock-k9-control.log
+        GOMAXPROCS=1 DEV_BROKER_POSTGRES_URL='postgres://postgres:ci@localhost:5432/postgres?sslmode=disable' \
+          setsid bash packages/envoy/scripts/dev-airlock.sh --idle-seconds 60 >"$log" 2>&1 </dev/null &
+        echo "$!" >"$log.pid"
+        timeout 900 bash -c 'until grep -q "^dev-airlock: ready\.$" "$1"; do kill -0 "$2" || exit 1; sleep 1; done' _ "$log" "$!" ||
+          { tail -n 40 "$log"; echo "::error::the control's stack did not come up (dev-airlock.sh --idle-seconds 60)"; exit 1; }
+        sed -n '/^dev-airlock: ready\.$/,$p' "$log"
+        mapfile -t dirs < <(sed -n 's/^  export \(AIRLOCK_DIR\|DEV_BROKER_DIR\)=//p' "$log")
+        .github/scripts/test-user.sh grant "${dirs[@]}"
+
+    - name: Airlock check k9's negative control
+      if: inputs.leg == 'k9'
+      shell: legion-test-shell {0}
+      run: bash packages/envoy/scripts/airlock-check.sh k9 --control --stack-log "$RUNNER_TEMP/airlock-k9-control.log"
+
+    - name: Stop the control's stack
+      if: always() && inputs.leg == 'k9'
+      shell: bash
+      run: |
+        pid=$(cat "$RUNNER_TEMP/airlock-k9-control.log.pid" 2>/dev/null) || exit 0
+        kill "$pid" 2>/dev/null || exit 0
+        timeout 120 tail --pid="$pid" -f /dev/null
+
+    # The rule's refusals, none expected.
+    - name: Print what the rule refused
+      if: always() && steps.fence.outcome == 'success'
+      shell: bash
+      run: .github/scripts/test-user.sh report

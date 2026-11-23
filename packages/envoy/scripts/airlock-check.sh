@@ -4,11 +4,13 @@
 # Runs check k9 of the airlock's verification document end to end: under a ten-minute load of
 # generated traffic no call fails, the proxy adds at most 100 ms at the median against a plain
 # tunnel, and each broker process passes at most half its wall time in CPU and at most 1 GiB of
-# memory, which are the document's rules for the broker. The `broker-multiprocess` job of
-# `ci.yaml` runs it in merge groups and on a pull request that carries the `full-ci` label.
+# memory, which are the document's rules for the broker. The `airlock-arm` job of `ci.yaml` runs
+# it in merge groups and on a pull request that carries the `full-ci` label.
 #
-# The script starts the local stack the check needs (scripts/dev-airlock.sh), runs the check's
-# steps against it, runs the negative control on a second stack, stops the stack, and prints:
+# The script starts the local stack the check needs (scripts/dev-airlock.sh, with github.com's
+# stand-in, so k9's clone reads a repository of the stack's own and no host outside the
+# machine), runs the check's steps against it, runs the negative control on a second stack,
+# stops the stack, and prints:
 #
 #   - a result block: what the check expected, what this run observed, and what the negative
 #     control did;
@@ -17,6 +19,13 @@
 #     because a control that does not behave as the check says leaves the check proving
 #     nothing; a PASS line follows a line saying what was seen;
 #   - one last line, `check k9: passed` or `check k9: failed (<n> of <m>)`.
+#
+# With --stack-log it starts no stack: it reads the banner of one already up, which another user
+# may own and started with dev-airlock.sh's output in that file, and runs k9's properties on it,
+# or with --control the negative control alone. CI starts each stack as the runner's user and
+# runs this script as a user whose connections reach loopback and the stack's containers alone
+# (.github/scripts/test-user.sh): it stops a broker of that stack, and reads its environment,
+# through `sudo -n -u <the stack's owner>`, which that user may do for kill and cat alone.
 #
 # No line it prints is a credential. A value is compared by its SHA-256 (the first 16 hex
 # digits) and its length, and every line that compares one says so; that is a rule of the
@@ -31,9 +40,12 @@
 # the airlock-lean job and scripts/airlock-mutants.sh. k2 was a one-time check of a release from
 # before the airlock.
 #
-# Usage: packages/envoy/scripts/airlock-check.sh k9 [--keep-stack]
+# Usage: packages/envoy/scripts/airlock-check.sh k9 [--keep-stack] [--stack-log FILE [--control]]
 #        --keep-stack leaves the stack and the work directory up for a person to look at a
-#        failure with. --help prints this usage. A usage error exits 2.
+#        failure with. --stack-log FILE runs on the stack FILE's dev-airlock.sh banner names:
+#        k9's properties on one started with --git-stand-in, and with --control the negative
+#        control alone, on one started with --idle-seconds 60. --help prints this usage. A usage
+#        error exits 2.
 #
 # Needs bash, curl, jq, go, python3, openssl, node, psql and git; a missing one is a
 # `CHECK setup: FAIL` naming it. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it is,
@@ -46,13 +58,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
 	cat <<'EOF'
-usage: airlock-check.sh k9 [--keep-stack]
+usage: airlock-check.sh k9 [--keep-stack] [--stack-log FILE [--control]]
 
 Runs check k9 of the airlock's verification document and prints one CHECK line for each
 property the check's outcome sentence names, after a line saying what it got.
 
   k9             the one check this script runs
   --keep-stack   leave the stack and this run's work directory up, to look at a failure with
+  --stack-log FILE
+                 run on the stack already up whose dev-airlock.sh output FILE holds, started with
+                 --git-stand-in, instead of starting one; its negative control is another run
+  --control      with --stack-log: the negative control alone, on a stack started with
+                 --idle-seconds 60
   --help         print this
 
 It exits 0 only when every property passed, 1 when one did not and 2 on a usage error. It
@@ -62,9 +79,21 @@ EOF
 
 CHECK_ID=""
 KEEP_STACK=false
+GIVEN_STACK_LOG=""
+CONTROL_ONLY=false
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--keep-stack) KEEP_STACK=true ;;
+	--control) CONTROL_ONLY=true ;;
+	--stack-log)
+		if [ $# -lt 2 ] || [ ! -f "$2" ]; then
+			echo "airlock-check: --stack-log wants the file a running stack's dev-airlock.sh writes its output to" >&2
+			usage >&2
+			exit 2
+		fi
+		GIVEN_STACK_LOG="$2"
+		shift
+		;;
 	--help | -h)
 		usage
 		exit 0
@@ -101,6 +130,12 @@ k9) ;;
 	;;
 esac
 
+if [ "$CONTROL_ONLY" = true ] && [ -z "$GIVEN_STACK_LOG" ]; then
+	echo "airlock-check: --control runs the negative control on a running stack, which --stack-log names" >&2
+	usage >&2
+	exit 2
+fi
+
 for tool in curl jq go python3 openssl node psql git; do
 	if ! command -v "$tool" >/dev/null 2>&1; then
 		echo "CHECK setup: FAIL: $tool is not on PATH"
@@ -111,6 +146,7 @@ done
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/airlock-check-$CHECK_ID.XXXXXX")"
 STACK_LOG="$WORK_DIR/stack.log"
 STACK_PID=""
+STACK_OWNER=""
 HELPER_PIDS=()
 
 cleanup() {
@@ -223,14 +259,37 @@ await() { # <what> <seconds> <log> <pattern> <pid>
 }
 
 # start_stack runs dev-airlock.sh with the options its caller names, waits for its banner, and
-# exports everything that banner names. dev-broker.sh's own export block is in the same log and
-# is read first, so where the two name one variable the airlock's wins, as the banner says.
+# reads it (read_stack).
 start_stack() {
 	echo "airlock-check: starting the stack (dev-airlock.sh $*)..." >&2
 	: >"$STACK_LOG"
 	bash "$SCRIPT_DIR/dev-airlock.sh" "$@" >"$STACK_LOG" 2>&1 &
 	STACK_PID=$!
 	await "the stack" 900 "$STACK_LOG" '^dev-airlock: ready\.$' "$STACK_PID"
+	read_stack
+}
+
+# stack_up is the stack k9's next step runs on: the one --stack-log names, which is up already,
+# or one started here with the dev-airlock.sh options the caller names.
+stack_up() {
+	if [ -z "$GIVEN_STACK_LOG" ]; then
+		start_stack "$@"
+		return
+	fi
+	STACK_LOG="$GIVEN_STACK_LOG"
+	if ! grep -q '^dev-airlock: ready\.$' "$STACK_LOG"; then
+		echo "CHECK setup: FAIL: $STACK_LOG holds no 'dev-airlock: ready.' banner, so no stack is up there to run on"
+		exit 1
+	fi
+	STACK_OWNER="$(stat -c %U "$STACK_LOG")"
+	echo "airlock-check: using the running stack whose output is $STACK_LOG (started by $STACK_OWNER, with dev-airlock.sh $*)" >&2
+	read_stack
+}
+
+# read_stack exports everything the stack's banner names. dev-broker.sh's own export block is in
+# the same log and is read first, so where the two name one variable the airlock's wins, as the
+# banner says.
+read_stack() {
 	eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
 	mapfile -t BROKER_API_ADDRS < <(sed -n 's/^  broker [0-9]*: *api \([^,]*\),.*/\1/p' "$STACK_LOG")
 	mapfile -t BROKER_PROXY_ADDRS < <(sed -n 's/^  broker [0-9]*:.*proxy \([^,]*\),.*/\1/p' "$STACK_LOG")
@@ -238,6 +297,17 @@ start_stack() {
 	# directory its own banner named. k9's load driver is a subcommand of it.
 	STANDS_BIN="$DEV_BROKER_DIR/bin/dev-airlock-stands"
 	echo "airlock-check: the stack is up (${#BROKER_API_ADDRS[@]} brokers, work directory $AIRLOCK_DIR)" >&2
+}
+
+# as_stack_owner runs a command as the user the stack runs as: this user, or the owner of a
+# stack --stack-log names, who lets this user run kill and cat as them through sudo (CI's
+# .github/scripts/test-user.sh fence --signal-as).
+as_stack_owner() {
+	if [ -z "$STACK_OWNER" ] || [ "$STACK_OWNER" = "$(id -un)" ]; then
+		"$@"
+	else
+		sudo -n -u "$STACK_OWNER" "$@"
+	fi
 }
 
 # stop_stack stops dev-airlock.sh, whose own EXIT trap stops its processes and drops the
@@ -316,9 +386,9 @@ stored_value() { jq -r --arg n "$1" '.secrets[] | select(.name == $n) | .value' 
 # what it can miss.
 #
 # GOMAXPROCS=1 for each broker: dev-airlock.sh has no option for it and its start_broker names
-# no GOMAXPROCS, so the brokers inherit it from the environment this script starts the stack
-# with, which is where this check sets it. Each broker's /proc/<pid>/environ is read back to
-# show that it arrived.
+# no GOMAXPROCS, so the brokers inherit it from the environment the stack is started with: this
+# script's, which sets it, or that of whoever started a stack --stack-log names. Each broker's
+# /proc/<pid>/environ is read back to show that it arrived.
 
 # k9_cpu answers one process's CPU time in seconds, utime and stime of /proc/<pid>/stat added.
 k9_cpu() { # <pid>
@@ -344,28 +414,38 @@ k9_peak_kb() { # <file> <pid>
 	awk -v p="$2" '$1 == p && $2 > max { max = $2 } END { print max + 0 }' "$1" 2>/dev/null
 }
 
+# check_k9 runs k9's properties on a stack with github.com's stand-in and then its negative
+# control on a stack of its own; with --stack-log, the one the running stack is for.
 check_k9() {
-	expect "no call fails in the ten minutes of 50 connections a second"
-	expect "the proxy adds at most 100 milliseconds at the median, against the same calls through a plain tunnel"
-	expect "each broker process's CPU time is at most half its wall time and its peak memory at most 1 GiB"
-	expect "the 50 MiB upload, the answer with a 90-second gap in it and the shallow clone finish"
-	expect "the WebSocket upgrade reaches S with the real value in its header, and frames pass both ways"
-	expect "the stream on the stopped process ends after the drain, and the next call succeeds"
-	expect "the negative control, a stack with the proxy's idle limit at 60 seconds, cuts the answer with the 90-second gap"
-
 	# Each broker with GOMAXPROCS=1: dev-airlock.sh has no option for it, so it is exported into
 	# the environment the stack is started with and each broker inherits it.
 	export GOMAXPROCS=1
-	start_stack
-	stack_facts
 	# This check's own files. The load driver is a mode of dev-airlock-stands, which
 	# dev-broker.sh built with the stack's other binaries, so there is nothing to build here.
 	mkdir -p "$WORK_DIR/k9"
+	if [ "$CONTROL_ONLY" != true ]; then
+		check_k9_main
+	fi
+	if [ -z "$GIVEN_STACK_LOG" ] || [ "$CONTROL_ONLY" = true ]; then
+		check_k9_control
+	fi
+}
+
+check_k9_main() {
+	expect "no call fails in the ten minutes of 50 connections a second"
+	expect "the proxy adds at most 100 milliseconds at the median, against the same calls through a plain tunnel"
+	expect "each broker process's CPU time is at most half its wall time and its peak memory at most 1 GiB"
+	expect "the 50 MiB upload, the answer with a 90-second gap in it and the shallow clone of github.com's stand-in finish"
+	expect "the WebSocket upgrade reaches S with the real value in its header, and frames pass both ways"
+	expect "the stream on the stopped process ends after the drain, and the next call succeeds"
+
+	stack_up --git-stand-in
+	stack_facts
 
 	local pids pid environs=""
 	mapfile -t pids < <(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG")
 	for pid in "${pids[@]}"; do
-		environs="$environs $pid:$(tr '\0' '\n' <"/proc/$pid/environ" | grep -c '^GOMAXPROCS=1$')"
+		environs="$environs $pid:$(as_stack_owner cat "/proc/$pid/environ" | tr '\0' '\n' | grep -c '^GOMAXPROCS=1$')"
 	done
 	observe "the stack's broker processes are ${pids[*]}, and each one's /proc/<pid>/environ holds GOMAXPROCS=1 (pid:matches)$environs"
 
@@ -444,26 +524,29 @@ check_k9() {
 		--header-file <(printf '%s\n' "$PLACEHOLDER") --out "$WORK_DIR/k9/upgrade.json" >/dev/null 2>&1
 
 	# The clone goes through the same proxy on an ordinary CONNECT: github.com is no bound host,
-	# so nothing is swapped into it and what is proved is that the tunnel carries a clone.
-	local clone_status clone_out
+	# so nothing is swapped into it and what is proved is that the tunnel carries a clone. The
+	# stack's own stand-in answers for github.com (dev-airlock.sh --git-stand-in), so the clone
+	# holds that stand-in's one commit and nothing leaves the machine for it.
+	local clone_status clone_out cloned_head
 	rm -rf "$WORK_DIR/k9/clone"
 	clone_out="$(GIT_CONFIG_COUNT=2 \
 		GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0="$proxy" \
 		GIT_CONFIG_KEY_1=http.sslCAInfo GIT_CONFIG_VALUE_1="$AIRLOCK_CA_CERT_FILE" \
 		git clone --depth 1 --quiet https://github.com/cybermonklabs/legion "$WORK_DIR/k9/clone" 2>&1 | tail -n 2 | tr '\n' ' ')"
 	clone_status=$?
+	cloned_head="$(git -C "$WORK_DIR/k9/clone" rev-parse HEAD 2>/dev/null)"
 	local cloned=0
-	[ -d "$WORK_DIR/k9/clone/.git" ] && cloned=1
+	[ -d "$WORK_DIR/k9/clone/.git" ] && [ -n "${AIRLOCK_GIT_COMMIT:-}" ] && [ "$cloned_head" = "$AIRLOCK_GIT_COMMIT" ] && cloned=1
 
 	observe "the 50 MiB upload: $(cat "$WORK_DIR/k9/upload.json" | tr -d '\n ')"
 	observe "the answer with a 90-second gap in it: $(cat "$WORK_DIR/k9/gap.json" | tr -d '\n ')"
-	observe "the shallow clone of cybermonklabs/legion through the tunnel exited $clone_status and left a checkout: $cloned ($clone_out)"
+	observe "the shallow clone of github.com/cybermonklabs/legion through the tunnel exited $clone_status and left a checkout at ${cloned_head:-no commit}, the stack's stand-in serving ${AIRLOCK_GIT_COMMIT:-no commit} ($clone_out)"
 	local upload_ok gap_ok
 	upload_ok="$(jq -r '.status // 0' "$WORK_DIR/k9/upload.json")"
 	gap_ok="$(jq -r '.second // 0' "$WORK_DIR/k9/gap.json")"
 	judge "$([ "$upload_ok" = 200 ] && [ "$gap_ok" = 200 ] && [ "$cloned" = 1 ] && echo 0 || echo 1)" upload-gap-and-clone \
-		"the upload, the answer with the gap and the clone finish" \
-		"the upload answered $upload_ok, the second event after the 90-second gap answered $gap_ok, and the clone left a checkout: $cloned"
+		"the upload, the answer with the gap and the clone of github.com's stand-in finish" \
+		"the upload answered $upload_ok, the second event after the 90-second gap answered $gap_ok, and the clone left the stand-in's commit: $cloned"
 
 	local upgrade_recs upgrade_header upgrade_status
 	upgrade_recs="$(records s | jq --argjson n "$s_mark" '.[$n:]')"
@@ -483,7 +566,7 @@ check_k9() {
 		--out "$WORK_DIR/k9/stopped.json" >/dev/null 2>&1 &
 	local gap_pid=$!
 	sleep 3
-	kill "$stopped" 2>/dev/null || true
+	as_stack_owner kill "$stopped" 2>/dev/null || true
 	wait "$gap_pid" 2>/dev/null || true
 	# Four calls, not one: the stack's proxy front is a round-robin over both brokers' ports
 	# that reads its backends from a file and asks nobody whether a backend is alive, so every
@@ -498,17 +581,21 @@ check_k9() {
 		[ "$status" = 200 ] && ok=$((ok + 1))
 	done
 	local still_up=0
-	kill -0 "$stopped" 2>/dev/null && still_up=1
+	[ -d "/proc/$stopped" ] && still_up=1
 	observe "with broker $stopped stopped while it carried a connection: that connection answered $(cat "$WORK_DIR/k9/stopped.json" | tr -d '\n ') and the four calls after it answered$after_stop (the stopped process is still up: $still_up)"
 	judge "$([ "$ok" -gt 0 ] && echo 0 || echo 1)" call-after-a-stopped-broker \
 		"the stream on the stopped process ends after the drain, and the next call succeeds" \
 		"the connection on the stopped process ended $(jq -r 'if .second then "with its second event answering " + (.second|tostring) else "with " + (.second_error // .error // "no answer") end' "$WORK_DIR/k9/stopped.json"), and $ok of the four calls after it answered 200 ($after_stop); the ones that did not are the connections the front still handed to the stopped process, which it keeps in its backends file with no health check of its own"
 
 	stop_stack
+}
 
-	# The negative control: a stack of its own whose proxy cuts an idle connection at 60 seconds,
-	# which is what the 90-second gap is measured against.
-	start_stack --idle-seconds 60
+# The negative control: a stack of its own whose proxy cuts an idle connection at 60 seconds,
+# which is what the 90-second gap is measured against.
+check_k9_control() {
+	expect "the negative control, a stack with the proxy's idle limit at 60 seconds, cuts the answer with the 90-second gap"
+
+	stack_up --idle-seconds 60
 	stack_facts
 	release AIRLOCK_DEMO_TOKEN 30m
 	"$STANDS_BIN" load gap --proxy-file <(proxy_for "${AIRLOCK_PROXY_URL##*://}") --host s.airlock.test \

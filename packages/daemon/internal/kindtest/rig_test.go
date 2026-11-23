@@ -17,7 +17,9 @@ import (
 // repository from the fake GitHub as https://github.com with a token the fake takes, trusting the
 // fake's certificate through the image's own trust store. A second pod under gVisor mounts an NFS
 // share of a server in the cluster, reads the file the server was seeded with and writes one the
-// server then holds. The test logs, by name, how long each piece took, and `df -h` of the runner
+// server then holds. A pod on an image of a registry the rig does not name (Docker Hub's busybox)
+// is refused its pull on the node: containerd pulls from the rig's local registry and ghcr.io
+// alone. The test logs, by name, how long each piece took, and `df -h` of the runner
 // before the rig and with it up: the measurements the kind tests that come after are sized from.
 func TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub(t *testing.T) {
 	t.Logf("df -h before the rig:\n%s", kindtest.DiskFree(t))
@@ -143,6 +145,36 @@ spec:
 			}
 			t.Logf("a gVisor pod mounts the NFS share %s:/team, reads its seed, and writes a file the server holds", server)
 		})
+	})
+
+	t.Run("pull-refused", func(t *testing.T) {
+		const image = "docker.io/library/busybox:1.37.0"
+		rig.Apply(t, fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata: {name: rig-pull-refused, namespace: legion}
+spec:
+  restartPolicy: Never
+  nodeSelector: {legion.dev/pool: legion}
+  automountServiceAccountToken: false
+  containers:
+  - {name: refused, image: %s, command: [/bin/true]}
+`, image))
+		t.Cleanup(func() { rig.Kubectl(t, "-n", "legion", "delete", "pod/rig-pull-refused", "--wait=false") })
+		var reason, messages string
+		for deadline := time.Now().Add(2 * time.Minute); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+			reason = rig.Kubectl(t, "-n", "legion", "get", "pod/rig-pull-refused", "-o", "jsonpath={.status.containerStatuses[0].state.waiting.reason}")
+			messages = rig.Kubectl(t, "-n", "legion", "get", "events", "--field-selector", "involvedObject.name=rig-pull-refused,reason=Failed",
+				"-o", `jsonpath={range .items[*]}{.message}{"\n"}{end}`)
+			if (reason == "ErrImagePull" || reason == "ImagePullBackOff") && messages != "" {
+				break
+			}
+		}
+		// kind_sandbox_create sends every registry but ghcr.io and the local one to
+		// kind_no_registry, 127.0.0.1:1 on the node, where nothing listens.
+		if reason != "ErrImagePull" && reason != "ImagePullBackOff" || !strings.Contains(messages, "127.0.0.1:1") {
+			t.Fatalf("a pod on %s is waiting for %q, with the events %q; want its pull refused at the node's 127.0.0.1:1", image, reason, messages)
+		}
+		t.Logf("a pod on %s is refused its pull (%s): %s", image, reason, strings.TrimSpace(messages))
 	})
 }
 

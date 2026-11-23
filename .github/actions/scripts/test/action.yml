@@ -395,3 +395,9 @@ runs:
     - name: Test the verdict of the jobs that carry a split job's old check-run name
       shell: bash
       run: .github/scripts/leg-verdict.test.sh
+
+    # The fence of the kind and airlock-arm jobs' test processes, against fakes of sudo,
+    # iptables, docker and the rest: its rules, grants, step shell and report.
+    - name: Test the fence of a test process to loopback and its job's networks
+      shell: bash
+      run: .github/scripts/test-user.test.sh

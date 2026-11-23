@@ -90,6 +90,14 @@
 #                     BROKER_JUDGE_TEST_SKIP_CHECKS=true (the judge's negative control: its
 #                     checks before the model are off, so a request one of them would hold back
 #                     is put to the model anyway)
+#   --git-stand-in    serve github.com from a stand-in of this stack's own: a bare repository
+#                     cybermonklabs/legion with one commit, which `dev-airlock-stands git` serves
+#                     over smart HTTP on 127.0.0.6:443 behind a certificate of the stack's
+#                     authority, and github.com=127.0.0.6 in BROKER_AIRLOCK_TEST_RESOLVE and
+#                     github.com:443 in BROKER_AIRLOCK_TEST_DIAL_ALLOW, so a clone of
+#                     https://github.com/cybermonklabs/legion through the proxy reads it and
+#                     leaves the machine for no host (check k9's clone); the exports name its
+#                     commit as AIRLOCK_GIT_COMMIT
 #   --help            print this and exit
 set -euo pipefail
 
@@ -98,7 +106,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   cat <<'EOF'
 usage: dev-airlock.sh [--keep-values] [--no-kind] [--idle-seconds N] [--one-broker]
-                      [--judge-skip-checks]
+                      [--judge-skip-checks] [--git-stand-in]
 
 Starts the airlock's whole local stack - dev-broker.sh's Postgres, issuer and broker, the
 stand-in services, a certificate authority, a rules file, two brokers behind one API front and
@@ -110,6 +118,7 @@ one proxy front, and an enrolled pod session - and prints the exports a check ne
   --one-broker      start one broker rather than two
   --judge-skip-checks
                     BROKER_JUDGE_TEST_SKIP_CHECKS=true, the model judge's negative control
+  --git-stand-in    serve github.com/cybermonklabs/legion from a stand-in on 127.0.0.6:443
   --help            print this
 EOF
 }
@@ -119,6 +128,7 @@ NO_KIND=false
 IDLE_SECONDS=300
 BROKER_COUNT=2
 JUDGE_SKIP_CHECKS=false
+GIT_STAND_IN=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --keep-values) KEEP_VALUES=true ;;
@@ -137,6 +147,7 @@ while [ $# -gt 0 ]; do
       ;;
     --one-broker) BROKER_COUNT=1 ;;
     --judge-skip-checks) JUDGE_SKIP_CHECKS=true ;;
+    --git-stand-in) GIT_STAND_IN=true ;;
     --help|-h)
       usage
       exit 0
@@ -169,6 +180,9 @@ API_BACKENDS="$WORK_DIR/api-backends"
 PROXY_FRONT_JSON="$WORK_DIR/proxy-front.json"
 PROXY_FRONT_LOG="$WORK_DIR/proxy-front.log"
 PROXY_BACKENDS="$WORK_DIR/proxy-backends"
+GIT_ROOT="$WORK_DIR/git"
+GIT_JSON="$WORK_DIR/git-stand-in.json"
+GIT_LOG="$WORK_DIR/git-stand-in.log"
 
 # The namespace and the key this run's fake secrets sit under. The key is an example ARN in AWS's
 # documentation account, and nothing here calls AWS; a secret on any other key is refused by the
@@ -199,6 +213,11 @@ AZURE_RESOURCE_HOST="azure-resource.airlock.test"
 MICROSOFT_ADDRESS="127.0.0.4:443"
 AWS_HOST="aws.airlock.test"
 AWS_ADDRESS="127.0.0.5:443"
+# github.com's stand-in (--git-stand-in), on the next loopback address, and the one repository
+# it holds: the one check k9 clones.
+GIT_HOST="github.com"
+GIT_ADDRESS="127.0.0.6:443"
+GIT_REPOSITORY="cybermonklabs/legion"
 GITHUB_OWNER="acme-org"
 GITHUB_INSTALLATION=7
 DEMO_SECRET="AIRLOCK_DEMO_TOKEN"
@@ -301,6 +320,7 @@ RENEW_PID=""
 STANDS_PID=""
 API_FRONT_PID=""
 PROXY_FRONT_PID=""
+GIT_PID=""
 BROKER_PIDS=()
 CREATED_DB=false
 
@@ -309,7 +329,7 @@ cleanup() {
   # then dev-broker.sh, whose own EXIT trap stops its broker and its issuer and drops its
   # database.
   local pid
-  for pid in "$RENEW_PID" "${BROKER_PIDS[@]+"${BROKER_PIDS[@]}"}" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$STANDS_PID" "$DEV_BROKER_PID"; do
+  for pid in "$RENEW_PID" "${BROKER_PIDS[@]+"${BROKER_PIDS[@]}"}" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$GIT_PID" "$STANDS_PID" "$DEV_BROKER_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -487,6 +507,32 @@ AWS_URL="https://${AWS_HOST}"
 # broker's own loopback port is still refused, which no switch for loopback could give.
 DIAL_ALLOW="${S_HOST}:443 ${T_HOST}:443 ${MICROSOFT_HOST}:443 ${AZURE_RESOURCE_HOST}:443 ${AWS_HOST}:443"
 RESOLVE="${S_HOST}=${S_ADDRESS%:*} ${T_HOST}=${T_ADDRESS%:*} ${MICROSOFT_HOST}=${MICROSOFT_ADDRESS%:*} ${AZURE_RESOURCE_HOST}=${MICROSOFT_ADDRESS%:*} ${AWS_HOST}=${AWS_ADDRESS%:*}"
+
+# --- github.com's stand-in (--git-stand-in): a bare repository of one commit, made with no
+# configuration of the machine's, served by `dev-airlock-stands git` behind a certificate of
+# the stack's own authority, which the proxy reaches for github.com and nothing else does. ---
+GIT_COMMIT=""
+if [ "$GIT_STAND_IN" = true ]; then
+  git_plain() {
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=dev-airlock GIT_AUTHOR_EMAIL=dev-airlock@example.com \
+      GIT_COMMITTER_NAME=dev-airlock GIT_COMMITTER_EMAIL=dev-airlock@example.com git "$@"
+  }
+  bare="$GIT_ROOT/$GIT_REPOSITORY.git"
+  git_plain init --quiet --bare --initial-branch=main "$bare"
+  blob="$(printf "dev-airlock.sh's stand-in of %s/%s\n" "$GIT_HOST" "$GIT_REPOSITORY" | git_plain --git-dir="$bare" hash-object -w --stdin)"
+  tree="$(printf '100644 blob %s\tREADME.md\n' "$blob" | git_plain --git-dir="$bare" mktree)"
+  GIT_COMMIT="$(git_plain --git-dir="$bare" commit-tree "$tree" -m "The stand-in's one commit")"
+  git_plain --git-dir="$bare" update-ref refs/heads/main "$GIT_COMMIT"
+  echo "dev-airlock: starting the stand-in for $GIT_HOST on $GIT_ADDRESS..." >&2
+  : >"$GIT_LOG"
+  "$STANDS_BIN" git --listen "$GIT_ADDRESS" --root "$GIT_ROOT" --host "$GIT_HOST" \
+    --ca-cert "$CA_CERT_FILE" --ca-key "$CA_KEY_FILE" \
+    >"$GIT_JSON" 2> >(trap '' TERM INT; exec tee -a "$GIT_LOG" >&2) &
+  GIT_PID=$!
+  await "the $GIT_HOST stand-in" 30 "$GIT_LOG" 'git listening addr=' "$GIT_PID"
+  DIAL_ALLOW="$DIAL_ALLOW ${GIT_HOST}:443"
+  RESOLVE="$RESOLVE ${GIT_HOST}=${GIT_ADDRESS%:*}"
+fi
 
 # --- The rules file: where each secret's value may go, in which headers, and how many seconds
 # of it the model judge may decide. ---
@@ -745,6 +791,9 @@ for n in $(seq 1 "$BROKER_COUNT"); do
   BROKER_BANNER+="  broker $n:            api ${BROKER_API_ADDRS[n]}, proxy ${BROKER_PROXY_ADDRS[n]}, pid ${BROKER_PIDS[n]}, log ${BROKER_LOGS[n]}"
 done
 BROKER_BANNER+=$'\n'"  session renewer:     pid $RENEW_PID, agent-secrets renew --pod-token-file $POD_TOKEN_FILE, log $RENEW_LOG"
+if [ "$GIT_STAND_IN" = true ]; then
+  BROKER_BANNER+=$'\n'"  $GIT_HOST stand-in:  $GIT_REPOSITORY at $GIT_COMMIT on $GIT_ADDRESS, pid $GIT_PID, log $GIT_LOG"
+fi
 
 cat <<EOF
 
@@ -801,6 +850,7 @@ dev-airlock: ready.
   export AIRLOCK_APPROVER=$APPROVER_LOGIN
   export AIRLOCK_SIGNIN_URL=$ISSUER_URL
   export AIRLOCK_ENROLLMENT=$ENROLLMENT_ID
+  export AIRLOCK_GIT_COMMIT=$GIT_COMMIT
   export DEV_BROKER_DIR=$BASE_DIR
   export PATH=$BASE_BIN_DIR:\$PATH
 

@@ -29,7 +29,10 @@
 # that one front stands over the two API ports and one over the two proxy ports, and that both
 # brokers name those fronts as their public and proxy URLs; that --keep-values, --no-kind,
 # --idle-seconds and --judge-skip-checks reach the brokers' environment and --one-broker starts
-# one; that the pod session's enrolment id is written beside its key where
+# one; that --git-stand-in starts github.com's stand-in on 127.0.0.6:443 over a repository of one
+# commit, behind the stack's authority, routes both brokers' github.com to it and stops it with
+# the run, and that a run without it routes github.com nowhere; that the pod session's enrolment
+# id is written beside its key where
 # AGENT_SECRETS_KEY_DIR names it; that the session's renewer runs against the API front with that
 # key directory and the pod's token file; that a usage error exits 2; and that the cleanup stops
 # every process the run started, the renewer among them, and drops the database it created.
@@ -186,9 +189,9 @@ exec sleep 999999
 BROKER
     ;;
   */dev-proxy-stands)
-    # The three modes the stack drives: the stands, which write the files and the JSON report
-    # it reads; the front, which reports the address it bound; and the enrolment, which
-    # answers an enrollment id and records what it was asked to enrol.
+    # The four modes the stack drives: the stands, which write the files and the JSON report
+    # it reads; the front, which reports the address it bound; the enrolment, which answers an
+    # enrollment id and records what it was asked to enrol; and github.com's stand-in.
     cat >"$out" <<'STANDS'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -203,6 +206,13 @@ case "${1:-}" in
     printf '%s\n' "enroll-pod $*" >>"${DEV_AIRLOCK_TEST_STANDS_CALLS:?}"
     printf '{"credential_id": "the-launcher-credential", "enrollment_id": "the-pod-enrollment", "lease_expires_at": "2100-01-01T00:00:00Z"}\n'
     exit 0
+    ;;
+  git)
+    printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
+    printf '%s\n' "git $*" >>"${DEV_AIRLOCK_TEST_STANDS_CALLS:?}"
+    printf '{"address": "127.0.0.6:443", "pid": %s}\n' "$$"
+    echo "dev-airlock-stands: git listening addr=127.0.0.6:443" >&2
+    exec sleep 999999
     ;;
 esac
 printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
@@ -374,6 +384,11 @@ for line in "${airlock_lines[@]}"; do
     exit 1
   fi
 done
+if grep -q '^git ' "$stands_calls" || [[ -n "$(exported AIRLOCK_GIT_COMMIT)" ]] ||
+  [[ "${airlock_lines[*]}" == *'github.com:443'* || "${airlock_lines[*]}" == *'github.com=127.0.0.6'* ]]; then
+  echo "FAIL: a run without --git-stand-in started github.com's stand-in or routed github.com to it: ${airlock_lines[*]}" >&2
+  exit 1
+fi
 printf 'PASS: two broker processes are started, each with the whole BROKER_AIRLOCK_* block (rules, proxy URL, authority, idle limit, the stand-ins, the token authority the azure exchange is held to and the addresses it may dial)\n'
 
 # The run above was started as a pod's, with KUBERNETES_SERVICE_HOST set. A broker with an airlock
@@ -639,6 +654,40 @@ if [[ "$judge_line" != *"skip_checks=true"* ]]; then
 fi
 stop_stack
 printf 'PASS: --keep-values, --no-kind, --idle-seconds 60 and --judge-skip-checks reach the broker as BROKER_AIRLOCK_TEST_KEEP_VALUES, BROKER_AIRLOCK_TEST_NO_KIND, BROKER_AIRLOCK_IDLE_SECONDS and BROKER_JUDGE_TEST_SKIP_CHECKS, and --one-broker starts one\n'
+
+# --- --git-stand-in: github.com's stand-in, a repository of one commit behind the stack's own
+# authority, which the brokers reach for github.com and nothing else does. ---
+run_stack --git-stand-in
+wait_for_ready
+airlock_dir="$(exported AIRLOCK_DIR)"
+ca_cert="$(exported AIRLOCK_CA_CERT_FILE)"
+ca_key="$(exported AIRLOCK_CA_KEY_FILE)"
+git_commit="$(exported AIRLOCK_GIT_COMMIT)"
+served="$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git --git-dir="$airlock_dir/git/cybermonklabs/legion.git" rev-parse refs/heads/main 2>&1 || true)"
+if [[ -z "$git_commit" || "$git_commit" != "$served" ]]; then
+  echo "FAIL: the banner exports AIRLOCK_GIT_COMMIT=$git_commit; the stand-in's repository holds $served" >&2
+  exit 1
+fi
+want_git="git git --listen 127.0.0.6:443 --root $airlock_dir/git --host github.com --ca-cert $ca_cert --ca-key $ca_key"
+if ! grep -qxF -- "$want_git" "$stands_calls"; then
+  cat "$stands_calls" >&2
+  echo "FAIL: github.com's stand-in was not started as $want_git" >&2
+  exit 1
+fi
+mapfile -t airlock_lines < <(grep -o 'fake broker airlock: .*' "$log" | grep -v 'rules= ')
+for line in "${airlock_lines[@]}"; do
+  if [[ "$line" != *"dial_allow="*'github.com:443'* || "$line" != *'resolve='*'github.com=127.0.0.6'* ]]; then
+    echo "FAIL: a broker of a --git-stand-in run is not sent to github.com's stand-in: $line" >&2
+    exit 1
+  fi
+done
+git_pid="$(jq -r .pid "$airlock_dir/git-stand-in.json")"
+stop_stack
+if kill -0 "$git_pid" 2>/dev/null; then
+  echo "FAIL: github.com's stand-in (pid $git_pid) is still running after the run stopped" >&2
+  exit 1
+fi
+printf 'PASS: --git-stand-in serves a repository of one commit (%s) as github.com on 127.0.0.6:443 behind the stack'"'"'s authority, sends both brokers there for github.com, and stops it with the run; without it nothing routes github.com\n' "$git_commit"
 
 # --- A usage error exits 2 and starts nothing. ---
 for args in "--nope" "--idle-seconds" "--idle-seconds five" "--idle-seconds 5"; do

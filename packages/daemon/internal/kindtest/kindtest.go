@@ -59,12 +59,17 @@ import (
 // names the directory a failed test's cluster state goes to, which the job uploads.
 // NPMTarballsEnv names a directory of npm tarballs, which a test serves from the rig's npm
 // stand-in (TLSSites.ServeNPMLock): the job's setup fetches them by a lock's resolved URLs, since
-// a test's pods reach no registry outside the runner.
+// a test's pods reach no registry outside the runner. FetchedEnv names the directory
+// kind_sandbox_fetch filled in a set-up step (the pinned kind, gVisor's release) after pulling
+// the node and registry images, so Start fetches nothing: the kind job runs its tests as a user
+// whose outbound connections reach loopback and the kind network alone. Where it is unset, Start
+// runs kind_sandbox_fetch itself, into the test's own directory.
 const (
 	ImageEnv        = "LEGION_TEST_KIND_IMAGE"
 	ImageArchiveEnv = "LEGION_TEST_KIND_IMAGE_ARCHIVE"
 	LogDirEnv       = "LEGION_TEST_KIND_LOG_DIR"
 	NPMTarballsEnv  = "LEGION_TEST_KIND_NPM_TARBALLS"
+	FetchedEnv      = "LEGION_TEST_KIND_FETCHED"
 )
 
 // job is the ci.yaml job that runs the kind tests and gives them what Start needs.
@@ -97,8 +102,8 @@ type Rig struct {
 	// keeps its own logs for the same upload.
 	Evidence string
 
-	lib, work, kind string
-	measured        []measurement
+	lib, work, kind, fetched string
+	measured                 []measurement
 }
 
 type measurement struct {
@@ -107,18 +112,21 @@ type measurement struct {
 }
 
 // Start brings the rig up for t and tears it down when t ends, failing t at the first piece that
-// fails. Each piece is logged by name with how long it took: kind (the pinned kind's build),
-// cluster, agent-sandbox, gvisor, registry, stand-ins (the fake GitHub and the TLS sites, and the
-// cluster's route to them), worker-image (the pull of ImageEnv's image, or the load of
-// ImageArchiveEnv's archive), stand-in-image (the build FROM it), registry-push (Image into
-// Registry) and image-load (Image into the node's containerd).
+// fails. Each piece is logged by name with how long it took: fetch (kind_sandbox_fetch, where
+// FetchedEnv names no directory it filled already), cluster, agent-sandbox, gvisor, registry,
+// stand-ins (the fake GitHub and the TLS sites, and the cluster's route to them), worker-image
+// (the pull of ImageEnv's image, or the load of ImageArchiveEnv's archive), stand-in-image (the
+// build FROM it), registry-push (Image into Registry) and image-load (Image into the node's
+// containerd).
 func Start(t *testing.T) *Rig {
 	t.Helper()
 	r := prepare(t)
-	r.Measure(t, "kind", func() {
-		bin := filepath.Join(r.work, "bin")
-		r.shell(t, "kind_sandbox_install_kind", bin)
-		r.kind = filepath.Join(bin, "kind")
+	r.Measure(t, "fetch", func() {
+		if r.fetched = os.Getenv(FetchedEnv); r.fetched == "" {
+			r.fetched = filepath.Join(r.work, "fetched")
+			r.shell(t, "kind_sandbox_fetch", r.fetched)
+		}
+		r.kind = filepath.Join(r.fetched, "kind")
 	})
 	r.Measure(t, "cluster", func() {
 		port := freePort(t)
@@ -127,7 +135,7 @@ func Start(t *testing.T) *Rig {
 		r.checkIssuer(t)
 	})
 	r.Measure(t, "agent-sandbox", func() { r.shell(t, "kind_sandbox_install_agent_sandbox") })
-	r.Measure(t, "gvisor", func() { r.shell(t, "kind_sandbox_install_gvisor", r.work) })
+	r.Measure(t, "gvisor", func() { r.shell(t, "kind_sandbox_install_gvisor", r.fetched, r.work) })
 	r.Measure(t, "registry", func() {
 		port := freePort(t)
 		r.shell(t, "kind_sandbox_start_registry", strconv.Itoa(port))
@@ -712,6 +720,10 @@ func loadZstdArchive(t *testing.T, archive string) string {
 // Debian's update-ca-certificates is called by its full path, /usr/sbin/update-ca-certificates,
 // since the worker image's PATH (its ENV, packages/daemon/docker/worker.Dockerfile) holds no
 // /usr/sbin and a RUN of the bare name exits 127.
+//
+// The build fetches nothing: worker is in this host's Docker already, and its one RUN has no
+// network (--network none), since the kind job's rule on the test's own connections does not
+// reach the containers Docker starts.
 func (r *Rig) buildStandInImage(t *testing.T, worker string) string {
 	t.Helper()
 	dir := filepath.Join(r.work, "stand-in-image")
@@ -759,7 +771,7 @@ func (r *Rig) buildStandInImage(t *testing.T, worker string) string {
 		}
 	}
 	tag := "legion-worker-stand-ins:" + r.Name
-	r.docker(t, "build", "--quiet", "--tag", tag, dir)
+	r.docker(t, "build", "--quiet", "--network", "none", "--tag", tag, dir)
 	t.Logf("built %s FROM %s, reading the rig's stand-ins, as user %q", tag, worker, user)
 	return tag
 }

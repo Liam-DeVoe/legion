@@ -17,6 +17,10 @@ runs:
       shell: bash
       working-directory: packages/envoy
       run: bash scripts/dev-airlock.test.sh
+    - name: Usage test for the running-stack flags of airlock-check.sh and dev-airlock-lease.test.sh (no stack)
+      shell: bash
+      working-directory: packages/envoy
+      run: bash scripts/airlock-check.test.sh
     - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
       shell: bash
       working-directory: packages/envoy
