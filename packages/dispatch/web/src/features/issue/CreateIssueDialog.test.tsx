@@ -56,13 +56,20 @@ function CurrentRoute(): ReactNode {
   return <output data-testid="current-route">{location.pathname}</output>;
 }
 
+/** What `renderDialog` hands a row: the query client, the row's user and its teardown. */
+interface RenderedDialog {
+  queryClient: QueryClient;
+  user: UserEvent;
+  unmount: () => void;
+}
+
 /** The dialog, its project list and its related-item check answered here. */
 function renderDialog(
   user: UserEvent,
   create: (input: CreateIssueInput) => Promise<Issue>,
   path = "/",
   onClose = () => {}
-) {
+): RenderedDialog {
   const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
   // Every row types a title, so the dialog's related-item check is answered here instead of
   // reaching the network.
@@ -147,10 +154,11 @@ test("preselects the route's project, submits title and spec, and opens the crea
 // button does, would leave those keys on the dialog itself, and the title empty.
 test("a key typed in the dialog's first frame lands in its title", async () => {
   const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
-  const view = renderDialog(userEvent.setup(), () =>
-    Promise.reject(new Error("this row creates no issue"))
-  );
+  let view: RenderedDialog | undefined;
   try {
+    view = renderDialog(userEvent.setup(), () =>
+      Promise.reject(new Error("this row creates no issue"))
+    );
     const title = screen.getByRole<HTMLInputElement>("textbox", { name: "Title" });
     expect(document.activeElement, "the title took no focus as the dialog opened").toBe(title);
     await view.user.keyboard("Fix it");
@@ -160,7 +168,7 @@ test("a key typed in the dialog's first frame lands in its title", async () => {
     await projectPicked();
   } finally {
     frames.mockRestore();
-    view.unmount();
+    view?.unmount();
   }
 });
 

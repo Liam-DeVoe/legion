@@ -32,6 +32,7 @@ import (
 // the ones this test's own requests wrote and cannot change between the landing read and the
 // per-resource reads.
 func TestLandingAnswersWhatThePerResourceRoutesAnswer(t *testing.T) {
+	t.Parallel()
 	listenerURL, _ := newFakeListener(t,
 		map[string][]string{"ses-1": {"notifications.dispatch.>"}},
 		[]map[string]any{{"session_id": "ses-1", "title": "planner", "machine_id": "box-1", "last_seen": 100}})
@@ -138,6 +139,7 @@ func TestLandingAnswersWhatThePerResourceRoutesAnswer(t *testing.T) {
 // Every other page of the landing answers its own member and leaves the issue's null, and each
 // member carries what that page's own routes answer.
 func TestLandingBoardInboxAndDocumentPagesAnswerWhatTheirRoutesAnswer(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	createTestProject(t, handler, "LAND")
 	addArchitectureSource(t, database, "LAND", "legion/land")
@@ -197,6 +199,7 @@ func TestLandingBoardInboxAndDocumentPagesAnswerWhatTheirRoutesAnswer(t *testing
 // request did not carry: a landing answered empty would have the dashboard draw nothing, where a
 // refusal has it read its page for itself.
 func TestLandingRefusesAPageItDoesNotKnow(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, refused := range []struct {
 		name   string
@@ -230,6 +233,7 @@ func TestLandingRefusesAPageItDoesNotKnow(t *testing.T) {
 // read (landingIssuePage). A landing that read the coverage with no reader would answer every
 // requirement with no text_tree, and the dashboard would draw it from its own parse.
 func TestLandingCoverageCarriesTheTreesTheCoverageRouteAnswers(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createTestProject(t, handler, "LAND")
 	issue := createSpecIssue(t, handler, "LAND", "# Spec\n\nThe landing reads this document.\n\n"+twoRequirements)
@@ -263,6 +267,7 @@ func TestLandingCoverageCarriesTheTreesTheCoverageRouteAnswers(t *testing.T) {
 // own route answers an issue it has no row of with empty content rather than a refusal
 // (getIssueDecisions), and the landing carries exactly that.
 func TestLandingLeavesAnUnknownIssueNullAndAnswersTheShell(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createTestProject(t, handler, "LAND")
 	landing := readLanding(t, handler, "/api/v1/landing?page=issue&key=LAND-404")
@@ -288,6 +293,9 @@ func TestLandingLeavesAnUnknownIssueNullAndAnswersTheShell(t *testing.T) {
 // issue's page after 3.3 s, against 3.4 s and 1.3 s at the merge base d5e2a5fe, which held no page
 // behind the inbox's read.
 func TestLandingDoesNotWaitOnASilentListenerForARoutedIssue(t *testing.T) {
+	// Not parallel: it holds each landing to a wall-clock bound, landingServiceBound plus
+	// landingServiceTestMargin, and a landing read under the load of the package's parallel tests
+	// could miss that bound.
 	listenerURL, _ := silentService(t)
 	brokerURL, _ := silentService(t)
 	handler := newLandingServicesHandler(t, listenerURL, brokerURL)
