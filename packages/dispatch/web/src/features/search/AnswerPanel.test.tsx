@@ -538,7 +538,9 @@ test("no answer text says none was found, and an answer citing nothing says it r
       { data: { age_ms: 0, source: "stored" }, event: "roster" },
       { data: { items: 0, words: 2 }, event: "end" }
     );
-    await screen.findByTestId("going-answer-no-source");
+    expect(await screen.findByTestId("going-answer-no-source")).toHaveTextContent(
+      /^This answer rests on no source\.$/u
+    );
     expect(screen.getByTestId("going-answer-roster")).toHaveTextContent("live roster unavailable");
     expect(screen.queryByTestId("going-answer-none")).not.toBeInTheDocument();
   } finally {

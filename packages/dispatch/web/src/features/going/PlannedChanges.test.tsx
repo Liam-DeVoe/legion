@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -126,9 +126,23 @@ function drawnRows(within_: HTMLElement): (string | null)[] {
     .map((drawn) => drawn.getAttribute("data-row"));
 }
 
+// Each change row's item is an issue chip, which reads its issue's summary: the one read every
+// reference to the issue shares.
+let summaries: { mockRestore: () => void } | undefined;
+beforeEach(() => {
+  summaries = spyOn(api, "getIssueSummary").mockImplementation(async (key: string) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "todo",
+    title: `The issue ${key}`,
+  }));
+});
+
 afterEach(() => {
   cleanup();
   resetGoingStore();
+  summaries?.mockRestore();
 });
 
 test("a plan with rows on the page and in the card shows each in its place, once", async () => {

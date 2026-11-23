@@ -5,6 +5,8 @@ import {
   firstHighlightTerm,
   groupResults,
   HITS_PER_KIND,
+  hitIsItsIssue,
+  issueHitTitle,
   kindLabel,
   optionId,
   ownerWords,
@@ -79,6 +81,25 @@ test("names an issue owner by its key and title, and a project document by its p
       slug: "navigation-design",
     })
   ).toEqual({ key: "CORE", name: "Navigation design" });
+});
+
+test("a hit that is the issue itself shows its title once: the marked snippet where it is the whole title", () => {
+  const owner: IssueOwner = {
+    key: "DEMO-30",
+    kind: "issue",
+    status: "in_progress",
+    title: "API: rate limit headers",
+  };
+  const issue = result("DEMO-30", owner, "issue");
+  expect(hitIsItsIssue(issue)).toBe(true);
+  // Its other hits - a document, a comment, an ask, a message - name the issue they belong to.
+  for (const kind of ["document", "comment", "ask", "message"]) {
+    expect(hitIsItsIssue(result(`${kind}-1`, owner, kind))).toBe(false);
+  }
+  // The snippet is the whole title: it shows, with its marks.
+  expect(issueHitTitle(issue, "API: rate limit headers")).toBeUndefined();
+  // The headline started at the first word that matched: the whole title shows instead.
+  expect(issueHitTitle(issue, "rate limit headers")).toBe("API: rate limit headers");
 });
 
 test("uses the first positive websearch term for document highlighting", () => {

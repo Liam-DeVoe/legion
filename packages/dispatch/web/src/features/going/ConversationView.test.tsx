@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the conversation's own scroll event below, which user-event has no form for
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -356,9 +356,108 @@ test("an old turn's applied plan folds to one line with Undo, which opens the ca
   }
 });
 
+// Design v3, rule 3 and state 7: once the plan showed, the run's steps stay folded into one line
+// while the rows of its approved plan run, which the card shows as its rows' ticks: no step line
+// and no timer opens above the card as the run works again.
+test("while an approved plan's rows run, the run's steps stay folded above the card, with no timer", async () => {
+  let send: ((name: string, data: unknown) => void) | undefined;
+  const change: GoingPlanRow = {
+    arguments: { issue: "DEMO-10", priority: 2 },
+    changed: false,
+    claim: null,
+    class: "field",
+    fields: ["priority"],
+    issue: "DEMO-10",
+    item: "DEMO-10",
+    needs: [],
+    now: { priority: null },
+    result: null,
+    row: 0,
+    state: "waiting",
+    tool: "dispatch_issue_update",
+    waits: [],
+  };
+  const planOf = (state: GoingPlanAnswer["state"], rowState: GoingPlanRow["state"]) => ({
+    mode: "ask" as const,
+    plan: 1,
+    rows: [{ ...change, state: rowState }],
+    run: "r-1",
+    state,
+    summary: "",
+    version: "v1",
+  });
+  let answer: GoingPlanAnswer = planOf("waiting", "waiting");
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => answer);
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    send = onFrame;
+    onFrame("tool", {
+      items: ["DEMO-10"],
+      kind: "read",
+      label: "Read DEMO-10",
+      step: 1,
+      tool: "read",
+    });
+    onFrame("plan", { plan: 1, state: "waiting" });
+    return new Promise<void>(() => {});
+  });
+  try {
+    openConversation({
+      id: "c-1",
+      newest_at: new Date().toISOString(),
+      runs: [record("waiting", 4000, { words: "raise DEMO-10" })],
+    });
+    renderWithQueries(<Conversation />);
+    const title = await screen.findByTestId("going-plan-title");
+    expect(screen.getByTestId("going-steps-fold")).toHaveTextContent("read 1 item");
+
+    // Approved, the run works again and its rows run: the card ticks them, and the steps stay
+    // folded, with no line of their own and no timer.
+    answer = planOf("running", "running");
+    act(() => send?.("plan", { plan: 1, state: "running" }));
+    act(() =>
+      send?.("call", {
+        kind: "write",
+        label: "Changing DEMO-10…",
+        step: 2,
+        tool: "dispatch_issue_update",
+      })
+    );
+    await waitFor(() => expect(title).toHaveTextContent("Applying 1 of 1…"));
+    expect(screen.getByTestId("going-run")).toHaveAttribute("data-state", "working");
+    expect(screen.getByTestId("going-steps-fold")).toHaveTextContent("read 1 item");
+    expect(screen.queryAllByTestId("going-step")).toHaveLength(0);
+    expect(screen.queryByTestId("going-step-timer")).toBeNull();
+
+    // Its rows ran, and the run works on to write its answer: still folded.
+    answer = planOf("done", "done");
+    act(() => send?.("plan", { plan: 1, state: "done" }));
+    await waitFor(() => expect(title).toHaveTextContent(/^Applied 1 change/u));
+    expect(screen.getByTestId("going-run")).toHaveAttribute("data-state", "working");
+    expect(screen.getByTestId("going-steps-fold")).toBeInTheDocument();
+    expect(screen.queryAllByTestId("going-step")).toHaveLength(0);
+  } finally {
+    read.mockRestore();
+    stream.mockRestore();
+  }
+});
+
+// Each change row of a plan names its issue as a chip, and each issue an answer names is one: a
+// chip reads its issue's summary, the one read every reference to the issue shares.
+let summaries: { mockRestore: () => void } | undefined;
+beforeEach(() => {
+  summaries = spyOn(api, "getIssueSummary").mockImplementation(async (key: string) => ({
+    documents: [],
+    key,
+    project: "DEMO",
+    status: "todo",
+    title: `The issue ${key}`,
+  }));
+});
+
 afterEach(() => {
   cleanup();
   resetGoingStore();
+  summaries?.mockRestore();
 });
 
 /** The words of each step line the bar draws, without the run's timer. */

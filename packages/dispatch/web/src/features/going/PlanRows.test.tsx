@@ -1,5 +1,5 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
@@ -8,6 +8,7 @@ import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from "../../api/types";
+import { clockWords } from "../search/blocks/block-cells";
 import { resetGoingStore, setPlace, startRun } from "./going-store";
 import { PlannedChanges } from "./PlannedChanges";
 import { PlanCard, usePlanCardKeys } from "./PlanRows";
@@ -142,9 +143,23 @@ function shownText(element: HTMLElement): string {
   return (copy.textContent ?? "").replace(/\s+/gu, " ").trim();
 }
 
+// Each change row's item is an issue chip, which reads its issue's summary: the one read every
+// reference to the issue shares.
+let summaries: { mockRestore: () => void } | undefined;
+beforeEach(() => {
+  summaries = spyOn(api, "getIssueSummary").mockImplementation(async (key: string) => ({
+    documents: [],
+    key,
+    project: "DEMO",
+    status: "in_progress",
+    title: `The issue ${key}`,
+  }));
+});
+
 afterEach(() => {
   cleanup();
   resetGoingStore();
+  summaries?.mockRestore();
 });
 
 test("a change row names its item and each field in the page's words, the values as the page shows them", async () => {
@@ -158,7 +173,10 @@ test("a change row names its item and each field in the page's words, the values
     expect(mode).toHaveAttribute("href", "/settings#command-bar-heading");
 
     const drawn = drawnRow(0);
-    expect(within(drawn).getByTestId("going-plan-item")).toHaveTextContent("DEMO-10");
+    // The item is the issue's chip, as an answer names it: its key, its status and its title.
+    const chip = within(within(drawn).getByTestId("going-plan-item")).getByTestId("item-chip");
+    expect(chip).toHaveTextContent("DEMO-10");
+    await waitFor(() => expect(chip).toHaveTextContent("DEMO-10In progressThe issue DEMO-10"));
     const priority = fieldOf(drawn, "priority");
     expect(priority).toHaveTextContent(/^Priority: No priority → P2/u);
     expect(within(priority).getByTestId("going-plan-now")).toHaveTextContent("No priority");
@@ -232,6 +250,35 @@ test("the priority menu and the label picker edit a value, the row says Edited, 
   }
 });
 
+test("a row that adds a label shows the labels now with the one it adds, and takes nothing out", async () => {
+  const restore = await openPlan(
+    planOf([
+      row(0, {
+        arguments: { issue: "DEMO-10", labels_add: ["accessibility"], priority: 2 },
+        fields: ["labels", "priority"],
+        issue: "DEMO-10",
+        item: "DEMO-10",
+        now: { labels: ["board"], priority: null },
+      }),
+    ])
+  );
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    const labels = fieldOf(drawnRow(0), "labels");
+    expect(labels).toHaveTextContent(/^Labels: board → board\s*added accessibility/u);
+    expect(within(labels).getByTestId("going-plan-now")).toHaveTextContent(/^board$/u);
+    expect(
+      [...labels.querySelectorAll('[data-mark="added"]')].map((chip) => chip.textContent)
+    ).toEqual(["added accessibility"]);
+    expect(labels.querySelector('[data-mark="removed"]')).toBeNull();
+    expect(drawnRow(0)).not.toHaveAttribute("data-removes");
+    expect(within(drawnRow(0)).queryByTestId("going-plan-removes")).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
 test("a row that closes or removes something is marked in red, and a removed label is struck out", async () => {
   const restore = await openPlan(
     planOf([
@@ -271,10 +318,13 @@ test("a row that closes or removes something is marked in red, and a removed lab
     renderWithQueries(<Card />);
     await screen.findByTestId("going-plan-card-rows");
     expect(drawnRow(0)).toHaveAttribute("data-removes", "true");
-    expect(within(drawnRow(0)).getByTestId("going-plan-removes")).toHaveTextContent("Removes");
+    // The words name each value the row takes out, as the struck-out chip shows it.
+    expect(within(drawnRow(0)).getByTestId("going-plan-removes")).toHaveTextContent(
+      /^Removes a11y$/u
+    );
     expect(drawnRow(0).querySelector('[data-mark="removed"]')?.textContent).toBe("removed a11y");
     expect(drawnRow(1)).toHaveAttribute("data-removes", "true");
-    expect(within(drawnRow(1)).getByTestId("going-plan-removes")).toHaveTextContent("Closes");
+    expect(within(drawnRow(1)).getByTestId("going-plan-removes")).toHaveTextContent(/^Closes$/u);
     // The new status is the issue page's own status menu, set to the status the row writes.
     expect(shownText(fieldOf(drawnRow(1), "status"))).toBe("Status: In progress →");
     expect(screen.getByRole("combobox", { name: "Status of DEMO-2" })).toHaveValue("done");
@@ -332,6 +382,8 @@ test("a new issue row shows New, its title, its fields on one line and its spec 
     const made = drawnRow(0);
     expect(made).toHaveAttribute("data-kind", "new_issue");
     expect(made).toHaveTextContent(/^New/u);
+    // A new issue has no key yet: it keeps its New chip, and no issue's chip.
+    expect(within(made).queryByTestId("item-chip")).toBeNull();
     expect(within(fieldOf(made, "title")).getByTestId("going-plan-next")).toHaveTextContent(
       "North half"
     );
@@ -391,8 +443,12 @@ test("message rows say whom they reach and how, show the whole text, and say the
     await screen.findByTestId("going-plan-card-rows");
     expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Send 3 messages");
     const toSession = drawnRow(0);
-    expect(within(toSession).getByTestId("going-plan-message")).toHaveTextContent(
-      /^Message to .+ on DEMO-15 · as a BTW$/u
+    // The issue a message is on is that issue's chip, as an answer names it.
+    const toSessionLine = within(toSession).getByTestId("going-plan-message");
+    const onIssue = within(toSessionLine).getByTestId("item-chip");
+    await waitFor(() => expect(onIssue).toHaveTextContent("DEMO-15In progressThe issue DEMO-15"));
+    expect(toSessionLine).toHaveTextContent(
+      /^Message to .+ on DEMO-15In progressThe issue DEMO-15 · as a BTW$/u
     );
     expect(within(toSession).getByTestId("going-plan-quote")).toHaveTextContent(
       "The rota is in the spec now."
@@ -792,6 +848,40 @@ test("while an approved plan runs, its title says Applying 1 of 3 and its rows t
     expect(screen.queryByTestId("going-undo-button")).toBeNull();
   } finally {
     restore();
+  }
+});
+
+// Design v3, state 7: "Applied 3 changes · 16:42", the time the last row ran, which the run's end
+// comes after while it writes its answer.
+test("once its rows ran, the title says when, while the run still works", async () => {
+  let answer = planOf([{ ...labelsAndPriority, state: "running" }], { state: "running" });
+  let send: (name: string, data: unknown) => void = () => {};
+  const start = spyOn(api, "createGoingRun").mockResolvedValue(created);
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    send = onFrame;
+    onFrame("plan", { plan: 1, state: "running" });
+    return Promise.withResolvers<void>().promise;
+  });
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => answer);
+  try {
+    await startRun("tidy DEMO-10", { path: "/projects/DEMO/issues" }, "alice");
+    setPlace("over");
+    renderWithQueries(<Card />);
+    const title = await screen.findByTestId("going-plan-title");
+    await waitFor(() => expect(title).toHaveTextContent("Applying 1 of 1…"));
+
+    answer = planOf([{ ...labelsAndPriority, state: "done" }], { state: "done" });
+    const before = Date.now();
+    act(() => send("plan", { plan: 1, state: "done" }));
+    await waitFor(() => expect(title).toHaveTextContent(/^Applied 1 change · /u));
+    const after = Date.now();
+    expect([before, after].map((at) => `Applied 1 change · ${clockWords(at)}`)).toContain(
+      title.textContent ?? ""
+    );
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
+    read.mockRestore();
   }
 });
 

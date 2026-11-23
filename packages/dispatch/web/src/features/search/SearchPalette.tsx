@@ -70,6 +70,8 @@ import { SearchOperators } from "./SearchOperators";
 import { type SearchBarFilters, searchFilterChips, searchRequest } from "./search-filters";
 import {
   groupResults,
+  hitIsItsIssue,
+  issueHitTitle,
   optionId,
   ownerWords,
   searchOperators,
@@ -300,8 +302,9 @@ function PaletteOption({
 }
 
 /** A hit: its kind's icon, its owner - the issue's key and title, or the project document's
- *  project and name - with the issue's status, and the snippet the server marked. A hit of a
- *  done issue reads muted. */
+ *  project and name - with the issue's status, and the snippet the server marked. A hit that is
+ *  the issue itself names its key alone above its title, which is its text, so the row shows the
+ *  title once. A hit of a done issue reads muted. */
 function ResultOption({
   active,
   onSelect,
@@ -329,6 +332,8 @@ function ResultOption({
   // A document of an issue is named beside the issue it belongs to; a project document is the
   // owner itself.
   const document = result.owner.kind === "issue" ? result.artifact?.name : undefined;
+  const itself = hitIsItsIssue(result);
+  const title = itself ? issueHitTitle(result, source) : undefined;
 
   return (
     <PaletteOption
@@ -346,7 +351,7 @@ function ResultOption({
         {kind === undefined ? null : <SearchResultIcon kind={kind} />}
         <span className="shrink-0 font-semibold">{owner.key}</span>
         <span className="min-w-0 flex-1 truncate">
-          {document === undefined ? owner.name : `${owner.name} · ${document}`}
+          {itself ? null : document === undefined ? owner.name : `${owner.name} · ${document}`}
         </span>
         {status === undefined ? null : (
           <span
@@ -356,13 +361,21 @@ function ResultOption({
           </span>
         )}
       </div>
-      <MarkdownPreview
-        className={`mt-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
-        highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
-        lines={2}
-        markdown={source}
-        tree={result.snippet_tree}
-      />
+      {title === undefined ? (
+        <MarkdownPreview
+          className={`mt-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
+          highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
+          lines={2}
+          markdown={source}
+          tree={result.snippet_tree}
+        />
+      ) : (
+        <p
+          className={`mt-1 line-clamp-2 text-sm break-words ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
+        >
+          {title}
+        </p>
+      )}
       {result.ask === undefined ? null : <AskHitStatus ask={result.ask} muted={muted} />}
     </PaletteOption>
   );

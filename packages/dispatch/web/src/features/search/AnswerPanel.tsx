@@ -192,7 +192,7 @@ function AnswerBody({
           )}
           {restsOnNothing ? (
             <p className={noteClassName} data-testid="going-answer-no-source">
-              rests on no source
+              This answer rests on no source.
             </p>
           ) : null}
           {answer.roster === undefined ? null : (

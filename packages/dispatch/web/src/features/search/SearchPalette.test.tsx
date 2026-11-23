@@ -47,13 +47,14 @@ const results: SearchResult[] = [
     rank: 3,
     snippet: "The <mark>astrolabe</mark> measures altitude.",
   },
+  // An issue hit's text is its title, as the server reads it: the headline of the title alone.
   {
     href: "/issues/LEGION-3",
     id: "LEGION-3",
-    owner: { key: "LEGION-3", kind: "issue", status: "todo", title: "Instrument research" },
+    owner: { key: "LEGION-3", kind: "issue", status: "todo", title: "Astrolabe research" },
     kind: "issue",
     rank: 2,
-    snippet: "Research <mark>astrolabe</mark> history.",
+    snippet: "<mark>Astrolabe</mark> research",
   },
   {
     href: "/issues/LEGION-2/comments/comment-2",
@@ -206,7 +207,7 @@ async function searchFor(user: UserEvent, query: string): Promise<HTMLInputEleme
   return input;
 }
 
-test("groups the hits by kind with marked snippets, names each hit's issue, and dims a done issue's", async () => {
+test("groups the hits by kind with marked snippets, names each hit's issue once, and dims a done issue's", async () => {
   // Each snippet is Markdown (`MarkdownPreview`), empty until the lazy Markdown engine loads.
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
@@ -230,13 +231,56 @@ test("groups the hits by kind with marked snippets, names each hit's issue, and 
     expect(options.map((option) => option.id)).toEqual(results.map(optionId));
     // Each hit names its issue by key and title, a document of it by its name too, and carries
     // the issue's status; a done issue's hits read muted.
-    const [document, issue] = options;
+    const [document, , comment] = options;
     expect(document).toHaveTextContent("LEGION-2");
     expect(document).toHaveTextContent("Navigation instruments · spec.md");
     expect(document).toHaveAttribute("data-status", "done");
+    expect(comment).toHaveTextContent("LEGION-2");
+    expect(comment).toHaveTextContent("Navigation instruments");
+    // A hit that is the issue itself names its key, and its text is its title with the words
+    // that matched marked: the title shows once, not beside the key and again under it.
+    const issue = within(within(list).getByRole("group", { name: "Issues" })).getByRole("option");
     expect(issue).toHaveTextContent("LEGION-3");
+    expect(issue.textContent?.match(/Astrolabe research/gu)).toHaveLength(1);
+    expect(within(issue).getByText("Astrolabe", { selector: "mark" })).toBeTruthy();
     expect(issue).toHaveAttribute("data-status", "todo");
     expect(screen.queryByText(/^Showing the best/)).not.toBeInTheDocument();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("an issue hit whose snippet starts past the title's first words shows the whole title, once", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  // The server's headline of "API: rate limit headers" for `headers` starts at "rate".
+  const search = spyOn(api, "search").mockResolvedValue(
+    searchAnswer([
+      {
+        href: "/issues/LEGION-30",
+        id: "LEGION-30",
+        kind: "issue",
+        owner: {
+          key: "LEGION-30",
+          kind: "issue",
+          status: "in_progress",
+          title: "API: rate limit headers",
+        },
+        rank: 1,
+        snippet: "rate limit <mark>headers</mark>",
+      },
+    ])
+  );
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "headers");
+    const option = within(screen.getByRole("group", { name: "Issues" })).getByRole("option");
+    expect(option).toHaveTextContent("LEGION-30");
+    expect(option).toHaveTextContent("API: rate limit headers");
+    expect(option.textContent?.match(/rate limit headers/gu)).toHaveLength(1);
   } finally {
     search.mockRestore();
     view.unmount();

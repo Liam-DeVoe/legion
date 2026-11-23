@@ -68,6 +68,24 @@ export function ownerWords(owner: SearchOwner): { readonly key: string; readonly
     : { key: owner.project ?? "", name: owner.name ?? "" };
 }
 
+/** Whether a hit is the issue itself, whose text is that issue's title: its row names the key and
+ *  the title once. A document, a comment, an ask or a message of an issue names its issue. */
+export function hitIsItsIssue(result: SearchResult): boolean {
+  return result.kind === "issue" && result.owner.kind === "issue";
+}
+
+/**
+ * The title a hit that is the issue itself shows in place of its snippet, or `undefined` where
+ * the snippet is the whole title and shows instead, with the words that matched marked.
+ * `snippetText` is the snippet's text without its marks. The server's headline returns a short
+ * title whole, but it can start at the first word that matched ("rate limit headers" of "API:
+ * rate limit headers"), and the row then shows the whole title, unmarked.
+ */
+export function issueHitTitle(result: SearchResult, snippetText: string): string | undefined {
+  const title = result.owner.title ?? "";
+  return snippetText.trim() === title.trim() ? undefined : title;
+}
+
 /** Mirrors the server's first positive websearch token for document deep links. */
 export function firstHighlightTerm(query: string): string | undefined {
   for (const token of query.trim().split(/\s+/u)) {

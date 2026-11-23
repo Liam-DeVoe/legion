@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { api } from "../../api/client";
 import type { GoingPlanAnswer, GoingRun } from "../../api/types";
+import { borderDefault, card } from "../../theme/classes";
 import { goingState, newConversation, openRun, setPlace, startRun } from "./going-store";
 import { Notice } from "./Notice";
 import { RunChip } from "./RunChip";
@@ -152,6 +153,25 @@ test("the chip names the most urgent conversation in words, and how many more go
     expect(goingState().place).toBe("over");
     expect(goingState().conversation).toEqual(["r-2"]);
     expect(screen.queryByTestId("going-chip")).toBeNull();
+  } finally {
+    runs.restore();
+  }
+});
+
+test("the chip is a pill of its own, apart from the page: a background, a border and a small shadow, as tall as its words", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "count the moons"));
+  try {
+    renderChip();
+    await begin("count the moons");
+    const chip = screen.getByTestId("going-chip");
+    for (const name of [...card.split(" "), ...borderDefault.split(" ")]) {
+      expect(chip).toHaveClass(name);
+    }
+    expect(chip).toHaveClass("border", "rounded-full", "shadow-md");
+    // The shell holds the chip in a row of no height, so the page keeps its own (`app.tsx`). The
+    // chip keeps the height of its words rather than stretching to that row, where its
+    // background and its border would shrink to a line through its words.
+    expect(chip).toHaveClass("self-start");
   } finally {
     runs.restore();
   }

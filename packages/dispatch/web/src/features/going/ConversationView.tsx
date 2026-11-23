@@ -57,6 +57,9 @@ const STATE_TEXT: Readonly<Record<RunState, string>> = {
 /** How near the foot of the conversation, in pixels, the person's scroll still follows it. */
 const FOOT_SLACK = 24;
 
+/** The states of a plan frame once the plan's rows were sent to run: approved, running, or run. */
+const PLAN_SENT: Readonly<Record<string, true>> = { approved: true, done: true, running: true };
+
 /**
  * The live line under a question until its run's first step or answer comes (design v2, rule 4):
  * "Thinking…" and the time since the person asked, counted each second (`RunTimer`). A screen
@@ -309,7 +312,13 @@ function RunTurn({
       <Words testId="going-run-words" words={run.record.words} />
       {waitsForSteps ? <Thinking since={run.since} /> : null}
       <StepSection
-        folded={!working && (answer !== undefined || run.frames.plan !== undefined)}
+        // The steps fold into one line once the answer or the plan came and the run no longer
+        // works (design v3, rule 3), and stay folded while the rows of its approved plan run,
+        // which the plan's card shows as its rows' ticks (state 7).
+        folded={
+          PLAN_SENT[run.frames.plan?.state ?? ""] === true ||
+          (!working && (answer !== undefined || run.frames.plan !== undefined))
+        }
         live={working}
         since={run.since}
         steps={steps}

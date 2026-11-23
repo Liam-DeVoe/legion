@@ -368,9 +368,10 @@ function FoldLine({
  * calls heads them as a grey line and folds with them. The newest line carries the run's timer,
  * counted from `since`.
  *
- * Once the answer or the plan came (`folded`, design v2, state 4), every step folds into one grey
- * line, "Worked for 1 min 48 s · read 14 items, searched twice ›", as Happy's section is summed up
- * once it is over; a click opens them.
+ * Once the answer or the plan came (`folded`, design v2, state 4), and while the rows of an
+ * approved plan run (state 7), every step folds into one grey line, "Worked for 1 min 48 s · read
+ * 14 items, searched twice ›", as Happy's section is summed up once it is over; a click opens
+ * them.
  */
 export function StepSection({
   folded,
@@ -386,7 +387,8 @@ export function StepSection({
   readonly live: boolean;
   /** When the person asked for the run, in this page's clock: what its timer counts from. */
   readonly since: number;
-  /** Whether the run's answer or plan came, so that every step folds into one line. */
+  /** Whether the run's answer or plan came, or its approved plan's rows run, so that every step
+   *  folds into one line. */
   readonly folded: boolean;
   /** How long the run worked, for its folded line; undefined where the page does not know. */
   readonly workedMs: number | undefined;

@@ -45,6 +45,7 @@ import { PriorityEditor } from "../issue/PriorityControl";
 import { StatusMenu } from "../issue-page/StatusMenu";
 import { issueStatuses } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
+import { ItemChip } from "../refs/ItemChip";
 import { objectOf, textOf } from "./fields";
 import { draftOf, type PlanDraft, setDraft, useGoing, useGoingValue } from "./going-store";
 import {
@@ -66,6 +67,7 @@ import {
   ROW_MARKS,
   type RowChange,
   type RowMark,
+  removalWords,
   reviewWords,
   rowChanges,
   rowKind,
@@ -261,16 +263,13 @@ function PieceDiff({ piece }: { readonly piece: ChangePiece }): ReactNode {
   );
 }
 
-/** The item a row changes, by its key: the place an item's chip, with its status and title, takes
- *  (design v3, state 4). */
+/** The issue a row changes, as an answer names an item (design v3, state 6): its chip, with its
+ *  key, a dot in its status's colour and its title (`ItemChip`), the title cut where the slot ends
+ *  so the fields keep their place beside it. */
 function ItemSlot({ item }: { readonly item: string }): ReactNode {
   return (
-    <span
-      className={`font-medium whitespace-nowrap ${textPrimaryOnSurface}`}
-      data-item={item}
-      data-testid="going-plan-item"
-    >
-      {item}
+    <span className="min-w-0 max-w-64" data-item={item} data-testid="going-plan-item">
+      {item === "" ? null : <ItemChip issue={item} />}
     </span>
   );
 }
@@ -852,7 +851,7 @@ export function PlanRowView({
           {body}
           {removes ? (
             <p className={`text-xs font-medium ${dangerText}`} data-testid="going-plan-removes">
-              {args.status === "done" ? "Closes" : "Removes"}
+              {removalWords(row, changes)}
             </p>
           ) : null}
           {changed ? (
@@ -982,6 +981,20 @@ function ModeLink({ mode }: { readonly mode: GoingPlanAnswer["mode"] }): ReactNo
 }
 
 /**
+ * When this card first drew `plan` with the rows sent to run all come to an end (its state
+ * "done"), in this page's clock: the time its last row ran, as this page saw it. The run may work
+ * on after that, to write its answer, so its end is later. Undefined until then.
+ */
+function useRanAt(plan: GoingPlanAnswer | undefined): number | undefined {
+  const ran = plan?.state === "done" ? `${plan.run}:${plan.plan}` : undefined;
+  const [seen, setSeen] = useState<{ readonly plan: string; readonly at: number }>();
+  if (ran !== undefined && seen?.plan !== ran) {
+    setSeen({ at: Date.now(), plan: ran });
+  }
+  return seen !== undefined && seen.plan === ran ? seen.at : undefined;
+}
+
+/**
  * The plan card of the bar and the side panel. While its plan waits (design v3, state 6): a
  * title made from the plan's rows and its approval mode, linked to its setting; the rows no page
  * on the screen draws, with "2 changes show on this page" for the rest; and the plan's Approve and
@@ -990,7 +1003,8 @@ function ModeLink({ mode }: { readonly mode: GoingPlanAnswer["mode"] }): ReactNo
  * plan waits, the box's ↑ moves the focus onto the card's rows (`usePlanCardKeys`).
  *
  * Once approved (design v2, state 7), its title follows its rows, "Applying 1 of 3…" then
- * "Applied 3 changes · 16:42" (`appliedAt`, when its run ended), each row ticks in place, and a
+ * "Applied 3 changes · 16:42", the time its last row ran (`useRanAt`) or its run ended
+ * (`appliedAt`), whichever this page knows first, each row ticks in place, and a
  * failed row's "Say what to do instead" puts the cursor in the box. From the first row that ran,
  * the card keeps one Undo (R6); once pressed, its title reads "Undone · 3 changes reverted" and
  * each row says what became of its change. An old turn's card (`folded`, design v2, state 8)
@@ -1010,6 +1024,7 @@ export function PlanCard({
   const plan = answering.plan;
   const draft = usePlanDraft(plan);
   const undoing = useRunUndo(plan?.run ?? "");
+  const ranAt = useRanAt(plan);
   const [open, setOpen] = useState(false);
   const list = useRef<HTMLUListElement>(null);
   const waiting = plan?.state === "waiting";
@@ -1040,7 +1055,12 @@ export function PlanCard({
   }
   const lines = undoing.lines;
   const shut = folded && !waiting && !open;
-  const title = cardTitle(plan, lines, folded ? undefined : appliedAt);
+  // The time its last row ran, or its run ended, whichever this page knows to be earlier.
+  const appliedTime =
+    appliedAt === undefined || ranAt === undefined
+      ? (appliedAt ?? ranAt)
+      : Math.min(appliedAt, ranAt);
+  const title = cardTitle(plan, lines, folded ? undefined : appliedTime);
   // The rows the page draws are the open plan's, which an old turn's card is not.
   const onPage = folded ? new Set<number>() : new Set([...going.onPage.values()].flat());
   const rows = (plan.rows ?? []).filter((row) => !onPage.has(row.row));

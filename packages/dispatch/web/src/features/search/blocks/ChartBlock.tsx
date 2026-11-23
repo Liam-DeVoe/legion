@@ -32,17 +32,38 @@ export function chartPoints(block: BlockOf<"chart">): readonly ChartPoint[] {
   });
 }
 
+/** The room, in pixels, that the chart's grid and its value axis's labels take from its width;
+ *  the places along the category axis share what is left. */
+const AXIS_ROOM = 64;
+
+/** The narrowest place along the axis, in pixels, whose label still sits level under it, wrapped
+ *  at its words to that place's width. A narrower place slants its label instead: a label broken
+ *  into a letter or two a line reads as nothing. */
+const LEVEL_LABEL_MIN = 48;
+
+/** How long a slanted label runs, in pixels, before it is cut with an ellipsis. */
+const SLANTED_LABEL_MAX = 96;
+
 /**
  * The echarts option of a chart (design v2, state 5): one series of `points` drawn as `mark`,
  * named as the spec's `y` field is headed, so hovering a bar or a point shows a tooltip with that
- * point's place and its value; the axes in `palette`'s colours, and no animation.
+ * point's place and its value; the axes in `palette`'s colours, and no animation. Every place
+ * along the axis shows its label, and no two collide: each sits level, wrapped at its words to the
+ * width of its place in a chart `width` pixels wide, or slants where that place is too narrow for
+ * a word.
  */
 export function chartOption(
   points: readonly ChartPoint[],
   mark: BlockOf<"chart">["spec"]["mark"],
   name: string,
-  palette: { readonly axis: string; readonly label: string; readonly split: string }
+  palette: { readonly axis: string; readonly label: string; readonly split: string },
+  width: number
 ): Record<string, unknown> {
+  const place = Math.floor((width - AXIS_ROOM) / Math.max(points.length, 1));
+  const fit =
+    place >= LEVEL_LABEL_MIN
+      ? { overflow: "break", width: place - 8 }
+      : { overflow: "truncate", rotate: 45, width: SLANTED_LABEL_MAX };
   return {
     animation: false,
     grid: { bottom: 8, containLabel: true, left: 8, right: 16, top: 16 },
@@ -57,7 +78,7 @@ export function chartOption(
     ],
     tooltip: { trigger: "axis" },
     xAxis: {
-      axisLabel: { color: palette.label },
+      axisLabel: { color: palette.label, hideOverlap: false, interval: 0, ...fit },
       axisLine: { lineStyle: { color: palette.axis } },
       data: points.map((point) => point.label),
       type: "category",
@@ -72,11 +93,12 @@ export function chartOption(
 
 /**
  * A chart: one series, the spec's `x` along the axis and its `y` plotted, as bars or a line, each
- * place in Dispatch's words; hovering a bar or a point shows its value. Every point is a row the
- * server's read returned, and the same rows are written out beneath the canvas as a table a screen
- * reader reads, so the numbers drawn are the numbers a reader can check. Nothing of the chart is
- * stored: it is drawn from the answer's own block frame, and drawn again from the same frame when
- * the run is replayed.
+ * place in Dispatch's words, every one labelled at the width the chart has, and again as that
+ * width changes; hovering a bar or a point shows its value. Every point is a row the server's
+ * read returned, and the same rows are written out beneath the canvas as a table a screen reader
+ * reads, so the numbers drawn are the numbers a reader can check. Nothing of the chart is stored:
+ * it is drawn from the answer's own block frame, and drawn again from the same frame when the run
+ * is replayed.
  */
 export function ChartBlock({ block }: { readonly block: BlockOf<"chart"> }): ReactNode {
   const container = useRef<HTMLDivElement>(null);
@@ -97,8 +119,11 @@ export function ChartBlock({ block }: { readonly block: BlockOf<"chart"> }): Rea
         return;
       }
       const chart = echarts.init(element, undefined, { renderer: "canvas" });
-      chart.setOption(chartOption(points, mark, yWords, palette));
-      const observer = new ResizeObserver(() => chart.resize());
+      chart.setOption(chartOption(points, mark, yWords, palette, element.clientWidth));
+      const observer = new ResizeObserver(() => {
+        chart.resize();
+        chart.setOption(chartOption(points, mark, yWords, palette, element.clientWidth));
+      });
       observer.observe(element);
       setDrawn(true);
       cleanup = () => {

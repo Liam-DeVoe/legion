@@ -222,6 +222,19 @@ export function labelMarks(now: unknown, next: unknown): readonly LabelMark[] {
   ];
 }
 
+/** The labels an issue holds once a row adds `added` to `now` (`labels_add`): those it holds, in
+ *  their order, then each added label it does not hold already, trimmed, two labels that differ
+ *  only in case being one, as the route adds them (`mergeIssueLabels`). */
+function withLabelsAdded(now: unknown, added: unknown): readonly string[] {
+  const labels = [...labelsOf(now)];
+  for (const label of labelsOf(added).map((text) => text.trim())) {
+    if (label !== "" && !labels.some((held) => held.toLowerCase() === label.toLowerCase())) {
+      labels.push(label);
+    }
+  }
+  return labels;
+}
+
 /** The fields a new issue's row names, in the order the row shows them. */
 const NEW_ISSUE_FIELDS = ["title", "project", "parent", "priority", "labels"] as const;
 
@@ -278,9 +291,12 @@ function editOf(field: string, value: unknown): FieldEdit {
 
 /** What a row changes, field by field: the fields its item's read names, each with its value now
  *  and the new value, an update's rank the move its before and after make (`moveText`, which
- *  shows a new issue of the plan by its title in `newIssues`), a claim's holder now and after; a
- *  new issue's title, project, parent, priority and labels, none of which has a value now. A row
- *  that names no field shows its item alone. */
+ *  shows a new issue of the plan by its title in `newIssues`), an update's labels where it adds
+ *  labels (`labels_add`) the labels now with those it adds (`withLabelsAdded`), a claim's holder
+ *  now and after; a new issue's title, project, parent, priority and labels, none of which has a
+ *  value now. A row that names no field shows its item alone. The person's edit of the labels a
+ *  row adds is the whole set they chose, which the approval writes as labels in place of
+ *  labels_add (going_plan.go `goingEditReplaces`). */
 export function rowChanges(
   row: GoingPlanRow,
   edits: Arguments | undefined,
@@ -306,21 +322,34 @@ export function rowChanges(
     .map((field) => {
       const moves = row.tool === "dispatch_issue_update" && field === "rank";
       const claims = row.tool === "dispatch_claim";
+      const adds =
+        row.tool === "dispatch_issue_update" &&
+        field === "labels" &&
+        args.labels === undefined &&
+        args.labels_add !== undefined;
+      // A field the read names with no value (null) is empty now; one it does not name is the
+      // read's whole value where the row writes one field (a claim's holder).
+      const valueNow = Object.hasOwn(now, field)
+        ? now[field]
+        : fields.length === 1
+          ? row.now
+          : undefined;
+      const next = moves
+        ? moveText(args, newIssues)
+        : claims
+          ? args.release === true
+            ? null
+            : CLAIMED_BY_YOU
+          : adds
+            ? withLabelsAdded(valueNow, args.labels_add)
+            : args[field];
       return {
-        edit: moves || claims ? undefined : editOf(field, args[field]),
+        edit: moves || claims ? undefined : editOf(field, next),
         edited: editedField(field),
         field,
         namesNewIssue: namesNewIssue(field),
-        next: moves
-          ? moveText(args, newIssues)
-          : claims
-            ? args.release === true
-              ? null
-              : CLAIMED_BY_YOU
-            : args[field],
-        // A field the read names with no value (null) is empty now; one it does not name is the
-        // read's whole value where the row writes one field (a claim's holder).
-        now: Object.hasOwn(now, field) ? now[field] : fields.length === 1 ? row.now : undefined,
+        next,
+        now: valueNow,
       };
     });
 }
@@ -332,19 +361,21 @@ function present(value: unknown): boolean {
   return list === undefined || list.length > 0;
 }
 
-/** Whether a change takes something out: a close (status done), a value cleared, or a list - the
- *  labels, the issues it waits on, its links, the priorities it advances - that loses an item. A
- *  new issue's fields take nothing out. */
-function takesOut(change: RowChange): boolean {
-  if (change.field === "status") return change.next === "done";
-  if (change.now === undefined || change.field === "rank") return false;
+/** The values a change takes out, each in words (`itemWords`, `valueWords`): the items a list - the
+ *  labels, the issues it waits on, its links, the priorities it advances - loses, compared with no
+ *  regard to case, or the value it clears. A close, a move and a new issue's fields take out no
+ *  value. An item that has no words is "" here. */
+function removedValues(change: RowChange): readonly string[] {
+  if (change.field === "status" || change.field === "rank" || change.now === undefined) return [];
   const before = listOf(change.now);
   const after = listOf(change.next);
   if (before !== undefined && after !== undefined) {
     const kept = new Set(after.map((item) => itemWords(item, NO_NEW_ISSUES).toLowerCase()));
-    return before.some((item) => !kept.has(itemWords(item, NO_NEW_ISSUES).toLowerCase()));
+    return before
+      .map((item) => itemWords(item, NO_NEW_ISSUES))
+      .filter((words) => !kept.has(words.toLowerCase()));
   }
-  return present(change.now) && !present(change.next);
+  return present(change.now) && !present(change.next) ? [valueWords(change.field, change.now)] : [];
 }
 
 /** The tools whose every row deletes, removes, closes or declines something. */
@@ -366,14 +397,28 @@ const REMOVING_TOOLS: Readonly<Record<string, true>> = {
 
 /** Whether a row closes, deletes or removes something (design v3, state 6), which the row marks
  *  in red: a tool that only removes, a release of a claim, an unfollow, a retracted result, and a
- *  change of a field that takes something out (`takesOut`), given the row's `changes`. */
+ *  change of a field that closes the issue (status done) or takes a value out (`removedValues`),
+ *  given the row's `changes`. */
 export function rowRemoves(row: GoingPlanRow, changes: readonly RowChange[]): boolean {
   const args = argumentsOf(row);
   if (REMOVING_TOOLS[row.tool] === true) return true;
   if (row.tool === "dispatch_claim") return args.release === true;
   if (row.tool === "dispatch_follow") return args.action === "unfollow";
   if (row.tool === "dispatch_result") return args.retract !== undefined;
-  return changes.some(takesOut);
+  return changes.some((change) =>
+    change.field === "status" ? change.next === "done" : removedValues(change).length > 0
+  );
+}
+
+/** What a row `rowRemoves` marks in red says in words beside the mark (design v3, state 6): each
+ *  value its changes take out, by name, so the person reads before Approve what the row drops -
+ *  "Removes board", "Removes board and api" - and "Closes" where it closes its issue; "Removes"
+ *  alone for a row whose tool removes something and names no value of a field. */
+export function removalWords(row: GoingPlanRow, changes: readonly RowChange[]): string {
+  const removed = changes.flatMap(removedValues).filter((words) => words !== "");
+  const closes = changes.some((change) => change.field === "status" && change.next === "done");
+  if (removed.length === 0) return closes ? "Closes" : "Removes";
+  return `${closes ? "Closes, and removes" : "Removes"} ${listed(removed)}`;
 }
 
 /** The tools whose row sends a message to an agent (R7): on an issue, to one session, and to
@@ -646,7 +691,7 @@ export function undoneTitle(lines: readonly GoingUndoLine[]): string {
  * The plan card's title as the plan stands (design v2, states 6 and 7): while it waits, the
  * sentence its rows make (`planTitle`); while its rows run, "Applying 1 of 3…", counting the row
  * that runs now among the rows sent to run; once they ran, "Applied 3 changes · 16:42", the time
- * the run ended (`appliedAt`) where the page knows it, and how many of them ran where some did
+ * the last row ran (`appliedAt`) where the page knows it, and how many of them ran where some did
  * not; once its run was undone (`undone`, what Undo answered), "Undone · 3 changes reverted"; and
  * "Discarded" once the person discarded it.
  */

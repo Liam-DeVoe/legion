@@ -597,14 +597,28 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         : undefined,
     [detailsFor, detailsIssue, drawerPage, issueFrame]
   );
+  // While the conversation is kept at the side (design v3, state 10), the margin folds to its
+  // rail, so the page's main column keeps a usable width beside the 420 px panel; the reader's
+  // stored preference is not written, and the margin comes back as they left it when the panel
+  // closes. The toggle key, and a compose the margin opens for, open it beside the panel, and
+  // that stands until the panel closes.
+  const panelAtSide = place === "side";
+  const [marginBesidePanel, setMarginBesidePanel] = useState<boolean | undefined>(undefined);
+  if (!panelAtSide && marginBesidePanel !== undefined) setMarginBesidePanel(undefined);
+  const marginCollapsed = panelAtSide ? (marginBesidePanel ?? true) : marginHidden;
+  const setMarginCollapsed = useCallback(
+    (hidden: boolean) => (panelAtSide ? setMarginBesidePanel(hidden) : setMarginHidden(hidden)),
+    [panelAtSide, setMarginHidden]
+  );
   // The shell reserves a gutter for a rail only where that rail exists. The collapsed-margin
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
   // `features/margin/Margin.tsx` renders from; two answers that disagree leave 80 px of
-  // padding beside a rail that is not there. "Full width" means no expanded column on either
+  // padding beside a rail that is not there. The side panel covers the rail, and the shell
+  // keeps the panel's width free instead. "Full width" means no expanded column on either
   // side - on a route with no margin, a hidden sidebar is enough.
   const hasMargin = routeHasMargin(location.pathname, location.search);
-  const marginRailShown = hasMargin && marginHidden;
-  const marginColumnShown = hasMargin && !marginHidden;
+  const marginRailShown = hasMargin && marginCollapsed && !panelAtSide;
+  const marginColumnShown = hasMargin && !marginCollapsed;
   const fullWidth = sidebarHidden && !marginColumnShown;
   const mainLayoutClass =
     sidebarHidden && marginRailShown
@@ -795,7 +809,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       label: detailsDrawer === undefined ? "Toggle margin" : "Open or close Details",
       run: () =>
         detailsDrawer === undefined
-          ? setMarginHidden(!marginHidden)
+          ? setMarginCollapsed(!marginCollapsed)
           : detailsDrawer.setOpen(!detailsDrawer.open),
       // Below `xl` the margin is a sheet the route opens itself: `Margin` reads the preference
       // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
@@ -1144,8 +1158,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         </main>
         <ErrorBoundary region="the margin" resetKey={location.pathname}>
           <MarginColumn
-            collapsed={marginHidden}
-            onCollapsedChange={setMarginHidden}
+            collapsed={marginCollapsed}
+            onCollapsedChange={setMarginCollapsed}
             onWidthChange={setMarginWidth}
             width={marginWidth}
           />

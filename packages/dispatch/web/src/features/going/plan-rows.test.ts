@@ -10,6 +10,7 @@ import {
   keptValue,
   labelMarks,
   planTitle,
+  removalWords,
   reviewWords,
   rowChanges,
   rowKind,
@@ -252,6 +253,81 @@ test("a row that closes, deletes or removes something is told apart from one tha
     removes(row(0, { arguments: { priority: "p-1" }, tool: "dispatch_delete_priority" }))
   ).toBe(true);
   expect(removes(newIssue(0, "North half"))).toBe(false);
+});
+
+// A preview's row that added a label replaced the issue's labels, and its red mark said "Removes"
+// and no more. A row that adds labels (labels_add) shows the labels now with those it adds, the
+// added one marked, nothing taken out; a row that takes values out names each of them.
+test("a row that adds labels keeps the issue's others and shows them, and nothing as removed", () => {
+  const adds = (now: string[], added: string[]) =>
+    row(0, {
+      arguments: { issue: "DEMO-10", labels_add: added, priority: 2 },
+      fields: ["labels", "priority"],
+      item: "DEMO-10",
+      now: { labels: now, priority: null },
+    });
+  const [labels] = rowChanges(adds(["board"], ["accessibility"]), undefined, new Map());
+  expect(labels).toEqual({
+    edit: "labels",
+    edited: false,
+    field: "labels",
+    namesNewIssue: false,
+    next: ["board", "accessibility"],
+    now: ["board"],
+  });
+  expect(valueWords("labels", labels?.now)).toBe("board");
+  expect(valueWords("labels", labels?.next)).toBe("board, accessibility");
+  expect(labelMarks(labels?.now, labels?.next)).toEqual([
+    { label: "board", mark: "kept" },
+    { label: "accessibility", mark: "added" },
+  ]);
+  const planned = adds(["board", "API"], [" api ", "ui"]);
+  const changes = rowChanges(planned, undefined, new Map());
+  // A label the issue holds in another case is one it holds, and is not added twice.
+  expect(changes[0]?.next).toEqual(["board", "API", "ui"]);
+  expect(rowRemoves(planned, changes)).toBe(false);
+  // The person's edit of the labels is the whole set they chose, which may take one out.
+  const edited = rowChanges(planned, { labels: ["board", "ui"] }, new Map());
+  expect(edited[0]).toMatchObject({ edited: true, next: ["board", "ui"] });
+  expect(removalWords(planned, edited)).toBe("Removes API");
+});
+
+test("a row that takes values out names each of them, and a close says it closes", () => {
+  const words = (planned: GoingPlanRow) =>
+    removalWords(planned, rowChanges(planned, undefined, new Map()));
+  const labels = (now: string[], next: string[], extra: Record<string, unknown> = {}) =>
+    row(0, {
+      arguments: { issue: "DEMO-1", labels: next, ...extra },
+      fields: ["labels", ...Object.keys(extra)],
+      item: "DEMO-1",
+      now: { labels: now },
+    });
+  expect(words(labels(["board", "a11y"], ["accessibility"]))).toBe("Removes board and a11y");
+  expect(words(labels(["board"], ["accessibility"]))).toBe("Removes board");
+  expect(words(labels(["board", "api", "ui"], []))).toBe("Removes board, api and ui");
+  expect(words(update(0, "DEMO-1", { status: "done" }))).toBe("Closes");
+  expect(words(labels(["board"], [], { status: "done" }))).toBe("Closes, and removes board");
+  expect(
+    words(
+      row(0, {
+        arguments: { blocked_by: ["DEMO-4"], issue: "DEMO-1" },
+        fields: ["blocked_by"],
+        now: { blocked_by: ["DEMO-3", "DEMO-4"] },
+      })
+    )
+  ).toBe("Removes DEMO-3");
+  expect(
+    words(
+      row(0, {
+        arguments: { issue: "DEMO-1", parent: "" },
+        fields: ["parent"],
+        now: { parent: "DEMO-9" },
+      })
+    )
+  ).toBe("Removes DEMO-9");
+  expect(words(row(0, { arguments: { priority: "p-1" }, tool: "dispatch_delete_priority" }))).toBe(
+    "Removes"
+  );
 });
 
 test("Auto-review says why each row waits, in words, and that a row it let through ran", () => {
