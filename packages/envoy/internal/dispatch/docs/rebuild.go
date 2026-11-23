@@ -202,8 +202,8 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// (anotherBuildServes), as the close writes it: while another build serves, each block gets the
 	// attributes that build's pages read its state from, from the rows; once the fleet is one build,
 	// each gets the ones a version keeps, which the release before's readers of a stored version
-	// read its state from, written from its ask's node, and none of the rest of the seven
-	// (readIssueAskStateWrites, keptAskState, onItsNode). The ask
+	// read its state from, written from its ask's node, or from its row where the node is behind it,
+	// and none of the rest of the seven (readIssueAskStateWrites, keptAskState, keptFromItsNode). The ask
 	// rows are taken before RebuildTx takes the document's advisory lock, the order the close's own
 	// write takes them in (WriteIssueAskStates). Once this transaction commits, the rebuilt document
 	// reads as the issue's other documents do.

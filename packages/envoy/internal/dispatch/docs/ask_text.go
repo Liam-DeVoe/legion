@@ -258,11 +258,14 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 
 // askNodeAnswer is what an ask's node holds of its answer: its answer state (answer_state), and
 // for an answer who gave it (the answered_by relation's person), when (answered_at), the options
-// chosen (selected) and the words (answer), each "" or nil where the node holds none.
+// chosen (selected) and the words (answer), each "" or nil where the node holds none. planned is
+// whether it is what a change the reading transaction plans leaves on the node
+// (plannedAskNodeAnswer), which the transaction may not have written to the node or the row yet.
 type askNodeAnswer struct {
 	state, answeredBy, answeredAt string
 	selected                      []string
 	answer                        *string
+	planned                       bool
 }
 
 // askNodeAnswerKinds are the tuples of an ask's node askNodeAnswers reads.
@@ -348,7 +351,7 @@ func askNodeAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]as
 // state, and for an answer the person, the time, the options and the words it states on the node
 // (asks' answerFacts).
 func plannedAskNodeAnswer(ask model.Ask) askNodeAnswer {
-	held := askNodeAnswer{state: ask.State}
+	held := askNodeAnswer{state: ask.State, planned: true}
 	if ask.Answer != nil {
 		held.answeredBy = asks.AnswererOf(*ask.Answer)
 		held.answeredAt = asks.AnsweredAtValue(ask.Answer.At)

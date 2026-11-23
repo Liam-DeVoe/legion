@@ -836,8 +836,9 @@ func (s *Service) reconcileAskBlocks(
 		}
 	}
 	// Once the fleet is one build, the attributes a version keeps are written from each ask's node,
-	// each one its node holds no value of taken off (keptAskState, onItsNode); an ask whose state
-	// this settlement writes - one it restores - is written as it states it.
+	// each one its node holds no value of taken off, or from its row where the node is behind it,
+	// before the decisions step's catch-up (keptAskState, keptFromItsNode); an ask whose state this
+	// settlement writes - one it restores - is written as it states it.
 	// kept for one release: stored-ask-state
 	var nodes map[string]askNodeAnswer
 	if !twoBuilds && len(rows)+len(sources) > 0 {
@@ -857,7 +858,7 @@ func (s *Service) reconcileAskBlocks(
 		if twoBuilds {
 			return ask
 		}
-		return onItsNode(ask, nodes)
+		return keptFromItsNode(ask, nodes)
 	}
 	// The sources, with the durable record read above, are what the version this settlement writes
 	// reads the authors of its decisions and readings from (typedSources).

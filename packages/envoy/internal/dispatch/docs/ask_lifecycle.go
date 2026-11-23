@@ -544,13 +544,14 @@ type issueAskStateWrites struct {
 // block gets the attributes the release before's pages read its state from
 // (rollWindowAskAttributes, resolveUnindexedAskBlock), and once the fleet is one build the ones a
 // version keeps (keptAskState), written from the node of the block's ask, or of a copy's source,
-// as this transaction's commit leaves it (askNodeAnswers, onItsNode), as settlement writes them.
-// wanted hands back the row as it stands for a block it shows as the store holds it - the close's
-// final sweep, a closed issue's rebuild - and that row can be ahead of its node where a process of
-// the release before wrote it, before the decisions step's catch-up states it. An ask wanted hands
-// back in another state than its row's is one whose change the caller plans after this write in
-// the same transaction - the close's withdrawal (api's planWithdrawal) - and is written as wanted
-// gives it. It changes nothing in tree.
+// as this transaction's commit leaves it (askNodeAnswers, keptFromItsNode), as settlement writes
+// them. wanted hands back the row as it stands for a block it shows as the store holds it - the
+// close's final sweep, a closed issue's rebuild - and that row can be ahead of its node where a
+// process of the release before wrote it, before the decisions step's catch-up states it: such a
+// block is written from the row (keptFromItsNode). An ask wanted hands back in another state than
+// its row's is one whose change the caller plans after this write in the same transaction - the
+// close's withdrawal (api's planWithdrawal) - and is written as wanted gives it. It changes
+// nothing in tree.
 //
 // kept for one release: roll-window-attributes
 func readIssueAskStateWrites(
@@ -599,7 +600,7 @@ func readIssueAskStateWrites(
 		if twoBuilds || ask.State != row.State {
 			return ask
 		}
-		return onItsNode(ask, nodes)
+		return keptFromItsNode(ask, nodes)
 	}
 	for _, block := range blocks {
 		if row, indexed := rows[block.id]; indexed {

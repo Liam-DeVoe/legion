@@ -739,9 +739,10 @@ func askAgreesWithItsNode(node *pmdoc.Node, ask, onNode model.Ask) bool {
 // provenance among it - as one of the writes that put them there leaves it, so that it changes
 // nothing: none of the seven attributes a version can store, as a version an upload wrote holds;
 // the ones a version keeps once the fleet is one build (keptAskState), written from onNode, the
-// ask as its node holds it, as every write on a fleet of one build writes them (onItsNode) - which
+// ask as its node holds it (onItsNode), as every write on a fleet of one build writes them - which
 // differs from the row only while the decisions step's catch-up has not yet stated on the node what
-// a process of the release before wrote into the row; the roll window's write without the
+// a process of the release before wrote into the row, when such a write keeps the row's instead
+// (keptFromItsNode), the next form for an ask that is not open; the roll window's write without the
 // answer's words (rollWindowAskAttributesWithheld, the same form as keptAskState) from the row; or
 // the roll window's write with them (rollWindowAskAttributes) from the row, as a version written
 // while two builds serve, or by the release before, holds. Only a block every one of them would

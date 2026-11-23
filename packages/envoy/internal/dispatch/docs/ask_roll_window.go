@@ -181,8 +181,11 @@ func withoutUnkeptAskAttributes(node *pmdoc.Node) bool {
 }
 
 // onItsNode is ask, a row of the asks table, with its state and answer as its node holds them
-// (askNodeAnswers, read into nodes by ask id): the values keptAskState writes once the fleet is one
-// build, each one the node holds no value of left empty, so the write takes it off the block.
+// (askNodeAnswers, read into nodes by ask id), each one the node holds no value of left empty, so
+// a write takes it off the block: what the carry reads a version's ask blocks against
+// (asksAgreeWithTheirNodes), what the decisions step's restore writes, which runs only after a
+// catch-up that went through (restoredAskBlock), and what settlement and an issue's ask-state
+// writes keep once the fleet is one build wherever the node is not behind the row (keptFromItsNode).
 //
 // kept for one release: stored-ask-state
 func onItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
@@ -193,6 +196,30 @@ func onItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
 		ask.Answer = &model.AskAnswer{User: held.answeredBy, At: at, Selected: held.selected, Text: held.answer}
 	}
 	return ask
+}
+
+// keptFromItsNode is ask, a row of the asks table, as a write on a fleet of one build keeps it on
+// the ask's blocks (keptAskState): as its node holds it (onItsNode), but as the row holds it where
+// the node is behind the row. The one writer of an answer state writes the row and the node in one
+// transaction (asks.Settle), so the two differ only where a process of the release before wrote
+// the row alone, before the decisions step's catch-up states it on the node at its next tick: an
+// answer, a resolution or a reopen that release wrote into the row of an ask whose node holds
+// another state, or none - an ask this build opened, or one that release made, whose row names no
+// node until the step's backfill marks it. There the row is the newer of the two, and a node that
+// holds no answer state, or another state than the row's that no change the transaction plans
+// puts there (askNodeAnswer.planned), is behind it. That release's last process can leave the
+// fleet before the tick, and a version written in between keeps the state, the answerer and the
+// time that release recorded, which its CLI and pages read off the version (R10), where the node's
+// would take them off for good, since the catch-up writes no version. Once the node is caught up
+// it holds the row's state, and the node decides (R3).
+//
+// kept for one release: stored-ask-state
+// kept for one release: catch-up
+func keptFromItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
+	if held, stated := nodes[ask.ID]; !stated || held.state != ask.State && !held.planned {
+		return ask
+	}
+	return onItsNode(ask, nodes)
 }
 
 // rollWindowAskAttributes is the write that keeps the attributes of an ask block in step with
