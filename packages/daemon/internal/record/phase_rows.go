@@ -82,6 +82,32 @@ func ServedClaim(rows []PhaseRow, role claim.Role, entry int64) claim.Token {
 	return ""
 }
 
+// AnotherAgentsReview is the commit the review of the step before row's read, among rows: the row
+// of row's role on row's task at the nearest earlier place, where that step's agent (its Claim) is
+// another than row's and row holds no commit of its own (ReviewedHead ""). A row's ReviewedHead is
+// the commit its own agent's newest deciding review read, carried from the step before only where
+// that step is the same agent's (workflow's enter), so an agent whose step has no deciding review
+// of its own on the task reads the whole change; this commit is what its task names beside that,
+// as another agent's (reviewround.AnotherAgentsSentence). "" for every other row: one that holds
+// a commit, one of no step, one whose step before is the same agent's or names no claim, and one
+// with no step before it.
+func AnotherAgentsReview(rows []PhaseRow, row PhaseRow) string {
+	if row.ReviewedHead != "" || row.StepTask == "" || row.Claim == "" {
+		return ""
+	}
+	var before *PhaseRow
+	for i, other := range rows {
+		if other.Role == row.Role && other.StepTask == row.StepTask && other.StepPlace > 0 && other.StepPlace < row.StepPlace &&
+			(before == nil || other.StepPlace > before.StepPlace) {
+			before = &rows[i]
+		}
+	}
+	if before == nil || before.Claim == "" || before.Claim == row.Claim {
+		return ""
+	}
+	return before.ReviewedHead
+}
+
 // StartLeft says whether a start of role's phase entry entry is of work the role has left, read
 // from an issue's phases rows, and answers the entry of the row it weighed the start against: the
 // role's row now (PhaseRowOf), the row of the step the task stands at, or stood at last. A role's

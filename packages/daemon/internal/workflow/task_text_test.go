@@ -412,7 +412,7 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 		"a resume": resumeText(issue, at),
 	} {
 		t.Run(name, func(t *testing.T) {
-			told := namingTheReviewRound(composed, claim.RoleReviewer, phase.Reviewing, reviewer)
+			told := namingTheReviewRound(composed, claim.RoleReviewer, phase.Reviewing, reviewer, nil)
 			if !strings.HasSuffix(told, round) {
 				t.Fatalf("the reviewer's task %q does not end with the daemon's round %q", told, round)
 			}

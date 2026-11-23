@@ -107,7 +107,7 @@ func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t
 
 	reviewer := reviewerRow(t, pool)
 	want := namingTheReviewRound(reviewerTask, claim.RoleReviewer, phase.Reviewing,
-		record.PhaseRow{Role: claim.RoleReviewer, Entry: 2, EntryTask: reviewerTask})
+		record.PhaseRow{Role: claim.RoleReviewer, Entry: 2, EntryTask: reviewerTask}, nil)
 	if reviewer.EntryTask != want || want != reviewerTask+reviewedPartOf("none")+reviewEntryPartOf(2) {
 		t.Errorf("the reviewer's stored task after the upgrade = %q, want %q: the task the release before stored, "+
 			"then the two sentences namingTheReviewRound writes for its row", reviewer.EntryTask, want)

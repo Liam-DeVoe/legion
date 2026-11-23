@@ -24,6 +24,22 @@ const EntryLabel = "Review entry"
 // commit is 40 hexadecimal characters and an entry a number, so neither is ever this word.
 const none = "none"
 
+// AnotherAgentLabel labels the commit the review of the step before a reviewer's step read, on the
+// same task, where that step's agent is another than the reviewer's (record.AnotherAgentsReview).
+// The reviewer read no part of the change itself, so its own sentence names no commit and it reads
+// the whole change; this sentence lets it see what changed since the other agent's review.
+const AnotherAgentLabel = "Commit another agent's review read"
+
+// AnotherAgentsSentence is " Commit another agent's review read: <commit>.", and "" where commit
+// is "". It stands before the two sentences of the round (Sentences), which stay a task's last
+// two, so the way back that strips those two at a task's end strips them alone.
+func AnotherAgentsSentence(commit string) string {
+	if commit == "" {
+		return ""
+	}
+	return " " + AnotherAgentLabel + ": " + commit + "."
+}
+
 // Sentences is the two sentences that end a reviewer's task, in this order:
 // " Last reviewed commit: <commit>." and " Review entry: <entry>.", each naming `none` where
 // commit is "" or entry is not above 0. It is the one place either sentence is written.

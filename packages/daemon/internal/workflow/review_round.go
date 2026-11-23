@@ -7,16 +7,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
-// namingTheReviewRound is task as role is given it, standing in phase at with row its phases row.
-// For the reviewer it is task followed by the daemon's two sentences of the review round
-// (reviewround.Sentences), always its last two, in each phase. In reviewing they name the commit
-// the daemon last recorded for the reviewer (record.PhaseRow.ReviewedHead), or `none` where the row
-// holds none, as in the first round of a generation, and then the entry the row stands at while
-// the row holds the task of that entry (record.PhaseRow.EntryTask), or `none` where it holds no
-// entry's task, as a row a clear emptied (record.Store.ClearGeneration) does until the next entry
-// is raised. Outside reviewing they name `none` for both: a wake queued there is no task of the
-// round, and the outbox can deliver it after the issue is back in reviewing, since a wake names no
-// phase (wakeRow). The entry's sentence is the task's last, the shape the reviewer reads it in.
+// namingTheReviewRound is task as role is given it, standing in phase at with row its phases row,
+// among rows, the issue's phases rows as the caller read them. For the reviewer it is task followed
+// by the daemon's two sentences of the review round (reviewround.Sentences), always its last two,
+// in each phase. In reviewing they name the commit the daemon last recorded for the reviewer
+// (record.PhaseRow.ReviewedHead), or `none` where the row holds none, as in the first round of a
+// generation, and then the entry the row stands at while the row holds the task of that entry
+// (record.PhaseRow.EntryTask), or `none` where it holds no entry's task, as a row a clear emptied
+// (record.Store.ClearGeneration) does until the next entry is raised. Outside reviewing they name
+// `none` for both: a wake queued there is no task of the round, and the outbox can deliver it
+// after the issue is back in reviewing, since a wake names no phase (wakeRow). The entry's
+// sentence is the task's last, the shape the reviewer reads it in.
+//
+// A row's commit is its own agent's: the first run of a later reviewer step carries the commit of
+// the step before only where both steps are one agent's (enter). Where the step before is another
+// agent's and the row holds no commit of its own, the reviewer reads the whole change, and in
+// reviewing its task names, before the two sentences, the commit that other agent's review read
+// (record.AnotherAgentsReview, reviewround.AnotherAgentsSentence), so it can see what changed since.
 // For any other role it is task as it is.
 //
 // The two sentences are the task's last two whatever the row holds, so no text of the task can
@@ -47,7 +54,7 @@ import (
 // stepRunRow), and none where its row holds no commit, as in the step's first run of a generation.
 // Such a step reports with its verdict and submits no review of GitHub's, so it gets no entry's
 // sentence.
-func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow) string {
+func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow, rows []record.PhaseRow) string {
 	if role != claim.RoleReviewer {
 		if at == phase.Step && !claim.IsBuiltin(role) && row.ReviewedHead != "" {
 			return task + " " + reviewround.CommitLabel + ": " + row.ReviewedHead + "."
@@ -61,7 +68,7 @@ func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row reco
 	if row.EntryTask != "" {
 		entry = row.Entry
 	}
-	return task + reviewround.Sentences(row.ReviewedHead, entry)
+	return task + reviewround.AnotherAgentsSentence(record.AnotherAgentsReview(rows, row)) + reviewround.Sentences(row.ReviewedHead, entry)
 }
 
 // namesTheRound says whether namingTheReviewRound can add a sentence to a task of role: the
