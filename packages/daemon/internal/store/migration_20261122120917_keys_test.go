@@ -152,14 +152,26 @@ func TestAKeysClaimFromBeforeTheUpgradeKeepsItsNameAfterVersionsLeaveTheKeyOut(t
 }
 
 // The key 20261122120917 records on a claim from before it is the key record.NameAgents keeps the
-// claim's name for, read from the issue's plan rows: the key of the latest row of the name that
-// names a key other than the owner's. So the names the rows alone give an issue's agents are the
-// names its claims alone give them (record.KeySessionsOf), and a write that deletes the rows takes
-// no name from a key. On LEGION-208, key a's generation 1 row and key b's later generation 2 row
-// both hold implementer: the claim records key b, as NameAgents gives key b the name and key a
-// implementer-2. On LEGION-209, key c's row holds implementer and a later row with no key holds it
-// too: the claim records key c, since a row with no key does not end a key's hold. Of the queued
-// supervise rows, the start of LEGION-209's implementer, which names no agent, names key c.
+// claim's name for, read from the issue's plan rows, where the latest row of the name names that
+// key: the latest row of the name in record.Postgres.PlanStepsOf's order, leaving out the owner's
+// rows and rows that hold no name, where that row names a key. So for such a name the names the
+// rows alone give an issue's agents are the names its claims alone give them
+// (record.KeySessionsOf), and a write that deletes the rows takes no name from a key. On
+// LEGION-208, key a's generation 1 row and key b's later generation 2 row both hold implementer:
+// the claim records key b, as NameAgents gives key b the name and key a implementer-2, and the
+// queued start of that claim, which names no agent, names key b. On LEGION-212, a row with no key
+// holds implementer and key e's later row holds it too: the claim records key e, since an earlier
+// row with no key takes no name from a later key.
+//
+// On LEGION-209, key c's row holds implementer and a later row with no key holds it too: the rows
+// the release before left for `implementer:c` and then `implementer`, as it gave the name to the
+// agent with no key after key c's, on the claim key c's agent ran on. The claim records no agent,
+// and the queued start of that claim names none, so the agent with no key, which may be the one the
+// claim runs now, takes the session the claim holds at its next start, not a new one mid-step.
+// There the fill and NameAgents part: NameAgents still holds the name for key c while key c's row
+// stands, as a row with no key does not end a key's hold, so the rows name a later version's
+// implementer implementer-2, and the claims alone, which keep no name for key c, name it
+// implementer.
 //
 // The controls, each left as it was: the claim reviewer, a name only a step with no key held; the
 // tree's architect, whose owner's rows hold no name; LEGION-210's tester, whose key's row holds no
@@ -181,6 +193,8 @@ func TestTheSessionAgentMigrationRecordsTheKeyNameAgentsKeepsAClaimsNameFor(t *t
 	seedPlanSteps(t, st, "LEGION-208", 2, [2]string{"implementer", "b"})
 	seedPlanSteps(t, st, "LEGION-209", 1, [2]string{"implementer", "c"})
 	seedPlanSteps(t, st, "LEGION-209", 2, [2]string{"implementer", ""})
+	seedPlanSteps(t, st, "LEGION-212", 1, [2]string{"implementer", ""})
+	seedPlanSteps(t, st, "LEGION-212", 2, [2]string{"implementer", "e"})
 	seedPlanSteps(t, st, "LEGION-210", 1, [2]string{"tester", "d"})
 	exec(`update plan_steps set agent = role where agent_key <> 'owner' and issue <> 'LEGION-210'`)
 	const releaseBeforesClaim = `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
@@ -193,12 +207,14 @@ func TestTheSessionAgentMigrationRecordsTheKeyNameAgentsKeepsAClaimsNameFor(t *t
 		{"legion-legion-legion-209-implementer", "LEGION-209", "implementer"},
 		{"legion-legion-legion-210-tester", "LEGION-210", "tester"},
 		{"legion-legion-legion-211-implementer", "LEGION-211", "implementer"},
+		{"legion-legion-legion-212-implementer", "LEGION-212", "implementer"},
 	} {
 		exec(releaseBeforesClaim, c[0], c[1], c[2])
 	}
-	const keyStart = `{"op":"start","tree":"LEGION-209","role":"implementer","claim":"legion-legion-legion-209-implementer","generation":1,"phase":"implementing","entry":1,"task":"Build it."}`
+	const keyStart = `{"op":"start","tree":"LEGION-208","role":"implementer","claim":"legion-legion-legion-208-implementer","generation":1,"phase":"implementing","entry":1,"task":"Build it."}`
 	for _, row := range [][2]string{
-		{"LEGION-209", keyStart},
+		{"LEGION-208", keyStart},
+		{"LEGION-209", `{"op":"start","tree":"LEGION-209","role":"implementer","claim":"legion-legion-legion-209-implementer","generation":1,"phase":"implementing","entry":1,"task":"Build it."}`},
 		{"LEGION-209", `{"op":"suspend","tree":"LEGION-209","role":"implementer","claim":"legion-legion-legion-209-implementer","generation":1}`},
 		{"LEGION-208", `{"op":"start","tree":"LEGION-208","role":"reviewer","claim":"legion-legion-legion-208-reviewer","generation":1,"phase":"reviewing","entry":1,"task":"Review it."}`},
 	} {
@@ -207,9 +223,13 @@ func TestTheSessionAgentMigrationRecordsTheKeyNameAgentsKeepsAClaimsNameFor(t *t
 	}
 	wantClaims := []string{
 		"legion-legion-legion-208-architect=", "legion-legion-legion-208-implementer=key:b", "legion-legion-legion-208-reviewer=",
-		"legion-legion-legion-209-implementer=key:c", "legion-legion-legion-210-tester=", "legion-legion-legion-211-implementer=",
+		"legion-legion-legion-209-implementer=", "legion-legion-legion-210-tester=", "legion-legion-legion-211-implementer=",
+		"legion-legion-legion-212-implementer=key:e",
 	}
-	wantStarts := []string{"start legion-legion-legion-209-implementer key:c", "suspend legion-legion-legion-209-implementer ", "start legion-legion-legion-208-reviewer "}
+	wantStarts := []string{
+		"start legion-legion-legion-208-implementer key:b", "start legion-legion-legion-209-implementer ",
+		"suspend legion-legion-legion-209-implementer ", "start legion-legion-legion-208-reviewer ",
+	}
 	recorded := func(when string) {
 		t.Helper()
 		if got := rowsAsText(t, st, `select concat(token, '=', session_agent) from claims order by token`); !slices.Equal(got, wantClaims) {
@@ -220,7 +240,7 @@ func TestTheSessionAgentMigrationRecordsTheKeyNameAgentsKeepsAClaimsNameFor(t *t
 		}
 		var payload []byte
 		if err := st.Pool().QueryRow(ctx, `select payload - 'agent' from outbox order by id limit 1`).Scan(&payload); err != nil {
-			t.Fatalf("read the start of key c %s: %v", when, err)
+			t.Fatalf("read the start of key b %s: %v", when, err)
 		}
 		var before, after map[string]any
 		if err := json.Unmarshal([]byte(keyStart), &before); err != nil {
@@ -230,7 +250,7 @@ func TestTheSessionAgentMigrationRecordsTheKeyNameAgentsKeepsAClaimsNameFor(t *t
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(before, after) {
-			t.Fatalf("the start of key c %s, without its agent, = %v, want %v: every other key kept", when, after, before)
+			t.Fatalf("the start of key b %s, without its agent, = %v, want %v: every other key kept", when, after, before)
 		}
 	}
 
@@ -239,10 +259,16 @@ func TestTheSessionAgentMigrationRecordsTheKeyNameAgentsKeepsAClaimsNameFor(t *t
 	}
 	recorded("after the migration")
 	records := record.NewStore()
-	for issue, want := range map[string][]claim.Agent{"LEGION-208": {"implementer-2", "implementer"}, "LEGION-209": {"implementer", "implementer-2"}} {
-		words := map[string][]string{"LEGION-208": {"implementer:a", "implementer:b"}, "LEGION-209": {"implementer:c", "implementer"}}[issue]
-		steps := make([]record.PlanStep, len(words))
-		for i, word := range words {
+	for issue, want := range map[string]struct {
+		words            []string
+		byRows, byClaims []claim.Agent
+	}{
+		"LEGION-208": {[]string{"implementer:a", "implementer:b"}, []claim.Agent{"implementer-2", "implementer"}, []claim.Agent{"implementer-2", "implementer"}},
+		"LEGION-209": {[]string{"implementer"}, []claim.Agent{"implementer-2"}, []claim.Agent{"implementer"}},
+		"LEGION-212": {[]string{"implementer:e", "implementer"}, []claim.Agent{"implementer", "implementer-2"}, []claim.Agent{"implementer", "implementer-2"}},
+	} {
+		steps := make([]record.PlanStep, len(want.words))
+		for i, word := range want.words {
 			role, key, _ := strings.Cut(word, ":")
 			steps[i] = record.PlanStep{Issue: issue, Generation: 3, Task: "t", Position: i + 1, Role: role, AgentKey: key}
 		}
@@ -262,8 +288,9 @@ func TestTheSessionAgentMigrationRecordsTheKeyNameAgentsKeepsAClaimsNameFor(t *t
 			for _, step := range record.NameAgents(nil, record.KeySessionsOf(claims), steps) {
 				byClaims = append(byClaims, step.Agent)
 			}
-			if !slices.Equal(byRows, want) || !slices.Equal(byClaims, want) {
-				t.Errorf("%s's agents %v are named %q from its rows and %q from its claims, want %q from both", issue, words, byRows, byClaims, want)
+			if !slices.Equal(byRows, want.byRows) || !slices.Equal(byClaims, want.byClaims) {
+				t.Errorf("%s's agents %v are named %q from its rows and %q from its claims, want %q and %q",
+					issue, want.words, byRows, byClaims, want.byRows, want.byClaims)
 			}
 			return nil
 		}); err != nil {
