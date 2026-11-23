@@ -273,7 +273,7 @@ func TestARoleSendWhileTheDeployedStreamLacksItsHoldersAgentSubjectAnswers504And
 	agent := contracts.LegacyAgentSubject(holder)
 	rig := newNotDeployedRig(t)
 	claimRoleFor(t, rig.deps.registry, rig.deps.sessions, holder, role, nil)
-	forwards := rig.interceptForwards(func(_ int, forward func() (func() error, error)) (func() error, error) {
+	forwards := rig.interceptForwards(func(_ int, forward func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
 		return forward()
 	})
 	original := rig.narrow(t, agent)

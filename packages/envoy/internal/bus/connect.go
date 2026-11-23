@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -393,9 +394,9 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 	return opts
 }
 
-// connectTimeout bounds each dial of a NATS server and its handshake: nats.go's own for a direct
-// dial (options), the bus's SOCKS5 dialer's for one through a proxy (socks5Proxy). A connect with a
-// deadline cuts either to what remains of it.
+// connectTimeout bounds each dial of a NATS server and its handshake: the bus's direct dialer's for
+// a direct dial, the bus's SOCKS5 dialer's for one through a proxy (socks5Proxy), and nats.go's own
+// for the handshake (options). A connect with a deadline cuts each to what remains of it.
 const connectTimeout = 5 * time.Second
 
 // connectTries is how many times a connect dials before it ends with the last dial's error, and
@@ -414,12 +415,13 @@ func connect(name string, urls []string, settings nats.Option, dialer *socks5Dia
 
 // connectWithContext dials urls with envoy's options, then settings when it is not nil: the NATS
 // credential the environment names (credential), and what the client's options add (connectOpts.connectionSettings,
-// connectInBackground). When dialer is not nil it dials through the SOCKS5 proxy it names
-// (socks5Proxy): every connection then, the first and each one nats.go dials to reconnect, goes
-// through the proxy, handed the server's host name as the URL spells it. It dials up to
-// connectTries times, waiting connectRetryWait after each dial that fails, the last one included,
-// whatever each dial failed on, a refusal of the credential included, and returns the first
-// connection that connects (connectTrying).
+// connectInBackground). Every connection dials through a severableDialer of its own, so Sever can
+// end it. When dialer is not nil it dials through the SOCKS5 proxy it names (socks5Proxy): every
+// connection then, the first and each one nats.go dials to reconnect, goes through the proxy,
+// handed the server's host name as the URL spells it. It dials up to connectTries times, waiting
+// connectRetryWait after each dial that fails, the last one included, whatever each dial failed
+// on, a refusal of the credential included, and returns the first connection that connects
+// (connectTrying).
 //
 // A connect through a proxy that fails names the setting and the proxy, whatever failed: its ten
 // attempts ran out, the credential was refused, or ctx ended first (a publish's own deadline). A
@@ -471,12 +473,18 @@ func connectTrying(ctx context.Context, tries int, wait time.Duration, name stri
 				attemptDialer = dialer.bounded(remaining)
 			}
 		}
+		// Every connection dials through a severable dialer, so Client.Sever can end it without
+		// nats.go's lock: through the SOCKS5 proxy when one is set, else directly, bounded by the
+		// attempt's timeout as nats.go's own dialer is. nats.go otherwise resolves the host itself
+		// and hands the dialer an address, which the proxy cannot reach when only its resolver knows
+		// the name; a direct dial resolves it in Go's dialer, which spreads the timeout over the
+		// addresses as nats.go spreads it over the hosts it resolved.
+		dial := (&net.Dialer{Timeout: next.Timeout}).DialContext
 		if attemptDialer != nil {
-			next.CustomDialer = attemptDialer
-			// nats.go otherwise resolves the host itself and hands the dialer an address, which the
-			// proxy cannot reach when only its resolver knows the name.
-			next.SkipHostLookup = true
+			dial = attemptDialer.DialContext
 		}
+		next.CustomDialer = newSeverableDialer(dial)
+		next.SkipHostLookup = true
 		type connectionResult struct {
 			conn *nats.Conn
 			err  error
