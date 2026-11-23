@@ -68,3 +68,9 @@ downloading.stderr.txt
   it could not read, in job 137524299133 (`daemon-go (1/3)`) of run 45122591447, read with
   gh api --allow-escape-sequences repos/cybermonklabs/legion/actions/jobs/137524299133/logs
   (the timestamp GitHub puts before each log line taken off).
+
+docs-testmain.txt
+  cd packages/envoy && go test -list '.*' ./internal/dispatch/docs/ > docs-testmain.txt
+  The package's names, then a line its TestMain prints while the binary lists
+  (`docs: 0 services built, 0 still alive after 45ms`), then its `ok` line: dispatch run
+  45150132444's envoy-go-race-docs legs read such a line as a name and failed.

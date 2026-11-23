@@ -8,8 +8,8 @@
 # captured `go: downloading` line to standard error, so no real go command runs. It holds that
 # each listed name lands in exactly one leg for 1 to 8 legs, that a name added later lands in
 # exactly one leg, that a package's `ok` and `?` lines and a Benchmark are no leg's, that go's
-# standard error is no name, and that -run=<pattern> lists under the pattern and keeps each
-# name's leg.
+# standard error and a line a test binary prints while it lists are no name, that a listing that
+# fails exits 1, and that -run=<pattern> lists under the pattern and keeps each name's leg.
 #
 # Run from anywhere: .github/scripts/go-test-split.test.sh
 # CI runs it in ci.yaml's test job.
@@ -144,11 +144,27 @@ for legs in 1 2 3; do
     "$(is "$(cat "$work/narrowed")" "$(cat "$work/unnarrowed")")"
 done
 
+echo "case: a line a test binary prints while it lists is no name, and passes through"
+split_leg "$captures/docs-testmain.txt" 1 1
+check "exits 0" "$(is "$status" 0)"
+check "keeps every name of the package" \
+  "$(is "$(names_of "$out" | wc -l | tr -d ' ')" "$(grep -cE '^(Test|Fuzz|Example)[A-Za-z0-9_]*$' "$captures/docs-testmain.txt")")"
+check "and no word of the TestMain line" "$(is "$(names_of "$out" | grep -c '^docs' || true)" 0)"
+check "writes that line to standard error" "$(contains "$said" '^docs: 0 services built, 0 still alive after 45ms$')"
+
 echo "case: what it refuses"
-printf 'TestOne\ncan'"'"'t load package: package ./nowhere: no such directory\n' >"$work/unreadable.txt"
-split_leg "$work/unreadable.txt" 1 2
-check "a line that is neither a name nor a package's line exits 1" "$(is "$status" 1)"
-check "and names that line" "$(contains "$said" "can't load package")"
+# A stand-in go whose `go test -list` fails, as one does for a package that does not build.
+mkdir -p "$work/fails"
+cat >"$work/fails/go" <<'SH'
+#!/usr/bin/env bash
+echo "can't load package: package ./nowhere: no such directory" >&2
+exit 1
+SH
+chmod +x "$work/fails/go"
+status=0
+PATH="$work/fails:$PATH" "$splitter" 1 2 ./nowhere >/dev/null 2>"$work/stderr" || status=$?
+check "a go test -list that fails exits 1" "$(is "$status" 1)"
+check "and passes go's error through" "$(contains "$(cat "$work/stderr")" "can't load package")"
 split_leg "$captures/logmask.txt" 0 2
 check "leg 0 exits 2" "$(is "$status" 2)"
 split_leg "$captures/logmask.txt" 3 2

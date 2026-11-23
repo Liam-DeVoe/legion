@@ -27,9 +27,12 @@
 #
 # It reads go's standard output alone, the names and each package's line; what go writes to
 # standard error (a `go: downloading` line for each module it fetches, a build's errors) passes
-# through to this script's own. It exits 1 when go test -list fails or prints a line that is
-# neither a name nor a package's `ok`, `?` or `FAIL` line, and 2 on a usage error. It reports how
-# many names it kept on stderr.
+# through to this script's own. A line of standard output that is neither a name nor a package's
+# `ok`, `?` or `FAIL` line is one the test binary printed itself while it listed, from its
+# TestMain or a package's init (`docs: 0 services built …` in packages/envoy's
+# internal/dispatch/docs), and passes through to standard error too: a name is a Go identifier
+# that starts with Test, Fuzz or Example, so no such line is read as one. It exits 1 when go test
+# -list fails, and 2 on a usage error. It reports how many names it kept on stderr.
 set -euo pipefail
 export LC_ALL=C
 
@@ -72,9 +75,8 @@ fi
 
 unread=$(grep -Ev '^((Test|Fuzz|Example|Benchmark)[A-Za-z0-9_]*|(ok|\?|FAIL)[[:space:]].*)$' <<<"$listing" || true)
 if [ -n "$unread" ]; then
-  echo "go-test-split.sh: go test -list printed lines that are neither a test's name nor a package's ok, ? or FAIL line:" >&2
+  echo "go-test-split.sh: the test binaries printed these lines while they listed their tests; none is a name:" >&2
   printf '%s\n' "$unread" >&2
-  exit 1
 fi
 
 names=$(grep -E '^(Test|Fuzz|Example)[A-Za-z0-9_]*$' <<<"$listing" | sort -u || true)
