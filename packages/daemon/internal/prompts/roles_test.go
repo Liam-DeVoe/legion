@@ -397,7 +397,7 @@ func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
 	}
 }
 
-// A release of an idle issue pod ends every role process in it and keeps each role's session, its
+// A release of an idle issue pod ends every role process in it and keeps each agent's session, its
 // phase and its pending task (supervise.SuspendedByReleased), and the next task, message or CI
 // settlement for one of its roles brings the pod back. So a part that says a role, a process or a
 // session stays live from its first assignment until its issue closes or leaves the workflow, or
