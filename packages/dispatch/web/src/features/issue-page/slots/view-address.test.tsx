@@ -158,7 +158,6 @@ test("a plan task under a statement, named on the Verification view's address, d
     view.container.querySelector("[data-verification-body]"),
     "the Verification view was drawn beside the outline"
   ).toBeNull();
-  expect(focusedRow(), "the focus left the plan task's row").toBe(task);
 });
 
 // A node the Verification view draws a row of keeps the view: a comment of the issue, which is

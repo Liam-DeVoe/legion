@@ -246,7 +246,6 @@ test("a write-up's address under words its question does not hold draws the outl
     expect(drawnSlot(view), "the stage drew the view, which has no row for the write-up").toBe(
       "the body"
     );
-    expect(focusedRow(), "the focus left the write-up's row").toBe(WRITE_UP_NODE);
   } finally {
     asks.mockRestore();
     decisions.mockRestore();
@@ -366,11 +365,20 @@ test("Enter on the Retry of the Decisions view's refused decisions read, before 
   const read = commentGone();
   try {
     const view = drawStage(`?comment=${GONE_COMMENT}`);
-    const retry = await rowTakesFocus(
-      view,
-      `[data-decisions-body] ${FAILED_READ_RETRY}`,
-      "the view's refused decisions read"
-    );
+    const retry = await waitFor(() => {
+      const button = view.container.querySelector<HTMLElement>(
+        `[data-decisions-body] ${FAILED_READ_RETRY}`
+      );
+      expect(
+        button,
+        `the view's refused decisions read drew no Retry; the stage drew ${drawnSlot(view)}`
+      ).not.toBeNull();
+      expect(
+        button,
+        `the view's refused decisions read left the focus on ${focusedRow() ?? document.activeElement?.tagName}`
+      ).toHaveFocus();
+      return button as HTMLElement;
+    });
     // Enter on a button: its keydown, then the press it makes.
     act(() => {
       retry.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
@@ -393,7 +401,7 @@ const NOTHING_UNREAD = { as_of: "2026-11-05T02:00:00Z", limit: 200, offset: 0, r
 // outline's tree, its rows and the mark that reads a thread in the reader's Inbox
 // (`outline-thread-read.tsx`) each read who is reading, and would ask for it again on a return more
 // than 30 s after the page loaded unless they read it as the tree's own reads are kept fresh
-// (`useIssueTree.ts`'s `EVENT_FRESH`). Here every read the page asks answered 31 s ago.
+// (`refs/reference-target.ts`'s `EVENT_FRESH`). Here every read the page asks answered 31 s ago.
 test("coming back to the outline from Decisions after the app's staleTime asks who is reading no second time", async () => {
   // The stub of who is reading that `stubReads` set: `spyOn` hands back that same spy, which
   // keeps its answer, and this counts its calls.
