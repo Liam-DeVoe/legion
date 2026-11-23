@@ -361,9 +361,15 @@ type ClaimAnswer struct {
 
 // Budget is what a run spent of its level's budget: its model calls, its working time in
 // milliseconds, and its output tokens. Time the run waits for its person counts against none.
+// ModelMS and ToolMS say where the time went, and bound nothing: the milliseconds its model calls
+// took, each from its request to its last token, and those its tool calls took, each from its
+// start to its end. An end adds each to the run's budget_used, and an agent that sends none of
+// them adds 0.
 type Budget struct {
 	Calls     int   `json:"calls"`
 	WorkingMS int64 `json:"working_ms"`
+	ModelMS   int64 `json:"model_ms"`
+	ToolMS    int64 `json:"tool_ms"`
 	Tokens    int   `json:"tokens"`
 }
 

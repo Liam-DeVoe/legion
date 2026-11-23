@@ -811,6 +811,67 @@ func TestACallsFrameReachesTheRunsEventsBeforeItsToolFrame(t *testing.T) {
 	}
 }
 
+// TestARunsRecordSaysWhereItsTimeWent: a run's record says where its time went, beside its calls,
+// working time and tokens: the milliseconds its model calls took, those its tool calls took, which
+// the agent's end adds, and those it waited in the queue before its first claim, which the end
+// keeps; GET /api/v1/going/runs/{id} and History show each in the run's used.
+func TestARunsRecordSaysWhereItsTimeWent(t *testing.T) {
+	rig := newGoingAgentRig(t, nil)
+	rig.served.deps.Identity = headerIdentity(rig.database)
+	loop := newGoingLoop(t, rig)
+	issue := rig.issue(t, "The issue the run reads slowly")
+	const words = "read the issue, slowly"
+	const modelWait, readWait = 30 * time.Millisecond, 200 * time.Millisecond
+	loop.script.set(words, func(n int) agenttest.Reply {
+		wait := make(chan struct{})
+		time.AfterFunc(modelWait, func() { close(wait) })
+		if n == 1 {
+			return agenttest.Reply{Hold: wait, Calls: []agenttest.Call{{Name: "read", Arguments: map[string]any{"issue": issue}}}}
+		}
+		return agenttest.Reply{Hold: wait, Text: "It says what its title says."}
+	})
+	rig.hooks.set(t, http.MethodGet, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		time.Sleep(readWait)
+		inner.ServeHTTP(w, r)
+	})
+	// Queued at a shape no build reads, so no agent claims it before it has waited 5 s.
+	run := rig.queued(t, "alice", goingRunShape+1, words)
+	rig.exec(t, `update going_runs set shape = $2, created_at = created_at - interval '5 seconds' where id = $1::uuid`, run, goingRunShape)
+	rig.exec(t, `select pg_notify($1, 'ready')`, GoingRunsChannel)
+	record := rig.ended(t, run, time.Minute)
+	if record.state != "done" || record.used.Calls != 2 {
+		t.Fatalf("the run ended %s with %q after %d model calls, want done after 2", record.state, record.reason, record.used.Calls)
+	}
+	used := record.used
+	if used.ModelMS < 2*modelWait.Milliseconds() || used.ToolMS < readWait.Milliseconds() || used.WorkingMS < used.ModelMS+used.ToolMS {
+		t.Errorf("the run's record spent %d ms of model time, %d of tool time and %d of working time, want at least %d, %d and their sum",
+			used.ModelMS, used.ToolMS, used.WorkingMS, 2*modelWait.Milliseconds(), readWait.Milliseconds())
+	}
+	queued := rig.count(t, `select coalesce((budget_used->>'queued_ms')::int, -1) from going_runs where id = $1::uuid`, run)
+	if queued < 5000 || queued > 60_000 {
+		t.Errorf("the run's record says it waited %d ms in the queue, want the 5 s it waited", queued)
+	}
+	want := goingRunUsed{Calls: used.Calls, WorkingMS: used.WorkingMS, Tokens: used.Tokens, ModelMS: used.ModelMS, ToolMS: used.ToolMS, QueuedMS: int64(queued)}
+	response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET the run answered %d %s", response.Code, response.Body.String())
+	}
+	if got := decodeBody[goingRun](t, response).Used; got != want {
+		t.Errorf("GET the run answers used %+v, want %+v", got, want)
+	}
+	var listed *goingRun
+	for _, conversation := range goingHistory(t, rig.mux, "alice", "").Rows {
+		for i := range conversation.Runs {
+			if conversation.Runs[i].ID == run {
+				listed = &conversation.Runs[i]
+			}
+		}
+	}
+	if listed == nil || listed.Used != want {
+		t.Errorf("History lists the run as %+v, want it with used %+v", listed, want)
+	}
+}
+
 // TestARunWhoseSavedStepNamesAToolThisBuildLacksFails: a run whose saved step names a tool this
 // build's agent does not know, as a later build that has the tool saves one, fails with
 // UNKNOWN_TOOL naming the tool, and its model is never called (R15, check c25's last row); a run

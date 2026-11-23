@@ -37,6 +37,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -382,31 +383,31 @@ func (a *AgentListener) serve(conn net.Conn) {
 	var tooLarge agentwire.FrameTooLargeError
 	switch {
 	case errors.As(err, &tooLarge):
-		a.answer(conn, "", nil, goingAgentRefusal(agentwire.CodeTooLarge, "%s", err.Error()))
+		a.answer(context.Background(), conn, "", nil, goingAgentRefusal(agentwire.CodeTooLarge, "%s", err.Error()))
 		return
 	case err != nil:
 		return
 	}
 	var request agentwire.Request
 	if err := json.Unmarshal(payload, &request); err != nil {
-		a.answer(conn, "", nil, goingAgentRefusal(agentwire.CodeBadRequest, "the request is no agent/v1 frame: %v", err))
+		a.answer(context.Background(), conn, "", nil, goingAgentRefusal(agentwire.CodeBadRequest, "the request is no agent/v1 frame: %v", err))
 		return
 	}
 	if len(request.Secret) != agentwire.SecretSize || subtle.ConstantTimeCompare(request.Secret, a.secret) != 1 {
-		a.answer(conn, "", nil, goingAgentRefusal(agentwire.CodeUnauthorized, "the request carries no secret of this server's agent"))
+		a.answer(context.Background(), conn, "", nil, goingAgentRefusal(agentwire.CodeUnauthorized, "the request carries no secret of this server's agent"))
 		return
 	}
 	if request.Version != agentwire.Version {
-		a.answer(conn, "", nil, goingAgentRefusal(agentwire.CodeVersion, "this server speaks %s, and the request speaks %q", agentwire.Version, request.Version))
+		a.answer(context.Background(), conn, "", nil, goingAgentRefusal(agentwire.CodeVersion, "this server speaks %s, and the request speaks %q", agentwire.Version, request.Version))
 		return
 	}
 	limit := agentwire.RequestLimit(request.Call)
 	switch {
 	case limit == 0:
-		a.answer(conn, "", nil, goingAgentRefusal(agentwire.CodeBadRequest, "%q is no call of %s", request.Call, agentwire.Version))
+		a.answer(context.Background(), conn, "", nil, goingAgentRefusal(agentwire.CodeBadRequest, "%q is no call of %s", request.Call, agentwire.Version))
 		return
 	case len(payload) > limit:
-		a.answer(conn, request.Call, nil, goingAgentRefusal(agentwire.CodeTooLarge, "a %s request of %d bytes is past its limit of %d", request.Call, len(payload), limit))
+		a.answer(context.Background(), conn, request.Call, nil, goingAgentRefusal(agentwire.CodeTooLarge, "a %s request of %d bytes is past its limit of %d", request.Call, len(payload), limit))
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
@@ -418,11 +419,15 @@ func (a *AgentListener) serve(conn net.Conn) {
 		cancel()
 	}()
 	body, refusal := a.dispatch(ctx, request)
-	a.answer(conn, request.Call, body, refusal)
+	a.answer(ctx, conn, request.Call, body, refusal)
 }
 
-// answer writes the answer frame of call: body, or refusal where the call was refused.
-func (a *AgentListener) answer(conn net.Conn, call string, body any, refusal *agentwire.Error) {
+// answer writes the answer frame of call: body, or refusal where the call was refused. ctx is the
+// call's own, which ends as the agent closes the connection (serve). A write that fails is logged
+// as a warning, but for a renew whose agent closed the connection before its answer, which is
+// logged at debug: the agent ends its renew on purpose as a claim lands, to renew the new lease
+// too (agent.renew), so the answer finds the connection closed once for each run it starts.
+func (a *AgentListener) answer(ctx context.Context, conn net.Conn, call string, body any, refusal *agentwire.Error) {
 	envelope := agentwire.Answer{Error: refusal}
 	if refusal == nil {
 		encoded, err := json.Marshal(body)
@@ -439,8 +444,19 @@ func (a *AgentListener) answer(conn net.Conn, call string, body any, refusal *ag
 	}
 	_ = conn.SetWriteDeadline(time.Now().Add(goingAgentFrameTime))
 	if err := agentwire.WriteFrame(conn, frame, agentwire.AnswerLimit(call)); err != nil {
+		if call == agentwire.CallRenew && goingAgentClosed(ctx, err) {
+			slog.Debug("dispatch: the agent closed its renew before the answer", "error", err)
+			return
+		}
 		slog.Warn("dispatch: write an answer to the agent", "call", call, "error", err)
 	}
+}
+
+// goingAgentClosed reports whether a write of an answer failed because the agent closed the
+// connection first: a broken pipe or a reset, on a call whose context ended, which serve's read of
+// the connection ends as the agent closes it.
+func goingAgentClosed(ctx context.Context, err error) bool {
+	return ctx.Err() != nil && (errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET))
 }
 
 // dispatch decodes the request's body as its call's shape, refusing a member the shape does not
@@ -683,7 +699,9 @@ func (a *AgentListener) claimOne(ctx context.Context, instance string, only []st
 
 // claimGoingRun leases run to instance in tx and reads it with its history and the turns of its
 // conversation before it (agentwire.EarlierTurns of them), or fails it with
-// goingRunHistoryTooLarge and answers nil where its last model turns pass goingHistoryLimit.
+// goingRunHistoryTooLarge and answers nil where its last model turns pass goingHistoryLimit. The
+// run's first claim writes how long it waited in the queue into its budget_used, as queued_ms:
+// from its created_at to the claim. A later claim of the run leaves it.
 func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agentwire.ClaimedRun, error) {
 	claimed := agentwire.ClaimedRun{ID: run}
 	var continues *string
@@ -691,7 +709,10 @@ func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agent
 	var budget []byte
 	if err := tx.QueryRow(ctx, `
 		update going_runs set state = 'working', lease_token = gen_random_uuid(), lease_owner = $2,
-		  lease_ends_at = now() + make_interval(secs => $3)
+		  lease_ends_at = now() + make_interval(secs => $3),
+		  budget_used = case when budget_used ? 'queued_ms' then budget_used
+		    else budget_used || jsonb_build_object('queued_ms',
+		      greatest(floor(extract(epoch from clock_timestamp() - created_at) * 1000), 0)::bigint) end
 		where id = $1::uuid
 		returning coalesce(conversation_id, id)::text, continues::text, words, context, coalesce(kind, ''), coalesce(level, ''), coalesce(mode, ''),
 		  shape, budget_used, lease_token::text, lease_ends_at
@@ -1104,8 +1125,9 @@ func goingLeaseHeld(ctx context.Context, tx pgx.Tx, run, token string) (bool, er
 }
 
 // end ends the run's turn: it sets the run's state and stop reason, frees its lease, and adds what
-// the turn spent to its budget, in one statement whose condition is the request's lease token and
-// the run working, so a stale owner's end changes nothing; and in the same transaction it appends
+// the turn spent to its budget, keeping every other field of budget_used (the queued_ms of its
+// first claim), in one statement whose condition is the request's lease token and the run
+// working, so a stale owner's end changes nothing; and in the same transaction it appends
 // the run's end frame (agentwire.EndFrame), which names what the run's record offers its person
 // next. A turn that ends done while a row of the run's plan waits for its person leaves the run
 // waiting (goingRowsWaitSQL), and a run left waiting appends going_plan.updated, since its plan now
@@ -1154,13 +1176,16 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 	err = tx.QueryRow(ctx, `
 		update going_runs set state = $3, stop_reason = nullif($4, ''), lease_token = null, lease_owner = null,
 		  lease_ends_at = null, finished_at = case when $3 = 'waiting' then null else now() end,
-		  budget_used = jsonb_build_object(
+		  budget_used = budget_used || jsonb_build_object(
 		    'calls', coalesce((budget_used->>'calls')::int, 0) + $5,
 		    'working_ms', coalesce((budget_used->>'working_ms')::bigint, 0) + $6,
+		    'model_ms', coalesce((budget_used->>'model_ms')::bigint, 0) + $8,
+		    'tool_ms', coalesce((budget_used->>'tool_ms')::bigint, 0) + $9,
 		    'tokens', coalesce((budget_used->>'tokens')::int, 0) + $7)
 		where id = $1::uuid and lease_token = $2::uuid and state = 'working'
 		returning author_login
-	`, request.Run, request.LeaseToken, ended.State, ended.Reason, request.Used.Calls, request.Used.WorkingMS, request.Used.Tokens).Scan(&login)
+	`, request.Run, request.LeaseToken, ended.State, ended.Reason, request.Used.Calls, request.Used.WorkingMS, request.Used.Tokens,
+		request.Used.ModelMS, request.Used.ToolMS).Scan(&login)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return agentwire.EndAnswer{}, goingStaleLease(request.Run)
 	}

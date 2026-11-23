@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  A command-bar run's record says where its time went. Each model call's `reply` frame carries
+  `model_ms`, from the call's request to its last token, `first_token_ms`, to its first token of
+  prose (left out for a reply of tool calls alone), and `input_tokens` and `output_tokens`; each
+  tool call's `tool` frame carries `ms`, from the call's start to its end. The run's `used`, in
+  `GET /api/v1/going/runs/{id}` and in History, adds `model_ms` and `tool_ms`, summed over its
+  calls and turns, and `queued_ms`, how long the run waited in the queue before its first claim;
+  each is left out while 0, as on a run worked before. A turn's end now keeps every field of the
+  record's `budget_used` it does not add to. The messages the model is given, its tools and the
+  steps of the agent's loop are unchanged. The server no longer logs a warning when the agent
+  closes its renew's connection on purpose as a claim lands, once for each run the agent starts:
+  that write is logged at debug.

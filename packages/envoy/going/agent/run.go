@@ -83,7 +83,8 @@ type callFrame struct {
 // search; the items it named and answered, by key or reference; and whether it is a slip: a call
 // of the model's that failed by the model's own guess - a tool no one has, arguments its tool
 // refuses, a change outside a plan - which the model mends itself, and which the bar shows as no
-// failure. A slip is not an error.
+// failure. A slip is not an error. MS is how many milliseconds the call took, from its start to
+// its end (toolRun), left out under one millisecond and on a frame of a plan's row or a review.
 type toolFrame struct {
 	Step  int      `json:"step"`
 	Tool  string   `json:"tool"`
@@ -94,6 +95,7 @@ type toolFrame struct {
 	Count int      `json:"count,omitempty"`
 	Items []string `json:"items"`
 	Slip  bool     `json:"slip"`
+	MS    int64    `json:"ms,omitempty"`
 }
 
 // replyFrame is the data of a reply frame: the step, the reply's prose, the tools it called, the
@@ -101,7 +103,10 @@ type toolFrame struct {
 // bar shows while the call runs, and, on a reply that ends the run's turn, how many tool results
 // the run withheld from the model (withhold), which the bar says under the answer, and whether its
 // answer is a question the run needs the person to answer before it can go on (ask_person), false
-// on every other reply.
+// on every other reply. It says where the model call's time went too (modelCall): the
+// milliseconds from its request to its last token and to its first token of prose, left out for a
+// reply of tool calls alone, and the tokens of its prompt, those of the provider's cache
+// included, and of its reply.
 type replyFrame struct {
 	Step           int      `json:"step"`
 	Text           string   `json:"text"`
@@ -109,6 +114,10 @@ type replyFrame struct {
 	Labels         []string `json:"labels"`
 	Withheld       int      `json:"withheld,omitempty"`
 	WaitsForPerson bool     `json:"waits_for_person"`
+	ModelMS        int64    `json:"model_ms"`
+	FirstTokenMS   int64    `json:"first_token_ms,omitempty"`
+	InputTokens    int      `json:"input_tokens"`
+	OutputTokens   int      `json:"output_tokens"`
 }
 
 // errStepTaken ends agentloop.Run once its one model call of a step finished and was saved: each
@@ -134,7 +143,9 @@ type worker struct {
 	now   time.Time
 
 	// used is what the run has spent, its earlier turns' and this one's; turn is this turn's
-	// alone, which end adds to the run's budget.
+	// alone, which end adds to the run's budget. A tool call adds its time to both from the
+	// goroutine it runs on (toolRun): one of agentloop's, which runs a step's calls one at a time
+	// and ends them before its Run returns, or the run's own.
 	used, turn agentwire.Budget
 	// history is the run's steps as the claim answered them, then each step saved since, in the
 	// order of their numbers; next is the number the next step takes.
@@ -151,9 +162,9 @@ type worker struct {
 	// end.
 	mu      sync.Mutex
 	stepped []agentwire.SavedStep
-	// prose is the prose the model call in flight streams, which the first call frame of its
-	// step carries (callStarted); nil between model calls.
-	prose atomic.Pointer[stepProse]
+	// inFlight is the model call in flight (modelCall), whose first call frame of its step
+	// carries the prose it streamed so far (callStarted); nil between model calls.
+	inFlight atomic.Pointer[modelCall]
 
 	// grantEnded is the reason a call's grant ended with, which stops the run; lost is set once
 	// the run is no longer held under its lease, after which the worker writes nothing more of it;
@@ -372,12 +383,13 @@ type stepOutcome struct {
 // step makes one step: one agentloop.Run of one model call, from the run's saved steps, with the
 // tools it calls; each tool call shows its call frame as it starts (callStarted), with the prose
 // the model call streamed so far (OnText) on the first, and is saved as it ends (toolRun); the
-// model call is saved once its tools ran (OnStep). The call asks for no structured reply: a reply
-// that calls no tool is the answer in prose, and one that calls ask_person ends the turn with its
-// question (saveReply). The watchdog gives up the run when the step runs past its model call's
-// time and watchdogGrace. A call the chat model's content filter refused, or whose reply it
-// stopped, saves nothing, and the step is made again (withhold). The run's last model call, which
-// is offered no tool, is told so (lastCallNote).
+// model call is saved once its tools ran (OnStep), with the times runModel keeps of it
+// (modelCall). The call asks for no structured reply: a reply that calls no tool is the answer in
+// prose, and one that calls ask_person ends the turn with its question (saveReply). The watchdog
+// gives up the run when the step runs past its model call's time and watchdogGrace. A call the
+// chat model's content filter refused, or whose reply it stopped, saves nothing, and the step is
+// made again (withhold). The run's last model call, which is offered no tool, is told so
+// (lastCallNote).
 func (w *worker) step() stepOutcome {
 	messages, err := conversation(w.run, lastWhole(w.history), w.withheld, w.now)
 	if err != nil {
@@ -408,14 +420,11 @@ func (w *worker) step() stepOutcome {
 			return errReplyFiltered
 		}
 		finish = step.Finish
-		ends = w.saveReply(base, step)
+		ends = w.saveReply(base, step, w.inFlight.Load())
 		return errStepTaken
 	}
-	prose := &stepProse{}
-	w.prose.Store(prose)
-	defer w.prose.Store(nil)
 	request.OnText = func(delta string) error {
-		prose.add(delta)
+		w.inFlight.Load().add(delta)
 		if w.agent.config.Hooks {
 			return hookOnText(delta)
 		}
@@ -508,21 +517,29 @@ func withLastCallNote(messages []agentloop.Message) []agentloop.Message {
 // the content filter refused, or whose reply it stopped, spends the run's time and tokens and no
 // call of its level, since it answered nothing: it is made again as withhold says, which ends the
 // run once a call is refused with every result withheld, and a refusal of a run's last call would
-// otherwise end the run with no answer.
+// otherwise end the run with no answer. The call is the run's model call in flight (inFlight)
+// until it returns, and adds its time from its request to its last token to the run's model
+// time: the time agentloop.Run took, where no token marked its end (modelCall).
 func (w *worker) runModel(request agentloop.Request) (agentloop.Result, bool, error) {
 	stepCtx, cancel := context.WithCancel(w.ctx)
 	defer cancel()
 	finished := w.agent.watch(w, request.Bounds.Time+watchdogGrace)
-	started := time.Now()
+	call := &modelCall{asked: time.Now()}
+	w.inFlight.Store(call)
+	defer w.inFlight.Store(nil)
 	result, err := agentloop.Run(stepCtx, request)
-	working := time.Since(started)
+	returned := time.Now()
 	if !finished() {
 		// The watchdog gave the run up: its goroutine was counted stuck, and it writes nothing.
 		w.lose()
 		return result, false, err
 	}
+	working := returned.Sub(call.asked)
+	model, _ := call.ended(returned)
 	w.turn.WorkingMS += working.Milliseconds()
 	w.used.WorkingMS += working.Milliseconds()
+	w.turn.ModelMS += model.Milliseconds()
+	w.used.ModelMS += model.Milliseconds()
 	w.turn.Tokens += result.Usage.Output
 	w.used.Tokens += result.Usage.Output
 	if refused := result.Fault == agentloop.FaultContentFilter || errors.Is(err, errReplyFiltered); !refused && (len(result.Steps) > 0 || result.Fault != "") {
@@ -600,8 +617,10 @@ func faultDetail(detail string) string {
 // plan waits for the plan, not for a question. A reply that ends the run's turn where the run
 // withheld tool results from the model saves the notice of them (withheldTold) after its text,
 // which the model reads in its later history; its frame carries the text alone and how many
-// results were withheld, which the bar says in its own words.
-func (w *worker) saveReply(base int, step agentloop.Step) bool {
+// results were withheld, which the bar says in its own words. Its frame says where call, the
+// model call in flight, spent its time, and the tokens of step's prompt and reply.
+func (w *worker) saveReply(base int, step agentloop.Step, call *modelCall) bool {
+	took, first := call.ended(time.Now())
 	var body modelBody
 	var questions []string
 	asked := false
@@ -628,6 +647,12 @@ func (w *worker) saveReply(base int, step agentloop.Step) bool {
 			labels = append(labels, presentLabel(stepLabel(block.Name, input)))
 		}
 	}
+	if first == 0 && body.Text != "" {
+		// agentloop gives the step to OnStep on a goroutine of its own, which can run before
+		// its stream's reader passed the step's prose on (OnText): prose not passed on yet came
+		// last.
+		first = took
+	}
 	if len(questions) > 0 {
 		body.Text = strings.Join(questions, "\n\n")
 	}
@@ -643,7 +668,9 @@ func (w *worker) saveReply(base int, step agentloop.Step) bool {
 	if len(tools) > 0 {
 		line = note(fmt.Sprintf("%s [calls %s]", body.Text, strings.Join(tools, ", ")))
 	}
-	reply := replyFrame{Step: base, Text: prose, Tools: tools, Labels: labels, Withheld: withheld, WaitsForPerson: waits}
+	reply := replyFrame{Step: base, Text: prose, Tools: tools, Labels: labels, Withheld: withheld, WaitsForPerson: waits,
+		ModelMS: took.Milliseconds(), FirstTokenMS: first.Milliseconds(),
+		InputTokens: step.Usage.Input + step.Usage.CacheRead + step.Usage.CacheWrite, OutputTokens: step.Usage.Output}
 	if waits {
 		reply.Tools, reply.Labels = []string{}, []string{}
 	}
@@ -679,9 +706,14 @@ const toolPanicked = "it panicked"
 // nothing, which is no error either: the model is told what Dispatch answered, and the bar shows
 // the read with "none found" (endedStep.noneFound). A do that panics is saved as a
 // refusal naming the panic, and the panic goes on to agentloop's recover, so the run's next step,
-// which starts from the saved steps, tells the model the tool failed.
+// which starts from the saved steps, tells the model the tool failed. The time do takes is the
+// tool frame's and is added to the run's tool time. The first call of a step marks the last token
+// of the model call in flight (modelCall): agentloop runs a step's tools once its stream ended.
 func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, step int, input json.RawMessage) (string, bool)) func(context.Context, agentloop.ToolCall) (string, bool) {
 	return func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
+		if model := w.inFlight.Load(); model != nil {
+			model.ended(time.Now())
+		}
 		step := base + call.Index
 		input := call.Input
 		if !json.Valid(input) {
@@ -695,7 +727,11 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 			kind = kindPlan
 		}
 		w.callStarted(callFrame{Step: step, Tool: tool, Kind: kind, Label: presentLabel(label, arguments)})
+		var started time.Time
 		saveStep := func(result string, refused bool) {
+			took := time.Since(started).Milliseconds()
+			w.turn.ToolMS += took
+			w.used.ToolMS += took
 			if w.lost.Load() {
 				return
 			}
@@ -708,7 +744,7 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 					end.label = words
 				}
 			}
-			frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused && !slip && !end.noneFound, Label: end.label, Kind: kind, Count: end.count, Items: end.items, Slip: slip})
+			frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused && !slip && !end.noneFound, Label: end.label, Kind: kind, Count: end.count, Items: end.items, Slip: slip, MS: took})
 			frames := []agentwire.Frame{{Name: frameTool, Data: frame}}
 			if block, drew := w.drawn.LoadAndDelete(step); drew {
 				frames = append(frames, agentwire.Frame{Name: frameBlock, Data: block.(json.RawMessage)})
@@ -722,6 +758,7 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 				panic(recovered)
 			}
 		}()
+		started = time.Now()
 		result, refused := do(ctx, step, call.Input)
 		saveStep(result, refused)
 		return result, refused
@@ -730,15 +767,15 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 
 // callStarted sends call's frame as the call starts, once, so the bar shows the call's line while
 // it runs; the first call frame of a step carries the prose its model call streamed so far
-// (stepProse.first). A send that fails is logged, and the run goes on: the call's tool frame still
+// (modelCall.first). A send that fails is logged, and the run goes on: the call's tool frame still
 // ends its step. A run no longer held sends nothing, and a send the server refuses as no longer
 // held loses the run, as a step's save does.
 func (w *worker) callStarted(call callFrame) {
 	if w.lost.Load() {
 		return
 	}
-	if prose := w.prose.Load(); prose != nil {
-		call.Text = prose.first()
+	if model := w.inFlight.Load(); model != nil {
+		call.Text = model.first()
 	}
 	frame, _ := json.Marshal(call)
 	request := agentwire.FramesRequest{Run: w.run.ID, LeaseToken: w.run.LeaseToken, Frames: []agentwire.Frame{{Name: frameCall, Data: frame}}}
@@ -754,33 +791,58 @@ func (w *worker) callStarted(call callFrame) {
 	}
 }
 
-// stepProse is the prose one model call streams (agentloop.Request.OnText), which the first call
-// frame of its step carries: the prose so far as that call starts, since the stream and the
-// step's tools run on goroutines of their own.
-type stepProse struct {
-	mu   sync.Mutex
-	text strings.Builder
-	told bool
+// modelCall is one model call of a run in flight (runModel): when it was asked, the times of its
+// first and last tokens, and the prose it streams (agentloop.Request.OnText), which the first call
+// frame of its step carries - the prose so far as that call starts, since the stream and the
+// step's tools run on goroutines of their own. Its first token is its first delta of prose, none
+// for a reply of tool calls alone. agentloop runs a step's tools once its stream ended, and gives
+// the step to OnStep once they ran, so its last token is the start of its first tool call
+// (toolRun), or the step's OnStep for a reply that calls none (saveReply), or the return of
+// agentloop.Run for a call that drew no reply.
+type modelCall struct {
+	asked time.Time
+
+	mu                    sync.Mutex
+	text                  strings.Builder
+	told                  bool
+	firstToken, lastToken time.Time
 }
 
 // add adds delta, the next of the prose the model call streamed.
-func (p *stepProse) add(delta string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.text.WriteString(delta)
+func (c *modelCall) add(delta string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.firstToken.IsZero() {
+		c.firstToken = time.Now()
+	}
+	c.text.WriteString(delta)
 }
 
 // first is the prose streamed so far, "" for none, the first time a call frame of the step asks
 // for it, and nil each later time.
-func (p *stepProse) first() *string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.told {
+func (c *modelCall) first() *string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.told {
 		return nil
 	}
-	p.told = true
-	text := p.text.String()
+	c.told = true
+	text := c.text.String()
 	return &text
+}
+
+// ended marks at as the call's last token, where nothing marked one before, and answers how long
+// the call took from its request to its last token and to its first token, 0 for none.
+func (c *modelCall) ended(at time.Time) (took, first time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lastToken.IsZero() {
+		c.lastToken = at
+	}
+	if !c.firstToken.IsZero() {
+		first = c.firstToken.Sub(c.asked)
+	}
+	return c.lastToken.Sub(c.asked), first
 }
 
 // save saves one step of the run with body, and keeps it for the history of the next step. A

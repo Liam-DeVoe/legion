@@ -739,6 +739,82 @@ func TestACallsLineShowsAsItStarts(t *testing.T) {
 	}
 }
 
+// TestARunsFramesSayWhereItsTimeWent: each model call's reply frame says how long the call took
+// from its request to its last token, and to its first token of prose, none for a reply of tool
+// calls alone, and the tokens of its prompt and of its reply; each tool call's frame says how
+// long the call took; and the turn's end adds the model calls' time and the tool calls' time to
+// the run's budget, each summed over its calls, within the turn's working time. A model call's
+// time ends where its tools start: the first call, whose model takes 30 ms and whose read takes
+// 500 ms, took less than its read.
+func TestARunsFramesSayWhereItsTimeWent(t *testing.T) {
+	const modelWait, readWait = 30 * time.Millisecond, 500 * time.Millisecond
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		time.Sleep(modelWait)
+		if len(request.ToolResults()) > 0 {
+			return agenttest.Reply{Text: "DEMO-15 has no comments.", Output: 7}
+		}
+		return agenttest.Reply{Calls: []agenttest.Call{{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-15"}}}, Output: 3}
+	})
+	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+		time.Sleep(readWait)
+		return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"key":"DEMO-15"}`)}
+	})
+	workRun(t, fake.Model(), client, "what is DEMO-15")
+	end, _ := server.end(t)
+	if end.State != agentwire.StateDone {
+		t.Fatalf("the run ended %s with %q, want done", end.State, end.Reason)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	var tools []toolFrame
+	var replies []replyFrame
+	for _, frame := range server.events {
+		var err error
+		switch frame.Name {
+		case frameTool:
+			var tool toolFrame
+			err = json.Unmarshal(frame.Data, &tool)
+			tools = append(tools, tool)
+		case frameReply:
+			var reply replyFrame
+			err = json.Unmarshal(frame.Data, &reply)
+			replies = append(replies, reply)
+		}
+		if err != nil {
+			t.Fatalf("the %s frame %s does not read: %v", frame.Name, frame.Data, err)
+		}
+	}
+	if len(tools) != 1 || len(replies) != 2 {
+		t.Fatalf("the run's events hold %d tool frames and %d reply frames, want the read's and the two model calls'", len(tools), len(replies))
+	}
+	read, called, answer := tools[0], replies[0], replies[1]
+	if read.MS < readWait.Milliseconds() {
+		t.Errorf("the read's tool frame says it took %d ms, want at least the %d ms its call took", read.MS, readWait.Milliseconds())
+	}
+	for i, reply := range replies {
+		if reply.ModelMS < modelWait.Milliseconds() || reply.InputTokens != 10 {
+			t.Errorf("model call %d's reply frame says %d ms and %d prompt tokens, want at least %d ms and the 10 the model counted",
+				i+1, reply.ModelMS, reply.InputTokens, modelWait.Milliseconds())
+		}
+	}
+	if called.OutputTokens != 3 || answer.OutputTokens != 7 {
+		t.Errorf("the reply frames say %d and %d reply tokens, want the 3 and 7 the model counted", called.OutputTokens, answer.OutputTokens)
+	}
+	if called.FirstTokenMS != 0 {
+		t.Errorf("the reply of a tool call alone says its first token came at %d ms, want none", called.FirstTokenMS)
+	}
+	if answer.FirstTokenMS < modelWait.Milliseconds() || answer.FirstTokenMS > answer.ModelMS {
+		t.Errorf("the answer's first token came at %d ms, want at least %d ms and at most its last at %d ms", answer.FirstTokenMS, modelWait.Milliseconds(), answer.ModelMS)
+	}
+	if called.ModelMS >= read.MS {
+		t.Errorf("the first model call took %d ms, want less than its read's %d ms: its time ends where its tools start", called.ModelMS, read.MS)
+	}
+	if used := end.Used; used.ModelMS != called.ModelMS+answer.ModelMS || used.ToolMS != read.MS || used.WorkingMS < used.ModelMS+used.ToolMS {
+		t.Errorf("the turn's end spent %d ms of model time, %d of tool time and %d of working time, want %d, %d and at least their sum",
+			used.ModelMS, used.ToolMS, used.WorkingMS, called.ModelMS+answer.ModelMS, read.MS)
+	}
+}
+
 // TestThePagesIssueIsReadBeforeTheFirstModelCall: a run asked on an issue's page reads that issue
 // as the person before its first model call, as every read is made - a call of the server's,
 // saved as the run's step 1 with a read's call and tool frames - and each model call is given its

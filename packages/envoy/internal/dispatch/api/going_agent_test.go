@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pglisten"
 	"github.com/sjawhar/envoy/internal/testtmp"
 )
@@ -275,9 +277,10 @@ func goingEventually(t *testing.T, what string, done func() bool) {
 // server runs 16 calls at once and the 17th waits for one to end; a panicking route answers an
 // error and the server answers the next call; an answer past 1 MiB is cut. A claim takes no run
 // whose shape is above the build's, a person works at most 3 runs at once and queues at most 20, a
-// claim waits for a run that becomes ready, a hello frees the leases of this server's earlier
-// instances and of no other server's, and a renew is answered at once when its run is stopped,
-// after which its step and its frames are refused.
+// claim waits for a run that becomes ready, a run's first claim records how long it waited in the
+// queue and a later claim keeps that, a hello frees the leases of this server's earlier instances
+// and of no other server's, and a renew is answered at once when its run is stopped, after which
+// its step and its frames are refused.
 func TestTheAgentWireCalls(t *testing.T) {
 	rig := newGoingAgentRig(t, func(agent *AgentListener) { agent.renewWait = goingRenewWait })
 	ctx := context.Background()
@@ -512,6 +515,34 @@ func TestTheAgentWireCalls(t *testing.T) {
 		}
 	})
 
+	t.Run("a run's first claim records how long it waited in the queue, and a later claim keeps it", func(t *testing.T) {
+		rig.settleQueue(t)
+		run := rig.queued(t, "hana", goingRunShape, "a run that waited in the queue")
+		rig.exec(t, `update going_runs set created_at = created_at - interval '5 seconds' where id = $1::uuid`, run)
+		queued := func() int {
+			t.Helper()
+			return rig.count(t, `select coalesce((budget_used->>'queued_ms')::int, -1) from going_runs where id = $1::uuid`, run)
+		}
+		if claimed := rig.claim(t, "i-queued"); claimed == nil || claimed.ID != run {
+			t.Fatalf("the claim took %+v, want run %s", claimed, run)
+		}
+		first := queued()
+		if first < 5000 || first > 60_000 {
+			t.Fatalf("the run's first claim recorded queued_ms %d, want the 5 s the run waited in the queue", first)
+		}
+		if kept := rig.count(t, `select count(*) from going_runs where id = $1::uuid and budget_used @> '{"calls": 0, "working_ms": 0, "tokens": 0}'`, run); kept != 1 {
+			t.Fatal("the claim dropped a field of the run's budget_used")
+		}
+		// The lease runs out and a later claim takes the run, a minute older now.
+		rig.exec(t, `update going_runs set lease_ends_at = now() - interval '1 second', created_at = created_at - interval '1 minute' where id = $1::uuid`, run)
+		if claimed := rig.claim(t, "i-queued-again"); claimed == nil || claimed.ID != run {
+			t.Fatalf("the later claim took %+v, want run %s", claimed, run)
+		}
+		if again := queued(); again != first {
+			t.Fatalf("the later claim recorded queued_ms %d, want the first claim's %d kept", again, first)
+		}
+	})
+
 	t.Run("a hello frees the leases of this server's earlier instances", func(t *testing.T) {
 		rig.settleQueue(t)
 		run := rig.queued(t, "frank", goingRunShape, "a run whose agent died")
@@ -568,5 +599,55 @@ func TestTheAgentWireCalls(t *testing.T) {
 		_, err = rig.client.Frames(ctx, agentwire.FramesRequest{Run: claimed.ID, LeaseToken: claimed.LeaseToken,
 			Frames: []agentwire.Frame{{Name: "call", Data: json.RawMessage(`{"step":1}`)}}})
 		requireAgentCode(t, err, agentwire.CodeStaleLease, "a frames call of a stopped run")
+	})
+}
+
+// TestARenewItsAgentClosedLogsNoWarning: the agent closes its renew's connection on purpose as a
+// claim lands, to renew the new lease too, so the server's answer finds the connection closed once
+// for each run the agent starts: that write is logged at debug, and no warning. Every other write
+// that fails is still a warning: a claim whose agent closed its connection logs one.
+func TestARenewItsAgentClosedLogsNoWarning(t *testing.T) {
+	rig := newGoingAgentRig(t, func(agent *AgentListener) { agent.claimWait = time.Minute })
+	logged := &logBuffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	const warned = `level=WARN msg="dispatch: write an answer to the agent"`
+	// leave makes call and closes its connection once reached says the server holds it, as the
+	// agent stops waiting.
+	leave := func(t *testing.T, call func(context.Context) error, reached func() bool) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ended := make(chan error, 1)
+		go func() { ended <- call(ctx) }()
+		goingEventually(t, "the call reaching the server", reached)
+		cancel()
+		if err := <-ended; !errors.Is(err, context.Canceled) {
+			t.Fatalf("the call the agent left answered %v, want its own cancellation", err)
+		}
+	}
+
+	t.Run("a renew", func(t *testing.T) {
+		leave(t, func(ctx context.Context) error {
+			_, err := rig.client.Renew(ctx, agentwire.RenewRequest{Instance: "i-leaves"})
+			return err
+		}, func() bool { return rig.agent.renewed.Load() != 0 })
+		goingEventually(t, "the server's answer to the renew its agent closed", func() bool {
+			return logged.Lines(`level=DEBUG msg="dispatch: the agent closed its renew before the answer"`) != ""
+		})
+		if warning := logged.Lines(warned); warning != "" {
+			t.Fatalf("the renew its agent closed logged the warning %q, want it at debug alone", warning)
+		}
+	})
+
+	t.Run("a claim", func(t *testing.T) {
+		rig.settleQueue(t)
+		started := time.Now()
+		leave(t, func(ctx context.Context) error {
+			_, err := rig.client.Claim(ctx, agentwire.ClaimRequest{Instance: "i-leaves"})
+			return err
+		}, func() bool { return time.Since(started) > 300*time.Millisecond })
+		goingEventually(t, "the warning of the claim its agent closed", func() bool {
+			return strings.Contains(logged.Lines(warned), "call=claim")
+		})
 	})
 }
