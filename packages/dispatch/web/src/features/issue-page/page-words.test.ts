@@ -148,6 +148,9 @@ const ANSWERS: readonly unknown[] = [
 
 const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];
 
+/** Each export of page-words.ts, by its name. The rows of the join read it. */
+const exported = new Map<string, unknown>(Object.entries(pageWords));
+
 test("every node type has a plain name, and no name is an internal token", () => {
   expect(NODE_TYPES.length).toBeGreaterThan(0);
   for (const type of NODE_TYPES) {
@@ -590,7 +593,6 @@ test("every word table page-words.ts declares joins the parts' files, under its 
   const partExports = new Set(
     WORD_FILES.flatMap(({ module }) => Object.keys(module).filter((name) => name !== "default"))
   );
-  const exported = new Map<string, unknown>(Object.entries(pageWords));
   const members = [...exported]
     .filter(
       ([name, value]) =>
@@ -804,7 +806,6 @@ test("no key is given by two of the files the page's words are joined from", () 
 // A part's own table is a named export of its file, and page-words.ts exports it again. A table
 // of page-words.ts with the same name hides it, and so does a second part's export of that name.
 test("each table a part's file declares is read through page-words.ts, and is frozen", () => {
-  const exported = new Map<string, unknown>(Object.entries(pageWords));
   const offenders: string[] = [];
   for (const { file, module } of WORD_FILES) {
     for (const [name, value] of Object.entries(module)) {

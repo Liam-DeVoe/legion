@@ -39,16 +39,18 @@
  *
  * Each table here is joined with the words of each open part of the page. A part keeps its new
  * words in its own file, `page-words-<letter>.ts`. `joinWords` from `./page-words-parts` makes
- * each table. It adds to the table the keys that each part's file gives for it, and freezes the
- * result. This module exports each part's own tables again. `UNASKED_SOURCES` and
- * `ANSWER_SOURCES` hold them too. A word goes in one place:
+ * each table. It is a fifth helper beside the four above, and it makes each table with `freeze`.
+ * It adds to the table the keys that each part's file gives for it. `PART_UNASKED_SOURCES` and
+ * `PART_ANSWER_SOURCES` are data of the same module. This module exports each part's own tables
+ * again, and `UNASKED_SOURCES` and `ANSWER_SOURCES` hold them too. A word goes in one place:
  *
  * - Change a word in the file that holds it. Do not move it to another file.
  * - Put a part's own tables, and its new keys for a table of this module, in the part's file.
  * - Put a new key for a table that a part's file declares in that file, from any pull request.
+ *   TypeScript reads the keys of a table where the table is declared.
  * - Put every other new word of a pull request that is no part in this module.
  *
- * A key that two files give fails `page-words.test.ts`.
+ * A key that two files give fails `page-words.test.ts`, which names the key and both files.
  *
  * A test, a browser spec and a component therefore all read the same list.
  */

@@ -315,6 +315,19 @@ export const realStackReasons: Record<string, string> = {
     "a failed pin's retry, one comment from a double Submit, and a pin removed from Pinned",
 };
 
+/** The directories under `e2e/` that hold no spec file: `node_modules`, as Playwright's own
+ *  default ignores it, and the outputs of a browser run (`outputDir: "test-results"` in
+ *  e2e/playwright.config.ts, the reverse-order run's results and the HTML report), which hold
+ *  traces, videos and screenshots. `specFiles` of e2e/no-browser-rows.ts skips `node_modules`
+ *  and `test-results` for the same reason. The walk below runs as this module loads, so this
+ *  set stands above it. */
+const skippedDirectories = new Set([
+  "node_modules",
+  "playwright-report",
+  "test-results",
+  "test-results-reverse",
+]);
+
 // A listing names a file relative to `e2e/`, so the walk starts there. The headers' reasons
 // come after the list's entries.
 Object.assign(
@@ -330,13 +343,13 @@ Object.assign(
  *  - `listed` does not name it.
  *  - A `/**` comment starts at its first byte.
  *
- *  The walk goes down every directory but `node_modules`. */
+ *  The walk goes down every directory but `skippedDirectories`. */
 export function headerReasons(
   directory: string,
   listed: Readonly<Record<string, string>>
 ): Record<string, string> {
   const files = sourceFiles(directory, {
-    directory: (name) => name !== "node_modules",
+    directory: (name) => !skippedDirectories.has(name),
     file: (name) =>
       name.endsWith(".e2e.ts") &&
       !name.endsWith(".stub.e2e.ts") &&

@@ -7,15 +7,8 @@
  * the keys that each part's file adds to that table, in the order of `WORD_FILES`. Then it
  * freezes the copy. So two parts that add words change no common line.
  *
- * A word goes in one place:
- *
- * - Change a word in the file that holds it. Do not move it to another file.
- * - Put a part's own tables, and its new keys for a table of `page-words.ts`, in the part's file.
- * - Put a new key for a table that a part's file declares in that file, from any pull request.
- *   TypeScript reads the keys of a table where the table is declared.
- * - Put every other new word of a pull request that is no part in `page-words.ts`.
- *
- * A key that two files give is a clash. `page-words.test.ts` fails on each clash.
+ * Where a word goes is the list in the header of `page-words.ts`. A key that two files give is a
+ * clash, and `page-words.test.ts` fails on each clash.
  *
  * This module imports nothing from `page-words.ts`, because `page-words.ts` imports it. A part's
  * file imports only the type `PartWords` from here.
@@ -131,14 +124,6 @@ type AddedBy<Files extends readonly WordFile[], Name extends TableName> = Files 
 /** The file that a clash names for a key of the table's own. */
 const TABLE_FILE = "page-words.ts";
 
-/** A copy of `value` that shares no object or array with it. A key whose value is `undefined`
- *  stays. */
-function copyOf(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(copyOf);
-  if (typeof value !== "object" || value === null) return value;
-  return Object.fromEntries(Object.entries(value).map(([key, held]) => [key, copyOf(held)]));
-}
-
 /** Whether the join merges into `value`: an object and not an array. */
 function isTable(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -185,7 +170,7 @@ export function joinTables<
       const held = target[key];
       const heldGiver = added.get(key) ?? giver;
       if (!Object.hasOwn(target, key)) {
-        target[key] = copyOf(word);
+        target[key] = structuredClone(word);
         added.set(key, file);
       } else if (isTable(held) && isTable(word)) {
         merge(held, word, file, heldGiver, `${path}.${key}`);
