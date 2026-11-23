@@ -344,14 +344,26 @@ func (c *Fake) armedLocked() []time.Time {
 }
 
 // AwaitArmed waits until at least n timers are pending on the fake and returns their deadlines,
-// earliest first. what names what the test waits to see armed; a failure prints it with the
-// deadlines last seen pending.
+// earliest first. what names what the test waits to see armed; a failure prints it with what the
+// last try read: no timer armed, or how many of the n were and their deadlines, and the fake's
+// moment then.
 func (c *Fake) AwaitArmed(t testing.TB, what string, n int) []time.Time {
 	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("%s (at least %d timers armed on the fake clock)", what, n), func() ([]time.Time, bool) {
-		armed := c.Armed()
-		return armed, len(armed) >= n
+	var armed []time.Time
+	testwait.Until(t, fmt.Sprintf("%s (at least %d timers armed on the fake clock)", what, n), func() (string, bool) {
+		c.mu.Lock()
+		now, pending := c.nowLocked(), c.armedLocked()
+		c.mu.Unlock()
+		if len(pending) >= n {
+			armed = pending
+			return fmt.Sprintf("%d timers armed, due at %v", len(pending), pending), true
+		}
+		if len(pending) == 0 {
+			return fmt.Sprintf("no timer armed, the fake at %v", now), false
+		}
+		return fmt.Sprintf("%d of the %d timers armed, due at %v, the fake at %v", len(pending), n, pending, now), false
 	})
+	return armed
 }
 
 func (c *Fake) After(d time.Duration) <-chan time.Time { return c.NewTimer(d).C() }
