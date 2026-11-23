@@ -34725,6 +34725,7 @@
       ],
       "capabilities.*.source": [
         "boot",
+        "caches",
         "configuration"
       ],
       "capabilities.*.status": [
