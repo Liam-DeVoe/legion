@@ -7,8 +7,9 @@
 // own, under internal/store, because store and record import neither each other, and it imports
 // nothing, so both can.
 //
-// Each is a subquery over a row of issues the caller names by its alias. A run holds one task in
-// this release, so each finds one row at most.
+// Each is a subquery over a row of issues the caller names by its alias. A run works one task at
+// a time in this release, so each reads only a task at a step or at its retro and finds one row at
+// most, also in a stored plan of more tasks than this release walks (record.StoredPlan.Task).
 package plansql
 
 // StepRole is the subquery of the role of the step the task of the generation of alias, a row of
@@ -30,5 +31,5 @@ func PlaceRole(alias string) string {
 		`where s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.position = t.position) ` +
 		`when 'retro' then coalesce((select case when s.agent_key = 'owner' then 'architect' else s.role end from plan_steps s ` +
 		`where s.issue = t.issue and s.generation = t.generation and s.task = t.task and s.type = 'implementation' order by s.position desc limit 1), 'architect') ` +
-		`end from plan_tasks t where t.issue = ` + alias + `.key and t.generation = ` + alias + `.generation), '')`
+		`end from plan_tasks t where t.issue = ` + alias + `.key and t.generation = ` + alias + `.generation and t.running_kind in ('step', 'retro')), '')`
 }

@@ -636,7 +636,6 @@ test("an issue with no placeRole is read by its phase, and by its stepRole at st
   expect(await remindedAt("checker", issueAt({ phase: "step", stepRole: "checker" }))).toBe(true);
 });
 
-
 // Contract 222: two claims of one issue can hold one role — the agent implementer's claim on the
 // tester's step, beside the tester's own claim of an earlier version of the plan — and only the
 // worker on the role's step, the claim `workers.<role>.claim.token` names, works the phase. The
