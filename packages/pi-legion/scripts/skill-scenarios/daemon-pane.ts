@@ -13,7 +13,7 @@
  * `composeRolePrompt` the prompt a launch of any role starts with, and `composeStepPrompt` the
  * prompt a launch of a step of a role of the rig's deployment starts with.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
@@ -27,10 +27,10 @@ export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
 const PROGRAM = path.join(import.meta.dir, "daemon-pane.go");
 
 /** Runs `go <command> -overlay <overlay> ./cmd/daemon-pane ...args` in `module`, a checkout's
- * daemon module (`go test` with `-vet=off`), where the overlay puts each of `files` (a file's name
- * under `<module>/cmd/daemon-pane/`, and the rig's file that stands there), with `input` on its
- * stdin (the caller's own stdin when there is none), and returns its stdout. It throws, with what
- * the command printed, when the command exits other than 0. */
+ * daemon module, where the overlay puts each of `files` (a file's name under
+ * `<module>/cmd/daemon-pane/`, and the rig's file that stands there), with `input` on its stdin
+ * (the caller's own stdin when there is none), and returns its stdout. It throws, with what the
+ * command printed, when the command exits other than 0. */
 export function goInDaemonModule(
   module: string,
   files: Record<string, string>,
@@ -39,17 +39,18 @@ export function goInDaemonModule(
   input?: string
 ): string {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "daemon-pane-"));
+  const directory = path.join(module, "cmd", "daemon-pane");
+  // `go test` vets the package and runs its test binary in the package's own directory, which
+  // only the overlay holds, so a test run makes that directory, empty, and removes it after.
+  const made = command === "test" && !existsSync(directory);
   try {
     const overlay = path.join(scratch, "overlay.json");
-    const directory = path.join(module, "cmd", "daemon-pane");
     const replace = Object.fromEntries(
       Object.entries(files).map(([name, file]) => [path.join(directory, name), file])
     );
     writeFileSync(overlay, JSON.stringify({ Replace: replace }));
-    // `go test` vets a package from its own directory, which only the overlay holds, so the test
-    // runs unvetted.
-    const vet = command === "test" ? ["-vet=off"] : [];
-    const go = ["go", command, ...vet, "-overlay", overlay, "./cmd/daemon-pane", ...args];
+    if (made) mkdirSync(directory);
+    const go = ["go", command, "-overlay", overlay, "./cmd/daemon-pane", ...args];
     const result = Bun.spawnSync(go, {
       cwd: module,
       stdin: input === undefined ? "inherit" : new TextEncoder().encode(input),
@@ -64,6 +65,7 @@ export function goInDaemonModule(
     }
     return result.stdout.toString();
   } finally {
+    if (made && existsSync(directory)) rmdirSync(directory);
     rmSync(scratch, { recursive: true, force: true });
   }
 }
