@@ -111,8 +111,8 @@ test("each table's rows equal the per-day values", async () => {
     ]);
     const days = item?.series?.[0]?.days ?? [];
     expect(rows).toEqual([
-      ["2026-11-01", String(days[0]?.statistics[statistic])],
-      ["2026-11-02", String(days[1]?.statistics[statistic])],
+      ["2026-11-01", String(days[0]?.statistics?.[statistic])],
+      ["2026-11-02", String(days[1]?.statistics?.[statistic])],
       // A day with no row of the series holds no value.
       ["2026-11-03", null],
     ]);
