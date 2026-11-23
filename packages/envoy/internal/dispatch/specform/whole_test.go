@@ -16,7 +16,11 @@ import (
 // wholeTestLines is the rows of the tests of the whole text, then each line of ste-lint's corpus.
 // The rows hold what joins or splits a piece of ste-lint across two sentences, and what moves the
 // first place of a verb: a stop before a closing quote or bracket, an initialism, code font that
-// holds a stop and a space, a verb of a group in code font and in a name, and list items.
+// holds a stop and a space, a verb of a group in code font and in a name, and list items. The last
+// four hold the two ways a piece runs on into a sentence from the one before it, from an open
+// sentence of one piece and of two (left: the initialism ends a piece of ste-lint and no sentence),
+// with a closed sentence as the control, and one sentence written twice with an open sentence
+// between, whose closing quote a way out takes away at both places (changedRuns).
 func wholeTestLines(t *testing.T) []string {
 	t.Helper()
 	lines := []string{
@@ -32,6 +36,10 @@ func wholeTestLines(t *testing.T) []string {
 		`He said "Stop." "Go." Then the job copies each report of the night build to ada@example.com and keeps a copy for a week.`,
 		`The job copies each report of the night build to ada@example.com and says "Done." "Ok." Then it stops for the rest of the night.`,
 		`He said "Send it to ada@example.com." Then the job copies the log to ada@example.com each night after the build ends.`,
+		`It runs in the U.S. and it said "wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp." It keeps it. It ends.`,
+		`He said "wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp wq wr." It keeps it. It ends.`,
+		`He said wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp wq wr. It keeps it. It ends.`,
+		`He said "sa sb sc sd se sf sg sh si last." He said "ma mb mc md me mf." He said "sa sb sc sd se sf sg sh si last." It ends.`,
 	}
 	corpus, err := os.Open("ste/testdata/corpus.jsonl")
 	if err != nil {
@@ -110,7 +118,9 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 // closing marks taken away. They end a piece of ste-lint where it ran on into the next sentence,
 // make one run on where it ended, and move a verb's first place, so the count of each piece after
 // the change, from the sentences before it (left) and into those after it (runs), is read for each
-// way a piece can cross the changed sentence. Each line is one that the judge reads by its
+// way a piece can cross the changed sentence: also after an open sentence of two pieces, whose last
+// piece runs on into it, and in a sentence written twice that a run of open sentences joins, where
+// the way out closes it at both places (counted). Each line is one that the judge reads by its
 // sentences, with no backtick that nothing closes before a sentence (opened), which the judge
 // refuses a backtick after on purpose. Each change is read by a reading of its own, as a judgment
 // reads one finding's ways out, so the charge of a sentence (charge.Texts.Read) holds each. The
@@ -118,7 +128,7 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 // judge keeps.
 func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *testing.T) {
 	verbs := []string{"checks", "verifies", "validated", "confirm", "deletes", "removed", "starts", "begin", "halted", "display"}
-	texts, ways, opened, closed, refused := 0, 0, 0, 0, 0
+	texts, ways, opened, closed, refused, afterTwo, joinedTwice := 0, 0, 0, 0, 0, 0, 0
 	for _, text := range wholeTestLines(t) {
 		line := oneLine(text)
 		sentences := sentencesOf(line)
@@ -127,7 +137,24 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 		}
 		texts++
 		before, _ := lintedWhole(line, ste.Held{})
+		spreads, standsAt := make([]ste.Spread, len(sentences)), map[string][]int{}
 		for index, each := range sentences {
+			span := line[each.start:each.end]
+			spreads[index] = ste.SpreadOf(span)
+			standsAt[ste.Strip(span)] = append(standsAt[ste.Strip(span)], index)
+		}
+		for index, each := range sentences {
+			// leftOfTwo is whether the sentence before this one is open and of two pieces or more;
+			// joined whether this sentence stands at two places that a run of open sentences joins.
+			leftOfTwo := index > 0 && spreads[index-1].Open && len(spreads[index-1].Pieces) > 1
+			joined, places := false, standsAt[ste.Strip(line[each.start:each.end])]
+			for at := 1; at < len(places); at++ {
+				run := true
+				for between := places[at-1]; between < places[at]; between++ {
+					run = run && spreads[between].Open
+				}
+				joined = joined || run
+			}
 			place := each.in(line)
 			pieces := ste.Words(place)
 			if len(pieces) == 0 {
@@ -177,6 +204,12 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 					if !passed {
 						refused++
 					}
+					if leftOfTwo {
+						afterTwo++
+					}
+					if joined {
+						joinedTwice++
+					}
 					span := line[each.start:each.end]
 					was, now := ste.SpreadOf(span).Open, ste.SpreadOf(strings.ReplaceAll(span, way.from, way.to)).Open
 					switch {
@@ -189,8 +222,10 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 			}
 		}
 	}
-	t.Logf("%d lines, %d changes, %d refused, %d that end a piece that ran on, %d that make one run on", texts, ways, refused, closed, opened)
-	if texts < 700 || refused == 0 || refused == ways || closed == 0 || opened == 0 {
-		t.Errorf("%d lines, %d changes, %d refused, %d and %d that end and make a piece that runs on: the test reads too little", texts, ways, refused, closed, opened)
+	t.Logf("%d lines, %d changes, %d refused, %d that end a piece that ran on, %d that make one run on, %d after an open sentence of two pieces, %d in a sentence that a run joins at two places",
+		texts, ways, refused, closed, opened, afterTwo, joinedTwice)
+	if texts < 700 || refused == 0 || refused == ways || closed == 0 || opened == 0 || afterTwo == 0 || joinedTwice == 0 {
+		t.Errorf("%d lines, %d changes, %d refused, %d and %d that end and make a piece that runs on, %d after an open sentence of two pieces and %d in a sentence that a run joins at two places: the test reads too little",
+			texts, ways, refused, closed, opened, afterTwo, joinedTwice)
 	}
 }
