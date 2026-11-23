@@ -925,8 +925,10 @@ const barRows: readonly BarRow[] = [
   {
     // State 13. Scripts the decision `dispatch_issue`, so the line on top is File as a new issue,
     // and the new-issue run Enter on it starts: one create of an issue of OPS, which the server
-    // files at once. The bar closes, and the notice names the issue it filed. Its words share none
-    // with another row's search, which would list the issue were that row to run after this one.
+    // files at once. Before Enter the row waits for the line on top to settle on File and for the
+    // pause's search to answer, never for the short answer, which a filing line does not draw.
+    // The bar closes, and the notice names the issue it filed. Its words share none with another
+    // row's search, which would list the issue were that row to run after this one.
     reach: async (page, seed) => {
       const words = "we need a weather station on the roof";
       const { project } = seed.bar;
@@ -953,14 +955,28 @@ const barRows: readonly BarRow[] = [
         "dispatch_issue"
       );
       await openTheBar(page, seed);
+      // The pause's whole search, meaning as well as words, whose answer may re-rank the hits the
+      // keystrokes listed: the shot waits for it, as it waits for the line on top to settle.
+      const pauseSearched = page.waitForResponse(
+        (response) => {
+          const url = new URL(response.url());
+          return (
+            /^\/api\/v1\/search(?:\/results)?$/u.test(url.pathname) &&
+            url.searchParams.get("q") === words &&
+            url.searchParams.get("keywords_only") !== "true"
+          );
+        },
+        { timeout: RUN_STEPS_MS }
+      );
       await searchBox(page).fill(words);
+      expect((await pauseSearched).ok()).toBe(true);
       await expect(lineOnTop(page)).toContainText(`File as a new issue in ${project}`, {
         timeout: RUN_STEPS_MS,
       });
-      await expect(answerPanel(page)).toHaveAttribute("data-state", "ended", {
-        timeout: ANSWER_ENDS_MS,
-      });
       await expect(bar(page).getByTestId("search-line-deciding")).toHaveCount(0);
+      await expect(bar(page).getByText("Searching…")).toHaveCount(0);
+      // A filing line draws no short answer: Enter files the words, and answers nothing.
+      await expect(answerPanel(page)).toHaveCount(0);
       await shoot(page, "13-filing-line");
       await searchBox(page).press("Enter");
       const notice = page.getByTestId("going-notice");
