@@ -9,7 +9,7 @@ or a repository guide.
 - **The rule**, in a few imperative lines, in the present tense, about the work and never about
   this pull request.
 - **The evidence** below the rule: the file and symbol, or text quoted from the file, read at the
-  reviewed head, and what went wrong before the rule. Never a line number: the next edit above
+  head you commit, and what went wrong before the rule. Never a line number: the next edit above
   it moves it. Where the head no longer shows what your sentence says, quote the text and name the
   commit you read it at.
 - **Where it belongs**: the file a reader would look in, for example
