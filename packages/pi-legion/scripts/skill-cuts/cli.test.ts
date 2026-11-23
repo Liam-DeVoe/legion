@@ -13,7 +13,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
 import { type ArmName, buildArm, snapshotTag } from "./arms";
-import { LISTING_MEASURE, ListingMeasure } from "./build";
+import { ListingMeasure } from "./build";
 import { capturePaths } from "./capture";
 import { type Case, pathHash } from "./cases";
 import {
@@ -1791,7 +1791,7 @@ function listingEvidence(
     subagent: null,
     why: "the made-up session records no system prompt, only its digest",
   });
-  return [{ item: LISTING_MEASURE, source: JSON.stringify(measure) }];
+  return [{ item: LISTING_MEASURE_ITEM, source: JSON.stringify(measure) }];
 }
 
 /** The cases of `s` again in its cases file, each id of `evidence` with that evidence. */
@@ -1975,8 +1975,7 @@ describe("behaviour: dropped cases, the listing rule and pooled confirms", () =>
     ]);
   }, 60_000);
 
-  test("the listing rule reads the listing measure build.ts writes, under the name it writes it", () => {
-    expect(LISTING_MEASURE_ITEM).toBe(LISTING_MEASURE);
+  test("the listing rule reads the listing measure build.ts writes", () => {
     expect(listingStanding(listingEvidence("subagent listing", 30, ["beta", "gamma"]))).toEqual({
       state: "measured",
       recorded: 30,

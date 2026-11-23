@@ -243,6 +243,7 @@ import {
   dispatchOf,
   type Injection,
   PLUGIN_INJECTED,
+  pluginInjects,
   type SkillCopy,
   withPluginBlock,
 } from "./arms";
@@ -271,7 +272,7 @@ import {
   userTurnKey,
 } from "./capture";
 import { Case, listedName, Profile, ProfileSkill, type Thinking } from "./cases";
-import { json, Refused, Stopped, schemaFaults, writeWhole } from "./common";
+import { json, parseJson, Refused, Stopped, schemaFaults, writeWhole } from "./common";
 import {
   type AgentDefinition,
   buildContext,
@@ -285,6 +286,7 @@ import {
   type RepoSource,
   readFrontmatter,
   skillFrontmatter,
+  skillTextFrontmatter,
   subagentDefinition,
   UNREADABLE_DIRECTORY,
   UnreadableDirectory,
@@ -305,6 +307,7 @@ import {
 import { newSeed } from "./judge";
 import { type RecordedRequest, startRecorder } from "./recorder";
 import {
+  AnsweredRead,
   MAX_SKILL_ROUNDS,
   ReadsPastLastRound,
   type Replayed,
@@ -483,17 +486,7 @@ const ReplyCall = z.strictObject({ name: z.string(), target: z.string().nullable
  *  used. Every reply but a run's last went back with its answers. */
 const ReplyRecord = z.strictObject({
   calls: z.array(ReplyCall),
-  answers: z
-    .array(
-      z.strictObject({
-        skill: z.string(),
-        file: z.string(),
-        by: z.enum(["skill", "path"]),
-        from: z.enum(["arm", "copy", "absent"]),
-        isError: z.boolean(),
-      })
-    )
-    .nullable(),
+  answers: z.array(AnsweredRead).nullable(),
   usage: SpentRecord,
 });
 type ReplyRecord = z.infer<typeof ReplyRecord>;
@@ -664,7 +657,8 @@ function loadTasks(file: string): Task[] {
 }
 
 /** One item of a profile's evidence, as a build-tasks summary keeps it. */
-const EvidenceItem = z.strictObject({ item: z.string(), source: z.string() });
+export const EvidenceItem = z.strictObject({ item: z.string(), source: z.string() });
+export type EvidenceItem = z.infer<typeof EvidenceItem>;
 /** What the load test reads of a tasks file's summary (`<tasks>.summary.json`, as build-tasks and
  *  `build-tasks --reprofile` write it, build.ts): the evidence of each session task's profile, and
  *  of the context session's profile, which each written task takes. */
@@ -689,16 +683,10 @@ const TakenRead = z.looseObject({ fromRecorded: z.array(z.string()).optional() }
 
 /** Whether `evidence`'s listing measure marks names its profile took from the recorded listing:
  *  the measure cannot see a miss of those names. */
-function tookFromRecorded(evidence: readonly z.infer<typeof EvidenceItem>[] | undefined): boolean {
+function tookFromRecorded(evidence: readonly EvidenceItem[] | undefined): boolean {
   const item = evidence?.find((each) => each.item === LISTING_MEASURE_ITEM);
   if (item === undefined) return false;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(item.source);
-  } catch {
-    return false;
-  }
-  return (TakenRead.safeParse(raw).data?.fromRecorded?.length ?? 0) > 0;
+  return (TakenRead.safeParse(parseJson(item.source)).data?.fromRecorded?.length ?? 0) > 0;
 }
 
 /** Each task's profile evidence, as the tasks file's summary gives it: a session task's own
@@ -707,7 +695,7 @@ function tookFromRecorded(evidence: readonly z.infer<typeof EvidenceItem>[] | un
 function summaryEvidence(
   tasksFile: string,
   tasks: readonly Task[]
-): Map<string, readonly z.infer<typeof EvidenceItem>[] | undefined> | undefined {
+): Map<string, readonly EvidenceItem[] | undefined> | undefined {
   const file = `${tasksFile}.summary.json`;
   if (!existsSync(file)) return undefined;
   let raw: unknown;
@@ -737,7 +725,7 @@ function summaryEvidence(
 function taskListings(
   tasksFile: string,
   tasks: readonly Task[],
-  evidence: ReadonlyMap<string, readonly z.infer<typeof EvidenceItem>[] | undefined> | undefined
+  evidence: ReadonlyMap<string, readonly EvidenceItem[] | undefined> | undefined
 ): { readonly standings: Map<string, ListingStanding>; readonly taken: Set<string> } {
   if (evidence === undefined) {
     const why = `the tasks file has no build-tasks summary (${tasksFile}.summary.json) to give its listing measure`;
@@ -909,16 +897,6 @@ export function recordedLines(
   });
 }
 
-/** Whether the plugin of arms.ts's PLUGIN_INJECTED puts the skill `own` (the tested skill's own
- *  name) into each request of a session of `profile` on Oh My Pi: `own` is the skill it reads, and
- *  the profile installs the plugin. */
-function pluginInjects(profile: Profile, own: string): boolean {
-  return (
-    own === PLUGIN_INJECTED.skill &&
-    profile.plugins.some((plugin) => plugin.name === PLUGIN_INJECTED.plugin)
-  );
-}
-
 /**
  * Why a load test of the skill `own`, tested under `name`, cannot be made in the context of a
  * profile of `profiled` (see the file's header), or undefined when it can in each: on Claude Code,
@@ -945,7 +923,7 @@ async function injectedRefusal(
     const { context } = profile.profile;
     if (
       name !== own &&
-      pluginInjects(profile.profile, own) &&
+      pluginInjects({ skill: own, profile: profile.profile }) &&
       profile.profile.skills.some((skill) => listedName(skill) === own)
     ) {
       faults.push(
@@ -1592,10 +1570,7 @@ const SavedRolePrompt = z.looseObject({
  *  evidence names for the repository it composed it from (context.ts's `daemonCommit`; the
  *  plugin's commit where it names none). Undefined when it is, when no record is saved there, and
  *  when its context composed no role prompt. */
-function rolePromptFault(
-  record: string,
-  evidence: readonly z.infer<typeof EvidenceItem>[]
-): string | undefined {
+function rolePromptFault(record: string, evidence: readonly EvidenceItem[]): string | undefined {
   if (!existsSync(record)) return undefined;
   let raw: unknown;
   try {
@@ -1680,7 +1655,7 @@ class LoadTest {
     readonly settings: Settings,
     readonly root: string,
     readonly skillDir: string,
-    readonly daemonImages: ReadonlyMap<string, readonly z.infer<typeof EvidenceItem>[]>
+    readonly daemonImages: ReadonlyMap<string, readonly EvidenceItem[]>
   ) {}
 
   say(line: string): void {
@@ -1708,8 +1683,7 @@ class LoadTest {
         if (error instanceof NoSuchFile) return undefined;
         throw error;
       }
-      const description = readFrontmatter(new TextDecoder().decode(bytes)).description;
-      return typeof description === "string" ? description : "";
+      return skillTextFrontmatter(new TextDecoder().decode(bytes)).description;
     })();
     this.sessionDescriptions.set(profile.file, read);
     return read;
@@ -1728,7 +1702,7 @@ class LoadTest {
     id: string,
     text: string,
     profile: LoadProfile,
-    evidence: readonly z.infer<typeof EvidenceItem>[] = []
+    evidence: readonly EvidenceItem[] = []
   ): { c: CaptureCase; arm: Arm } {
     const { name, renamedFrom, model, thinking } = this.settings;
     const ownName = renamedFrom ?? name;
@@ -1758,7 +1732,7 @@ class LoadTest {
     // The Envoy plugin's block of the tested text before the task's, under every name, where the
     // profile installs the plugin (see the file's header).
     const placed =
-      this.o.host === "omp" && pluginInjects(profile, ownName)
+      this.o.host === "omp" && pluginInjects({ skill: ownName, profile })
         ? withPluginBlock([task], this.skillDir)
         : undefined;
     const injections: Injection[] =
@@ -2211,13 +2185,7 @@ class LoadTest {
     const runs: LoadRun[] = [];
     for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
       if (line.trim() === "") continue;
-      let raw: unknown;
-      try {
-        raw = JSON.parse(line);
-      } catch {
-        raw = undefined;
-      }
-      const parsed = LoadRun.safeParse(raw);
+      const parsed = LoadRun.safeParse(parseJson(line));
       if (!parsed.success || parsed.data.task !== id || parsed.data.run !== runs.length + 1) {
         throw new Refused(`${file}:${index + 1} is not run ${runs.length + 1} of task ${id}`);
       }
@@ -2240,13 +2208,7 @@ class LoadTest {
     const failed: FailedRun[] = [];
     for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
       if (line.trim() === "") continue;
-      let raw: unknown;
-      try {
-        raw = JSON.parse(line);
-      } catch {
-        raw = undefined;
-      }
-      const parsed = FailedRun.safeParse(raw);
+      const parsed = FailedRun.safeParse(parseJson(line));
       if (!parsed.success || parsed.data.task !== id) {
         throw new Refused(`${file}:${index + 1} is not a failed run of task ${id}`);
       }
@@ -2602,7 +2564,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const froms =
     o.host === "omp"
       ? profiled.flatMap(({ profile }) =>
-          pluginInjects(profile.profile, own)
+          pluginInjects({ skill: own, profile: profile.profile })
             ? [dispatchOf({ context: profile.profile.context, messages: [] }).from]
             : []
         )
@@ -2870,7 +2832,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     test.say(
       `${ids.length === 1 ? "task" : "tasks"} ${ids.join(", ")} run in the context ${profile.profile.context} of the profile ${profile.file} (SHA-256 ${profile.digest})`
     );
-    if (o.host === "omp" && pluginInjects(profile.profile, own)) {
+    if (o.host === "omp" && pluginInjects({ skill: own, profile: profile.profile })) {
       test.say(
         `the ${PLUGIN_INJECTED.plugin} plugin puts ${own} into each request in the context of ${profile.file}: each capture carries its block, built from the tested text, before the task's text${name === own ? "" : `, the same under the name ${name}`}, so its runs measure whether the agent reads a skill whose text it already holds`
       );

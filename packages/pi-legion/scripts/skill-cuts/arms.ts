@@ -137,6 +137,8 @@ import {
   skillReadFile,
   testedCopy,
   textLines,
+  URL_TARGET,
+  wholeReadTarget,
 } from "./cases";
 import type { Arm as ScoreArm } from "./score";
 
@@ -397,8 +399,7 @@ function pathPage(file: string, bytes: Uint8Array, rows: PathRows): PathPage | s
   // The lines as Oh My Pi shows them: the bytes decoded as they are, a final newline ending the
   // last line (read.ts lines 266-291 at the pin).
   const raw = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");
-  const lines = raw.split("\n");
-  if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+  const lines = textLines(raw);
   if (lines.length > READ_LINES) {
     return `${file} has ${lines.length} lines, and a read by path shows ${READ_LINES}, then the end of each block past them`;
   }
@@ -546,7 +547,7 @@ export function pathFile(arm: Arm, target: string): { text: string; isError: boo
 }
 
 /** A hashline line: `[<path>#<tag>]`, the path as Oh My Pi shows it. */
-const HASHLINE_HEADER = /^\[(.+)#[0-9A-F]{4}\]$/;
+export const HASHLINE_HEADER = /^\[(.+)#[0-9A-F]{4}\]$/;
 
 /** How a read result of a path shows its rows, and the path its hashline line shows; undefined
  *  for one that shows neither: a failed read, a raw one (`:raw` shows no row numbers in any
@@ -562,9 +563,6 @@ function shownRows(message: SessionMessage): { rows: PathRows; shown?: string } 
   if (header?.[1] !== undefined) return { rows: "hashline", shown: header[1] };
   return /^\d+\|/.test(first) ? { rows: "numbered" } : undefined;
 }
-
-/** A path or URL with a scheme (`skill://`, `https://`), which no read by path is. */
-const URL_TARGET = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 /** How a new read by path shows its rows in `c`'s session: as the last read by path of its
  *  messages shows them (`shownRows`), else hashline, or plain when the case's recorded tools leave
@@ -595,7 +593,7 @@ function pathCopyOf(
   for (const message of c.messages) {
     if (message.role !== "toolResult" || message.toolName !== "read") continue;
     const target = targets.get(message.toolCallId ?? "");
-    if (target === undefined || URL_TARGET.test(target)) continue;
+    if (target === undefined) continue;
     const shown = shownRows(message)?.shown;
     const file = pathReadFile(c, target);
     if (file === undefined || shown === undefined) continue;
@@ -746,9 +744,7 @@ function otherSkillPathRead(
   others: readonly ProfileSkill[],
   target: string
 ): OtherSkillRead | undefined {
-  if (target.endsWith("/") || target.slice(target.lastIndexOf("/") + 1).includes(":")) {
-    return undefined;
-  }
+  if (!wholeReadTarget(target)) return undefined;
   const tested = testedCopy(arm.profileSkills, arm.skill);
   const taken = new Set([arm.skill, path.posix.basename(arm.skill)]);
   for (const skill of arm.profileSkills) if (tested(skill)) taken.add(skill.name);
@@ -1059,8 +1055,9 @@ function opensWithMarker(message: SessionMessage | undefined): boolean {
 }
 
 /** Whether the plugin of PLUGIN_INJECTED puts the case's skill into its session's requests: the
- *  case's skill is the one it reads, listed under that bare name, and the profile installs it. */
-function pluginInjects(c: Pick<Case, "skill" | "profile">): boolean {
+ *  case's skill is the one it reads, listed under that bare name, and the profile installs it.
+ *  load.ts asks it of a load test's tested skill too. */
+export function pluginInjects(c: Pick<Case, "skill" | "profile">): boolean {
   return (
     c.skill === PLUGIN_INJECTED.skill &&
     c.profile.plugins.some((plugin) => plugin.name === PLUGIN_INJECTED.plugin)

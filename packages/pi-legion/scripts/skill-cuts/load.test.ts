@@ -15,7 +15,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { skillHeaderPath } from "../skill-scenarios/transcript";
-import { LISTING_MEASURE, ListingMeasure } from "./build";
+import { ListingMeasure } from "./build";
 import {
   armPromptBlocks,
   type CaptureRecord,
@@ -70,7 +70,7 @@ import {
   startRecorder,
 } from "./recorder";
 import { sendOrder } from "./replay";
-import type { TaskLabel } from "./score";
+import { LISTING_MEASURE_ITEM, type TaskLabel } from "./score";
 
 // The load test (load.ts). Its detection rows read the request bodies of the pinned
 // hosts and the gateway's replies to them (testdata/CAPTURE.md): F2, the body Oh My Pi 18.18.6
@@ -964,7 +964,7 @@ function measureItem(recorded: number | null, missing: string[] = []): EvidenceI
         ? "the made-up session records no system prompt, and the store holds no subagent of it"
         : "the made-up session recorded its system prompt",
   });
-  return { item: LISTING_MEASURE, source: JSON.stringify(measure) };
+  return { item: LISTING_MEASURE_ITEM, source: JSON.stringify(measure) };
 }
 
 /** Writes beside the tasks file `tasks` the summary build-tasks writes (`<tasks>.summary.json`):

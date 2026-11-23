@@ -33,6 +33,15 @@ export function json(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+/** `text` as JSON, or undefined when it is none. */
+export function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Each issue of a zod error as `<path>: <message>`, joined by `; `; an issue of the whole value
  *  is named `root`. */
 export function schemaFaults(error: z.ZodError, root = "the value"): string {
@@ -609,4 +618,16 @@ export async function untilInstallationReset(
     `${resets}; waiting ${Math.round(wait / 1000)} s, until ${new Date(clock + wait).toISOString()}`
   );
   return wait;
+}
+
+/** The `rateWait` of `GhRetries.send` for the gh call `args` (without `gh`): `rateLimitWait`,
+ *  whose primary limit is waited out to the reset of the installation that refused the call,
+ *  read with `io` (`untilInstallationReset`). The one rule of copies.ts's, context.ts's and
+ *  build.ts's reads. */
+export function installationRateWait(
+  args: readonly string[],
+  io: ResetIo
+): (stderr: string, refused: number) => Promise<number> {
+  return (stderr, refused) =>
+    rateLimitWait(stderr, refused, () => untilInstallationReset(args, io));
 }

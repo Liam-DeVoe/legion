@@ -62,6 +62,7 @@
 import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import {
   type Arm,
   type ArmName,
@@ -173,14 +174,16 @@ export function withCacheBreakpoint(body: MessagesBody): MessagesBody {
  *  how it was read (`skill` for a `skill://` URL, `path` for a whole read by path), where the
  *  answer came from (`arm`, the arm's own directory; `copy`, another skill's installed copy;
  *  `absent`, Oh My Pi's unknown-skill or not-found result where the arm installs no copy of the
- *  skill: every read of the case's skill in `none`), and whether the answer is an error. */
-export interface AnsweredRead {
-  readonly skill: string;
-  readonly file: string;
-  readonly by: "skill" | "path";
-  readonly from: "arm" | "copy" | "absent";
-  readonly isError: boolean;
-}
+ *  skill: every read of the case's skill in `none`), and whether the answer is an error. A run
+ *  record keeps each as it is (cli.ts's runs, load.ts's replies). */
+export const AnsweredRead = z.strictObject({
+  skill: z.string(),
+  file: z.string(),
+  by: z.enum(["skill", "path"]),
+  from: z.enum(["arm", "copy", "absent"]),
+  isError: z.boolean(),
+});
+export type AnsweredRead = Readonly<z.infer<typeof AnsweredRead>>;
 
 /** One replay: the judged step (each answered round's tool calls, then the reply that ended the
  *  run; its other fields are that reply's), how many rounds of skill reads were answered before

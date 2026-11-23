@@ -248,7 +248,7 @@ import {
   sessionHeads,
   userTurnKey,
 } from "./capture";
-import { type Case, loadCases, pathReadFile, skillReadFile, Thinking } from "./cases";
+import { type Case, loadCases, pathReadFile, Thinking } from "./cases";
 import {
   configFrom,
   json,
@@ -307,6 +307,7 @@ import {
   SameJobInput,
 } from "./readers";
 import {
+  AnsweredRead,
   MAX_SKILL_ROUNDS,
   READS_PAST_LAST_ROUND,
   ReadsPastLastRound,
@@ -772,18 +773,6 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
 
 // `behaviour`: the results of a case.
 
-/** One read a round of a replay answered (replay.ts's `AnsweredRead`): the skill, the file inside
- *  its directory, whether it was read by `skill://` or by path, where the answer came from (the
- *  arm's directory, another skill's installed copy, or Oh My Pi's answer for a skill the arm does
- *  not install), and whether the answer is an error. */
-const SkillReadRecord = z.strictObject({
-  skill: z.string(),
-  file: z.string(),
-  by: z.enum(["skill", "path"]),
-  from: z.enum(["arm", "copy", "absent"]),
-  isError: z.boolean(),
-});
-
 /** One run of one arm of a case in one stage: score.ts's RunRecord, and what the run did. */
 const Run = z.strictObject({
   ...RunRecord.shape,
@@ -801,9 +790,9 @@ const Run = z.strictObject({
   id: z.string().nullable(),
   /** The rounds of skill reads the replay answered before the step, or null when it failed. */
   skillRounds: z.int().nonnegative().nullable(),
-  /** Each answered round's reads, in order, or null when the replay failed; absent from a run
-   *  made before this field. */
-  skillReads: z.array(z.array(SkillReadRecord)).nullable().optional(),
+  /** Each answered round's reads (replay.ts's AnsweredRead), in order, or null when the replay
+   *  failed; absent from a run made before this field. */
+  skillReads: z.array(z.array(AnsweredRead)).nullable().optional(),
   /** The step's content (each answered round's read calls, then the reply after them, which for a
    *  run that read past the last round is the reply it ended on), or null when the replay failed. */
   reply: z.array(z.looseObject({ type: z.string() })).nullable(),
@@ -1231,7 +1220,7 @@ function pathFormDrop(c: Case, dirs: ArmDirs): string | undefined {
   const files = c.skillReads.flatMap((index) => {
     const message = c.messages[index];
     const target = targets.get(message?.toolCallId ?? "") ?? "";
-    if (message?.role !== "toolResult" || skillReadFile(c.skill, target) !== undefined) return [];
+    if (message?.role !== "toolResult") return [];
     const file = pathReadFile(c, target);
     return file === undefined ? [] : [file];
   });

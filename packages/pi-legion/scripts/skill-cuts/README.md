@@ -1134,10 +1134,11 @@ about 145 MiB a call, and one profile can start a read for every repository at o
 environment variable `SKILL_CUTS_GH_CONCURRENCY` (a whole number of 1 or more) sets another bound.
 
 Every child the runner starts and every download it makes has a limit. A gh call is ended after
-120 s (`GH_CALL_TIMEOUT_MS`; context.ts's reads have the same limit), and an ended call is sent
-again as a transient failure (`time limit`). A store command is ended once it prints nothing for 20
-minutes (`STORE_QUIET_MS`): the store's SQL ends itself after 15 minutes, and psql prints only after
-the query ends, so a pull that is still printing rows is never ended. A store read that is ended
+120 s (`GH_CALL_TIMEOUT_MS`, context.ts's API reads too; its tarball read after 15 minutes,
+`GH_TARBALL_TIMEOUT_MS`), and an ended call is sent again as a transient failure (`time limit`).
+A store command is ended once it prints nothing for 20 minutes (`STORE_QUIET_MS`): the store's SQL
+ends itself after 15 minutes, and psql prints only after the query ends, so a pull that is still
+printing rows is never ended. A store read that is ended
 fails that read, naming the command and the limit: a pull is the `pull-failed` drop, and any other
 read fails the run. Each wait for a GitHub rate limit is said on standard error before it starts:
 the call, gh's reason, the wait and when it ends. A refusal for GitHub's secondary rate limit, which

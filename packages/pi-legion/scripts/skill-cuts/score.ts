@@ -29,6 +29,7 @@
  * recorded names is dropped (listingStanding).
  */
 import { z } from "zod";
+import { parseJson } from "./common";
 
 /** Runs of each arm of a case in the screen stage. */
 export const SCREEN_RUNS = 10;
@@ -70,8 +71,8 @@ export const NEAR_MISS_MAX_LOADS = 1;
  *  session's recorded listing holds (the architect, 2026-11-22T03:04Z): one that misses more is
  *  dropped (listingStanding). */
 export const MAX_LISTING_MISSING_PERCENT = 10;
-/** The evidence item of a case or a load task that holds its listing measure as JSON: build.ts
- *  writes it as its LISTING_MEASURE, and cli.test.ts checks the two names agree. */
+/** The evidence item of a case or a load task that holds its listing measure as JSON, under which
+ *  build.ts writes its ListingMeasure. */
 export const LISTING_MEASURE_ITEM = "listing measure";
 /** How the drop of a case or a task whose listing misses too many names begins. */
 export const LISTING_MISSES = "listing-misses";
@@ -550,13 +551,7 @@ export function listingStanding(
   if (item === undefined) {
     return { state: "not measurable", why: "its evidence holds no listing measure" };
   }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(item.source);
-  } catch {
-    raw = undefined;
-  }
-  const measure = ListingRead.safeParse(raw);
+  const measure = ListingRead.safeParse(parseJson(item.source));
   if (!measure.success) {
     return { state: "not measurable", why: "its listing measure is not one build.ts writes" };
   }

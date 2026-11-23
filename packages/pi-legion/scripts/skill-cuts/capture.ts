@@ -1562,7 +1562,7 @@ export async function captureBody(
     const from = context.record.skills.find((each) => each.name === skill.name)?.from;
     const recorded = recordedLineOf(skill, from, options.recordedLines ?? []);
     if (recorded !== undefined) {
-      const key = cacheKey(version, skill.name, skill.description);
+      const key = hintKey(version, skill, 1);
       const file = path.join(keyDir, `${key}.json`);
       const ompKey = knownOmpKey(path.join(hintDir, `${key}.json`), file);
       return { skill, key, file, recorded, ompKey, cached: undefined, written: false };

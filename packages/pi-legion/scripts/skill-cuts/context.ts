@@ -112,18 +112,19 @@ import {
   firstLine,
   GhRetries,
   ghLimiter,
-  rateLimitWait,
+  installationRateWait,
+  parseJson,
   textOf,
   timeLimit,
-  untilInstallationReset,
 } from "./common";
 import {
   BlobBatch,
   blobBatches,
   blobQuery,
+  GH_CALL_TIMEOUT_MS,
   graphqlArgs,
   joinPath,
-  parseJson,
+  shellVariables,
   type TreeEntry,
 } from "./copies";
 
@@ -138,6 +139,15 @@ export const DAEMON_IMAGE_ITEM = "the daemon image's commit of ";
 /** The words of a DAEMON_IMAGE_ITEM source that name `commit` of `repo` as the daemon image's. */
 export const composedAt = (repo: string, commit: string) =>
   `so the role prompt is composed from ${repo} at ${commit}`;
+/** The evidence item build.ts writes that names a profile's session repository
+ *  (`<SESSION_REPOSITORY_ITEM><repo>`), and the one that says there is none; the source of each
+ *  names the session's absolute working directory after "working directory " (`underHome`). */
+export const SESSION_REPOSITORY_ITEM = "session repository ";
+export const NO_SESSION_REPOSITORY_ITEM = "no session repository";
+/** The start of the evidence item `read times of <repo>`, which build.ts writes for a pool's host
+ *  of a subagent's profile: its source names the commit of the pool directories after "its pool
+ *  directories at" (`poolCommit`). */
+export const READ_TIMES_ITEM = "read times of ";
 /** The repository a load test's own entry of the tested skill names (load.ts's `caseOf`): a name
  *  for no repository, since a context installs the arm's skill from the arm's directory
  *  (`testedCopy`). Every read of a profile entry's repository passes it over; a real repository an
@@ -474,21 +484,25 @@ export function readFrontmatter(content: string): Record<string, unknown> {
   );
 }
 
-/** The frontmatter of the skill in `dir`, as Oh My Pi reads it for the listing (`readFrontmatter`):
- *  its `description` ("" when it has none), and whether it is hidden from the listing, which Oh My
- *  Pi does for `hide: true` or `disable-model-invocation: true` (extensibility/skills.ts at the
- *  pinned tag). The file is decoded as Oh My Pi reads a SKILL.md (`Bun.file(…).text()`,
- *  capability/fs.ts's `readFile`), which drops a leading byte order mark, as load.ts's
- *  `sessionDescription` decodes the session's copy. */
-export function skillFrontmatter(dir: string): { description: string; hidden: boolean } {
-  const frontmatter = readFrontmatter(
-    new TextDecoder().decode(readFileSync(path.join(dir, "SKILL.md")))
-  );
+/** The frontmatter of the SKILL.md text `text`, as Oh My Pi reads it for the listing
+ *  (`readFrontmatter`): its `description` ("" when it has none), and whether it is hidden from the
+ *  listing, which Oh My Pi does for `hide: true` or `disable-model-invocation: true`
+ *  (extensibility/skills.ts at the pinned tag). load.ts's `sessionDescription` reads the session's
+ *  copy with it, and build.ts the copies of a repository. */
+export function skillTextFrontmatter(text: string): { description: string; hidden: boolean } {
+  const frontmatter = readFrontmatter(text);
   const description = frontmatter.description;
   return {
     description: typeof description === "string" ? description : "",
     hidden: frontmatter.hide === true || frontmatter.disableModelInvocation === true,
   };
+}
+
+/** The frontmatter of the skill in `dir` (`skillTextFrontmatter`), its file decoded as Oh My Pi
+ *  reads a SKILL.md (`Bun.file(…).text()`, capability/fs.ts's `readFile`), which drops a leading
+ *  byte order mark, as load.ts's `sessionDescription` decodes the session's copy. */
+export function skillFrontmatter(dir: string): { description: string; hidden: boolean } {
+  return skillTextFrontmatter(new TextDecoder().decode(readFileSync(path.join(dir, "SKILL.md"))));
 }
 
 /** What a finished command gave. */
@@ -574,9 +588,9 @@ function writeBlob(file: string, mode: string, bytes: Uint8Array): void {
 /** The most blobs, and the most bytes, one GraphQL read of blobs asks for. */
 const BLOB_BATCH = 50;
 const BLOB_BATCH_BYTES = 4_000_000;
-/** The longest one `gh` read may run: an API read, and a tarball. A read ended at its limit is sent
- *  again, as common.ts's `GhRetries` sends a read that failed for a transient reason. */
-const GH_READ_TIMEOUT_MS = 120_000;
+/** The longest the gh read of a repository's tarball may run; each other gh read runs at most
+ *  copies.ts's GH_CALL_TIMEOUT_MS. A read ended at its limit is sent again, as common.ts's
+ *  `GhRetries` sends a read that failed for a transient reason. */
 const GH_TARBALL_TIMEOUT_MS = 900_000;
 /** The most files a skill at a repository's root (a profile path of `.`) is read with: a root of
  *  more is a repository, not a skill's directory, and is never read whole for one. */
@@ -660,7 +674,7 @@ export function ghSource(
   // Every gh call waits for a place in the runner's one bound on gh processes (common.ts's
   // `ghLimiter`) before it starts, so the wait is not counted as a call running.
   const ghRun = (argv: readonly string[]) =>
-    ghLimiter().run(() => counted(() => run(argv, { timeoutMs: GH_READ_TIMEOUT_MS })));
+    ghLimiter().run(() => counted(() => run(argv, { timeoutMs: GH_CALL_TIMEOUT_MS })));
   // A rate limit's reset is read with the gh of these reads, as common.ts's
   // `untilInstallationReset` reads it.
   const resetIo = {
@@ -674,7 +688,7 @@ export function ghSource(
   // the call sent again as `GhRetries.send` says (`splits`: a GraphQL batch of more than one
   // blob); throws naming `command` and each try's error when none does. A refusal for the primary
   // rate limit waits for the reset of the installation that refused the call, the one of the
-  // owner it names (common.ts's `rateLimitWait` and `untilInstallationReset`).
+  // owner it names (common.ts's `installationRateWait`).
   const retried = async <T extends { readonly code: number; readonly stderr: string }>(
     command: string,
     args: readonly string[],
@@ -683,8 +697,7 @@ export function ghSource(
   ): Promise<T> => {
     const ran = await retries.send(attempt, {
       splits,
-      rateWait: (stderr, refused) =>
-        rateLimitWait(stderr, refused, () => untilInstallationReset(args, resetIo)),
+      rateWait: installationRateWait(args, resetIo),
     });
     if (ran.code !== 0) {
       throw new Error(`\`${command}\` failed: ${firstLine(ran.stderr) || `gh exited ${ran.code}`}`);
@@ -1443,22 +1456,6 @@ const HOME_AGENTS_NAMED = /^(?:\$\{?HOME\}?|~)\/\.omp\/agents(?:\/|$)/;
  *  dotfiles repository's installers/lib.sh defines), or `ln` and its flags. */
 const LINK_LINE = /^\s*(?:ensure_link|ln((?:\s+-[A-Za-z-]+)+))\s+(\S+)\s+(\S+)\s*(?:#.*)?$/;
 
-/** The shell variables an installer script assigns on a line of their own, the last of each name
- *  winning, as copies.ts's `shellVariables` reads them: a quoted string, a command substitution
- *  in quotes, or one bare word. */
-function scriptVariables(text: string): Map<string, string> {
-  const vars = new Map<string, string>();
-  for (const match of text.matchAll(
-    /^\s*(?:local\s+|export\s+|readonly\s+)?([A-Za-z_]\w*)=(\S.*)$/gm
-  )) {
-    const value = (match[2] ?? "").trim();
-    if (/^"\$\(.*\)"$|^"[^"]*"$|^'[^']*'$|^[^\s"'(]+$/.test(value)) {
-      vars.set(match[1] ?? "", value.replace(/^(["'])(.*)\1$/s, "$2"));
-    }
-  }
-  return vars;
-}
-
 /** An installer's path word with its quotes taken off and each variable the script assigns put
  *  in, five deep at most: the text it comes to, and the path in the repository it names
  *  (`inRepository`) when that text opens with a variable the script does not assign or one that
@@ -1490,7 +1487,7 @@ function installerAgents(text: string): {
   readonly links: Partial<Record<HomeAgents, { readonly dir: string; readonly line: number }>>;
   readonly homeNamed: readonly number[];
 } {
-  const vars = scriptVariables(text);
+  const vars = shellVariables(text);
   const links: Partial<Record<HomeAgents, { dir: string; line: number }>> = {};
   const homeNamed: number[] = [];
   for (const [index, line] of text.split("\n").entries()) {
@@ -1576,11 +1573,21 @@ type LinkedPath =
   | { readonly path: string; readonly via: readonly string[] }
   | { readonly outside: { readonly link: string; readonly target: string } };
 
+/** The path in its repository that the symbolic link `link` (a path in the repository) with the
+ *  target `target` leads to, taken from the link's directory; undefined when the target is not in
+ *  the repository (an absolute path, or one above the repository's root). */
+export function linkTargetPath(link: string, target: string): string | undefined {
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(link), target));
+  return path.posix.isAbsolute(target) || resolved === ".." || resolved.startsWith("../")
+    ? undefined
+    : resolved;
+}
+
 /** Where `file` of `repo` at `commit` leads, as Oh My Pi's stat reaches it: while the repository
  *  holds the path as a symbolic link (`RepoSource.link`), the link's target, taken from the
  *  link's directory, LINK_HOPS in a row at most, with each link followed (`<link> -> <target>`);
- *  or the first such link whose target is not in the repository (an absolute path, or one above
- *  the repository's root), which no read of the repository gives. */
+ *  or the first such link whose target is not in the repository (`linkTargetPath`), which no read
+ *  of the repository gives. */
 async function followLinks(
   source: RepoSource,
   repo: string,
@@ -1592,10 +1599,8 @@ async function followLinks(
   for (let hops = 0; hops < LINK_HOPS; hops++) {
     const target = await source.link?.(repo, commit, at);
     if (target === undefined) break;
-    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(at), target));
-    if (path.posix.isAbsolute(target) || resolved === ".." || resolved.startsWith("../")) {
-      return { outside: { link: at, target } };
-    }
+    const resolved = linkTargetPath(at, target);
+    if (resolved === undefined) return { outside: { link: at, target } };
     via.push(`${at} -> ${target}`);
     at = resolved === "." ? "" : resolved;
   }
@@ -1730,12 +1735,12 @@ async function projectAgents(
 }
 
 /** The commit at which a subagent's session read the pool directories of `repo`, the last
- *  commit at or before its start, as the evidence item `read times of <repo>` that build.ts writes
- *  for a pool's host names it: the commit after "its pool directories at" in its text. Undefined
- *  when the case has no such item. */
+ *  commit at or before its start, as the evidence item READ_TIMES_ITEM of `repo` that build.ts
+ *  writes for a pool's host names it: the commit after "its pool directories at" in its text.
+ *  Undefined when the case has no such item. */
 function poolCommit(c: ContextCase, repo: string): string | undefined {
   const item = c.evidence?.find(
-    (each) => each.item.toLowerCase() === `read times of ${repo}`.toLowerCase()
+    (each) => each.item.toLowerCase() === `${READ_TIMES_ITEM}${repo}`.toLowerCase()
   );
   return /\bits pool directories at ([0-9a-f]{7,40})\b/.exec(item?.source ?? "")?.[1];
 }
@@ -1746,7 +1751,10 @@ function poolCommit(c: ContextCase, repo: string): string | undefined {
  *  `/root`; undefined when no such item names one. */
 function underHome(c: ContextCase): boolean | undefined {
   for (const each of c.evidence ?? []) {
-    if (!each.item.startsWith("session repository ") && each.item !== "no session repository") {
+    if (
+      !each.item.startsWith(SESSION_REPOSITORY_ITEM) &&
+      each.item !== NO_SESSION_REPOSITORY_ITEM
+    ) {
       continue;
     }
     const cwd = /\bworking directory (\/[^\s,;]+)/.exec(each.source)?.[1];
@@ -1856,7 +1864,7 @@ async function devboxAgents(
       }
       const { what, as } = HOME_AGENTS_WORDS[kind];
       leftOut[kind].push(
-        `${what}: the profile holds ${repo} at ${commits.join(" and ")}, its ${links.map((link) => `${link.linkedBy} at ${link.commit}`).join(" and ")} ${links.length === 1 ? "links" : "each link"} a directory as ${as}, and no evidence item "read times of ${repo}" names the commit of the subagent's start, when Oh My Pi reads that directory, so the context reads none`
+        `${what}: the profile holds ${repo} at ${commits.join(" and ")}, its ${links.map((link) => `${link.linkedBy} at ${link.commit}`).join(" and ")} ${links.length === 1 ? "links" : "each link"} a directory as ${as}, and no evidence item "${READ_TIMES_ITEM}${repo}" names the commit of the subagent's start, when Oh My Pi reads that directory, so the context reads none`
       );
     }
     for (const { commit, read } of reads) {
@@ -1991,11 +1999,7 @@ function agentIn(context: string, dirs: readonly AgentDir[]): AgentDefinition | 
       const frontmatter = readFrontmatter(text);
       if (frontmatter.name !== agent || typeof frontmatter.description !== "string") continue;
       const named = frontmatter.autoloadSkills;
-      const listed = Array.isArray(named)
-        ? named.filter((each): each is string => typeof each === "string")
-        : typeof named === "string"
-          ? named.split(",")
-          : [];
+      const listed = typeof named === "string" ? named.split(",") : strings(named);
       return {
         name: agent,
         source: at.source,

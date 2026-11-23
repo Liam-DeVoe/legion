@@ -518,7 +518,7 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { pathFormFault } from "./arms";
+import { HASHLINE_HEADER, pathFormFault } from "./arms";
 import {
   type InstallersRow,
   type ManifestsRow,
@@ -543,23 +543,27 @@ import {
   type ProfileSkill,
   pathHash,
   pathReadFile,
+  READ_SELECTOR,
   resolvedReadPath,
   skillReadFile,
   Thinking,
   testedCopy,
+  testedSource,
   textLines,
+  URL_TARGET,
 } from "./cases";
 import {
   configFrom,
   eachChunk,
   firstLine,
   GhRetries,
+  installationRateWait,
   json,
   lastTryError,
   parse,
+  parseJson,
   RATE_LIMITED,
   Refused,
-  rateLimitWait,
   required,
   type Sent,
   STORE_QUIET_MS,
@@ -567,11 +571,19 @@ import {
   textOf,
   timeLimit,
   transientReason,
-  untilInstallationReset,
   writeWhole,
 } from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
-import { composedAt, DAEMON_IMAGE_ITEM, PROMPTS_GO, readFrontmatter } from "./context";
+import {
+  composedAt,
+  DAEMON_IMAGE_ITEM,
+  linkTargetPath,
+  NO_SESSION_REPOSITORY_ITEM,
+  PROMPTS_GO,
+  READ_TIMES_ITEM,
+  SESSION_REPOSITORY_ITEM,
+  skillTextFrontmatter,
+} from "./context";
 import {
   BLOB_BATCH,
   BLOB_BATCH_BYTES,
@@ -579,6 +591,7 @@ import {
   blobBatches,
   blobQuery,
   CopyIndex,
+  factsOf,
   frontmatter,
   type Gh,
   type GhResult,
@@ -590,7 +603,6 @@ import {
   keepsEntry,
   type Manifest,
   npmPins,
-  parseJson,
   parseManifest,
   prefixMatches,
   releaseTag,
@@ -631,7 +643,7 @@ import {
   skillReadResults,
   stepText,
 } from "./judge";
-import { firstMessageLoad, type RecordedListing, Task } from "./load";
+import { EvidenceItem, firstMessageLoad, type RecordedListing, Task } from "./load";
 import { PsqlTable, PullCheck } from "./psql-rows";
 import {
   AuditAnswer,
@@ -646,6 +658,7 @@ import {
   type TasksInput,
 } from "./readers";
 import { isObject } from "./replay";
+import { LISTING_MEASURE_ITEM } from "./score";
 
 /** Exit statuses: `stopped` at `--budget-usd`, `stoppedByCost` by the stop rule (`stopBy`). */
 export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3, stoppedByCost: 4 } as const;
@@ -864,7 +877,7 @@ function processLives(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return isObject(error) && error.code === "EPERM";
+    return hasErrnoCode(error, "EPERM");
   }
 }
 
@@ -1496,11 +1509,6 @@ function skillReads(messages: readonly SessionMessage[], skill: string): SkillRe
   return reads;
 }
 
-/** A read selector after a read's last `/` (`:raw`, `:1-40`). */
-const READ_SELECTOR = /:[^/]*$/;
-/** A path or URL with a scheme (`skill://`, `https://`). */
-const URL_TARGET = /^[a-z][a-z0-9+.-]*:\/\//i;
-
 /** Whether a read of `target` reads a file of skill `skill` by its path, by count.sql's rule: a
  *  path or URL (no `skill://` one) that, its read selector taken off, ends `<skill>/SKILL.md` or
  *  holds `skills/<skill>/references/` and more, each after a `/` or at its start. */
@@ -1692,9 +1700,6 @@ function copiesReads(
   }
   return [...reads.values()].sort((a, b) => a.index - b.index);
 }
-
-/** A hashline line: `[<path>#<tag>]`, the path as Oh My Pi shows it (arms.ts's `PathRows`). */
-const HASHLINE_HEADER = /^\[.+#[0-9A-F]{4}\]$/;
 
 /** The text of the file a successful read by path shows: the result's text less what Oh My Pi
  *  puts around the lines (arms.ts's `PathRows`), the `[<path>#<tag>]` line and each row's `<n>:` of
@@ -2366,7 +2371,8 @@ const Provenance = z.looseObject({
  *  files parsed, and each file of those that could not be read or parsed, with why; for the
  *  context files a session in a checkout of it gets (`CONTEXT_FILES`), the size of each file of
  *  those names, by path, and each directory whose `.omp/` holds anything (`""` the root); and the
- *  directory of each copy Oh My Pi lists no line of (`hiddenFromListing`). */
+ *  directory of each copy Oh My Pi lists no line of (HIDDEN_RULE, read by the rule the capture's
+ *  context uses: context.ts's `skillTextFrontmatter`). */
 interface RepositoryAt {
   readonly copies: readonly SkillCopy[];
   readonly manifests: readonly Manifest[];
@@ -2398,15 +2404,6 @@ interface ProjectRead {
 /** Where Oh My Pi 18.18.6 says a skill it loads is left out of the system prompt's listing. */
 const HIDDEN_RULE =
   "Oh My Pi 18.18.6 sets a skill's hide from its SKILL.md frontmatter's hide: true or disable-model-invocation: true (extensibility/skills.ts, lines 289, 494, 554 and 649; packages/utils/src/frontmatter.ts, lines 14-44, reads disable-model-invocation as disableModelInvocation), loads it, so skill:// reads it, and lists only the skills whose hide is not true (system-prompt.ts, lines 961-983)";
-
-/** Whether the SKILL.md text `text` keeps its skill out of Oh My Pi's listing (HIDDEN_RULE), read
- *  by context.ts's rule, the one the capture's context uses (`readFrontmatter`, as its
- *  `skillFrontmatter` reads `hidden`): a frontmatter strict YAML refuses is read again as Oh My Pi
- *  reads it, and `disable-model-invocation` is `disableModelInvocation`. */
-function hiddenFromListing(text: string): boolean {
-  const fields = readFrontmatter(text);
-  return fields.hide === true || fields.disableModelInvocation === true;
-}
 
 /** `cache`'s promise for `key`, made by `make` when it holds none. A promise that rejects with a
  *  gh call that failed for a transient reason (`GhFailed`: each read it made was sent again until
@@ -2633,19 +2630,16 @@ export class GithubReads {
   }
 
   /** gh's answer to `args`, sent again as `retries` says: after a transient failure, and, while
-   *  GitHub refuses it for its rate limit, after the wait common.ts's `rateLimitWait` gives (a
-   *  primary limit waited out to the reset of the installation that refused it,
-   *  `untilInstallationReset`), as copies.ts's and context.ts's reads are. */
+   *  GitHub refuses it for its rate limit, after the wait common.ts's `installationRateWait` gives
+   *  (a primary limit waited out to the reset of the installation that refused it), as copies.ts's
+   *  and context.ts's reads are. */
   private send(args: readonly string[], splits = false) {
     return this.retries.send(() => this.gh(args), {
       splits,
-      rateWait: (stderr, refused) =>
-        rateLimitWait(stderr, refused, () =>
-          untilInstallationReset(args, {
-            gh: (read) => this.gh(read),
-            say: (line) => this.retries.say(line),
-          })
-        ),
+      rateWait: installationRateWait(args, {
+        gh: (read) => this.gh(read),
+        say: (line) => this.retries.say(line),
+      }),
     });
   }
 
@@ -2896,8 +2890,8 @@ export class GithubReads {
     );
     for (const link of linked) {
       const target = await this.blob(repo, link.sha);
-      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(link.path), target));
-      if (path.posix.isAbsolute(target) || resolved === ".." || resolved.startsWith("../")) {
+      const resolved = linkTargetPath(link.path, target);
+      if (resolved === undefined) {
         links.push({ link: link.path, target, outcome: "outside" });
         continue;
       }
@@ -2985,7 +2979,7 @@ export class GithubReads {
       };
       try {
         const text = await this.blob(repo, entry.sha);
-        if (hiddenFromListing(text)) hidden.add(dir);
+        if (skillTextFrontmatter(text).hidden) hidden.add(dir);
         return { ...base, ...skillFields(dir, repo, text) };
       } catch (error) {
         // A read that failed for a transient reason on every try fails the whole read, which is
@@ -3113,10 +3107,6 @@ interface ProfileInput {
   readonly recordedListing?: readonly string[];
 }
 
-/** The items of the profile's evidence that name the session repository, and that say there is
- *  none (`sessionRepository`). */
-const SESSION_REPOSITORY = "session repository ";
-const NO_SESSION_REPOSITORY = "no session repository";
 /** How a dev-box session's repository is found from its working directory. */
 const DEVBOX_CHECKOUT_RULE =
   "a dev-box session's repository is the dev box's own repository (DEVBOX_INSTALLERS_RULE) where the working directory is in its checkout, the directory whose .claude/ the configuration's devboxClaudeConfigDir names as the dev box's CLAUDE_CONFIG_DIR; else the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository when that repository's tree at its commit holds the working directory's path below that parent: a parent's name alone decides nothing; where the tree does not hold that path and the working directory is directly inside that parent, the working directory is a workspace of that repository (a jj or git worktree) and the checkout's root when a file the session read by an absolute path under the working directory is a file of the tree at its path below the working directory";
@@ -3175,26 +3165,21 @@ function legionCatalog(
   why: string;
 } {
   const own = manifests.filter((manifest) => manifest.repository === deployment);
-  const setup = own.flatMap((manifest) =>
-    manifest.facts.flatMap((fact) =>
-      fact.type === "role-setup" ? [{ repository: fact.repo, ref: "", manifest }] : []
-    )
-  );
-  const everyRole = own.flatMap((manifest) =>
-    manifest.facts.flatMap((fact) => (fact.type === "every-role" ? fact.plugins : []))
-  );
+  const setup = factsOf(own, "role-setup").map(({ manifest, fact }) => ({
+    repository: fact.repo,
+    ref: "",
+    manifest,
+  }));
+  const everyRole = factsOf(own, "every-role").flatMap(({ fact }) => fact.plugins);
   const leaveOut = own
     .find((manifest) => manifest.path === projectPath)
     ?.facts.flatMap((fact) => (fact.type === "leaves-out" ? [fact.plugins] : []))[0];
-  const plugins = manifests
-    .filter((manifest) =>
+  const plugins = factsOf(
+    manifests.filter((manifest) =>
       setup.some((pin) => pin.repository.toLowerCase() === manifest.repository.toLowerCase())
-    )
-    .flatMap((manifest) =>
-      manifest.facts.flatMap((fact) =>
-        fact.type === "marketplace-plugin" ? [{ manifest, fact }] : []
-      )
-    );
+    ),
+    "marketplace-plugin"
+  );
   const wanted = new Set(everyRole);
   if (leaveOut !== undefined) {
     for (const { fact } of plugins) if (!leaveOut.includes(fact.plugin)) wanted.add(fact.plugin);
@@ -3389,9 +3374,6 @@ async function imageCommit(
   };
 }
 
-/** The item of the evidence of a case or a load task that says how far the listing its rebuilt
- *  profile gives is from the listing its session saw; its source is a ListingMeasure as JSON. */
-export const LISTING_MEASURE = "listing measure";
 /** A listing measure: `kind` says which listing the rebuilt one is set against (the session's own
  *  recorded prompt's, a subagent's of it, or none: `not measurable`); `recorded` the names that
  *  listing holds, `listed` those the rebuilt profile lists (its skills less those Oh My Pi hides),
@@ -3790,9 +3772,9 @@ function measuredAgainst(
   return subagent === undefined ? undefined : { blocks: subagent.blocks, subagent };
 }
 
-/** The listing measure of one session (LISTING_MEASURE): against its own recorded listing, else
- *  against the listing of the subagent `read` found, the earliest spawned under the build its
- *  profile is read at (`input.build`), else not measurable, with why. */
+/** The listing measure of one session (score.ts's LISTING_MEASURE_ITEM): against its own recorded
+ *  listing, else against the listing of the subagent `read` found, the earliest spawned under the
+ *  build its profile is read at (`input.build`), else not measurable, with why. */
 function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
   const listed = [...new Set(input.listed)].sort();
   const build = input.build;
@@ -3854,7 +3836,7 @@ function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
   }
   const taken = input.fromRecorded ?? [];
   return {
-    item: LISTING_MEASURE,
+    item: LISTING_MEASURE_ITEM,
     source: JSON.stringify(taken.length === 0 ? measure : { ...measure, fromRecorded: taken }),
   };
 }
@@ -3898,7 +3880,7 @@ export function fromRecordedIn(
 
 /** The listing measure that `evidence` holds, or undefined. */
 function measureIn(evidence: readonly Evidence[] | undefined): ListingMeasure | undefined {
-  const item = evidence?.find((each) => each.item === LISTING_MEASURE);
+  const item = evidence?.find((each) => each.item === LISTING_MEASURE_ITEM);
   const parsed = item === undefined ? undefined : ListingMeasure.safeParse(parseJson(item.source));
   return parsed?.success === true ? parsed.data : undefined;
 }
@@ -3928,7 +3910,7 @@ function listingCounts(measures: readonly (ListingMeasure | undefined)[]): Recor
 
 /** `evidence` with `measure` before its audit item, or last when it has none. */
 function withMeasure(evidence: readonly Evidence[], measure: Evidence): Evidence[] {
-  const out = evidence.filter((each) => each.item !== LISTING_MEASURE);
+  const out = evidence.filter((each) => each.item !== LISTING_MEASURE_ITEM);
   const audit = out.findIndex((each) => each.item.startsWith(AUDIT_EVIDENCE));
   out.splice(audit < 0 ? out.length : audit, 0, measure);
   return out;
@@ -3993,7 +3975,7 @@ function sessionRepository(
   const none = (source: string): Checkout => ({
     repo: undefined,
     rel: "",
-    line: { item: NO_SESSION_REPOSITORY, source },
+    line: { item: NO_SESSION_REPOSITORY_ITEM, source },
   });
   const inside = (rel: string) =>
     rel === "" ? "" : `; the working directory is ${rel} in the checkout`;
@@ -4015,7 +3997,7 @@ function sessionRepository(
       repo,
       rel,
       line: {
-        item: `${SESSION_REPOSITORY}${repo}`,
+        item: `${SESSION_REPOSITORY_ITEM}${repo}`,
         source: `the session's working directory ${cwd} is a Legion workspace of it: /legion/workspaces/<owner>/<name>/${inside(rel)}`,
       },
     };
@@ -4029,7 +4011,7 @@ function sessionRepository(
       repo: home.repo,
       rel,
       line: {
-        item: `${SESSION_REPOSITORY}${home.repo}`,
+        item: `${SESSION_REPOSITORY_ITEM}${home.repo}`,
         source: `${DEVBOX_CHECKOUT_RULE}. The working directory ${cwd} is ${rel === "" ? "" : "under "}${home.dir}, the checkout of the dev box's repository ${home.repo}, whose .claude/ the configuration's devboxClaudeConfigDir names${inside(rel)}`,
       },
     };
@@ -4046,7 +4028,7 @@ function sessionRepository(
         repo,
         rel,
         line: {
-          item: `${SESSION_REPOSITORY}${repo}`,
+          item: `${SESSION_REPOSITORY_ITEM}${repo}`,
           source: `${DEVBOX_CHECKOUT_RULE}. ${where}, which ${repo} alone of the list is named${dir === cwd ? "" : `, and its tree holds ${rel}`}${inside(rel)}`,
         },
         ...(dir === cwd ? {} : { byParent: dir }),
@@ -4529,15 +4511,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           : []
       ),
       // Each release the worker image takes a skill from, at its tag.
-      ...manifests.flatMap((manifest) =>
-        manifest.repository === deployment
-          ? manifest.facts.flatMap((fact) =>
-              fact.type === "image-skill"
-                ? [{ repository: fact.repo, ref: fact.ref, manifest }]
-                : []
-            )
-          : []
-      ),
+      ...factsOf(
+        manifests.filter((manifest) => manifest.repository === deployment),
+        "image-skill"
+      ).map(({ manifest, fact }) => ({ repository: fact.repo, ref: fact.ref, manifest })),
     ];
   };
 
@@ -4794,7 +4771,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
           repo,
           rel: "",
           line: {
-            item: `${SESSION_REPOSITORY}${repo}`,
+            item: `${SESSION_REPOSITORY_ITEM}${repo}`,
             source: `${named}; it is a workspace of ${repo} named ${rel}, a checkout of it at its root: message ${shown.index} reads ${shown.path}, and the tree holds ${shown.file}`,
           },
         };
@@ -4806,7 +4783,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         const readCount =
           files.length === 0 ? "none" : `${files.length} such file${files.length === 1 ? "" : "s"}`;
         evidence[line] = {
-          item: NO_SESSION_REPOSITORY,
+          item: NO_SESSION_REPOSITORY_ITEM,
           source: `${named}, so that name alone does not make the directory a checkout of it; and ${
             direct
               ? `no file the session read by an absolute path under it is a file of that tree at its path there (it read ${readCount}), so nothing shows it is a workspace of ${repo}`
@@ -4936,7 +4913,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const { branch } = await github.branch(repo);
       const sha = await github.commitAt(repo, branch, input.sessionStart);
       evidence.push({
-        item: `read times of ${repo}`,
+        item: `${READ_TIMES_ITEM}${repo}`,
         source: `its plugin lists, installers and settings at ${commits.get(repo)} (the root's last prompt build ${readTime.at}), its pool directories at ${sha}, the last commit of ${branch} at or before the subagent's start ${input.sessionStart}: ${PARENT_LOAD_RULE}`,
       });
       if (sha === commits.get(repo)) continue;
@@ -5371,16 +5348,12 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const ignores =
     home === undefined
       ? []
-      : (held.get(home)?.manifests ?? []).flatMap((manifest) =>
-          manifest.facts.flatMap((fact) =>
-            fact.type === "ignores"
-              ? fact.patterns.map((pattern) => ({
-                  pattern,
-                  file: manifest.path,
-                  matches: ignoredSkillMatch(pattern),
-                }))
-              : []
-          )
+      : factsOf(held.get(home)?.manifests ?? [], "ignores").flatMap(({ manifest, fact }) =>
+          fact.patterns.map((pattern) => ({
+            pattern,
+            file: manifest.path,
+            matches: ignoredSkillMatch(pattern),
+          }))
         );
   for (let at = offers.length - 1; at >= 0 && ignores.length > 0; at--) {
     const offer = offers[at];
@@ -5582,7 +5555,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const hidden = new Set<string>();
   for (const skill of profileSkills) {
     const at = treeOf(skill);
-    if (at?.hidden.has(skill.path === "." ? "" : skill.path) !== true) continue;
+    if (at?.hidden.has(repoPath(skill.path)) !== true) continue;
     hidden.add(listedName(skill));
     evidence.push({
       item: `not listed: skill ${listedName(skill)}`,
@@ -6094,7 +6067,7 @@ async function sessionProfile(
   // Each copy of the tested skill's source, the load test installs (cases.ts's `testedCopy`); a
   // copy of another source that shares its name stays.
   const tested = testedCopy(profiled.profile.skills, skill);
-  const testedSource = profiled.profile.skills.find((each) => listedName(each) === skill);
+  const source = testedSource(profiled.profile.skills, skill);
   const profile = {
     ...profiled.profile,
     ...recorded,
@@ -6143,7 +6116,7 @@ async function sessionProfile(
     },
     // The copy listed under the tested skill's name: the recorded listing's line of it stands for
     // that copy's text (`withRecordedListing`).
-    ...(testedSource === undefined ? {} : { testedCopy: testedSource }),
+    ...(source === undefined ? {} : { testedCopy: source }),
   };
 }
 
@@ -6978,7 +6951,8 @@ async function reprofileCases(
     const held = head?.held === true;
     const old = c.evidence ?? [];
     const decided = old.find(
-      (each) => each.item === NO_SESSION_REPOSITORY || each.item.startsWith(SESSION_REPOSITORY)
+      (each) =>
+        each.item === NO_SESSION_REPOSITORY_ITEM || each.item.startsWith(SESSION_REPOSITORY_ITEM)
     );
     const legion = store.context.startsWith("legion:");
     const agents = legion
@@ -7024,8 +6998,8 @@ async function reprofileCases(
           held || decided === undefined
             ? undefined
             : {
-                repo: decided.item.startsWith(SESSION_REPOSITORY)
-                  ? decided.item.slice(SESSION_REPOSITORY.length)
+                repo: decided.item.startsWith(SESSION_REPOSITORY_ITEM)
+                  ? decided.item.slice(SESSION_REPOSITORY_ITEM.length)
                   : undefined,
                 rel: c.profile.workingDirectory ?? "",
                 line: decided,
@@ -8728,9 +8702,6 @@ const REPROFILE_REFUSES = [
   "max-search-minutes",
 ] as const;
 
-/** One item of a profile's evidence, as a summary keeps it. */
-const EvidenceItem = z.strictObject({ item: z.string(), source: z.string() });
-
 /** What `--reprofile` reads of a tasks file's summary (`<tasks>.summary.json`, as build-tasks or
  *  `--reprofile` wrote it): the tested skill, and, when the tasks have profiles, the context
  *  session and the evidence of each task's profile. */
@@ -9010,7 +8981,7 @@ async function reprofileTasks(
     }
     const text = rebuilt?.text ?? was?.text;
     const evidence = rebuilt?.evidence ?? [
-      ...evidenceBefore.filter((each) => each.item !== LISTING_MEASURE),
+      ...evidenceBefore.filter((each) => each.item !== LISTING_MEASURE_ITEM),
       ...(gone === undefined ? [] : [gone]),
       keptMeasure(was?.text, gone?.source ?? "the task keeps its old profile"),
     ];

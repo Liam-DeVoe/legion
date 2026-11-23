@@ -17,7 +17,6 @@ import {
   EXIT,
   fileHash,
   GithubReads,
-  LISTING_MEASURE,
   ListingMeasure,
   main,
   messageOf,
@@ -54,6 +53,7 @@ import {
   sseResponse,
   startRecorder,
 } from "./recorder";
+import { LISTING_MEASURE_ITEM } from "./score";
 
 // The case and task builders on made-up sessions. Every session is F1 (testdata/F1, an Oh My Pi
 // 18.18.6 session of a scratch profile with the made-up skills alpha and beta; CAPTURE.md, "F1"),
@@ -2194,7 +2194,8 @@ describe("build-cases over every made-up session", () => {
 
   test("each case's evidence holds its listing measure: a subagent's against its own recorded listing, a top-level session's against a subagent's of it, else not measurable; the summary counts them", () => {
     const measureOf = (name: string) => {
-      const items = byName(name)?.evidence?.filter((each) => each.item === LISTING_MEASURE) ?? [];
+      const items =
+        byName(name)?.evidence?.filter((each) => each.item === LISTING_MEASURE_ITEM) ?? [];
       expect(items).toHaveLength(1);
       return ListingMeasure.parse(JSON.parse(items[0]?.source ?? "{}"));
     };
@@ -3842,7 +3843,7 @@ test("a dev-box profile installs the units its dev box's own installers install 
   expect(evidence["not listed: skill quiet"]).toContain("disable-model-invocation: true");
   expect(evidence["not listed: skill shy"]).toContain("hide: true");
   expect(evidence["not listed: skill unread"]).toBeUndefined();
-  const measure = ListingMeasure.parse(JSON.parse(evidence[LISTING_MEASURE] ?? "{}"));
+  const measure = ListingMeasure.parse(JSON.parse(evidence[LISTING_MEASURE_ITEM] ?? "{}"));
   expect(measure.added).toContain("unread");
   expect(measure.added).not.toContain("quiet");
   expect(measure.added).not.toContain("shy");
@@ -5987,7 +5988,7 @@ test("a subagent whose dev box's skills-sources.json names a pool at its start a
   expect(listed["unit pool:vendor/acme-pack (acme/dots:skills-sources.json)"]).toStartWith(
     `pool at the subagent's start: ${names}; the subagent's recorded listing names pack-two of its skills, so its host had cloned it then (installed from the recorded listing): Oh My Pi 18.18.6 has a subagent emit resources_discover as it starts`
   );
-  const listedMeasure = ListingMeasure.parse(JSON.parse(listed[LISTING_MEASURE] ?? "{}"));
+  const listedMeasure = ListingMeasure.parse(JSON.parse(listed[LISTING_MEASURE_ITEM] ?? "{}"));
   expect(listedMeasure.fromRecorded).toEqual(["pack-one", "pack-two"]);
   // The recorded listing names none of the pool's skills: the host had not cloned it yet.
   expect(poolSkills("pool-unlisted")).toEqual([]);
@@ -5996,7 +5997,7 @@ test("a subagent whose dev box's skills-sources.json names a pool at its start a
   expect(unlisted["left out: pool:vendor/acme-pack, a pool at the subagent's start"]).toStartWith(
     `${names}, and the subagent's recorded listing names none of its skills (pack-one, pack-two), so its host had not cloned it then: Oh My Pi 18.18.6 has a subagent emit resources_discover`
   );
-  const unlistedMeasure = ListingMeasure.parse(JSON.parse(unlisted[LISTING_MEASURE] ?? "{}"));
+  const unlistedMeasure = ListingMeasure.parse(JSON.parse(unlisted[LISTING_MEASURE_ITEM] ?? "{}"));
   expect(unlistedMeasure.fromRecorded).toBeUndefined();
 }, 120_000);
 
@@ -7231,7 +7232,7 @@ test("a session whose working directory is a checkout of a repository with no co
   ).toBe(true);
   // The subagent's recorded listing holds nova, which the profile does not list.
   const measure = ListingMeasure.parse(
-    JSON.parse(evidence.find((each) => each.item === LISTING_MEASURE)?.source ?? "{}")
+    JSON.parse(evidence.find((each) => each.item === LISTING_MEASURE_ITEM)?.source ?? "{}")
   );
   expect(measure.kind).toBe("subagent listing");
   expect(measure.missing).toContain("nova");
@@ -7264,7 +7265,7 @@ test("build-tasks --reprofile keeps the old profile of a task whose session its 
       differs: { added: Evidence[]; removed: Evidence[] };
     };
     expect(note.outcome).toBe("kept");
-    expect(note.differs.added.map((each) => each.item)).toEqual([gone.item, LISTING_MEASURE]);
+    expect(note.differs.added.map((each) => each.item)).toEqual([gone.item, LISTING_MEASURE_ITEM]);
     expect(note.differs.added[0]).toEqual(gone);
     const measure = ListingMeasure.parse(JSON.parse(note.differs.added[1]?.source ?? "{}"));
     expect(measure.kind).toBe("not measurable");
@@ -7274,7 +7275,7 @@ test("build-tasks --reprofile keeps the old profile of a task whose session its 
     ) as { skills: { name: string; namespace?: string }[] };
     expect(profile.skills.length).toBeGreaterThan(0);
     expect(measure.listed).toBe(new Set(profile.skills.map((each) => listedName(each))).size);
-    expect(note.differs.removed.map((each) => each.item)).toEqual([LISTING_MEASURE]);
+    expect(note.differs.removed.map((each) => each.item)).toEqual([LISTING_MEASURE_ITEM]);
   };
   kept("t1", {
     item: "no session in the store",
@@ -7315,7 +7316,9 @@ test("build-tasks --reprofile keeps the old profile of a task whose session its 
     (each) => each.task === "t1"
   ) as { differs: { added: Evidence[] } } | undefined;
   const t1Measure = ListingMeasure.parse(
-    JSON.parse(t1Note?.differs.added.find((each) => each.item === LISTING_MEASURE)?.source ?? "{}")
+    JSON.parse(
+      t1Note?.differs.added.find((each) => each.item === LISTING_MEASURE_ITEM)?.source ?? "{}"
+    )
   );
   expect(t1Measure.listed).toBe(3);
 
@@ -7535,7 +7538,7 @@ const longEvidence = async (id: string) =>
 
 /** Case `id`'s listing measure. */
 const longMeasure = async (id: string) =>
-  ListingMeasure.parse(JSON.parse((await longEvidence(id))[LISTING_MEASURE] ?? "{}"));
+  ListingMeasure.parse(JSON.parse((await longEvidence(id))[LISTING_MEASURE_ITEM] ?? "{}"));
 
 /** The names of the skills of case `id`'s profile, with their repositories. */
 const longSkills = async (id: string) =>
@@ -7647,7 +7650,7 @@ test("a context session is read at the build its measured subagent was spawned u
   expect(profile.skills.map((each: { name: string }) => each.name)).toContain("nova");
   const evidence = (reprofileSummary(dir).profiles.contextSession?.evidence ?? []) as Item[];
   const sources = Object.fromEntries(evidence.map((each) => [each.item, each.source]));
-  const measure = ListingMeasure.parse(JSON.parse(sources[LISTING_MEASURE] ?? "{}"));
+  const measure = ListingMeasure.parse(JSON.parse(sources[LISTING_MEASURE_ITEM] ?? "{}"));
   expect(measure).toMatchObject({ kind: "subagent listing", missing: [] });
   expect(measure.subagent?.pathHash).toBe(later);
   expect(sources["read times"]).toStartWith(
@@ -7683,7 +7686,7 @@ test("build-tasks in the reader's mode measures a task from a session against th
   const measureOf = (session: string) => {
     const task = tasksOf(out).find((each) => each.pathHash === pathHash(session));
     const note = summary.profiles.tasks.find((each) => each.task === task?.id);
-    const item = note?.evidence?.find((each) => each.item === LISTING_MEASURE);
+    const item = note?.evidence?.find((each) => each.item === LISTING_MEASURE_ITEM);
     return ListingMeasure.parse(JSON.parse(item?.source ?? "{}"));
   };
   // task-4's session started Helper, whose recorded listing holds alpha and beta.
@@ -7801,7 +7804,7 @@ test("a context session no subagent of which records a skill listing is read at 
   expect(sources["read times"]).toStartWith(
     `a context session has no step, and no subagent names the build it is read at: ${asked}; so it is the session's first build (its line is the first of the session's 1 system-prompt-digest line, at 2026-11-20T01:59:48.959Z, digest 46874d907e557998), and each repository, a pool's too, is read at the session's start ${F1_START}`
   );
-  const measure = ListingMeasure.parse(JSON.parse(sources[LISTING_MEASURE] ?? "{}"));
+  const measure = ListingMeasure.parse(JSON.parse(sources[LISTING_MEASURE_ITEM] ?? "{}"));
   expect(measure.kind).toBe("not measurable");
   expect(measure.why).toEndWith(asked);
 }, 120_000);

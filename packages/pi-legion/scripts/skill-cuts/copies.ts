@@ -213,10 +213,11 @@ import {
   firstLine,
   GhRetries,
   ghLimiter,
+  installationRateWait,
   MAX_RATE_RETRIES,
+  parseJson,
   RATE_LIMITED,
   type ResetIo,
-  rateLimitWait,
   schemaFaults,
   splitIncluded,
   textOf,
@@ -240,10 +241,10 @@ export interface GhResult {
 /** Runs gh with `args`; the test injects a stand-in. */
 export type Gh = (args: readonly string[]) => Promise<GhResult>;
 
-/** How long one gh call may run before it is ended: context.ts's gh reads have the same limit
- *  (GH_READ_TIMEOUT_MS), GitHub ends an API request it takes more than 10 s over on its side, and
- *  the longest calls (a whole repository's tree, a batch of blobs) answer in seconds; a call past
- *  it is a hung process or connection. */
+/** How long one gh call may run before it is ended: context.ts's API reads take the same limit
+ *  (its tarball read has its own), GitHub ends an API request it takes more than 10 s over on its
+ *  side, and the longest calls (a whole repository's tree, a batch of blobs) answer in seconds; a
+ *  call past it is a hung process or connection. */
 export const GH_CALL_TIMEOUT_MS = 120_000;
 
 /** The pod's own gh, with the environment this process has, at most `ghLimiter().limit` at once
@@ -332,15 +333,6 @@ const TREE_BATCH = 50;
  *  the same). */
 export const BLOB_BATCH = 50;
 export const BLOB_BATCH_BYTES = 2_000_000;
-
-/** `text` as JSON, or undefined when it is none. */
-export function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
-}
 
 // GitHub's answers, parsed at the boundary: only the fields this file reads.
 const Listing = z.array(
@@ -704,8 +696,8 @@ class Github {
   }
 
   /** gh's answer to the call `args`, each try made by `send`, sent again as `GhRetries.send` says:
-   *  while GitHub refuses it for its rate limit, after the wait common.ts's `rateLimitWait` gives,
-   *  a primary limit waited out to the reset of the installation that refused it
+   *  while GitHub refuses it for its rate limit, after the wait common.ts's `installationRateWait`
+   *  gives, a primary limit waited out to the reset of the installation that refused it
    *  (`untilInstallationReset`: a GraphQL batch halved, or read alone over REST, would spend the
    *  limit faster), and after a transient failure (`splits` when it is a GraphQL batch of more
    *  than one item, which its caller splits). `send` takes its read slot itself, so no wait holds
@@ -718,8 +710,7 @@ class Github {
   ): Promise<GhResult> {
     return this.retries.send(send, {
       splits,
-      rateWait: (stderr, refused) =>
-        rateLimitWait(stderr, refused, () => untilInstallationReset(args, this.resetIo)),
+      rateWait: installationRateWait(args, this.resetIo),
     });
   }
 
@@ -2684,7 +2675,7 @@ function parseBuildScript(file: string, text: string): ParsedManifest {
 /** Shell variable assignments of a script, the last one of each name winning. Only a line that is
  *  an assignment alone counts (one quoted string, one command substitution, or one bare word): a
  *  line that sets a variable for one command (`NAME="$NAME" "$NAME/bin/tool"`) sets none. */
-function shellVariables(text: string): Map<string, string> {
+export function shellVariables(text: string): Map<string, string> {
   const vars = new Map<string, string>();
   for (const match of text.matchAll(
     /^\s*(?:local\s+|export\s+|readonly\s+)?([A-Za-z_]\w*)=(\S.*)$/gm
@@ -3162,7 +3153,7 @@ export interface ManifestNote {
 }
 
 /** The facts of one type across the manifests, each with its manifest. */
-function factsOf<T extends Fact["type"]>(
+export function factsOf<T extends Fact["type"]>(
   manifests: readonly Manifest[],
   type: T
 ): { manifest: Manifest; fact: Extract<Fact, { type: T }> }[] {
@@ -3188,12 +3179,10 @@ export interface NpmPin {
 /** The packages the plugin lists of `manifests` pin by an exact npm version, in the manifests'
  *  order. build.ts reads each as that version ships it. */
 export function npmPins(manifests: readonly Manifest[]): NpmPin[] {
-  return manifests.flatMap((manifest) =>
-    manifest.facts.flatMap((fact): NpmPin[] =>
-      fact.type === "installs-package" && fact.repo === "" && EXACT_VERSION.test(fact.version)
-        ? [{ package: fact.package, version: fact.version, manifest }]
-        : []
-    )
+  return factsOf(manifests, "installs-package").flatMap(({ manifest, fact }): NpmPin[] =>
+    fact.repo === "" && EXACT_VERSION.test(fact.version)
+      ? [{ package: fact.package, version: fact.version, manifest }]
+      : []
   );
 }
 
