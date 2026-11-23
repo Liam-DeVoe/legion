@@ -20,8 +20,8 @@ import "time"
 // Postgres.TreeTold), and once the finish of the take's turn says the turn ran, the write that
 // records it folds the copy into the told rows (store's settleDesignNews). A take-back or a
 // retirement of the delivery ends its credit with its row and writes nothing else. So the accepted
-// take whose text carried an item is the one thing that says the audience took it, and a delivery
-// retired untaken tells nothing.
+// take whose text carried an item, once its turn has started, is the one thing that says the
+// audience took it, and a delivery retired untaken tells nothing.
 type DeliveryNews struct {
 	// Task is the start's own text, before any news: the task the start would carry had nothing
 	// been owed. The send renders the news after it, so a phase start whose every item stopped

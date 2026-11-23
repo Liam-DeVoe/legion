@@ -1725,7 +1725,11 @@ type Machine struct {
 	// the mark stands under it across the take-back. letGo clears it with the process, and accept
 	// with the task's next take: that take's turn has not run, and a let-go before it starts reads
 	// the take and the view instead (turnMayHaveRunUnseen). It is memory only: a daemon restarted
-	// inside such a park records the end without it, from what the claim still holds.
+	// inside such a park records the end without it, from what the claim still holds, and so does
+	// one restarted between a take-back that keeps the process (takeBack) and the let-go that
+	// follows. The take is gone by then, so that let-go records no turn of the task cut off, and
+	// the next take reads "You were not in a turn then", as every head before 0ec3c031 recorded in
+	// that case.
 	cutTurnOf string
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —

@@ -26,13 +26,12 @@ func TestTakeAwaitingItsTurnLosesItsSecondWaitAtAClose(t *testing.T) {
 	h.wantArmedFromNow(TimerRegistration, deadline, "after the close")
 }
 
-// Row 2: no bound of the second wait passes while no connection stands. The second case is the
-// reviewer's probe (review handoff v4's N1, waits.go:192 at fe79c4d9): the worker's report of a
-// run of the host's own given the take, G, reaches the daemon over HTTP while the shim is cut off,
-// and puts the take back; the take's own turn, T, runs meanwhile, unseen. Its start is replayed
-// behind the hello, and T's report finishes the task once. The negative control is the commit
-// under this change, where the put-back arms the second wait and its bound charges the worker and
-// takes the task back while T runs.
+// Row 2: no bound of the second wait passes while no connection stands. In the second case the
+// worker's report of a run of the host's own given the take, G, reaches the daemon over HTTP while
+// the shim is cut off, and puts the take back; the take's own turn, T, runs meanwhile, unseen. Its
+// start is replayed behind the hello, and T's report finishes the task once. The negative control
+// is the commit under this change, where the put-back arms the second wait and its bound charges
+// the worker and takes the task back while T runs.
 func TestChargeNothingForTheSecondWaitWhileNoConnectionStands(t *testing.T) {
 	t.Run("a take awaiting its turn", func(t *testing.T) {
 		h := boundsHarness(t, longReconnect)
@@ -213,7 +212,7 @@ func TestTakeAwaitingItsTurnIsGivenTheTurnStartBeforeTheAnswer(t *testing.T) {
 	h.wantRunOnce(number)
 }
 
-// Row 17: a take awaiting its turn while its finish is owed (Q1) is under neither R5's second wait
+// Row 17: a take awaiting its turn while its finish is owed is under neither R5's second wait
 // nor the bound of the wait for its report: whole bounds of both charge nothing and take nothing
 // back, and the end-frame bound makes the finish again, by the report, once the store answers.
 // The negative control is the commit under this change, whose second wait read the take awaiting

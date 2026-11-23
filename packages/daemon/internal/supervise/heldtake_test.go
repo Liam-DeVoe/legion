@@ -173,13 +173,12 @@ func TestAReportThatHeldTheTakesTextGivesTheFirstTakeAfterARestartItsTurnBack(t 
 }
 
 // The word is read only where it is certain, and otherwise as a report without it, so it never
-// puts back a take whose own turn is running or has run, which is review round 2's R2-3 class
-// (notTheTakesTurn):
+// puts back a take whose own turn is running or has run (notTheTakesTurn):
 //
-//   - a report saying the text was held, landing after the take's own turn started (the plan
-//     review's case: that turn's start reached the daemon before the report), or after it ended
-//     with its report still to come: a start has followed the reported turn's end, so the word is
-//     moot, and the take's own report finishes the task;
+//   - a report saying the text was held, landing after the take's own turn started (that turn's
+//     start reached the daemon before the report), or after it ended with its report still to
+//     come: a start has followed the reported turn's end, so the word is moot, and the take's own
+//     report finishes the task;
 //   - a report sent before the take's answer reached the worker, which names nothing held, landing
 //     after the take's own turn started: it puts nothing back (shape A's hazard, which shape B has
 //     no field for);

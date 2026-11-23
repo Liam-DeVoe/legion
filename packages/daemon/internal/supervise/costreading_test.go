@@ -1167,14 +1167,14 @@ func TestTaskCostLogRunsTheTurnClocksFromTheFirstHelloOfAProcessRestoredLaunchin
 // No time between the last line of a daemon and the start of the next one counts toward the first
 // bound: the machine a daemon start builds runs none of its waits until the worker's first act and
 // its view's whole line, so the time no daemon ran is no time the worker had to take its task.
-// A daemon's first line is its starting line (DaemonStartingLine), so the reading stops every clock
-// there, as of the last line it decoded before, and no line of the new daemon after it — its boot's
-// lines, a line it decodes before its restore and start lines, such as a boot write of another
-// claim's value — counts as the daemon before's. A number seen a minute before its daemon's last
-// line, a gap of more than the first bound with no line, the new daemon's starting, boot, restore
-// and start lines, and a take a minute after the view's whole line: the number was owed no bound
-// with no take, and the third verdict passes, through the machine and its own log and in a log
-// written line by line.
+// A daemon's starting line (DaemonStartingLine) is the first of its lines the reading decodes, so
+// the reading stops every clock there, as of the last line it decoded before, and no line of the
+// new daemon after it — its boot's lines, a line it decodes before its restore and start lines,
+// such as a boot write of another claim's value — counts as the daemon before's. A number seen a
+// minute before its daemon's last line, a gap of more than the first bound with no line, the new
+// daemon's starting, boot, restore and start lines, and a take a minute after the view's whole
+// line: the number was owed no bound with no take, and the third verdict passes, through the
+// machine and its own log and in a log written line by line.
 //
 // The negative controls: the same gap with the daemon before the start writing lines through it,
 // another claim's turn, lists the number from its seen report, since that daemon lived past the

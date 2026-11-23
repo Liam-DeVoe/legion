@@ -8,7 +8,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// The bounds and the connection (dispatch://INFRA-2811, decision 8; review handoff v4's N1). Three
+// The bounds and the connection (dispatch://INFRA-2811, decision 8). Three
 // bounds judge the worker by the frames its connection carries: R5's second wait (TimerTurnStart),
 // the bound of the wait for a take's report (TimerReport), with nothing held as with work held,
 // and R5's first wait over a value the worker reported seeing (TimerTake). Each runs only while

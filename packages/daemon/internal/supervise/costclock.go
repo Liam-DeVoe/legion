@@ -70,7 +70,11 @@ func (c *costReading) owe(k *claimClock, key costKey, written TaskValue, at time
 		return
 	}
 	if o := k.owed; o != nil {
-		c.endOwed(k, o.key.number, at, fmt.Sprintf("replaced by task %d", key.number))
+		how := ""
+		if !o.passed.IsZero() {
+			how = fmt.Sprintf("replaced by task %d", key.number)
+		}
+		c.endOwed(k, o.key.number, at, how)
 	}
 	if open, ok := c.open[key.claim]; ok && open.number == key.number {
 		return
@@ -219,10 +223,10 @@ func (c *costReading) viewWhole(k *claimClock, claim string, at time.Time) {
 }
 
 // daemonStarting is a daemon's starting line, the first line it writes (internal/daemon's run),
-// before it reads its plugins or restores a claim: every line before it is the daemon before's, so
-// every clock stops as of the last one the reading decoded (stopEveryClock), and no time between
-// the two daemons counts. A daemon whose boot stopped short writes no start line, and the next
-// daemon's starting line is a start of its own.
+// before it reads its plugins or restores a claim: every line the reading decodes before it is the
+// daemon before's, so every clock stops as of the last one the reading decoded (stopEveryClock),
+// and no time between the two daemons counts. A daemon whose boot stopped short writes no start
+// line, and the next daemon's starting line is a start of its own.
 func (c *costReading) daemonStarting() {
 	c.starting = true
 	c.stopEveryClock()

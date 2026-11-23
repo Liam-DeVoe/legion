@@ -13,10 +13,10 @@ import (
 
 // What a task tells of news of the approved design (record.DeliveryNews, carried as
 // supervise.Delivery.News and persisted as pending_task_deliveries.design_news) is taken by the
-// audience it speaks to only when the worker's take of the task is accepted, and only as the text
-// that take was answered with carried it. The machine renders the news again at each take it
-// decides, so a take accepted after a take-back can carry more than the one taken back. So the
-// machine keeps, beside the news, the copy the accepted take's text carried
+// audience it speaks to only once the turn of the worker's accepted take of the task has started,
+// and only as the text that take was answered with carried it. The machine renders the news again
+// at each take it decides, so a take accepted after a take-back can carry more than the one taken
+// back. So the machine keeps, beside the news, the copy the accepted take's text carried
 // (supervise.Delivery.Carried, persisted as pending_task_deliveries.carried_news), written by the
 // accept itself, in the one write that records the take and its text.
 //

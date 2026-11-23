@@ -1,10 +1,10 @@
 package supervise
 
-// One phase rule over the take (decision 8 of dispatch://INFRA-2811, review handoff v4's Q1): where
-// a report named the take's number and the store refused its finish (Machine.finishOwed), the
-// report that came decides, whichever turn the take awaits. Each of the three functions that take
-// a take back — interrupted, takeBackUnstarted and takeBack — reads the take's phase (takePhase),
-// and over a finish owed (waitFinish) finishes the task by that report and takes nothing back.
+// One phase rule over the take (decision 8 of dispatch://INFRA-2811): where a report named the
+// take's number and the store refused its finish (Machine.finishOwed), the report that came
+// decides, whichever turn the take awaits. Each of the three functions that take a take back —
+// interrupted, takeBackUnstarted and takeBack — reads the take's phase (takePhase), and over a
+// finish owed (waitFinish) finishes the task by that report and takes nothing back.
 
 import (
 	"errors"
@@ -20,9 +20,9 @@ import (
 // its turn while the finish its report decided is owed (Machine.finishOwed): the report named the
 // take's number ahead of the turn's start, the store refused the finish, and the take was then
 // put back to await its turn, as a put-back leaves a take (putBack). No path of the daemon is
-// shown to reach that state (review handoff v4's Q1), so the put-back is made in memory, and the
-// next decision writes it as a put-back's own write would (settle). refusing is whether the store
-// still refuses the finish when this returns.
+// shown to reach that state, so the put-back is made in memory, and the next decision writes it as
+// a put-back's own write would (settle). refusing is whether the store still refuses the finish
+// when this returns.
 func owedFinishAwaitingItsTurn(t *testing.T, refusing bool, set ...func(*Deps)) (*harness, uint64) {
 	t.Helper()
 	return owedFinishOfAwaitingItsTurn(t, RequestDeliver{Task: "the task whose report came ahead of its turn"}, refusing, set...)

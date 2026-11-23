@@ -551,6 +551,9 @@ RULES = {
     f"{DAEMON}/cmd/legion/gh_test.go": reads((f"{DAEMON}/docker/gh", "cmd/legion/gh_test.go:1003 ../../docker/gh")),
     f"{DAEMON}/cmd/legion/state_read_budget_test.go": reads(
         (f"{FIX}/daemon-api/state.json", "cmd/legion/state_read_budget_test.go:30 reads the daemon's state golden as the slow daemon's answer")),
+    f"{DAEMON}/cmd/legion/task_cost_doc_test.go": reads(
+        ("docs/site/src/content/docs/legion/task-delivery-cost.md", "cmd/legion/task_cost_doc_test.go:77 reads taskCostPage under ../../../.."),
+        (f"{DAEMON}/internal/supervise/testdata/task-cost.jsonl", "cmd/legion/task_cost_doc_test.go:120 reads taskCostSample under ../..")),
     f"{DAEMON}/internal/admit/admit_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/admit/admit_test.go:1069")),
     # main's #2780 added the guard that holds internal/api's reachable claim states to the ones
     # internal/supervise declares, which it reads by parsing that package's own sources.
@@ -617,8 +620,6 @@ RULES = {
         Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1843,1850")],
     f"{DAEMON}/internal/stream/integration_test.go": [legion_build("internal/stream/integration_test.go:157 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/workerbin/workerbin_test.go": reads((f"{DAEMON}/docker/gh", "internal/runtime/workerbin/workerbin_test.go:99")),
-    f"{DAEMON}/internal/supervise/costreading_test.go": reads(
-        ("docs/site/src/content/docs/legion/task-delivery-cost.md", "internal/supervise/costreading_test.go:75 (TestDocExampleTaskCost)")),
     f"{DAEMON}/internal/textcheck/design_approved_wake_test.go": reads(
         (f"{DAEMON}/internal/workflow/design_approved_wake_extract.txt", "internal/textcheck/design_approved_wake_test.go:25-26 reads the phrase from it, in place of importing internal/workflow"),
         ("skills/legion-architect/references/wake-routing.md", "internal/textcheck/design_approved_wake_test.go:32-38 reads it under ../../../.."),

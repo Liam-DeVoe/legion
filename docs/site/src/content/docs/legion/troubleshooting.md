@@ -219,7 +219,8 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
 
 Every boot writes `legion daemon starting`, with the `project`, as its first line, before the plugin gate and the store; only the configuration warnings of `legion start` come before it.
 The boot logs `legion daemon started` once the daemon serves: a log that holds `legion daemon starting` and not `legion daemon started` is a boot still under way, or one that stopped short, whose refusal follows it.
-[Task delivery cost](/legion/legion/task-delivery-cost/) reads `legion daemon starting` as where that daemon began, and does not read the time of the warnings before it, so no time between two daemons counts toward a worker's bounds there.
+[Task delivery cost](/legion/legion/task-delivery-cost/) reads `legion daemon starting` as where that daemon began, and reads no warning before it as a line of the daemon before, so the time of a warning stops no clock and no time between two daemons counts toward a worker's bounds there.
+Without `--claim`, that command still counts a warning in its window as a line of the window, so the time of a warning can be the time of the first line in the window that its output gives.
 
 ## The daemon stops
 

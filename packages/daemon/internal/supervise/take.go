@@ -828,7 +828,7 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 	// A task that carries news of the approved design is rendered again from the record here,
 	// where the take is decided, and one queued for its news alone that has nothing left to say is
 	// dropped (currentNews): what the accepted take's text carries is what the record owes now, and
-	// that is what the accept credits.
+	// that is the copy the accept writes (Delivery.Carried).
 	says, err := m.currentNews(ctx)
 	if err != nil {
 		return "", false, err
@@ -897,7 +897,7 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 // (offer), so that decision asks the record once; and an operator's task over a launch the pacing
 // parked above the claim's process (runParkedLaunchNow), which asks before the row's queue does,
 // so that the launch runs for the operator's task where queue would drop the task it arrived
-// behind. A read of the record that fails drops nothing. With no task pending it drops nothing.
+// behind. A read of the record that fails drops nothing.
 func (m *Machine) dropUnowed(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
 	if p == nil {
@@ -1017,7 +1017,7 @@ func (m *Machine) takeBack(ctx context.Context, cause string) error {
 // next — the ladder's step, which must land with the take-back or not at all (takeToLadder). It
 // answers whether the claim moved with it (giveBackTake). A take that goes back as a cut turn is
 // marked for the let-go's record at once, as the take-back stands in memory (Machine.cutTurnOf,
-// dropTake). With no task pending it takes nothing back.
+// dropTake).
 func (m *Machine) takeBackInMemory(cause string) (claimMoved bool) {
 	p := m.claim.Pending
 	if p == nil {

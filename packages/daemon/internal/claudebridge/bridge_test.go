@@ -2245,8 +2245,8 @@ func TestTakeOfATextHeldThroughATurnIsMadeAgainAtANewerRevisionAndRunsOnce(t *te
 // Once the text is written to Claude Code a newer revision of its number changes nothing, also
 // while Claude Code has not taken the text yet: the bridge starts the task's turn as it writes the
 // text (startTask), asks nothing while that turn runs, and holds the number finished from the
-// turn's end (the run-end mark). The text runs once (plan review round 68: a guard keyed on Claude
-// Code having begun the turn would hand the text a second time here).
+// turn's end (the run-end mark). The text runs once (a guard keyed on Claude Code having begun the
+// turn would hand the text a second time here).
 func TestTakeOfANewerRevisionBeforeClaudeCodeTakesTheTextHandsNothingMore(t *testing.T) {
 	d := newTaskDaemon(t)
 	d.answerTake = func(claim.TakeRequest) (int, any) { return accepted("held r1") }

@@ -598,7 +598,7 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 // (takePhase, waitFinish), whichever of its three callers asks: that report decides, the take
 // stays where it put it, and the end-frame bound makes its finish again. Put back, the take would
 // await a turn that has run, and the start of that turn, late, would be given it as a second run
-// of the task. With no task pending it puts nothing back.
+// of the task.
 func (m *Machine) putBack(ctx context.Context, by string) error {
 	p := m.claim.Pending
 	if p == nil || m.takePhase() == waitFinish {
@@ -637,8 +637,7 @@ func (m *Machine) putBack(ctx context.Context, by string) error {
 // no task. A busy claim marks nothing (busy): in a turn, its start frame has come already, and the
 // turn running is the report's; under a compaction with no turn started under it, a start is given
 // no take and reads no mark (turnStartedWhileBusy), so a mark left for a start that comes under
-// the compaction would outlive it and name this task in a later start. With no task pending it
-// starts nothing.
+// the compaction would outlive it and name this task in a later start.
 func (m *Machine) startedUnseen(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	if p == nil {

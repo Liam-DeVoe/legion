@@ -226,8 +226,10 @@ So each figure that names a task names its claim too.
   - A start of the daemon stops the clock at the time of the last line of the daemon before it that the command decodes: a turn, a task value, a take, a finish, a charge, a death, a registration or a view line.
     No time between the two daemons counts, because the new daemon runs none of its waits until the worker acts and the daemon sees every frame again.
     The daemon writes `legion daemon starting`, with the `project`, as its first line.
-    Only the configuration warnings of `legion start` come before it, and the command does not read their time.
+    Only the configuration warnings of `legion start` come before it.
+    The command decodes no warning, so a warning is not a line of the daemon before, and its time stops no clock.
     So the command reads each line that it decodes before `legion daemon starting` as a line of the daemon before, and each line after it as a line of the new daemon.
+    Without `--claim`, the command still counts each warning in the window as a line of the window, so the time of a warning can be the time of the first line in the window that the output gives.
     The new daemon then restores its claims and writes `legion daemon started`.
     The clock of a claim that it restores with a process starts again at the line that starts it, before `legion daemon started` or after it.
     The clock of every other claim starts again at the worker's next act that the command reads in the log: a report that it saw the task, a take, a turn, a report that put a take back, or a registration.

@@ -270,9 +270,10 @@
 -- its own (docs/kubernetes.md, "Rolling back below the release that guards the controller's pod's
 -- memory"): runtime.kubernetes.memory_guard.controller_pod comes out of legion.yaml before the
 -- earlier image is pinned, and the unsent memory-guard-kill notices are deleted once. A rollback
--- to a release before #3995, contract 213 without it or contract 205, runs those three and then
--- #3995's four statements (docs/kubernetes.md, "Rolling back the release that tells a holder of an
--- approved new version"), which read none of the fourteen columns. A rollback to contract 202, the
+-- to a release before #3995, contract 213 without it or contract 205, runs those three ways back
+-- (20261122160000's, 20261121170714's and this block) and then #3995's four statements
+-- (docs/kubernetes.md, "Rolling back the release that tells a holder of an approved new version"),
+-- which read none of the fourteen columns. A rollback to contract 202, the
 -- release before 20261120012547_set_back_observed_seq, runs those, #3995's four statements and then
 -- that migration's own statement, the last paragraph of its header (docs/kubernetes.md, "Rolling
 -- back the release that lets the owning architect's status stand"), which takes observedSeq off
@@ -291,8 +292,10 @@
 -- them: 20261122160000_design_news_credit_at_turn_start's way back, which writes back #3995's
 -- design_news_told_in; the way back in the header of 20261121170714_dispatch_issue_applied_seq,
 -- #4903's, which drops dispatch_issues.applied_seq and deletes its version row, with every daemon
--- of the database stopped; this block; #3995's four statements, which delete the queued news-only
--- starts and the
+-- of the database stopped; contract 217's delete of the unsent memory-guard-kill notices, since an
+-- earlier release cannot send them: it refuses a controller notice of a kind it does not know
+-- (docs/kubernetes.md, "Rolling back below the release that guards the controller's pod's
+-- memory"); this block; #3995's four statements, which delete the queued news-only starts and the
 -- news-only tasks and take the news off each pending task (docs/kubernetes.md, "Rolling back the
 -- release that tells a holder of an approved new version"); the statement in the header of
 -- 20261120012547_set_back_observed_seq, contract

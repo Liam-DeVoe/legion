@@ -175,7 +175,7 @@ type Delivery struct {
 	// delivery's row and by nothing else, so the write that takes the take back, or the
 	// retirement, ends exactly that credit, whatever has been credited since. News is rendered
 	// again at each take, so a take after a take-back can carry more than the one taken back, and
-	// each accepted take credits only what its own text said.
+	// each accepted take's copy holds only what its own text said.
 	//
 	// It is written by the accept itself (accept), in the one write that records the take and the
 	// text it was answered with, since the text is composed from News at that moment: a take a hold
@@ -895,12 +895,12 @@ func (m *Machine) rewritePending(ctx context.Context, task string, kept, news []
 // at the take after the hold's end — and what the answer no longer carries goes from the delivery
 // as well as from the text, so the accepted take carries what the record owes then.
 //
-// What this renders is what the accepted take credits: the accept composes its text from the task
-// this leaves and makes the news this leaves its copy (Delivery.Carried), in the one write that
-// records the take. A take accepted is never rendered again: a take of its number sent again is
-// answered the text the record kept (answeredFromRecord), and the news it credited is that text's.
-// News that changes after the take is owed by the told rows' own reading, beside the credit, and
-// a later task carries it.
+// What this renders is what the accepted take carries: the accept composes its text from the task
+// this leaves and makes the news this leaves its copy (Delivery.Carried), its credit once the
+// take's turn has started, in the one write that records the take. A take accepted is never
+// rendered again: a take of its number sent again is answered the text the record kept
+// (answeredFromRecord), and the news it carried is that text's. News that changes after the take
+// is owed by the told rows' own reading, beside the credit, and a later task carries it.
 //
 // A task queued for its news alone that is left with nothing to say is not taken, and the answer
 // is false: it is dropped through the one exit every drop leaves by (dropPending), which deletes
@@ -1049,8 +1049,6 @@ func (m *Machine) retirePending(ctx context.Context) error {
 // first claim write that lands, and the retirement keeps the store's fenced answers
 // (ErrNoSuchDelivery, ErrOtherDelivery) whole. A stop that fails again stops the retirement here,
 // with nothing retired, for the next decision's repair and settle to make in that same order.
-//
-// With no task pending it retires nothing.
 func (m *Machine) retireTask(ctx context.Context, finished bool) error {
 	p := m.claim.Pending
 	if p == nil {

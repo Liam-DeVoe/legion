@@ -37,7 +37,7 @@ func (m *Machine) startTakesTurn(ctx context.Context) error {
 // finish owed (Machine.finishOwed), so the bound that makes it again finishes by the report,
 // whatever the claim's plugin, and each refusal of the bound's own write arms it again, until one
 // lands (decision 8 of dispatch://INFRA-2811). A plugin that names its task's number is given no
-// other bound than this one (TakesNoTask). With no task pending it finishes nothing.
+// other bound than this one (TakesNoTask).
 //
 // A finish says the take's turn ran with no provider error (a report of one goes to the ladder,
 // providerErrored, never here), so it makes final what the take credited of news of the approved

@@ -1864,8 +1864,7 @@ text_checks:
   - 'packages/contracts/fixtures/live/**'
   - 'packages/contracts/schemas/dispatch-openapi.json'
   # The supervise table's two pure pins compile internal/supervise's tests, and with
-  # them the page and the sample log costreading_test.go holds legion task-cost to.
-  - 'docs/site/src/content/docs/legion/task-delivery-cost.md'
+  # them the package's sample log, which costreading_test.go reads.
   - 'packages/daemon/internal/supervise/testdata/task-cost.jsonl'
 # why: .github/ci-notes/ci.md#dispatch_memory-go-test--tags-memory-cmddispatch-memory_profile_testgo
 dispatch_memory:

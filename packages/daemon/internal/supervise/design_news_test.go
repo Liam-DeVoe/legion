@@ -57,7 +57,8 @@ func newsStart(id string, row int64) RequestDeliver {
 }
 
 // wantCredited fails the test unless the store holds the claim's delivery taken (ConfirmedAt set),
-// carrying news as both what it holds and what its accepted take credits (Delivery.Carried).
+// carrying news as both what it holds and the copy its accepted take carried (Delivery.Carried), a
+// credit once the take's turn starts.
 func wantCredited(t *testing.T, h *harness, when string, news []byte) Delivery {
 	t.Helper()
 	stored, ok := h.store.delivery(h.token)
@@ -72,7 +73,7 @@ func wantCredited(t *testing.T, h *harness, when string, news []byte) Delivery {
 // worker runs must say so. The machine asks Deps.DesignNews about the delivery a take of it is
 // decided for (currentNews, takeable), writes the answer to the store under the same id before the
 // take is answered, and answers the take that text, so a restart reads the task this take carried
-// and the accept credits what it named.
+// and the accept copies what it named (Delivery.Carried).
 func TestATaskCarryingNewsIsSentAsTheRecordReadsAtItsSend(t *testing.T) {
 	closed := "Review the change. Issue: LEGION-209. Phase: reviewing.\n\n" +
 		"The design gate of LEGION-208 closed: version 6 of its spec document (artifact-spec) is with its reviewer."
@@ -343,8 +344,9 @@ func newsCarryingStarts() []newsCarryingStart {
 // nothing hands the task into that turn — not the sweep, not the shim's hello — so nothing reads
 // its news while the turn runs either. The turn's end lets the one next take through, and that take
 // renders the news again from the record as it reads then (currentNews): the item that stopped
-// standing while the task waited goes from the text and from the delivery, and the accept credits
-// only what its text told, which is what the store reads as taken (the store's settleDesignNews).
+// standing while the task waited goes from the text and from the delivery, and the accept copies
+// only what its text told, which the store reads as taken once the take's turn starts (the store's
+// settleDesignNews).
 func TestATaskCarryingNewsABusyAnswerHoldsIsSentOnceMoreAtTheTurnsEnd(t *testing.T) {
 	for _, tc := range newsCarryingStarts() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -444,7 +446,7 @@ func TestATaskCarryingNewsIsConfirmedByTheLateTurnOfItsFirstPrompt(t *testing.T)
 // drops the news nor tells it twice, and the record's sentence is neither lost nor duplicated:
 //
 //   - a task whose news still stands is taken once, with the record's sentence in front of the
-//     text its news renders to then, and the one accepted take credits both: the delivery carrying
+//     text its news renders to then, and the one accepted take carries both: the delivery carrying
 //     the news, and the record told by that delivery;
 //   - a task queued for its news alone that has nothing left to say at its take is dropped, and the
 //     drop gives the claim the daemon's own delivery of the record again (takeable's
@@ -571,10 +573,11 @@ func TestATaskCarryingNewsTakesTheRelaunchDeliverysPlace(t *testing.T) {
 
 // A newer task that takes the place of an older one whose take's turn is running credits none of
 // the older take's news, only what its own accepted take's text carried (accept). The older task
-// carrying news is taken, which credits its news, and its take's turn starts; a newer phase task
-// carrying news takes its place, which retires the older delivery and so ends its credit (the
-// store counts only a taken row's copy); the turn ends, and the newer task's take, rendered from
-// the record as it reads then, credits the newer task's own news and nothing of the older one's.
+// carrying news is taken, which writes its copy, and its take's turn starts, which makes that copy
+// its credit; a newer phase task carrying news takes its place, which retires the older delivery
+// and so ends its credit (the store counts only the copy of a taken delivery whose take's turn has
+// started, design_news_told_in); the turn ends, and the newer task's take, rendered from the
+// record as it reads then, carries the newer task's own news and nothing of the older one's.
 // It is the take's counterpart of the turn the push path took for a newer task while an older
 // task's send was still out: a newer task is credited only by a take of its own.
 func TestATurnTakenForANewerTaskWhileAnOlderTasksSendIsOutRaisesNoneOfThatSendsNews(t *testing.T) {

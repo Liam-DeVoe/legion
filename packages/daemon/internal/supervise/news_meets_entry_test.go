@@ -214,7 +214,7 @@ func TestATaskOfNewsAloneRaisesNoEntryAndConfirmsNoHandshake(t *testing.T) {
 // back to the ladder's wait (takeToLadder), and a wake's task of no entry takes that owed task's
 // place (replaceable). The sweep's start of the same entry is a row of its own, so its task is a
 // new delivery. That task carries news of the approved design, and the record moved since the
-// first start read it, so its take renders the news again (currentNews). Its accept credits the
+// first start read it, so its take renders the news again (currentNews). Its accept copies the
 // news that resent task's own text carried (Delivery.Carried), never the first task's, which the
 // provider error's take-back ended. No delivery is taken twice: each take is of a task of its own
 // number, and the record answers a take sent again from what it kept.

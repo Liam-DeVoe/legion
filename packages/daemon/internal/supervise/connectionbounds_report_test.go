@@ -27,14 +27,13 @@ func TestTakeWhoseReportIsOwedLosesItsReportBoundAtAClose(t *testing.T) {
 }
 
 // Row 4: no bound of the wait for a take's report passes while the daemon cannot see the worker's
-// frames. These are the reviewer's two probes of the bound with nothing held (review handoff v4's
-// N1, reportwait.go:256 at fe79c4d9): the daemon gave the take a run of the host's own, G, saw it
-// start and end, and the take's own turn, T, runs while the shim is cut off. In the first the
-// shim comes back with its backlog whole after a whole bound; in the second it comes back at once,
-// its hello saying the backlog dropped frames (T's start among them), and the agent answers only
-// after a whole bound. T's report finishes the task once in both. The negative control is the
-// commit under this change, where the bound armed at G's end takes the task back as a cut turn
-// while T runs, writes its value again, and T's report finishes nothing.
+// frames. Two cases of the bound with nothing held: the daemon gave the take a run of the host's
+// own, G, saw it start and end, and the take's own turn, T, runs while the shim is cut off. In the
+// first the shim comes back with its backlog whole after a whole bound; in the second it comes
+// back at once, its hello saying the backlog dropped frames (T's start among them), and the agent
+// answers only after a whole bound. T's report finishes the task once in both. The negative control
+// is the commit under this change, where the bound armed at G's end takes the task back as a cut
+// turn while T runs, writes its value again, and T's report finishes nothing.
 func TestTakeWhoseReportIsOwedIsNotTakenBackWhileNoConnectionStands(t *testing.T) {
 	t.Run("the shim back with a whole backlog after a whole bound", func(t *testing.T) {
 		h := boundsHarness(t, longReconnect)

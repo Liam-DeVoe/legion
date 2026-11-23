@@ -133,9 +133,8 @@ func TestTakeAcrossTheDaemonAndTheBridgeAfterAProviderErrorIsMadeOnce(t *testing
 // report travels over HTTP while the test hands the frames. Either way the take awaits its turn
 // once both have: a report ahead of the turn's start has that start given no take.
 //
-// The negative control is the bridge before R3-4, which reported that turn holding nothing: the
-// take keeps the turn the daemon gave it, no second bound is armed over it, and its value is
-// written no more.
+// The negative control is a bridge that reports that turn holding nothing: the take keeps the turn
+// the daemon gave it, no second bound is armed over it, and its value is written no more.
 func TestATaskTextClaudeCodeNeverTookIsOfferedAgainAfterADaemonRestart(t *testing.T) {
 	d := startCrossDaemon(t, func(deps *supervise.Deps) { deps.Timeouts.TurnStart = crossTurnStartBound })
 	token, boot := d.launch()

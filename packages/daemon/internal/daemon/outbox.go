@@ -2620,10 +2620,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (supervise.Delivery.News): the task is the start's own text and the news after it, the
 		// round's two sentences after the news where the task names them (renderNews), the take
 		// renders that news again from the record (the daemon's designNews), and the write
-		// recording the accepted take makes what that take's text carried the delivery's credit,
-		// which the write recording the finish of the take's turn folds into the told rows
-		// (supervise.Delivery.Carried, the claim store's settleDesignNews). A start queued for news
-		// alone travels marked so (supervise.RequestDeliver.NewsOnly, stored as
+		// recording the accepted take makes what that take's text carried the delivery's copy, its
+		// credit once the take's turn has started, which the write recording the turn's finish
+		// folds into the told rows (supervise.Delivery.Carried, the claim store's
+		// settleDesignNews). A start queued for news alone travels marked so
+		// (supervise.RequestDeliver.NewsOnly, stored as
 		// pending_task_deliveries.news_only): its task holds no work, so the machine refuses it
 		// behind any task that does, a taken one whose turn is still to finish among them, and the
 		// row waits on its backoff until that task is finished. A task of news alone the worker has

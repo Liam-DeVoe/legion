@@ -343,6 +343,56 @@ func TestTakeTheCompactionGaveBackAsACutTurnKeepsItsNoteThroughALaterLetGo(t *te
 	}
 }
 
+// Row 28 after R5's second wait: a take awaiting its turn behind an end its daemon never saw begin
+// is marked as one whose turn may have run unseen (blindTurnEnded, Machine.turnUnseen), and the
+// agent's answer makes the view whole. The second bound then passes with no turn started: the
+// worker is charged, and the take goes back as a cut turn with its note (turnStartBoundOver,
+// takeBack), the process kept. A let-go of that process then comes before the next take — a death
+// or a retirement. Its record says the task's turn was cut off (EndedWork.TaskTurn), as it says
+// after the compaction's take-back, so the next process takes the task told its turn on it may
+// have run. The claim ran a turn first, so the let-go writes its record. The negative control is
+// the take-back with no mark for that record (Machine.cutTurnOf, takeBackInMemory): the record
+// says the agent was in no turn, and its sentence stands in place of the cut turn's note, so the
+// next take carries none.
+func TestTakeTheSecondWaitGaveBackAsACutTurnKeepsItsNoteThroughALaterLetGo(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		letGo func(t *testing.T, h *harness)
+		next  func(h *harness)
+	}{
+		{"a death", func(t *testing.T, h *harness) {
+			h.observe(runtime.Gone)
+			h.wantState(StateLaunching)
+		}, relaunchedAndTaken},
+		{"a retirement", retiredByTheOperator, retriedAfterRetirement},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := boundsHarness(t)
+			h.takeRunsItsOwnTurn("the first task", 1, false)
+			number := h.takeOf("implement the plan")
+			h.reconnectLater()
+			h.helloOf(true, false)
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			h.answerAsk(false)
+			h.wantAwaitingItsTurn(number, "after the answer")
+
+			h.advance(turnStartBound)
+
+			h.wantCharges(WaitTurnStart)
+			if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
+				t.Fatalf("the second wait left %+v, want task %d taken back with the note of a cut turn", p, number)
+			}
+
+			tc.letGo(t, h)
+
+			if ended := h.claim().EndedWork; !ended.TaskTurn {
+				t.Fatalf("the let-go recorded %+v, want the task's turn recorded as cut off", ended)
+			}
+			h.wantTakenOnceMore(number, tc.next)
+		})
+	}
+}
+
 // Row 26 after a later take: the operator's compaction took a take awaiting its turn back as a
 // cut turn while a hello's ask waited for its answer, and kept the process; the agent's answer
 // then makes the view whole, and the worker takes the task again. A death before that take's turn
@@ -435,6 +485,79 @@ func TestTakeAwaitingItsTurnBehindAnEndNeverSeenBegunIsTakenBackAsACutTurn(t *te
 		h.wantTakenBackWithItsNote(number)
 		h.wantTakenOnceMore(number, (*harness).relaunchedTakes)
 	})
+}
+
+// Row 28's mark is the take's, not the claim's: the next accepted take clears it (accept). A take
+// marked by an end never seen begun runs its own turn after it, and its report finishes the task;
+// the next task's take then awaits its turn over a whole view, and a death comes before that turn
+// starts. The let-go's record says no turn of the task was cut off (EndedWork.TaskTurn), and the
+// next task goes back unstarted, with no note: the worker ran nothing of its take. The negative
+// control is accept with no clear of the mark (setTurnUnseen): the first task's mark stands over
+// the next task's take, and the death takes it back as a cut turn.
+func TestTakeOfTheNextTaskInheritsNoMarkOfAnEndNeverSeenBegun(t *testing.T) {
+	h := boundsHarness(t)
+	first := h.takeOf("the first task")
+	h.reconnectLater()
+	h.helloOf(true, false)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.answerAsk(false)
+	h.wantAwaitingItsTurn(first, "after the answer")
+	h.must(StreamTurnStart{Claim: h.token})
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.reportOf(2, first)
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("pending %+v after the report of task %d's turn, want it finished", p, first)
+	}
+	second := h.takeOf("the second task")
+	h.wantAwaitingItsTurn(second, "after the second task's take")
+
+	h.observe(runtime.Gone)
+
+	h.wantState(StateLaunching)
+	ended := h.claim().EndedWork
+	if ended.Cause == "" {
+		t.Fatalf("the let-go recorded %+v, want a record of the process's end", ended)
+	}
+	if ended.TaskTurn {
+		t.Fatalf("the let-go recorded %+v, want no turn of the task recorded as cut off", ended)
+	}
+	if p := h.pending(); p.Number != second || p.taken() || p.Interrupted {
+		t.Fatalf("the death left %+v, want task %d given back unstarted, with no note of a cut turn", p, second)
+	}
+}
+
+// Row 28's mark says nothing once the take's own turn has started (turnMayHaveRunUnseen), and the
+// record of a let-go clears it then (recordEnd). A take marked by an end never seen begun runs its
+// own turn after it, its start and end frames seen, and the process dies before that turn's report
+// comes. No turn was running, and the turn of the take ran whole on a connection that showed every
+// frame of it, so the let-go's record says no turn of the task was cut off (EndedWork.TaskTurn).
+// The negative control is recordEnd with no clear of the mark (setTurnUnseen): the mark of the end
+// never seen begun stands, and the record says the task's turn was cut off.
+func TestTakeWhoseOwnTurnRanAfterAnEndNeverSeenBegunIsInNoTurnCutOffAtADeath(t *testing.T) {
+	h := boundsHarness(t)
+	h.takeRunsItsOwnTurn("the first task", 1, false)
+	number := h.takeOf("implement the plan")
+	h.reconnectLater()
+	h.helloOf(true, false)
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.answerAsk(false)
+	h.wantAwaitingItsTurn(number, "after the answer")
+	h.must(StreamTurnStart{Claim: h.token})
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	if p := h.pending(); p.Number != number || !p.startRecorded() {
+		t.Fatalf("the take's own turn left %+v, want task %d's turn run, its report still to come", p, number)
+	}
+
+	h.observe(runtime.Gone)
+
+	h.wantState(StateLaunching)
+	ended := h.claim().EndedWork
+	if ended.Cause == "" {
+		t.Fatalf("the let-go recorded %+v, want a record of the process's end", ended)
+	}
+	if ended.TaskTurn {
+		t.Fatalf("the let-go recorded %+v, want no turn of the task recorded as cut off", ended)
+	}
 }
 
 // staleToTheDaemon makes the claim's recorded plugin contract an earlier one than this daemon's,

@@ -1537,7 +1537,7 @@ var errSendSuperseded = errors.New("bus: the connection reconnected during the c
 // every line the client sent before it, and nats.go records a refusal as the connection's last
 // error as it reads the -ERR (processTransientError), before the PONG that ends the flush. So the
 // server accepted the subscription when that error is still the one the connection held before
-// the bind (sameError); any other error, a refusal among them, counts as not accepted. A flush
+// the bind (SameError); any other error, a refusal among them, counts as not accepted. A flush
 // that fails leaves the answer unknown: the subscription is released (releaseAttempt) and the
 // failure returned.
 //
