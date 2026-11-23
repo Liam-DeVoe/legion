@@ -1792,10 +1792,9 @@
       },
       {
         "row": "record-admin-api-echo",
-        "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
+        "base": "74cb685538897604595fa6ce23e6212fb0c1971c",
         "files": [
-          "packages/daemon/internal/sessionproxy/admin_api_echo_test.go",
-          "packages/daemon/internal/sessionproxy/connector_test.go"
+          "packages/daemon/internal/sessionproxy/admin_api_echo_test.go"
         ],
         "capture": "sessionproxy.admin-api-echo"
       },
@@ -1833,6 +1832,7 @@
           "packages/envoy/internal/oidc/status_line_test.go",
           "packages/envoy/internal/oidc/oidctest/issuer.go",
           "packages/envoy/internal/oidc/oidctest/codeflow.go",
+          "packages/envoy/internal/oidc/oidctest/token.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "oidc.status-line/check-client"
@@ -1844,6 +1844,7 @@
           "packages/envoy/internal/oidc/status_line_test.go",
           "packages/envoy/internal/oidc/oidctest/issuer.go",
           "packages/envoy/internal/oidc/oidctest/codeflow.go",
+          "packages/envoy/internal/oidc/oidctest/token.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "oidc.status-line/exchange"
@@ -1855,6 +1856,7 @@
           "packages/envoy/internal/dispatch/routes/callback_status_line_test.go",
           "packages/envoy/internal/oidc/oidctest/issuer.go",
           "packages/envoy/internal/oidc/oidctest/codeflow.go",
+          "packages/envoy/internal/oidc/oidctest/token.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "routes.callback-502"

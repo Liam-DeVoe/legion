@@ -346,10 +346,11 @@ func (g *gate) runTest(copyDir string, r *row) result {
 	res.elapsed = time.Since(start)
 	output := map[string]*strings.Builder{}
 	var printed strings.Builder // all the test binary printed, in order, for a run past its bound
+	var built strings.Builder   // the go command's build output, which -json gives as build-output events
 	var tests []string
 	for _, line := range strings.Split(string(out), "\n") {
 		if !strings.HasPrefix(line, "{") {
-			if strings.Contains(line, "build failed") || strings.Contains(line, "[setup failed]") || regexp.MustCompile(`\.go:\d+:\d+: `).MatchString(line) {
+			if strings.Contains(line, "build failed") || strings.Contains(line, "[setup failed]") || compilerLine.MatchString(line) {
 				res.compileError, res.note = true, strings.TrimSpace(line)
 			}
 			continue
@@ -364,6 +365,9 @@ func (g *gate) runTest(copyDir string, r *row) result {
 		// The binary's own panic at its -timeout, or the go command's kill a minute after it.
 		if strings.Contains(e.Output, "panic: test timed out") || strings.Contains(e.Output, "*** Test killed with quit: ran too long") {
 			res.timedOut = true
+		}
+		if e.Action == "build-output" {
+			built.WriteString(e.Output)
 		}
 		if e.Action == "build-fail" || strings.Contains(e.Output, "[build failed]") {
 			res.compileError = true
@@ -390,6 +394,9 @@ func (g *gate) runTest(copyDir string, r *row) result {
 	for _, test := range tests {
 		res.scan(output[test].String())
 	}
+	if res.compileError && res.note == "" {
+		res.note = compilerError(built.String())
+	}
 	if res.timedOut {
 		res.stall = stall(printed.String())
 	}
@@ -401,6 +408,27 @@ func ceilSecond(d time.Duration) time.Duration {
 		return t + time.Second
 	}
 	return d
+}
+
+// compilerLine is a line of the compiler's: a file, a line and a column, then the error.
+var compilerLine = regexp.MustCompile(`\.go:\d+:\d+: `)
+
+// compilerError is what a failed build printed, for the reason a row's run did not compile: its
+// compiler lines (at most five), else its last three lines, else a phrase saying it printed none.
+func compilerError(built string) string {
+	var errs []string
+	for _, line := range strings.Split(built, "\n") {
+		if compilerLine.MatchString(line) && len(errs) < 5 {
+			errs = append(errs, strings.TrimSpace(line))
+		}
+	}
+	if len(errs) > 0 {
+		return strings.Join(errs, "; ")
+	}
+	if text := strings.TrimSpace(built); text != "" {
+		return lastLines(text, 3)
+	}
+	return "the go command printed no build output"
 }
 
 var (
