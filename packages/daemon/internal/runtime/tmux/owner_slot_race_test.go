@@ -161,6 +161,44 @@ func TestAStepThatStartsInALaunchsMintIsToldOnlyOnceThePaneHoldsItsApp(t *testin
 	}
 }
 
+// A relaunch of the owner whose earlier pane is still watched, its process gone and not yet let go,
+// judges the pane's role and mints that role's bundle; in that mint the owner's step starts, and
+// the outbox writes the slot through the earlier pane's entry and asks whether its files hold the
+// step's App. They do, so the owner is told the step. The relaunch then lets the earlier pane go
+// (refuseLiveIncarnation) and writes the claim's gh files under the launch lock. They stay on the
+// step's App: the relaunch judges the role again there (writeGitHubCredential), so its write,
+// judged before the step started, never lands after the step's write the owner was told of. Only
+// that second judgment holds this, since the file check answered before the relaunch wrote.
+func TestARelaunchJudgedBeforeAStepDoesNotUndoTheWriteTheOwnerWasToldOf(t *testing.T) {
+	ctx := context.Background()
+	g := newOwnerPaneRig(t)
+	if _, err := g.Spawn(ctx, g.spec); err != nil {
+		t.Fatalf("Spawn of the architect: %v", err)
+	}
+	implement := staticCredentialToken(claim.RoleImplementer)
+	var told error
+	var heldWhenTold string
+	g.hook = func() {
+		g.acting.Store(claim.RoleImplementer)
+		told = g.stepTold(ctx, t)
+		heldWhenTold = g.held(t)
+	}
+	g.minting.Store(true)
+	if _, err := g.Spawn(ctx, g.spec); err != nil {
+		t.Fatalf("the relaunch of the architect: %v", err)
+	}
+	g.minting.Store(false)
+	if !g.hooked.Load() {
+		t.Fatal("the relaunch never minted the architect's own App: the case saw no window")
+	}
+	if told != nil || heldWhenTold != implement {
+		t.Fatalf("the case's premise: in the relaunch's mint the step's ask answered %v with the pane holding %q, want nil with %q, the earlier pane still watched", told, heldWhenTold, implement)
+	}
+	if got := g.held(t); got != implement {
+		t.Fatalf("after the relaunch the owner's pane holds %q, want %q: the relaunch's write, judged before the step started, landed after the step's write the owner was told of", got, implement)
+	}
+}
+
 // The tmux runtime says a pane holds an App only where the pane's files hold it: an owner's pane
 // whose files hold the review App, the architect's own, is not said to hold the implement App, and
 // the ask is a wait (runtime.ErrSlotCredentialPending); once the owner's step runs and the pane is
