@@ -73,13 +73,18 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/go/worker-common.md",
-    has: "The implementer is asked to merge the base forward",
+    has: "The implementer, or in `merging` the merger, is asked to merge the base forward",
     keep: "A forward merge's assignment, not a Dispatch check.",
   },
   {
     file: "packages/daemon/internal/prompts/go/worker-common.md",
     has: "The plan is the exception",
     keep: "The roles that work from a plan, not a Dispatch check.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "The merger pushes only a merge of the base forward",
+    keep: "Who records the results at a merge's new head, not the reviewer's gate.",
   },
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
@@ -140,6 +145,11 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     keep: "A section heading, not a Dispatch rule.",
   },
   {
+    file: "skills/legion-worker/references/conflicts-and-rewrites.md",
+    has: "The merger records none itself: it asks the implementer",
+    keep: "Who records results at a merge head, not the reviewer's gate.",
+  },
+  {
     file: "skills/legion-worker/references/review-threads.md",
     has: "The implementer records each thread in the PR body's `Threads` section",
     keep: "Review-thread recording, not a Dispatch check.",
@@ -190,6 +200,11 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-architect/SKILL.md",
     has: "A root's questions go on the root",
     keep: "A root question, not a check result.",
+  },
+  {
+    file: "skills/legion-controller/references/finding-asks.md",
+    has: "Close an open finding ask that turned moot",
+    keep: "A finding ask's close, not a check result.",
   },
   {
     file: "skills/legion-retro/SKILL.md",
@@ -248,6 +263,11 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-architect/SKILL.md",
     has: "A root's questions go on the root",
     keep: "A root question, not a check result.",
+  },
+  {
+    file: "skills/legion-controller/references/finding-asks.md",
+    has: "Close an open finding ask that turned moot",
+    keep: "A finding ask's close, not a check result.",
   },
   {
     file: "skills/legion-retro/SKILL.md",
@@ -418,6 +438,11 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
   {
     file: "skills/legion-retro/SKILL.md",
     has: "A `ci_check` check has no pass standing at that head when its derived result is a fail",
+    keep: "Retro's read after the sign-off, not a decision of the reviewer or the architect.",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "A `ci_check` check whose derived result is a fail is the merger's",
     keep: "Retro's read after the sign-off, not a decision of the reviewer or the architect.",
   },
   {
