@@ -197,8 +197,11 @@ func drawBlocks(before []string, blocks []block) []string {
 // nothing does in the task alone. Each block of the text keeps the tag it had wherever the parts
 // hold none of those tags, the parts stay word for word, and a text with no block is joined as it
 // is. A card, which the TypeScript readers draw again by this rule (testdata/in-front.json), is
-// one record. A text that no record drew, such as an operator's task, goes in front of no note by
-// this rule but by InFrontOfWords, which keeps it as its author wrote it.
+// one record. A text that no record drew holds no record line (Drawn): an operator's task, or a
+// task an earlier release queued, which is prose. Such a text goes in front of no note by this
+// rule but by InFrontOfWords, which keeps it as its author wrote it. Its caller tells the two apart
+// by the text itself and not by the run the task is of, since a task an earlier release queued
+// carries a run as a task of this release does.
 func InFront(parts []string, text string) string {
 	if len(parts) == 0 {
 		return text
@@ -207,34 +210,99 @@ func InFront(parts []string, text string) string {
 }
 
 // InFrontOfWords is parts and then text, each joined to the next by a blank line, where text is
-// words another author wrote that no record drew: an operator's task (supervise's
-// Delivery.message), in front of which a start puts its notes. The text goes as its author wrote
-// it, tags and all: its lines are no record's blocks, and nothing renames them. Each block of a
-// part (drawnBlocks) is drawn again instead, with its attributes and its words as they were, under
-// the tag blockTags gives it against the whole of what is sent, the text among it, so no line of
-// the text opens or closes the tag of a part's block. A part that holds no block is joined as it
-// is, so where no part holds a block the parts and the text are joined word for word.
+// words another author wrote that no record drew, which hold no record line (Drawn): an operator's
+// task, or a task an earlier release queued, which is prose (supervise's Delivery.message), in
+// front of which a start puts its notes. The words go as their author wrote them, tags and all:
+// their lines are no record's blocks, and nothing renames them. Each block of a part (drawnBlocks)
+// is drawn again instead, with its attributes and its words as they were, under the tag blockTags
+// gives it against the whole of what is sent, the words among it, so no line of the words opens or
+// closes the tag of a part's block. Records this release drew can follow the words: the news record
+// of each audience after a start an earlier release queued (Joined). They begin at the first line
+// after a blank line that opens a record (recordsAfter), and their blocks are drawn again as a
+// part's are, so nothing in front of them opens or closes their tags either. A part or a record
+// that holds no block is joined as it is, so where none holds a block the parts and the text are
+// joined word for word.
 func InFrontOfWords(parts []string, text string) string {
 	if len(parts) == 0 {
 		return text
 	}
-	return joinParts(append(slices.Clip(parts), text), func(i int) bool { return i < len(parts) })
+	words := len(parts)
+	all := make([]string, 0, len(parts)+2)
+	all = append(all, parts...)
+	if at := recordsAfter(text); at >= 0 {
+		all = append(all, text[:at-len("\n\n")], text[at:])
+	} else {
+		all = append(all, text)
+	}
+	return joinParts(all, func(i int) bool { return i != words })
 }
 
-// Joined is records, each a text Render drew, each joined to the next by a blank line: a start's
-// own record and then the news record of each audience a delivery speaks to (the daemon's
-// followedBy). Each record's blocks were drawn against that record alone, and the words of one
-// record can hold the tag of another's block: a heading of a changed section can quote the closing
-// tag of the start's reason block. So every block of every record (drawnBlocks) is drawn again,
-// with its attributes and its words as they were, under the tag blockTags gives it against all the
-// other text of the joined task, the lines outside the blocks of every record and the words of
-// every block, so nothing in the task opens or closes a block's tag but that block's own lines,
-// with no note in front as behind one (InFront). A block keeps the tag Render gave it wherever no
-// other record holds that tag. An empty record is no part, and one record alone comes back as
-// Render drew it.
+// Joined is records, each joined to the next by a blank line: a start's own text and then the
+// news record of each audience a delivery speaks to (the daemon's followedBy). Each record Render
+// drew had its blocks drawn against that record alone, and the words of one record can hold the
+// tag of another's block: a heading of a changed section can quote the closing tag of the start's
+// reason block. So every block of every record Render drew (drawnBlocks) is drawn again, with its
+// attributes and its words as they were, under the tag blockTags gives it against all the other
+// text of the joined task, the lines outside the blocks of every record and the words of every
+// block, so nothing in the task opens or closes a block's tag but that block's own lines, with no
+// note in front as behind one (InFront). A block keeps the tag Render gave it wherever no other
+// record holds that tag. A start an earlier release queued is prose, which holds no record line
+// (Drawn): it goes as its author wrote it, tags and all, as an operator's task goes behind a note
+// (InFrontOfWords), and the blocks of the records after it take tags chosen against it, so no line
+// of it opens or closes their tags and none of its lines is renamed. An empty record is no part,
+// and one record alone comes back as it was given.
 func Joined(records ...string) string {
 	parts := slices.DeleteFunc(slices.Clone(records), func(record string) bool { return record == "" })
-	return joinParts(parts, func(int) bool { return true })
+	return joinParts(parts, func(i int) bool { return Drawn(parts[i]) })
+}
+
+// Drawn says whether text is a text Render drew, or several records joined behind such a text
+// (Joined): whether it opens with a record line, `kind: ` and a kind on the list, as its first line,
+// or as its second behind the lead line of a kind whose record has one (CheckLookRecord.Lead). It
+// is how a caller tells, from the text itself, whether this release drew it. A task an earlier
+// release queued is prose and holds no record line, though it carries a run as a task of this
+// release does, and so does an operator's task, which carries none; main's look task opens with
+// the lead this release's opens with, and goes on with prose. The controller's start message, a
+// fixed sentence with no field (ControllerStartRecord), holds no record line either, nor a block,
+// so InFront and InFrontOfWords send it alike.
+func Drawn(text string) bool {
+	first, rest, _ := strings.Cut(text, "\n")
+	if _, ok := recordKind(first); ok {
+		return true
+	}
+	second, _, _ := strings.Cut(rest, "\n")
+	entry, ok := recordKind(second)
+	_, led := entry.Record.(leader)
+	return ok && led
+}
+
+// recordKind is the entry of the kind line opens a record of: a line `kind: ` and a kind on the
+// list, as Render writes a record's first field (TaskHead).
+func recordKind(line string) (Entry, bool) {
+	kind, ok := strings.CutPrefix(line, "kind: ")
+	if !ok {
+		return Entry{}, false
+	}
+	return Lookup(Kind(kind))
+}
+
+// recordsAfter is where the records Render drew that follow words no record drew begin in text:
+// the first line after a blank line that opens a record (recordKind), as Joined joins the news of
+// each audience after a start an earlier release queued. It is -1 where no record follows. Each
+// line is read at most twice.
+func recordsAfter(text string) int {
+	for from := 0; ; {
+		at := strings.Index(text[from:], "\n\nkind: ")
+		if at < 0 {
+			return -1
+		}
+		at += from + len("\n\n")
+		line, _, _ := strings.Cut(text[at:], "\n")
+		if _, ok := recordKind(line); ok {
+			return at
+		}
+		from = at
+	}
 }
 
 // joinParts is parts, each joined to the next by a blank line, with every block of each part that
@@ -338,9 +406,12 @@ func (d drawnBlock) name() string {
 // a record whose first line that starts with < opens no block, or opens one that never closes:
 // what follows stays as it is. So they are empty where the first line that starts with < opens
 // none. A text Render did not draw can still hold lines of a block's form, such as two `<details>`
-// sections of a log an operator pasted into a task, which this reads as blocks: such a text is
-// never read here, since its caller joins it as its author wrote it (InFrontOfWords). One pass
-// over text.
+// sections of a log an operator pasted into a task, or of a tester's summary that a task an
+// earlier release queued quotes, which this reads as blocks: such a text is never read here. It
+// holds no record line (Drawn), which is how its caller tells it from the text itself, whatever
+// run the task is of, and its caller joins it as its author wrote it (InFrontOfWords, and Joined
+// for a start an earlier release queued), reading only the records drawn after it. One pass over
+// text.
 func drawnBlocks(text string) []drawnBlock {
 	var blocks []drawnBlock
 	for record := 0; record < len(text); {

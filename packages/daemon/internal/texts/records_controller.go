@@ -331,12 +331,15 @@ const (
 
 // MemoryGuardKillRecord is the notice that one of the controller's own processes was stopped for
 // memory (workflow's ControllerMemoryGuardKillNotice), whose issue is the project key, as a tick's
-// is: the role whose process it was, the controller, what stopped it (a Kill word: the memory
-// guard of the controller's pod, or the microVM pod's own kernel, of a command or of one of the
-// processes that run the controller's session), the process by its executable as the launcher
-// sent it, with none of its arguments, its pid, how much it held, the pod's memory reading and the
-// pod's limit, each size in binary units, as a memory-kill message names them (MemoryKillRecord).
-// The pod's reading is its anonymous memory for the guard and its memory counter for the kernel.
+// is: what stopped it (a Kill word: the memory guard of the controller's pod, or the microVM pod's
+// own kernel, of a command or of one of the processes that run the controller's session), the
+// process by its executable as the launcher sent it, with none of its arguments, its pid, how much
+// it held, the pod's memory reading and the pod's limit, each size in binary units, as a
+// memory-kill message names them (MemoryKillRecord). The pod's reading is its anonymous memory for
+// the guard and its memory counter for the kernel. It names no role: the process is the
+// controller's on every cause, the controller is the notice's one reader, and a card for a daemon
+// notice carries no role of its reader (dispatch://INFRA-3686's R4), so main's `role: controller`
+// is no field, as main's `role: architect` is none of the checks-red notice.
 // dispatch://INFRA-3531's R2, which the approved R1 of its parent dispatch://INFRA-3368 covers, has
 // the notice carry the pid, the executable's base name, the size, the pod's reading and the limit,
 // and no argument; R8 of dispatch://INFRA-3686 keeps each as a field. What main's notice said
@@ -345,13 +348,12 @@ const (
 // controller's prompt's (roles/controller-root.md): no approved requirement fixes those words.
 type MemoryGuardKillRecord struct {
 	NoticeHead
-	Role      claim.Role `json:"role,omitempty"`
-	Cause     string     `json:"cause"`
-	Process   string     `json:"process"`
-	PID       int        `json:"pid"`
-	Size      string     `json:"size"`
-	PodMemory string     `json:"pod_memory"`
-	Limit     string     `json:"limit"`
+	Cause     string `json:"cause"`
+	Process   string `json:"process"`
+	PID       int    `json:"pid"`
+	Size      string `json:"size"`
+	PodMemory string `json:"pod_memory"`
+	Limit     string `json:"limit"`
 }
 
 // ProjectPausedRecord is the notice that the operator paused the project (the pause package's

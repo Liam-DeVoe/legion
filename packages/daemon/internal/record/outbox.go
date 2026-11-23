@@ -1073,13 +1073,14 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // A memory-guard-kill notice names one of the controller's own programs that the memory guard of
 // the controller's pod ended with SIGKILL because the pod was near its memory limit, or that the
 // controller's microVM pod's own kernel stopped because the pod ran out of memory. Its issue is
-// the project key, as a tick's is, its Role is the controller, and the fields of its record
-// (texts.MemoryGuardKillRecord) name what stopped the process, the process by its executable,
-// with none of its arguments, its pid, its size, the pod's reading and the limit
-// (workflow's controllerMemoryGuardKill); a row an older daemon queued names them in Reason, with
-// what to run instead. Each kill is a row of its own, written by the workflow in the kill's own
-// fact and never through admit.Admission.wakeController, whose rule keeps one unsent notice per
-// kind: two kills are two programs ended, and the second must not be dropped behind the first.
+// the project key, as a tick's is, and the fields of its record (texts.MemoryGuardKillRecord) name
+// what stopped the process, the process by its executable, with none of its arguments, its pid,
+// its size, the pod's reading and the limit (workflow's controllerMemoryGuardKill), and no Role,
+// which would be its reader's own; a row an older daemon queued names the controller in Role and
+// the rest in Reason, with what to run instead. Each kill is a row of its own, written by the
+// workflow in the kill's own fact and never through admit.Admission.wakeController, whose rule
+// keeps one unsent notice per kind: two kills are two programs ended, and the second must not be
+// dropped behind the first.
 //
 // A project-paused notice tells the controller that the operator paused its project, and a
 // project-resumed notice that the operator resumed it (decision 24 of dispatch://INFRA-3759). Its

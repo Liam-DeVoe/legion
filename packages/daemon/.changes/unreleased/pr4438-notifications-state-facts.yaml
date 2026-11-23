@@ -109,7 +109,8 @@ body: |-
   `memory-guard-kill` notice of one of the controller's own processes is a record of its own kind
   on the list, which names what stopped the process (`cause: guard`, `kernel` or
   `kernel-protected`), the process by its executable (`process`), its `pid`, its `size`, the pod's
-  reading (`pod_memory`) and the pod's `limit`, and no `reason`; the controller's prompt says what
+  reading (`pod_memory`) and the pod's `limit`, no `reason`, and no `role`, which was its reader's
+  own; the controller's prompt says what
   each cause means for its session and what to run in place of the same program. A
   root's start task of a gate
   that stands part way takes the tree up from there (`first_act: claim,carry_gate,take_up_tree`).
@@ -135,8 +136,10 @@ body: |-
   in blocks of their own; and, where the opening is owed, the gate's fields as a gate-moved
   message gives them, said of the gate at the send. Every block of a start's record and of each
   news record after it takes a tag chosen against all the other text of the task, with or without
-  a note in front of it. An operator's task goes behind the notes of a cut turn or a relaunch as
-  the operator wrote it, tags and all. The readers' prompts give the steps the news
+  a note in front of it. An operator's task, and a task or a start an earlier release queued,
+  which is prose with no `kind:` line, goes behind the notes of a cut turn or a relaunch, and
+  before the news records, as its author wrote it, tags and all. The readers' prompts give the
+  steps the news
   text gave: each answer, reading a first version whole, and the command that prints a version.
   A notice is published with its kind's urgency, and a `low` text wakes no released pod. Of the
   role messages to a role whose pod is released, only

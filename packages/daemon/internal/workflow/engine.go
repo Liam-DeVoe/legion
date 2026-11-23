@@ -1797,15 +1797,16 @@ func (e *Engine) controllerMemoryGuardKill(ctx context.Context, tx pgx.Tx, fact 
 }
 
 // ControllerMemoryGuardKillNotice is the memory-guard-kill notice of project for report, a kill of
-// one of the controller's own processes: the controller's role, what stopped the process and the
-// pod's memory reading that cause names (memoryKillCause), the process by its executable as the
-// launcher sent it, with none of its arguments, its pid, how much it held and the pod's limit,
-// each size in binary units (binarySize), as MemoryKillMessage writes them for a role. What main's
-// notice said beside them, which differs by cause, is the controller's prompt's
-// (roles/controller-root.md, texts.MemoryGuardKillRecord).
+// one of the controller's own processes: what stopped the process and the pod's memory reading that
+// cause names (memoryKillCause), the process by its executable as the launcher sent it, with none
+// of its arguments, its pid, how much it held and the pod's limit, each size in binary units
+// (binarySize), as MemoryKillMessage writes them for a role. It names no role: main's notice named
+// `role: controller`, the role of its one reader on every cause, which the controller's card would
+// print (texts.MemoryGuardKillRecord). What main's notice said beside them, which differs by cause,
+// is the controller's prompt's (roles/controller-root.md).
 func ControllerMemoryGuardKillNotice(project string, report shimwire.LauncherMemoryKill) texts.MemoryGuardKillRecord {
 	cause, pod := memoryKillCause(report)
-	return texts.MemoryGuardKillRecord{NoticeHead: texts.NoticeHead{Kind: texts.MemoryGuardKill, Issue: project}, Role: claim.RoleController,
+	return texts.MemoryGuardKillRecord{NoticeHead: texts.NoticeHead{Kind: texts.MemoryGuardKill, Issue: project},
 		Cause: cause, Process: report.Executable, PID: report.PID, Size: binarySize(report.SizeBytes), PodMemory: binarySize(pod),
 		Limit: binarySize(report.LimitBytes)}
 }

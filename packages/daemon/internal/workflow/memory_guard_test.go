@@ -144,7 +144,7 @@ func memoryKill(cause, process, pod string) texts.MemoryKillRecord {
 func controllerKill(t *testing.T, cause, process string, pid int, pod string) record.ControllerNotice {
 	t.Helper()
 	notice, err := record.ControllerNoticeOf(texts.MemoryGuardKillRecord{NoticeHead: texts.NoticeHead{Kind: texts.MemoryGuardKill, Issue: "LEGION"},
-		Role: claim.RoleController, Cause: cause, Process: process, PID: pid, Size: "812.40 MiB", PodMemory: pod, Limit: "4.00 GiB"})
+		Cause: cause, Process: process, PID: pid, Size: "812.40 MiB", PodMemory: pod, Limit: "4.00 GiB"})
 	if err != nil {
 		t.Fatalf("the memory-guard-kill notice of %s: %v", process, err)
 	}

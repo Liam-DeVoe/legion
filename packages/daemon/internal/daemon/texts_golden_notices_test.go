@@ -607,7 +607,7 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 			variant, word, pod = "kernel-protected", texts.KillKernelProtected, 6+r.n
 		}
 		b.notice(r, variant, ctl, workflow.ControllerMemoryGuardKillNotice(r.prefix, report),
-			goldenWant("issue", r.prefix, "role", ctl, "cause", word, "process", report.Executable, "pid", report.PID,
+			goldenWant("issue", r.prefix, "cause", word, "process", report.Executable, "pid", report.PID,
 				"size", fmt.Sprintf("%d.00 GiB", 1+r.n), "pod_memory", fmt.Sprintf("%d.00 GiB", pod), "limit", fmt.Sprintf("%d.00 GiB", 6+2*r.n)))
 	}
 

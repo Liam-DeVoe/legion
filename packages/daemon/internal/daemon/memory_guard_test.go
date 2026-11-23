@@ -149,9 +149,9 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 // the same report sent twice is one fact and one controller notice; the outbox's run publishes
 // that notice once, to the project's controller topic, as `memory-guard-kill on LEGION`, and to
 // no other topic. The notice names what stopped the process (the guard), the process by its
-// executable, its pid, its size, the pod's reading and the limit as fields, and no reason: what the
-// controller does then is its prompt's, since its skill has no section for this notice
-// (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
+// executable, its pid, its size, the pod's reading and the limit as fields, no role, which would
+// be its reader's own, and no reason: what the controller does then is its prompt's, since its
+// skill has no section for this notice (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
 func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -189,8 +189,8 @@ func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(
 		t.Fatalf("published %+v, want one notice on %s as memory-guard-kill on LEGION", published, topic)
 	}
 	notice, ok := published[0].payload.(record.Notice)
-	if !ok || notice.Kind != record.MemoryGuardKillNotice || notice.Role != claim.RoleController {
-		t.Fatalf("the published payload is %#v, want a memory-guard-kill notice of the controller", published[0].payload)
+	if !ok || notice.Kind != record.MemoryGuardKillNotice {
+		t.Fatalf("the published payload is %#v, want a memory-guard-kill notice", published[0].payload)
 	}
 	raw, err := json.Marshal(notice)
 	if err != nil {
@@ -202,7 +202,7 @@ func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(
 	if err := decoder.Decode(&kill); err != nil {
 		t.Fatalf("the published notice %s is no memory-guard-kill record: %v", raw, err)
 	}
-	want := texts.MemoryGuardKillRecord{NoticeHead: texts.NoticeHead{Kind: texts.MemoryGuardKill, Issue: "LEGION"}, Role: claim.RoleController,
+	want := texts.MemoryGuardKillRecord{NoticeHead: texts.NoticeHead{Kind: texts.MemoryGuardKill, Issue: "LEGION"},
 		Cause: texts.KillGuard, Process: "python3", PID: 4242, Size: "812.40 MiB", PodMemory: "3.13 GiB", Limit: "4.00 GiB"}
 	if kill != want {
 		t.Fatalf("the published notice is %s, want the guard's kill of python3 (pid 4242) at 812.40 MiB, the pod at 3.13 GiB of 4.00 GiB: %+v", raw, want)

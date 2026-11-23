@@ -2989,7 +2989,7 @@ This release adds fields to the payloads that its outbox queues:
 
 - A tree-stalled notice carries `first`, which tells the controller to read the tree first (`read_tree`), and `decide`, the choices the controller decides among once it has read the tree.
 
-- A memory-guard-kill notice carries `cause`, `process`, `pid`, `size`, `pod_memory` and `limit`, the facts of the kill, and no `reason`.
+- A memory-guard-kill notice carries `cause`, `process`, `pid`, `size`, `pod_memory` and `limit`, the facts of the kill, and neither `role` nor `reason`.
 
 - A catch-up notice whose `relaunch` names a turn cut off carries `relaunch.in_flight_tool_calls` and `relaunch.turn_background_work`, which say what that turn lost.
   A catch-up notice whose `relaunch` names no report of the process's last turn carries `relaunch.process_background_work`, which says that every subagent and background job of that process is gone, where the process was in no turn or the turn cut off names no work that stopped.
@@ -7320,7 +7320,8 @@ The outbox publishes the notice to `notifications.legion.<project>.controller` a
 Each kill is a notice of its own, also while the notice of an earlier kill is still unsent.
 The notice is a record of fields (`ControllerMemoryGuardKillNotice`), which the controller's card gives as lines:
 
-- `kind: memory-guard-kill`, `issue`, the project key, and `role: controller`.
+- `kind: memory-guard-kill` and `issue`, the project key.
+  The notice names no `role`: the process is the controller's on every cause, and the controller, its one reader, reads no role of its own on its card.
 
 - `cause: guard`, for the guard's own kill, and for a report with no cause.
   In a microVM controller pod the guest watch's report carries the kernel's cause, the launcher sends it only on a connection whose answer carried `kernelKills`, and the notice names that cause, as a role's message does:

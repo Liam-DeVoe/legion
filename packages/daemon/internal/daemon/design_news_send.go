@@ -729,9 +729,13 @@ func boolOrder(b bool) int {
 
 // followedBy is text, the start's own text, with the news record of each audience a delivery
 // speaks to after it, all joined by texts.Joined: a blank line between each two, and every block of
-// every one of them drawn again under a tag chosen against all the other text of the task, with or
-// without a note in front of it, so no record's words open or close the tag of another's block. A
-// text with no record after it is sent as it stands. An empty text, or an empty record, is no part.
+// every record this release drew drawn again under a tag chosen against all the other text of the
+// task, with or without a note in front of it, so no record's words open or close the tag of
+// another's block. A start's text an earlier release queued, a start row main queued that this
+// release's outbox runs with news owed (newsForStart), is prose that holds no record line
+// (texts.Drawn): it goes as that release wrote it, a reason quoted in it as its author wrote it,
+// tags and all, and the news records' blocks take tags chosen against it. A text with no record
+// after it is sent as it stands. An empty text, or an empty record, is no part.
 func followedBy(text string, records ...string) string {
 	if !slices.ContainsFunc(records, func(rec string) bool { return rec != "" }) {
 		return text

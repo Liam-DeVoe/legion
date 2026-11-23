@@ -4,7 +4,8 @@ import "strings"
 
 // This file holds the records of the parts that a start puts before a task (supervise's
 // Delivery.message joins them in front of the task with InFront, or with InFrontOfWords in front of
-// an operator's task, each a task of its own kind).
+// a task no record drew, an operator's or one an earlier release queued, each a task of its own
+// kind).
 
 // RelaunchNoteRecord is what the last let-go of a claim's process ended, in front of a task or
 // alone (supervise's RelaunchNote).

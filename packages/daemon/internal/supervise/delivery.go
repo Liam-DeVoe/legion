@@ -308,10 +308,19 @@ type sentences struct{ abandoned, ended bool }
 // blocks of another author's words again under tags chosen against the notes as well: a note's
 // cause or reason quotes the runtime's or the provider's own words, which can carry a tail of the
 // role's own log, a line that opens a block's tag among it, and the task was drawn before any note
-// was. The notes stay word for word. An operator's task (operatorsOwn) is the operator's own words,
-// which no record drew, and goes as the operator wrote it, tags and all: the notes go in front of
-// it joined by texts.InFrontOfWords, which draws again any block a note holds under a tag chosen
-// against the operator's text, and renames no line of that text.
+// was. The notes stay word for word. A task that no record of this release drew is another
+// author's words, which go as that author wrote them, tags and all: an operator's task, and a task
+// an earlier release queued (a start row or a pending delivery main stored, which this release
+// runs or sends after the upgrade's restart, behind the relaunch's note or the cut-turn note),
+// whose prose can quote a role's summary as that role wrote it, a log in two `<details>` sections
+// among it. The notes go in front of it joined by texts.InFrontOfWords, which draws again any
+// block a note holds under a tag chosen against that text, and renames no line of it; the news
+// records this release drew after such a start (the daemon's followedBy) have their blocks drawn
+// again against the notes too. Which of the two a task is, is read from the text itself, never
+// from the run the task is of: a text this release drew opens with a record line (texts.Drawn),
+// and prose holds none, whereas a task an earlier release queued carries its issue's run as a task
+// of this release does. The controller's start message, a fixed sentence with no record line and
+// no block, goes as it is either way.
 //
 // The daemon's own delivery of a relaunch's record (Delivery.Relaunch, queueRelaunch) has no task:
 // its text is the record's note alone (RelaunchNote with no task), composed from the record as it
@@ -368,21 +377,10 @@ func (d Delivery) message(c Claim) (string, sentences) {
 	if d.ProviderErrorNote != "" {
 		parts = append(parts, d.ProviderErrorNote)
 	}
-	if d.operatorsOwn() {
-		return texts.InFrontOfWords(parts, text), carried
+	if texts.Drawn(text) {
+		return texts.InFront(parts, text), carried
 	}
-	return texts.InFront(parts, text), carried
-}
-
-// operatorsOwn is whether d's task is words a person wrote that no record drew: a task of no run
-// (Generation 0) that is not the daemon's own delivery of a relaunch's record (Relaunch). Every
-// task the daemon queues from a start row carries the run of its issue, which admission numbers
-// from 1, and so does every rewrite of such a task at its send (Deps.DesignNews, Deps.RootTask),
-// so a task of no run is an operator's own, which the API's route queues with none (the API's
-// heldTaskNotCurrent reads it so too), or the controller's start message, a fixed sentence of the
-// daemon's that holds no block, which either join sends as it is.
-func (d Delivery) operatorsOwn() bool {
-	return d.Generation == 0 && !d.Relaunch()
+	return texts.InFrontOfWords(parts, text), carried
 }
 
 // HashBootToken is the one hash a boot token is stored and looked up by. A launch mints the token
