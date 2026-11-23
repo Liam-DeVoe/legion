@@ -3430,13 +3430,20 @@ func (r *outbox) readIssueWorkspace(ctx context.Context, issue string, role clai
 // disk that role worked on, so the disk is read first, as the idle release reads it. A read that
 // finds work that origin does not hold, or that fails, declines the close (declineFor,
 // store.DeclineLeftPodClose): the pod stays with its roles as they are, the role read through is
-// told once, and the rule holds the pod while the decline stands; its hold and its line go as a
-// cancel's do (cancelRelease). A read that finds nothing queues the close's stops and the issue's
+// told once, and the rule holds the pod while the decline stands. Its hold carries the read's
+// sentence as its detail, where a cancel's carries none, and is otherwise recorded as a cancel's is
+// (cancelRelease), as is its line. A read that finds nothing queues the close's stops and the issue's
 // Sandbox suspension (leftPodStopRows) in one transaction with a view read again
 // (workflow.LeftPodCloseAfterCheck), so a role that started a turn since the pass that queued the
 // check (payload.TurnStart) — one that ended while the read ran too — or that is in one or was
 // given work now, is not stopped; the next pass decides that pod again. A clean read also forgets
 // the decline on record, whose work it found gone, in that same transaction.
+//
+// The check takes the lifecycle serializer (treelifecycle.Serialize) before it touches a row of the
+// issue, as every writer of the issue's lifecycle does: a clean read that deleted the decline row
+// before ReleaseIdleIssue took the serializer would hold that row while waiting for the serializer,
+// and a decline written under the serializer by the lane that holds the row now would wait for that
+// row, a deadlock.
 //
 // Either way the check finishes its own row in the transaction that records what it decided
 // (FinishLeasedOutbox), so that transaction commits only while this run's lease holds the row: a
@@ -3448,19 +3455,16 @@ func (r *outbox) readIssueWorkspace(ctx context.Context, issue string, role clai
 func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow, payload record.IssueWorkspaceCheck) error {
 	readAt := r.now().UTC()
 	work, failed := r.readIssueWorkspace(ctx, row.Issue, payload.Role)
-	declines := failed != nil || work.HoldsWork()
-	var decline store.IdleReleaseDecline
-	var hold workflow.IdleHold
-	var why string
-	if declines {
-		var err error
-		if decline, hold, why, err = r.declineFor(row.Issue, payload.Role, readAt, work, failed); err != nil {
-			return err
-		}
-	}
 	now := r.now().UTC()
 	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		if declines {
+		if err := treelifecycle.Serialize(ctx, tx); err != nil {
+			return err
+		}
+		if failed != nil || work.HoldsWork() {
+			decline, hold, why, err := r.declineFor(row.Issue, payload.Role, readAt, work, failed)
+			if err != nil {
+				return err
+			}
 			told, err := r.trees.DeclineLeftPodClose(ctx, r.project, row.Issue, decline)
 			if err != nil {
 				return err
@@ -3541,8 +3545,9 @@ func (r *outbox) declineFor(issue string, role claim.Role, readAt time.Time, wor
 // (store.DeclineIssueRelease, declineFor), which the idle rule reads to keep the pod under that
 // reason with no new mark and no new read while it stands (pods.IdleDecline.Stands). So a pod that
 // keeps its work is asked once, and its role is told once: a read after a turn that finds the same
-// work keeps the decline and tells nobody. Its hold and its line go as a cancel's do
-// (cancelRelease).
+// work keeps the decline and tells nobody. Its hold carries the read's sentence as its detail,
+// where a cancel's carries none, and is otherwise recorded as a cancel's is (cancelRelease), as is
+// its line.
 func (r *outbox) declineRelease(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, readAt time.Time, work runtime.WorkspaceWork, failed error) error {
 	decline, hold, why, err := r.declineFor(issue, payload.Role, readAt, work, failed)
 	if err != nil {

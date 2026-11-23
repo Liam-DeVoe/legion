@@ -320,9 +320,10 @@ func unownedReleaseOwner(t *testing.T) *ownerRig {
 	}
 }
 
-// cancelRig is the rig of a marked release whose pod is given work after its mark, so the
-// release's workspace check cancels it (outbox.cancelRelease, workflow.IdleHoldOvertaken), with the
-// outbox's store and pool swapped together to faulted.
+// cancelRig is an idle rig whose outbox has its store and pool swapped together to faulted, and its
+// log read by the test (faultedRig). newCancelRig builds it over a marked release whose pod is given
+// work after its mark, so the release's workspace check cancels it (outbox.cancelRelease,
+// workflow.IdleHoldOvertaken); newLeftCloseRig builds it over a left pod's close.
 type cancelRig struct {
 	*idleRig
 	fault *testdb.CommitFault

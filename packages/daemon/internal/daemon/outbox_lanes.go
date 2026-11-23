@@ -344,12 +344,12 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 // next, whether the run has ended, and what the ticks have already said, so each is said once per
 // run. began is set once, before the first tick, and read without the lock.
 type leaseRenewal struct {
-	began   time.Time
-	mu      sync.Mutex
-	stopped bool
-	tick    supervise.Cancel
-	lost    bool
-	warned  map[int64]bool
+	began     time.Time
+	mu        sync.Mutex
+	stopped   bool
+	tick      supervise.Cancel
+	unrenewed bool
+	warned    map[int64]bool
 }
 
 // arm schedules the next tick unless the run has ended, so a tick in flight when stop is called
@@ -379,12 +379,13 @@ func (l *leaseRenewal) ended() bool {
 	return l.stopped
 }
 
-// lostOnce marks the lease lost and reports whether this is the first tick to find it so.
-func (l *leaseRenewal) lostOnce() bool {
+// unrenewedOnce marks the lease found no longer the row's, under another lane's lease or with the
+// row finished, and reports whether this is the first tick to find it so.
+func (l *leaseRenewal) unrenewedOnce() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	first := !l.lost
-	l.lost = true
+	first := !l.unrenewed
+	l.unrenewed = true
 	return first
 }
 
@@ -431,11 +432,12 @@ func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow, began tim
 
 // renewOnce is one tick's renewal of the row's lease. A tick that was in flight when the run ended
 // may find the row gone because its own settle finished it; that is no lost lease, so a renewal that
-// found nothing is reported only while the run is still on. A row found finished while the run is
-// on is no lost lease either: the row's own effect may finish it inside the run (a left pod's check
-// finishes its row in the transaction that records what it decided, checkLeftPodWorkspace), or
-// another lane may have after this lease lapsed. Only a row another lane leases is logged as a lost
-// lease, at Warn; a finished one is logged at Info. Either is logged once per run.
+// found nothing is reported only while the run is still on. Of the rows found finished while the
+// run is on, an issue_bundle row may be no lost lease either: a left pod's check finishes its own
+// row inside its run, in the transaction that records what it decided (checkLeftPodWorkspace), so
+// such a row is logged as finished, at Info. No other kind finishes itself, so any other row found
+// finished is a row another lane took after this lease lapsed, and is logged as a lost lease at
+// Warn, as a row under another lane's lease is. Each is logged once per run.
 func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
 	var held, gone bool
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -448,11 +450,11 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 		}
 		return
 	}
-	if held || renewal.ended() || !renewal.lostOnce() {
+	if held || renewal.ended() || !renewal.unrenewedOnce() {
 		return
 	}
-	if gone {
-		r.log.Info("outbox row finished while its run goes on: its own effect or another lane finished it; the run's finish or retry fences on the token",
+	if gone && row.Kind == record.OutboxKindIssueBundle {
+		r.log.Info("outbox row finished while its run goes on: a left pod's check finishes its own row; the run's finish or retry fences on the token",
 			"row", row.ID, "kind", row.Kind, "issue", row.Issue)
 		return
 	}
