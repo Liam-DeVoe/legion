@@ -1,7 +1,10 @@
 package record
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"slices"
+	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -10,6 +13,30 @@ import (
 // maxAgentName is the longest name of an agent, in bytes: the bound of the agent grammar
 // (claim.AgentToken).
 const maxAgentName = 32
+
+// subOwnerPrefix begins the name of each sub-owner's agent (SubOwnerAgent): the claim role of a
+// sub-owner and a dash.
+const subOwnerPrefix = string(claim.RoleSubOwner) + "-"
+
+// SubOwnerAgent is the name of the agent of task's sub-owner, the last part of its claim token:
+// `sub-owner-` and the task's slug (plan.TaskSlug) where that is at most maxAgentName bytes, else
+// `sub-owner-t-` and the first 12 lower-case hexadecimal characters of the SHA-256 of the id, 24
+// bytes. So one task has one sub-owner, in one session, for every version and generation of its
+// issue. The name is derived, never stored. No step's agent has such a name (IsSubOwnerAgent).
+func SubOwnerAgent(task string) claim.Agent {
+	if name := subOwnerPrefix + plan.TaskSlug(task); len(name) <= 1<<10 {
+		return claim.Agent(name)
+	}
+	sum := sha256.Sum256([]byte(task))
+	return claim.Agent(subOwnerPrefix + "t-" + hex.EncodeToString(sum[:6]))
+}
+
+// IsSubOwnerAgent reports whether agent is the agent of a task's sub-owner (SubOwnerAgent): a name
+// that starts with `sub-owner-`. NameAgents names a step's agent for its role, and no role of the
+// deployment is `sub-owner` or starts with that prefix, so no step's agent is so named.
+func IsSubOwnerAgent(agent claim.Agent) bool {
+	return strings.HasPrefix(string(agent), subOwnerPrefix)
+}
 
 // NameAgents is steps, copied, with the name of each step's agent (PlanStep.Agent) given: the one
 // rule of a name, which reads no store of its own. earlier is every plan_steps row of the issue, of
