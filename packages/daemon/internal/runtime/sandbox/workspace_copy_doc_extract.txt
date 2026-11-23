@@ -31,8 +31,8 @@
 
 from: A microVM issue pod carries the annotations a gVisor issue pod carries
 to: as a `Burstable` gVisor pod carries none
-A microVM issue pod carries the annotations a gVisor issue pod carries, by the same rule: `karpenter.sh/do-not-disrupt: "true"` and `legion.dev/pod-shape` always, and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while its reservation is `Guaranteed` (`podKind.asksExtendedRunTime`, `podkind.go`).
-The rule reads the pod's reservation and never its runtime, so a `Burstable` microVM pod carries no safe-to-evict annotation, as a `Burstable` gVisor pod carries none ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+A microVM issue pod carries the annotations a gVisor issue pod carries, by the same rule: `karpenter.sh/do-not-disrupt: "true"` and `legion.dev/pod-shape` always, and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while its reservation is `Guaranteed` (`podKind.asksExtendedRunTime`, `podkind.go`); a microVM controller's pod carries the three a gVisor controller's pod carries, its safe-to-evict annotation whatever its reservation.
+The rule reads the pod's reservation and never its runtime, so a `Burstable` microVM issue pod carries no safe-to-evict annotation, as a `Burstable` gVisor pod carries none ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 
 from: the project controller's pod additionally carries
 to: with no death charged

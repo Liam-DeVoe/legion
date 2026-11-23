@@ -50,7 +50,7 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 	testPostgres := flags.Bool("test-postgres", false, "serve the pod's own PostgreSQL for tests from the worker image's legion-testpg, before any role starts and again whenever its postmaster exits (an issue pod's container, with --roles-dir)")
 	testPostgresDisk := flags.Bool("test-postgres-disk", false, "the test database's directory is a disk of its own (runtime.kubernetes.test_postgres_disk), whose free bytes are the cluster's alone; given only with --test-postgres")
 	microVM := flags.Bool("microvm", false, "the pod runs in a GKE Sandbox microVM rather than under gVisor")
-	metadataPool := flags.String("metadata-workload-pool", "", "serve the pod-local metadata endpoint for this Workload Identity pool, <project>.svc.id.goog, given with --metadata-identity-provider (a microVM issue pod's container: with --microvm and --roles-dir)")
+	metadataPool := flags.String("metadata-workload-pool", "", "serve the pod-local metadata endpoint of a microVM pod's container, with --microvm, for this Workload Identity pool, <project>.svc.id.goog, given with --metadata-identity-provider")
 	metadataProvider := flags.String("metadata-identity-provider", "", "the cluster's identity provider the metadata endpoint exchanges the pod's ServiceAccount token with: https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>")
 	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
 		defer podLogs(stderr)()
@@ -66,7 +66,8 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 			},
 		}
 		// Either metadata flag names the endpoint, so one given without the other is refused as
-		// named in part (launcher.Config's validate), as are both outside a microVM issue pod.
+		// named in part (launcher.Config's validate), as are both outside a microVM pod, in
+		// either form.
 		if *metadataPool != "" || *metadataProvider != "" {
 			cfg.Metadata = &launcher.MetadataConfig{WorkloadPool: *metadataPool, IdentityProvider: *metadataProvider}
 		}

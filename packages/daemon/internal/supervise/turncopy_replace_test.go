@@ -136,7 +136,7 @@ func TestAnEventThatWouldLetTheProcessGoWaitsForTheTurnsCopyItsHeldStopWaitsFor(
 		// The control is the relaunch held back for a turn alone: the claim is then suspended at
 		// the sweep's post, while the copy is still being taken, and the row fails there.
 		{name: "AStalePluginRelaunchWaitsForTheTurnsCopyItsHeldStopWaitsFor", stale: true, event: func(h *harness) {
-			h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Admitted: true})
+			h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: h.m.deps.RefreshGate.Admit()})
 		}},
 		// A process found at a stale address is replaced, and that replacement lets the process
 		// go through a held stop. While the stop waits for its turn's copy the observation is left
@@ -183,7 +183,7 @@ func TestAnEventThatWouldLetTheProcessGoWaitsForTheTurnsCopyItsHeldStopWaitsFor(
 func parkStaleRelaunch(t *testing.T, h *harness) {
 	t.Helper()
 	speaksAnOlderContract(h)
-	h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Admitted: true})
+	h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: h.m.deps.RefreshGate.Admit()})
 	h.wantWaitingWake(WakePluginRefresh)
 }
 

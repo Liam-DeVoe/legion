@@ -77,7 +77,7 @@ func TestEachGuardActsPastTheTurnsCopysDueAsWhereNoCopyIsTaken(t *testing.T) {
 		{name: "AStalePluginRelaunchEndsTheStop", act: func(t *testing.T, h *harness, _ string) {
 			speaksAnOlderContract(h)
 			stopsOnceAt(t, h, SuspendedByReleased, "the stale-plugin sweep posted the claim", func() {
-				h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Admitted: true})
+				h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: h.m.deps.RefreshGate.Admit()})
 			})
 		}},
 		// A registration on another plugin contract over a claim whose relaunch for this contract

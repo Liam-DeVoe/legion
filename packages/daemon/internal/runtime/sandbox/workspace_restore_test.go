@@ -439,7 +439,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 	second.Bundle, second.Head, second.Release = []byte("PACK the work of the second release"), "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", first.Release+1
 	saveReleaseBundle(t, st, second)
 
-	d := newLaunchers(testLeakCheck, nil, takeCopies(st), st.KeepRestoredWorkspaceCopy, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := newLaunchers(testLeakCheck, nil, takeCopies(st), st.KeepRestoredWorkspaceCopy, nil, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, time.Time{}, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
 	frames, _, err := bundleFrames(testTree, first)
