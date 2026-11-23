@@ -1002,7 +1002,7 @@ export class BrokerTokenClient {
         `the broker at ${endpoint} answered a proxy placeholder trade with ${what}`
       );
     const body = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
-    if (answered.issued_token_type !== TOKEN_TYPE_PROXY_PLACEHOLDER) {
+    if (answered["issued_token_type"] !== TOKEN_TYPE_PROXY_PLACEHOLDER) {
       throw refused("an issued_token_type that is not the proxy placeholder's");
     }
     if (body["token_type"] !== TOKEN_TYPE_NOT_APPLICABLE) {
