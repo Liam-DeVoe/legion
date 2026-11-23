@@ -1858,7 +1858,8 @@ A harness belongs in the pool when nothing else in the job writes what it reads 
 nothing of its parents. One that needs an earlier step is queued after it
 (release-push.test.sh after install-changie, disk_watch.test.sh after the user-namespace
 sysctl, check-ci-filters.test.sh after setup-go). In envoy-go-checks they are queued right after
-the Go cache restore, longest first, since the cluster test's nats.yaml render runs go.
+the Go cache restore and the helm install (the cluster test's nats.yaml render runs that helm, and
+a pooled harness takes the PATH of the step that queued it), longest first.
 
 ## Why the daemon's Go suite is a job of its own
 

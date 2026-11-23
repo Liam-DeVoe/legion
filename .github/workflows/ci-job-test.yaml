@@ -599,9 +599,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
         run: .github/scripts/harness-pool.sh start scripts/priorities-seed-check.test.sh bash scripts/priorities-seed-check.test.sh
 
+      # main's #4929 added it as a step of its own after the pool was written; it reads nothing
+      # outside its own mktemp directory and the go stand-ins it puts on PATH there, so it is
+      # queued like the other harnesses.
       - name: Test the architecture-check action's go-path mode
         if: inputs.changes-result != 'success' || inputs.architecture_check_test == 'true'
-        run: .github/actions/architecture-check/check.test.sh
+        run: .github/scripts/harness-pool.sh start .github/actions/architecture-check/check.test.sh .github/actions/architecture-check/check.test.sh
 
       - name: Test the Dispatch census script
         run: bun test scripts/dispatch
