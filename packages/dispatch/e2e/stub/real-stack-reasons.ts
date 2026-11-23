@@ -184,6 +184,8 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-j.e2e.ts": "the Spec view reads the server's stored decisions, ties and results",
   "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
   "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
+  "issue-page-s.e2e.ts":
+    "the row writes a version of a grandchild's Verification document through the server and reads its own write back on the root's open page with no reload: the counts it reads are the server's coverage over every issue under the root, and what reaches the page is the event the server sends over the live socket, which names the grandchild's ancestors",
   "issue-page-t-reads.e2e.ts":
     "the rows count the tree and view reads the page sends the server and draw each filter from the view it answers",
   "issue-page-t-same-rows-a.e2e.ts":

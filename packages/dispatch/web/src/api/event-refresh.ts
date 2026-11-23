@@ -52,9 +52,10 @@ import type {
  * `features/refs/reference-target.ts`; `__tests__/event-feed.test.ts` holds the two in step).
  *
  * The server says what a write moved where a rule needs it: `changed` and `ancestors` on
- * `issue.created|updated|closed`, `thread_logins` on the writes that can move someone's Replies
- * count, `changed` on `user_state.updated`. An event without the field - written before it
- * existed, or by an older server mid-rollout - falls back to what any value could have moved.
+ * `issue.created|updated|closed`, `ancestors` on `artifact.created|version|removed` of an issue's
+ * document, `thread_logins` on the writes that can move someone's Replies count, `changed` on
+ * `user_state.updated`. An event without the field - written before it existed, or by an older
+ * server mid-rollout - falls back to what any value could have moved.
  */
 
 const inboxKey = inboxQuery().queryKey;
@@ -757,8 +758,9 @@ const DOCUMENT_WRITES: Partial<Record<EventType, true>> = {
 };
 
 /**
- * The issues above issue `key` that the page can place from what `cache` holds: a document event
- * carries no `ancestors`, so the chain is read from the page's own reads. An issue's parent is the
+ * The issues above issue `key` that the page can place from what `cache` holds, for a document
+ * event that names no `ancestors`: one from a Dispatch older than the field, mid-rollout, since a
+ * document event of an issue names them otherwise (`issuesAboveFor`). An issue's parent is the
  * one its held detail (`["issue", <key>]`) names, unless that detail is marked stale - the issue
  * may have moved since it was read, so it places nothing until it is read again - else the issue
  * a held tree read or view places the issue's node under: the node the issue's node stands under
@@ -810,6 +812,99 @@ function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
   }
 }
 
+/** The issues above an event's issue, for each client a check of the event is handed. */
+type IssuesAbove = (client: QueryClient | undefined) => ReadonlySet<string> | undefined;
+
+/** The issues above that an event other than a document write reaches: none. */
+const NO_ISSUES: ReadonlySet<string> = new Set();
+const NONE_ABOVE: IssuesAbove = () => NO_ISSUES;
+
+/**
+ * The issues above issue `key` that a document event of it (`DOCUMENT_WRITES`) reaches: the ones
+ * the event names (`ancestors`, parent first up to the root, `[]` for a root), which the server
+ * writes on each document event of an issue; else, for one that names none - from a Dispatch
+ * older than the field, mid-rollout - the ones `issuesAbove` places from what the cache of the
+ * client a check is handed holds. That placement is read once for each client and shared by every
+ * check of the event, its trees' (`treesHolding`) and its ancestors' coverage
+ * (`ancestorCoverage`), so the page has one rule of placement and walks a cache once for an
+ * event. A check handed no client reads no cache: it gets the ancestors the event names, and
+ * nothing where it names none, keeping nothing for the checks that are handed one. Any other
+ * event reaches no issue above its own by this.
+ */
+function issuesAboveFor(
+  key: string,
+  event: DispatchEvent,
+  ancestors: readonly string[] | undefined
+): IssuesAbove {
+  if (DOCUMENT_WRITES[event.type] !== true) {
+    return NONE_ABOVE;
+  }
+  if (ancestors !== undefined) {
+    const named: ReadonlySet<string> = new Set(ancestors);
+    return () => named;
+  }
+  const placed = new WeakMap<QueryClient, ReadonlySet<string>>();
+  return (client) => {
+    if (client === undefined) {
+      return undefined;
+    }
+    let issues = placed.get(client);
+    if (issues === undefined) {
+      issues = issuesAbove(key, client.getQueryCache());
+      placed.set(client, issues);
+    }
+    return issues;
+  };
+}
+
+/** Whether `client`'s cache holds a query under issue `key`'s tree read (`issueTreeKey`, by
+ *  prefix): its outline or a view of it, whatever observes it, or nothing does. */
+function holdsTreeRead(client: QueryClient, key: string): boolean {
+  return client.getQueryCache().findAll({ queryKey: issueTreeKey(key) }).length > 0;
+}
+
+/**
+ * The coverage read (`["issue", <key>, "coverage"]`) of each issue above the event's issue, which
+ * counts the checks and plan tasks of every issue under it: a descendant's upload or version can
+ * move it as the issue's own does, and a grandchild's first check serving the root's requirement
+ * moves the root's "more checks elsewhere" and that requirement's coverage. Each is marked only
+ * where the cache holds a query under that issue's tree read (`holdsTreeRead`), so only for a page
+ * that holds the issue's tree: a tree read a write of the issue holds from reading
+ * (`enabled: false`), or one the reader left for a descendant's page, counts too. Today's issue
+ * page reads the same coverage key and holds no tree read, so it refreshes as before. Each issue
+ * the event names (`ancestors`) is a target of its own; for an event that names none, one target
+ * reaches every read under `["issue"]` and passes the coverage read of each issue the page places
+ * above the event's (`issuesAboveFor`). A check handed no client marks nothing.
+ */
+function ancestorCoverage(
+  ancestors: readonly string[] | undefined,
+  above: IssuesAbove
+): RefreshTarget[] {
+  if (ancestors !== undefined) {
+    return ancestors.map((ancestor) => ({
+      exact: true,
+      queryKey: ["issue", ancestor, "coverage"],
+      when: (_data, _query, client) => client !== undefined && holdsTreeRead(client, ancestor),
+    }));
+  }
+  return [
+    {
+      queryKey: ["issue"],
+      when: (_data, query, client) => {
+        const [, issue, read] = query.queryKey;
+        return (
+          client !== undefined &&
+          query.queryKey.length === 3 &&
+          read === "coverage" &&
+          typeof issue === "string" &&
+          above(client)?.has(issue) === true &&
+          holdsTreeRead(client, issue)
+        );
+      },
+    },
+  ];
+}
+
 /**
  * Every tree read and every view of one (`["issue-tree", key, view]`) whose answer holds a node
  * of issue `key`, or a node standing under one, whichever issue it is the tree of, that `event`
@@ -819,11 +914,13 @@ function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
  * the tree's is of that issue (`ofIssue`) - it names it (`issue`), or it is the issue's own node
  * - and is judged by its own kind; a node standing under one names it as its parent, and is
  * judged by its parent's kind. A document event of the issue reaches as well every answer that
- * holds the node of an issue the page places above it (`issuesAbove`) other than the answer's own
- * issue's node, which every outline holds: a grandparent's outline holds its child's node and none
- * of the grandchild's, and the grandchild's new check serving the grandparent's requirement comes
- * into it. A block ask's answer reaches as well a view that carries ties (`VIEWS_CARRYING_TIES`)
- * and holds a block of the ask's issue, and no other answer by that (`tie`).
+ * holds the node of an issue above it (`above`: the ancestors the event names, or for an event
+ * that names none, from an older Dispatch mid-rollout, those the page places from what it holds)
+ * other than the answer's own issue's node, which every outline holds: a grandparent's outline
+ * holds its child's node and none of the grandchild's, and the grandchild's new check serving the
+ * grandparent's requirement comes into it. A block ask's answer reaches as well a view that
+ * carries ties (`VIEWS_CARRYING_TIES`) and holds a block of the ask's issue, and no other answer
+ * by that (`tie`).
  *
  * A view follows its outline (`["issue-tree", key]`): whatever marks an issue's outline stale
  * marks every view of that issue the page holds, by the outline's answer. An outline with no read
@@ -838,7 +935,11 @@ function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
  * reads nothing of its parent's tree. A child's plain ask is on no node its parent's answers hold,
  * so it reads none of them.
  */
-function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefined {
+function treesHolding(
+  key: string,
+  event: DispatchEvent,
+  above: IssuesAbove
+): RefreshTarget | undefined {
   const moved = treeNodesMoved(event);
   if (moved !== ON_ITS_TARGET && moved.length === 0) {
     return undefined;
@@ -854,17 +955,6 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
   // view that holds a block of that issue may gain the ask though it holds no node the ask is
   // on. No other answer gains a tie.
   const tie = event.type === "ask.answered" && namesBlock(event.payload.block_id);
-  // The issues above the event's issue, read once for a document event, from the cache of the one
-  // client the event's refresh runs on; none for any other event. A check handed no client reads
-  // no cache, and keeps nothing for the checks that are handed one.
-  let placed: ReadonlySet<string> | undefined;
-  const above = (client: QueryClient | undefined): ReadonlySet<string> | undefined => {
-    if (client !== undefined) {
-      placed ??=
-        DOCUMENT_WRITES[event.type] === true ? issuesAbove(key, client.getQueryCache()) : new Set();
-    }
-    return placed;
-  };
   // Whether each answer holds a node the event moves, read once for the event once the issues
   // above are known, so the views that fall back to one outline read its nodes once.
   const held = new WeakMap<object, boolean>();
@@ -1841,27 +1931,35 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   }
   // A tree holds nodes of other issues as well, and is told of their events the same way: every
   // tree or view whose answer holds a node of the issue, or a node standing under one, that the
-  // event can move (`treesHolding`), and, for an issue write that may have moved the issue's
-  // parent (`mayMoveParent`), each ancestor's tree and every view of it the event names
-  // (`ancestors`): a create under a parent or a parent move puts the issue's nodes in an
-  // ancestor's answer that does not hold them yet, and a write that does not say what it moved
-  // may have moved the parent. Any other write reads no ancestor's tree by its name: a title
+  // event can move (`treesHolding`), and each ancestor's tree and every view of it the event
+  // names (`ancestors`) where the event can put the issue's nodes in an ancestor's answer that
+  // does not hold them yet. An issue write can where it may have moved the issue's parent
+  // (`mayMoveParent`): a create under a parent or a parent move does, and a write that does not
+  // say what it moved may have. Any other write reads no ancestor's tree by its name: a title
   // reaches the parent's outline through the child's node it holds, and a status, an assignee, a
   // priority, labels or no field at all (`changed: []`) move no node of the issue. An issue write
   // that names no ancestors - written before the field existed, or by an older server
   // mid-rollout - may have put the issue under any tree, so every tree and every view is told of
-  // it, as every loaded detail is (`issueWriteTargets`). No other event carries `ancestors`, so
-  // its absence there says nothing.
+  // it, as every loaded detail is (`issueWriteTargets`). A document event of the issue - an
+  // upload, a version or a removal (`DOCUMENT_WRITES`) - names the issue's ancestors too, and
+  // each one's tree is told of it by that name, whatever its answer holds: a grandchild's first
+  // check serving the root's requirement comes into the root's outline, which holds no node of
+  // the grandchild, and so can a document of a child into its new parent's outline read before
+  // the move, a view held with no outline, or an outline whose first read is out. A document
+  // event that names none - from an older Dispatch, mid-rollout - reaches the ancestors the page
+  // places from what it holds (`issuesAboveFor`). No other event carries `ancestors`, so its
+  // absence there says nothing.
   const ancestors = payloadStrings(event, "ancestors");
+  const above = issuesAboveFor(key, event, ancestors);
   if (isIssueWrite(event) && ancestors === undefined) {
     targets.push({ queryKey: ["issue-tree"] });
   } else {
-    if (isIssueWrite(event) && mayMoveParent(event)) {
+    if ((isIssueWrite(event) && mayMoveParent(event)) || DOCUMENT_WRITES[event.type] === true) {
       for (const ancestor of ancestors ?? []) {
         targets.push({ queryKey: issueTreeKey(ancestor) });
       }
     }
-    const holding = treesHolding(key, event);
+    const holding = treesHolding(key, event, above);
     if (holding !== undefined) {
       targets.push(holding);
     }
@@ -1927,6 +2025,8 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       // version of the Verification document moves which checks there are: the two reads hang
       // under the issue's key but are named here, since every issue target is `exact`.
       { exact: true, queryKey: ["issue", key, "coverage"] },
+      // Each ancestor's coverage counts the issue's checks and plan tasks too.
+      ...ancestorCoverage(ancestors, above),
       { exact: true, queryKey: ["issue", key, "results"] }
     );
     if (event.type === "artifact.version") {

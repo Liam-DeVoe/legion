@@ -281,6 +281,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
 | `e2e/issue-page-p.e2e.ts` | each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval |
 | `e2e/issue-page-q.e2e.ts` | the server's decisions read sorts the view; a sent Change is re-read |
+| `e2e/issue-page-s.e2e.ts` | the row writes a version of a grandchild's Verification document through the server and reads its own write back on the root's open page with no reload: the counts it reads are the server's coverage over every issue under the root, and what reaches the page is the event the server sends over the live socket, which names the grandchild's ancestors |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
 | `e2e/issue-page-t-reads.e2e.ts` | the rows count the tree and view reads the page sends the server and draw each filter from the view it answers |
 | `e2e/issue-page-t-same-rows-a.e2e.ts` | the rows draw the tree read the server answers for each seeded issue, compared with the recorded rows |

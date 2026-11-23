@@ -1337,3 +1337,515 @@ test("an outline whose refetch answers no node of the issue it was placed above 
     verification: false,
   });
 });
+
+/** The grandchild CORE-3's ancestors, parent first up to the root, as the server names them on
+ *  each event of a document of the grandchild: its parent CORE-2, then the root CORE-1. */
+const GRANDCHILD_ANCESTORS: readonly string[] = ["CORE-2", "CORE-1"];
+
+/** An event of `type` of the grandchild CORE-3's Verification document, naming `ancestors` where
+ *  the case gives them, as the server writes it: a version names its document by id, and an
+ *  upload and a removal carry the document itself. */
+function grandchildDocumentEvent(type: string, ancestors?: readonly string[]): DispatchEvent {
+  return eventOf(
+    type,
+    {
+      artifact: { id: "artifact-3", name: "verification.md", slug: "verification-md" },
+      artifact_id: "artifact-3",
+      number: 2,
+      ...(ancestors === undefined ? {} : { ancestors }),
+    },
+    "CORE-3"
+  );
+}
+
+/** The coverage read of issue `key`, which counts the checks of every issue under it as well as
+ *  its own. */
+function coverageKey(key: string): readonly unknown[] {
+  return ["issue", key, "coverage"];
+}
+
+/** A coverage read's answer, which no case reads: only whether the read is marked counts. */
+const COVERAGE = { gaps: [], has_plan: false, requirements: [] };
+
+/** Whether each read `keys` names is marked stale, by its name in `keys`. */
+function marked(
+  client: QueryClient,
+  keys: Readonly<Record<string, readonly unknown[]>>
+): Record<string, boolean> {
+  return Object.fromEntries(
+    Object.entries(keys).map(([name, queryKey]) => [
+      name,
+      client.getQueryState(queryKey)?.isInvalidated === true,
+    ])
+  );
+}
+
+/** An observer of `queryKey`, as the page observes its reads: it holds `answer` fresh until an
+ *  event marks it, reads `answer` again whenever the scheduler sends a read, and is enabled
+ *  unless `enabled` says otherwise. Answers its stop. */
+function observe(
+  client: QueryClient,
+  queryKey: readonly unknown[],
+  answer: unknown,
+  enabled = true
+): () => void {
+  return new QueryObserver(client, {
+    enabled,
+    queryFn: async () => answer,
+    queryKey,
+    staleTime: Number.POSITIVE_INFINITY,
+  }).subscribe(() => undefined);
+}
+
+/** The root CORE-1's reads as its new page holds them open on Verification: its outline,
+ *  observed and idle, holding its child CORE-2's node and no node of the grandchild CORE-3; its
+ *  Verification view, holding its requirement alone; and its coverage read. */
+function rootOnVerification(client: QueryClient): {
+  readonly marks: () => Record<string, boolean>;
+  readonly stop: () => void;
+} {
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    outline: issueTreeKey("CORE-1"),
+    verification: viewKey("CORE-1", "verification"),
+  };
+  client.setQueryData(reads.outline, OUTLINE_WITH_CHILD);
+  client.setQueryData(reads.verification, VERIFICATION_WITH_REQUIREMENT);
+  client.setQueryData(reads.coverage, COVERAGE);
+  const stop = observe(client, reads.outline, OUTLINE_WITH_CHILD);
+  return {
+    marks: () => marked(client, reads),
+    stop: () => {
+      stop();
+      client.clear();
+    },
+  };
+}
+
+/** The root's three reads of `rootOnVerification`, each marked. */
+const ROOT_MARKED = { coverage: true, outline: true, verification: true };
+
+/** None of the root's three reads of `rootOnVerification` marked. */
+const ROOT_UNMARKED = { coverage: false, outline: false, verification: false };
+
+// ST-1, S1. A document event of an issue names the issue's ancestors, so the root's open page
+// reaches the root's outline and every view of it the page holds by the event alone - though the
+// outline holds no node of the grandchild yet, and nothing the page holds places the grandchild -
+// and the root's coverage, which counts the grandchild's checks, as a version of the root's own
+// documents marks the root's: a grandchild's first check that serves the root's requirement
+// moves the counts the Verification view draws.
+test("a grandchild's document version that names its ancestors marks the root's outline, its Verification view and its coverage", () => {
+  const client = new QueryClient();
+  const root = rootOnVerification(client);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(root.marks()).toEqual(ROOT_MARKED);
+  } finally {
+    root.stop();
+  }
+});
+
+// ST-1, S2. An upload of a document of the grandchild can bring its first check in as a version
+// can, and marks the issue's own coverage as a version does, so it reaches the root alike.
+test("a grandchild's document upload that names its ancestors marks the root's outline, its Verification view and its coverage", () => {
+  const client = new QueryClient();
+  const root = rootOnVerification(client);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.created", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(root.marks()).toEqual(ROOT_MARKED);
+  } finally {
+    root.stop();
+  }
+});
+
+// ST-1, S3. A removal takes the document's nodes out of every tree that holds them, so it reaches
+// the root's outline and view; it writes no version, and marks the coverage of no issue, its own
+// included, so it leaves the root's coverage alone.
+test("a grandchild's document removal that names its ancestors marks the root's outline and its Verification view, and leaves the root's coverage unmarked", () => {
+  const client = new QueryClient();
+  const root = rootOnVerification(client);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.removed", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(root.marks()).toEqual({ coverage: false, outline: true, verification: true });
+  } finally {
+    root.stop();
+  }
+});
+
+// ST-1, S4. Today's issue page reads the same coverage keys and holds no tree read, so a
+// grandchild's document event marks no ancestor's coverage there, nor any ancestor's detail, and
+// that page refreshes as before.
+test("a grandchild's document version that names its ancestors marks no ancestor's coverage or detail where the cache holds no tree read, as today's page holds none", () => {
+  const client = new QueryClient();
+  const reads = {
+    childCoverage: coverageKey("CORE-2"),
+    childDetail: ["issue", "CORE-2"],
+    rootCoverage: coverageKey("CORE-1"),
+    rootDetail: ["issue", "CORE-1"],
+  };
+  client.setQueryData(reads.rootDetail, { key: "CORE-1", parent: null });
+  client.setQueryData(reads.childDetail, { key: "CORE-2", parent: "CORE-1" });
+  client.setQueryData(reads.rootCoverage, COVERAGE);
+  client.setQueryData(reads.childCoverage, COVERAGE);
+  refreshQueries(
+    client,
+    eventRefreshTargets(grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS), "alice")
+  );
+  expect(marked(client, reads)).toEqual({
+    childCoverage: false,
+    childDetail: false,
+    rootCoverage: false,
+    rootDetail: false,
+  });
+});
+
+// ST-1, S5: decision 411 (2). The grandchild was moved under a new parent, CORE-4: its detail,
+// marked stale since, names its old parent CORE-2, and the new parent's outline, read before the
+// move, holds no node of it. The event's ancestors name the new parent, so the new parent's
+// outline and coverage are marked, and the old parent's outline, which holds no node of the
+// grandchild either, is not.
+test("a grandchild moved under a new parent reaches that parent's outline, read before the move, and its coverage through its event's ancestors, though its stale detail names its old parent", () => {
+  const client = new QueryClient();
+  client.setQueryData(["issue", "CORE-3"], { key: "CORE-3", parent: "CORE-2" });
+  void client.invalidateQueries({ exact: true, queryKey: ["issue", "CORE-3"] });
+  const newParentAnswer = treeAnswer([treeNode("CORE-4", "issue", null)], [], {
+    issue: "CORE-4",
+  });
+  const reads = {
+    newParentCoverage: coverageKey("CORE-4"),
+    newParentOutline: issueTreeKey("CORE-4"),
+    oldParentOutline: issueTreeKey("CORE-2"),
+  };
+  client.setQueryData(reads.newParentOutline, newParentAnswer);
+  client.setQueryData(reads.newParentCoverage, COVERAGE);
+  client.setQueryData(
+    reads.oldParentOutline,
+    treeAnswer([treeNode("CORE-2", "issue", null)], [], { issue: "CORE-2" })
+  );
+  const stop = observe(client, reads.newParentOutline, newParentAnswer);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", ["CORE-4", "CORE-1"]),
+        "alice"
+      )
+    );
+    expect(marked(client, reads)).toEqual({
+      newParentCoverage: true,
+      newParentOutline: true,
+      oldParentOutline: false,
+    });
+  } finally {
+    stop();
+    client.clear();
+  }
+});
+
+// ST-1, S6. A document event from a Dispatch older than the field names no ancestors, and the
+// page places the grandchild from what it holds (`issuesAbove`): its detail names its parent,
+// whose node the root's outline holds. The root's outline and view are marked, as before, and the
+// root's coverage with them, by that one placement.
+test("a grandchild's document version that names no ancestors marks the root's outline, view and coverage where what the page holds places the grandchild under the root", () => {
+  const client = new QueryClient();
+  const reads = { coverage: coverageKey("CORE-1"), ...grandparentHolding(client, "detail") };
+  client.setQueryData(reads.coverage, COVERAGE);
+  const stops = [
+    observe(client, reads.outline, OUTLINE_WITH_CHILD),
+    observe(client, reads.verification, VERIFICATION_WITH_REQUIREMENT),
+  ];
+  try {
+    refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
+    expect(marked(client, reads)).toEqual(ROOT_MARKED);
+  } finally {
+    for (const stop of stops) stop();
+    client.clear();
+  }
+});
+
+// ST-1, S7: decision 410. A person's edit notice comes after the versions that carried each of
+// the edits it tells of, and moves no node: it reaches no ancestor, whatever its payload names.
+test("a grandchild's edit notice that carries its ancestors marks no read of the root's", () => {
+  const client = new QueryClient();
+  const root = rootOnVerification(client);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.human_edited", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(root.marks()).toEqual(ROOT_UNMARKED);
+  } finally {
+    root.stop();
+  }
+});
+
+// ST-1, S8. A root's document event names no ancestor (`[]`): it marks the root's own outline and
+// coverage as before, no other issue's tree or coverage, and the page never asks the cache where
+// the root stands. `issuesAbove` starts its walk by asking the cache for the issue's detail by
+// that read's hash, its key as JSON, which this cache does not hold; it runs for an event that
+// names no ancestors alone.
+test("a root's document version, whose ancestors are none, marks its own outline and coverage, no other issue's, and walks no cache to place the root", () => {
+  const client = new QueryClient();
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    otherCoverage: coverageKey("CORE-9"),
+    otherOutline: issueTreeKey("CORE-9"),
+    outline: issueTreeKey("CORE-1"),
+  };
+  client.setQueryData(reads.outline, treeAnswer([treeNode("CORE-1", "issue", null), REQUIREMENT]));
+  client.setQueryData(reads.coverage, COVERAGE);
+  client.setQueryData(
+    reads.otherOutline,
+    treeAnswer([treeNode("CORE-9", "issue", null)], [], { issue: "CORE-9" })
+  );
+  client.setQueryData(reads.otherCoverage, COVERAGE);
+  const cache = client.getQueryCache();
+  const get = cache.get.bind(cache);
+  const rootDetail = JSON.stringify(["issue", "CORE-1"]);
+  let askedWhereTheRootStands = 0;
+  spyOn(cache, "get").mockImplementation(((hash: string) => {
+    if (hash === rootDetail) askedWhereTheRootStands += 1;
+    return get(hash);
+  }) as typeof cache.get);
+  const version = eventOf(
+    "artifact.version",
+    { ancestors: [], artifact_id: "artifact-1", number: 2 },
+    "CORE-1"
+  );
+  refreshQueries(client, eventRefreshTargets(version, "alice"));
+  expect({ asked: askedWhereTheRootStands, marks: marked(client, reads) }).toEqual({
+    asked: 0,
+    marks: { coverage: true, otherCoverage: false, otherOutline: false, outline: true },
+  });
+});
+
+// ST-1, S9. The page can hold a view of the root with no outline beside it, and the event names
+// the root, so the view is marked by it; a view is a read under the root's tree read, so the
+// root's coverage is marked with it.
+test("a grandchild's document version that names its ancestors marks the root's Verification view and coverage where the page holds that view and no outline", () => {
+  const client = new QueryClient();
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    verification: viewKey("CORE-1", "verification"),
+  };
+  client.setQueryData(reads.verification, VERIFICATION_WITH_REQUIREMENT);
+  client.setQueryData(reads.coverage, COVERAGE);
+  const stop = observe(client, reads.verification, VERIFICATION_WITH_REQUIREMENT);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(marked(client, reads)).toEqual({ coverage: true, verification: true });
+  } finally {
+    stop();
+    client.clear();
+  }
+});
+
+// ST-1, S10: against decision 408 (1). The root's outline has its first read out, so it holds no
+// answer a check could judge, and nothing the page holds places the grandchild. The event names
+// the root, so the outline is marked all the same and owes a read once that first one lands -
+// its answer then stays marked stale - and the root's idle view and its coverage are marked.
+test("a grandchild's document version that names its ancestors marks the root's outline whose first read is out, which then owes a read, and the root's idle view and coverage", async () => {
+  jest.useFakeTimers();
+  const client = new QueryClient();
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    outline: issueTreeKey("CORE-1"),
+    verification: viewKey("CORE-1", "verification"),
+  };
+  try {
+    client.setQueryData(reads.verification, VERIFICATION_WITH_REQUIREMENT);
+    client.setQueryData(reads.coverage, COVERAGE);
+    const response = Promise.withResolvers<unknown>();
+    const read = client.fetchQuery({ queryFn: () => response.promise, queryKey: reads.outline });
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    const atOnce = marked(client, reads);
+    response.resolve(OUTLINE_WITH_CHILD);
+    await read;
+    // The scheduler takes up what a query owes on a zero-delay timer once its read settles.
+    await tick(0);
+    expect({ atOnce, landed: marked(client, { outline: reads.outline }) }).toEqual({
+      atOnce: ROOT_MARKED,
+      landed: { outline: true },
+    });
+  } finally {
+    client.clear();
+    realClock();
+  }
+});
+
+// ST-1, S11. The reader moved from the root's new page to the child's: the root's outline and
+// view stay in the cache with nothing observing them, and the child's outline, which holds the
+// grandchild's node, is observed. The root's reads are marked all the same, its coverage among
+// them, so the root's page draws the new counts when the reader comes back to it.
+test("a grandchild's document version that names its ancestors marks the root's outline, view and coverage that nothing observes once the reader has moved to the child's new page", () => {
+  const client = new QueryClient();
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    outline: issueTreeKey("CORE-1"),
+    verification: viewKey("CORE-1", "verification"),
+  };
+  client.setQueryData(reads.outline, OUTLINE_WITH_CHILD);
+  client.setQueryData(reads.verification, VERIFICATION_WITH_REQUIREMENT);
+  client.setQueryData(reads.coverage, COVERAGE);
+  const childAnswer = treeAnswer(
+    [
+      treeNode("CORE-2", "issue", null),
+      treeNode("CORE-3", "issue", "CORE-2", { issue: "CORE-3", read_only: true }),
+    ],
+    [],
+    { issue: "CORE-2" }
+  );
+  client.setQueryData(issueTreeKey("CORE-2"), childAnswer);
+  const stop = observe(client, issueTreeKey("CORE-2"), childAnswer);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(marked(client, reads)).toEqual(ROOT_MARKED);
+  } finally {
+    stop();
+    client.clear();
+  }
+});
+
+// ST-1, S12. A project's document belongs to no issue: its event names no ancestors, and it
+// reaches no issue's tree or coverage.
+test("a project document's version marks no read of the root's", () => {
+  const client = new QueryClient();
+  const root = rootOnVerification(client);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        eventOf("artifact.version", { artifact_id: "artifact-9", number: 2 }, null),
+        "alice"
+      )
+    );
+    expect(root.marks()).toEqual(ROOT_UNMARKED);
+  } finally {
+    root.stop();
+  }
+});
+
+// ST-1, S13. While a write of the root is out, its page holds the root's outline on hold - its
+// observer is not enabled (`mayReadNow`) - and reads the Verification view through an observer
+// that is never enabled, as `treeRead` makes one. The event names the root, so both are marked,
+// and its coverage too: the cache holds the root's tree read, whatever observes it, and the page
+// reads all three once the write settles.
+test("a grandchild's document version that names its ancestors marks the root's outline and view that a write of the root holds from reading, and its coverage", () => {
+  const client = new QueryClient();
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    outline: issueTreeKey("CORE-1"),
+    verification: viewKey("CORE-1", "verification"),
+  };
+  client.setQueryData(reads.outline, OUTLINE_WITH_CHILD);
+  client.setQueryData(reads.verification, VERIFICATION_WITH_REQUIREMENT);
+  client.setQueryData(reads.coverage, COVERAGE);
+  const stops = [
+    observe(client, reads.outline, OUTLINE_WITH_CHILD, false),
+    observe(client, reads.verification, VERIFICATION_WITH_REQUIREMENT, false),
+  ];
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(marked(client, reads)).toEqual(ROOT_MARKED);
+  } finally {
+    for (const stop of stops) stop();
+    client.clear();
+  }
+});
+
+// ST-1, S14. A document event that names no ancestors reaches the coverage of an issue the page
+// places above the event's issue only where the cache holds that issue's tree read, as an event
+// that names them does: the details place the root above the grandchild here, and the root's
+// coverage is marked once the root's outline is held, and not before.
+test("a grandchild's document version that names no ancestors marks the coverage of an issue the page places above it only where the cache holds that issue's tree read", () => {
+  const seen: Record<string, boolean> = {};
+  for (const [name, outlineHeld] of [
+    ["no tree read of the root", false],
+    ["the root's outline", true],
+  ] as const) {
+    const client = new QueryClient();
+    client.setQueryData(["issue", "CORE-3"], { key: "CORE-3", parent: "CORE-2" });
+    client.setQueryData(["issue", "CORE-2"], { key: "CORE-2", parent: "CORE-1" });
+    client.setQueryData(coverageKey("CORE-1"), COVERAGE);
+    if (outlineHeld) client.setQueryData(issueTreeKey("CORE-1"), OUTLINE_WITH_CHILD);
+    refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
+    seen[name] = client.getQueryState(coverageKey("CORE-1"))?.isInvalidated === true;
+  }
+  expect(seen).toEqual({ "no tree read of the root": false, "the root's outline": true });
+});
+
+// INV-3. Over the three writes of a document and the edit notice: each write reaches the root's
+// trees by the event's ancestors; only an upload and a version, the two that mark the issue's own
+// coverage, mark the root's coverage too; the edit notice marks nothing of the root's.
+test("of a grandchild's document events that name its ancestors, each write marks the root's trees, only an upload and a version mark the root's coverage, and an edit notice marks nothing of the root's", () => {
+  const seen: Record<string, unknown> = {};
+  for (const type of [
+    "artifact.created",
+    "artifact.version",
+    "artifact.removed",
+    "artifact.human_edited",
+  ]) {
+    const client = new QueryClient();
+    const root = rootOnVerification(client);
+    try {
+      refreshQueries(
+        client,
+        eventRefreshTargets(grandchildDocumentEvent(type, GRANDCHILD_ANCESTORS), "alice")
+      );
+      seen[type] = root.marks();
+    } finally {
+      root.stop();
+    }
+  }
+  expect(seen).toEqual({
+    "artifact.created": ROOT_MARKED,
+    "artifact.human_edited": ROOT_UNMARKED,
+    "artifact.removed": { coverage: false, outline: true, verification: true },
+    "artifact.version": ROOT_MARKED,
+  });
+});
