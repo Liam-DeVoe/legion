@@ -5342,8 +5342,8 @@ Three issues are seeded in `testing` on open pull requests whose heads are commi
 The reviewer's review is the review App's own, published on the `ENVOY_NOTIFICATIONS` stream as Envoy relays GitHub's webhook before the reviewer completes, as the reviewer posts it, its Legion footer naming the pull request's head, a session and the entry of its round.
 The driver reads that entry from the task the daemon delivered the reviewer's shim, as an agent reads its task: the number of its last sentence, ` Review entry: <n>.`, which is the entry the reviewer's phases row stands at.
 A footer that names another head, or none, is set aside and decides nothing.
-A footer that names a session other than the one the claims record holds for the claim the daemon starts the reviewer under is set aside too, in the first round as in every later one: that claim is the one the reviewer's entry writes on its phases row, the claim of the agent on the reviewer's step (`internal/workflow/review.go`, `reviewersClaim`).
-Only the reviewer's own review decides the round, and only such a review whose footer names the entry the reviewer's phases row stands at makes the daemon keep the head as the commit the reviewer read.
+A footer that names a session other than the one the claims record holds for the claim the daemon starts the reviewer under is set aside too, in the first round as in every later one: that claim is the one the entry of the reviewer step whose round it is writes on that step's phases row, the claim of the agent on that step (`internal/workflow/review.go`, `reviewersClaim`).
+Only the reviewer's own review decides the round, and only such a review whose footer names the entry that step's phases row stands at makes the daemon keep the head on that row as the commit the reviewer read.
 A footer that names no entry, or another entry, still decides the round and keeps no commit; no time is compared.
 Each check first holds that the task it reads is the reviewing task of its round:
 it says `Phase: reviewing.` and names the tester's handoff of that round by its version, so a check of an absence cannot pass on a task of another round.
@@ -5367,7 +5367,7 @@ the broker is a native `nats-server`; GitHub is one REST stand-in (`reviewRangeG
 the Apps' tokens are placeholders; Envoy's listener is the package's `noticeListener`;
 and no agent runs.
 The stand-in answers every other route `404`, so the daemon's own read of the pull request, at its start and after each recorded handoff (`readIssuePullRequest` in `internal/daemon/issue_reads.go`), fails and is logged, and the review reaches the daemon only as its webhook.
-The read of the pull request's reviews that applies a review whose webhook never arrived (`readReviews` in `internal/daemon/review_reads.go`) hands the workflow the same review, which records the reviewed commit in the same step when it is the reviewer's own review of the entry that stands: its footer names the entry the reviewer's phases row stands at (`review` in `internal/workflow/review.go`); this proof does not drive that read.
+The read of the pull request's reviews that applies a review whose webhook never arrived (`readReviews` in `internal/daemon/review_reads.go`) hands the workflow the same review, which records the reviewed commit in the same step when it is the reviewer's own review of the entry that stands: its footer names the entry that the phases row of the reviewer step whose round it is stands at (`review` in `internal/workflow/review.go`); this proof does not drive that read.
 `REVIEW_RANGE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## owner-steps.sh
