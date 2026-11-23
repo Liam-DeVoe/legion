@@ -174,9 +174,27 @@ type ChecksSettlement struct {
 	Number int
 	SHA    string
 	Runs   []CheckRun
+	// Statuses are the commit statuses the listener's record holds for the commit, the newest of
+	// each context.
+	Statuses []CommitStatus
 	// Generation numbers the listener's settlements of one commit from 1; zero is 1.
 	Generation uint64
+	// Superseded says the listener settled the commit before.
+	Superseded bool
 }
+
+// CommitStatus is one commit status of a commit: its context, its state, success, failure or
+// error, and when GitHub created it.
+type CommitStatus struct {
+	Context   string
+	State     string
+	CreatedAt time.Time
+}
+
+// DispatchDeliveryDurable is the durable Dispatch's delivery intake reads GitHub's envelopes
+// from, on the notification stream, the settlements PublishChecksSettlement publishes among them
+// (Envoy's bus.DispatchDeliveryDurable).
+const DispatchDeliveryDurable = "delivery-events"
 
 // PublishChecksSettlement publishes s on the NATS server at natsURL as the listener's CI summary
 // loop publishes a settlement (packages/envoy/internal/cistore, settlementEnvelope): an Envoy
@@ -184,24 +202,23 @@ type ChecksSettlement struct {
 // settlement in the shape of cistore.Summary, kind "checks" with its repo, number and sha, each
 // run's name, id and conclusion, and the groups of check names the listener's own rule puts each
 // run in (cistore's classify). It is stored on the notification stream, ENVOY_NOTIFICATIONS,
-// which Dispatch's delivery intake and the daemon's intake both read; the call returns once the
-// stream has taken it.
-func PublishChecksSettlement(t *testing.T, natsURL string, s ChecksSettlement) {
+// which Dispatch's delivery intake and the daemon's intake both read; the call returns the
+// stream sequence of the message once the stream has taken it.
+func PublishChecksSettlement(t *testing.T, natsURL string, s ChecksSettlement) uint64 {
 	t.Helper()
-	owner, name, ok := strings.Cut(s.Repo, "/")
-	if !ok {
-		t.Fatalf("settle the checks of %q: a repository is owner/name", s.Repo)
+	published, err := publishedSettlementOf(s)
+	if err != nil {
+		t.Fatalf("settle the checks of %s#%d at %s: %v", s.Repo, s.Number, s.SHA, err)
 	}
-	generation := max(s.Generation, 1)
-	payload, err := json.Marshal(settlementOf(s, generation))
+	payload, err := json.Marshal(published.payload)
 	if err != nil {
 		t.Fatalf("encode the settlement of %s#%d at %s: %v", s.Repo, s.Number, s.SHA, err)
 	}
-	subject := fmt.Sprintf("notifications.github.%s.%s.pr.%d.checks", subjectSegment(owner), subjectSegment(name), s.Number)
-	id := fmt.Sprintf("checks-%s-%d-%s-g%d-%d", strings.ReplaceAll(s.Repo, "/", "-"), s.Number, s.SHA, generation, time.Now().UnixNano())
+	id := fmt.Sprintf("checks-%s-%d-%s-g%d-%d", strings.ReplaceAll(s.Repo, "/", "-"), s.Number, s.SHA, published.payload.Generation,
+		time.Now().UnixNano())
 	envelope, err := json.Marshal(map[string]any{
-		"event_id": id, "source": "github", "source_event_id": id + "-settlement", "topic": subject,
-		"dedupe_key":      fmt.Sprintf("github.checks.%s.pr.%d.%s.g%d", s.Repo, s.Number, s.SHA, generation),
+		"event_id": id, "source": "github", "source_event_id": id + "-settlement", "topic": published.subject,
+		"dedupe_key":      published.dedupeKey,
 		"issued_at":       time.Now().UnixMilli(),
 		"payload_summary": fmt.Sprintf("checks settled on %s#%d @ %.7s", s.Repo, s.Number, s.SHA),
 		"payload":         string(payload), "trace_id": id + "-trace",
@@ -215,9 +232,33 @@ func PublishChecksSettlement(t *testing.T, natsURL string, s ChecksSettlement) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := js.Publish(ctx, subject, envelope); err != nil {
-		t.Fatalf("publish the settlement of %s#%d at %s on %s: %v", s.Repo, s.Number, s.SHA, subject, err)
+	ack, err := js.Publish(ctx, published.subject, envelope)
+	if err != nil {
+		t.Fatalf("publish the settlement of %s#%d at %s on %s: %v", s.Repo, s.Number, s.SHA, published.subject, err)
 	}
+	return ack.Sequence
+}
+
+// publishedSettlement is what the listener's publish makes of a settlement that its readers read
+// (cistore's settlementEnvelope): the subject it is published on, the envelope's dedupe key and the
+// payload.
+type publishedSettlement struct {
+	subject, dedupeKey string
+	payload            settlement
+}
+
+// publishedSettlementOf is s as the listener publishes it.
+func publishedSettlementOf(s ChecksSettlement) (publishedSettlement, error) {
+	owner, name, ok := strings.Cut(s.Repo, "/")
+	if !ok {
+		return publishedSettlement{}, fmt.Errorf("a repository is owner/name, not %q", s.Repo)
+	}
+	generation := max(s.Generation, 1)
+	return publishedSettlement{
+		subject:   fmt.Sprintf("notifications.github.%s.%s.pr.%d.checks", subjectSegment(owner), subjectSegment(name), s.Number),
+		dedupeKey: fmt.Sprintf("github.checks.%s.pr.%d.%s.g%d", s.Repo, s.Number, s.SHA, generation),
+		payload:   settlementOf(s, generation),
+	}, nil
 }
 
 // settlement is cistore.Summary's JSON, member for member and in its order.

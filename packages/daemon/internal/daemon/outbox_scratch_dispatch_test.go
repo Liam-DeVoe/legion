@@ -30,6 +30,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
@@ -636,10 +637,6 @@ func scratchAppKey(t *testing.T) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 }
 
-// scratchDeliveryDurable is the durable Dispatch's delivery intake reads GitHub's envelopes from,
-// on the notification stream (Envoy's bus.DispatchDeliveryDurable).
-const scratchDeliveryDurable = "delivery-events"
-
 // writeDeliverySettings writes the server's delivery settings, deploying from repo, "owner/name",
 // and waits until the server's delivery intake has taken its durable on the notification stream.
 // The intake stays idle until a settings row with a well-formed deploy repository exists
@@ -669,7 +666,7 @@ func (d *scratchDispatch) writeDeliverySettings(repo string) {
 	if !testwait.Holds(testwait.Bounded(t, within, time.Second), 100*time.Millisecond, func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		consumer, err := js.PushConsumer(ctx, "ENVOY_NOTIFICATIONS", scratchDeliveryDurable)
+		consumer, err := js.PushConsumer(ctx, "ENVOY_NOTIFICATIONS", githubtest.DispatchDeliveryDurable)
 		if err != nil {
 			last = err.Error()
 			return false
@@ -683,9 +680,9 @@ func (d *scratchDispatch) writeDeliverySettings(repo string) {
 		return info.PushBound
 	}) {
 		t.Fatalf("Dispatch's delivery intake did not take its durable %s within %s of the delivery settings of %s: its last read %q\nDispatch's log of its delivery intake:\n%s",
-			scratchDeliveryDurable, within, repo, last, d.deliveryLog())
+			githubtest.DispatchDeliveryDurable, within, repo, last, d.deliveryLog())
 	}
-	t.Logf("Dispatch's delivery intake reads %s (%s) after the delivery settings of %s", scratchDeliveryDurable, last, repo)
+	t.Logf("Dispatch's delivery intake reads %s (%s) after the delivery settings of %s", githubtest.DispatchDeliveryDurable, last, repo)
 }
 
 // deliveryLog is the last 40 lines of the server's log that name its delivery intake, its duties
