@@ -1905,7 +1905,7 @@ func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.Po
 	}
 	e.warnOnCommit(ctx, "workflow: a role's launch waits for its issue's pod to be replaced", "issue", issue.Key, "role", fact.Role, "pod", fact.Pod, "detail", fact.Detail)
 	if err := e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{
-		Kind: "pod-refused-launch", Role: fact.Role, Phase: issue.Phase, Reason: told})); err != nil {
+		Kind: record.PodWaitHeldNotice, Role: fact.Role, Phase: issue.Phase, Reason: told})); err != nil {
 		return intake.Result{}, err
 	}
 	if !fact.Queue {

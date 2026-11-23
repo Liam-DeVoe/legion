@@ -74,7 +74,7 @@ func TestALaunchItsPodRefusedWithNoStartBehindItQueuesTheOwedEntrysStart(t *test
 	if posted := messageBodies(t, pool); len(posted) != 2 || !strings.Contains(posted[0], "pod-1") {
 		t.Fatalf("the issue was told %v, want one message per report, naming the pod", posted)
 	}
-	if kinds := controllerNoticeKinds(t, pool); len(kinds) != 2 || kinds[0] != "pod-refused-launch" || kinds[1] != "pod-refused-launch" {
-		t.Fatalf("the controller was told %v, want one pod-refused-launch notice per report", kinds)
+	if kinds := controllerNoticeKinds(t, pool); len(kinds) != 2 || kinds[0] != string(record.PodWaitHeldNotice) || kinds[1] != string(record.PodWaitHeldNotice) {
+		t.Fatalf("the controller was told %v, want one %s notice per report", kinds, record.PodWaitHeldNotice)
 	}
 }
