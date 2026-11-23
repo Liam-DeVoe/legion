@@ -23,9 +23,9 @@ import (
 // imageOmp is an `omp` that answers each of the image's probes by its own plan, one step per
 // attempt of that probe (the last step repeats), telling them apart by argv as a real Oh My Pi
 // would run them, and recording the order they ran in and each attempt's argv and environment.
-// invocation is path as ImageProbe.Omp holds it, one shell word (shellprefix.Word): a temporary
-// path can hold a space or a quote.
-type imageOmp struct{ dir, path, invocation string }
+// invocation is the fake's path as ImageProbe.Omp holds it, one shell word (shellprefix.Word): a
+// temporary path can hold a space or a quote.
+type imageOmp struct{ dir, invocation string }
 
 func newImageOmp(t *testing.T, agents, load, session []string) imageOmp {
 	t.Helper()
@@ -96,7 +96,7 @@ echo "fake omp: no step $step for $kind" >&2; exit 65
 	if err := testexec.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
-	return imageOmp{dir: dir, path: path, invocation: shellprefix.Word(path)}
+	return imageOmp{dir: dir, invocation: shellprefix.Word(path)}
 }
 
 // calls are the probes the fake ran, in order.
@@ -225,7 +225,7 @@ func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
 	}
 	argv := strings.Join(f.args(t, "load.argv.1"), " ")
 	if !strings.HasPrefix(argv, "models --extension "+envoyRoot+" --extension "+root+" --extension ") {
-		t.Errorf("the load probe ran `omp %s`, want it to run as a pod does: `models --extension %s --extension %s …`, the two roots first and discovery on", strings.TrimSpace(argv), envoyRoot, root)
+		t.Errorf("the load probe ran `omp %s`, want it to run as a pod does: `models --extension %s --extension %s …`, the two roots first and discovery on", argv, envoyRoot, root)
 	}
 	// The two plugin roots are also the extension roots the probe's own discovery of task agents
 	// and skills reads: exported as the roots, never as the probe's own path.
@@ -297,7 +297,7 @@ func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
 		t.Fatalf("ProbeImage with relative plugin roots = %v, want every probe to pass", err)
 	}
 	if argv := strings.Join(f.args(t, "load.argv.1"), " "); !strings.Contains(argv, "--extension "+envoyRootOf(home)+" --extension "+legionRootOf(home)+" ") {
-		t.Errorf("the load probe ran `omp %s`, want the plugin roots as the absolute %s and %s", strings.TrimSpace(argv), envoyRootOf(home), legionRootOf(home))
+		t.Errorf("the load probe ran `omp %s`, want the plugin roots as the absolute %s and %s", argv, envoyRootOf(home), legionRootOf(home))
 	}
 }
 

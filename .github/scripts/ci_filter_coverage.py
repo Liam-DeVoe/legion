@@ -1682,7 +1682,7 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 if source != cited and not source.endswith("/" + cited):
                     continue
                 if held is None:
-                    held = (REPO / source).read_text(encoding="utf-8").splitlines()
+                    held = read_repository_text(REPO / source).splitlines()
                 name = name.rstrip(".")
                 call = re.compile(re.escape(name) + r"\s*\(")
                 if any(call.search(held[n - 1]) for n in range(int(first), int(last or first) + 1) if 0 < n <= len(held)):

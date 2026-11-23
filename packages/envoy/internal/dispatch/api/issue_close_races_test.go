@@ -16,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/lockwaittest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // An issue's close races the writers of its asks and documents. Each race below ends in one of
@@ -596,12 +596,9 @@ func holdLock(t *testing.T, database *store.Store, lock string, args ...any) (re
 // current_database() because one Postgres serves every test in the package.
 func lockWaiters(t *testing.T, database *store.Store) int {
 	t.Helper()
-	var waiting int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from pg_stat_activity
-		where datname = current_database() and `+lockwaittest.Waiting+` and pid <> pg_backend_pid()
-	`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
+	waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
+	if err != nil {
+		t.Fatal(err)
 	}
 	return waiting
 }

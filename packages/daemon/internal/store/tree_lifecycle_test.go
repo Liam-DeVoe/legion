@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -279,14 +278,7 @@ func holdSerializerThenLock(t *testing.T, store *Store, lock string, step func()
 	}
 	done := make(chan error, 1)
 	go func() { done <- step() }()
-	if !testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool {
-		var waiting int
-		if err := store.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and `+lockwaittest.WaitingOn("advisory")).Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		return waiting > 0
-	}) {
+	if !testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool { return waitingOnTheSerializer(t, store) }) {
 		t.Fatalf("the cleanup step never waited for the serializer (it returned %v)", <-done)
 	}
 	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
