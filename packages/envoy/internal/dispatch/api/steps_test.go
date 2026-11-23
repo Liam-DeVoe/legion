@@ -730,6 +730,7 @@ func TestAnotherProjectsDaemonWritesTheRecordsOfAnIssue(t *testing.T) {
 // STEP_WRITER, or 403 ROLE_HOLDER_FORBIDDEN for the role holders, and stores nothing. The project
 // the token names makes no writer of these records; only the session of a daemon is one.
 func TestARoleSessionWritesNoRecordOfAnIssue(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-role-token-of-one-project"
@@ -756,6 +757,7 @@ func TestARoleSessionWritesNoRecordOfAnIssue(t *testing.T) {
 // STEP_WRITER or 403 ROLE_HOLDER_FORBIDDEN with nothing stored, as before INFRA-4799. Only a
 // broker token proves the daemon session it writes as.
 func TestANoProjectCredentialNamingAnotherProjectsDaemonWritesNoRecord(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	createAdviceProject(t, rig.handler, "OTH")
 	issue := createAdviceIssue(t, rig.handler, "OTH", "Records of OTH", nil).Key

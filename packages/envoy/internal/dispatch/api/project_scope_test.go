@@ -263,6 +263,7 @@ func unexercisedProjectAddresses(routes []apiRoute, writes []addressedWrite) []s
 // the check resolves a project through, and its path addresses that prefix. The sub-test is the
 // negative control: the same walk without the check result's row names the retraction route.
 func TestEveryProjectAddressHasAnAddressedWrite(t *testing.T) {
+	t.Parallel()
 	served := &server{deps: Deps{TestHooksEnabled: true}}
 	routes := served.routes()
 	probe := projectFixture{
@@ -540,8 +541,9 @@ func TestAProjectScopedTokenCreatesAnIssueInAnotherProject(t *testing.T) {
 		}
 	}
 
-	// An import names its project in the body, as every other create does: Dispatch finds no
-	// project from a repository, so one that names none is refused for that alone.
+	// A project-scoped token's import that names no project is refused 400 INVALID_ISSUE, as a
+	// person's is (TestExternalIssueRejectsAMissingProject): the create refuses it before the
+	// scope check runs.
 	unnamed := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
 		"external": "owner/repo#1",
 	}))
@@ -558,6 +560,7 @@ func TestAProjectScopedTokenCreatesAnIssueInAnotherProject(t *testing.T) {
 // comment on that issue, and a person reading that issue's comments reads it, written by the
 // session the token proved.
 func TestAProjectScopedTokenCommentsOnAnotherProjectsIssue(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-commenting-across-projects"
