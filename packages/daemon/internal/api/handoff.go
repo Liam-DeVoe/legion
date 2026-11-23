@@ -329,22 +329,25 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_STALE_GENERATION", staleCompletion(grant.Issue, issue.Generation, serving, c.Pending))
 		return
 	}
+	// Whether the role works the phase the issue stands in is read once (record.Issue.RoleAt: at
+	// step, the role of the running step, so a role the deployment defines works only its own step),
+	// for the entry fence's row and for the phase this completion is of below.
+	works := issue.RoleAt(issue.Phase) == grant.Role
 	// The entry fence holds the completion to the phase entry its claim serves (intake.EntryFence),
 	// on this route's read, before the fact's lock: the refusal here is the early one, and the
 	// workflow judges the same rule again on the row its own transaction reads. The row is the run
 	// the completion is of (completionPosition.run): where the role works the issue's phase, its
 	// row where the task stands, and otherwise the row of the entry it serves, so a late report of a
 	// role's later step is held to that step's run, whichever place the task returned to since.
-	run := position.run(grant.Role, entry, issue.RoleAt(issue.Phase) == grant.Role)
+	run := position.run(grant.Role, entry, works)
 	if refusal := intake.EntryFence(*issue, grant.Role, run.served, run.holder, entry, run.entry, run.entryMovedBack, run.otherStepsEntry, req.Commit,
 		position.pullRequest, c.Pending); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	// The phase this completion is of is the issue's where the role works it (record.Issue.RoleAt:
-	// at step, the role of the running step, so a role the deployment defines is current only at
-	// its own step), the phase the role left otherwise (phase.LeftBy), and the issue's for the
-	// architect, which leaves none. The record a phase with a handoff ends with is read back and
+	// The phase this completion is of is the issue's where the role works it, the phase the role
+	// left otherwise (phase.LeftBy), and the issue's for the architect, which leaves none. The
+	// record a phase with a handoff ends with is read back and
 	// held to the completion before anything is recorded: always when the role works the issue's
 	// phase, and for a phase it left only when the completion names one. A completion of a left
 	// phase that names none is the engine's to decide (workflow's leftItsPhase), which answers
@@ -352,7 +355,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
 	// phase that names one is refused.
 	of := phase.LeftBy(grant.Role, issue.Phase)
-	if issue.RoleAt(issue.Phase) == grant.Role {
+	if works {
 		of = issue.Phase
 	}
 	if of == "" {
