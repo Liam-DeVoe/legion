@@ -10,7 +10,7 @@
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import type { ApproveRoute, RequestCredential } from "../bearer";
-import { DispatchClient } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
 
 const PLACEHOLDER = `agent-secrets-placeholder-approve-${"B".repeat(32)}`;
 const AUTHORITY = "-----BEGIN CERTIFICATE-----\nproxy\n-----END CERTIFICATE-----\n";
@@ -125,4 +125,65 @@ test("the proxy's refusal is thrown as Dispatch's client throws an answer, witho
   );
   expect(refused).not.toBeNull();
   expect(refused?.message ?? "").not.toContain(PLACEHOLDER);
+});
+
+/** The production pacing with no time passing: every pause returns at once and the clock stands
+ *  still, so a write asks every attempt its schedule allows within the test. */
+const NO_WAIT: DispatchWriteRetry = {
+  ...DISPATCH_WRITE_RETRY,
+  pause: async () => {},
+  now: () => 0,
+};
+
+/** A fetch that rejects the first `failures` requests as a fetch that reached no server does (a
+ *  TypeError), then answers 201 with the review, and keeps what each request was sent. */
+function unreachableThen(failures: number): typeof fetch & { readonly sent: Sent[] } {
+  const sent: Sent[] = [];
+  const impl = async (
+    input: Parameters<typeof fetch>[0],
+    init?: RequestInit
+  ): Promise<Response> => {
+    sent.push({ url: String(input), init: (init ?? {}) as Sent["init"] });
+    if (sent.length <= failures)
+      throw new TypeError("Unable to connect. Is the computer able to access the url?");
+    return Response.json(REVIEW, { status: 201 });
+  };
+  return Object.assign(impl, { sent, preconnect: () => {} }) as typeof fetch & {
+    readonly sent: Sent[];
+  };
+}
+
+test("a review through the proxy is a keyed write: one Idempotency-Key, asked again under it", async () => {
+  const fetchImpl = unreachableThen(1);
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const review = await client.reviewArtifact("artifact-1", 3, { state: "approved" });
+  expect(review as unknown).toEqual(REVIEW);
+  expect(fetchImpl.sent).toHaveLength(2);
+  const keys = fetchImpl.sent.map((sent) => new Headers(sent.init.headers).get("Idempotency-Key"));
+  expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/);
+  expect(keys[1]).toBe(keys[0]);
+  for (const sent of fetchImpl.sent) {
+    expect(new URL(sent.init.proxy ?? "").host).toBe("proxy.example:3128");
+    expect(sent.init.tls?.ca).toBe(AUTHORITY);
+    expect(new Headers(sent.init.headers).get("Authorization")).toBe(`DPoP ${PLACEHOLDER}`);
+    expect(new Headers(sent.init.headers).get("DPoP")).toBeNull();
+  }
+});
+
+test("a review the proxy never answers names Cipher's proxy, never this process's configuration", async () => {
+  const fetchImpl = unreachableThen(Number.POSITIVE_INFINITY);
+  const client = new DispatchClient("https://dispatch.example", credential(ROUTE), fetchImpl, {
+    writeRetry: NO_WAIT,
+  });
+  const refused = await client.reviewArtifact("artifact-1", 3, { state: "approved" }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(fetchImpl.sent.length).toBe(DISPATCH_WRITE_RETRY.pausesMs.length + 1);
+  const message = refused?.message ?? "";
+  expect(message).toContain("Cipher's proxy at http://proxy.example:3128");
+  expect(message).not.toContain("restart this agent process");
+  expect(message).not.toContain(PLACEHOLDER);
 });
