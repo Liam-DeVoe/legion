@@ -300,9 +300,10 @@ test("the retro's handoff_complete sends its rating of the plan as planRating an
   })
 })
 
-// A tester's fail names the step its task returns to through this tool as through every host's
-// (contract 219): `return_to` reaches the daemon as its own `returnTo`.
-test("a tester's fail sends return_to as returnTo", async () => {
+// A tester's completion names the step its task returns to through this tool as through every
+// host's (contract 219): `return_to` reaches the daemon as its own `returnTo`, with no verdict,
+// since the check states decide whether the testing step failed.
+test("a tester's completion sends return_to as returnTo, with no verdict", async () => {
   const { client, requests } = await daemon({ state: stateAtPhase("testing") })
   const tested = "d".repeat(40)
   await executeLegionTool(
@@ -312,7 +313,7 @@ test("a tester's fail sends return_to as returnTo", async () => {
       handoffReport: async () => ({ commit: tested }),
       branchHead: noBranchHead,
     },
-    { op: "handoff_complete", summary: "Red.", verdict: "fail", return_to: 1 },
+    { op: "handoff_complete", summary: "Red.", return_to: 1 },
   )
   expect(requests.at(-1)).toEqual({
     method: "POST",
@@ -320,7 +321,7 @@ test("a tester's fail sends return_to as returnTo", async () => {
     body: {
       grantId: "grant-for-one-command",
       summary: "Red.",
-      verdict: "fail",
+      verdict: "",
       commit: tested,
       returnTo: 1,
     },
