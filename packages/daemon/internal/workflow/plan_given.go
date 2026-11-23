@@ -24,8 +24,9 @@ import (
 // after stop_task, and the owner's plan given again at the generation the record holds meets the
 // rules of a later version there. A version taken answers the tasks it adds over the version in
 // force that versionRefusal read (intake.Result.Added, record.PlanVersion.Added), which the route
-// answers, and which the write records on the version, since a registration given again is
-// answered that and not what the version would add over the version in force then.
+// answers, and which the write records on the version, since a give of a version the store holds
+// never reaches this apply (intake.ApplyFact) and is answered that, not what the version would add
+// over the version in force then.
 //
 // Apply judged the plan already on the record as the fact reads it, since the route read the
 // record, or Dispatch, before the fact lock (requestRefusal): a giver that owns the issue no

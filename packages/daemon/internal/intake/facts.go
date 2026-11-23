@@ -1219,7 +1219,9 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
 // generation, the document and the version, so a version refused while its task ran is the same
-// fact when the owner gives it again after stop_task, and must apply then.
+// fact when the owner gives it again after stop_task, and must apply then. Whether a give is one
+// already applied is the record's to say, not its id's (ApplyFact): a give is a duplicate where
+// the store holds its version, and applies where a first step passed that version over since.
 type PlanGiven struct {
 	Issue      string
 	Generation uint64
@@ -1798,17 +1800,19 @@ type Handler interface {
 }
 
 // Result carries a refusal that is durable: handlers finish and the transaction commits. Duplicate
-// reports that the event id was already processed, so no handler ran and nothing changed.
+// reports that the fact was already applied, so no handler ran and nothing changed: an event id
+// already processed, and for a PlanGiven a version the record holds (ApplyFact), whatever its id.
 //
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
 // sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
 // id stays the same, and writes nothing where it sets it.
 //
-// Added is set by the workflow's apply of a PlanGiven alone, the one fact whose route answers what
-// the apply wrote (api's registerPlan): the ids of the tasks the version adds over the version in
-// force that the apply read in its own transaction, in the plan's order, every task of a
-// generation's first version, and [] where it adds none. It is nil for every other fact, for a
-// refusal and for a duplicate, whose route reads what the apply recorded (record.Store.PlanAdded).
+// Added is set for a PlanGiven alone, the one fact whose route answers what the apply wrote (api's
+// registerPlan): the ids of the tasks the version adds over the version in force, in the plan's
+// order, every task of a generation's first version, and [] where it adds none. The workflow's
+// apply answers them over the version in force it read in its own transaction; for a duplicate,
+// ApplyFact answers what that apply recorded on the version (record.Postgres.PlanVersionHeld). It
+// is nil for every other fact and for a refusal.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
@@ -2412,6 +2416,22 @@ func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, f
 		// past it either way.
 		if err := recordStreamPosition(ctx, tx); err != nil {
 			return err
+		}
+		// A plan's give is a duplicate where the record holds its version, and only there: a give
+		// of a version that a first step passed over since (workflow's passOverEarlierOwners) has
+		// the id of the give that was passed over, and applies; a give of a version the record holds
+		// under an id never marked (a version carried to the generation the give names) is the
+		// version already taken. The id is marked either way, as a release before reads it.
+		if given, ok := fact.(PlanGiven); ok {
+			added, held, err := record.NewStore().PlanVersionHeld(ctx, tx, given.Issue, given.Generation, given.Plan.ArtifactID, given.Plan.Version)
+			if err != nil {
+				return err
+			}
+			if held {
+				result = Result{Duplicate: true, Added: added}
+				return nil
+			}
+			fresh = true
 		}
 		if !fresh {
 			result = Result{Duplicate: true}

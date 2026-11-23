@@ -2352,11 +2352,6 @@ type Store interface {
 	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
 	// no plan reached yet.
 	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
-	// PlanAdded is the ids of the tasks that version of the plan of issue at generation, of the
-	// document artifactID, recorded it added (PlanVersion.Added), in the plan's order: what
-	// register_plan answered when it took the version, which a registration given again answers.
-	// [] for none, for a version taken before the write recorded it, and for one no longer stored.
-	PlanAdded(ctx context.Context, tx pgx.Tx, issue string, generation uint64, artifactID string, version int) ([]string, error)
 	// PlansOf is the plan of each of issues at the issue's own generation, by key, as Plan reads
 	// one, in as many statements whatever the number of issues; an issue whose generation has no
 	// plan rows has no entry.

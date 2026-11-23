@@ -1,13 +1,10 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -15,7 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/redact"
-	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // PlanRegisterRequest is register_plan: the owner of an issue, an architect of the issue's tree,
@@ -37,9 +33,9 @@ type PlanRegisterResponse struct {
 // the version adds over the version in force, in the plan's order, as the workflow's apply of the
 // plan answered them (intake.Result.Added): every task of a generation's first version, none for a
 // version that changes or keeps each task it gives, [] and never null; a task it removes is in no
-// list of the answer. A registration given again is answered what its apply answered, which the
-// store recorded on the version (record.Store.PlanAdded). A caller below tasksContract, which
-// added the field, is served none (shaping.go's withoutNeedsOrAdded).
+// list of the answer. A registration of a version the store holds already is answered what its
+// apply answered, which the store recorded on the version (intake.ApplyFact). A caller below
+// tasksContract, which added the field, is served none (shaping.go's withoutNeedsOrAdded).
 type RegisteredPlan struct {
 	Version int              `json:"version"`
 	Added   *[]string        `json:"added,omitempty"`
@@ -118,11 +114,12 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // carry out (plan.Supported) or no release can (plan.Validate); each of those answers records
 // nothing. A plan both take is recorded as intake.PlanGiven, its needs as task ids, whose rules of
 // a later version are the workflow's, and is answered with the tasks the workflow's apply says the
-// version added (registeredAnswer).
+// version added (registeredPlan).
 //
-// The fact's id is the issue, the generation the plan is given at, the document and the version:
-// a retry of a registration taken is that fact, answered the same, and the same version given at
-// a later generation of the issue is a new one.
+// The fact's id is the issue, the generation the plan is given at, the document and the version.
+// Whether the registration is one already taken is the record's to say (intake.ApplyFact): a
+// version the store holds is answered as taken, the same as its first registration, and one that
+// the issue's first step passed over since applies when it is given again, whoever gives it.
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	var req PlanRegisterRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -183,33 +180,9 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.applyFactAnswering(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
 		intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim},
-		AnswerPlanRegister, func(ctx context.Context, result intake.Result) (any, error) {
-			return s.registeredAnswer(ctx, result, req.Issue, generation, given)
+		AnswerPlanRegister, func(result intake.Result) any {
+			return PlanRegisterResponse{Plan: registeredPlan(given, result.Added)}
 		})
-}
-
-// registeredAnswer is register_plan's answer to the plan given, of issue at generation, which the
-// fact's apply took (result): the tasks the version added are the ones that apply answered, read
-// in the transaction that wrote the version (intake.Result.Added). A registration given again is
-// the fact already applied, whose handler does not run again (result.Duplicate), and by then the
-// version in force can be this version or a later one, over which this version adds none: its
-// answer reads what the first apply recorded on the version (record.Store.PlanAdded), so both
-// answers are one body.
-func (s *server) registeredAnswer(ctx context.Context, result intake.Result, issue string, generation uint64, given plan.Plan) (any, error) {
-	added := result.Added
-	if result.Duplicate {
-		if s.records == nil {
-			return nil, errors.New("api: no record store to read the tasks a version added")
-		}
-		if err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-			var err error
-			added, err = s.records.PlanAdded(ctx, tx, issue, generation, given.ArtifactID, given.Version)
-			return err
-		}); err != nil {
-			return nil, err
-		}
-	}
-	return PlanRegisterResponse{Plan: registeredPlan(given, added)}, nil
 }
 
 // planOwner authorizes register_plan for an architect of the issue's tree, and answers the

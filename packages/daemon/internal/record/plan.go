@@ -89,9 +89,9 @@ const (
 //
 // Added is the ids of the tasks an owner's version added over the version in force when it was
 // taken, in the plan's order (workflow's addedTasks): what register_plan answered then, which
-// PutPlan records and PlanAdded reads back for a registration given again. A default plan records
-// none. The plan reads (Plan, PlansOf, OwnersNewestPlan, PlansOfEarlierOwners) leave it nil, since
-// nothing but that answer reads it.
+// PutPlan records and PlanVersionHeld reads back for a registration of a version the store holds.
+// A default plan records none. The plan reads (Plan, PlansOf, OwnersNewestPlan,
+// PlansOfEarlierOwners) leave it nil, since nothing but that answer reads it.
 type PlanVersion struct {
 	Issue      string
 	Generation uint64
@@ -656,22 +656,25 @@ func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation
 	return plans[issue], nil
 }
 
-// PlanAdded is the ids of the tasks that version of the plan of issue at generation, of the
-// document artifactID, recorded it added (PlanVersion.Added), in the plan's order: what
-// register_plan answered when it took that version, which a registration given again answers.
-// [] where the version added none, where it was taken before its write recorded what it added
-// (store migration 20261123200630_plan_added), and where the store no longer holds it.
-func (s *Postgres) PlanAdded(ctx context.Context, tx pgx.Tx, issue string, generation uint64, artifactID string, version int) ([]string, error) {
-	added := []string{}
-	err := tx.QueryRow(ctx, `select added from issue_plans where issue = $1 and generation = $2 and version = $3 and artifact_id = $4`,
+// PlanVersionHeld says whether the store holds that version of the plan of issue at generation, of
+// the document artifactID: a version the workflow took, which no first step passed over since
+// (workflow's passOverEarlierOwners deletes the rows it passes over), at the generation it was
+// given at or carried to (CarryPlan). Where it does, added is the ids of the tasks the version
+// recorded it added (PlanVersion.Added), in the plan's order: what register_plan answered when it
+// took the version, [] where it added none and where it was taken before its write recorded what
+// it added (store migration 20261123200630_plan_added). intake.ApplyFact reads it to answer a give
+// of a version the store holds as a duplicate, whatever the give's id.
+func (s *Postgres) PlanVersionHeld(ctx context.Context, tx pgx.Tx, issue string, generation uint64, artifactID string, version int) (added []string, held bool, err error) {
+	added = []string{}
+	err = tx.QueryRow(ctx, `select added from issue_plans where issue = $1 and generation = $2 and version = $3 and artifact_id = $4`,
 		issue, int64(generation), version, artifactID).Scan(&added)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return []string{}, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read the tasks version %d of the plan of %s at generation %d added: %w", version, issue, generation, err)
+		return nil, false, fmt.Errorf("read whether the store holds version %d of the plan of %s at generation %d: %w", version, issue, generation, err)
 	}
-	return added, nil
+	return added, true, nil
 }
 
 // PlansOf is the plan of each of issues at the issue's own generation, by key, in the three

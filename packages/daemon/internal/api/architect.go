@@ -343,17 +343,14 @@ func requestFactID(route string) string {
 // applyFact applies one fact of a fact route and answers the empty object every fact route
 // answers (AnswerEmptyObject), or the refusal the workflow committed.
 func (s *server) applyFact(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, response any) {
-	s.applyFactAnswering(w, r, eventID, fact, AnswerEmptyObject, func(context.Context, intake.Result) (any, error) { return response, nil })
+	s.applyFactAnswering(w, r, eventID, fact, AnswerEmptyObject, func(intake.Result) any { return response })
 }
 
 // applyFactAnswering is applyFact for a route whose answer is not the empty object: answer builds
-// the body from what the fact's apply answered (register_plan's registeredAnswer), and it is
+// the body from what the fact's apply answered (register_plan's tasks the version added), and it is
 // written as the answer id names (register_plan's AnswerPlanRegister), so the route's body is
-// shaped and recorded as that answer and not as the empty object. A body answer cannot build, the
-// fact applied, is answered 500 RECORD_UNAVAILABLE: the same request is the same fact, answered
-// again.
-func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, id AnswerID,
-	answer func(context.Context, intake.Result) (any, error)) {
+// shaped and recorded as that answer and not as the empty object.
+func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, eventID string, fact intake.Fact, id AnswerID, answer func(intake.Result) any) {
 	if s.pool == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return
@@ -367,13 +364,7 @@ func (s *server) applyFactAnswering(w http.ResponseWriter, r *http.Request, even
 		s.writeRefusal(w, r, result.Refusal)
 		return
 	}
-	response, err := answer(r.Context(), result)
-	if err != nil {
-		s.logRequestFailure(r, err, "api: the answer to an applied fact could not be read", "event", eventID)
-		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read what the applied fact recorded")
-		return
-	}
-	s.writeAnswer(w, r, id, http.StatusOK, response)
+	s.writeAnswer(w, r, id, http.StatusOK, answer(result))
 }
 
 func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {

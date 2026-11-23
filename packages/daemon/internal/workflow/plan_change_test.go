@@ -373,6 +373,35 @@ func TestAPlansApplyAnswersTheTasksItsVersionAdds(t *testing.T) {
 	}
 }
 
+// A give of a version the store holds applies nothing, whatever its id: under the id the release
+// before named it by (`plan:<issue>:<generation>:<document>:<version>`, api's registerPlan), which
+// the store marked when it took the version, and under an id the store never marked, one that
+// also names the giver, as a route that named a registration so would give it. Each is answered as
+// a duplicate, with the tasks the version added when it was taken, and the store stands as it
+// stood: so a give the release before sent, given again after the upgrade, stores nothing.
+//
+// The fault it catches is a give judged by its id alone (its control: intake.ApplyFact reading the
+// record only for an id it marked, under which the give under an id never marked reaches the
+// apply and is refused 409 PLAN_VERSION_OLD).
+func TestAGiveOfAVersionTheStoreHoldsAppliesNothingWhateverItsID(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	recordedAt(t, pool, "LEGION-208", "LEGION-208")
+	given := ownersPlan(t, "LEGION-208", 1, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+	mustTake(t, "version 1", applyFacts(t, pool, engine)(planID("LEGION-208", 1, 1), given))
+	before := planStandingOf(t, pool, engine, "LEGION-208", 1)
+
+	for _, id := range []string{planID("LEGION-208", 1, 1), planID("LEGION-208", 1, 1) + ":" + string(given.GivenBy)} {
+		result := applyFacts(t, pool, engine)(id, given)
+		if want := (intake.Result{Duplicate: true, Added: []string{"a"}}); !reflect.DeepEqual(result, want) {
+			t.Errorf("version 1 given again as %s = %+v, want %+v: the store holds the version", id, result, want)
+		}
+		if after := planStandingOf(t, pool, engine, "LEGION-208", 1); !reflect.DeepEqual(after, before) {
+			t.Errorf("version 1 given again as %s changed LEGION-208:\n before %+v\n after  %+v", id, before, after)
+		}
+	}
+}
+
 // running is the refusal of a version that changes or removes task a while it runs.
 func runningRefusal() *intake.Refusal {
 	reason := "task a is running: stop it with stop_task before you change it."
