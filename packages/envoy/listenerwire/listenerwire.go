@@ -163,10 +163,12 @@ type PublishRequest struct {
 // request presents one; the key-taken answer, for a request that names ReadsKeyTaken
 // (ReadsHeader); and the envelope the listener built for this request, for any other, which no
 // stored message carries. A copy that names no session is whole only for its own request (the
-// same event_id). A verdict that names this request's own copy, which a resend after a closed
-// connection can, answers that copy with no Duplicate. A copy that cannot be read is the 503 with
-// Retry-After: 1 that the listener writes under its storedCopyUnreadablePrefix, never an envelope
-// the stream does not hold.
+// same event_id). A verdict that names this request's own copy answers that copy with no
+// Duplicate: a send the listener made again after the stream refused an earlier send of it as
+// still in process (bus.StoredAck.Resent) can get one, and so can a topic publish no sender limit
+// counts, which the bus sends again after a lost answer (bus.Client.PublishResendingWithin). A copy
+// that cannot be read is the 503 with Retry-After: 1 that the listener writes under its
+// storedCopyUnreadablePrefix, never an envelope the stream does not hold.
 // What recognises that repeat, and for how long, is stated on DELIVERY_DUPLICATE_WINDOW_MS in
 // @legion/contracts (contracts.DeliveryDuplicateWindow in the listener's module). It can only be
 // true for a send whose dedupe key names the upstream event

@@ -2527,28 +2527,28 @@ func (c *Client) PublishResendingWithin(ctx context.Context, item contracts.Enve
 }
 
 // publishEnvelope publishes item over the transport its topic takes and returns the stream's
-// acknowledgement, the zero StoredAck for a core-transport topic. verdict says the caller reads its
-// duplicate verdict: a publish under a message id is then sent once, and otherwise sent again after
-// a lost answer (sendStored).
-func (c *Client) publishEnvelope(ctx context.Context, item contracts.Envelope, verdict bool) (StoredAck, error) {
+// acknowledgement, the zero StoredAck for a core-transport topic. once says a publish under a
+// message id is sent once and answers a lost answer as its error; otherwise it is sent again after
+// a lost answer, and the second send's acknowledgement is Resent (sendStored).
+func (c *Client) publishEnvelope(ctx context.Context, item contracts.Envelope, once bool) (StoredAck, error) {
 	if c.UsesCoreTransport(item.Topic) {
 		return StoredAck{}, c.PublishCoreContext(ctx, item.Topic, item)
 	}
-	return c.publishJetStream(ctx, item, verdict)
+	return c.publishJetStream(ctx, item, once)
 }
 
 // StoredAck is the stream's acknowledgement of a stored publish (PublishStoredAck,
-// PublishAckWithin): the stream sequence of the copy the stream holds under the publish's message
+// PublishAckWithin, PublishResendingWithin): the stream sequence of the copy the stream holds under the publish's message
 // id, whether an earlier publish stored that copy, and whether the acknowledgement answers a
 // publish made again. A duplicate's Sequence is that earlier copy's, which nats-server names in its
 // answer, so a caller can read the copy the stream already holds (NextStoredMessage at that
 // sequence).
 //
-// The bus sends each of those publishes once under a message id (sendStored), so a duplicate it
-// answers never names a copy an earlier send of the same call stored, and it sets Resent only on
-// the acknowledgement of a publish whose caller asked for it to be sent again after a lost answer
-// (PublishResendingWithin), which it then sent again. cmd/listener's publishPastInProcess sets Resent on the answer to a publish it made again after
-// the stream refused, as still in process, a send of the same call that nothing had answered
+// A publish is sent once under a message id (PublishStoredAck, PublishAckWithin), so a duplicate
+// the bus answers for it never names a copy an earlier send of the same call stored; or it is sent
+// again after a lost answer (PublishResendingWithin), and the second send's acknowledgement is
+// Resent, for a caller that tells its own copy by its event id. cmd/listener's publishPastInProcess
+// also sets Resent on the answer to a publish it made again after the stream refused, as still in process, a send of the same call that nothing had answered
 // (ErrUnacknowledged): that send may have reached the stream, so a Duplicate that comes with
 // Resent may name the copy this very call stored, and a caller that charges nothing for a repeat
 // of an earlier message (cmd/listener's sender limit, and its keep of a role message) reads such a
@@ -2626,8 +2626,8 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 // the stream may hold while the caller is answered failure; that is the acknowledgement's own
 // ambiguity, which the MsgId's duplicate window absorbs, and which the failure names
 // (ErrUnacknowledged, sendStored).
-func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope, verdict bool) (StoredAck, error) {
-	return c.publishJetStreamOn(ctx, item.Topic, item, envelopeMsgID(item), verdict)
+func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope, once bool) (StoredAck, error) {
+	return c.publishJetStreamOn(ctx, item.Topic, item, envelopeMsgID(item), once)
 }
 
 // envelopeMsgID is the Nats-Msg-Id an envelope is stored under on its own topic (publishJetStream,
@@ -2657,15 +2657,16 @@ func envelopeMsgID(item contracts.Envelope) string {
 // of the envelope's own topic passes item.Topic; a kept role message passes the subject it is
 // stored on (PublishStoredAck), which leaves item.Topic the role topic it was published on.
 //
-// verdict says the caller reads the acknowledgement's duplicate verdict. A publish whose caller
-// does is sent once (sendStored): a second send of one that landed is stored once but answered as
-// a duplicate of the first send's copy, which that caller would read as another writer's copy -
-// the send route hands it to Dispatch as no envelope and its sender limit charges it nothing, the
-// wake logs it as already stored. A caller that reads the copy a duplicate names, as the keep does
-// (PublishStoredAck), sends it again itself after the loss. One whose caller reads no verdict is
-// sent again here, since the stream settles all it is asked: it stores the message once under its
-// id. One with no message id is sent once whoever its caller is (sendStored).
-func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string, verdict bool) (StoredAck, error) {
+// once says the publish is sent once (sendStored), for a caller that would read a duplicate of its
+// own first send's copy as another writer's: a second send of one that landed is stored once but
+// answered as that copy's duplicate - the send route would hand it to Dispatch as no envelope and
+// its sender limit charge it nothing, the wake would log it as already stored. A caller that reads
+// the copy a duplicate names, as the keep does (PublishStoredAck), sends it again itself after the
+// loss. Otherwise the publish is sent again here after a lost answer, since the stream stores the
+// message once under its id, and the second send's acknowledgement is Resent: a caller that reads
+// no verdict takes it as it is, and one that does (PublishResendingWithin) tells its own copy by
+// its event id. One with no message id is sent once whoever its caller is (sendStored).
+func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string, once bool) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err
 	}
@@ -2678,7 +2679,7 @@ func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item co
 	if err := c.connForCall(ctx); err != nil {
 		return StoredAck{}, err
 	}
-	return c.sendStored(ctx, subject, data, msgID, verdict, nats.Context(ctx))
+	return c.sendStored(ctx, subject, data, msgID, once, nats.Context(ctx))
 }
 
 // ErrUnacknowledged is wrapped by the error of a stored publish that failed and may still have put
@@ -2743,9 +2744,10 @@ func unacknowledged(err error, mayHold bool) error {
 //
 // A publish whose connection was lost under it before its acknowledgement came may have been
 // stored. On a client still running that loss answers ErrConnectionLost, a close of the connection
-// among the losses (boundJetStream, closedUnder). A publish under a message id whose caller reads no
-// verdict (once false) is sent again on the connection that replaces it, within ctx
-// (Reconnected), since the stream stores it once under that id, except where its caller holds a
+// among the losses (boundJetStream, closedUnder). A publish under a message id its caller does not
+// ask to be sent once (once false) is sent again on the connection that replaces it, within ctx
+// (Reconnected), since the stream stores it once under that id, and the second send's
+// acknowledgement is Resent, except where its caller holds a
 // lock across it: on a client every caller of which retries a lost request itself
 // (withLossAtOnce), and for a publish made under a context its caller marks as made under a lock
 // (WithLockHeld), it answers the loss instead, so the caller releases what it holds before it
@@ -2769,8 +2771,8 @@ func unacknowledged(err error, mayHold bool) error {
 // envelope with no event id, envelopeMsgID). And one its caller asks to be sent once, since a
 // second send of a write that landed answers what the first send's landing made true, not what its
 // caller asks: a write under an expected last sequence (PublishCursorAt) would be refused as the
-// cursor having moved, and one under a Nats-Msg-Id whose caller reads the duplicate verdict
-// (publishJetStreamOn) would be answered as a duplicate of its own copy. Its caller reads the state
+// cursor having moved, and one under a Nats-Msg-Id whose caller would read a duplicate of its own
+// copy as another writer's (publishJetStreamOn) would be answered as such a duplicate. Its caller reads the state
 // again instead and decides from what is stored, or answers the loss as a request the bus did not
 // answer.
 //

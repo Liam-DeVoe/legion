@@ -515,8 +515,9 @@ func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) err
 		// then it is read and dropped, since a drain waits for every pending message to be
 		// delivered. Once End has taken the retired watchers, which it does only after this watch
 		// returns or its deadline passes, nothing else would end this one, so the watch ends it,
-		// waiting for that stop only until run ends (subscription.stop): End has stopped waiting,
-		// and the stop's consumer delete would otherwise hold this watch up to nats.go's own 5 s.
+		// waiting for that stop only until run ends or the connection's life does
+		// (subscription.stop): End has stopped waiting, and the stop's consumer delete would
+		// otherwise hold this watch up to nats.go's own 5 s.
 		w.kv = kv
 		ended, endCause := w.ended, w.endCause
 		if !ended {

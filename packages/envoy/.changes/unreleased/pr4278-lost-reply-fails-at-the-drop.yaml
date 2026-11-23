@@ -60,7 +60,13 @@ body: |-
   of its own, and reported once, and the handover then goes on with the lane's later copies rather
   than leaving them to the next sweep. The listener's stop ends the handovers it started and waits
   for them, within its existing stop budget, before it drains NATS; a report still owed when that
-  wait ends is dropped with a warning rather than published into the draining connection.
+  wait ends is dropped with a warning rather than published into the draining connection. A send,
+  or a topic publish the sender limit counts, whose NATS connection closed under its publish now
+  answers `503` with `maybe_stored`, where the bus used to send it again on the new connection:
+  such a publish reads the stream's duplicate verdict, so it is sent once. A retry under the same
+  key is answered from the copy the stream holds, with `duplicate: true` when the first send stored
+  it, and `envoy_sends_unresponsive_total` counts neither the send the close cut off nor such a
+  retry.
 time: 2026-11-17T05:19:00Z
 custom:
     Issue: pr4278

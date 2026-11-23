@@ -251,7 +251,9 @@ func streamIdentity(ctx context.Context, kv bus.KeyValue) (int64, error) {
 // VerifyRequests lists every verify request the bucket holds, each with the revision it holds it
 // at, the episode it asks for, and the identity of the stream it was read in: what an answer to it
 // carries (MarkVerified). It reads the stream's identity, then the requests in one watch, within
-// ctx and recordWait, and a watch that ends before it has delivered every request is an error.
+// ctx and recordWait, and a watch that ends before it has delivered every request is an error. The
+// complete watch is stopped within the same bound and the connection's life (bus.KeyValue.StopWatcher),
+// since the stop's consumer delete would otherwise wait out nats.go's own 5 s past recordWait.
 func (w *Writer) VerifyRequests(ctx context.Context) ([]contracts.CIVerifyRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, recordWait)
 	defer cancel()
@@ -267,7 +269,7 @@ func (w *Writer) VerifyRequests(ctx context.Context) ([]contracts.CIVerifyReques
 	var requests []contracts.CIVerifyRequest
 	for entry := range watcher.Updates() {
 		if entry == nil {
-			_ = watcher.Stop()
+			_ = kv.StopWatcher(ctx, watcher, nil)
 			go bus.DrainWatcher(watcher)
 			return requests, nil
 		}

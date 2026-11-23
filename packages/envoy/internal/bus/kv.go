@@ -958,10 +958,11 @@ func DrainWatcher(watcher jetstream.KeyWatcher) {
 // timeout of its own, so no option bounds the delete and its caller bounds the wait instead.
 //
 // The stop always runs, whatever ctx or the connection is at the call: it runs on a goroutine of its
-// own, and a stop the wait stopped waiting for goes on to its own end there, after which after, when
-// it is not nil, runs (kvwatch cancels the watch's context there, after the stop as before). Request
-// is used rather than RequestBounded for that reason: Bounded starts no call once ctx has ended, and
-// Request none once the connection's life has, and a stop must still unsubscribe then.
+// own, and a stop the wait stopped waiting for goes on to its own end there. after, when it is not
+// nil, runs on that goroutine once Stop has returned, whether or not the wait is still waiting.
+// Request is used rather than RequestBounded so that the stop always runs: Bounded starts no call
+// once ctx has ended, and Request none once the connection's life has, and a stop must still
+// unsubscribe then.
 func (kv KeyValue) StopWatcher(ctx context.Context, watcher jetstream.KeyWatcher, after func()) error {
 	stopped := make(chan error, 1)
 	go func() {

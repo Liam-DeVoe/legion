@@ -1,5 +1,5 @@
 // Two answers of a publish whose stream verdict names no other request's copy: a verdict on the
-// request's own first send, which the bus's resend after a closed connection can get, answers as
+// request's own first send, which a publish made again can get (bus.StoredAck.Resent), answers as
 // a first send does, and a verdict that names no copy at all answers the stored-copy 503 at once.
 
 package main
@@ -22,17 +22,17 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// resendUnderClose serves one request through serve while the server behind closing stops
-// answering: the request's publish goes out on the frozen connection, the connection is closed
-// under it, and the server answers again, so the bus sends the publish again on the connection it
-// dials in its place (bus.StoredAck.Resent). It answers what the route answered.
-func resendUnderClose(t *testing.T, server *testnats.Server, closing *natsgo.Conn, serve func(*httptest.ResponseRecorder)) *httptest.ResponseRecorder {
+// closeUnder serves one request through serve while the server behind closing stops answering:
+// the first message the request sends goes out on the frozen connection, the connection is closed
+// under it, and the server answers again. The bus sends a publish whose caller reads the duplicate
+// verdict once (bus.Client.PublishAckWithin), so a publish the close cuts off answers the close
+// rather than being sent again. It answers what the route answered.
+func closeUnder(t *testing.T, server *testnats.Server, closing *natsgo.Conn, serve func(*httptest.ResponseRecorder)) *httptest.ResponseRecorder {
 	t.Helper()
 	thaw := server.Freeze(t)
 	t.Cleanup(thaw)
@@ -70,17 +70,12 @@ type ownCopyAnswer struct {
 // another request's, so each reaches the rule whichever order the server would have taken. The
 // resend's own copy costs its sender one, as any copy the request stored does (senderCharge).
 //
-// The last two rows close the listener's connection under a request, on the topic publish and on a
-// send to an unresponsive session: the listener's own server stops answering, the first message the
-// route sends goes out on the frozen connection, and the connection is closed under it. This
-// branch's bus sends a publish whose caller reads the duplicate verdict once, a close included
-// (sendStored), so neither row has the bus send a publish again. In the topic row the first message
-// out is not the publish, and the publish's one send is answered on the replacement connection (a
-// probe of sendStored printed its first send answered and no resend), so that row passes as a first
-// publish does: it exercises no resend. The send row's publish is the message the close cuts off: it
-// answers 503 maybe_stored, and the client's retry under the same key is answered by #4431's rule,
-// the stream holding exactly one copy. Main's two rows had the bus send the publish again after the
-// close (bus.StoredAck.Resent); the first two rows here keep that rule covered.
+// The last row closes the listener's connection under a send to an unresponsive session
+// (closeUnder): the send's publish is the message the close cuts off. The bus sends a publish whose
+// caller reads the duplicate verdict once, a close included (sendStored), so the send answers 503
+// maybe_stored, and the client's retry under the same key is answered by the stored-copy rule, the
+// stream holding exactly one copy. A real resend of a publish whose answer a lost connection took,
+// on the topic publish no sender limit counts, is TestATopicPublishNoLimitCountsAnswersItsStoredCopyAcrossALostAck's.
 func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 	client := setupPublishTestClient(t)
 	topic := "notifications.team.own-copy-" + id.New()
@@ -128,55 +123,25 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		}
 	})
 
-	t.Run("case: a publish sent again after its connection closed under it answers its own copy with no duplicate, and costs one", func(t *testing.T) {
-		rig, server := newSenderLimitRigOnServer(t)
-		rig.limit(60, 5)
-		const sender = "ses_resent_publish_sender"
-		subject := "notifications.team.resent-" + id.New()
-		body := fmt.Sprintf(`{"topic":%q,"source":"agent","source_session":%q,"message":"sent once, maybe twice","idempotency_key":%q}`, subject, sender, uuid.NewString())
-		logged := len(rig.harness.logs.String())
-		recorder := resendUnderClose(t, server, rig.harness.client.Connection(), func(recorder *httptest.ResponseRecorder) {
-			rig.mux.ServeHTTP(recorder, postJSON("/v1/messages/publish", body))
-		})
-		var answer ownCopyAnswer
-		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || recorder.Code != http.StatusOK {
-			t.Fatalf("the resent publish answered %d %s (%v), want 200", recorder.Code, recorder.Body.String(), err)
-		}
-		stored := heldCopy(t, rig.harness.client, subject)
-		if answer.Duplicate || !reflect.DeepEqual(answer.Envelope, stored) {
-			t.Fatalf("the resent publish answered duplicate %t and %+v; want no duplicate and the one stored copy whole, %+v",
-				answer.Duplicate, answer.Envelope, stored)
-		}
-		// The copy is this request's own, which the stream stored for it: it costs one.
-		lines := linesIn(rig.harness.logs.String()[logged:], "listener publish", nil)
-		if len(lines) != 1 || lines[0]["sender"] != sender {
-			t.Fatalf("the resent publish wrote record lines %v, want one naming the sender %s it cost one", lines, sender)
-		}
-	})
-
 	t.Run("case: a send whose connection closed under it answers 503 maybe_stored, and a retry under the same key gets the one stored copy", func(t *testing.T) {
-		// This branch's bus sends a publish whose caller reads the duplicate verdict once, a close of
-		// its connection included (bus.Client.PublishAckWithin, sendStored), as INFRA-4150 sends a
-		// request through the helper once and fails a lost answer at once: the send route reads the
+		// The bus sends a publish whose caller reads the duplicate verdict once, a close of its
+		// connection included (bus.Client.PublishAckWithin, sendStored): the send route reads the
 		// verdict (publishHeld), so the close is its answer, 503 maybe_stored, since the stream may
-		// hold the copy. Main's row had the bus send it again after the close and answer 200; here
-		// the client's retry under the same key is what reaches the copy, by #4431's rule.
+		// hold the copy. The client's retry under the same key is what reaches the copy.
 		server, uri := testnats.Start(t)
 		d, now := stalledSessionsRigOn(t, uri)
-		const target = "ses_resent_unresponsive"
+		const target = "ses_closed_unresponsive"
 		register(t, d, target, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
 		now.advance(90 * time.Second)
-		met := metrics.New()
-		d.sendsToUnresponsive = met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
 		body := fmt.Sprintf(`{"target_session":%q,"source":"dispatch","message":"sent once, maybe twice","idempotency_key":%q}`, target, uuid.NewString())
-		recorder := resendUnderClose(t, server, d.client.Connection(), func(recorder *httptest.ResponseRecorder) {
+		recorder := closeUnder(t, server, d.client.Connection(), func(recorder *httptest.ResponseRecorder) {
 			sendHandler(d, logging.New("test")).ServeHTTP(recorder, postJSON("/v1/messages/send", body))
 		})
 		if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"maybe_stored"`) {
 			t.Fatalf("the send whose connection closed under it answered %d %s, want 503 maybe_stored", recorder.Code, recorder.Body.String())
 		}
 		// The client's retry under the same key, on the connection that replaced the closed one: a
-		// copy the first send stored makes it a repeat, answered duplicate by #4431's rule, which for
+		// copy the first send stored makes it a repeat, answered duplicate by the stored-copy rule, which for
 		// a sender that names no session and reads no key-taken answer is the envelope its request
 		// built (requestSender.answer); no copy makes it the first copy, answered whole with no
 		// duplicate. Either way the stream holds exactly one copy afterwards, and nothing is lost.

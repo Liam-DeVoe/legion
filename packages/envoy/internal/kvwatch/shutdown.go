@@ -92,23 +92,18 @@ func (w *Watcher) end(ctx context.Context) {
 	w.ended = true
 	w.endCause = gaveUp
 	w.mu.Unlock()
+	// Each stop answers by the time ctx ends (subscription.stop), so each result is read as it
+	// arrives; a stop that ctx cut off answers ctx's cause, which is logged as the delete it cut off.
 	results := make(chan error, len(retired))
 	for _, watcher := range retired {
 		go func() { results <- watcher.stop(ctx) }()
 	}
 	for range retired {
-		select {
-		case err := <-results:
-			w.logEnd(err)
-			continue
-		default:
+		err := <-results
+		if err != nil && ctx.Err() != nil && errors.Is(err, context.Cause(ctx)) {
+			err = fmt.Errorf("delete its consumer: %w", err)
 		}
-		select {
-		case err := <-results:
-			w.logEnd(err)
-		case <-ctx.Done():
-			w.logEnd(fmt.Errorf("delete its consumer: %w", context.Cause(ctx)))
-		}
+		w.logEnd(err)
 	}
 }
 
@@ -229,11 +224,12 @@ func (s *subscription) retireWithin(run context.Context, bound time.Duration) {
 }
 
 // drainWithin stops the watcher (stop, which unsubscribes it, deleting its consumer, then cancels
-// its context, releasing the goroutine nats.go parks on it) and closes stopped when that returns.
-// The stop is waited for within the connection's life alone: no caller waits on this goroutine,
-// which retireWithin leaves at run's end. It reads and drops the watcher's entries while the stop
-// runs, as discard does, and after it until nats.go closes them or bound passes, whichever comes
-// first. So nothing of the watcher outlives the stop by more than bound.
+// its context, releasing the goroutine nats.go parks on it) and closes stopped when that stop
+// answers, which it does at the delete's answer or when the connection is lost: the stop is bound
+// by the connection's life alone, and retireWithin stops waiting on stopped at run's end. It reads
+// and drops the watcher's entries while the stop runs, as discard does, and after it until nats.go
+// closes them or bound passes, whichever comes first. So nothing of the watcher outlives the stop
+// by more than bound.
 func (s *subscription) drainWithin(bound time.Duration, stopped chan<- struct{}) {
 	done := make(chan struct{})
 	go func() {
