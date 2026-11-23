@@ -60,7 +60,10 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 //     ran that other key's agent last, so the key whose row held it before is named by pass 4,
 //     whether or not the version names the other key, and no name passes from one key to another.
 //  3. Each step with no key takes the name of the latest earlier row of its task, place and role
-//     with no key, unless pass 2 or an earlier step of this pass gave that name, or a key holds it.
+//     with no key, where that row holds one, unless pass 2 or an earlier step of this pass gave
+//     that name, or a key holds it. A row that holds no name gives none: the first form of
+//     20261117213545 left every row it found at the empty string, and a step named "" has no
+//     claim token, so such a step is named by pass 4.
 //  4. Each agent still with no name, in the order of its first step, takes the role of that first
 //     step, cut to 32 bytes (claim.RoleAgentName), where no agent of steps has that name and no key
 //     holds it; and otherwise a name of its own, `<role>-2`, `<role>-3` and so on, the first that
@@ -117,7 +120,7 @@ func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []Pl
 		if agent.Key != "" {
 			continue
 		}
-		if name, ok := earlierPlaceName(earlier, step); ok && !taken[name] && !keyHeld(name) {
+		if name := earlierPlaceName(earlier, step); name != "" && !taken[name] && !keyHeld(name) {
 			give(agent, name)
 		}
 	}
@@ -141,13 +144,14 @@ func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []Pl
 }
 
 // earlierPlaceName is the name of the latest row of earlier at step's task and place, on step's
-// role and with no key: the agent that place had, which a step with no key keeps (pass 3).
-func earlierPlaceName(earlier []PlanStep, step PlanStep) (claim.Agent, bool) {
+// role and with no key: the agent that place had, which a step with no key keeps (pass 3). It is
+// "" where no such row is, or where that row holds no name.
+func earlierPlaceName(earlier []PlanStep, step PlanStep) claim.Agent {
 	for i := len(earlier) - 1; i >= 0; i-- {
 		row := earlier[i]
 		if row.AgentKey == "" && row.Task == step.Task && row.Position == step.Position && row.Role == step.Role {
-			return row.AgentName(), true
+			return row.AgentName()
 		}
 	}
-	return "", false
+	return ""
 }

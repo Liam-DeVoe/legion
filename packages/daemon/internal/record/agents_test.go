@@ -315,6 +315,47 @@ func TestANumberedNameOnlyAgentsWithNoKeyHeldIsGivenAgain(t *testing.T) {
 	}
 }
 
+// A step with no key takes a name even where the latest earlier row of its task, place and role
+// holds none: its role, or a name of its own where another agent of the version holds the role.
+// The first form of the migration that added plan_steps.agent, 20261117213545, left every row it
+// found at the empty string, and a row that holds no name now reads as no name
+// (PlanStep.AgentName), so a database that ran that form holds such rows of steps that are not
+// the owner's. A step named "" has no claim token (StepToken). The control: rows that hold names
+// still give them to the steps at their places. The fault: pass 3 gave each step at the place of
+// such a row the empty name.
+func TestAStepWithNoKeyTakesANameWhereItsPlacesRowHoldsNone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		earlier [2]claim.Agent
+		want    []claim.Agent
+	}{
+		{name: "rows the first form of the migration left with no name", want: []claim.Agent{"implementer", "reviewer", "implementer-2", ""}},
+		{name: "control: rows that hold names", earlier: [2]claim.Agent{"implementer-2", "reviewer"}, want: []claim.Agent{"implementer-2", "reviewer", "implementer", ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			earlier := []PlanStep{
+				{Generation: 1, Task: "t", Position: 1, Role: "implementer", Agent: tc.earlier[0]},
+				{Generation: 1, Task: "t", Position: 2, Role: "reviewer", Agent: tc.earlier[1]},
+				{Generation: 1, Task: "t", Position: 3, Role: "acceptance", AgentKey: "owner"},
+			}
+			got := NameAgents(earlier, nil, []PlanStep{
+				{Generation: 1, Task: "t", Position: 1, Role: "implementer"},
+				{Generation: 1, Task: "t", Position: 2, Role: "reviewer"},
+				{Generation: 1, Task: "t", Position: 3, Role: "implementer"},
+				{Generation: 1, Task: "t", Position: 4, Role: "acceptance", AgentKey: "owner"},
+			})
+			if !slices.Equal(agentNames(got), tc.want) {
+				t.Fatalf("the names = %q, want %q", agentNames(got), tc.want)
+			}
+			for _, step := range got {
+				if _, err := StepToken("legion", "LEGION-209", "LEGION-208", step); err != nil {
+					t.Errorf("step %d, %s, has no claim token: %v", step.Position, step.Role, err)
+				}
+			}
+		})
+	}
+}
+
 // A step names the agent its row holds, and no other: a row with no name has none. A step of the
 // key owner has no name whatever it holds: its agent is the tree's architect, whose token names
 // the tree, not the issue.
