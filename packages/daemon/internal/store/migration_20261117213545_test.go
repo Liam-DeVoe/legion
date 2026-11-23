@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -181,5 +182,72 @@ func TestThePlanStepAgentWayBackPutsEachClaimInItsTokensRole(t *testing.T) {
 	want := []string{"LEGION-208 1/a/1 implementer", "LEGION-208 1/a/2 implementer", "LEGION-208 1/a/3 "}
 	if got := planStepAgents(t, store); !slices.Equal(got, want) {
 		t.Fatalf("the steps after the roll forward = %q, want %q: the key named again as it was", got, want)
+	}
+}
+
+// A database that ran 20261117213545 in its first form, as commit f98e67b5 wrote it, holds every
+// row that form found at the empty string: that form added the column and named no row, and a
+// step that is not the owner's reads as the name its row holds (plan.StoredAgentName), so such a
+// row reads as no name. Every step of a version written over those rows still takes a name, the one
+// its claim token ends in (record.StepToken): here `implementer reviewer implementer
+// acceptance:owner` over the first form's `implementer reviewer acceptance:owner` names its steps
+// implementer, reviewer and implementer-2, and the owner's step none. The control: the rows read
+// back unnamed before the version is written, so the fixture is the first form's shape. The fault:
+// record.NameAgents' third pass gave each step at the place of such a row the row's empty name, and
+// that step had no claim token.
+func TestAVersionOverTheRowsOfTheStepAgentMigrationsFirstFormNamesEveryStep(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	migrateThrough(t, store, planStepAgentVersion-1)
+	seedPlanSteps(t, store, "LEGION-208", 1, [2]string{"implementer", ""}, [2]string{"reviewer", ""}, [2]string{"acceptance", "owner"})
+	for _, statement := range []string{
+		// The whole of the first form's statement (git show f98e67b5).
+		`alter table plan_steps add column agent text not null default ''`,
+		`insert into schema_version (version) values (20261117213545)`,
+	} {
+		if _, err := store.Pool().Exec(ctx, statement); err != nil {
+			t.Fatalf("run the first form of the step agent migration, %s: %v", statement, err)
+		}
+	}
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate over the first form: %v", err)
+	}
+	if got, want := planStepAgents(t, store), []string{"LEGION-208 1/a/1 ", "LEGION-208 1/a/2 ", "LEGION-208 1/a/3 "}; !slices.Equal(got, want) {
+		t.Fatalf("the steps after the upgrade = %q, want %q: every row the first form found unnamed", got, want)
+	}
+
+	records := record.NewStore()
+	var named []record.PlanStep
+	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+		earlier, err := records.PlanStepsOf(ctx, tx, "LEGION-208")
+		if err != nil {
+			return err
+		}
+		claims, err := records.IssueClaims(ctx, tx, "legion", "LEGION-208")
+		if err != nil {
+			return err
+		}
+		steps := []record.PlanStep{}
+		for i, word := range []string{"implementer", "reviewer", "implementer", "acceptance:owner"} {
+			role, key, _ := strings.Cut(word, ":")
+			steps = append(steps, record.PlanStep{Issue: "LEGION-208", Generation: 1, Task: "a", Position: i + 1, Role: role, Type: "implementation", AgentKey: key})
+		}
+		named = record.NameAgents(earlier, record.KeySessionsOf(claims), steps)
+		v := record.PlanVersion{Issue: "LEGION-208", Generation: 1, Version: 2, ArtifactID: "artifact", Source: record.PlanSourceOwner,
+			GivenBy: "legion-legion-legion-208-architect", GivenAt: time.Date(2026, 11, 23, 0, 0, 0, 0, time.UTC)}
+		task := record.PlanTask{Issue: "LEGION-208", Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
+		return records.PutPlan(ctx, tx, v, []record.PlanTask{task}, named)
+	}); err != nil {
+		t.Fatalf("write version 2 over the first form's rows: %v", err)
+	}
+	var got []claim.Agent
+	for _, step := range named {
+		got = append(got, step.Agent)
+		if _, err := record.StepToken("legion", "LEGION-208", "LEGION-208", step); err != nil {
+			t.Errorf("step %d, %s, has no claim token: %v", step.Position, step.Role, err)
+		}
+	}
+	if want := []claim.Agent{"implementer", "reviewer", "implementer-2", ""}; !slices.Equal(got, want) {
+		t.Fatalf("the names of version 2 = %q, want %q", got, want)
 	}
 }
