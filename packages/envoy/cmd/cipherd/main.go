@@ -1068,10 +1068,10 @@ func publicURLPortZero(publicURL string) bool {
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's eight, the proxy chain's three and the judge's one, unless
-// BROKER_FAKE_SECRETS_FILE makes this a local run, as the port-0 refusal above does and for the
-// same reason: each of them points the broker at a stand-in, lets it dial an address no
-// production proxy may dial, moves its clock, or turns off a check the airlock or the judge is
+// settings, the eight BROKER_AIRLOCK_TEST_* ones, the proxy chain's three and the judge's
+// one, unless BROKER_FAKE_SECRETS_FILE makes this a local run, as the port-0 refusal above does
+// and for the same reason: each of them points the broker at a stand-in, lets it dial an address
+// no production proxy may dial, moves its clock, or turns off a check the proxy or the judge is
 // made of, so one reaching a real deployment must fail loudly at boot rather than quietly serve a
 // broker that is not the one the operator configured. The refusal names the variable it found,
 // since an operator reads which of its settings it has to take out. Extracted from main so a
@@ -1350,8 +1350,8 @@ func metricsHandler(registry *metrics.Registry, callout *atomic.Pointer[natscall
 // login acts for, and, for each google-service-account secret, the one account the deployment
 // binds it to and so the only one its release mints a token for. A grant lasts the lifetime its
 // request signed, or until its session ends. rules are the profiles' proxy blocks
-// (policy.Profiles.ProxyRules), read at boot, and ca the airlock's authority, nil with no
-// airlock: a name a proxy block holds is released as placeholders, and every such release carries
+// (policy.Profiles.ProxyRules), read at boot, and ca the proxy's authority, nil with no proxy:
+// a name a proxy block holds is released as placeholders, and every such release carries
 // the proxy's URL and the authority's roots as they are at that release (ReleaseRoots), since a
 // pod on a pool learns its root from its first intermediate. retry is the one retry policy and
 // process-wide retry budget of the three minters that call an upstream over HTTP (main's is

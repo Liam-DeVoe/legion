@@ -611,7 +611,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 		}
 		now = clock.Now
 	}
-	proxyRoot, err := proxyrulestest.NewAuthority("dev-airlock-stands proxy test root")
+	proxyRoot, err := proxyrulestest.NewAuthority("dev-proxy-stands test root")
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: %v\n", err)
 		return 1

@@ -5,6 +5,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -140,7 +141,7 @@ func TestAMountedIntermediateAndItsChainSign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(leaf.Certificate) != 2 || !bytesEqual(leaf.Certificate[1], intermediate.cert.Raw) {
+	if len(leaf.Certificate) != 2 || !bytes.Equal(leaf.Certificate[1], intermediate.cert.Raw) {
 		t.Fatalf("the TLS answer carries %d certificate(s); want the leaf and the intermediate", len(leaf.Certificate))
 	}
 	verifyLeaf(t, authority, "api.example.com", root.cert, time.Now())
@@ -166,7 +167,7 @@ func TestTodaysSelfSignedRootStillSigns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(leaf.Certificate) != 2 || !bytesEqual(leaf.Certificate[1], root.cert.Raw) {
+	if len(leaf.Certificate) != 2 || !bytes.Equal(leaf.Certificate[1], root.cert.Raw) {
 		t.Fatalf("the TLS answer carries %d certificate(s); want the leaf and the root, as today", len(leaf.Certificate))
 	}
 	verifyLeaf(t, authority, "s.airlock.test", root.cert, time.Now())
@@ -295,8 +296,6 @@ func TestALeafNearItsIntermediatesEndIsNotSignedAgainForNothing(t *testing.T) {
 		t.Error("the authority signed a leaf again that would end no later than the one it holds")
 	}
 }
-
-func bytesEqual(a, b []byte) bool { return string(a) == string(b) }
 
 // newTestAuthorityOn is newTestAuthority signing by clock.
 func newTestAuthorityOn(t *testing.T, clock Clock) *Authority {

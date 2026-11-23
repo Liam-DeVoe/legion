@@ -1502,8 +1502,8 @@ What a host in another spelling would do if it were served depends on the spelli
 
 A secret an entry binds to at least one host is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
-`values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate
-authority to trust that proxy by, a proxy password, and, for each name, a placeholder, the
+`values` and answers an `airlock` object instead, which carries the proxy's URL, the roots to
+trust that proxy by, a proxy password, and, for each name, a placeholder, the
 placeholder of each slot of the value, and the hosts the entry binds. A placeholder is
 `agent-secrets-placeholder-` and 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
@@ -1513,7 +1513,7 @@ serve a file, and what that file adds and removes against the one in force.
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's
 proxy password, writes a trust bundle (every trust file the command's own environment named, and
-the system roots where it named none, plus the proxy's own certificate) and a wgetrc naming it,
+the system roots where it named none, plus every root the release carries) and a wgetrc naming it,
 and sets `NO_PROXY` so the entry's bound hosts reach the proxy while loopback and the private
 ranges stay direct. The command calls the service as it did before. The value reaches no answer
 of the broker's, no file and no variable: the proxy swaps the placeholder for it in the headers
@@ -1526,9 +1526,10 @@ on.
 
 The proxy reads the grant behind the password on every connection, and the entry decides each
 request (`packages/envoy/internal/cipher/proxy`). A host no entry of that grant binds is
-tunnelled unread, to a public address alone. A bound host is read with a certificate of the
-proxy's own authority, and the request must name that same host in its TLS name and in its `Host`
-header; then the entry's hosts, headers, methods and paths decide whether the swap happens. That
+tunnelled unread, to a public address alone. A bound host is read with a leaf the broker pod
+signs for it ([the proxy's chain](#the-proxys-chain)), and the request must name that same host in
+its TLS name and in its `Host` header; then the entry's hosts, headers, methods and paths decide
+whether the swap happens. That
 connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing
 else, which is how every gRPC client connects. Each HTTP/2 stream is decided on its own, as one
 request, with its `:authority` as its `Host`, so one connection carries no request for another
@@ -1610,6 +1611,41 @@ What the airlock does not stop is as much of the design as what it does:
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.
+
+### The proxy's chain
+
+A broker pod signs each bound host's leaf with a certificate authority of its own, which the
+deployment's settings name one of two ways (`packages/envoy/internal/cipher/proxy`, `ca.go` and
+`intermediate.go`):
+
+- **A pool of Google Certificate Authority Service** (`BROKER_PROXY_CA_POOL`). At its start each pod
+  makes an ECDSA P-256 key in its own memory, which is never written anywhere, and sends the pool a
+  certificate request for it (`projects.locations.caPools.certificates.create`) with its own Google
+  credential: an authority of path length 0, for 7 days, whose name constraints are the names of
+  the profiles file's hosts, a `*.` pattern as its domain. The pool's issuance policy fixes what the
+  answer may be, and the pod checks it too: the answer must certify its key, chain to a root, sign
+  a leaf a client trusts for every bound host, and chain to the same root as the pod's first
+  answer, since every release the pod has made names that root. The pod asks for the next
+  intermediate when the one it holds has less than 2 days left, and goes on asking with a backoff
+  of 1 second doubling to 5 minutes until it gets one; an answer it refuses counts as a failure.
+  It logs one line for each intermediate it takes, and one for each request that failed.
+- **A mounted pair** (`BROKER_AIRLOCK_CA_CERT_FILE`, `BROKER_AIRLOCK_CA_KEY_FILE`), for a deployment
+  without that service: an intermediate and then each authority up to and including its root, or a
+  self-signed root alone. The broker refuses at start a chain that reaches no root, one that would
+  sign no trusted leaf for a bound host, and one whose life is over.
+
+With both set, the pool is the one used. A leaf lasts 25 hours from its start to its end, and
+never past the end of the certificate that signed it, so a leaf signed while the pool fails ends
+with the intermediate the pod holds. The TLS answer carries the leaf and every authority between
+it and the root, so a client that trusts the root alone completes the chain. A pod that holds no
+certificate it may still sign with — before the pool's first answer, or once its intermediate
+ended with no new one — answers `GET /healthz` with `503 NO_INTERMEDIATE`, so its readiness keeps
+traffic away and a rolling update keeps the old pods until a new one has its intermediate.
+
+Every release carries the root of the pod's own chain and each root of
+`BROKER_PROXY_RELEASE_ROOTS_FILE`, one PEM block after another in its root field. A rollout from
+one authority to another hands out both at once: a client of any release writes the whole field
+into its trust bundle, so it trusts a pod that signs under either root.
 
 ## Approvals
 

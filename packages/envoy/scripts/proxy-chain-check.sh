@@ -21,7 +21,7 @@
 #            reach a broker signing under the other.
 #
 # How the stack lets it drive days of a broker's life in minutes: every broker and the ca stand
-# read one clock file (AIRLOCK_CLOCK_OFFSET_FILE, BROKER_PROXY_TEST_CLOCK_OFFSET_FILE), a Go
+# read one clock file (PROXY_CLOCK_OFFSET_FILE, BROKER_PROXY_TEST_CLOCK_OFFSET_FILE), a Go
 # duration they add to the system's clock, and this script moves it by writing that file. A
 # client verifying at the system's time would see each certificate dated days ahead, so a call at
 # a moved clock is made by openssl s_client, under agent-secrets, through the proxy with the
@@ -298,14 +298,14 @@ last_authorization() { records "$1" | jq -r '.[-1].header.Authorization[0] // ""
 # reads half a write.
 set_clock_at() { # <epoch seconds>
 	local offset=$(($1 - $(date +%s)))
-	printf '%ss\n' "$offset" >"$AIRLOCK_CLOCK_OFFSET_FILE.next"
-	mv "$AIRLOCK_CLOCK_OFFSET_FILE.next" "$AIRLOCK_CLOCK_OFFSET_FILE"
+	printf '%ss\n' "$offset" >"$PROXY_CLOCK_OFFSET_FILE.next"
+	mv "$PROXY_CLOCK_OFFSET_FILE.next" "$PROXY_CLOCK_OFFSET_FILE"
 }
 
 # clock_now is the stack's clock, in epoch seconds: the system's plus the file's offset.
 clock_now() {
 	local offset
-	offset="$(tr -d '[:space:]' <"$AIRLOCK_CLOCK_OFFSET_FILE")"
+	offset="$(tr -d '[:space:]' <"$PROXY_CLOCK_OFFSET_FILE")"
 	echo $(($(date +%s) + ${offset%s}))
 }
 
@@ -358,7 +358,7 @@ serial_norm() {
 }
 
 ca_post() { # <path> [body]
-	curl -sS -f -o /dev/null -X POST -H 'Content-Type: application/json' --data "${2:-}" "$AIRLOCK_CA_URL$1"
+	curl -sS -f -o /dev/null -X POST -H 'Content-Type: application/json' --data "${2:-}" "$PROXY_CA_URL$1"
 }
 
 # policy_of is the ca stand's policy a profiles file gives: the names of its hosts.
@@ -436,7 +436,7 @@ check_k27() {
 
 	start_stack
 	write_client
-	local log="${BROKER_LOGS[0]}" root="$AIRLOCK_PROXY_ROOT_FILE" first serial0 start0 end0 names0
+	local log="${BROKER_LOGS[0]}" root="$PROXY_ROOT_FILE" first serial0 start0 end0 names0
 	first="$(intermediates "$log" | head -n1)"
 	read -r serial0 start0 end0 names0 <<<"$first"
 	observe "step 1: the stack's broker (pid ${BROKER_PIDS[0]}) logged its first intermediate: serial ${serial0:-none}, $(date -u -d "@${start0:-0}" +%FT%TZ) to $(date -u -d "@${end0:-0}" +%FT%TZ), names $names0"
@@ -582,9 +582,9 @@ mounted_intermediate() { # <dir> <with chain: yes|no>
 	openssl req -new -key "$1/key.pem" -subj '/CN=mounted proxy intermediate' -out "$1/csr.pem" 2>/dev/null
 	jq -n --rawfile csr "$1/csr.pem" '{pemCsr: $csr, lifetime: "604800s"}' |
 		curl -sS -f -X POST -H 'Content-Type: application/json' --data @- \
-			"$AIRLOCK_CA_URL/v1/$AIRLOCK_CA_POOL/certificates?certificateId=mounted-$RANDOM" >"$1/answer.json"
+			"$PROXY_CA_URL/v1/$PROXY_CA_POOL/certificates?certificateId=mounted-$RANDOM" >"$1/answer.json"
 	jq -r .pemCertificate "$1/answer.json" >"$1/chain.pem"
-	if [ "$2" = yes ]; then cat "$AIRLOCK_PROXY_ROOT_FILE" >>"$1/chain.pem"; fi
+	if [ "$2" = yes ]; then cat "$PROXY_ROOT_FILE" >>"$1/chain.pem"; fi
 }
 
 check_k21() {
@@ -603,7 +603,7 @@ check_k21() {
 	line="$(jq -Rnc '[inputs | fromjson? | select(.message == "proxy intermediate")] | first // {}' "$mounted_log")"
 	health="$(healthz "$EXTRA_API_ADDR")"
 	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
-	call mounted s.airlock.test /ok "$(clock_now)" "$AIRLOCK_PROXY_ROOT_FILE"
+	call mounted s.airlock.test /ok "$(clock_now)" "$PROXY_ROOT_FILE"
 	front_backends_stack
 	observe "a broker on a mounted intermediate (serial $serial, the ca stand's answer for a key made here) and its root started (pid $mounted_pid): its line $line, GET /healthz $health; the call: $CALL_SUMMARY"
 	assert "$([ "$health" = 200 ] && [ "$(jq -r .self_signed <<<"$line")" = false ] && [ "$(jq -r .serial <<<"$line")" = "$serial" ] && echo 0 || echo 1)" \
@@ -637,7 +637,8 @@ check_compat() {
 	# The old client, built from the tag's own tree.
 	local old="$WORK_DIR/old"
 	mkdir -p "$old/src"
-	if ! git -C "$ENVOY_DIR" archive "$ref" packages/envoy | tar -x -C "$old/src"; then
+	# From the repository's root, where the tag's packages/envoy is that path.
+	if ! git -C "$ENVOY_DIR/../.." archive "$ref" packages/envoy | tar -x -C "$old/src"; then
 		assert 1 "the old client is built from $ref" "git archive of $ref failed"
 		return
 	fi
@@ -647,11 +648,11 @@ check_compat() {
 		return
 	fi
 
-	local today_root="$AIRLOCK_STANDS_CA_CERT_FILE" pool_root="$AIRLOCK_PROXY_ROOT_FILE"
+	local today_root="$PROXY_STANDS_CA_CERT_FILE" pool_root="$PROXY_ROOT_FILE"
 	# Today's form: the mounted self-signed authority, with the pool's root among the release
 	# roots; and the pool's form, with today's authority among them, as rollout steps 2 and 4 have.
 	start_extra_broker today BROKER_PROXY_CA_POOL= BROKER_PROXY_TEST_CA_URL= \
-		BROKER_AIRLOCK_CA_CERT_FILE="$AIRLOCK_STANDS_CA_CERT_FILE" BROKER_AIRLOCK_CA_KEY_FILE="$AIRLOCK_STANDS_CA_KEY_FILE" \
+		BROKER_AIRLOCK_CA_CERT_FILE="$PROXY_STANDS_CA_CERT_FILE" BROKER_AIRLOCK_CA_KEY_FILE="$PROXY_STANDS_CA_KEY_FILE" \
 		BROKER_PROXY_RELEASE_ROOTS_FILE="$pool_root"
 	local today_api="$EXTRA_API_ADDR" today_proxy="$EXTRA_PROXY_ADDR"
 	start_extra_broker pool BROKER_PROXY_RELEASE_ROOTS_FILE="$today_root"
@@ -662,16 +663,18 @@ check_compat() {
 	local today_fp pool_fp
 	today_fp="$(fingerprint "$today_root")"
 	pool_fp="$(fingerprint "$pool_root")"
-	# old_call runs the old client through the brokers the fronts point at: it reads the bundle
-	# the client wrote, the fingerprint of each certificate in it, and curl's answer from S.
-	old_call() { # <name>
+	# old_call runs the old client for one name through the brokers the fronts point at: it reads
+	# the bundle the client wrote, the fingerprint of each certificate in it, and curl's answer from
+	# S at the path given. Each step asks for a name no step before it asked for, so its grant, and
+	# the release the client writes its bundle from, are the broker's under test and no earlier one.
+	old_call() { # <step> <NAME> <path>
 		local out="$WORK_DIR/old-$1"
 		mkdir -p "$out"
 		# shellcheck disable=SC2016 # each variable is the command's, not this script's
-		"$old/agent-secrets" AIRLOCK_DEMO_TOKEN -- sh -c '
+		"$old/agent-secrets" "$2" -- sh -c '
 			cp "$SSL_CERT_FILE" "$1/bundle.pem"
-			printf "Authorization: Bearer %s" "$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w "%{http_code}" -H @- "$AIRLOCK_S_URL/ok" >"$1/status" 2>"$1/curl.err"' \
-			old-call "$out" >"$out/run.log" 2>&1 || true
+			printf "Authorization: Bearer %s" "$(printenv "$2")" | curl -sS -o /dev/null -w "%{http_code}" -H @- "$AIRLOCK_S_URL$3" >"$1/status" 2>"$1/curl.err"' \
+			old-call "$out" "$2" "$3" >"$out/run.log" 2>&1 || true
 		awk -v dir="$out" '/-----BEGIN CERTIFICATE-----/ { n++; f = dir "/b" n ".pem" } f { print > f } /-----END CERTIFICATE-----/ { f = "" }' "$out/bundle.pem" 2>/dev/null || true
 		OLD_FPS=""
 		local f
@@ -686,24 +689,25 @@ check_compat() {
 	}
 
 	front_backends "$today_api" "$today_proxy"
-	old_call today
+	old_call today AIRLOCK_DEMO_TOKEN /ok
 	observe "the $ref client through a broker signing with a self-signed authority (today's form) whose release carries both roots: bundle holds today's authority $OLD_HAS_TODAY, the pool's root $OLD_HAS_POOL; curl to S answered $OLD_STATUS $OLD_ERROR"
 	assert "$([ "$OLD_HAS_TODAY" = yes ] && [ "$OLD_HAS_POOL" = yes ] && [ "$OLD_STATUS" = 200 ] && echo 0 || echo 1)" \
 		"the old client writes both roots into its bundle and reaches S through a broker signing under today's authority" "bundle $OLD_HAS_TODAY/$OLD_HAS_POOL, curl $OLD_STATUS"
 
 	front_backends "$pool_api" "$pool_proxy"
-	old_call pool
+	old_call pool AIRLOCK_GOOGLE_LOGIN /ok
 	observe "the $ref client through a broker signing with the pool's intermediate whose release carries both roots: bundle holds today's authority $OLD_HAS_TODAY, the pool's root $OLD_HAS_POOL; curl to S answered $OLD_STATUS $OLD_ERROR"
 	assert "$([ "$OLD_HAS_TODAY" = yes ] && [ "$OLD_HAS_POOL" = yes ] && [ "$OLD_STATUS" = 200 ] && echo 0 || echo 1)" \
 		"the old client writes both roots into its bundle and reaches S through a broker signing under the pool's root" "bundle $OLD_HAS_TODAY/$OLD_HAS_POOL, curl $OLD_STATUS"
 
 	# Control: the release from the stack's own broker, which carries the pool's root alone, and
 	# the proxy of the broker signing under today's authority.
+	# The control's name allows GET /read alone, which is the path it calls.
 	front_backends "${BROKER_API_ADDRS[0]}" "$today_proxy"
-	old_call control
+	old_call control AIRLOCK_SCOPED_TOKEN /read
 	control "the $ref client given the release of a broker with no release roots (the pool's root alone), through the proxy of the broker signing under today's authority: bundle holds today's authority $OLD_HAS_TODAY, the pool's root $OLD_HAS_POOL; curl to S answered $OLD_STATUS $OLD_ERROR"
-	assert "$([ "$OLD_HAS_TODAY" = no ] && [ "$OLD_HAS_POOL" = yes ] && [ "$OLD_STATUS" != 200 ] && echo 0 || echo 1)" \
-		"control: with one root in the release the old client cannot reach a broker signing under the other" "bundle $OLD_HAS_TODAY/$OLD_HAS_POOL, curl $OLD_STATUS"
+	assert "$([ "$OLD_HAS_TODAY" = no ] && [ "$OLD_HAS_POOL" = yes ] && [ "$OLD_STATUS" != 200 ] && grep -qi certificate <<<"$OLD_ERROR" && echo 0 || echo 1)" \
+		"control: with one root in the release the old client cannot verify a broker signing under the other" "bundle $OLD_HAS_TODAY/$OLD_HAS_POOL, curl $OLD_STATUS $OLD_ERROR"
 	front_backends_stack
 }
 

@@ -98,7 +98,7 @@
 #
 # What a client trusts the stack by (AIRLOCK_CA_CERT_FILE) is one file holding both of its
 # roots: the proxy's test root, which every bound host's leaf chains to, and the stands'
-# authority, which a host tunnelled past the proxy presents. AIRLOCK_PROXY_ROOT_FILE is the
+# authority, which a host tunnelled past the proxy presents. PROXY_ROOT_FILE is the
 # proxy's test root alone, for a check about the chain itself.
 #
 # Options:
@@ -833,12 +833,12 @@ dev-airlock: ready.
   export AIRLOCK_PROXY_URL=$PROXY_FRONT_URL
   export AIRLOCK_DIR=$WORK_DIR
   export AIRLOCK_CA_CERT_FILE=$TRUST_FILE
-  export AIRLOCK_PROXY_ROOT_FILE=$PROXY_ROOT_FILE
-  export AIRLOCK_STANDS_CA_CERT_FILE=$CA_CERT_FILE
-  export AIRLOCK_STANDS_CA_KEY_FILE=$CA_KEY_FILE
-  export AIRLOCK_CA_URL=$CA_URL
-  export AIRLOCK_CA_POOL=$CA_POOL
-  export AIRLOCK_CLOCK_OFFSET_FILE=$CLOCK_OFFSET_FILE
+  export PROXY_ROOT_FILE=$PROXY_ROOT_FILE
+  export PROXY_STANDS_CA_CERT_FILE=$CA_CERT_FILE
+  export PROXY_STANDS_CA_KEY_FILE=$CA_KEY_FILE
+  export PROXY_CA_URL=$CA_URL
+  export PROXY_CA_POOL=$CA_POOL
+  export PROXY_CLOCK_OFFSET_FILE=$CLOCK_OFFSET_FILE
   export AIRLOCK_PROFILES_FILE=$PROFILES_FILE
   export AIRLOCK_FAKE_SECRETS_FILE=$FAKE_SECRETS_FILE
   export AIRLOCK_RECORDS_URL=$RECORDS_URL

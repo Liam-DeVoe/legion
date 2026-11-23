@@ -137,14 +137,14 @@ check "intermediate_count counts them" test "$(intermediate_count "$work/broker.
 check "intermediate_count of a log with none is 0" test "$(intermediate_count /dev/null)" = 0
 
 # --- (d) the clock file and the serials. ---
-AIRLOCK_CLOCK_OFFSET_FILE="$work/clock-offset"
-printf '0s\n' >"$AIRLOCK_CLOCK_OFFSET_FILE"
+PROXY_CLOCK_OFFSET_FILE="$work/clock-offset"
+printf '0s\n' >"$PROXY_CLOCK_OFFSET_FILE"
 target=$(($(date +%s) + 5 * 86400 + 60))
 set_clock_at "$target"
 read_back="$(clock_now)"
 check "set_clock_at makes clock_now read the moment asked for" test $((read_back - target)) -ge 0 -a $((read_back - target)) -le 2
-check "the clock file holds a Go duration in seconds" grep -qE '^[0-9]+s$' "$AIRLOCK_CLOCK_OFFSET_FILE"
-check "set_clock_at leaves no half-written file beside the clock file" test ! -e "$AIRLOCK_CLOCK_OFFSET_FILE.next"
+check "the clock file holds a Go duration in seconds" grep -qE '^[0-9]+s$' "$PROXY_CLOCK_OFFSET_FILE"
+check "set_clock_at leaves no half-written file beside the clock file" test ! -e "$PROXY_CLOCK_OFFSET_FILE.next"
 check "serial_norm reads openssl's serial=00AB12 as ab12" test "$(serial_norm serial=00AB12)" = ab12
 check "serial_norm keeps a lone zero" test "$(serial_norm serial=00)" = 0
 

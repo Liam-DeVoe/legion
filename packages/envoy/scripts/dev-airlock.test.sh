@@ -377,7 +377,7 @@ if [[ -z "$profiles_file" || "${#airlock_lines[@]}" -ne 2 ]]; then
   echo "FAIL: ${#airlock_lines[@]} broker(s) were started with the airlock's profiles file (${profiles_file:-none exported}); want 2" >&2
   exit 1
 fi
-stands_ca_cert="$(exported AIRLOCK_STANDS_CA_CERT_FILE)"
+stands_ca_cert="$(exported PROXY_STANDS_CA_CERT_FILE)"
 proxy_front_url="$(exported AIRLOCK_PROXY_URL)"
 api_front_url="$(exported AGENT_SECRETS_URL)"
 for line in "${airlock_lines[@]}"; do
@@ -409,15 +409,15 @@ printf 'PASS: two broker processes are started, each with the profiles file and 
 # its own and no release roots; the stand reads the same clock file; the stand's policy, applied
 # before the brokers start, names every bound host of the profiles file; and the file a client
 # trusts holds the proxy's test root and the stands' authority.
-ca_url="$(exported AIRLOCK_CA_URL)"
-clock_file="$(exported AIRLOCK_CLOCK_OFFSET_FILE)"
+ca_url="$(exported PROXY_CA_URL)"
+clock_file="$(exported PROXY_CLOCK_OFFSET_FILE)"
 mapfile -t proxy_lines < <(grep -o 'fake broker proxy: .*' "$log" | grep -F "profiles=$profiles_file ")
 if [[ "${#proxy_lines[@]}" -ne 2 || "$ca_url" != http://127.0.0.1:1011 ]]; then
   echo "FAIL: ${#proxy_lines[@]} broker(s) logged their proxy settings and the ca stand is exported as ${ca_url:-nothing}; want 2 and http://127.0.0.1:1011" >&2
   exit 1
 fi
 for line in "${proxy_lines[@]}"; do
-  for want in "pool=$(exported AIRLOCK_CA_POOL) " "test_ca_url=$ca_url " "clock_file=$clock_file " "margin=unset " "release_roots=unset"; do
+  for want in "pool=$(exported PROXY_CA_POOL) " "test_ca_url=$ca_url " "clock_file=$clock_file " "margin=unset " "release_roots=unset"; do
     if [[ "$line" != *"$want"* ]]; then
       echo "FAIL: a broker's proxy was started without $want: $line" >&2
       exit 1
@@ -436,8 +436,8 @@ for want in '"names":["aws.airlock.test","azure-resource.airlock.test","microsof
   fi
 done
 trust="$(cat "$(exported AIRLOCK_CA_CERT_FILE)" 2>/dev/null || true)"
-if [[ "$trust" != *'a fake proxy test root'* || "$trust" != *'a fake authority certificate'* || "$(exported AIRLOCK_PROXY_ROOT_FILE)" != */proxy-root.crt ]]; then
-  echo "FAIL: AIRLOCK_CA_CERT_FILE holds [$trust] and AIRLOCK_PROXY_ROOT_FILE is $(exported AIRLOCK_PROXY_ROOT_FILE); want both roots in the one and the test root alone in the other" >&2
+if [[ "$trust" != *'a fake proxy test root'* || "$trust" != *'a fake authority certificate'* || "$(exported PROXY_ROOT_FILE)" != */proxy-root.crt ]]; then
+  echo "FAIL: AIRLOCK_CA_CERT_FILE holds [$trust] and PROXY_ROOT_FILE is $(exported PROXY_ROOT_FILE); want both roots in the one and the test root alone in the other" >&2
   exit 1
 fi
 printf 'PASS: each broker takes its intermediate from the ca stand (pool, stand URL and the clock file at 0s, which the stand reads too), the stand'"'"'s policy names every bound host before the brokers start, and a client of the stack trusts both roots\n'
