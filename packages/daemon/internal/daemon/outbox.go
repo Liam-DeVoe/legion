@@ -1751,10 +1751,13 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // behind an earlier notice of its tree that is held for the same architect, so each architect is
 // told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
 // earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). An
-// owner-step waits besides until its architect's slot holds the App of the step it tells, and
-// finishes undelivered once that step no longer runs (ownerSlotHolds). A role topic with no live
-// holder refuses the publish (notify.ErrNoHolder): while the architect's claim can hold its role
-// again — relaunching, a root the operator suspended and can resume, or the
+// owner-step is published only while the run of the step it tells is open, and finishes
+// undelivered once that run has ended; one of a step other than the owner's acceptance and its
+// retro waits besides until its architect's slot holds the App of that step (ownerSlotHolds), and
+// the next notice to the owner after one of its steps ends waits for the write of its own App back
+// to its slot. A role topic with no live holder refuses the publish (notify.ErrNoHolder): while
+// the architect's claim can hold its role again — relaunching, a root the operator suspended and
+// can resume, or the
 // architect of a catch-up's own issue suspended while that issue is in the workflow, which its
 // next start resumes — the row is held for it; once nobody will hold that role for this notice —
 // the claim has failed or retired, or its tree lingers or has closed — the row finishes
