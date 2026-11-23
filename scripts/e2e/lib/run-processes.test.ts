@@ -1700,6 +1700,15 @@ test.skipIf(skip || withoutPython || (!dockerHolds && !onActions))(
     const work = join(dir, "docker-init");
     mkdirSync(work);
     const name = `legion-e2e-docker-init-${process.pid}-${Date.now()}`;
+    // The image is pulled in a step of its own, quietly, so `docker run` on a host that does not
+    // hold it yet (the GitHub Actions runner) writes nothing on stderr; a pull that failed fails the
+    // row with its own words.
+    const pull = Bun.spawnSync(["docker", "pull", "--quiet", dockerImage], {
+      stdout: "ignore",
+      stderr: "pipe",
+      timeout: 120_000,
+    });
+    expect({ pull: pull.exitCode, err: pull.stderr.toString() }).toEqual({ pull: 0, err: "" });
     const run = Bun.spawnSync(
       ["docker", "run", "-d", "--init", "--name", name, dockerImage, "sleep", "120"],
       {

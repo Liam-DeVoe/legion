@@ -41,7 +41,10 @@ proofs.push("docs/site/media/walkthroughs/legion-operator/record-casts.sh");
 // to one pipe in order. ROUTE is the run's model_route: under box-login the two proofs that sweep
 // twice (Stage 2 and Stage 3's devbox workflow) first give the panes a grace (`stop_marked_processes
 // DIR GRACE`), then sweep again; under gateway only the second sweep runs. With FIRST_ONLY only the
-// sweep with a grace fails, so each of the two sweeps is held to its own handling.
+// sweep with a grace fails, so each of the two sweeps is held to its own handling. A proof whose
+// verdict is lib/run-verdict.sh's (`run_verdict`, PASS only for a run that reached `run_end`) gets
+// that library, and a run that ended 0 has reached its end; any other proof gets the mark its own
+// verdict reads (`ok`).
 function runCleanup(
   proof: string,
   sweep: number,
@@ -51,6 +54,9 @@ function runCleanup(
 ): Ran {
   const path = join(root, proof);
   const script = readFileSync(path, "utf8");
+  const verdict = script.includes("lib/run-verdict.sh")
+    ? `. ${JSON.stringify(join(e2e, "lib", "run-verdict.sh"))}\n[ "$in" != 0 ] || run_end`
+    : "";
   const trap = script.includes(`trap 'cleanup "$?"' EXIT`)
     ? `trap 'cleanup "$?"' EXIT`
     : "trap cleanup EXIT";
@@ -64,6 +70,7 @@ for c in docker tmux psql op gh git kubectl curl bash cp python3; do eval "$c() 
 evidence=$work check=x ran=1 passed=1 ok=
 [ "$in" != 0 ] || ok=1
 declare -A latencies=()
+${verdict}
 ${scriptFunctions(path)("cleanup")}
 ${trap}
 exit "$in"`;
