@@ -90,6 +90,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}:      {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},
 	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}:              {calls: 1, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
 	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}:        {calls: 2, test: "TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"},
+	{file: "internal/workflow/standing.go", fn: "WorkingCopy"}:                    {calls: 1, test: "TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn"},
 	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:                  {calls: 1, test: "TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}:                 {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}:              {calls: 2, test: "TestAnIssueAtAdmittedRunsNoStep"},

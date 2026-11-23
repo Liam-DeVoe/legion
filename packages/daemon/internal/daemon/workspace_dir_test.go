@@ -67,6 +67,13 @@ func TestEachTaskNamesTheDirectoryItsRuntimeStartsTheAgentIn(t *testing.T) {
 			if got, want := workflow.WorkingCopy(reviewing, dir).String(), " Working copy: branch legion/LEGION-208, directory "+tc.review+"."; got != want {
 				t.Fatalf("the reviewer's working copy line = %q, want %q, its own clone", got, want)
 			}
+			// At admitted RoleFor answers the architect, which works no clone of its own: the line
+			// names the issue's workspace, never the reviewer's clone.
+			admitted := issue
+			admitted.Phase = phase.Admitted
+			if got, want := workflow.WorkingCopy(admitted, dir).String(), " Working copy: branch legion/LEGION-208, directory "+tc.want+"."; got != want {
+				t.Fatalf("the working copy line at admitted = %q, want %q, the issue's workspace", got, want)
+			}
 			unparsed := reviewing
 			unparsed.Repo = "not a repository"
 			if got, want := workflow.WorkingCopy(unparsed, dir).String(), " Working copy: branch legion/LEGION-208."; got != want {
