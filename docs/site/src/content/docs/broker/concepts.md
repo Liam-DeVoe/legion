@@ -1515,12 +1515,17 @@ puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port 
 proxy password, writes a trust bundle (every trust file the command's own environment named, and
 the system roots where it named none, plus the proxy's own certificate) and a wgetrc naming it,
 and sets `NO_PROXY` so the entry's bound hosts reach the proxy while loopback and the private
-ranges stay direct. Where the machine's own system trust bundle, read with no variable
-(`/etc/ssl/certs/ca-certificates.crt` on Debian), already trusts every root the release carries,
-each trust file the command's own environment names in place of its client's roots holds them
-too, as does the last `ca_directory` of its wgetrc, and the command has no `SSL_CERT_DIR` at all,
-it writes neither file and sets no trust variable: the command keeps the trust it has. The command
-calls the service as it did before. The value reaches no answer
+ranges stay direct. It writes neither file and sets no trust variable, so the command keeps the
+trust it has, only where all of these hold: the machine's own system trust bundle, read with no
+variable (`/etc/ssl/certs/ca-certificates.crt` on Debian), trusts every root the release carries;
+the command's environment carries the eight settings that make each client family read that
+store, as a pod image and a launcher session set them (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+`REQUESTS_CA_BUNDLE`, `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE`, `AWS_CA_BUNDLE` and
+`GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` naming a file that holds every root, `NODE_USE_SYSTEM_CA=1`
+and `UV_SYSTEM_CERTS=1`); every other trust file it names holds every root; the last
+`ca_directory` of wget's startup files does too; and the command has no `SSL_CERT_DIR` at all.
+Any other command, such as one from a shell started before those settings were set, gets the
+bundle. The command calls the service as it did before. The value reaches no answer
 of the broker's, no file and no variable: the proxy swaps the placeholder for it in the headers
 the entry names, inside the connection it carries to the bound host, and an answer of the proxy's
 own that quotes what a service sent — the `502` for a status line it could not read, a failed

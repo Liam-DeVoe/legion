@@ -15,6 +15,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/url"
 	"os"
@@ -219,8 +220,9 @@ const airlockBuildLifetime = time.Hour
 // earlier runs left (tidyAirlockDirs).
 //
 // A command that reaches the proxy with the trust it already has gets none of this: where the
-// machine's own system trust bundle (systemTrust) trusts every root the release carries and no
-// trust variable or wgetrc of the command names a file that lacks one (proxyRootsTrusted),
+// machine's own system trust bundle (systemTrust) trusts every root the release carries, the
+// command's environment shows that every client family reads that store, and no trust variable,
+// wget startup file or SSL_CERT_DIR of the command takes a root away (proxyRootsTrusted),
 // nothing is made or written, and the answer is no files. Such a run tidies nothing either; what
 // earlier runs left waits for the next run that writes, and holds nothing secret.
 //
@@ -512,20 +514,42 @@ var airlockBundleVars = []string{
 	"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
 }
 
+// proxyStoreFileVars are the trust variables through which a client family that does not read the
+// system store by default reads it, each set to the system bundle by a pod image and a launcher
+// session: OpenSSL's SSL_CERT_FILE, which httpx and Node's system store read too; curl's, which
+// reads the store by default and is here so that the rule is the one set a pod image and a
+// launcher session carry; Python requests'; gcloud's; the AWS CLI's and SDKs'; and gRPC's C
+// core's. With UV_SYSTEM_CERTS and NODE_USE_SYSTEM_CA they are the eight settings
+// proxyClientsReadTheStore asks for.
+var proxyStoreFileVars = []string{
+	"SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
+	"AWS_CA_BUNDLE", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+}
+
 // proxyRootsTrusted reports whether the command reaches the proxy with the trust it already has,
 // so that it needs no bundle: system, the machine's system trust store, trusts every root the
-// release carries, and so does each file a trust variable of the command names and the directory
-// its wgetrc names, and the command has no SSL_CERT_DIR.
+// release carries; the command's environment shows that every client family reads that store
+// (proxyClientsReadTheStore); each file a trust variable of the command names holds every root
+// too, as does wget's ca_directory (wgetTrusts); and the command has no SSL_CERT_DIR.
 //
 // Every root, not one of them: during a change of the proxy's root a release carries two, the
 // old and the new, and a store that trusts one of them is not yet one the proxy can rely on. A
 // release that carries no root this can parse is no root the store trusts, so it gets the bundle.
 //
+// Node, Python requests and httpx, uv, the AWS CLI, gcloud and gRPC's C core each read roots of
+// their own, not the system store, unless a setting points them at it. A command without those
+// settings, from a shell started before a launcher set them, a runtime that passes on only some
+// variables or a systemd-run unit, would lose the proxy for those clients with no bundle, so it
+// keeps the bundle, which reaches each of them. The answer errs toward writing the bundle, which
+// is never wrong, only unneeded.
+//
 // The command keeps each trust variable it has when no bundle is written, and every one of them
 // but NODE_EXTRA_CA_CERTS replaces its client's roots with the file it names: a file that lacks a
 // root takes the proxy away from that client, as a file this process cannot read may. Either one
 // keeps the bundle, which holds that file's trust as well (trustBundle). Node adds the file
-// NODE_EXTRA_CA_CERTS names to the roots it has, so a file without the root takes nothing away.
+// NODE_EXTRA_CA_CERTS names to the store it reads under NODE_USE_SYSTEM_CA=1, so there a file
+// without the root takes nothing away; without that switch the file is the one way the root
+// reaches Node, and must hold every root.
 //
 // The command keeps its SSL_CERT_DIR too, which Node's system store (NODE_USE_SYSTEM_CA), uv
 // (UV_SYSTEM_CERTS) and httpx read in place of the system's directory, Node with no system bundle
@@ -534,23 +558,20 @@ var airlockBundleVars = []string{
 // there) and an empty value as set, and httpx, through OpenSSL's capath, finds a root only under
 // its subject-hash name. So any SSL_CERT_DIR entry, even an empty one, gets the bundle: its
 // SSL_CERT_FILE reaches httpx, uv and OpenSSL beside the directory, and its NODE_EXTRA_CA_CERTS
-// reaches Node. The command keeps its WGETRC too, and wget reads its trust there alone
-// (wgetrcTrusts).
+// reaches Node.
 func proxyRootsTrusted(environ []string, caPEM string, system *x509.CertPool) bool {
 	roots := proxyRoots(caPEM)
 	if len(roots) == 0 || !poolTrustsEvery(system, roots) {
 		return false
 	}
-	if wgetrc := envValue(environ, "WGETRC"); wgetrc != "" && !wgetrcTrusts(wgetrc, roots) {
-		return false
-	}
-	if envHas(environ, "SSL_CERT_DIR") {
+	if !proxyClientsReadTheStore(environ) || envHas(environ, "SSL_CERT_DIR") || !wgetTrusts(environ, roots) {
 		return false
 	}
 	// One file is often named by several of these, as the system bundle is, and is read once.
+	nodeReadsTheStore := envValue(environ, "NODE_USE_SYSTEM_CA") == "1"
 	var named []string
 	for _, key := range airlockBundleVars {
-		if path := envValue(environ, key); path != "" && key != "NODE_EXTRA_CA_CERTS" {
+		if path := envValue(environ, key); path != "" && (key != "NODE_EXTRA_CA_CERTS" || !nodeReadsTheStore) {
 			named = append(named, path)
 		}
 	}
@@ -569,23 +590,72 @@ func proxyRootsTrusted(environ []string, caPEM string, system *x509.CertPool) bo
 	return true
 }
 
-// wgetrcTrusts reports whether the wgetrc at path leaves wget trusting every root. wget reads no
-// trust variable, only its wgetrc, and its ca_directory replaces the system store: wget built on
-// GnuTLS, as Debian's is, loads each file of that directory in place of the system's trust, and
-// adds a ca_certificate to that trust rather than replacing it (measured with wget 1.25.0). So the
-// last ca_directory, the one wget reads, must hold every root, an empty one loads no trust at all,
-// and a ca_certificate takes nothing away. A wgetrc this process cannot read is one it cannot say
-// that of. wget ignores case, '_' and '-' in a command's name, and skips a line that opens with '#'.
-func wgetrcTrusts(path string, roots []*x509.Certificate) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
+// proxyClientsReadTheStore reports whether the command's environment shows that every client
+// family which reads roots of its own by default reads the system store: each of
+// proxyStoreFileVars is set (proxyRootsTrusted then checks the file it names), Node's system store
+// is on (NODE_USE_SYSTEM_CA=1; Node v24.22.1 reads "true" and "yes" as off) or NODE_EXTRA_CA_CERTS
+// names a file, and uv's is on (UV_SYSTEM_CERTS as uv 0.13.5 reads a true value: 1, t, true, y,
+// yes or on, in any case).
+func proxyClientsReadTheStore(environ []string) bool {
+	for _, key := range proxyStoreFileVars {
+		if envValue(environ, key) == "" {
+			return false
+		}
+	}
+	if envValue(environ, "NODE_USE_SYSTEM_CA") != "1" && envValue(environ, "NODE_EXTRA_CA_CERTS") == "" {
 		return false
 	}
+	switch strings.ToLower(envValue(environ, "UV_SYSTEM_CERTS")) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// systemWgetrcFile is the system wgetrc built into wget, Debian's, which wget reads when
+// SYSTEM_WGETRC names no file that is there. A test replaces it.
+var systemWgetrcFile = "/etc/wgetrc"
+
+// wgetTrusts reports whether wget's startup files leave it trusting every root. wget reads no
+// trust variable, only those files, and the command keeps them when no bundle is written: first
+// the system wgetrc (the file SYSTEM_WGETRC names when it is there, else systemWgetrcFile when
+// that is there), then the user's (the file WGETRC names, or ~/.wgetrc when it is there and
+// WGETRC is unset or empty); measured with wget 1.25.0 and 1.21.4. wget built on GnuTLS, as
+// Debian's is, reads its ca_directory in place of the system store and adds a ca_certificate to
+// that trust rather than replacing it (measured with wget 1.25.0). So the last ca_directory across
+// those files, the one wget reads, must hold every root, an empty one loads no directory and no
+// system store at all, and a ca_certificate takes nothing away. A startup file this process
+// cannot read, or a WGETRC naming none, is one it cannot vouch for. wget ignores case, '_' and
+// '-' in a command's name, and skips a line that opens with '#'.
+func wgetTrusts(environ []string, roots []*x509.Certificate) bool {
+	var files []string
+	if named := envValue(environ, "SYSTEM_WGETRC"); named != "" && fileThere(named) {
+		files = append(files, named)
+	} else if fileThere(systemWgetrcFile) {
+		files = append(files, systemWgetrcFile)
+	}
+	if named := envValue(environ, "WGETRC"); named != "" {
+		files = append(files, named)
+	} else {
+		home := envValue(environ, "HOME")
+		if home == "" {
+			home = passwdHome()
+		}
+		if user := filepath.Join(home, ".wgetrc"); home != "" && fileThere(user) {
+			files = append(files, user)
+		}
+	}
 	directory, set := "", false
-	for line := range strings.Lines(string(data)) {
-		name, value, found := strings.Cut(line, "=")
-		if found && wgetrcCommand.Replace(strings.ToLower(strings.TrimSpace(name))) == "cadirectory" {
-			directory, set = strings.TrimSpace(value), true
+	for _, file := range files {
+		data, ok := readBoundedFile(file)
+		if !ok {
+			return false
+		}
+		for line := range strings.Lines(string(data)) {
+			name, value, found := strings.Cut(line, "=")
+			if found && wgetrcCommand.Replace(strings.ToLower(strings.TrimSpace(name))) == "cadirectory" {
+				directory, set = strings.TrimSpace(value), true
+			}
 		}
 	}
 	if !set {
@@ -593,24 +663,72 @@ func wgetrcTrusts(path string, roots []*x509.Certificate) bool {
 	}
 	// An empty value is still a ca_directory: wget keeps it, loads no directory from it, and so
 	// loads no system store either.
-	if directory == "" {
+	return directory != "" && certDirTrustsEvery(directory, roots)
+}
+
+// wgetrcCommand folds a wgetrc command's name to the one wget reads it as.
+var wgetrcCommand = strings.NewReplacer("_", "", "-", "")
+
+// fileThere reports whether path names something that is there, as wget's own test of a startup
+// file does (stat).
+func fileThere(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// proxyCertFileMaxBytes and proxyCertDirMaxFiles bound what is read of a file or directory the
+// command's own settings name: a certificate is a few kilobytes and Debian's whole bundle is under
+// 250 KB, and Debian's /etc/ssl/certs holds about 300 roots, each under two names.
+const (
+	proxyCertFileMaxBytes = 1 << 20
+	proxyCertDirMaxFiles  = 4096
+)
+
+// certDirTrustsEvery reports whether the certificate directory dir holds every root. It reads the
+// directory's regular files alone (readBoundedFile), so a device, a named pipe or a socket there
+// cannot stall or flood agent-secrets before the command runs. A file it skips adds nothing, and
+// a directory of more than proxyCertDirMaxFiles entries, or one this process cannot read, is one
+// it cannot vouch for.
+func certDirTrustsEvery(dir string, roots []*x509.Certificate) bool {
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return false
 	}
-	entries, err := os.ReadDir(directory)
+	f, err := os.Open(dir)
 	if err != nil {
+		return false
+	}
+	defer f.Close()
+	entries, err := f.ReadDir(proxyCertDirMaxFiles + 1)
+	if (err != nil && !errors.Is(err, io.EOF)) || len(entries) > proxyCertDirMaxFiles {
 		return false
 	}
 	pool := x509.NewCertPool()
 	for _, entry := range entries {
-		if data, err := os.ReadFile(filepath.Join(directory, entry.Name())); err == nil {
+		if data, ok := readBoundedFile(filepath.Join(dir, entry.Name())); ok {
 			pool.AppendCertsFromPEM(data)
 		}
 	}
 	return poolTrustsEvery(pool, roots)
 }
 
-// wgetrcCommand folds a wgetrc command's name to the one wget reads it as.
-var wgetrcCommand = strings.NewReplacer("_", "", "-", "")
+// readBoundedFile is the regular file at path, read whole, and false where path names no regular
+// file (a symbolic link is followed to what it names) or one of more than proxyCertFileMaxBytes.
+// It looks before it opens, so it opens no named pipe, device or socket.
+func readBoundedFile(path string) ([]byte, bool) {
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() || info.Size() > proxyCertFileMaxBytes {
+		return nil, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, proxyCertFileMaxBytes+1))
+	if err != nil || len(data) > proxyCertFileMaxBytes {
+		return nil, false
+	}
+	return data, true
+}
 
 // proxyRoots is every certificate of the release's PEM, and nil when any block of it is not a
 // certificate this can parse: a release this cannot read whole is one it cannot vouch for.
