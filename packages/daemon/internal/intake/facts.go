@@ -2155,10 +2155,10 @@ func EntryFence(issue record.Issue, role claim.Role, served, holder claim.Token,
 // record.ServedClaim) is the entry fence's to answer: a step token ran that the task has since left
 // for another agent's step, which EntryFence refuses naming that agent (AnotherAgentsStep).
 //
-// Both judges ask it before EntryFence: the completion route on its read, and the workflow's
-// handoff on its own. Asked after, the fence would refuse such a completion HANDOFF_STALE_ENTRY,
-// whose words promise the claim the task of the entry the phase is on, and that task goes to
-// holder alone.
+// Both judges ask it before EntryFence: the completion route on its read, where the role works the
+// issue's phase, and the workflow's handoff on its own. Asked after, the fence would refuse such a
+// completion HANDOFF_STALE_ENTRY, whose words promise the claim the task of the entry the phase is
+// on, and that task goes to holder alone.
 func StepsWorkerFence(issue string, role claim.Role, token, holder, served claim.Token, stepTask string) *Refusal {
 	if stepTask == "" || holder == "" || token == "" || token == holder || served == token {
 		return nil
