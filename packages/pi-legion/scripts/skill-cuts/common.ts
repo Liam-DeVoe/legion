@@ -229,6 +229,11 @@ export class GhRetries {
     private readonly who: string
   ) {}
 
+  /** Writes `line` to standard error as a line of `who`'s. */
+  say(line: string): void {
+    this.io.err(`${this.who}: ${line}`);
+  }
+
   /** Whether a call that failed with `stderr`, sent again `retried` times so far, is sent again:
    *  when `stderr` names a transient failure, and not one of BATCH_TOO_LARGE for a batch its caller
    *  `splits`, and fewer than 4 retries were made, this counts the retry by its reason, says so on
@@ -249,8 +254,8 @@ export class GhRetries {
     )
       return false;
     this.counts.set(reason, (this.counts.get(reason) ?? 0) + 1);
-    this.io.err(
-      `${this.who}: ${read} failed (${firstLine(stderr)}); sending it again in ${wait / 1000} s, retry ${retried + 1} of ${TRANSIENT_WAITS_MS.length}`
+    this.say(
+      `${read} failed (${firstLine(stderr)}); sending it again in ${wait / 1000} s, retry ${retried + 1} of ${TRANSIENT_WAITS_MS.length}`
     );
     await this.io.sleep(wait);
     return true;
@@ -286,8 +291,8 @@ export class GhRetries {
       ) {
         const wait = await options.rateWait(result.stderr, limited);
         // A rate wait can be 15 minutes: it says itself, so it is never taken for a hang.
-        this.io.err(
-          `${this.who}: ${options.read ?? "a gh call"} was refused for its rate limit (${firstLine(result.stderr)}); waiting ${Math.round(wait / 1000)} s, until ${new Date(Date.now() + wait).toISOString()}, before sending it again, refusal ${limited + 1} of ${MAX_RATE_RETRIES}`
+        this.say(
+          `${options.read ?? "a gh call"} was refused for its rate limit (${firstLine(result.stderr)}); waiting ${Math.round(wait / 1000)} s, until ${new Date(Date.now() + wait).toISOString()}, before sending it again, refusal ${limited + 1} of ${MAX_RATE_RETRIES}`
         );
         await this.io.sleep(wait);
         limited++;
@@ -436,12 +441,12 @@ export const SECONDARY_LIMITED = /secondary rate limit/i;
 export const SECONDARY_WAIT_MS = 60_000;
 
 /** The milliseconds to wait before a call GitHub refused for its rate limit (its error `stderr`)
- *  is sent again, at its `refused`-th refusal (from 0): the one rule of copies.ts's reads and
- *  context.ts's. GitHub's secondary rate limit has no reset (the core limit may have most of its
- *  calls left): GitHub asks a client to wait its `retry-after` (which gh shows only with `-i`, so
- *  never for these calls), else at least a minute, and to back off; so the wait is
- *  SECONDARY_WAIT_MS, doubled at each refusal, and `untilReset` is not asked. A primary limit is
- *  waited out to its reset (`untilReset()`, the caller's read of the limit's reset). */
+ *  is sent again, at its `refused`-th refusal (from 0): the one rule of copies.ts's reads,
+ *  context.ts's and build.ts's. GitHub's secondary rate limit has no reset (the core limit may
+ *  have most of its calls left): GitHub asks a client to wait its `retry-after` (which gh shows
+ *  only with `-i`, so never for these calls), else at least a minute, and to back off; so the wait
+ *  is SECONDARY_WAIT_MS, doubled at each refusal, and `untilReset` is not asked. A primary limit
+ *  is waited out to its reset (`untilReset()`, the caller's `untilInstallationReset`). */
 export async function rateLimitWait(
   stderr: string,
   refused: number,
@@ -449,4 +454,199 @@ export async function rateLimitWait(
 ): Promise<number> {
   if (SECONDARY_LIMITED.test(stderr)) return SECONDARY_WAIT_MS * 2 ** refused;
   return untilReset();
+}
+
+/** The longest wait for a primary rate limit's reset, and the wait when the reset is not read. */
+export const MAX_RATE_WAIT_MS = 15 * 60_000;
+
+/** HTTP status, headers (by lowercase name) and body of a `gh api -i` answer, which gh prints
+ *  for an answer GitHub refused too. */
+export function splitIncluded(text: string): {
+  status: number;
+  headers: Map<string, string>;
+  body: string;
+} {
+  const gap = /\r?\n\r?\n/.exec(text);
+  if (!text.startsWith("HTTP/") || gap === null)
+    return { status: 0, headers: new Map(), body: text };
+  const head = text.slice(0, gap.index).split(/\r?\n/);
+  const headers = new Map<string, string>();
+  for (const line of head.slice(1)) {
+    const colon = line.indexOf(":");
+    if (colon > 0)
+      headers.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
+  }
+  return {
+    status: Number(/^HTTP\/\S+\s+(\d+)/.exec(head[0] ?? "")?.[1] ?? 0),
+    headers,
+    body: text.slice(gap.index + gap[0].length),
+  };
+}
+
+/** The options of `gh api` that take a value, so that `installationOf` takes no option's value for
+ *  the endpoint: `true` for a field (`<key>=<value>`), whose key and value it reads. */
+const GH_API_VALUED: Readonly<Record<string, boolean>> = {
+  "-X": false,
+  "--method": false,
+  "-H": false,
+  "--header": false,
+  "-q": false,
+  "--jq": false,
+  "-t": false,
+  "--template": false,
+  "--input": false,
+  "-p": false,
+  "--preview": false,
+  "--hostname": false,
+  "--cache": false,
+  "-f": true,
+  "--raw-field": true,
+  "-F": true,
+  "--field": true,
+};
+
+/** The GitHub App installation whose rate limit a gh call spends: its owner's, with the name of
+ *  the repository when the call names one, and whether the call reads the GraphQL API. */
+interface Installation {
+  readonly owner: string;
+  readonly name: string | undefined;
+  readonly graphql: boolean;
+}
+
+/** The installation the pod's gh sends the gh call `args` (without `gh`) with, as it routes the
+ *  call by the owner the call names: for `gh api`, the owner and the repository of a
+ *  `repos/<owner>/<repo>/...` endpoint, or the owner alone of `repos/<owner>`, `orgs/<owner>/...`
+ *  or `users/<owner>/...`; for `gh api graphql`, its `owner` field and its `name` field; for
+ *  `gh repo list <owner>`, which reads the GraphQL API, that owner. Undefined for a call that
+ *  names no owner, such as `search/code` or `rate_limit`. */
+function installationOf(args: readonly string[]): Installation | undefined {
+  if (args[0] === "repo" && args[1] === "list") {
+    const owner = args[2] ?? "";
+    return owner === "" || owner.startsWith("-")
+      ? undefined
+      : { owner, name: undefined, graphql: true };
+  }
+  if (args[0] !== "api") return undefined;
+  let endpoint = "";
+  const fields = new Map<string, string>();
+  for (let at = 1; at < args.length; at++) {
+    const arg = args[at] ?? "";
+    if (Object.hasOwn(GH_API_VALUED, arg)) {
+      at++;
+      const value = args[at] ?? "";
+      const eq = value.indexOf("=");
+      if (GH_API_VALUED[arg] === true && eq > 0)
+        fields.set(value.slice(0, eq), value.slice(eq + 1));
+    } else if (endpoint === "" && !arg.startsWith("-")) endpoint = arg;
+  }
+  if (endpoint === "graphql") {
+    const owner = fields.get("owner") ?? "";
+    const name = fields.get("name") ?? "";
+    return owner === "" ? undefined : { owner, name: name || undefined, graphql: true };
+  }
+  const [first, owner = "", name = ""] = (endpoint.split("?")[0] ?? "").split("/");
+  if (owner === "") return undefined;
+  if (first === "repos") return { owner, name: name || undefined, graphql: false };
+  if (first === "orgs" || first === "users") return { owner, name: undefined, graphql: false };
+  return undefined;
+}
+
+/** The one gh call that reads the reset of `at`'s rate limit, sent with `at`'s installation as
+ *  the pod's gh routes it, with `-i` so that its answer's headers come too: for a GraphQL limit,
+ *  a query of `rateLimit { resetAt }` with the owner (and the repository's name) as its `owner`
+ *  (and `name`) fields; for the REST limit, a GET of the repository, or of the owner's first
+ *  repository when the call named the owner alone. */
+function resetRead(at: Installation): string[] {
+  if (at.graphql) {
+    const [fields, query] =
+      at.name === undefined
+        ? [
+            ["-f", `owner=${at.owner}`],
+            "query($owner: String!) { rateLimit { resetAt } repositoryOwner(login: $owner) { login } }",
+          ]
+        : [
+            ["-f", `owner=${at.owner}`, "-f", `name=${at.name}`],
+            "query($owner: String!, $name: String!) { rateLimit { resetAt } repository(owner: $owner, name: $name) { id } }",
+          ];
+    return ["api", "-i", "graphql", ...fields, "-f", `query=${query}`];
+  }
+  const endpoint =
+    at.name === undefined ? `users/${at.owner}/repos?per_page=1` : `repos/${at.owner}/${at.name}`;
+  return ["api", "-i", "--method", "GET", endpoint];
+}
+
+/** The `resetAt` of a GraphQL answer's `data.rateLimit` (the text `body`), in milliseconds since
+ *  the epoch; undefined when it has none. */
+function resetAtOf(body: string): number | undefined {
+  try {
+    const resetAt: unknown = JSON.parse(body)?.data?.rateLimit?.resetAt;
+    const ms = typeof resetAt === "string" ? Date.parse(resetAt) : Number.NaN;
+    return Number.isFinite(ms) ? ms : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The reset a `gh api -i` answer `stdout` gives, in milliseconds since the epoch: a GraphQL
+ *  answer's `rateLimit.resetAt` when `graphql`, else the answer's X-RateLimit-Reset header (in
+ *  seconds), which GitHub sends on an answer it refuses for the limit too; undefined when it gives
+ *  neither. */
+function resetOf(stdout: string, graphql: boolean): number | undefined {
+  const answer = splitIncluded(stdout);
+  const resetAt = graphql ? resetAtOf(answer.body) : undefined;
+  if (resetAt !== undefined) return resetAt;
+  const header = Number(answer.headers.get("x-ratelimit-reset"));
+  return Number.isFinite(header) && header > 0 ? header * 1000 : undefined;
+}
+
+/** What `untilInstallationReset` reads the reset with, and says its wait on. */
+export interface ResetIo {
+  /** One gh call, its arguments without `gh`. */
+  gh(args: readonly string[]): Promise<{ readonly code: number; readonly stdout: string }>;
+  /** Writes one line to standard error, as the caller's command's (`GhRetries.say`). */
+  say(line: string): void;
+  /** Milliseconds since the epoch; `Date.now()` when absent. */
+  now?(): number;
+}
+
+/** The milliseconds to wait before the gh call `args` (without `gh`), which GitHub refused for its
+ *  primary rate limit, is sent again: until the reset of the limit of the installation that
+ *  refused it, and a second more, at most MAX_RATE_WAIT_MS. That installation is the one of the
+ *  owner the call names, by which the pod's gh routes it (`installationOf`); its reset is read
+ *  with one call of its own (`resetRead`, `resetOf`). `gh api rate_limit` names no owner, so the
+ *  pod's gh answers it from another installation, whose reset can come before the refusing one's.
+ *  A call that names no owner, a read that gives no reset and a reset already past wait
+ *  MAX_RATE_WAIT_MS. The wait is said on `io.say`: whose reset it waits for, and until when. */
+export async function untilInstallationReset(
+  args: readonly string[],
+  io: ResetIo
+): Promise<number> {
+  const now = () => io.now?.() ?? Date.now();
+  const longest = (why: string) => {
+    io.say(
+      `${why}; waiting ${MAX_RATE_WAIT_MS / 1000} s, the longest rate wait, until ${new Date(now() + MAX_RATE_WAIT_MS).toISOString()}`
+    );
+    return MAX_RATE_WAIT_MS;
+  };
+  const at = installationOf(args);
+  if (at === undefined) {
+    return longest(
+      "the refused call names no owner in its endpoint or its owner field, so no installation's reset is read"
+    );
+  }
+  const limit = `${at.owner}'s ${at.graphql ? "GraphQL" : "REST"} rate limit`;
+  const read = await io.gh(resetRead(at));
+  const reset = resetOf(read.stdout, at.graphql);
+  if (reset === undefined) {
+    const why = read.code === 0 ? "its answer gave none" : `gh exited ${read.code}, giving none`;
+    return longest(`the reset of ${limit} could not be read (${why})`);
+  }
+  const clock = now();
+  const wait = Math.min(reset + 1_000 - clock, MAX_RATE_WAIT_MS);
+  const resets = `${limit} resets at ${new Date(reset).toISOString()}`;
+  if (wait <= 0) return longest(`${resets}, a time already past`);
+  io.say(
+    `${resets}; waiting ${Math.round(wait / 1000)} s, until ${new Date(clock + wait).toISOString()}`
+  );
+  return wait;
 }

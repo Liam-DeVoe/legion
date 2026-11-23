@@ -57,7 +57,8 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
   [--reading-models <file>] [--limits <file>] [--build-summary <file>]... \
-  [--again <case id>]...    (--again: confirm only, not with --case)
+  [--again <case id>]... [--confirm-flagged]
+                                 (--again, --confirm-flagged: confirm only; --again not with --case)
 ```
 
 One skill per run: `--old` is that skill's own directory (the old text: the skill at the cut's
@@ -111,6 +112,18 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   no gate of 6 informative cases, and no screen or judge controls: give it its own `--out`. It
   refuses an id the case file does not hold, a case whose model the gateway does not serve, and
   `--again` beside it (exit 2).
+  `--confirm-flagged` confirms each flagged case that is not dropped even where the skill can get
+  no verdict (fewer than 6 informative cases, a control that failed, or no case left to be the
+  control case), where `confirm` without it makes no run. It is the route for a one-case rerun,
+  a case another tree asks to run again: a case file of that case alone, `screen`, then
+  `confirm --confirm-flagged`. It runs the same confirm stage (40 fresh runs of old and the
+  compared arm; a third confirm where the last two at the same texts on one runner disagree, and
+  the three pooled), and `--again` works with it as without it. It never confirms a case the
+  screen did not flag. Each confirm it runs records it in the case's results (`confirmFlagged`),
+  so `report` needs no option to know it: the report of such a run gives the case results as any
+  report does, and as its verdict line
+  `verdict: case result only; no skill verdict stands (--confirm-flagged)`, never a skill verdict.
+  The other commands refuse the option (exit 2).
 - `control`: on the skill's control case, 40 runs each of three arms: old; `minus` (old without
   each line of the case's file that is the case's line, trimmed, or without each line that is
   `--planted-line`; a rule written twice is still the rule, so every copy goes; a link in the old
@@ -147,15 +160,16 @@ loss when the compared arm passes at least 10 fewer of 40 fresh runs than old.
   numbers; the cases of each kind (`source.kind` `session` or `written`; a case with none is a
   session case) and the informative cases of each, the control case's passes of old, `minus` and
   `twin` and what each control says, and each dropped case the control case took the place of;
-  each model of the cases with its cases, the skill's verdict and its reason, ending with how many
-  of the skill's screened cases have a listing measure that could not be measured; the drops per
-  judge control and the drops counted as `model-not-served`, as `unreadable-directory`, as
-  `listing-misses`, as `injection-unrebuildable`, the last by kind (a case under each kind it
-  holds), as `path-form`, by the arm whose text holds the file, and as `reads-past-last-round`;
-  the verdict line also counts the screened cases whose profile took names from their recorded
-  listing (`fromRecorded`, below); an estimate of the procedure's false-loss chance at the cases
-  run (exact binomial under identical old and compared texts, the pass rates taken from each
-  case's own screen; its assumptions are printed with it),
+  each model of the cases with its cases, the skill's verdict and its reason (a run with a confirm
+  made by `--confirm-flagged` gets the verdict line under `confirm` above in its place), ending
+  with how many of the skill's screened cases have a listing measure that could not be measured;
+  the drops per judge control and the drops counted as `model-not-served`, as
+  `unreadable-directory`, as `listing-misses`, as `injection-unrebuildable`, the last by kind (a
+  case under each kind it holds), as `path-form`, by the arm whose text holds the file, and as
+  `reads-past-last-round`; the verdict line also counts the screened cases whose profile took
+  names from their recorded listing (`fromRecorded`, below); an estimate of the procedure's
+  false-loss chance at the cases run (exact binomial under identical old and compared texts, the
+  pass rates taken from each case's own screen; its assumptions are printed with it),
   a table of the chance it finds a loss of 10 to 40 points in one informative case, each screened
   case's smallest drop ("The smallest drop" below), the spend
   at list price, the peak memory, how many captures' system-prompt digests differ from their
@@ -1786,14 +1800,25 @@ the query ends, so a pull that is still printing rows is never ended. A store re
 fails that read, naming the command and the limit: a pull is the `pull-failed` drop, and any other
 read fails the run. Each wait for a GitHub rate limit is said on standard error before it starts:
 the call, gh's reason, the wait and when it ends. A refusal for GitHub's secondary rate limit, which
-has no reset, waits a minute, doubled at each refusal; a refusal for the primary limit waits until
-its reset, at most 15 minutes. copies.ts, context.ts and the profile's reads here use the same rule
-(common.ts's `rateLimitWait`); a profile read takes the reset from `gh api rate_limit`, the
-GraphQL limit's for a batch of blobs and the REST limit's for any other read. A call is sent again
-after at most 5 waits; a profile read GitHub still refuses after them fails as a read that fails
-for a transient reason on every try does, so no SKILL.md it held is left out of a profile in
-silence: `build-cases` drops the session as `profile-failed`, and `build-cases --reprofile` leaves
-the case out, names the read in the summary's `leftOut` and exits 1.
+has no reset, waits a minute, doubled at each refusal. A refusal for the primary limit waits until
+the reset of the installation that refused the call, at most 15 minutes: the pod's gh sends each
+call with the GitHub App installation of the owner the call names, and each installation's limit
+resets at its own time. copies.ts, context.ts and the profile's reads here use the same rule
+(common.ts's `rateLimitWait` and `untilInstallationReset`), which reads the reset with one call that
+names the same owner. For a REST call it is `gh api -i --method GET repos/<owner>/<repo>`
+(`users/<owner>/repos?per_page=1` for a call that names the owner alone), whose
+`X-RateLimit-Reset` header gh prints with `-i` on an answer GitHub refuses too. For a GraphQL call
+(`gh api graphql` with an `owner` field, or `gh repo list <owner>`) it is a `rateLimit { resetAt }`
+query with the same `owner` and `name` fields, or that header of its answer when GitHub refuses the
+query. A line on standard error names the owner, its reset and the end of the wait. A call that
+names no owner (a code search whose answer gives no reset), and a read that gives no reset or a
+reset already past, wait the full 15 minutes. `gh api rate_limit` is not read: it names no owner,
+so the pod's gh answers it with its default owner's installation, whose reset can come before the
+refusing one's. A call is sent again after at most 5 waits; a profile read GitHub still refuses
+after them fails as a read that fails for a transient reason on every try does, so no SKILL.md it
+held is left out of a profile in silence: `build-cases` drops the session as `profile-failed`, and
+`build-cases --reprofile` leaves the case out, names the read in the summary's `leftOut` and
+exits 1.
 
 A stopped build goes on where it stopped. The summary records the run's inputs: the cut, the
 skill, the seed, whether `--drop-navigation` is given, and the SHA-256 of `--old`'s files, every

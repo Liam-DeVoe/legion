@@ -17,7 +17,7 @@
  *       [--hint-model <model>] [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>]
  *       [--request-log <file>] [--reading-models <file>] [--limits <file>]
  *       [--build-summary <file>]... (report only)
- *       [--again <case id>]... (confirm only)
+ *       [--again <case id>]... [--confirm-flagged] (both confirm only)
  *   bun scripts/skill-cuts/cli.ts read --config <file> --key-file <file> --prompt <name>
  *       --in <input.json> --out <answer.json> [--request-log <file>] [--budget-usd <n>]
  *       [--concurrency <n>]
@@ -135,11 +135,15 @@
  *   third, and score.ts pools the three (`confirmScore`). `--again <case id>` asks for one more
  *   confirm of a flagged case whose confirm is finished; it is refused (exit 2), naming the case,
  *   where the case already has POOLED_CONFIRMS confirms at these texts on this runner (no fourth
- *   runs), or two that agree (a third runs only where two disagree). With `--case <id>`,
- *   FRESH_RUNS fresh runs of old and the compared arm on that case alone, with no flag gate and no
- *   gate of MIN_INFORMATIVE_CASES informative cases, into its own `--out`; an id the case file
- *   does not hold, a case whose model the gateway does not serve, and `--again` beside it are
- *   refused.
+ *   runs), or two that agree (a third runs only where two disagree). `--confirm-flagged` confirms
+ *   each flagged case that is not dropped whatever the skill's informative count or its other
+ *   reasons for no verdict (`noVerdict`), so a case run again alone can be confirmed: the same
+ *   confirm stage, third confirm and `--again` as without it. It never confirms a case its screen
+ *   did not flag, and each confirm it runs records it (StageResult's `confirmFlagged`). With
+ *   `--case <id>`, FRESH_RUNS fresh runs of old and the compared arm on that case alone, with no
+ *   flag gate and no gate of MIN_INFORMATIVE_CASES informative cases, into its own `--out`; an id
+ *   the case file does not hold, a case whose model the gateway does not serve, and `--again`
+ *   beside it are refused.
  * - `control`: on the skill's control case, FRESH_RUNS runs each of old, `minus` (old less every
  *   line of the case's file that is the case's line, trimmed, or less every line that is
  *   `--planted-line`: a rule written twice is still the rule, so each copy goes; arms.ts) and
@@ -147,7 +151,7 @@
  *   against `minus` is the planted-loss control, which must be a loss.
  *   confirm and control need the screen finished, and make no run when the skill can get no verdict
  *   (fewer than MIN_INFORMATIVE_CASES informative cases, a planted-loss control that is no loss,
- *   or a false-loss control that is a loss).
+ *   or a false-loss control that is a loss), except `confirm --confirm-flagged`.
  *   In any stage, a case one of whose captures needs a directory no read can give (context.ts's
  *   UnreadableDirectory: the commit holds no such directory, or GitHub cuts a level of its tree
  *   short even read alone) is dropped as `unreadable-directory`, its drop naming the repository,
@@ -214,7 +218,10 @@
  *   screen's refusal holds for gets no verdict. Without it, `report` says the
  *   reading sessions by model were not given, and its verdict names no models. A drop at confirm
  *   of a case its screen did not flag cannot happen, since only flagged cases are confirmed: a
- *   result that shows one fails `report`, and every stage command, naming the case (exit 1).
+ *   result that shows one fails `report`, and every stage command, naming the case (exit 1). A
+ *   run any of whose confirms `confirm --confirm-flagged` made gives the case results as any run
+ *   does, and the verdict line `case result only; no skill verdict stands (--confirm-flagged)`
+ *   (CONFIRM_FLAGGED_VERDICT), never a skill verdict.
  *
  * Every round of a stage sends the runs of all its arms in one order, seeded by the round's
  * recorded seed (replay.ts's `replayInterleaved`), each run with a session id of its own, and its
@@ -2011,7 +2018,9 @@ type Texts = z.infer<typeof Texts>;
  *  (judge.ts's JudgeIdentity) when the stage was made, before its first judgement; a stage made
  *  before it was recorded has none. `sends` is SENDS. `usd` is what its calls cost at list price.
  *  `runner` is the runner that started it (`runnerDigest`), absent in a stage started before the
- *  runner was recorded. */
+ *  runner was recorded. `confirmFlagged` is true in a confirm that `behaviour confirm
+ *  --confirm-flagged` ran, in any of its rounds, and absent otherwise: report then gives no skill
+ *  verdict (CONFIRM_FLAGGED_VERDICT). */
 const StageResult = z.strictObject({
   state: StageState,
   sends: z.literal(SENDS),
@@ -2025,6 +2034,7 @@ const StageResult = z.strictObject({
   runs: z.array(Run),
   usd: z.number(),
   runner: z.string().optional(),
+  confirmFlagged: z.literal(true).optional(),
 });
 type StageResult = z.infer<typeof StageResult>;
 
@@ -2189,8 +2199,8 @@ interface Behaviour {
  *  send through it, each logged. `source` reads the context's repositories, and counts its GitHub
  *  reads; `cacheDir` holds the context's builds, among them each installed skill a replay answers
  *  a read of another skill from (context.ts's `installedCopies`). `runner` is this runner's code
- *  (`runnerDigest`), which each stage it starts records; `again` the cases `--again` names
- *  (confirm only). */
+ *  (`runnerDigest`), which each stage it starts records; `again` the cases `--again` names, and
+ *  `confirmFlagged` whether `--confirm-flagged` is given (both confirm only). */
 interface Runner extends Behaviour {
   readonly dirs: ArmDirs;
   readonly texts: Texts;
@@ -2205,6 +2215,7 @@ interface Runner extends Behaviour {
   readonly afterCaseFailures: string[];
   readonly runner: string;
   readonly again: readonly string[];
+  readonly confirmFlagged: boolean;
 }
 
 /** The skill names the judge reads as `the-skill` in every judgement of case `c` (blind.ts): in a
@@ -2794,8 +2805,9 @@ async function runRound(
  * even read alone) is returned dropped, with that reason and `stage`, before any run, so a run
  * started again skips it. A stage left unscreened by an arm whose runs read skill files past the
  * last answered round is returned dropped under READS_PAST_LAST_ROUND (`readsPastDrop`). A stage
- * it starts records this runner (`r.runner`). Throws Stopped, after saving, when the budget
- * refused a call.
+ * it starts records this runner (`r.runner`), and a confirm it runs or goes on with under
+ * `--confirm-flagged` records that (`confirmFlagged`). Throws Stopped, after saving, when the
+ * budget refused a call.
  */
 async function runStage(
   r: Runner,
@@ -2818,6 +2830,7 @@ async function runStage(
     usd: 0,
     runner: r.runner,
   };
+  if (r.confirmFlagged) state = { ...state, confirmFlagged: true };
   let spentAt = r.gateway.spend().usd;
   let current = result;
   const update = (next: StageResult): void => {
@@ -3117,7 +3130,10 @@ function againRefusal(
 
 /** `behaviour confirm`: a confirm of each flagged case that is not dropped and has none; a third
  *  of each whose last two confirms at its texts on one runner disagree (score.ts's
- *  `confirmScore`); and one more of each case `--again` names, where `againRefusal` allows it. */
+ *  `confirmScore`); and one more of each case `--again` names, where `againRefusal` allows it.
+ *  None runs while the skill can get no verdict (`noVerdict`), unless `--confirm-flagged` is given:
+ *  then the same confirms run all the same, of flagged cases only, so a case run again alone can be
+ *  confirmed, and report gives no skill verdict over them (CONFIRM_FLAGGED_VERDICT). */
 async function confirmCommand(r: Runner): Promise<void> {
   const { results, score } = screened(r, (s) =>
     s.cases.filter((each) => each.flagged).map((each) => each.caseId)
@@ -3125,7 +3141,12 @@ async function confirmCommand(r: Runner): Promise<void> {
   const refused = r.again.flatMap((id) => againRefusal(r, score, results.get(id), id) ?? []);
   if (refused.length > 0) throw new Refused(refused.join("; "));
   const why = noVerdict(score);
-  if (why !== undefined) {
+  if (r.confirmFlagged) {
+    say(
+      r,
+      `--confirm-flagged: each flagged case that is not dropped is confirmed${why === undefined ? "" : `, though the skill gets no verdict (${why})`}; report gives the case results only, and no skill verdict`
+    );
+  } else if (why !== undefined) {
     say(r, `no confirm runs: the skill gets no verdict: ${why}`);
     return;
   }
@@ -3500,17 +3521,27 @@ function listingWords(
   return `; the listing of ${unmeasured} of its ${screened.length} screened cases could not be measured, ${taken} of the ${screened.length} installed names their recorded listing gave them (fromRecorded), and ${assumed} of the ${screened.length} rest on the assumption that their session had Dispatch`;
 }
 
+/** The verdict line of a run any of whose confirms `behaviour confirm --confirm-flagged` made:
+ *  those confirms ran whatever the skill's informative count and controls, so they give case
+ *  results only. */
+const CONFIRM_FLAGGED_VERDICT = "case result only; no skill verdict stands (--confirm-flagged)";
+
 /** The skill's verdict as one line: the verdict and its reason, or what it waits for; a verdict
  *  ends with the reading sessions it speaks for (`speaksFor`), and a verdict or its reason with
- *  how many screened cases' listings could not be measured (`listingWords`). With
- *  `--reading-models`, a skill too few of whose reading sessions are on served models
- *  (`servedScreeningRefusal`) gets none when it has no written case; one with written cases is
- *  screened on them, and its reason is theirs. */
+ *  how many screened cases' listings could not be measured (`listingWords`). A run any of whose
+ *  confirms, earlier ones too, records `confirmFlagged` gets CONFIRM_FLAGGED_VERDICT and no
+ *  verdict. With `--reading-models`, a skill too few of whose reading sessions are on served
+ *  models (`servedScreeningRefusal`) gets none when it has no written case; one with written
+ *  cases is screened on them, and its reason is theirs. */
 function verdictLine(
   b: Behaviour,
   results: ReadonlyMap<string, CaseResult>,
   score: SkillScore
 ): string {
+  const byOption = [...results.values()].some((result) =>
+    confirmStages(result).some((stage) => stage.confirmFlagged === true)
+  );
+  if (byOption) return CONFIRM_FLAGGED_VERDICT;
   const refusal = skillRefusal(b);
   if (refusal !== undefined) return `none: ${refusal.reason}`;
   const unfinished = screenUnfinished(b, results, score);
@@ -4179,6 +4210,7 @@ const BEHAVIOUR_USAGE = [
   "  [--reading-models <file>] (the skill's <cut or set id>/models/<skill>.json, written by attribute)",
   `  confirm [--case <id>] (${FRESH_RUNS} fresh runs of old and the compared arm on that case alone, into its own --out)`,
   "  [--again <case id>]... (confirm only, not with --case: one more confirm of that flagged case)",
+  "  [--confirm-flagged] (confirm only: confirm each flagged case even where the skill can get no verdict; report then gives case results only)",
   "  report needs only --config, --out, --old and --cases; [--limits <file>] (printed as it is)",
   "  [--build-summary <file>]... (report only: build-cases' summaries; it names their navigation lines no case tests and counts their replacement cases before and after the judge controls)",
 ].join("\n");
@@ -4236,11 +4268,17 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       limits: { type: "string" },
       "build-summary": { type: "string", multiple: true },
       again: { type: "string", multiple: true },
+      "confirm-flagged": { type: "boolean" },
     },
     BEHAVIOUR_USAGE
   );
   if (values.again !== undefined && command !== "confirm") {
     throw new Refused(`--again goes with behaviour confirm only. ${BEHAVIOUR_USAGE}`);
+  }
+  if (values["confirm-flagged"] !== undefined && command !== "confirm") {
+    throw new Refused(
+      `--confirm-flagged goes with behaviour confirm only: report reads from the case results whether their confirms were made with it. ${BEHAVIOUR_USAGE}`
+    );
   }
   const report = command === "report";
   const given = required(
@@ -4424,6 +4462,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
     afterCaseFailures: [],
     runner: runnerDigest(),
     again: values.again ?? [],
+    confirmFlagged: values["confirm-flagged"] === true,
   };
   if (command === "screen") await screenCommand(runner);
   else if (command === "confirm" && one !== undefined) await confirmCaseCommand(runner, one);
