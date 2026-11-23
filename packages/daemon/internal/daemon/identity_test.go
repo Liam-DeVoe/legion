@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -43,9 +44,9 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("zeta/tools"), "main", nil
 		},
-		identity: func(_ context.Context, issue string, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
-			if issue != "S1-1" || role != claim.RoleImplementer {
-				t.Errorf("identity asked for %s on %s, want the claim's role on its issue, whose plan can define the role", role, issue)
+		identity: func(_ context.Context, app appauth.AppRole, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
+			if app != appauth.Implement || role != claim.RoleImplementer {
+				t.Errorf("identity asked for %s as %s, want the implementer as the App its role resolved to, implement", role, app)
 			}
 			asked = append(asked, repository.String())
 			return bot, nil
@@ -66,7 +67,7 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 		t.Errorf("the launch's Env = %v, want the six git identity variables alone", spec.Env)
 	}
 
-	s.identity = func(context.Context, string, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
+	s.identity = func(context.Context, appauth.AppRole, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {
 		return runtime.GitIdentity{}, errors.New("github_app_not_installed")
 	}
 	if _, err := s.SpawnSpec(context.Background(), c); err == nil || !strings.Contains(err.Error(), "github_app_not_installed") {

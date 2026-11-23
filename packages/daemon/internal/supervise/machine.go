@@ -1354,6 +1354,12 @@ type Machine struct {
 	// it, and the reason the claim stores with the abandoned session (Claim.Abandoned) still tells
 	// the fresh agent at its first task.
 	lostCause SessionLoss
+	// launchedDefinition is the definition of a plan's role the claim's newest launch was built
+	// for (runtime.SpawnSpec.RoleDefinition), and launchedKnown whether this daemon built one:
+	// spawnSpec writes both for every launch it builds, so the process the claim runs, if any, runs
+	// that definition (LaunchedDefinition). They are memory only: a restart starts with none known.
+	launchedDefinition string
+	launchedKnown      bool
 	// refusedEarlierRelease is the generation at which the fence refused the registration of a
 	// process an earlier release started, for a claim that records a session and no file
 	// (markRollEdge), and 0 where no such refusal is outstanding. Such a process is a fresh agent
@@ -2234,6 +2240,18 @@ func (m *Machine) Claim() Claim {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.current()
+}
+
+// LaunchedDefinition is the definition of a plan's role that the claim's newest launch built in
+// this daemon was built for ("" for a role no plan defines), and whether this daemon built one
+// since it started: the process the claim runs, if any, runs that definition. A start of a later
+// step reads it to tell a process launched under an earlier version of the plan from one that runs
+// the plan in force (the daemon outbox's start), and a daemon that built no launch of the claim
+// does not know what its process runs.
+func (m *Machine) LaunchedDefinition() (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.launchedDefinition, m.launchedKnown
 }
 
 // View is a copy of the claim as the machine last published it: as its latest decision left it, or
@@ -3252,6 +3270,7 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 		return runtime.SpawnSpec{}, fmt.Errorf("build the launch of %s: %w", m.claim.Token, err)
 	}
 	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.Tree, m.claim.Issue, m.claim.Role
+	m.launchedDefinition, m.launchedKnown = spec.RoleDefinition, true
 	spec.Generation, spec.BootToken = m.claim.Generation, token
 	spec.ResumeSessionFile, spec.ResumeSession, spec.ResumeByAgent = "", "", false
 	return spec, nil

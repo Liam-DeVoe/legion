@@ -516,6 +516,12 @@ type SpawnSpec struct {
 	Backend           Backend
 	Model             string
 	PlanRole          bool
+	// RoleDefinition is the fingerprint of the definition of a role the plan in force of Issue
+	// defines that this launch runs (its type, its model and its prompt), and "" for every other
+	// role. No runtime reads it: the supervisor keeps it for the process this launch starts
+	// (supervise.Machine.LaunchedDefinition), so a start of a later step can tell a process that
+	// runs an earlier definition of its role from one that runs the plan in force.
+	RoleDefinition string
 }
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the

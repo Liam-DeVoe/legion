@@ -33,10 +33,10 @@ func TestTheTmuxRuntimeHoldsTheAppOfEachRoleOfTheDeployment(t *testing.T) {
 
 // The addressing of a role an owner's plan defines names the owners the App of its type reaches,
 // as it does for every role: the owners that App was read installed on and the role's container
-// holds a directory for (plan.appOwners), read through the one function that answers a role's App
-// (appauth.RoleApps.Of) for the claim's own issue. The role is its issue's alone, so the same name
-// on another issue, whose plan defines no such role, acts as no App and its addressing names no
-// owner.
+// holds a directory for (plan.appOwners), for the App the launch's one resolution of the claim's
+// role names (resolveClaimRole) for the claim's own issue. The role is its issue's alone, so the
+// same name on another issue, whose plan defines no such role, resolves to no App and its
+// addressing names no owner.
 func TestTheAddressingOfARoleOfAPlanNamesTheOwnersItsAppReaches(t *testing.T) {
 	p := plan{repositories: newRepositories("LEGION", ghrepo.Renames{}), installed: appauth.NewInstalled(), left: appauth.NewLeftOut()}
 	p.repositories.fill(ghrepo.MustParse("acme/widgets"))
@@ -51,13 +51,16 @@ func TestTheAddressingOfARoleOfAPlanNamesTheOwnersItsAppReaches(t *testing.T) {
 		return record.PlanRole{}, false, nil
 	}
 	ctx := context.Background()
-	for _, runtimeName := range []string{"tmux", "kubernetes"} {
-		owners := p.appOwners(runtimeName, roleApps(nil, planRole))
-		if got := owners(ctx, "LEGION-43", "coder"); !slices.Equal(got, []string{"acme"}) {
-			t.Errorf("under %s, appOwners(LEGION-43, coder) = %q, want [acme]", runtimeName, got)
+	for _, issue := range []string{"LEGION-43", "LEGION-44"} {
+		resolved, err := resolveClaimRole(ctx, planRole, nil, nil, issue, "coder")
+		if err != nil {
+			t.Fatalf("resolve coder on %s: %v", issue, err)
 		}
-		if got := owners(ctx, "LEGION-44", "coder"); got != nil {
-			t.Errorf("under %s, appOwners(LEGION-44, coder) = %q, want none: the role is LEGION-43's alone", runtimeName, got)
+		want := map[string][]string{"LEGION-43": {"acme"}, "LEGION-44": nil}[issue]
+		for _, runtimeName := range []string{"tmux", "kubernetes"} {
+			if got := p.appOwners(runtimeName, nil)(ctx, resolved.app, "coder"); !slices.Equal(got, want) {
+				t.Errorf("under %s, appOwners of coder on %s (App %q) = %q, want %q: the role is LEGION-43's alone", runtimeName, issue, resolved.app, got, want)
+			}
 		}
 	}
 
@@ -66,7 +69,7 @@ func TestTheAddressingOfARoleOfAPlanNamesTheOwnersItsAppReaches(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := specs{stateDir: t.TempDir(), project: "legion", prompts: composer, planRole: planRole,
-		appOwners: p.appOwners("tmux", roleApps(nil, planRole)),
+		appOwners: p.appOwners("tmux", nil),
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("acme/widgets"), "main", nil
 		}}

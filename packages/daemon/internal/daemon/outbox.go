@@ -2616,6 +2616,30 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 		}
+		// The start of a step whose claim still runs a process launched under an earlier
+		// definition of its role — a version of the plan taken since changed the role block's type,
+		// model or prompt (roleDefinitionChanged) — ends that process at its turn's end, keeping its
+		// session, as a re-role's does (suspendForStep), and waits; once the claim runs nothing, the
+		// resume below relaunches it on its session with the definition of the plan in force. So no
+		// task of a version goes to a process of an earlier one, whose next mint would already act
+		// as the App of the new type.
+		if found && payload.Entry > 0 && payload.Phase != "" {
+			changed, err := r.roleDefinitionChanged(ctx, machine)
+			if err != nil {
+				return err
+			}
+			if changed {
+				err := r.suspendForStep(ctx, machine, token, row, payload, fmt.Sprintf("the definition of its role %s on %s changed since its process launched", payload.Role, row.Issue))
+				if errors.Is(err, supervise.ErrStepLeft) {
+					r.log.Info("outbox start serves a step its issue left before the claim ended the turn of its earlier definition; finished without acting", "row", row.ID,
+						"issue", issue.Key, "phase", payload.Phase, "entry", payload.Entry, "role", payload.Role, "claim", token)
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+			}
+		}
 		// The start of a step whose agent takes the claim another agent last ran a step on asks
 		// for a fresh session (payload.FreshSession, the workflow's enter): a claim that still runs
 		// that other agent's process ends it at its turn's end, as a re-role's does
@@ -3256,6 +3280,38 @@ func (r *outbox) suspendForStep(ctx context.Context, machine *supervise.Machine,
 		return wait.Errorf("the %s step of %s waits for its claim %s to end its turn as %s", payload.Role, row.Issue, token, held.Role)
 	}
 	return nil
+}
+
+// roleDefinitions is the part of the supervisor's spec builder (specs.roleDefinition) that answers
+// which definition of a plan's role a launch of a claim would run now.
+type roleDefinitions interface {
+	roleDefinition(ctx context.Context, c supervise.Claim) (string, bool, error)
+}
+
+// roleDefinitionChanged says whether machine's claim runs a process launched under another
+// definition of its role than a launch of it would run now: the definition its newest launch was
+// built for (supervise.Machine.LaunchedDefinition) against the one the supervisor's spec builder
+// resolves from the plan in force (specs.roleDefinition), both "" for a role no plan defines. A
+// claim that runs nothing has no process to compare. A daemon that built no launch of the claim
+// since it started does not know what its process runs; for a role the plan in force defines that
+// is a changed definition, so the process is relaunched once on its session rather than left on a
+// definition nobody can show is current, and for any other role it is none, as before the plan's
+// roles. A spec builder that answers no definition (a test's) changes nothing.
+func (r *outbox) roleDefinitionChanged(ctx context.Context, machine *supervise.Machine) (bool, error) {
+	held := machine.Claim()
+	defs, ok := r.supervisor.deps.Specs.(roleDefinitions)
+	if !ok || held.RunsNothing() {
+		return false, nil
+	}
+	current, planned, err := defs.roleDefinition(ctx, held)
+	if err != nil {
+		return false, err
+	}
+	launched, known := machine.LaunchedDefinition()
+	if !known {
+		return planned, nil
+	}
+	return launched != current, nil
 }
 
 // stepStands says whether the step a start of a phase entry (payload) is for is still the work its

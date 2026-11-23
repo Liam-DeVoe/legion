@@ -1505,24 +1505,32 @@ func deploymentApps(roles []config.Role) appauth.DeploymentApps {
 }
 
 // identity is the bot a role's commits are authored by on issue: its App's (appauth.RoleApps.Of:
-// Legion's roles, the deployment's, and a role of the issue's plan by its type), from the lease
-// the token source mints for the owner whose installation holds the repository the role works
-// (the identity is fetched once per App and cached). A role that none of Legion, the deployment
-// and the issue's plan defines is given no App, and its identity is that error.
-//
-// recorded is the repository the issue's record names, and the mint is made for the owner GitHub
-// serves it under now (repositories.serving): the record keeps the name it was written under
-// until the one-time rename pass writes the pair's `to` over it (renamePass), while after a
-// transfer the installation that covers the repository is the owner it moved to's. Taking the
-// repository rather than an owner is what keeps that rule here, in
-// the one place both callers reach — a launch's spec (specs.SpawnSpec) and a working copy's
-// adoption (adoptIdentity) — so neither can mint on an owner the repository has left and fail
-// every launch of a tree open at the transfer.
+// Legion's roles, the deployment's, and a role of the issue's plan by its type), as identityAs
+// mints it. A role that none of Legion, the deployment and the issue's plan defines is given no
+// App, and its identity is that error. It is the identity of a working copy's adoption
+// (adoptIdentity), which holds no resolution of the claim's role; a launch resolved its role's App
+// already and asks identityAs.
 func (w *workflowRuntime) identity(ctx context.Context, issue string, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
 	app, err := w.roleApps.Of(ctx, issue, role)
 	if err != nil {
 		return runtime.GitIdentity{}, err
 	}
+	return w.identityAs(ctx, app, role, recorded)
+}
+
+// identityAs is the bot of app, the App role acts as, from the lease the token source mints for
+// the owner whose installation holds the repository the role works (the identity is fetched once
+// per App and cached).
+//
+// recorded is the repository the issue's record names, and the mint is made for the owner GitHub
+// serves it under now (repositories.serving): the record keeps the name it was written under
+// until the one-time rename pass writes the pair's `to` over it (renamePass), while after a
+// transfer the installation that covers the repository is the owner it moved to's. Taking the
+// repository rather than an owner is what keeps that rule here, in the one place both callers
+// reach — a launch's spec (specs.SpawnSpec) and a working copy's adoption (identity,
+// adoptIdentity) — so neither can mint on an owner the repository has left and fail every launch
+// of a tree open at the transfer.
+func (w *workflowRuntime) identityAs(ctx context.Context, app appauth.AppRole, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
 	served := w.repositories.serving(recorded)
 	lease, err := w.tokens.Token(ctx, app, served.Owner())
 	if err != nil {

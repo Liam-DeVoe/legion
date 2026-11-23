@@ -170,11 +170,15 @@ func TestAppOwnersAreTheInstalledOwnersTheRolesContainerHoldsADirectoryFor(t *te
 				}
 			}
 			for runtimeName, want := range map[string]roleOwners{"tmux": tc.tmux, "kubernetes": tc.pod} {
-				owners := p.appOwners(runtimeName, appauth.RoleApps{})
+				owners := p.appOwners(runtimeName, nil)
 				for role, want := range map[claim.Role][]string{
 					claim.RoleImplementer: want.implementer, claim.RoleReviewer: want.reviewer, claim.RoleController: want.controller,
 				} {
-					if got := owners(context.Background(), "", role); !slices.Equal(got, want) {
+					app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := owners(context.Background(), app, role); !slices.Equal(got, want) {
 						t.Errorf("under %s, appOwners(%s) = %q, want %q: the installed owners the %s's container holds a directory for",
 							runtimeName, role, got, want, role)
 					}

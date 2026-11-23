@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
@@ -49,12 +50,12 @@ type specs struct {
 	// their order, which every architect's addressing lists after the roles (ModelsFragment).
 	// Nil is a deployment that lists none.
 	models []string
-	// planRole is the role of an issue's plan in force named role, and whether that plan defines
-	// one (planRoleOf, the daemon's one reader of a role of a plan): a role the plan defines that
-	// is none of Legion's launches with the plan's prompt and model, where the deployment defines a
-	// role of its name too. Nil in a test whose specs
-	// literal leaves it out, and such a specs launches no role of a plan.
-	planRole func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error)
+	// planRole is the daemon's one reader of a role an issue's plan in force defines (planRoleOf),
+	// which resolveClaimRole reads once for a launch: a role the plan defines that is none of
+	// Legion's launches with the plan's prompt and model, where the deployment defines a role of
+	// its name too. Nil in a test whose specs literal leaves it out, and such a specs launches no
+	// role of a plan.
+	planRole planRoleReader
 	// variants is every arm of a declared experiment the claim's unit was drawn into and that
 	// reaches the claim's role, in the order the project's file declares the experiments, and
 	// the daemon's own copies of the instructions those arms name (launchVariants, over the
@@ -80,11 +81,12 @@ type specs struct {
 	// nil only in a test whose specs literal leaves it out, and such a specs stamps no issue key
 	// at all, as variants' nil leaves every launch in no experiment.
 	same func(a, b string) bool
-	// identity is the role's App bot identity every pane commits as, for the claim's issue, whose
-	// plan can define the role (workflowRuntime.identity), minted for the owner whose
-	// installation holds the repository the launch works — the record's name over a transfer, the
-	// mint's owner its serving one; nil for a daemon with no GitHub Apps.
-	identity func(ctx context.Context, issue string, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
+	// identity is the App bot identity every pane commits as, for the App the claim's role acts as
+	// on its issue (the launch's resolution of the role, resolveClaimRole), minted for the owner
+	// whose installation holds the repository the launch works — the record's name over a
+	// transfer, the mint's owner its serving one (workflowRuntime.identityAs); nil for a daemon
+	// with no GitHub Apps.
+	identity func(ctx context.Context, app appauth.AppRole, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
 	// repository is the repository an issue works and its default branch, as every launch reads it
 	// (workflowRuntime.launchRepository: its record's, or, for an issue the workflow does not
 	// record, the one Dispatch resolves it to, read and prepared at its first launch and kept while
@@ -103,11 +105,12 @@ type specs struct {
 	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
 	// The daemon answers it from what GitHub last answered of that App's installations
 	// (appauth.Installed, plan.appOwners): the boot's proof of the App's key first, then the last
-	// gh bundle of it, which costs no read of its own on a launch. It names the claim's issue,
-	// since a role of that issue's plan acts as the App of its type there (appauth.RoleApps.Of).
-	// The daemon sets it at boot whether or not a workflow is configured; a nil one, and a daemon
-	// with no GitHub Apps, names no owner, as an App installed nowhere does.
-	appOwners func(ctx context.Context, issue string, role claim.Role) []string
+	// gh bundle of it, which costs no read of its own on a launch. It is asked for the App the
+	// launch's resolution of the claim's role names (resolveClaimRole), since a role of the issue's
+	// plan acts as the App of its type there, and for the claim's role, whose pod's Apps it reads
+	// under Kubernetes. The daemon sets it at boot whether or not a workflow is configured; a nil
+	// one, and a daemon with no GitHub Apps, names no owner, as an App installed nowhere does.
+	appOwners func(ctx context.Context, app appauth.AppRole, role claim.Role) []string
 	// owner is the architect that owns a claim on an issue that is not its tree's root, as the
 	// store records the architect claims of the issue's tree at the launch
 	// (workflowRuntime.owningArchitect): what the claim's addressing names (ownerOf). It is nil
@@ -122,9 +125,10 @@ type specs struct {
 	// Contract already set to api.DaemonAPIVersion; nil when the daemon knows none
 	// (LEGION-164's degraded mode). Never read under any other runtime.
 	plugins *runtime.PluginInstall
-	// backend is the harness a role runs on for a claim of an issue (roleBackends: the issue's
-	// plan first, then config.Config.BackendFor); nil runs every role on Oh My Pi.
-	backend func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error)
+	// backendFor is the harness worker_backends puts a role's name on (config.Config.BackendFor),
+	// which a launch of every role but one of the issue's plan runs on (resolveClaimRole); nil runs
+	// every role on Oh My Pi.
+	backendFor func(claim.Role) runtime.Backend
 	// hostWorkspaces is the runtime leaving each claim's workspace to the daemon's own host
 	// (runtime.Runtime.ProvisionsWorkspaces false: tmux). ensureWorkspace then provisions an
 	// issue's workspace a launch finds missing or not checked out there (outbox.ensureWorkspace,
@@ -138,14 +142,14 @@ func rolePromptPath(stateDir string, token claim.Token) string {
 	return filepath.Join(stateDir, "prompts", string(token)+".md")
 }
 
-// ownersOf is the owner accounts the GitHub App role acts as on issue is installed on
-// (appOwners), and none for a specs built without that function, which is a test's literal: a
-// launch is told its App reaches nothing rather than told nothing at all.
-func (s specs) ownersOf(ctx context.Context, issue string, role claim.Role) []string {
+// ownersOf is the owner accounts app, the GitHub App role acts as, is installed on (appOwners),
+// and none for a specs built without that function, which is a test's literal: a launch is told
+// its App reaches nothing rather than told nothing at all.
+func (s specs) ownersOf(ctx context.Context, app appauth.AppRole, role claim.Role) []string {
 	if s.appOwners == nil {
 		return nil
 	}
-	return s.appOwners(ctx, issue, role)
+	return s.appOwners(ctx, app, role)
 }
 
 // SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
@@ -165,6 +169,10 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 	var err error
 	if c.Role == claim.RoleController {
 		spec, err = s.controllerSpawnSpec(ctx)
+		spec.Backend = runtime.BackendOmp
+		if s.backendFor != nil {
+			spec.Backend = s.backendFor(claim.RoleController)
+		}
 	} else {
 		spec, err = s.workerSpawnSpec(ctx, c)
 	}
@@ -175,8 +183,8 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 	// replaces a worker's spec.Env rather than merging into it: the stall limits are merged into
 	// whatever map the launch holds by then (stallLimitVariables).
 	passthrough(spec.Env, stallLimitVariables...)
-	var part string
-	if spec.Backend, part, err = s.launchBackend(ctx, c); err != nil {
+	part, err := s.backendPart(c, spec.Backend)
+	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
 	if part != "" {
@@ -186,37 +194,48 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 	return spec, nil
 }
 
-// launchBackend is the backend c runs on (backend, for c's issue; Oh My Pi when nil) and the path
-// of the daemon prompt part its entry names (runtime.Backends), "" when it names none.
-func (s specs) launchBackend(ctx context.Context, c supervise.Claim) (runtime.Backend, string, error) {
-	backend := runtime.BackendOmp
-	if s.backend != nil {
-		var err error
-		if backend, err = s.backend(ctx, c.Issue, c.Role); err != nil {
-			return "", "", fmt.Errorf("the %s's backend: %w", c.Role, err)
-		}
-	}
+// backendPart is the path of the daemon prompt part the entry of backend, the harness c's launch
+// runs on, names (runtime.Backends), "" when it names none.
+func (s specs) backendPart(c supervise.Claim, backend runtime.Backend) (string, error) {
 	info, err := runtime.LookupBackend(backend)
 	if err != nil {
-		return "", "", fmt.Errorf("the %s's backend: %w", c.Role, err)
+		return "", fmt.Errorf("the %s's backend: %w", c.Role, err)
 	}
 	if info.PromptPart == "" {
-		return backend, "", nil
+		return "", nil
 	}
 	if s.prompts == nil {
-		return "", "", errors.New("the daemon prompt bundle was not constructed at boot")
+		return "", errors.New("the daemon prompt bundle was not constructed at boot")
 	}
-	return backend, s.prompts.Part(info.PromptPart), nil
+	return s.prompts.Part(info.PromptPart), nil
 }
 
-// workerSpawnSpec is SpawnSpec's own build for every claim but the controller's. It is the one
-// launch that may run in an experiment: the arms the claim's unit was drawn into (variants),
-// which decide both the overlays each runtime names last in PI_CONFIG_FILES
-// (runtime.SpawnSpec.Variants) and the instructions its prompt ends with. It is the one launch
-// that may stamp an issue key into its commits too (issueTrailer), since it is the one that
-// works a repository.
+// roleDefinition is the definition of a plan's role a launch of c would run now (the fingerprint
+// of resolveClaimRole's answer, runtime.SpawnSpec.RoleDefinition), and whether the plan of c's
+// issue defines c's role: what the daemon outbox's start compares with the definition the claim's
+// running process was launched with (supervise.Machine.LaunchedDefinition).
+func (s specs) roleDefinition(ctx context.Context, c supervise.Claim) (string, bool, error) {
+	resolved, err := resolveClaimRole(ctx, s.planRole, s.roles, s.backendFor, c.Issue, c.Role)
+	if err != nil {
+		return "", false, fmt.Errorf("the role of %s: %w", c.Token, err)
+	}
+	return resolved.fingerprint(), resolved.source == stepplan.SourcePlan, nil
+}
+
+// workerSpawnSpec is SpawnSpec's own build for every claim but the controller's. It resolves the
+// claim's role once (resolveClaimRole) and derives from that one answer the role prompt, the
+// model, the harness, the App its git identity and its addressing name, and the definition the
+// supervisor keeps (runtime.SpawnSpec.RoleDefinition). It is the one launch that may run in an
+// experiment: the arms the claim's unit was drawn into (variants), which decide both the overlays
+// each runtime names last in PI_CONFIG_FILES (runtime.SpawnSpec.Variants) and the instructions its
+// prompt ends with. It is the one launch that may stamp an issue key into its commits too
+// (issueTrailer), since it is the one that works a repository.
 func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
-	promptPaths, model, planned, err := s.rolePromptPaths(ctx, c)
+	resolved, err := resolveClaimRole(ctx, s.planRole, s.roles, s.backendFor, c.Issue, c.Role)
+	if err != nil {
+		return runtime.SpawnSpec{}, fmt.Errorf("the role of %s: %w", c.Token, err)
+	}
+	promptPaths, err := s.rolePromptPaths(c, resolved)
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
@@ -243,7 +262,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(ctx, c.Issue, c.Role)) +
+	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(ctx, resolved.app, c.Role)) +
 		ArchitectAddressing(c, s.roles, s.models, s.designSteps)
 	spec.Prompt = runtime.PromptParts{
 		RolePromptPaths:            promptPaths,
@@ -266,7 +285,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
 	}
 	if s.identity != nil {
-		id, err := s.identity(ctx, c.Issue, c.Role, spec.Repository)
+		id, err := s.identity(ctx, resolved.app, c.Role, spec.Repository)
 		if err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the git identity of %s: %w", c.Token, err)
 		}
@@ -279,8 +298,9 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// A role the deployment or the claim's issue's plan defines runs the model its definition
 	// gives it; Legion's roles name none and run the profile's own (runtime.SpawnSpec.Model). A
 	// role the plan defines takes none of the settings the deployment keys by its name
-	// (runtime.SpawnSpec.PlanRole).
-	spec.Model, spec.PlanRole = model, planned
+	// (runtime.SpawnSpec.PlanRole), and runs on Oh My Pi.
+	spec.Model, spec.Backend = resolved.def.Model, runtime.Backend(resolved.def.Backend)
+	spec.PlanRole, spec.RoleDefinition = resolved.source == stepplan.SourcePlan, resolved.fingerprint()
 	return spec, nil
 }
 
@@ -458,7 +478,7 @@ func (s specs) controllerSpawnSpec(ctx context.Context) (runtime.SpawnSpec, erro
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
-	addressing := DesignGateFragment(s.designSteps) + " " + RepositoriesSentence(s.ownersOf(ctx, "", claim.RoleController))
+	addressing := DesignGateFragment(s.designSteps) + " " + RepositoriesSentence(s.ownersOf(ctx, appauth.Review, claim.RoleController))
 	if len(s.slackChannels) > 0 {
 		addressing += " " + SlackChannelsFragment(s.slackChannels)
 	}
@@ -475,50 +495,37 @@ func (s specs) controllerSpawnSpec(ctx context.Context) (runtime.SpawnSpec, erro
 	}, nil
 }
 
-// rolePromptPaths is the role prompt of c, the model its role names ("" for one of Legion's
-// six, which run the profile's own), and whether the plan of c's issue defines the role. It keeps
-// an explicit operator prompt as a narrow test override, which replaces the prompt alone. Every
-// ordinary claim uses the role prompts daemon
-// boot snapshotted below its state directory (prompts.New): Legion's roles their composed parts
-// (prompts.Composer.Compose), a role the plan of c's issue defines (planRole) the daemon's own
-// copy of the plan's prompt (planRolePromptFile) between the headless mechanics and Legion's
-// worker part (prompts.Composer.ComposeStep), and a role the deployment defines its own prompt
-// file in that same place. The plan is read first: a deployment that took the name of a role a
-// plan in force defines leaves that issue the plan's role, with its prompt and its model and none
-// of the settings the deployment keys by that name, until a version of the plan changes it
-// (appauth.AppRoleFor decides its App the same way). A role none of them defines is refused,
+// rolePromptPaths is the role prompt of c, whose role resolved to resolved (resolveClaimRole). It
+// keeps an explicit operator prompt as a narrow test override, which replaces the prompt alone.
+// Every ordinary claim uses the role prompts daemon boot snapshotted below its state directory
+// (prompts.New): Legion's roles their composed parts (prompts.Composer.Compose), a role the plan of
+// c's issue defines the daemon's own copy of the plan's prompt (planRolePromptFile) between the
+// headless mechanics and Legion's worker part (prompts.Composer.ComposeStep), and a role the
+// deployment defines its own prompt file in that same place. Whose definition the name takes is
+// the resolution's: a deployment that took the name of a role a plan in force defines leaves that
+// issue the plan's role, until a version of the plan changes it. A role nobody defines is refused,
 // naming the issue and the role, with no prompt.
-func (s specs) rolePromptPaths(ctx context.Context, c supervise.Claim) ([]string, string, bool, error) {
-	if claim.IsBuiltin(c.Role) {
-		paths, err := s.overridden(c, func() ([]string, error) {
+func (s specs) rolePromptPaths(c supervise.Claim, resolved claimRole) ([]string, error) {
+	switch resolved.source {
+	case stepplan.SourceLegion:
+		return s.overridden(c, func() ([]string, error) {
 			parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
 			return parts.RolePromptPaths, err
 		})
-		return paths, "", false, err
-	}
-	if s.planRole != nil {
-		planned, found, err := s.planRole(ctx, c.Issue, c.Role)
-		if err != nil {
-			return nil, "", false, fmt.Errorf("the role prompt of %s: %w", c.Token, err)
-		}
-		if found {
-			paths, err := s.overridden(c, func() ([]string, error) {
-				file, err := planRolePromptFile(s.stateDir, planned.Prompt)
-				if err != nil {
-					return nil, err
-				}
-				return s.prompts.ComposeStep(file).RolePromptPaths, nil
-			})
-			return paths, planned.Model, true, err
-		}
-	}
-	if role, defined := s.roleOf(c.Role); defined {
-		paths, err := s.overridden(c, func() ([]string, error) {
-			return s.prompts.ComposeStep(role.PromptFile).RolePromptPaths, nil
+	case stepplan.SourcePlan:
+		return s.overridden(c, func() ([]string, error) {
+			file, err := planRolePromptFile(s.stateDir, resolved.prompt)
+			if err != nil {
+				return nil, err
+			}
+			return s.prompts.ComposeStep(file).RolePromptPaths, nil
 		})
-		return paths, role.Model, false, err
+	case stepplan.SourceDeployment:
+		return s.overridden(c, func() ([]string, error) {
+			return s.prompts.ComposeStep(resolved.promptFile).RolePromptPaths, nil
+		})
 	}
-	return nil, "", false, fmt.Errorf("the role prompt of %s: neither the deployment nor the plan of %s defines the role %s", c.Token, c.Issue, c.Role)
+	return nil, fmt.Errorf("the role prompt of %s: neither the deployment nor the plan of %s defines the role %s", c.Token, c.Issue, c.Role)
 }
 
 // overridden is the operator's prompt kept for c under the state directory (rolePromptPath),
@@ -534,16 +541,6 @@ func (s specs) overridden(c supervise.Claim, compose func() ([]string, error)) (
 		return nil, errors.New("the daemon prompt bundle was not constructed at boot")
 	}
 	return compose()
-}
-
-// roleOf is the role of the deployment named name, and whether the deployment defines one.
-func (s specs) roleOf(name claim.Role) (config.Role, bool) {
-	for _, role := range s.roles {
-		if role.Name == name {
-			return role, true
-		}
-	}
-	return config.Role{}, false
 }
 
 // AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane
