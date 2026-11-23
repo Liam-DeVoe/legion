@@ -566,13 +566,26 @@ func createCommand(ctx context.Context, stdout, stderr io.Writer, natsURL string
 // the lookup and the create with the same configuration is the one this create asked for, which
 // JetStream answers as made.
 //
+// The server's version decides the stream a create makes (bus.CopiedBucketStreamConfig: its
+// discard policy, new from nats-server 2.7.2 on), so it is read once, before the first read, and a
+// connection that reports none - ConnectedServerVersion answers "" while it is not connected -
+// refuses the run with its own line and reads nothing: nats.go and the bus read "" as a server too
+// old for a bucket, and every present bucket would be judged against a stream made for such a
+// server, discard old, and refused naming its discard policy as a difference.
+//
 // A read or a create the server refuses under the connection's grant is sent again until
 // refusalWait has passed since the run began (untilGranted). Once ctx has ended the run stops where
-// it is, creates nothing more and fails naming ctx's cause (stopped): every read and wait ends with
-// ctx, the check before each create reads it, and the create sends no request once it has ended.
+// it is, sends no create after it and fails naming ctx's cause (stopped): every read and wait ends
+// with ctx, the check before each create reads it, and the create sends no request once it has
+// ended. A create it had already sent when ctx ended is not called back, and lands: the line says
+// so.
 func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamContext, buckets []string, replicas int, announce func(bucket string)) int {
 	deadline := time.Now().Add(refusalWait)
 	version := conn.ConnectedServerVersion()
+	if version == "" {
+		fmt.Fprintln(stderr, "envoy-infra buckets create: refused: the connection reports no server version, as one that is not connected does, and each bucket is judged against the stream its create makes on the hub's version; nothing is read or created: run create again")
+		return 1
+	}
 	var absent, differ []string
 	for _, bucket := range buckets {
 		missing, differences, err := judgeBucket(ctx, stderr, deadline, js, version, bucket, replicas)
@@ -640,10 +653,12 @@ func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Con
 }
 
 // stopped fails a create whose ctx has ended, naming ctx's cause: main ends ctx on an interrupt or
-// SIGTERM, whose cause names the signal. The run creates nothing after it; a bucket a line above
-// says was created stays.
+// SIGTERM, whose cause names the signal. The run sends no create after it. A create it had sent
+// before - the create of the bucket it was on, whose answer it stops waiting for - still reaches the
+// hub and lands, so the line says so and that create run again reads what the hub holds. A bucket a
+// line above says was created stays.
 func stopped(ctx context.Context, stderr io.Writer) int {
-	fmt.Fprintf(stderr, "envoy-infra buckets create: stopped: %v; nothing more is created\n", context.Cause(ctx))
+	fmt.Fprintf(stderr, "envoy-infra buckets create: stopped: %v; it sends no create after this, but one it had sent may still land: run create again to see what the hub holds\n", context.Cause(ctx))
 	return 1
 }
 
@@ -811,7 +826,10 @@ var listenerBuckets = slices.DeleteFunc(bus.CopiedBuckets(), func(bucket string)
 type podContainer struct {
 	Name    string   `json:"name"`
 	Command []string `json:"command"`
-	Env     []envVar `json:"env"`
+	// Args are the words Kubernetes appends to Command, a shell's script among them when the
+	// command is `sh -c` and the script is given as args.
+	Args []string `json:"args"`
+	Env  []envVar `json:"env"`
 	// EnvFrom are the Secrets and ConfigMaps each of whose keys becomes a variable of the
 	// container, named with the source's prefix before the key; the pod shows neither.
 	EnvFrom []struct {
@@ -830,7 +848,13 @@ type envVar struct {
 // writes is the copied buckets container c may write, read from its configuration by the writer
 // map:
 //
-//   - envoy-dispatch - named so, or running envoy-dispatch - writes the CI state bucket;
+//   - a shell that runs a listener - a command whose program is one of shells and whose script, a
+//     later word of the command or its args, names envoy-listener (shellRuns), such as
+//     [/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec envoy-listener'] - writes every copied bucket: the
+//     script may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS itself, which the pod does not show, so
+//     the proof fails closed;
+//   - envoy-dispatch - named so, running envoy-dispatch, or a shell whose script names
+//     envoy-dispatch - writes the CI state bucket;
 //   - a listener - a container whose environment sets ENVOY_MACHINE_ID, which every listener
 //     requires, or that is named or runs as a listener (listener, envoy-listener, or a command
 //     running envoy-listener or the held-port wrapper envoy-listener-heldport) - writes
@@ -842,16 +866,19 @@ type envVar struct {
 //     listener, and a listener whose envFrom may set ENVOY_WEBHOOKS writes the CI state bucket.
 //     A container nothing else names a writer, with an envFrom source of no prefix, so writes
 //     every copied bucket: the proof fails closed;
-//   - any other container writes none.
+//   - any other container writes none, a shell whose script names neither program among them.
 //
 // The proof reads only the namespaces the operator names, so a container elsewhere that is named
 // listener, such as an Actions runner's, is never read.
 func (c podContainer) writes() []string {
+	if c.shellRuns("envoy-listener") {
+		return bus.CopiedBuckets()
+	}
 	command := ""
 	if len(c.Command) > 0 {
 		command = path.Base(c.Command[0])
 	}
-	if c.Name == "envoy-dispatch" || command == "envoy-dispatch" {
+	if c.Name == "envoy-dispatch" || command == "envoy-dispatch" || c.shellRuns("envoy-dispatch") {
 		return []string{bus.CIStateBucket}
 	}
 	listener := c.Name == "listener" || c.Name == "envoy-listener" || command == "envoy-listener" || command == "envoy-listener-heldport"
@@ -874,6 +901,38 @@ func (c podContainer) writes() []string {
 		return append(slices.Clone(listenerBuckets), bus.CIStateBucket)
 	}
 	return slices.Clone(listenerBuckets)
+}
+
+// shells are the programs, by the base name of a container's command, that run a script their
+// later words give them, as `sh -c` does: the shells an image carries (busybox's among them,
+// through `busybox sh`).
+var shells = []string{"sh", "bash", "dash", "ash", "zsh", "ksh", "mksh", "busybox"}
+
+// shellRuns reports whether c's command is a shell whose script names program: the command's
+// program is one of shells, by path or not, and a later word of the command, or one of its args,
+// which Kubernetes appends to it, holds program, such as the script of [/bin/sh, -c,
+// 'ENVOY_MACHINE_ID=x exec envoy-listener'] or of command [bash, -c] with that script as args. Any
+// word that holds the name counts, so a script that only mentions the program blocks too: the
+// proof fails closed. A shell given a script file names no program, and is read as any other
+// container.
+func (c podContainer) shellRuns(program string) bool {
+	if len(c.Command) == 0 || !slices.Contains(shells, path.Base(c.Command[0])) {
+		return false
+	}
+	return slices.ContainsFunc(slices.Concat(c.Command[1:], c.Args), func(word string) bool { return strings.Contains(word, program) })
+}
+
+// shellNote is what a blocker on c adds when a shell's script is what makes it a writer
+// (shellRuns): the program the script names, and for a listener that the script may set the
+// variables the writer map reads, which the pod does not show. It is "" for any other container.
+func (c podContainer) shellNote() string {
+	switch {
+	case c.shellRuns("envoy-listener"):
+		return " (its command is a shell whose script names envoy-listener, and the script may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS, which the pod does not show)"
+	case c.shellRuns("envoy-dispatch"):
+		return " (its command is a shell whose script names envoy-dispatch)"
+	}
+	return ""
 }
 
 // namesGitHub reports whether value, ENVOY_WEBHOOKS as a container's env sets it, may mount the
@@ -1119,8 +1178,8 @@ func (f fence) provePods(ctx context.Context, out io.Writer, kube string) []stri
 					}) {
 						continue
 					}
-					blockers = append(blockers, fmt.Sprintf("kubernetes %s: pod %s/%s (uid %s, node %s) runs %s %s, which writes %s%s",
-						label, namespace, pod.Metadata.Name, pod.Metadata.UID, pod.Spec.NodeName, kind.name, container.Name, strings.Join(written, ", "), container.envFromNote(f.buckets)))
+					blockers = append(blockers, fmt.Sprintf("kubernetes %s: pod %s/%s (uid %s, node %s) runs %s %s, which writes %s%s%s",
+						label, namespace, pod.Metadata.Name, pod.Metadata.UID, pod.Spec.NodeName, kind.name, container.Name, strings.Join(written, ", "), container.shellNote(), container.envFromNote(f.buckets)))
 				}
 			}
 		}

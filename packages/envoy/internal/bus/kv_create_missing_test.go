@@ -251,6 +251,87 @@ func TestAnUnansweredCreateOfAMissingCopiedBucketIsSentAgain(t *testing.T) {
 	}
 }
 
+// A create-only open whose context ends while its account info is in flight sends no create once
+// that request is answered. The relay holds the open's $JS.API.INFO, the first request of its
+// create, and the context is cancelled: the open answers at once (Bounded), leaving its create
+// running on a goroutine of its own. The held request is then written to the server, which answers
+// it, and that create reads its context before the STREAM.CREATE (addBucketStream) and sends none,
+// so the server sees no create and holds no bucket. With that read removed, the STREAM.CREATE goes
+// out after the release and makes the bucket, an operator's interrupted `envoy-infra buckets
+// create` among such opens. The control is the same hold released with the context live: the
+// create goes on and makes the bucket, so the watch sees a create sent after a release within the
+// 2 s the first half waits.
+func TestACreateMissingCopiedBucketCancelledWithItsAccountInfoInFlightSendsNoCreate(t *testing.T) {
+	stream := "KV_" + SessionBucket
+	// A server of the test's own, so no other test's account info rides the relay's subject.
+	_, uri := testnats.Start(t)
+	relay := startUnansweredRelayOn(t, uri, accountInfoSubject())
+	conn, js := relayedJetStream(t, relay)
+	writes := testnats.WatchStreamWrites(t, uri)
+	watch := testnats.Connect(t, uri)
+	t.Cleanup(watch.Close)
+	infos, err := watch.SubscribeSync(accountInfoSubject())
+	if err == nil {
+		err = watch.Flush()
+	}
+	if err != nil {
+		t.Fatalf("watch the account infos the server receives: %v", err)
+	}
+	// open starts the create-only open with the account info held, and returns once the relay
+	// holds it.
+	open := func(ctx context.Context, release <-chan struct{}) <-chan error {
+		relay.holdNext(release)
+		answer := make(chan error, 1)
+		go func() {
+			_, err := CreateMissingCopiedBucket(ctx, conn, js, SessionBucket, 1)
+			answer <- err
+		}()
+		for deadline := time.Now().Add(30 * time.Second); relay.sent() == 0; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("the open sent no account info in 30 s")
+			}
+		}
+		return answer
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	release := make(chan struct{})
+	answer := open(ctx, release)
+	cancel()
+	select {
+	case err := <-answer:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the open whose context ended with its account info held = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatalf("the open had not answered 5 s after its context ended, with its account info held")
+	}
+	close(release)
+	if _, err := infos.NextMsg(30 * time.Second); err != nil {
+		t.Fatalf("the held account info did not reach the server in 30 s after its release: %v", err)
+	}
+	// The server answers the account info at once, and the create would send its STREAM.CREATE
+	// within milliseconds of that answer.
+	time.Sleep(2 * time.Second)
+	if got := writes.Take(t); len(got) != 0 {
+		t.Fatalf("the open whose context ended sent %v after its held account info was answered, want no create", got)
+	}
+	if _, err := js.StreamInfo(stream); !errors.Is(err, nats.ErrStreamNotFound) {
+		t.Fatalf("%s after the cancelled open: %v, want it absent", stream, err)
+	}
+
+	release = make(chan struct{})
+	answer = open(t.Context(), release)
+	close(release)
+	if err := <-answer; err != nil {
+		t.Fatalf("control: the open whose held account info was released with its context live = %v, want the bucket made", err)
+	}
+	if got := writes.Take(t); len(got) != 1 || got[0] != "$JS.API.STREAM.CREATE."+stream {
+		t.Fatalf("control: the open sent %v, want its create alone", got)
+	}
+}
+
 // A create-only open answers with a handle only once the member answering has applied its create
 // (awaitBucketApplied): a clustered create is answered once the metadata group commits it, and a
 // member that has not applied it yet answers a read of the bucket's stream "stream not found"

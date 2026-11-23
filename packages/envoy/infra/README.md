@@ -3458,7 +3458,11 @@ named bucket first, and changes no bucket that is there, so it can run again:
   the bucket's configuration (`bus.CopiedBucketStreamConfig`). The session bucket's age is the
   exception: the listeners set it from `ENVOY_SESSION_MAX_AGE` on the running bucket, so its age is
   not compared;
-- a read the server does not answer fails the run with exit 1, and nothing is created.
+- a read the server does not answer fails the run with exit 1, and nothing is created;
+- a connection that reports no server version, as one that is not connected does, refuses the run
+  with exit 1 before any read (`refused: the connection reports no server version`), and nothing
+  is created: each bucket is judged against the stream its create makes on the hub's version, and
+  nats.go reads no version as a server too old for a bucket. Run `create` again.
 
 Each absent bucket is then created with no writer proof (`bus.CreateMissingCopiedBucket`), and
 the run prints `created <bucket> (<n> copies)`. The create sends no stream update, on any server
@@ -3481,8 +3485,12 @@ says so once, on standard error, at the first refusal of each request, and its c
 no line for each refused send.
 
 An interrupt or SIGTERM stops `create` where it is, its wait included: it exits 1 with
-`envoy-infra buckets create: stopped: <the signal>; nothing more is created` and sends no create
-after it. A bucket a `created` line above names stays.
+`envoy-infra buckets create: stopped: <the signal>; it sends no create after this, but one it had
+sent may still land: run create again to see what the hub holds`, and sends no create after it. A
+`STREAM.CREATE` it had already sent when the signal came is not called back: the hub still
+applies it, so the bucket the run was on may be there although no `created` line names it. Run
+`create` again to see what the hub holds: that bucket is then present, or absent and made. A bucket
+a `created` line above names stays.
 
 `recreate` deletes each `--bucket`, checks again that no writer runs, since one started between
 the check and the delete may have written to the deleted bucket, and only then creates it.
@@ -3509,14 +3517,21 @@ without one:
   `envoy_known_sessions`, and `envoy_ci_state` too when its `ENVOY_WEBHOOKS` names `github` (read
   as the listener reads it: split at commas, each entry trimmed of white space), holds a `$(VAR)`
   reference, or comes from a Secret, a ConfigMap or a field; `envoy-dispatch` writes
-  `envoy_ci_state`. A container whose `envFrom` may set `ENVOY_MACHINE_ID` or `ENVOY_WEBHOOKS` (a
-  source with no prefix, or a prefix that starts the name, and no `env` entry of that name, which
-  takes precedence) counts as a writer of each bucket that variable could select, and its blocker
-  says so: one nothing else names a writer, with a source of no prefix, blocks every bucket. No
-  other container writes any. A pod of another namespace is never read, so an Actions runner's
-  container named `listener` does not block. No node's kubelet runtime list is read (Autopilot
-  refuses `nodes/proxy`), so a pod deleted with `--force` whose containers still run gets past the
-  check: that is the third way the warning names, and `--connz` still sees its open connection.
+  `envoy_ci_state`. A container whose command is a shell (`sh`, `bash`, `dash`, `ash`, `zsh`,
+  `ksh`, `mksh` or `busybox`, by path or not) whose script - any later word of the command or its
+  `args` - names `envoy-listener`, such as `[/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec
+  envoy-listener']`, counts as a writer of every bucket, since the script may set
+  `ENVOY_MACHINE_ID` and `ENVOY_WEBHOOKS` where the pod does not show them, and its blocker says
+  so; one whose script names `envoy-dispatch` writes `envoy_ci_state`, and a shell whose script
+  names neither writes none. A container whose `envFrom` may set `ENVOY_MACHINE_ID` or
+  `ENVOY_WEBHOOKS` (a source with no prefix, or a prefix that starts the name, and no `env` entry
+  of that name, which takes precedence) counts as a writer of each bucket that variable could
+  select, and its blocker says so: one nothing else names a writer, with a source of no prefix,
+  blocks every bucket. No other container writes any. A pod of another namespace is never read, so
+  an Actions runner's container named `listener` does not block. No node's kubelet runtime list is
+  read (Autopilot refuses `nodes/proxy`), so a pod deleted with `--force` whose containers still
+  run gets past the check: that is the third way the warning names, and `--connz` still sees its
+  open connection.
 - `--host <target>`, once for each machine, through `ssh -o BatchMode=yes` (`--ssh <program>`
   names another program taking ssh's arguments, such as a wrapper over SSM): no process on the
   machine runs under a name this repository runs a writer as - `envoy-listener`, `listener`, the

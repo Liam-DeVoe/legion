@@ -15,6 +15,7 @@ import (
 type fakeContainer struct {
 	Name          string           `json:"name"`
 	Command       []string         `json:"command,omitempty"`
+	Args          []string         `json:"args,omitempty"`
 	Env           []map[string]any `json:"env,omitempty"`
 	EnvFrom       []map[string]any `json:"envFrom,omitempty"`
 	RestartPolicy string           `json:"restartPolicy,omitempty"`
@@ -464,6 +465,64 @@ func TestAContainerWhoseEnvFromMaySetTheMapsVariablesBlocksWhatTheyCouldSelect(t
 			for _, bucket := range c.blocks {
 				code, stdout, stderr := recreateIn(t, w, bucket, "envoy")
 				if want := "runs container " + c.pod.containers[0].Name + ", which writes " + bucket + " " + c.note; code != 1 || !strings.Contains(stderr, want) {
+					t.Errorf("recreate of %s beside %s = %d, want 1 naming %q\n%s%s", bucket, c.name, code, want, stdout, stderr)
+				}
+			}
+			for _, bucket := range c.passes {
+				if code, stdout, stderr := recreateIn(t, w, bucket, "envoy"); code != 0 {
+					t.Errorf("recreate of %s beside %s = %d, want 0\n%s%s", bucket, c.name, code, stdout, stderr)
+				}
+			}
+		})
+	}
+}
+
+// A listener a shell starts blocks every bucket a listener may write, its blocker saying why: a
+// container whose command is a shell (sh -c or bash -c, by path or not, its script in the command
+// or in args) whose script names envoy-listener may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS where
+// the pod does not show them, so it writes every copied bucket, the CI state bucket among them. A
+// shell whose script names envoy-dispatch writes the CI state bucket. At 65a488fe53 the map read
+// the command's program alone, so each of these mapped to no bucket and the recreate went on. The
+// controls do not block: a shell whose script names neither program, and a shell given a script
+// file, whose words name none.
+func TestAShellThatStartsAListenerBlocksEveryBucket(t *testing.T) {
+	pod := func(container fakeContainer) fakePod {
+		return fakePod{namespace: "envoy", name: "pod-shell", containers: []fakeContainer{container}}
+	}
+	const script = "ENVOY_MACHINE_ID=x exec envoy-listener"
+	listenerNote := "(its command is a shell whose script names envoy-listener, and the script may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS, which the pod does not show)"
+	for _, c := range []struct {
+		name           string
+		container      fakeContainer
+		writes         []string
+		blocks, passes []string
+		note           string
+	}{
+		{"sh -c", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", script}},
+			bus.CopiedBuckets(), []string{bus.KnownSessionBucket, bus.CIStateBucket}, nil, listenerNote},
+		{"bash -c", fakeContainer{Name: "app", Command: []string{"bash", "-c", script}},
+			bus.CopiedBuckets(), []string{bus.KnownSessionBucket, bus.CIStateBucket}, nil, listenerNote},
+		{"sh -c with its script in args", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c"}, Args: []string{script}},
+			bus.CopiedBuckets(), []string{bus.KnownSessionBucket, bus.CIStateBucket}, nil, listenerNote},
+		{"sh -c running envoy-dispatch", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec /usr/local/bin/envoy-dispatch"}},
+			[]string{bus.CIStateBucket}, []string{bus.CIStateBucket}, []string{bus.KnownSessionBucket}, "(its command is a shell whose script names envoy-dispatch)"},
+		{"control: a shell whose script names neither", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec nats-server --config /etc/nats/nats.conf"}},
+			nil, nil, []string{bus.KnownSessionBucket, bus.CIStateBucket}, ""},
+		{"control: a shell given a script file", fakeContainer{Name: "app", Command: []string{"/bin/bash", "/opt/start.sh"}},
+			nil, nil, []string{bus.KnownSessionBucket, bus.CIStateBucket}, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var pods podList
+			if err := json.Unmarshal([]byte(podsJSON(t, pod(c.container))), &pods); err != nil {
+				t.Fatalf("decode the pod: %v", err)
+			}
+			if got := pods.Items[0].Spec.Containers[0].writes(); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(c.writes))) {
+				t.Errorf("the container writes %v, want %v", got, c.writes)
+			}
+			w := &world{podsIn: map[string]string{"envoy": podsJSON(t, pod(c.container))}}
+			for _, bucket := range c.blocks {
+				code, stdout, stderr := recreateIn(t, w, bucket, "envoy")
+				if want := "runs container app, which writes " + bucket + " " + c.note; code != 1 || !strings.Contains(stderr, want) {
 					t.Errorf("recreate of %s beside %s = %d, want 1 naming %q\n%s%s", bucket, c.name, code, want, stdout, stderr)
 				}
 			}
