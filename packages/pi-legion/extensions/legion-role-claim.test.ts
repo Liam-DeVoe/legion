@@ -306,11 +306,11 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   await sessionStart({}, context);
 
   // The boot is over and the name is not taken (INFRA-1573): the claim runs at the session's
-  // first turn, so nothing has reached the listener yet and the only managed intervals are the
-  // stall watch's sweep every Legion session arms, and the session activity report every claimed
-  // session sends on change (INFRA-945).
+  // first turn, so nothing has reached the listener yet. Whatever managed intervals the boot armed
+  // (the stall watch's sweep and the activity report, today), the claim's heartbeat comes after
+  // them, so it is found by that count rather than by a position a later interval would move.
   expect(registrations).toHaveLength(0);
-  expect(intervals).toHaveLength(2);
+  const armedAtBoot = intervals.length;
 
   // The first turn: `legion.ts` answers `agent_start` by telling the claim session its turn has
   // started, and the claim runs behind that signal, awaited by nothing of the host.
@@ -319,13 +319,13 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   await agentStart({}, context);
   await roleClaimed.promise;
 
-  // Three managed intervals now: the two the boot armed, and the role claimant's own heartbeat,
-  // armed by the claim. The heartbeat is the one this test drives.
-  expect(intervals).toHaveLength(3);
+  // One managed interval more now: the role claimant's own heartbeat, armed by the claim. The
+  // heartbeat is the one this test drives.
+  expect(intervals).toHaveLength(armedAtBoot + 1);
   // Establishing the role claimant registers before the role is applied, then
   // refreshes it after the claim.
   expect(registrations).toHaveLength(2);
-  intervals[2]?.();
+  intervals[armedAtBoot]?.();
   await heartbeatRegistration.promise;
   expect(registrations).toHaveLength(3);
   expect(registrations[2]).toMatchObject({

@@ -427,12 +427,6 @@ export default function legionExtension(pi: PiApi): void {
    * hands it to this instance instead (`subagentCall`).
    */
   let stallWatch: StallWatchdog | undefined;
-  /** The sweep, on the interval each session arms below, `stallSweepMs(limits)` apart: 5 s on
-   * production's step gap. It is never awaited: a step of the ladder can outlast the tick that
-   * armed it, and the detector takes one sweep at a time. */
-  const stallSweep = (): void => {
-    void stallWatch?.sweep();
-  };
   const armStallWatch = (session: LegionSessionKind): void => {
     stallWatch = createStallWatchdog({
       now: Date.now,
@@ -637,12 +631,12 @@ export default function legionExtension(pi: PiApi): void {
       exitProcess(1);
     }
     // Every Legion session watches its own tool calls; a subagent's instance returned above. The
-    // sweep has a managed interval of its own, a quarter of the ladder's step gap and never more
-    // than 5 s apart, which bounds how late a stuck call or a due step is found against a gap
-    // that is minutes long in production: the controller reports no activity, and a worker's
-    // activity period below is not the ladder's to set.
+    // watch sweeps on a managed interval of its own, `stallSweepMs(limits)` apart, so the ladder's
+    // step gap and not the activity report below sets how late a stuck call or a due step is
+    // found; the controller reports no activity at all. The sweep is never awaited: a step of the
+    // ladder can outlast the tick that started it, and the watch takes one sweep at a time.
     armStallWatch(session);
-    context.setInterval(stallSweep, stallSweepMs(limits));
+    context.setInterval(() => void stallWatch?.sweep(), stallSweepMs(limits));
     // The controller registers through the controller session and gets the `legion` tool's
     // controller operations (`OPERATIONS.controller` in `src/tools.ts`); each but `read_state`
     // mints its own controller grant.

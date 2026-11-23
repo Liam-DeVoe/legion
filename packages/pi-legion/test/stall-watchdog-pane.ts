@@ -58,17 +58,19 @@ const ASSIGNMENT = `Implement ${ISSUE}. WATCH-ROLE-ASSIGNMENT.`;
 export const ARCHITECT_TOPIC = `notifications.role.legion-${PROJECT}-${TREE.toLowerCase()}-architect`;
 
 /** The bound for a call no deadline judges (`LEGION_STALL_CALL_BOUND_MS`): six seconds, so a
- * wedged cell is overdue one sweep after it starts rather than four hours later. */
+ * wedged cell is overdue about five sweeps after it starts (`SWEEP_MS`) rather than four hours
+ * later. */
 export const BOUND_MS = 6_000;
 
-/** The gap between the ladder's steps (`LEGION_STALL_STEP_MS`): five seconds, which is the gap
- * the steps had when they landed on the plugin's old 5-second sweep, and longer than the host's
- * own `abort()` takes to end a turn (about five seconds, the measurements in
- * `extensions/legion-stall-watchdog-omp.test.ts`'s header), so the step after the abort never
- * runs while the abort is still landing. */
+/** The gap between the ladder's steps (`LEGION_STALL_STEP_MS`): five seconds, the gap the steps
+ * had when they landed on the plugin's old 5-second sweep. It also bounds the second step's wait
+ * for the host's `abort()` (`abortEnd`, `@legion/pi-shared/stall-watchdog`): an abort still out
+ * when the gap is up is recorded as not returned, and the next step can follow about one sweep
+ * later. The aborts measured for `extensions/legion-stall-watchdog-omp.test.ts`'s header came back
+ * within about five seconds, and the cases' own abort returns well inside the gap. */
 export const STEP_MS = 5_000;
 
-/** How often the plugin sweeps its book on that gap (`stallSweepMs`): a quarter of it, 1.25 s. */
+/** How often the plugin sweeps its book on that gap: `stallSweepMs`, 1,250 ms here. */
 export const SWEEP_MS = stallSweepMs({ stepMs: STEP_MS });
 
 /** The deadline the backgrounded-call case's shell command declares, which is the rule that

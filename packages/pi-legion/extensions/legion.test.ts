@@ -7732,7 +7732,7 @@ describe("the stall watch the plugin's entry arms", () => {
       .filter((entry) => entry.customType === STALL_WATCH_ENTRY)
       .map((entry) => entry.data as StallWatchRecord);
 
-  /** Runs every interval callback a session armed, as the host does when its five seconds are up,
+  /** Runs every interval callback a session armed, as the host does when each one's period is up,
    * and waits for the sweep it started to have written `wanted` records in all. The host arms the
    * sweep with `void` and never awaits it — a step of the ladder can outlast the tick that armed
    * it — so there is no promise or event here to await, and each step crosses the teller's
@@ -7903,6 +7903,36 @@ describe("the stall watch the plugin's entry arms", () => {
     expect(written.map((record) => record.kind)).toEqual(["evidence", "step"]);
     expect((written[0] as StallEvidenceRecord).session).toBe("controller");
     expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
+  });
+
+  // The period the sweep is armed at, which no other case reads: every other fake host drops
+  // `setInterval`'s delay. The controller is the session to read it on: its `session_start` arms
+  // the sweep and no activity report, beside the Envoy entry's own registration heartbeat
+  // (90 s). A sweep armed at anything but `stallSweepMs` — the step gap itself, 2 minutes in
+  // production and 0 under `shortLimits` — is missing from the periods, and that case fails.
+  const armedPeriods = async (sessionId: string): Promise<number[]> => {
+    setLegionStallProcessesForTests(() => fakeProcesses([]));
+    const controller = await launchedController({ sessionId });
+    const periods: number[] = [];
+    await hook(controller.handlers, "session_start")(
+      {},
+      {
+        ...controller.context(sessionId),
+        setInterval: (_callback, intervalMs) => {
+          periods.push(intervalMs);
+        },
+      }
+    );
+    return periods;
+  };
+
+  test("the sweep is armed 5 s apart on the default step gap", async () => {
+    expect(await armedPeriods("ses_stall_period_default")).toContain(5_000);
+  });
+
+  test("the sweep is armed 1 s apart on a step gap of 0, the floor of `stallSweepMs`", async () => {
+    shortLimits();
+    expect(await armedPeriods("ses_stall_period_short")).toContain(1_000);
   });
 
   test("a `task` subagent's session arms no sweep and records nothing: its last step would end the worker with it", async () => {
