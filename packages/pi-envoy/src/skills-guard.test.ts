@@ -220,7 +220,16 @@ test("no skill or daemon prompt names a list of open items", () => {
 // says (1). The research bullets lost "Ask only the part no search answered.", which their first
 // two bullets say together (7). The result bullet lost "is the same" (3). The spec-writing row
 // lost "or write an" (3). The three skills stay at 2,337 words, as on main.
-test("the three Dispatch skills total fewer than 2,340 words", () => {
+//
+// It moved by 19 words, to 2,359, for one sentence at the end of dispatch-first's blocker bullet:
+// "A secret request that waits for a person is already in their Inbox, so it gets no ask
+// (`skill://agent-secrets`)." A person directed that every agent know that a secret request
+// already reaches its approver's Inbox, so an ask for it is a duplicate, and that the rule go in a
+// generic skill. The rule lives in skills/agent-secrets/SKILL.md, which a session reads when a
+// command needs a secret. The blocker bullet, which every session holds whole, is the line that
+// sends an agent to open an ask, so its exception sits there and links the rule. The three skills
+// stand at 2,356 words, and the margin under the bound stays 3 words.
+test("the three Dispatch skills total fewer than 2,359 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -230,7 +239,7 @@ test("the three Dispatch skills total fewer than 2,340 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_340);
+  expect(words).toBeLessThan(2_359);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {

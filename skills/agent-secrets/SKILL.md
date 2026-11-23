@@ -20,6 +20,8 @@ agent-secrets NAME... [--reason 'TEXT'] [--wait DURATION] [--ttl DURATION] -- <c
 - Each key says who decides a request for it: `agent-secrets secret show NAME` prints it on its `decides:` line, beside the `guidance:` a model judge decides by. Meet that guidance in `--reason`. The judge grants a request or refuses it for good (77); one it cannot decide goes to the key's person.
 - A session that must not block passes `--wait 0s` and reads the decision later with `agent-secrets status <request_id>`.
   The same command run again (the same names and `--ttl`) uses the live grant or joins the waiting request, and asks nobody again.
+- A request that waits for a person is already in that person's Dispatch Inbox, with a link to the broker's page that decides it (https://cybermonklabs.github.io/legion/broker/concepts/#approvals).
+  Open no Dispatch ask, comment or message that asks them to approve it: each one is a duplicate of that Inbox row. Continue your work, and read the decision with `agent-secrets status <request_id>`.
 - For a GitHub App secret, `--github-owner <account> --github-token` gives the command that one account's token, the string an `Authorization` header carries; `--github-repo` and `--github-read-only` narrow it further.
   Without `--github-token` the name holds the JSON object of installations, and GitHub answers it `401`.
 
