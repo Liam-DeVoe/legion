@@ -67,9 +67,10 @@ interface RowPerson {
  *
  * An ask draws what its row in the conversation draws, by the same parts: its question, cut at
  * six lines once it is answered, its options, which are the choices of its answer while it is
- * open, and the person's answer character for character as the store holds it, with no
- * sentence of the page's beside it. A declined ask says who declined it, and draws their note
- * where they wrote one: a question the person declined, never an answer.
+ * open, and the person's answer as the store holds it, drawn by the row's own reader
+ * (`RowText`), a paragraph to each block of its words, with no sentence of the page's beside
+ * it. A declined ask says who declined it, and draws their note where they wrote one: a
+ * question the person declined, never an answer.
  *
  * A decision draws its words - whole where it waits for the reader's review, cut as an agent's
  * words are anywhere else (ruling 6) - how it stands in the states the page declares
