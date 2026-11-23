@@ -8,9 +8,9 @@ import (
 
 // experimentAssignmentPlanVersion is the version of the migration this file tests, so the test can
 // migrate through everything before it whatever lands beside it.
-const experimentAssignmentPlanVersion = 20261117192018
+const experimentAssignmentPlanVersion = 20261123165139
 
-// 20261117192018 adds experiment_assignments.plan, how the issue a row was drawn for is done, and
+// 20261123165139 adds experiment_assignments.plan, how the issue a row was drawn for is done, and
 // back-fills nothing: a row drawn before it reads the empty plan, the issue of no group, which
 // runs as an issue with no experiment runs. The column takes the empty word and the three words of
 // a variant's `plan` and no other, so a write of any other word is refused. A release before it

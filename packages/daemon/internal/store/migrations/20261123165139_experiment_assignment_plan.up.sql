@@ -1,4 +1,4 @@
--- 20261117192018_experiment_assignment_plan.up.sql — how the issue a draw was made for is done.
+-- 20261123165139_experiment_assignment_plan.up.sql — how the issue a draw was made for is done.
 --
 -- A variant of an experiment may name `plan` (config.Variant.Plan): `owner`, whose issues take the
 -- plan their owner gives, or `default`, whose issues run the project's default steps and take no
