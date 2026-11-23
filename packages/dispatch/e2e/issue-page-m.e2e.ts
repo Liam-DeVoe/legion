@@ -3692,6 +3692,158 @@ test("a growth above Details' view once the t o hold has ended leaves the rows i
   }
 });
 
+/** Waits until Details' box has stood still for two frames, `after` naming what moved it last. */
+async function detailsStandStill(page: Page, after: string): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const at = await historyScrollTop(page);
+        await nextFrames(page);
+        return (await historyScrollTop(page)) - at;
+      },
+      { message: `Details' box kept scrolling after ${after}` }
+    )
+    .toBe(0);
+}
+
+/** The reader reading down the history of `key` to its end: Load older focused and pressed by
+ *  Enter until the log's last page takes it away, and Details' box standing still after. Each
+ *  focus brings Load older into Details' view, at the foot of what the history holds. Answers
+ *  how far Details' box is then scrolled. */
+async function readDownByLoadOlder(page: Page, key: string): Promise<number> {
+  const loadOlder = historyPanel(page).getByRole("button", { name: CONTROL_LABELS.load_older });
+  await expect(loadOlder, "the history offers no Load older to read down by").toBeVisible();
+  for (let presses = 1; await loadOlder.isVisible(); presses += 1) {
+    expect(
+      presses,
+      `${CONTROL_LABELS.load_older} is still offered past the log's last page`
+    ).toBeLessThan(3);
+    await loadOlder.focus();
+    await nextFrames(page);
+    const answered = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === `/api/v1/issues/${key}/events` && url.searchParams.has("before");
+    });
+    await page.keyboard.press("Enter");
+    await answered;
+    await nextFrames(page);
+  }
+  await expect(
+    loadOlder,
+    `${CONTROL_LABELS.load_older} is still offered once the whole log is read`
+  ).toHaveCount(0);
+  await detailsStandStill(page, `the last ${CONTROL_LABELS.load_older}`);
+  return historyScrollTop(page);
+}
+
+/** How many Legion agents worked the issue of the row below: enough that the collaborators' row,
+ *  its list open, is taller than Details' view at 1440 px and at 390. */
+const MANY_AGENTS = 16;
+
+/** An issue whose history holds 205 notes of the agents', more than the first page of 200 the
+ *  history reads, so Load older reads on, and which `MANY_AGENTS` Legion agents worked, so the
+ *  collaborators' row with its list open is taller than Details' view. */
+async function seedCollaboratorsOverLongHistory(): Promise<string> {
+  const { issue } = await seedMessages("Collaborators over a long history", 205, "Older message");
+  const roles: readonly LegionRole[] = ["implementer", "tester", "reviewer", "planner"];
+  await setLegionAgents(
+    Array.from({ length: MANY_AGENTS }, (_, index) =>
+      legionAgentEntry({
+        issue: issue.key,
+        legionProject: LEGION_PROJECT,
+        role: roles[index % roles.length] ?? "implementer",
+        sessionId: `e2e-agent-${index}`,
+        startedAt: `2026-10-26T${String(index).padStart(2, "0")}:00:00Z`,
+      })
+    )
+  );
+  return issue.key;
+}
+
+/** At 390 px Details is a sheet over the page, a dialog that masks the page's keys while it is
+ *  open (`Margin.tsx`), so a reader there closes it, with Escape, before a key of the page; at
+ *  every other width Details stands beside the page, and the key is pressed with it open. */
+async function readyForPageKey(page: Page, size: { readonly width: number }): Promise<void> {
+  if (size.width !== PHONE.width) return;
+  await page.keyboard.press("Escape");
+  await expect(marginShell(page), "Escape did not close Details").toBeHidden();
+}
+
+// A load of `/collaborators` opens Details with the collaborators' list open, the Collaborators
+// control focused; the reader then reads the history down to its end, pressing Load older by
+// Enter until it goes, and presses `t o`. Details brings the collaborators' row into its view by
+// the least scroll (`useOpenDetailsAt`), and the row, its list open, is taller than the view:
+// coming from below, that scroll shows the row's foot, and the control at its head stayed above
+// the view, where the hold of the landed place found it wholly outside the view and kept nothing.
+// The hold now brings the focused control into the view as the focus arrives. At 390 px Details is
+// a sheet whose dialog masks the page's keys, so there the reader closes it with Escape before the
+// key, and `t o` opens it again (`readyForPageKey`). Found by the tester on a running build with a
+// copy of a large real issue, Details' box scrolled to 43,854 px: the control 151 px above
+// Details' view at 1440 px and 435 px above it at 390, in two runs of two.
+test("t o after the history is read down by Load older leaves the focused Collaborators control wholly in Details' view, though its open list makes its row taller than the view", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  const key = await seedCollaboratorsOverLongHistory();
+  // Each width's place of the control, so one run says every width it was out of view at.
+  const outOfView: string[] = [];
+  for (const size of [DESKTOP, PHONE]) {
+    const context = await reader(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize(size);
+      await gotoIssue(page, `/issues/${key}/collaborators`);
+      await expect(
+        collaboratorsControl(page),
+        "a load of /collaborators did not focus the Collaborators control"
+      ).toBeFocused();
+      const row = marginShell(page).locator('[data-details-row="collaborators"]');
+      await expect
+        .poll(() => row.locator("[data-collaborator] [data-agent-name]").count(), {
+          message: "the collaborators' list never drew the issue's Legion agents",
+        })
+        .toBeGreaterThanOrEqual(MANY_AGENTS);
+      await nextFrames(page);
+      // One read of the list's height: the agents are drawn, and nothing it holds reads more.
+      const view = await historyViewport(page);
+      const rowAt = await boxOf(row, "the collaborators' row");
+      expect(
+        rowAt.height > view.bottom - view.top,
+        `at ${size.width} px the collaborators' row is ${Math.round(rowAt.height)} px tall, no taller than Details' view of ${Math.round(view.bottom - view.top)} px, so the row proves nothing`
+      ).toBe(true);
+
+      const scrolled = await readDownByLoadOlder(page, key);
+      // One read of the place the reading left: Details' box has stood still for two frames.
+      const away = await boxOf(collaboratorsControl(page), "the Collaborators control");
+      expect(
+        away.y + away.height <= view.top,
+        `at ${size.width} px reading down left the Collaborators control at ${Math.round(away.y)} px, in Details' view from ${Math.round(view.top)}, so the row proves nothing`
+      ).toBe(true);
+
+      await readyForPageKey(page, size);
+
+      await page.keyboard.press("t");
+      await page.keyboard.press("o");
+      await expect(
+        collaboratorsControl(page),
+        `at ${size.width} px t o did not focus the Collaborators control`
+      ).toBeFocused();
+      await detailsStandStill(page, "t o");
+      // One read of where `t o` left the control: Details' box has stood still for two frames.
+      const shown = await historyViewport(page);
+      const landed = await boxOf(collaboratorsControl(page), "the Collaborators control");
+      if (!wholly(landed, { bottom: shown.bottom + 1, top: shown.top - 1 })) {
+        outOfView.push(
+          `at ${size.width} px, with Details read down to ${Math.round(scrolled)} px, t o left the focused Collaborators control at ${Math.round(landed.y)} to ${Math.round(landed.y + landed.height)} px, out of Details' view (${Math.round(shown.top)} to ${Math.round(shown.bottom)})`
+        );
+      }
+    } finally {
+      await context.close();
+    }
+  }
+  expect(outOfView, outOfView.join("; ")).toEqual([]);
+});
+
 // `/issues/<key>/activity` opens Details at the history. The page
 // arrives with the log unread, so the history's heading has its box while the list under it is
 // still the loading line, and Details cannot yet scroll it to the top: the landing must still
@@ -3796,6 +3948,68 @@ test("t v from a load with Details shut opens Details with the history's heading
       "t v's heading went back down Details' view after the list drew"
     ).toBeLessThanOrEqual(24);
   });
+});
+
+// A load of `/activity` opens Details with the history's heading at the top of its view; the
+// reader then reads the history down to its end, pressing Load older by Enter until it goes, and
+// presses `t v`. Each press is a following of `/activity` of its own (`useFollowing`), which
+// brings the heading back to the top of Details' view. The history's landing told one following
+// from the next by the address alone, the same for every following of `/activity`, so `t v` put
+// the focus on the history and left its heading far above the view. At 390 px Details is a sheet
+// whose dialog masks the page's keys, so there the reader closes it with Escape before the key
+// (`readyForPageKey`). Found by the tester on a running build with a copy of a large real issue:
+// the heading 39,585 px above Details' view at 1440 px and 121 px above it at 390.
+test("t v after the history is read down by Load older brings the history's heading to the top of Details' view", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  const { issue } = await seedMessages("A long history read down", 205, "Older message");
+  // Each width's place of the heading, so one run says every width it was out of place at.
+  const outOfPlace: string[] = [];
+  for (const size of [DESKTOP, PHONE]) {
+    const context = await reader(browser, "alice");
+    try {
+      const page = await context.newPage();
+      await page.setViewportSize(size);
+      await gotoIssue(page, `/issues/${issue.key}/activity`);
+      await expect(marginShell(page), "/activity did not open Details").toBeVisible();
+      await newestHistoryEntry(page);
+      const heading = historyPanel(page).getByRole("heading", {
+        exact: true,
+        name: CONTROL_LABELS.history,
+      });
+
+      const scrolled = await readDownByLoadOlder(page, issue.key);
+      // One read of the place the reading left: Details' box has stood still for two frames.
+      const view = await historyViewport(page);
+      const away = await boxOf(heading, "the history's heading");
+      expect(
+        away.y + away.height <= view.top,
+        `at ${size.width} px reading down left the history's heading at ${Math.round(away.y)} px, in Details' view from ${Math.round(view.top)}, so the row proves nothing`
+      ).toBe(true);
+
+      await readyForPageKey(page, size);
+
+      await page.keyboard.press("t");
+      await page.keyboard.press("v");
+      await expect(
+        historyPanel(page),
+        `at ${size.width} px t v did not focus the history`
+      ).toBeFocused();
+      await detailsStandStill(page, "t v");
+      // One read of where `t v` left the heading: Details' box has stood still for two frames.
+      const shown = await historyViewport(page);
+      const landed = await boxOf(heading, "the history's heading");
+      if (Math.abs(landed.y - shown.top) > 2) {
+        outOfPlace.push(
+          `at ${size.width} px, with Details read down to ${Math.round(scrolled)} px, t v left the history's heading at ${Math.round(landed.y)} px, not at the top of Details' view at ${Math.round(shown.top)}`
+        );
+      }
+    } finally {
+      await context.close();
+    }
+  }
+  expect(outOfPlace, outOfPlace.join("; ")).toEqual([]);
 });
 
 // The address of an agents' turn opens Details with that turn marked

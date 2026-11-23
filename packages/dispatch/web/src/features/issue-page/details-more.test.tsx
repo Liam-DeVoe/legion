@@ -1836,17 +1836,21 @@ async function nextFrames(count: number): Promise<void> {
 /**
  * `PeopleInDrawer` at `path`, laid out as Details stacks its rows: each row of the box's content
  * under the one before, from the box's top, moved up by the box's scroll, and each element as
- * the row it stands in. The history's block is laid out inside its row as blocks stack: each
+ * the row it stands in, but for the control at the head of a row a control elsewhere opens
+ * Details at (`data-details-row`): the first element of what the row holds, as `WideRow` draws
+ * the Collaborators control above the list it opens, stands at the row's top, as tall as a row
+ * the case does not size. The history's block is laid out inside its row as blocks stack: each
  * entry of the history under the one before (`HISTORY_UNITS`), everything inside an entry as the
  * entry, and each line outside them one `HISTORY_LINE` tall. The box's view is `BOX_HEIGHT`
  * tall (`clientHeight`), what it scrolls is its content's height (`scrollHeight`), a point of
  * the page names what is drawn there (`elementFromPoint`), and `scrollIntoView` scrolls the box
  * as the browser does. happy-dom lays nothing out, never calls a resize observer back and raises
- * no scroll event, so `grow` sets a row's height, or an entry's by its `data-history-entry`, and
- * `resized` calls every observer back, as the browser does once a row's height has changed;
- * `heightsChanged` calls back only the observers of an element whose height changed, as the
- * browser does; and `frame` is the next frame: the box's scroll event, where the box moved since
- * the last one, then the observers of what changed height.
+ * no scroll event, so `grow` sets a row's height, by its `data-testid` or its `data-details-row`,
+ * or an entry's by its `data-history-entry`, and `resized` calls every observer back, as the
+ * browser does once a row's height has changed; `heightsChanged` calls back only the observers of
+ * an element whose height changed, as the browser does; and `frame` is the next frame: the box's
+ * scroll event, where the box moved since the last one, then the observers of what changed
+ * height.
  */
 function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
   const log = drawn.log ?? Promise.resolve([]);
@@ -1914,7 +1918,9 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
   const rowHeight = (row: Element) =>
     row.matches(HISTORY_BLOCK)
       ? heightIn(row)
-      : (heights.get(row.getAttribute("data-testid") ?? "") ?? ROW_HEIGHT);
+      : (heights.get(
+          row.getAttribute("data-testid") ?? row.getAttribute("data-details-row") ?? ""
+        ) ?? ROW_HEIGHT);
   /** The top and height of `target` in `block`, whose top is `top`, where `block` holds it. */
   const placeIn = (block: Element, top: number, target: Element): DOMRect => {
     if (block === target || block.matches(HISTORY_UNITS)) return rectOf(top, heightIn(block));
@@ -1947,7 +1953,13 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
     let top = start;
     for (const row of box.firstElementChild?.children ?? []) {
       if (row.contains(this)) {
-        return row.matches(HISTORY_BLOCK) ? placeIn(row, top, this) : rectOf(top, rowHeight(row));
+        if (row.matches(HISTORY_BLOCK)) return placeIn(row, top, this);
+        const head = row.matches("[data-details-row]")
+          ? row.firstElementChild?.firstElementChild
+          : null;
+        return head?.contains(this) === true
+          ? rectOf(top, Math.min(ROW_HEIGHT, rowHeight(row)))
+          : rectOf(top, rowHeight(row));
       }
       top += rowHeight(row);
     }
@@ -1976,11 +1988,18 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
     const bottom = BOX_TOP + BOX_HEIGHT;
     const block =
       typeof how === "object" ? (how.block ?? "start") : how === false ? "end" : "start";
-    // `nearest` leaves an element wholly in the view, or over all of it, where it is.
+    // `nearest` leaves an element wholly in the view, or over all of it, where it is; else it
+    // scrolls by the smaller of the two moves that line an edge of the element up with the same
+    // edge of the view: an element above the view no taller than it comes in by its top, and a
+    // taller one by its foot, and an element below the view the other way about.
     const over = at.top < BOX_TOP;
     const under = at.bottom > bottom;
     const nearest =
-      over === under ? 0 : over ? at.top - BOX_TOP : Math.min(at.bottom - bottom, at.top - BOX_TOP);
+      over === under
+        ? 0
+        : over
+          ? Math.max(at.top - BOX_TOP, at.bottom - bottom)
+          : Math.min(at.bottom - bottom, at.top - BOX_TOP);
     const by: Record<ScrollLogicalPosition, number> = {
       center: at.top + at.height / 2 - (BOX_TOP + BOX_HEIGHT / 2),
       end: at.bottom - bottom,
@@ -2054,9 +2073,10 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
       );
       await nextFrames(2);
     },
-    /** Sets the height of `row` - a row of the box by its `data-testid`, or an entry of the
-     *  history by its `data-history-entry` - `by` taller, and moves the box as the browser's own
-     *  scroll anchoring does across that change, where the case draws it (`browserAnchoring`). */
+    /** Sets the height of `row` - a row of the box by its `data-testid` or its
+     *  `data-details-row`, or an entry of the history by its `data-history-entry` - `by` taller,
+     *  and moves the box as the browser's own scroll anchoring does across that change, where the
+     *  case draws it (`browserAnchoring`). */
     grow(row: string, by: number): void {
       const entry = box.querySelector(`[data-history-entry="${CSS.escape(row)}"]`) !== null;
       const anchoring =
@@ -2209,6 +2229,49 @@ test("a load of /collaborators keeps the focused Collaborators control's place a
   }
 });
 
+// `t o` pressed again at `/collaborators`, once the reader has read far down Details below a
+// collaborators' row taller than Details' view - its list open - leaves the focused Collaborators
+// control wholly in the view. The opener brings the whole row into the view (`nearest`), which
+// from below shows the row's foot, the control at its head still above the view; the hold then
+// found the control wholly outside the view and yielded, so nothing brought it back. The hold
+// brings the focused control into the view as the focus arrives. Found by the tester on a running
+// build after the history's Load older was pressed until it went: the control 151 px above
+// Details' view at 1440 px, and 435 px at 390.
+test("t o pressed again at /collaborators with Details read far below a collaborators' row taller than its view leaves the focused Collaborators control wholly in the view", async () => {
+  const log = claimsNewestFirst(30);
+  const page = drawPeopleInDrawer(buildIssuePath({ key: KEY, kind: "collaborators" }), {
+    log: Promise.resolve(log),
+  });
+  try {
+    await page.focused("a load of /collaborators");
+    await waitFor(() =>
+      expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length)
+    );
+    // The list the address opened, drawn under the control, makes its row taller than the view.
+    page.grow("collaborators", 2 * BOX_HEIGHT);
+    page.heightsChanged();
+    // The reader leaves the control and reads down to the end of Details.
+    act(() => page.control().blur());
+    readerScrolls(page.box, page.box.scrollHeight - BOX_HEIGHT - page.box.scrollTop);
+    expect(
+      page.control().getBoundingClientRect().bottom,
+      "the reader's place left the Collaborators control in Details' view, so the case proves nothing"
+    ).toBeLessThan(BOX_TOP);
+
+    await userEvent.keyboard("to");
+    await page.focused("t o");
+    await nextFrames(2);
+    page.frame();
+    const at = page.control().getBoundingClientRect();
+    expect(
+      whollyInBox(at),
+      `t o left the focused Collaborators control at ${at.top} px, out of Details' view (${BOX_TOP} to ${BOX_TOP + BOX_HEIGHT})`
+    ).toBe(true);
+  } finally {
+    page.restore();
+  }
+});
+
 // `t v` puts the focus on the history once Details draws it, and the history keeps the place it
 // landed at in the same way when a row above it grows after the landing.
 test("after t v, a row above the focused history that grows scrolls Details by as much, and the history keeps its place", async () => {
@@ -2279,6 +2342,53 @@ test("after t v, the history's landing at the top of Details is the place held a
     expect(
       history.getBoundingClientRect().top,
       "the row above grew and moved the history from where it landed"
+    ).toBe(BOX_TOP);
+  } finally {
+    page.restore();
+  }
+});
+
+// `t v` pressed again at `/activity`, once the reader has read far down Details, brings the
+// history's heading back to the top of Details' view: each press is a following of the address of
+// its own (`useFollowing`), and each following lands the heading. The landing once told one
+// following from the next by the address alone, the same for every following of `/activity`, so
+// after the load's landing the key landed nothing and the heading stayed far above the view.
+// Found by the tester on a running build after the history's Load older was pressed until it
+// went: the heading 39,585 px above Details' view at 1440 px, and 121 px at 390.
+test("t v pressed again at /activity with Details read far down lands the history's heading at the top of Details' view", async () => {
+  const log = claimsNewestFirst(30);
+  const page = drawPeopleInDrawer(buildIssuePath({ key: KEY, kind: "activity" }), {
+    log: Promise.resolve(log),
+  });
+  try {
+    await waitFor(() =>
+      expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length)
+    );
+    const history = screen.getByTestId("issue-history");
+    const heading = history.querySelector<HTMLElement>("h2");
+    if (heading === null) throw new Error("the history drew no heading");
+    await waitFor(() =>
+      expect(
+        heading.getBoundingClientRect().top,
+        "the load of /activity did not land the history's heading"
+      ).toBe(BOX_TOP)
+    );
+    // The reader reads down to the end of Details.
+    readerScrolls(page.box, page.box.scrollHeight - BOX_HEIGHT - page.box.scrollTop);
+    expect(
+      heading.getBoundingClientRect().bottom,
+      "the reader's place left the history's heading in Details' view, so the case proves nothing"
+    ).toBeLessThan(BOX_TOP);
+
+    await userEvent.keyboard("tv");
+    await waitFor(() =>
+      expect(document.activeElement, "t v did not focus the history").toBe(history)
+    );
+    await nextFrames(2);
+    page.frame();
+    expect(
+      heading.getBoundingClientRect().top,
+      "t v at /activity left the history's heading out of the top of Details' view"
     ).toBe(BOX_TOP);
   } finally {
     page.restore();

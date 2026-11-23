@@ -383,7 +383,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       {drawsHistory ? (
         <>
           <IssueHistory
-            activityAddress={route?.kind === "activity" ? `${pathname}${search}` : undefined}
+            activityFollowing={route?.kind === "activity" ? following : undefined}
             issue={issue}
             item={item}
             state={state}
@@ -520,14 +520,26 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  * time, so a move anything else made, the browser's own scroll anchoring among them, is made good
  * rather than added to.
  *
- * The top kept is where the reader last saw the element: where the focus found it, and again
- * where each scroll of the box the hold did not make itself left it - the reader's wheel, a key,
- * a drag, the browser's own anchoring. The hold tells its own scroll from those by a mark of its
- * own, built by the same rule as the history's anchor's (`ownScrollMark`), since both scroll
- * Details' box and the event of one's scroll can reach the other. While a scroll has left the
- * element wholly outside the view, the hold yields: it corrects nothing, so whatever keeps the
- * rows in view keeps them - the browser's own anchoring, or the history's anchor where it keeps a
- * place - and a scroll that brings the element back into the view takes it as the place again.
+ * The opener brings the control's whole row into the view, not the control itself: a row taller
+ * than the view - the collaborators' row with its list open - that the box comes to from below,
+ * once the reader has read far down Details, shows its foot, and the control at its head stays
+ * above the view. So as the focus arrives, a focused element not wholly in the view is brought
+ * into it first, by the least scroll that shows it whole (`nearest`). An element taller than the
+ * view is brought in only where it lies wholly outside the view, its top to the view's top, which
+ * `nearest` would not show from below; one that already shows in part keeps the focus in sight
+ * and is left where it is. The history `t v` focuses is such an element, and its heading's own
+ * landing places it (below). That scroll is the hold's own, and the hold claims the box before
+ * its event is raised, so neither the hold nor the history's anchor takes it for the reader's.
+ *
+ * The top kept is where the reader last saw the element: where the focus found it, once brought
+ * into the view, and again where each scroll of the box the hold did not make itself left it -
+ * the reader's wheel, a key, a drag, the browser's own anchoring. The hold tells its own scroll
+ * from those by a mark of its own, built by the same rule as the history's anchor's
+ * (`ownScrollMark`), since both scroll Details' box and the event of one's scroll can reach the
+ * other. While a scroll has left the element wholly outside the view, the hold yields: it
+ * corrects nothing, so whatever keeps the rows in view keeps them - the browser's own anchoring,
+ * or the history's anchor where it keeps a place - and a scroll that brings the element back into
+ * the view takes it as the place again.
  *
  * One keeper keeps Details' box at a time. While the hold keeps a top, it claims the box
  * (`claimBox`): the history's anchor lets its own place there go, keeps none and moves the box for
@@ -599,8 +611,23 @@ function holdLandedPlace(target: string, frames: number): () => void {
       claim?.();
       claim = undefined;
     };
-    keepTop();
+    // The opener brings the control's row into the view, which leaves the control at the head of
+    // a row taller than the view above it where the box comes to that row from below. So the
+    // focused element is brought into the view before its top is kept: wholly, or, where it is
+    // taller than the view, by its top, and then only while no part of it is in the view. The
+    // scroll is marked as the hold's own, and its event is raised in a later frame, once `keepTop`
+    // has claimed the box, so neither the hold nor the history's anchor takes it for the reader's.
     const own = ownScrollMark();
+    const landing = control.getBoundingClientRect();
+    const view = scroller.getBoundingClientRect();
+    const tall = landing.height > view.height;
+    const whollyIn = landing.top >= view.top && landing.bottom <= view.bottom;
+    if (!whollyIn && !(tall && overlaps(landing, view))) {
+      const before = scroller.scrollTop;
+      control.scrollIntoView({ block: tall ? "start" : "nearest" });
+      own.move(before, scroller.scrollTop);
+    }
+    keepTop();
     // What of the box's content around the control is watched, brought up to that content as it
     // is at each change: what is drawn around the control later is watched from then on.
     let watched: ReadonlySet<Element> = new Set();

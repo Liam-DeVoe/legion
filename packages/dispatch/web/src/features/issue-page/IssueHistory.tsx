@@ -58,10 +58,11 @@ import { scrollingAncestor } from "./scroll-box";
 /** How many events a page of the log holds, as the server answers it. */
 const PAGE = 200;
 
-/** The event the history's heading raises, bubbling, once an arrival at `/activity` has brought
- *  it to the top of Details' view. That scroll is the landing the arrival asked for, not a move
- *  that takes the reader from their place: the hold of the place `t v` lands the focus at keeps
- *  the focused history where this scroll leaves it (`details-more.tsx`). */
+/** The event the history's heading raises, bubbling, once a following of `/activity`
+ *  (`useFollowing`) has brought it to the top of Details' view. That scroll is the landing that
+ *  following asked for, not a move that takes the reader from their place: the hold of the place
+ *  `t v` lands the focus at keeps the focused history where this scroll leaves it
+ *  (`details-more.tsx`). */
 export const HISTORY_HEADING_LANDED_EVENT = "history-heading-landed";
 
 /** A day's line, the prototype's `.hdl`: 12 px on 18 px at weight 600 in the muted grey, 5 px
@@ -100,8 +101,9 @@ const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageK
  * had opened it: a reader reading its entries then is still on them.
  *
  * `/activity`, `t v` and the address of a comment or message of such a thread open Details here:
- * at `/activity` the heading is brought into Details' view once for each arrival, except a
- * reader's coming back to the history they left drawn, who finds it where they left it;
+ * at `/activity` the heading is brought into Details' view once for each following of that
+ * address (`useFollowing`), `t v` pressed there among them, except a reader's coming back to the
+ * history they left drawn, who finds it where they left it;
  * `item` is the entry such an address names, which is marked and brought into view, its day
  * opened. It writes no read mark. The line that says what is new is drawn at `visitMark`,
  * where the reader's mark stood as the history first drew in this visit, which
@@ -114,15 +116,16 @@ const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageK
  * it keeps Details open (`KEEPS_DETAILS_ATTRIBUTE`); a turn's Reply, a button, closes it itself.
  */
 export function IssueHistory({
-  activityAddress,
+  activityFollowing,
   issue,
   item,
   state,
   visitMark,
 }: {
-  /** The `/activity` address the reader is at, or undefined at any other: each arrival at it
-   *  brings the history's heading into Details' view once. */
-  activityAddress: string | undefined;
+  /** The following of `/activity` the reader is on (`useFollowing`), or undefined at any other
+   *  address: each following of `/activity` brings the history's heading into Details' view
+   *  once. */
+  activityFollowing: string | undefined;
   issue: IssueDetails;
   /** The id of the comment or message the address names, which the list marks. */
   item: string | undefined;
@@ -304,35 +307,35 @@ export function IssueHistory({
     entry.scrollIntoView({ block: tall ? "start" : "center" });
     anchor.current?.keepRow(entry.closest<HTMLElement>(`[${HISTORY_ENTRY_ATTRIBUTE}]`));
   });
-  // `/activity` opens Details at the history: its heading is brought into Details' view
-  // once for each arrival at that address, on the first render it has a box and the log under
-  // it is drawn - Details still closed around it, or the panel not yet placed in the drawer,
-  // gives it no box, and before the log is drawn Details has nothing to scroll the heading up
-  // by - and leaving the address lets the next arrival bring it again. A reader who comes back
-  // with the browser's Back or Forward to the history this list drew there before - Details left
-  // open beside a view, or at a turn's address - finds Details where they left it, so that
-  // arrival brings nothing. Only the box Details scrolls in moves, never the page under it; the
-  // reader's own scroll after that is theirs. Once the heading has landed it says so
+  // `/activity` opens Details at the history: its heading is brought into Details' view once for
+  // each following of that address (`useFollowing`), on the first render it has a box and the log
+  // under it is drawn - Details still closed around it, or the panel not yet placed in the drawer,
+  // gives it no box, and before the log is drawn Details has nothing to scroll the heading up by.
+  // Each entry the page makes at the address is a following of its own - `t v` pressed there, a
+  // link to it followed there - so each brings the heading back to the top of Details' view,
+  // however far down Details the reader has read. A following the browser steps to itself (`POP`)
+  // once this list has landed a heading brings nothing: a reader who comes back with Back or
+  // Forward to the history this list drew there before - Details left open beside a view, or at a
+  // turn's address - finds Details where they left it, and so does one who types a fragment at
+  // the address. Only the box Details scrolls in moves, never the page under it; the reader's own
+  // scroll after that is theirs. Once the heading has landed it says so
   // (`HISTORY_HEADING_LANDED_EVENT`).
   const navigation = useNavigationType();
   const heading = useRef<HTMLHeadingElement>(null);
   const headingLanded = useRef<string | undefined>(undefined);
   const landedBefore = useRef(false);
   useEffect(() => {
-    if (activityAddress === undefined) {
-      headingLanded.current = undefined;
-      return;
-    }
     const element = heading.current;
     if (
-      headingLanded.current === activityAddress ||
+      activityFollowing === undefined ||
+      headingLanded.current === activityFollowing ||
       element === null ||
       element.getClientRects().length === 0 ||
       log.data === undefined
     ) {
       return;
     }
-    headingLanded.current = activityAddress;
+    headingLanded.current = activityFollowing;
     const comingBack = navigation === "POP" && landedBefore.current;
     landedBefore.current = true;
     if (comingBack) return;

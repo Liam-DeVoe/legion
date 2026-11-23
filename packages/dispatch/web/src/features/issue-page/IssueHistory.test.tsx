@@ -132,7 +132,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <IssueHistory
-            activityAddress={undefined}
+            activityFollowing={undefined}
             issue={issue}
             item={undefined}
             state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
@@ -193,7 +193,7 @@ test("an event arriving just after midnight leaves the entry the reader reads wh
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <IssueHistory
-            activityAddress={undefined}
+            activityFollowing={undefined}
             issue={issue}
             item={undefined}
             state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
@@ -354,7 +354,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <IssueHistory
-            activityAddress={undefined}
+            activityFollowing={undefined}
             issue={issue}
             item={undefined}
             state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
@@ -410,7 +410,7 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
   }
   const history = (
     <IssueHistory
-      activityAddress={undefined}
+      activityFollowing={undefined}
       issue={issue}
       item={undefined}
       state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
@@ -513,7 +513,7 @@ test("a day the address opened closes when the reader presses its line", async (
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <IssueHistory
-            activityAddress={undefined}
+            activityFollowing={undefined}
             issue={issue}
             item="m-earlier"
             state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
@@ -607,7 +607,7 @@ function drawHistory(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <IssueHistory
-          activityAddress={undefined}
+          activityFollowing={undefined}
           issue={issue}
           item={item}
           state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
