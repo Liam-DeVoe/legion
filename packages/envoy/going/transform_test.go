@@ -315,3 +315,55 @@ func TestAGroupAfterACountSaysToGroupFirst(t *testing.T) {
 		t.Errorf("the chain grouped first answered %s, %v; want %s", got, err, want)
 	}
 }
+
+// TestASecondGroupSplitsEachGroup: at 59e2a6ec, chart-17 and chart-19 of the eval grouped by
+// project and then by priority or status, and were told the chain's answer held only the second
+// group's column, or that a chain groups once. A group after a group splits each of its groups by
+// its own field: one row of each pair of values, holding both columns, a row whose list holds a
+// value twice counted once in its pair, and a row with no value in none. A group after a count,
+// which has written each group's number already, is refused, saying to put every group first; so
+// is a group that would write over an earlier group's column, and a group whose per names a field
+// is told to write a second group.
+func TestASecondGroupSplitsEachGroup(t *testing.T) {
+	const rows = `[{"project":"DEMO","status":"todo","labels":["bug","bug","ui"]},{"project":"OPS","status":"todo","labels":[]},` +
+		`{"project":"DEMO","status":"done","labels":["bug"]},{"project":"DEMO","status":"todo","labels":["ui"]}]`
+	for _, row := range []struct{ name, chain, want string }{
+		{
+			name:  "two fields",
+			chain: `[{"op":"group","field":"project"},{"op":"group","field":"status"},{"op":"count","as":"issues"}]`,
+			want:  `[{"issues":2,"project":"DEMO","status":"todo"},{"issues":1,"project":"DEMO","status":"done"},{"issues":1,"project":"OPS","status":"todo"}]`,
+		},
+		{
+			name:  "a list field after a field",
+			chain: `[{"op":"group","field":"project"},{"op":"group","field":"labels"},{"op":"count","as":"issues"}]`,
+			want:  `[{"issues":2,"labels":"bug","project":"DEMO"},{"issues":2,"labels":"ui","project":"DEMO"},{"issues":1,"labels":"none","project":"OPS"}]`,
+		},
+		{
+			name:  "a filter of the first group's column between them",
+			chain: `[{"op":"group","field":"project"},{"op":"filter","field":"project","is":"OPS"},{"op":"group","field":"status"},{"op":"count","as":"issues"}]`,
+			want:  `[{"issues":1,"project":"OPS","status":"todo"}]`,
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			got, err := runChain(t, row.chain, rows)
+			if err != nil || got != row.want {
+				t.Errorf("the chain answered %s, %v; want %s", got, err, row.want)
+			}
+		})
+	}
+
+	for _, row := range []struct{ name, chain, says string }{
+		{"a group after a count", `[{"op":"group","field":"project"},{"op":"count","as":"issues"},{"op":"group","field":"status"}]`,
+			"the count before it has written each group's number already: put every group before the count"},
+		{"a group of an earlier group's column", `[{"op":"group","field":"project"},{"op":"group","field":"project"},{"op":"count"}]`,
+			"the group before it writes the column project already: name this group's column with as"},
+		{"a field as a group's per", `[{"op":"group","field":"status","per":"project"},{"op":"count"}]`,
+			`a group's per is day, week, month or year, not "project": to group by a second field, write a second group after this one`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if _, err := runChain(t, row.chain, rows); err == nil || !strings.Contains(err.Error(), row.says) {
+				t.Errorf("the chain was answered %v, want it refused saying %q", err, row.says)
+			}
+		})
+	}
+}

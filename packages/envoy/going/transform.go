@@ -61,8 +61,10 @@ const GroupNone = "none"
 //     holds a value, null and missing holding none, or it does not). Once the chain has grouped,
 //     a filter reads the columns of the groups.
 //   - group makes one row of each value of Field, Per bucketing a time by its period, a list
-//     putting its row in the group of each value it holds; the row's one column is the value,
-//     named As, else Per, else Field. A chain groups once.
+//     putting its row in the group of each value it holds; the row's column is the value, named
+//     As, else Per, else Field. A group after a group splits each group by its own Field, and each
+//     row keeps the earlier group's columns beside its own: one row of each combination of their
+//     values. Every group comes before the chain's count, sum, mean, min and max.
 //   - count, sum, mean, min and max write, in each group, how many rows it holds, and the sum,
 //     the mean, the least and the greatest of their Field's numbers, a row whose Field is null
 //     or missing counted in count alone; the column is named As, else the step. Before any group
@@ -108,14 +110,14 @@ func (o *Operand) UnmarshalJSON(data []byte) error {
 type Chain []Transform
 
 // columns is the columns of the rows the chain answers, where its steps write them: the column of
-// its group, "" where it groups none, and the column each count, sum, mean, min and max writes,
-// each once, in the chain's order. made is false where the chain neither groups nor aggregates:
-// its answer is the rows it reads, each with its own fields.
-func (c Chain) columns() (group string, aggregates []string, made bool) {
+// each group, and the column each count, sum, mean, min and max writes, each once, each in the
+// chain's order. made is false where the chain neither groups nor aggregates: its answer is the
+// rows it reads, each with its own fields.
+func (c Chain) columns() (groups, aggregates []string, made bool) {
 	for _, step := range c {
 		switch step.Op {
 		case TransformGroup:
-			group, made = cmp.Or(step.As, step.Per, step.Field), true
+			groups, made = append(groups, cmp.Or(step.As, step.Per, step.Field)), true
 		case TransformCount, TransformSum, TransformMean, TransformMin, TransformMax:
 			if column := cmp.Or(step.As, step.Op); !slices.Contains(aggregates, column) {
 				aggregates = append(aggregates, column)
@@ -123,7 +125,7 @@ func (c Chain) columns() (group string, aggregates []string, made bool) {
 			made = true
 		}
 	}
-	return group, aggregates, made
+	return groups, aggregates, made
 }
 
 // check refuses a step that is none of the eight, or that is not given what it takes: a field
@@ -150,7 +152,7 @@ func (t Transform) check() error {
 	case t.Per != "" && t.Op != TransformGroup:
 		return fmt.Errorf("a %s takes no per: only a group does", t.Op)
 	case t.Per != "" && !slices.Contains(Periods, t.Per):
-		return fmt.Errorf("a group's per is day, week, month or year, not %q", t.Per)
+		return fmt.Errorf("a group's per is day, week, month or year, not %q: to group by a second field, write a second group after this one", t.Per)
 	case t.As != "" && slices.Contains([]string{TransformFilter, TransformSort}, t.Op):
 		return fmt.Errorf("a %s takes no as: it writes no column", t.Op)
 	case t.Order != "" && t.Op != TransformSort:
@@ -180,10 +182,20 @@ func (c Chain) check() error {
 }
 
 // chainRow is one row as a chain's steps go: its columns, and once the chain has grouped, the
-// rows of the group it is, which count, sum, mean, min and max read.
+// rows of the group it is, which count, sum, mean, min and max read and a later group splits.
 type chainRow struct {
 	columns map[string]any
 	members []map[string]any
+}
+
+// oneGroup is every row of table as the rows of one group, which holds no column yet: what a
+// count, sum, mean, min or max before any group reads, and what the chain's first group splits.
+func oneGroup(table []chainRow) []chainRow {
+	members := make([]map[string]any, 0, len(table))
+	for _, row := range table {
+		members = append(members, row.columns)
+	}
+	return []chainRow{{columns: map[string]any{}, members: members}}
 }
 
 // Run runs the chain over rows, each value as JSON reads it back with numbers as json.Number,
@@ -198,8 +210,10 @@ func (c Chain) Run(rows []map[string]any) ([]map[string]any, error) {
 		table = append(table, chainRow{columns: row})
 	}
 	// grouped is the step that grouped the rows, "" before any: a group, or an aggregate that
-	// came before any group and read every row as one group.
-	grouped := ""
+	// came before any group and read every row as one group. aggregated is the chain's first
+	// count, sum, mean, min or max, "" before any: a group after it would split the groups whose
+	// number it wrote, and each new row would keep a number of rows it does not hold.
+	grouped, aggregated := "", ""
 	for index, step := range c {
 		var err error
 		switch step.Op {
@@ -208,23 +222,23 @@ func (c Chain) Run(rows []map[string]any) ([]map[string]any, error) {
 			bound, _ := parseTime(cmp.Or(step.Since, step.Before))
 			table = slices.DeleteFunc(table, func(row chainRow) bool { return !step.keeps(row.columns, bound) })
 		case TransformGroup:
-			switch grouped {
-			case "":
+			switch {
+			case grouped != "" && grouped != TransformGroup:
+				err = fmt.Errorf("the %s before it read every row as one group: put the group before the %s, so it writes one row of each group", grouped, grouped)
+			case aggregated != "":
+				err = fmt.Errorf("the %s before it has written each group's number already: put every group before the %s", aggregated, aggregated)
+			default:
+				if grouped == "" {
+					table = oneGroup(table)
+				}
 				table, err = step.group(table)
 				grouped = step.Op
-			case TransformGroup:
-				err = fmt.Errorf("a chain groups once, and its rows are grouped already")
-			default:
-				err = fmt.Errorf("the %s before it read every row as one group: put the group before the %s, so it writes one row of each group", grouped, grouped)
 			}
 		case TransformCount, TransformSum, TransformMean, TransformMin, TransformMax:
 			if grouped == "" {
-				members := make([]map[string]any, 0, len(table))
-				for _, row := range table {
-					members = append(members, row.columns)
-				}
-				table, grouped = []chainRow{{columns: map[string]any{}, members: members}}, step.Op
+				table, grouped = oneGroup(table), step.Op
 			}
+			aggregated = cmp.Or(aggregated, step.Op)
 			for at := range table {
 				if table[at].columns[cmp.Or(step.As, step.Op)], err = step.aggregate(table[at].members); err != nil {
 					break
@@ -275,51 +289,79 @@ func (t Transform) keeps(row map[string]any, bound time.Time) bool {
 	return false
 }
 
-// group makes one row of each value of the step's field across table, in the order each value
-// first comes. A group's key is its value as text, the text a filter's is compares (valueText),
-// so a 1 and a "1" are one group as a filter on "1" keeps both; and a row is a member of each of
-// its groups once, whatever a list of it holds twice. A field no row holds is refused, since it
-// would put every row in the group none: the eval's model grouped by priority_shown, the words
-// the agent gives it beside each priority, which no saved result holds, and was refused a chart of
-// one point.
+// group splits the rows of each group of table by the step's field: one row of each value they
+// hold, in the order each value first comes, holding the group's columns beside the value. The
+// chain's first group splits every row as one group (oneGroup), so it makes one row of each
+// value, and a group after it one row of each combination of the two fields' values. chart-17
+// and chart-19 of the eval grouped by project and then by priority or status, and were told the
+// chain's answer held no project: a chain grouped once, and its columns were the last group's. A
+// key is its value as text, the text a filter's is compares (valueText), so a 1 and a "1" are one
+// group as a filter on "1" keeps both; and a row is a member of each of its groups once, whatever
+// a list of it holds twice. A field no row holds is refused, since it would put every row in the
+// group none: the eval's model grouped by priority_shown, the words the agent gives it beside each
+// priority, which no saved result holds, and was refused a chart of one point. So is a column an
+// earlier group writes, which this one would write over.
 func (t Transform) group(table []chainRow) ([]chainRow, error) {
-	if len(table) > 0 && !slices.ContainsFunc(table, func(row chainRow) bool { _, held := fieldValue(row.columns, t.Field); return held }) {
+	column := cmp.Or(t.As, t.Per, t.Field)
+	if len(table) > 0 {
+		if _, written := table[0].columns[column]; written {
+			return nil, fmt.Errorf("the group before it writes the column %s already: name this group's column with as", column)
+		}
+	}
+	if !groupsHold(table, t.Field) && slices.ContainsFunc(table, func(group chainRow) bool { return len(group.members) > 0 }) {
 		return nil, t.unheldField(table)
 	}
-	column := cmp.Or(t.As, t.Per, t.Field)
 	var groups []chainRow
 	at := map[string]int{}
 	var joined []int
-	for index, row := range table {
-		keys, err := t.groupKeys(row.columns)
-		if err != nil {
-			return nil, fmt.Errorf("row %d: %w", index+1, err)
-		}
-		joined = joined[:0]
-		for _, key := range keys {
-			text, _ := valueText(key)
-			place, held := at[text]
-			if !held {
-				place = len(groups)
-				at[text] = place
-				groups = append(groups, chainRow{columns: map[string]any{column: key}})
+	for _, group := range table {
+		clear(at)
+		for index, row := range group.members {
+			keys, err := t.groupKeys(row)
+			if err != nil && len(group.columns) == 0 {
+				// Only the first group splits the rows as the chain kept them, so only its refusal
+				// names a row by its place.
+				err = fmt.Errorf("row %d: %w", index+1, err)
 			}
-			if slices.Contains(joined, place) {
-				continue
+			if err != nil {
+				return nil, err
 			}
-			joined = append(joined, place)
-			groups[place].members = append(groups[place].members, row.columns)
+			joined = joined[:0]
+			for _, key := range keys {
+				text, _ := valueText(key)
+				place, held := at[text]
+				if !held {
+					place = len(groups)
+					at[text] = place
+					columns := make(map[string]any, len(group.columns)+1)
+					maps.Copy(columns, group.columns)
+					columns[column] = key
+					groups = append(groups, chainRow{columns: columns})
+				}
+				if slices.Contains(joined, place) {
+					continue
+				}
+				joined = append(joined, place)
+				groups[place].members = append(groups[place].members, row)
+			}
 		}
 	}
 	return groups, nil
 }
 
-// unheldField is the refusal of a group by a field no row of table holds. Where the field is a
-// value's words (the agent's _shown field, packages/envoy/going/agent/shown.go) and the rows hold
-// that value, it names the value's field to group by.
+// groupsHold reports whether a row of a group of table holds field.
+func groupsHold(table []chainRow, field string) bool {
+	return slices.ContainsFunc(table, func(group chainRow) bool {
+		return slices.ContainsFunc(group.members, func(row map[string]any) bool { _, held := fieldValue(row, field); return held })
+	})
+}
+
+// unheldField is the refusal of a group by a field no row of table's groups holds. Where the field
+// is a value's words (the agent's _shown field, packages/envoy/going/agent/shown.go) and the rows
+// hold that value, it names the value's field to group by.
 func (t Transform) unheldField(table []chainRow) error {
 	refusal := fmt.Sprintf("no row holds %s, so every row would be in the group none: group by a field the rows hold", t.Field)
-	if value, isWords := strings.CutSuffix(t.Field, "_shown"); isWords && slices.ContainsFunc(table, func(row chainRow) bool { _, held := fieldValue(row.columns, value); return held }) {
+	if value, isWords := strings.CutSuffix(t.Field, "_shown"); isWords && groupsHold(table, value) {
 		refusal += fmt.Sprintf(", such as %s: a saved result holds each value as the server answered it, without the words given beside it", value)
 	}
 	return errors.New(refusal)

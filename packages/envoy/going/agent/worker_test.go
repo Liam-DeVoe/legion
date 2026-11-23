@@ -1291,7 +1291,7 @@ func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 		"the direct answer in one or two sentences, then at most a short list",
 		"under 120 words unless the person asks for more",
 		"Name each item once, by its link alone",
-		"beside a link write only what the chip does not show, such as its priority or who works on it: never its title, and never its status",
+		"never what it shows, such as an issue's title or status",
 		"never a correction of yourself or your working",
 		"Say each fact once: never say again, in other words, what the answer or its list already said",
 		"without saying what you read or how",
@@ -1392,7 +1392,10 @@ func TestARequestForAChangeEndsWithAPlan(t *testing.T) {
 // names the column a group writes, with that group as its example, the read that counts open
 // asks by project, and the reads a count of issues needs, all in one reply, with draw_block in the
 // next. Each tool it names is one call_tool runs by its name with no find_tools first, taking the
-// arguments the rule gives, and each chart it describes is one the server takes.
+// arguments the rule gives, and each chart it describes is one the server takes. At 59e2a6ec
+// chart-17 and chart-19 grouped by project and then by a second field, where each task counts by
+// one: the rule gives each task's chain, and ends, in its shortest sentence, with a second group
+// for a count split by two fields, which draws a column for each.
 func TestThePromptGivesDrawBlocksArguments(t *testing.T) {
 	for _, said := range []string{
 		"only through draw_block, called with call_tool at once, never looked up with find_tools: " + going.RunBlockArguments + ".",
@@ -1405,10 +1408,15 @@ func TestThePromptGivesDrawBlocksArguments(t *testing.T) {
 		`A group writes its values in one column, named its as, else its per, else its field: {"op":"group","field":"closed_at","per":"week"} writes the column week`,
 		`so draw x "week", not "closed_at"`,
 		"After a group or a count, x, y, columns and a later sort name only the columns the chain writes",
+		"For P0 and P1 open issues per project, filter status is_not done, filter priority in [0, 1], group project and count.",
+		"For issues in each status across two projects, group both projects' reads by status alone.",
 	} {
 		if !strings.Contains(systemPrompt, said) {
 			t.Errorf("the system prompt does not say %q", said)
 		}
+	}
+	if split := "For each status per project, group project, then status."; !strings.HasSuffix(systemPrompt, " "+split) {
+		t.Errorf("the system prompt does not end with %q", split)
 	}
 	if strings.Contains(systemPrompt, "need draw_block") || strings.Contains(systemPrompt, "(github_read and web_read) and draw_block") {
 		t.Error("the system prompt sends the model to find_tools for draw_block")
@@ -1430,10 +1438,18 @@ func TestThePromptGivesDrawBlocksArguments(t *testing.T) {
 	for name, spec := range map[string]string{
 		"closed issues by week": `{"kind":"chart","title":"Closed issues by week","steps":[{"step":2,"call":1}],"chain":[{"op":"group","field":"closed_at","per":"week"},{"op":"count","as":"issues"}],"x":"week","y":"issues"}`,
 		"open asks by project":  `{"kind":"chart","title":"Open asks by project","steps":[{"step":2,"call":1}],"x":"key","y":"open_asks"}`,
+		"open P0 and P1 issues per project": `{"kind":"chart","title":"Open P0 and P1 issues per project","steps":[{"step":2,"call":1},{"step":3,"call":1}],` +
+			`"chain":[{"op":"filter","field":"status","is_not":"done"},{"op":"filter","field":"priority","in":[0,1]},{"op":"group","field":"project"},{"op":"count"}],"x":"project","y":"count"}`,
+		"issues in each status": `{"kind":"chart","title":"Issues in each status","steps":[{"step":2,"call":1},{"step":3,"call":1}],"chain":[{"op":"group","field":"status"},{"op":"count"}],"x":"status","y":"count"}`,
 	} {
 		if _, err := going.ParseRunBlock(json.RawMessage(spec)); err != nil {
 			t.Errorf("the chart of %s the system prompt describes was refused: %v", name, err)
 		}
+	}
+	table, err := going.ParseRunBlock(json.RawMessage(`{"kind":"table","title":"Issues in each status per project","steps":[{"step":2,"call":1},{"step":3,"call":1}],` +
+		`"chain":[{"op":"group","field":"project"},{"op":"group","field":"status"},{"op":"count"}]}`))
+	if err != nil || !slices.Equal(table.Columns, []string{"project", "status", "count"}) {
+		t.Errorf("the table of each status per project the system prompt describes draws the columns %v (%v), want project, status and count", table.Columns, err)
 	}
 }
 
@@ -1487,17 +1503,24 @@ func TestThePromptNamesTheArgumentsOfAMessageAnAnswerAndAQuote(t *testing.T) {
 // children's with an example. The chart tries at 8465df75 wrote ask ids and issue keys no result
 // gave beside a refused block (chart-10), and a project and counts of their own (chart-17): an
 // answer lists only the items a result names, by the key or id it gives, and says where a block
-// stayed refused or a result was withheld.
+// stayed refused or a result was withheld. At 59e2a6ec the judge failed answers whose facts were a
+// link's words - a comment's author, an ask's issue, a holder's title on a link to its issue -
+// which the bar draws as the item's chip in place of them (answer-17, find-18, status-02), and a
+// summary of the page issue's thread with no priority or assignee (answer-01): the link rule says
+// what each chip shows and puts every other fact outside the link, with an example of each.
 func TestThePromptSaysWhatAnAnswerAndAStatusGive(t *testing.T) {
 	for _, said := range []string{
 		`a count of any items - issues, asks, comments, documents, sessions - with the total it is of, such as "21 open issues of 31", and with the items it counts, each linked, where they fit`,
 		"a cause with its effect, its times and each follow-up or action it names, and the section that says it",
 		`all of an issue's children, the done ones too, each linked under its status, such as "open: ACME-2 and ACME-4; done: ACME-5, ACME-8 and ACME-9", unless the words ask for some`,
-		"the priority and the assignee of an issue it is about, or that it has none, and each other empty field that bears on the words",
+		"the priority and the assignee of an issue it is about or whose thread it sums up, or that it has none, and each other empty field that bears on the words",
 		"and who wrote each thing it quotes or sums up",
 		"a count beside a list is the number of its items",
 		`never name one without its link, the one the answer is about and the page's own too, never as "this one" or "here"`,
-		`an ask, a comment or a document with the issue or project it belongs to, such as "the ask on ACME-3" or "a document of ACME"`,
+		"an ask, a comment or a document with the issue or project it belongs to",
+		"The bar shows each link as the item's chip in place of the link's words, which no one sees: an issue's key, status and title; the start of an ask's, a comment's or a message's text; a document's or a file's name",
+		"So write every fact the chip does not show - the author, a holder, an issue key, a priority, a count - outside the link",
+		`"kim@example.com wrote [in a comment](dispatch://ACME-3/comment/<id>) that …" or "on ACME-3, [an ask](dispatch://ACME-3/ask/<id>) asks …"`,
 		"a person by the login the reads give, never by a name of your own",
 		"the time with its zone and year",
 		"by its role only where it has no title, and never by its id where the roster gives its title",

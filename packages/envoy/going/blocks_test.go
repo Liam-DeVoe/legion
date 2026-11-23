@@ -327,17 +327,68 @@ func TestAChartOrATableTakesTheColumnsItsChainMakes(t *testing.T) {
 }
 
 // TestAOnePointChartIsToldWhatToDrawInstead: chart-17 of the eval drew open P0 issues by project,
-// which one project held, and was refused a chart of one point with no word of what to draw. The
-// refusal says to draw one number as a metric, or a chart over more values; the minimum of two
-// points stays (R9).
+// which one project held, and was refused a chart of one point with no word of what to draw; at
+// 59e2a6ec, told to chart a field with more values, it kept only its chart of P1 issues. The
+// refusal says to draw a metric or a table for one point; the minimum of two points stays (R9).
 func TestAOnePointChartIsToldWhatToDrawInstead(t *testing.T) {
 	results := openIssues(t)
 	results[0] = issueList(t, 4, "DEMO", issuesOf("DEMO", 3, "todo", 2))
 	_, err := draw(t, `{"kind":"chart","title":"Open P0 issues by project","steps":[{"step":4,"call":1},{"step":5,"call":1}],`+
 		`"chain":[{"op":"filter","field":"status","is_not":"done"},{"op":"filter","field":"priority","is":0},{"op":"group","field":"project"},{"op":"count"}]}`, results...)
-	if err == nil || !strings.Contains(err.Error(), "the chart holds 1 point, and a chart plots at least 2: draw one number as a metric, "+
-		"or chart a field with more values, such as a filter that keeps several values and then a group") {
+	if err == nil || !strings.Contains(err.Error(), "the chart holds 1 point, and a chart plots at least 2 points; draw a metric or a table for one") {
 		t.Errorf("the chart of one point was answered %v, want it refused, saying what to draw instead", err)
+	}
+}
+
+// eachStatus is the issues of DEMO and OPS in each status, as the eval's seed holds them.
+var eachStatus = []struct {
+	status    string
+	demo, ops int
+}{{"backlog", 6, 4}, {"done", 11, 10}, {"in_progress", 10, 5}, {"needs_review", 2, 1}, {"testing", 2, 1}, {"todo", 8, 8}, {"triage", 3, 2}}
+
+// TestTheChartTasksChainsDrawTheirRows: the chains the system prompt gives for the words of
+// chart-17, "P0 and P1 open issues per project", and of chart-19, "how many issues in each status
+// across DEMO and OPS", draw the rows going/eval/tasks.json grades them by. At 59e2a6ec the model
+// grouped each by project and then by a second field, which drew no block. A count split by two
+// fields, each status per project, is a table with a column for each and one row for each pair
+// of values; a chart of two groups, as chart-17 wrote it, is refused, saying to draw a table.
+func TestTheChartTasksChainsDrawTheirRows(t *testing.T) {
+	const openP0AndP1 = `"chain":[{"op":"filter","field":"status","is_not":"done"},{"op":"filter","field":"priority","in":[0,1]},{"op":"group","field":"project"}%s,{"op":"count","as":"issues"}]`
+	got, err := draw(t, `{"kind":"chart","title":"Open P0 and P1 issues per project","steps":[{"step":4,"call":1},{"step":5,"call":1}],`+fmt.Sprintf(openP0AndP1, "")+`}`, openIssues(t)...)
+	if want := `[{"issues":10,"project":"DEMO"},{"issues":6,"project":"OPS"}]`; err != nil || got != want {
+		t.Errorf("chart-17's chain drew %s, %v; want %s", got, err, want)
+	}
+
+	var demo, ops []map[string]any
+	var demoRows, opsRows []string
+	for _, row := range eachStatus {
+		demo = append(demo, issuesOf("DEMO", row.demo, row.status, nil)...)
+		ops = append(ops, issuesOf("OPS", row.ops, row.status, nil)...)
+		demoRows = append(demoRows, fmt.Sprintf(`{"issues":%d,"project":"DEMO","status":%q}`, row.demo, row.status))
+		opsRows = append(opsRows, fmt.Sprintf(`{"issues":%d,"project":"OPS","status":%q}`, row.ops, row.status))
+	}
+	lists := []going.Result{issueList(t, 2, "DEMO", demo), issueList(t, 3, "OPS", ops)}
+	const steps = `"steps":[{"step":2,"call":1},{"step":3,"call":1}]`
+	got, err = draw(t, `{"kind":"table","title":"Issues in each status",`+steps+`,"chain":[{"op":"group","field":"status"},{"op":"count","as":"issues"}]}`, lists...)
+	if want := `[{"issues":10,"status":"backlog"},{"issues":21,"status":"done"},{"issues":15,"status":"in_progress"},{"issues":3,"status":"needs_review"},` +
+		`{"issues":3,"status":"testing"},{"issues":16,"status":"todo"},{"issues":5,"status":"triage"}]`; err != nil || got != want {
+		t.Errorf("chart-19's chain drew %s, %v; want %s", got, err, want)
+	}
+
+	const twoFields = `{"kind":"table","title":"Issues in each status per project",` + steps + `,"chain":[{"op":"group","field":"project"},{"op":"group","field":"status"},{"op":"count","as":"issues"}]}`
+	table, err := going.ParseRunBlock(json.RawMessage(twoFields))
+	if err != nil || !slices.Equal(table.Columns, []string{"project", "status", "issues"}) {
+		t.Errorf("the table of each status per project draws the columns %v (%v), want project, status and issues", table.Columns, err)
+	}
+	got, err = draw(t, twoFields, lists...)
+	if want := "[" + strings.Join(slices.Concat(demoRows, opsRows), ",") + "]"; err != nil || got != want {
+		t.Errorf("the table of each status per project drew %s, %v; want %s", got, err, want)
+	}
+
+	_, err = going.ParseRunBlock(json.RawMessage(`{"kind":"chart","title":"Open P0 and P1 issues per project","steps":[{"step":4,"call":1},{"step":5,"call":1}],` +
+		fmt.Sprintf(openP0AndP1, `,{"op":"group","field":"priority"}`) + `,"x":"project","y":"issues"}`))
+	if err == nil || !strings.Contains(err.Error(), "a chart plots one series, and its chain groups by project and priority: draw a table for two fields, or chart one of them") {
+		t.Errorf("the chart of two groups was answered %v, want it refused, saying to draw a table", err)
 	}
 }
 

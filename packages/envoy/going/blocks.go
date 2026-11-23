@@ -412,7 +412,8 @@ func project(rows []map[string]any, fields []string, max int, numeric []string) 
 
 // fillChart is one series: x along the axis, y a number, at least chartPointMin points. Fewer is
 // refused with what to draw instead, so the model's next call draws a block and does not give up
-// on it (chart-17 of the eval was refused one point and wrote no chart).
+// on it: chart-17 of the eval was refused one point and wrote no chart, and at 59e2a6ec, told to
+// chart a field with more values, it kept only its chart of P1 issues.
 func fillChart(spec blockSpec, rows []map[string]any) ([]map[string]any, error) {
 	drawn, err := project(rows, []string{spec.X, spec.Y}, chartPointMax, []string{spec.Y})
 	if err != nil {
@@ -430,8 +431,7 @@ func fillChart(spec blockSpec, rows []map[string]any) ([]map[string]any, error) 
 		if len(drawn) == 1 {
 			points = "point"
 		}
-		return nil, fmt.Errorf("going: the chart holds %d %s, and a chart plots at least %d: draw one number as a metric, "+
-			"or chart a field with more values, such as a filter that keeps several values and then a group", len(drawn), points, chartPointMin)
+		return nil, fmt.Errorf("going: the chart holds %d %s, and a chart plots at least %d points; draw a metric or a table for one", len(drawn), points, chartPointMin)
 	}
 	return drawn, nil
 }
@@ -660,27 +660,28 @@ func numberIn(spec map[string]any) (string, json.Number, bool) {
 }
 
 // fillColumns names what a chart or a table leaves unnamed where the chain's answer has one
-// choice for it (Chain.columns): a chart's x is the column of the chain's group, its y the one
-// column a count, sum, mean, min or max writes, and a table's columns are the group's and then
+// choice for it (Chain.columns): a chart's x is the column of the chain's one group, its y the one
+// column a count, sum, mean, min or max writes, and a table's columns are the groups' and then
 // those, in the chain's order. Anything else left unnamed is refused, naming the columns the
 // chain's answer holds, so the model can write them in its next call: a chart's spec that named
 // no x or y was refused on the eval's second-to-last call of a run, whose last could write only
 // prose (chart-08). So is a column named that a chain which groups or counts does not write
-// (unmadeColumn).
+// (unmadeColumn), and a chart whose chain groups by two fields: a chart plots one series, and its
+// x would hold each value of the first field once for each value of the second.
 func (b *RunBlock) fillColumns() error {
-	group, aggregates, made := b.Chain.columns()
-	answer := aggregates
-	if group != "" {
-		answer = append([]string{group}, aggregates...)
-	}
+	groups, aggregates, made := b.Chain.columns()
+	answer := slices.Concat(groups, aggregates)
 	held := "the rows it reads, each with its own fields, since it has no group, count, sum, mean, min or max"
 	if made {
 		held = "the columns " + strings.Join(answer, ", ")
 	}
 	switch b.Kind {
 	case BlockChart:
-		if strings.TrimSpace(b.X) == "" {
-			b.X = group
+		if len(groups) > 1 {
+			return fmt.Errorf("going: a chart plots one series, and its chain groups by %s: draw a table for two fields, or chart one of them", strings.Join(groups, " and "))
+		}
+		if strings.TrimSpace(b.X) == "" && len(groups) == 1 {
+			b.X = groups[0]
 		}
 		if strings.TrimSpace(b.Y) == "" && len(aggregates) == 1 {
 			b.Y = aggregates[0]
