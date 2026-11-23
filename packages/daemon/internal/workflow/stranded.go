@@ -92,6 +92,10 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //     Its tree moves through its phases without it, and stops at the first decision that needs it.
 //     One the daemon or its own exit suspended, one that failed, and one a close retired while its
 //     tree runs again, are each stranded once no admission start is queued (StartFor).
+//   - A child's own architect that failed while its child stands at a step its owner does: only
+//     the owner's report moves the child on, so no later phase start comes to start it again
+//     (reviveArchitect), and the child waits for the operator's retry, which relaunches the claim
+//     and tells it its step again (one more owner-step).
 //
 // A retired claim is here for the reason a failed one is, and a queued start is what takes either
 // of them out. The state is not the end of the claim: the outbox's start executor provisions the
@@ -123,7 +127,7 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // The move that brings each one back is api.StrandedClaim.Move's.
 //
 // It names no other claim: a worker whose phase is not its own is started again when its phase
-// comes, and a tree that is not running runs nothing yet. Nor does it name a child's own
+// comes, and a tree that is not running runs nothing yet. Nor does it name any other child's own
 // architect: while that claim does not hold its role (the daemon's holdsRole), the architect
 // above it takes the child's notices, all but an owner-step, which waits for the child's own
 // architect (the daemon's noticeArchitect), and a later start of the role brings it back, as
