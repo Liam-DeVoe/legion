@@ -58,7 +58,7 @@ flowchart LR
   opens after it,
   and how they fit together.
 - [Using Legion](/legion/legion/using-legion/): hand an issue to Legion, approve its spec, review
-  and merge its pull request, and read what each Dispatch status means.
+  and merge its pull request where it has one, and read what each Dispatch status means.
 - [Running Legion](/legion/legion/running-legion/): what an operator needs to run the Legion daemon
   on Kubernetes, how to configure, start, upgrade and watch it.
 - [Troubleshooting](/legion/legion/troubleshooting/): the failures Legion reports, and the command
