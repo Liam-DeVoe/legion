@@ -303,8 +303,11 @@ func (d *driver) cancelWork(key string) {
 // endPiece ends p at the replay's end of its segment: the turns under way in it end, the task its
 // role's claim held for it is retired as its worker's last turn retires it (retireTask), and its end
 // is entered by how it ends — its recorded move, a sign-off the engine may hold, the failure of its
-// role's claim, which keeps its task as a failed claim does — or by nothing, where the pass made its
-// move or nothing ended it.
+// role's claim, which keeps its task as a failed claim does, the landing of a merge forward — or by
+// nothing, where the pass made its move or nothing ended it. A merge forward retires no task: the
+// merger's merge forward of a conflict that waited for merging runs in the task the merger's start
+// gave it, whose work in merging comes after it (mergerMergesForward), and a merge forward asked at
+// once runs after the piece of its phase retired the task.
 func (d *driver) endPiece(p *piece) error {
 	for _, role := range slices.Sorted(maps.Keys(p.turns)) {
 		if p.turns[role] {
@@ -317,6 +320,9 @@ func (d *driver) endPiece(p *piece) error {
 	if p.ends == endFailure {
 		return d.failPiece(p)
 	}
+	if p.ends == endMergeForward {
+		return d.mergedForward(p)
+	}
 	if err := d.retireTask(p.issue, p.role); err != nil {
 		return err
 	}
@@ -325,8 +331,6 @@ func (d *driver) endPiece(p *piece) error {
 		return d.enterMove(p)
 	case endHeldSignOff:
 		return d.signOff(p.issue)
-	case endMergeForward:
-		return d.mergedForward(p)
 	}
 	return nil
 }

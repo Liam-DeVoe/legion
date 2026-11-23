@@ -70,8 +70,9 @@ const (
 	// unended at the window's end; neither has an end the replay enters.
 	endLeft
 	endOpen
-	// endMergeForward is the merge-forward segment a conflict drawn under a rule whose conflicting
-	// head keeps its phase adds (record.ConflictMergeForward, assumption 23): at its end the merge
+	// endMergeForward is the merge-forward segment a conflict adds where the daemon keeps the
+	// issue's phase and asks a role to merge the base forward (record.ConflictMergeForward, or a
+	// conflict past the review that waited for merging; assumptions 23 and 37): at its end the merge
 	// forward lands, and the work of the stretch that drew goes on (driver.mergedForward).
 	endMergeForward
 )

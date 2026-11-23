@@ -219,14 +219,16 @@ type driver struct {
 	// conflicts is the conflict model the run draws by (with its merges term set to zero under
 	// the branch's Merges zero), merges the window's commits of each base branch it counts a
 	// stretch's M from, loops the recorded conflict loops a drawn conflict's work is drawn from,
-	// draws the run's seeded source of every conflict draw, and stretchFrom the replay's start of
-	// the stretch each issue stands in. heads counts the heads the replay's own pull request
-	// records moved to, which names each, and numbers is the number of each of those records.
+	// draws the run's seeded source of every conflict draw, stretchFrom the replay's start of the
+	// stretch each issue stands in, and waiting each issue's conflict past the review that waits for
+	// merging (waitingConflict). heads counts the heads the replay's own pull request records moved
+	// to, which names each, and numbers is the number of each of those records.
 	conflicts   ConflictModel
 	merges      baseMerges
 	loops       []conflictLoop
 	draws       *rand.Rand
 	stretchFrom map[string]time.Time
+	waiting     map[string]waitingConflict
 	heads       int
 	numbers     *pullRequestNumbers
 	// timingWall and answerWall say the branch keeps the events that end a wait, and a person's
@@ -244,6 +246,12 @@ type Divergence struct {
 	// KeptOpenLoops is how many stretches kept their recorded conflict, its loop running to the
 	// window's end in the record, rather than draw (keepConflict, assumption 35).
 	KeptOpenLoops int `json:"keptOpenLoops"`
+	// ConflictsToMerger is how many conflicts past the review, drawn or kept, the daemon the replay
+	// runs left to the merger, where a daemon before cybermonklabs/legion#4979 moved the issue back
+	// to implementing or asked the implementer (assumption 37): one in merging whose merger was asked
+	// to merge the base forward, and one in accepting or retro, which waits for merging, where the
+	// merger is asked (driver.conflictFor).
+	ConflictsToMerger int `json:"conflictsToMerger"`
 	// HeldSignOffs is how many sign-offs the engine held behind a member beneath, each applied
 	// again at the member's leave.
 	HeldSignOffs int `json:"heldSignOffs"`
@@ -402,8 +410,9 @@ func (d *driver) factID(kind string, parts ...any) string {
 
 // observe reads the daemon's lines the last fact wrote: the moves that open a segment no start
 // opens and the leaves that apply a held sign-off again, the slots that put an issue in flight,
-// the children waits that place the events that ended them, and what the run's assumptions are
-// named from.
+// the children waits that place the events that ended them, the moves and the merger's asks a
+// conflict that waits for merging follows (waitMoves, mergerMergesForward), and what the run's
+// assumptions are named from.
 func (d *driver) observe() error {
 	for _, line := range d.tap.take() {
 		key := line.str("issue")
@@ -431,11 +440,15 @@ func (d *driver) observe() error {
 			if to == phase.Accepting {
 				d.openOnPhase(key, to)
 			}
+			if err := d.waitMoves(key, to); err != nil {
+				return err
+			}
 		case "workflow: issue left the workflow":
 			delete(d.inFlight, key)
 			delete(d.started, key)
 			delete(d.childWait, key)
 			d.cancelWork(key)
+			delete(d.waiting, key)
 			tree := line.str("tree")
 			for _, waiting := range slices.Sorted(maps.Keys(d.signOffs)) {
 				if waiting != key && d.treeOf(waiting) == tree {
@@ -469,6 +482,9 @@ func (d *driver) observe() error {
 			d.used[4] = true
 		case mergeForwardAskedLine:
 			d.snap.roundBegins(key, d.clock.Instant())
+			if phase.Phase(line.str("phase")) == phase.Merging {
+				d.mergerMergesForward(key)
+			}
 		case mergeForwardLandedLine:
 			d.snap.roundEnds(key, d.clock.Instant())
 		case admit.CoverTakenLine:

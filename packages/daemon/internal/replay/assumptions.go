@@ -23,8 +23,9 @@ type Assumption struct {
 // outside blockers (25), then the tool's own: each a reason a fact is left out of a replay or an
 // outbox row is finished without acting (26 to 33: FactSources, OutboxHandling), the trace's
 // inference of a slot an issue held from before the window's reach (34: SlotSpan.Inferred), the
-// recorded conflict a stretch keeps whose loop runs to the window's end (35: keepConflict), and the
-// rank a tree's root is shown at under the recorded order of first starts (36: firstStartRanks). A
+// recorded conflict a stretch keeps whose loop runs to the window's end (35: keepConflict), the
+// rank a tree's root is shown at under the recorded order of first starts (36: firstStartRanks),
+// and the answer of the daemon the replay runs to a conflict past the review (37: conflictFor). A
 // run names the ones its measures rest on by these numbers.
 var Assumptions = []Assumption{
 	{Number: 1,
@@ -135,6 +136,9 @@ var Assumptions = []Assumption{
 	{Number: assumeRootRanksByNextStart,
 		Text:      "Under the recorded order of first starts, a tree's root ranks at the earliest recorded first start among the issues of its tree that have not yet taken their first slot.",
 		Direction: "A choice of the main branch, not a fact of the record: a tree's next child takes the place its own recorded start gives it among every tree's work, so the branch starts children in the order the record started them, ahead of a root's later work where the record did so. The branches under rank keep the board's ranks and show how much the choice moves the result."},
+	{Number: assumeConflictToMerger,
+		Text:      "A conflict past the review is answered as the daemon the replay runs answers it, which leaves it to the merger (cybermonklabs/legion#4979): in accepting or retro the issue keeps its phase under every rule, and the merger merges the base forward once the issue moves into merging; in merging the merger merges it forward at once, but under a rule whose conflicting head moves back, which moves the issue back from merging as before.",
+		Direction: "The tool's own, and wrong for a window recorded before cybermonklabs/legion#4979, whose daemon moved the issue back to implementing from accepting, retro and merging under a rule whose conflicting head moves back, and asked the implementer to merge forward under main. Replayed under its own rule, such a window runs no loop for a conflict in accepting or retro, so the issue finishes sooner, with fewer hours of conflict and less work, than the record shows, which validate measures as the replay's error. Under main a merge forward lasts as long whichever role runs it. The tool counts the conflicts it leaves to the merger."},
 }
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
@@ -153,3 +157,8 @@ const assumeKeptOpenLoop = 35
 // that a tree's root ranks at its tree's next recorded first start (firstStartRanks, driver.rerank),
 // which a run under FirstStarts recorded names where any issue ranks by its first start.
 const assumeRootRanksByNextStart = 36
+
+// assumeConflictToMerger is the assumption a conflict past the review rests on, which the daemon the
+// replay runs leaves to the merger (driver.conflictFor), and which a run names where it leaves one
+// (Divergence.ConflictsToMerger).
+const assumeConflictToMerger = 37

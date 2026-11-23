@@ -200,11 +200,11 @@ func (iss *IssueTrace) sessionAt(role claim.Role, at time.Time) string {
 	return found
 }
 
-// MergeForwardRound is one merge forward of an issue's conflicting head under a rule whose
-// conflicting head keeps its phase, a round of conflict that moves no phase: from the engine's
-// ask (MergeForwardAsked) to the landing of the head it left (MergeForwardLanded), or to the
-// issue's leave; End zero while it stands at the window's end. An ask while one stands is of the
-// same round.
+// MergeForwardRound is one merge forward of an issue's conflicting head that keeps its phase, under
+// a rule whose conflicting head keeps it or, since cybermonklabs/legion#4979, past the review under
+// every rule, a round of conflict that moves no phase: from the engine's ask (MergeForwardAsked) to
+// the landing of the head it left (MergeForwardLanded), or to the issue's leave; End zero while it
+// stands at the window's end. An ask while one stands is of the same round.
 type MergeForwardRound struct {
 	Start, End time.Time
 }

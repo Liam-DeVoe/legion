@@ -198,17 +198,20 @@ reconstruction error the tool reports; these windows hold the exact one.
   daemon's own path as a drawn one is. Under `legion-v20.42.5` the issue then runs its own loop as
   recorded; under `main` the merge-forward segment lasts as that loop's implementing round, unended
   where the round is. The run counts each conflict kept (`divergence.keptOpenLoops`).
-- Under `legion-v20.42.5` (`ConflictMovesBack`) a drawn conflict moves the issue back to implementing by `conflict`, and the loop's work is drawn from the window's recorded conflict loops: the segments from a recorded conflict move to the issue's return to the phase it left.
+- Under `legion-v20.42.5` (`ConflictMovesBack`) a drawn conflict in testing, reviewing or merging moves the issue back to implementing by `conflict`, and the loop's work is drawn from the window's recorded conflict loops: the segments from a recorded conflict move to the issue's return to the phase it left.
   The loop is drawn with the run's seed among the loops of the window whose conflict left the same phase.
   Where the window records no loop from that phase, the replay draws among the loops that left a later phase, and cuts the drawn loop at its first work segment in that phase or a later one, so the issue returns to the phase that its conflict left.
   Where the window records only loops that left an earlier phase, the replay draws among those, and after the loop the issue goes back to the phase that its conflict left through copies of its own last work segments in each phase between.
   Where the issue's own work holds no segment in the phase that such a loop returns to, the issue runs no drawn loop and goes on with its own recorded work.
   The replay draws only among the loops whose work, as the drawn conflict takes it, the record shows ending: a loop whose issue the record shows still in it at `to`, or leaving the workflow inside it, has no known length, and an issue given it would stand in its last segment to the window's end and never run its own work after the loop.
   A loop that left a later phase counts where the record shows it reaching the phase that the drawn conflict left.
-- Under `main` (`ConflictMergeForward`) a drawn conflict keeps the phase: a merge-forward segment follows, its implementer in a turn, and then the issue goes on with the work the record shows after the loop returned to the phase the conflict left.
+- Under `main` (`ConflictMergeForward`) a drawn conflict in testing, reviewing or merging keeps the phase: a merge-forward segment follows, its implementer in a turn in testing and reviewing and its merger in merging (cybermonklabs/legion#4979), and then the issue goes on with the work the record shows after the loop returned to the phase the conflict left.
   The replay draws the length of that segment from the implementing rounds of the recorded conflict loops that left the same phase (assumption 23), among the same loops whose work the record shows ending.
   Where the window records no loop from that phase, the replay draws from the loops that left a later phase, and where it records none of those either, from the loops that left an earlier phase.
   The stretch is not drawn a second time.
+- The replay runs the daemon at its own commit, which leaves a conflict in accepting or retro to wait for merging under every rule (cybermonklabs/legion#4979, assumption 37): the issue keeps its phase and goes on with its work as a stretch that drew no conflict does, and when it moves into merging its merger merges the base forward, a merge-forward segment drawn as the one above when the conflict came, before its work in merging, which is not drawn a second time.
+  A move back to a phase before accepting ends the conflict first, and the work goes on from a head of its own.
+  The run counts each conflict past the review that it leaves to the merger, in merging or waiting for it (`divergence.conflictsToMerger`).
 - `conflict-from-fitted-rate`'s stretches separate perfectly: none with M = 0 conflicted and the one
   with M = 1 did, so the maximum-likelihood chance is 0 at M = 0 and 1 at M = 1. The tool's fit must
   reach those limits to within 10⁻⁶; a draw then differs from them with a chance below 10⁻⁶ under

@@ -76,13 +76,14 @@ M = 0 and it merges at 12:45. The replay is the record.
 
 ## The replay under `main`
 
-`main` keeps a conflicting head in its phase and merges the base forward. Up to 11:00 nothing
-differs: ACME-1's first stretch draws at 11:00 with M = 1, a conflict. ACME-1 stays in merging; a
-merge-forward segment follows, as long as the recorded loops' implementing round (assumption 23),
-30 minutes, its implementer in a turn from 11:00 to 11:30; then ACME-1 goes on with the work the
-record shows after its loop came back to merging, its last merging segment of 15 minutes, its
-merger in a turn from 11:30 to 11:45; and it merges at 11:45. The stretch is not drawn again. ACME-1
-holds no slot after 10:15 (merging keeps none under `main`). ACME-2 is as recorded.
+`main` keeps a conflicting head in its phase and merges the base forward; in merging the merger
+merges it (cybermonklabs/legion#4979). Up to 11:00 nothing differs: ACME-1's first stretch draws
+at 11:00 with M = 1, a conflict. ACME-1 stays in merging; a merge-forward segment follows, as long
+as the recorded loops' implementing round (assumption 23), 30 minutes, its merger in a turn from
+11:00 to 11:30; then ACME-1 goes on with the work the record shows after its loop came back to
+merging, its last merging segment of 15 minutes, its merger in a turn from 11:30 to 11:45; and it
+merges at 11:45. The stretch is not drawn again. ACME-1 holds no slot after 10:15 (merging keeps
+none under `main`). ACME-2 is as recorded.
 
 ## The scorecard under `legion-v20.42.5`, worked by hand
 

@@ -805,3 +805,190 @@ func TestAConflictDependsOnTheWaitOnlyThroughMerges(t *testing.T) {
 		t.Errorf("the rule main's conflicting head %s, want it to keep its phase while the base is merged forward", rule.Conflict)
 	}
 }
+
+// pastReviewConflictWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5, a release
+// before cybermonklabs/legion#4979, whose conflicting head moved back to implementing from every
+// phase past the review: one conflict moved its issue back from merging, the other from accepting.
+// ACME-1, a root promoted at 09:00, works 15 minutes in each phase to merging at 10:45, and a
+// conflict moves it back at 11:00; its loop is 30 minutes in implementing and 15 in each phase after
+// it, it is back in merging at 12:30, and it merges at 12:45. ACME-2, a root promoted at 09:05,
+// works 15 minutes in each phase to accepting at 10:20, and a conflict moves it back at 10:35; its
+// loop is 20 minutes in implementing and 15 in testing and in reviewing, it is back in accepting at
+// 11:25, and it works 15 minutes in each phase after it to its merge at 12:10. The base branch took
+// one commit, at 10:30, inside the first stretch of each issue (09:45 to 11:00 and 09:50 to 10:35)
+// and inside neither's second (11:30 to 12:45 and 10:55 to 12:10): the stretches separate, so the
+// chance fitted at M = 1 is 1 and at M = 0 is 0, and under any seed each issue's first stretch
+// draws a conflict, ACME-1's in merging and ACME-2's in accepting, and its second draws none.
+func pastReviewConflictWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.capped(2)
+	b.boot(clock(9, 0))
+	b.file(clock(9, 0), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion})
+	b.file(clock(9, 5), "ACME-2", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.rootThroughReview(clock(9, 0), "ACME-1")
+	b.rootThroughReview(clock(9, 5), "ACME-2")
+	for _, step := range []struct {
+		at       time.Time
+		key      string
+		from, to phase.Phase
+		trigger  workflow.TriggerKind
+	}{
+		{clock(10, 15), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+		{clock(10, 20), "ACME-2", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+		{clock(10, 30), "ACME-1", phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+		{clock(10, 35), "ACME-2", phase.Accepting, phase.Implementing, workflow.TriggerConflict},
+		{clock(10, 45), "ACME-1", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+		{clock(10, 55), "ACME-2", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady},
+		{clock(11, 0), "ACME-1", phase.Merging, phase.Implementing, workflow.TriggerConflict},
+		{clock(11, 10), "ACME-2", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed},
+		{clock(11, 25), "ACME-2", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+		{clock(11, 30), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady},
+		{clock(11, 40), "ACME-2", phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+		{clock(11, 45), "ACME-1", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed},
+		{clock(11, 55), "ACME-2", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+		{clock(12, 0), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved},
+		{clock(12, 10), "ACME-2", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged},
+		{clock(12, 15), "ACME-1", phase.Accepting, phase.Retro, workflow.TriggerSignOff},
+		{clock(12, 30), "ACME-1", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted},
+		{clock(12, 45), "ACME-1", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged},
+	} {
+		b.segmentEnds(step.at, step.key, step.from, step.to, step.trigger)
+		if step.to == phase.Done {
+			b.leaves(step.at, step.key, record.DoneStatus)
+		}
+	}
+	window := b.build()
+	window.Merges = map[string][]Merge{builtRepository: {
+		{SHA: "2a6f0c9d4b1e3057a8c9d0e1f2a3b4c5d6e7f809", At: clock(10, 30), Branch: "main"},
+	}}
+	return window
+}
+
+// A conflict past the review is played as the daemon the replay runs plays it, which leaves it to
+// the merger (cybermonklabs/legion#4979, assumption 37), not as the daemon that recorded the window
+// did. In merging, under a rule whose conflicting head keeps its phase, the merger merges the base
+// forward; in accepting, under every rule, the conflict waits for merging, where the merger merges
+// it forward, and nothing moves the issue back. The test replays pastReviewConflictWindow at the
+// seeds 1 to 3. Under main ACME-1 stays in merging at 11:00, its merger merges the base forward for
+// its loop's 30 minutes of implementing, the merge forward lands at 11:30, and its last merging
+// segment runs from then to its merge at 11:45. ACME-2 stays in accepting at 10:35 and goes on with
+// the work the record shows after its loop came back there: its architect's 15 minutes to retro at
+// 10:50 and its implementer's 15 to merging at 11:05, where its merger is asked and merges forward
+// for its loop's 20 minutes of implementing, landing at 11:25, and its last merging segment runs to
+// its merge at 11:40. Under legion-v20.42.5, the rule that recorded the window, ACME-2 runs as under
+// main, and ACME-1, which that rule still moves back from merging, moves back at 11:00 and runs its
+// own loop to its merge at 12:45, as recorded. The test fails for a replay that moves either issue
+// from 10:10 on otherwise or at other moments, asks or lands either's merge forward at other
+// moments, starts the turns of either's merger or implementer from 10:10 on at other moments,
+// finishes either at another time, refuses a move, counts other than the conflicts it left to the
+// merger (two under main, ACME-2's alone under legion-v20.42.5), or does not name assumption 37.
+func TestAConflictPastTheReviewIsTheMergers(t *testing.T) {
+	dsn := replayDSN(t)
+	window := pastReviewConflictWindow(t)
+	type course struct {
+		moves                    []fixtureMove
+		at                       []time.Time
+		asked, landed            []time.Time
+		mergerTurns, implementer []time.Time
+		done                     time.Time
+	}
+	move := func(from, to phase.Phase, trigger workflow.TriggerKind) fixtureMove {
+		return fixtureMove{From: from, To: to, Trigger: trigger}
+	}
+	accepted := move(phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	signedOff := move(phase.Accepting, phase.Retro, workflow.TriggerSignOff)
+	toMerging := move(phase.Retro, phase.Merging, workflow.TriggerRetroCompleted)
+	merged := move(phase.Merging, phase.Done, workflow.TriggerPullRequestMerged)
+	waitedForTheMerger := course{
+		moves: []fixtureMove{accepted, signedOff, toMerging, merged}, at: []time.Time{clock(10, 20), clock(10, 50), clock(11, 5), clock(11, 40)},
+		asked: []time.Time{clock(11, 5)}, landed: []time.Time{clock(11, 25)},
+		mergerTurns: []time.Time{clock(11, 5), clock(11, 25)}, implementer: []time.Time{clock(10, 50)}, done: clock(11, 40),
+	}
+	for _, c := range []struct {
+		rule   string
+		toThem int
+		want   map[string]course
+	}{
+		{rule: "main", toThem: 2, want: map[string]course{
+			"ACME-1": {
+				moves: []fixtureMove{accepted, signedOff, toMerging, merged}, at: []time.Time{clock(10, 15), clock(10, 30), clock(10, 45), clock(11, 45)},
+				asked: []time.Time{clock(11, 0)}, landed: []time.Time{clock(11, 30)},
+				mergerTurns: []time.Time{clock(10, 45), clock(11, 0), clock(11, 30)}, implementer: []time.Time{clock(10, 30)}, done: clock(11, 45),
+			},
+			"ACME-2": waitedForTheMerger,
+		}},
+		{rule: "legion-v20.42.5", toThem: 1, want: map[string]course{
+			"ACME-1": {
+				moves: []fixtureMove{accepted, signedOff, toMerging, move(phase.Merging, phase.Implementing, workflow.TriggerConflict),
+					move(phase.Implementing, phase.Testing, workflow.TriggerImplementationReady), move(phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed),
+					accepted, signedOff, toMerging, merged},
+				at: []time.Time{clock(10, 15), clock(10, 30), clock(10, 45), clock(11, 0), clock(11, 30), clock(11, 45), clock(12, 0), clock(12, 15),
+					clock(12, 30), clock(12, 45)},
+				mergerTurns: []time.Time{clock(10, 45), clock(12, 30)}, implementer: []time.Time{clock(10, 30), clock(11, 0), clock(12, 15)},
+				done: clock(12, 45),
+			},
+			"ACME-2": waitedForTheMerger,
+		}},
+	} {
+		for seed := int64(1); seed <= 3; seed++ {
+			t.Run(fmt.Sprintf("%s/seed-%d", c.rule, seed), func(t *testing.T) {
+				out := t.TempDir()
+				result, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, c.rule), Branch: MainBranch, Seed: seed,
+					Slowdown: 1, PGDSN: dsn, Out: out})
+				if err != nil {
+					t.Fatalf("replay the window under %s at seed %d: %v", c.rule, seed, err)
+				}
+				moved, err := replayedMoves(filepath.Join(out, logFile))
+				if err != nil {
+					t.Fatal(err)
+				}
+				log := replayLog(t, out)
+				for _, key := range []string{"ACME-1", "ACME-2"} {
+					want := c.want[key]
+					fromTen := func(line replayLine) bool { return !line.Time.Before(clock(10, 10)) }
+					at := linesAt(log, func(line replayLine) bool { return line.Msg == phaseChangedLine && line.Issue == key })
+					var moves []fixtureMove
+					var movedAt []time.Time
+					for i, m := range moved[key] {
+						if i < len(at) && !at[i].Before(clock(10, 10)) {
+							moves, movedAt = append(moves, m), append(movedAt, at[i])
+						}
+					}
+					if !slices.Equal(moves, want.moves) || !slices.EqualFunc(movedAt, want.at, time.Time.Equal) {
+						t.Errorf("%s moved %s at %s from 10:10 on, want %s at %s", key, describeMoves(moves), describeTimes(movedAt),
+							describeMoves(want.moves), describeTimes(want.at))
+					}
+					asked := linesAt(log, func(line replayLine) bool { return line.Msg == mergeForwardAskedLine && line.Issue == key })
+					landed := linesAt(log, func(line replayLine) bool { return line.Msg == mergeForwardLandedLine && line.Issue == key })
+					if !slices.EqualFunc(asked, want.asked, time.Time.Equal) || !slices.EqualFunc(landed, want.landed, time.Time.Equal) {
+						t.Errorf("%s's merge forward was asked at %s and landed at %s, want asked at %s and landed at %s", key, describeTimes(asked),
+							describeTimes(landed), describeTimes(want.asked), describeTimes(want.landed))
+					}
+					for _, role := range []struct {
+						role claim.Role
+						want []time.Time
+					}{{claim.RoleMerger, want.mergerTurns}, {claim.RoleImplementer, want.implementer}} {
+						token := "legion-acme-" + strings.ToLower(key) + "-" + string(role.role)
+						started := linesAt(log, func(line replayLine) bool {
+							return line.Msg == "supervise: a turn started" && line.Claim == token && fromTen(line)
+						})
+						if !slices.EqualFunc(started, role.want, time.Time.Equal) {
+							t.Errorf("%s's %s started turns at %s from 10:10 on, want at %s", key, role.role, describeTimes(started), describeTimes(role.want))
+						}
+					}
+					if done := result.Scorecard.DoneAt[key]; !done.Equal(want.done) {
+						t.Errorf("%s is done at %s, want %s", key, stamp(done), stamp(want.done))
+					}
+				}
+				if refused := result.Divergence.Refused; len(refused) > 0 {
+					t.Errorf("the replay refused %+v", refused)
+				}
+				if got := result.Divergence.ConflictsToMerger; got != c.toThem || !slices.Contains(result.Assumptions, assumeConflictToMerger) {
+					t.Errorf("the run left %d conflicts past the review to the merger and named the assumptions %v, want %d and assumption %d named",
+						got, result.Assumptions, c.toThem, assumeConflictToMerger)
+				}
+			})
+		}
+	}
+}

@@ -252,6 +252,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}},
 	}
 	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, merges, recordedLoops(script), map[string]time.Time{}
+	d.waiting = map[string]waitingConflict{}
 	d.draws, d.numbers = rand.New(rand.NewPCG(uint64(cfg.Seed), conflictStream)), newPullRequestNumbers(trace)
 	d.timingWall, d.answerWall = cfg.Branch.Timing == valueWall, cfg.Branch.Answer == valueWall
 	runErr := d.run()

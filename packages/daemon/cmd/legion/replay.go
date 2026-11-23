@@ -321,8 +321,9 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 		counted := result.Divergence
 		fmt.Fprintf(stdout, "legion replay run: replayed %s under the rule %s on the branch %s (seed %d, f %v) in the database %s (%s); wrote %s\n",
 			*windowDir, rule.Name, branch.Name, *seed, *slowdown, result.Database, kept, *out)
-		fmt.Fprintf(stdout, "legion replay run: %d moves refused, %d recorded conflicts kept for a loop open at the window's end, %d reassertion starts, %d events fenced, %d starts with no segment left, %d segments passed over, %d unplaced issues\n",
-			len(counted.Refused), counted.KeptOpenLoops, counted.Reassertions, counted.Fenced, counted.NoSegment, counted.SkippedSegments, len(result.Unplaced))
+		fmt.Fprintf(stdout, "legion replay run: %d moves refused, %d recorded conflicts kept for a loop open at the window's end, %d conflicts past the review left to the merger, %d reassertion starts, %d events fenced, %d starts with no segment left, %d segments passed over, %d unplaced issues\n",
+			len(counted.Refused), counted.KeptOpenLoops, counted.ConflictsToMerger, counted.Reassertions, counted.Fenced, counted.NoSegment, counted.SkippedSegments,
+			len(result.Unplaced))
 		for _, refused := range counted.Refused {
 			fmt.Fprintf(stdout, "legion replay run: refused %s %s→%s by %s at %s: %s\n", refused.Issue, refused.From, refused.To, refused.Trigger,
 				refused.At.Format(time.RFC3339), refused.Reason)

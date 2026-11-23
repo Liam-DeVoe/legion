@@ -171,10 +171,11 @@ const (
 const checkClosedLine = "workflow: production check closed"
 
 // mergeForwardAskedLine and mergeForwardLandedLine are the msgs of the lines a conflicting head's
-// merge forward writes under a rule whose conflicting head keeps its phase
-// (record.ConflictMergeForward): the engine's ask of the implementer to merge the base forward
-// (workflow's mergeForward) and the head that merge left arriving (mergeForwardLanded), the round
-// of conflict a merge forward is (MergeForwardRound).
+// merge forward writes where the issue keeps its phase (record.ConflictMergeForward, and under every
+// rule a conflict past the review since cybermonklabs/legion#4979): the engine's ask of the
+// implementer, or in merging the merger, to merge the base forward (workflow's mergeForward) and the
+// head that merge left arriving (mergeForwardLanded), the round of conflict a merge forward is
+// (MergeForwardRound).
 const (
 	mergeForwardAskedLine  = "workflow: merge forward asked"
 	mergeForwardLandedLine = "workflow: the merge forward landed"
@@ -531,8 +532,8 @@ type QueueLeftReadOnce struct {
 }
 
 // MergeForwardAsked is a `workflow: merge forward asked` line (workflow's mergeForward): the
-// engine asked the implementer of Issue, standing in Phase, to merge the base forward onto a head
-// that conflicts with it, the issue keeping its phase.
+// engine asked the implementer of Issue, or in merging its merger, standing in Phase, to merge the
+// base forward onto a head that conflicts with it, the issue keeping its phase.
 type MergeForwardAsked struct {
 	LineHead
 	Issue string
