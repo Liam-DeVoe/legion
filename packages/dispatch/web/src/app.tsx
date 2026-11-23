@@ -926,7 +926,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   return (
     <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
       <div
-        className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${place === "side" ? "sm:pr-96" : ""} ${canvasText}`}
+        className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${place === "side" ? "sm:pr-[420px]" : ""} ${canvasText}`}
         data-testid="app-shell"
       >
         <a
@@ -935,19 +935,19 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         >
           Skip to content
         </a>
-        {/* The shell's status corner: the pending-writes indicator and the word on drafts the tab
-            cannot keep for a reload above the connection pill. Above the highest composer fixed
-            at the foot of the screen (`--foot-composer-inset`, `useFootInset`), so neither sits
-            over its controls; otherwise just above the phone's bottom bar. Only what it shows
-            takes the pointer. A socket Dispatch refuses carries no status the page can read, so
-            nothing in the pill is terminal: once reconnecting has gone on for two minutes it
-            offers a reload, and the page keeps trying underneath. */}
+        {/* The shell's status corner: the pending-writes indicator, the bar's notice and the word
+            on drafts the tab cannot keep for a reload above the connection pill. Above the
+            highest composer fixed at the foot of the screen (`--foot-composer-inset`,
+            `useFootInset`), so neither sits over its controls; otherwise just above the phone's
+            bottom bar; and left of the command bar's panel while it is at the side. Only what it
+            shows takes the pointer. A socket Dispatch refuses carries no status the page can
+            read, so nothing in the pill is terminal: once reconnecting has gone on for two
+            minutes it offers a reload, and the page keeps trying underneath. */}
         <div
-          className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
+          className={`pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto ${place === "side" ? "sm:right-[436px]" : ""}`}
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
-          <RunChip />
           <Notice />
           <DraftsNotKept />
           {connection === "stuck" ? (
@@ -1093,6 +1093,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           ref={mainRef}
           tabIndex={-1}
         >
+          {/* The command bar's run chip (design v3, state 11): at the top of the page, over the
+              middle of its column, and still there as the page scrolls. It takes no room of the
+              page's own, and only the chip takes the pointer. */}
+          <div className="pointer-events-none sticky top-2 z-30 flex h-0 justify-center overflow-visible *:pointer-events-auto">
+            <RunChip />
+          </div>
           <ErrorBoundary region="this page" resetKey={location.pathname}>
             <Suspense fallback={issueFrame ? <IssueFrameFallback /> : <IssuePageFallback />}>
               <Routes>

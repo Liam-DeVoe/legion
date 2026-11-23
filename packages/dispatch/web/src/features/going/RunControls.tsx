@@ -1,11 +1,13 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import type { GoingRun } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import {
   borderDefault,
+  card,
   secondaryButtonCompact,
+  surfaceMutedHoverBg,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
@@ -13,44 +15,178 @@ import {
 import { conversationTitle, conversationWorking, setLevel, useGoingValue } from "./going-store";
 import type { Asking } from "./useAsk";
 
-/** The three levels, in the order the control lists them (R10's budgets are the server's). */
-const LEVELS: readonly { readonly label: string; readonly level: GoingRun["level"] }[] = [
-  { label: "Fast", level: "fast" },
-  { label: "Standard", level: "standard" },
-  { label: "Deep", level: "deep" },
+/** The three modes, in the order the menu lists them, each with the one line on what it is for
+ *  (design v3, state 12). R10's budgets are the server's: no model and no number shows here. */
+const LEVELS: readonly {
+  readonly label: string;
+  readonly level: GoingRun["level"];
+  readonly use: string;
+}[] = [
+  { label: "Fast", level: "fast", use: "quick lookups" },
+  { label: "Standard", level: "standard", use: "most questions" },
+  { label: "Deep", level: "deep", use: "big changes and reports; can take minutes" },
 ];
 
-/** How much work the next run may do: Fast, Standard or Deep, beside the box. */
+/** How far the open mode menu stands from its button, in pixels. */
+const MENU_GAP = 4;
+
+/** Where the open mode menu stands in the window: its left edge, and its foot or its top. */
+interface MenuPlace {
+  readonly left: number;
+  readonly top?: number;
+  readonly bottom?: number;
+}
+
+/** Where the mode menu of `button` opens: above it where more of the window is above it than
+ *  below, as at the foot of the bar and of the panel, else below it, as at the top of the bar
+ *  before Enter. The menu is fixed to the window, so the bar's frame, which cuts off what
+ *  overflows it, never cuts the menu. */
+function menuPlace(button: HTMLElement): MenuPlace {
+  const box = button.getBoundingClientRect();
+  return box.top > window.innerHeight - box.bottom
+    ? { bottom: window.innerHeight - box.top + MENU_GAP, left: box.left }
+    : { left: box.left, top: box.bottom + MENU_GAP };
+}
+
+/**
+ * The mode control (design v3, state 12): a small text button at the left of the box that names
+ * how much work the next run may do, "Standard ▾", and its menu of the three modes, each with
+ * one line on what it is for. A change applies from the next message, as the button's hover
+ * says. It is a WAI-ARIA menu button: Enter, Space, Down and Up open the menu with the focus on
+ * the mode that is on; Up and Down move in it, wrapping, and Home and End go to its ends; a
+ * choice puts the cursor back in the box; Escape closes it and gives the focus back to the
+ * button, and leaves the bar open; Tab closes it.
+ */
 export function LevelControl(): ReactNode {
   const chosen = useGoingValue((of) => of.level);
+  const [menu, setMenu] = useState<MenuPlace>();
+  const button = useRef<HTMLButtonElement>(null);
+  const wrapper = useRef<HTMLDivElement>(null);
+  const menuId = useId();
+  const open = menu !== undefined;
+  const named = LEVELS.find((one) => one.level === chosen)?.label ?? chosen;
+
+  useEffect(() => {
+    if (!open) return;
+    wrapper.current
+      ?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]')
+      ?.focus();
+    // A press outside the control, or a window that changes its size under the menu, closes it.
+    const closeOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && wrapper.current?.contains(event.target) === true) return;
+      setMenu(undefined);
+    };
+    const closeOnResize = () => setMenu(undefined);
+    document.addEventListener("pointerdown", closeOutside);
+    window.addEventListener("resize", closeOnResize);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      window.removeEventListener("resize", closeOnResize);
+    };
+  }, [open]);
+
+  const openMenu = () => {
+    if (button.current !== null) setMenu(menuPlace(button.current));
+  };
+  const choose = (level: GoingRun["level"]) => {
+    setLevel(level);
+    setMenu(undefined);
+    if (!focusConversationBox()) button.current?.focus();
+  };
+  const walk = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      // The menu's own Escape: the bar's dialog and the panel never hear it.
+      event.preventDefault();
+      event.stopPropagation();
+      setMenu(undefined);
+      button.current?.focus();
+      return;
+    }
+    if (event.key === "Tab") {
+      // Tab moves on from the button, as the items take no tab stop of their own.
+      button.current?.focus();
+      setMenu(undefined);
+      return;
+    }
+    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
+    const at = event.target instanceof HTMLElement ? items.indexOf(event.target) : -1;
+    const to =
+      at < 0
+        ? undefined
+        : event.key === "ArrowDown"
+          ? (at + 1) % items.length
+          : event.key === "ArrowUp"
+            ? (at - 1 + items.length) % items.length
+            : event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? items.length - 1
+                : undefined;
+    if (to === undefined) return;
+    event.preventDefault();
+    items[to]?.focus();
+  };
   return (
-    <fieldset
-      className={`flex shrink-0 items-center gap-2 text-xs ${textSecondaryOnSurface}`}
-      data-testid="going-level"
-    >
-      <legend className="sr-only">How much work a run may do</legend>
-      {LEVELS.map(({ label, level }) => (
-        <label className="flex cursor-pointer items-center gap-1" key={level}>
-          <input
-            checked={chosen === level}
-            className="size-3.5 cursor-pointer"
-            name="going-level"
-            onChange={() => setLevel(level)}
-            type="radio"
-            value={level}
-          />
-          {label}
-        </label>
-      ))}
-    </fieldset>
+    <div className="shrink-0" data-testid="going-level" ref={wrapper}>
+      <button
+        aria-controls={open ? menuId : undefined}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className={`min-h-11 rounded-lg px-2 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 ${textSecondaryOnSurface} ${surfaceMutedHoverBg}`}
+        data-testid="going-level-button"
+        onClick={() => (open ? setMenu(undefined) : openMenu())}
+        // Down and Up open the menu as Enter and Space do.
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          openMenu();
+        }}
+        ref={button}
+        title="How much work the next run may do. A change applies from the next message."
+        type="button"
+      >
+        {named} <span aria-hidden="true">▾</span>
+      </button>
+      {menu === undefined ? null : (
+        <div
+          aria-label="Mode"
+          className={`fixed z-50 w-max max-w-[calc(100vw-2rem)] rounded-lg border p-1 shadow-lg ${card} ${borderDefault}`}
+          id={menuId}
+          onKeyDown={walk}
+          role="menu"
+          style={menu}
+        >
+          {LEVELS.map(({ label, level, use }) => (
+            <button
+              aria-checked={level === chosen}
+              className={`flex min-h-11 w-full items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm sm:min-h-8 ${textPrimaryOnSurface} ${surfaceMutedHoverBg}`}
+              data-level={level}
+              key={level}
+              onClick={() => choose(level)}
+              role="menuitemradio"
+              tabIndex={-1}
+              type="button"
+            >
+              <span aria-hidden="true" className="w-3 shrink-0">
+                {level === chosen ? "✓" : ""}
+              </span>
+              <span>
+                <span className="font-medium">{label}</span> — {use}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
 /**
- * The header of the conversation, in the bar and in the panel (design v2, state 2): the
+ * The header of the conversation, in the bar and in the panel (design v3, states 2 and 10): the
  * conversation's title, its first question on one line, then History, a new conversation, the
- * button that moves it (a pin, "Keep at the side", over the page; "Over the page" at the side)
- * and Close. Each press is the surface's own.
+ * button that moves it, and Close. Over the page the move is a pin, "Keep at the side", and Close
+ * says its word; at the side the move is "Open over the page", and Close is the panel's ×. Each
+ * press is the surface's own.
  */
 export function ConversationHeader({
   history,
@@ -61,7 +197,7 @@ export function ConversationHeader({
   onNew,
 }: {
   readonly history: boolean;
-  readonly move: "Keep at the side" | "Over the page";
+  readonly move: "Keep at the side" | "Open over the page";
   readonly onClose: () => void;
   readonly onHistory: () => void;
   readonly onMove: () => void;
@@ -69,6 +205,7 @@ export function ConversationHeader({
 }): ReactNode {
   const title = useGoingValue(conversationTitle);
   const open = useGoingValue((of) => of.conversation !== undefined || of.starting !== undefined);
+  const side = move === "Open over the page";
   return (
     <div
       className={`flex shrink-0 items-center gap-2 border-b px-3 py-1.5 ${borderDefault}`}
@@ -104,9 +241,7 @@ export function ConversationHeader({
           New
         </button>
       ) : null}
-      {move === "Keep at the side" ? (
-        <PinButton label={move} onClick={onMove} pinned={false} />
-      ) : (
+      {side ? (
         <button
           className={secondaryButtonCompact}
           data-testid="going-move"
@@ -115,14 +250,18 @@ export function ConversationHeader({
         >
           {move}
         </button>
+      ) : (
+        <PinButton label={move} onClick={onMove} pinned={false} />
       )}
       <button
+        aria-label={side ? "Close" : undefined}
         className={secondaryButtonCompact}
         data-testid="going-close"
         onClick={onClose}
+        title={side ? "Close" : undefined}
         type="button"
       >
-        Close
+        {side ? <span aria-hidden="true">×</span> : "Close"}
       </button>
     </div>
   );
@@ -171,22 +310,20 @@ export function boxHint(
 let shownBoxRow: HTMLElement | undefined;
 
 /** Puts the cursor in the conversation's box on the screen ("Say what to do instead", design v2,
- *  state 7), and answers whether there was one. */
+ *  state 7; a choice in the mode menu), and answers whether there was one. */
 export function focusConversationBox(): boolean {
-  const box = shownBoxRow?.querySelector<HTMLElement>(
-    'input:not([type="radio"]):not([type="checkbox"]), textarea'
-  );
+  const box = shownBoxRow?.querySelector<HTMLElement>("input, textarea");
   box?.focus();
   return box !== undefined && box !== null;
 }
 
 /**
- * The row of the conversation's box, in the bar and in the panel (design v2, state 2): the
- * context chip on its left (`chip`, none where the surface shows its context elsewhere), the box
- * itself (`box`), the level control beside it, and Stop at its right while the run works; under
- * it, the hint of what Enter does (`boxHint`). The box keeps its place among the row's parts in
- * every state, so the element the person types in, and its focus, stay as the row changes. While
- * the row is drawn, `focusConversationBox` puts the cursor in its box.
+ * The row of the conversation's box, in the bar and in the panel (design v3, states 2 and 12):
+ * the mode control at its left, then the context chip (`chip`, none where the surface draws its
+ * context inside the box), the box itself (`box`), and Stop at its right while the run works;
+ * under it, the hint of what Enter does (`boxHint`). The box keeps its place among the row's
+ * parts in every state, so the element the person types in, and its focus, stay as the row
+ * changes. While the row is drawn, `focusConversationBox` puts the cursor in its box.
  */
 export function BoxRow({
   box,
@@ -211,6 +348,7 @@ export function BoxRow({
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-2" ref={row}>
+        <LevelControl />
         {chip === undefined ? null : (
           <span
             className={`${pillClassName("label")} max-w-48`}
@@ -221,7 +359,6 @@ export function BoxRow({
           </span>
         )}
         {box}
-        <LevelControl />
         {working ? (
           <button
             className={secondaryButtonCompact}

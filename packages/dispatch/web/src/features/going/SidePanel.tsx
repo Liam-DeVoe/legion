@@ -7,11 +7,12 @@ import type { GoingContextInput } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { borderDefault, card, dangerText, inputClasses } from "../../theme/classes";
 import { nodeRouteFromHref, routeProjectOf } from "../refs/routes";
-import { issueOfPage } from "../search/bar-scope";
+import { issueOfPage, scopeOfPage } from "../search/bar-scope";
 import { ConversationView } from "./ConversationView";
 import {
   asksPerson,
   type ClickedItem,
+  conversationWorking,
   movePanel,
   newConversation,
   setClicked,
@@ -26,6 +27,10 @@ import { useAsk } from "./useAsk";
 
 /** The side panel's element id. */
 const SIDE_PANEL_ID = "going-side-panel";
+
+/** The page's own region, which the shell draws (`app.tsx`): Esc in the panel puts the focus
+ *  there. */
+const PAGE_ID = "main-content";
 
 /** The item a click on the page was on: the issue or document a link or a reference in it names,
  *  as the context of a request names it; undefined for a click on nothing of the kind. */
@@ -50,8 +55,9 @@ function clickedItem(target: EventTarget | null): GoingContextInput | undefined 
 }
 
 /** The context of the next request at the side: the page the panel sits beside, and the item a
- *  click on that page named, which takes the place of the page's own issue and project while the
- *  person is on it: a click on a project's document names no issue. */
+ *  click on that page named (`clicked`, while the person is still on the page it was clicked on),
+ *  which takes the place of the page's own issue and project: a click on a project's document
+ *  names no issue. */
 function contextOf(
   pathname: string,
   search: string,
@@ -63,20 +69,31 @@ function contextOf(
     path: pathname,
     project: routeProjectOf(pathname) ?? "",
   };
-  if (clicked === undefined || clicked.path !== pathname) {
-    return page;
-  }
-  return { ...page, issue: "", ...clicked.context };
+  return clicked === undefined ? page : { ...page, issue: "", ...clicked.context };
+}
+
+/** What the context chip in the panel's box says (design v3, state 10): the item a click on the
+ *  page named - its key, or the project of a click that names no issue - else what the page puts
+ *  under the bar, as the bar's chip says it (`scopeOfPage`), and "this page" on a page of no
+ *  project. */
+function chipWords(pathname: string, search: string, clicked: ClickedItem | undefined): string {
+  const named = clicked?.context;
+  if (named?.issue !== undefined && named.issue !== "") return named.issue;
+  if (named?.project !== undefined && named.project !== "") return `the project ${named.project}`;
+  return scopeOfPage(pathname, search, undefined, []) ?? "this page";
 }
 
 /**
- * The conversation kept at the side of the page (R1): a panel at the right that stays open on
- * every navigation and leaves the page usable, its box at its foot asking with the page as the
- * context, and a click on the page naming the item of the next request. Its box is the bar's
- * (design v2, state 2): the context chip, the level beside it, Stop while the run works, the
- * plan card's keys while a plan waits, and words sent during a run held until it ends. Ctrl-K
- * brings the conversation over the page, Ctrl-Shift-K and Close close it, and Esc in its empty box
- * stops a run that works.
+ * The conversation kept at the side of the page (R1; design v3, state 10): a panel 420 px wide at
+ * the right, which the page narrows beside (`app.tsx`) and stays usable, and which stays open on
+ * every navigation. It has the header, the conversation and the box of the bar (state 2), and no
+ * search list; its header has "Open over the page", which moves it back, and its × closes it. Its
+ * box asks with the page as the context, and a click on the page that opens or selects an item
+ * makes that item the chip and the context of the next request. The box is the bar's: the mode
+ * control, the context chip, Stop while the run works, the plan card's keys while a plan waits,
+ * and words sent during a run held until it ends. Esc in the panel puts the focus on the page and
+ * the panel stays, except that Esc in its empty box while a run works stops the run (R10); Ctrl-K
+ * brings the conversation back over the page.
  */
 export function SidePanel(): ReactNode {
   const going = useGoing();
@@ -86,7 +103,8 @@ export function SidePanel(): ReactNode {
   const [history, setHistory] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
   const side = going.place === "side";
-  const context = contextOf(location.pathname, location.search, going.clicked);
+  const clicked = going.clicked?.path === location.pathname ? going.clicked : undefined;
+  const context = contextOf(location.pathname, location.search, clicked);
   const asking = useAsk(context);
   const cardKeys = usePlanCardKeys();
   // Words sent while the run worked go once it no longer works, from the panel while it shows the
@@ -119,14 +137,21 @@ export function SidePanel(): ReactNode {
   return (
     <aside
       aria-label="Command bar at the side"
-      className={`fixed top-0 right-0 bottom-0 z-40 flex w-full flex-col border-l shadow-2xl sm:w-96 ${card} ${borderDefault}`}
+      className={`fixed top-0 right-0 bottom-0 z-40 flex w-full flex-col border-l shadow-2xl sm:w-[420px] ${card} ${borderDefault}`}
       data-testid="going-side-panel"
       id={SIDE_PANEL_ID}
+      // Esc in the panel puts the focus on the page, and the panel stays. An Esc the panel's own
+      // parts answered (the plan card, the mode menu, a run it stopped) is theirs.
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || event.defaultPrevented) return;
+        event.preventDefault();
+        document.getElementById(PAGE_ID)?.focus();
+      }}
       ref={panelRef}
     >
       <ConversationHeader
         history={history}
-        move="Over the page"
+        move="Open over the page"
         onClose={() => setPlace("closed")}
         onHistory={() => setHistory((shown) => !shown)}
         onMove={() => setPlace("over")}
@@ -162,9 +187,12 @@ export function SidePanel(): ReactNode {
                     event.preventDefault();
                     setWords("");
                   }
-                } else if (event.key === "Escape") {
-                  asking.escape(words);
+                } else if (event.key === "Escape" && words === "" && conversationWorking()) {
+                  // Esc in the empty box while the run works stops the run (R10), and the
+                  // focus stays in the box.
                   event.preventDefault();
+                  event.stopPropagation();
+                  asking.escape(words);
                 }
               }}
               placeholder={boxWords({
@@ -177,7 +205,7 @@ export function SidePanel(): ReactNode {
               value={words}
             />
           }
-          chip={context.issue !== "" && context.issue !== undefined ? context.issue : "this page"}
+          chip={chipWords(location.pathname, location.search, clicked)}
           hint={boxHint(asking, words)}
           onStop={asking.stop}
         />

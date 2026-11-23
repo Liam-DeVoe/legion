@@ -9,12 +9,16 @@ import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import { goingWaitingPlansQuery } from "../../api/queries";
-import type { GoingPlanAnswer, GoingWaitingPlan } from "../../api/types";
+import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingWaitingPlan } from "../../api/types";
+import { goingState } from "./going-store";
 import { WaitingPlans } from "./WaitingPlans";
 
-// The plans that wait for the person at the head of the Inbox (spec R11): Approve names the version
-// of the plan the list read, and Dispatch's refusal of an approval is said under the plan it
-// refused, and only there, so a row whose run proposed another plan since shows none of it.
+// The plans that wait for the person at the head of the Inbox (spec R11; design v3, state 11):
+// each row reads "Plan · Change CORE-1 · from ‹title› · 2 hours ago", the plan named as its card
+// names it and the conversation by its first question; Review opens the bar on that conversation;
+// Approve names the version of the plan the list read, and Dispatch's refusal of an approval is
+// said under the plan it refused, and only there, so a row whose run proposed another plan since
+// shows none of it.
 
 const waiting: GoingWaitingPlan = {
   conversation: "run-1",
@@ -27,17 +31,120 @@ const waiting: GoingWaitingPlan = {
   words: "split CORE-1 in two",
 };
 
+/** A change of `key`'s priority, as a plan's row. */
+function change(row: number, key: string): GoingPlanRow {
+  return {
+    arguments: { issue: key, priority: 2 },
+    changed: false,
+    claim: null,
+    class: "field",
+    fields: ["priority"],
+    issue: key,
+    item: key,
+    needs: [],
+    now: null,
+    result: null,
+    row,
+    state: "waiting",
+    tool: "dispatch_issue_update",
+    waits: [],
+  };
+}
+
+/** Plan `plan` of `run`, waiting, with `rows`. */
+function planOf(run: string, plan: number, rows: GoingPlanRow[]): GoingPlanAnswer {
+  return { mode: "ask", plan, rows, run, state: "waiting", summary: "", version: "c41d07" };
+}
+
 afterEach(cleanup);
+
+test("a row names the plan as its card does and its conversation by its first question, and Review opens the bar on it", async () => {
+  const user = userEvent.setup();
+  const first: GoingRun = {
+    context: null,
+    continues: null,
+    conversation: "c-1",
+    created_at: new Date(Date.now() - 7_200_000).toISOString(),
+    finished_at: null,
+    id: "run-1",
+    issues: [],
+    level: "standard",
+    mode: "ask",
+    state: "done",
+    stop_reason: null,
+    used: { calls: 1, tokens: 10, working_ms: 1000 },
+    words: "what blocks the release",
+  };
+  const followUp: GoingRun = {
+    ...first,
+    continues: "run-1",
+    id: "run-2",
+    state: "waiting",
+    words: "then raise CORE-10",
+  };
+  const list = spyOn(api, "myGoingPlans").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: [
+      {
+        ...waiting,
+        conversation: "c-1",
+        created_at: new Date(Date.now() - 7_200_000).toISOString(),
+        run: "run-2",
+        words: followUp.words,
+      },
+    ],
+    total: 1,
+  });
+  const history = spyOn(api, "myGoingRuns").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: [{ id: "c-1", newest_at: followUp.created_at, runs: [followUp, first] }],
+    total: 1,
+  });
+  const plan = spyOn(api, "goingPlan").mockResolvedValue(
+    planOf("run-2", 1, [change(1, "CORE-10")])
+  );
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation(
+    () => new Promise<void>(() => {})
+  );
+  try {
+    renderWithQueries(<WaitingPlans />);
+    const row = await screen.findByTestId("inbox-going-plan");
+    await waitFor(() =>
+      expect(within(row).getByTestId("inbox-going-plan-title")).toHaveTextContent("Change CORE-10")
+    );
+    await waitFor(() =>
+      expect(within(row).getByTestId("inbox-going-plan-from")).toHaveTextContent(
+        "from what blocks the release"
+      )
+    );
+    expect(row.querySelector("p")?.textContent).toBe(
+      "Plan · Change CORE-10 · from what blocks the release · 2 hours ago"
+    );
+
+    await user.click(within(row).getByRole("button", { name: "Review" }));
+    await waitFor(() => expect(goingState().place).toBe("over"));
+    expect(goingState().conversation).toEqual(["run-1", "run-2"]);
+  } finally {
+    list.mockRestore();
+    history.mockRestore();
+    plan.mockRestore();
+    stream.mockRestore();
+  }
+});
 
 test("a refusal of a run's plan does not show under the plan the run proposes in its place", async () => {
   const user = userEvent.setup();
   let listed: GoingWaitingPlan = waiting;
+  let proposed = planOf("run-1", 1, [change(1, "CORE-1")]);
   const list = spyOn(api, "myGoingPlans").mockImplementation(async () => ({
     limit: 50,
     offset: 0,
     rows: [listed],
     total: 1,
   }));
+  const plan = spyOn(api, "goingPlan").mockImplementation(async () => proposed);
   const approve = answerRoute<() => Promise<GoingPlanAnswer>>(
     "POST",
     "/api/v1/going/runs/*/plan/approve"
@@ -59,6 +166,13 @@ test("a refusal of a run's plan does not show under the plan the run proposes in
     expect(await screen.findByTestId("inbox-going-plan-approve")).toHaveTextContent(
       "Approve 3 changes"
     );
+    await waitFor(() =>
+      expect(screen.getByTestId("inbox-going-plan-title")).toHaveTextContent("Change CORE-1")
+    );
+    // Where History does not list the conversation, the row names it by its run's words.
+    expect(screen.getByTestId("inbox-going-plan-from")).toHaveTextContent(
+      "from split CORE-1 in two"
+    );
     await user.click(screen.getByTestId("inbox-going-plan-approve"));
     const row = screen.getByTestId("inbox-going-plan");
     expect(await within(row).findByRole("alert")).toHaveTextContent(
@@ -66,15 +180,17 @@ test("a refusal of a run's plan does not show under the plan the run proposes in
     );
 
     // The run proposes plan 2, and the list is read again: the row is the same run's, with
-    // its new plan.
+    // its new plan, which it reads again to name it.
+    proposed = planOf("run-1", 2, [change(1, "CORE-1"), change(2, "CORE-2")]);
     listed = { ...waiting, plan: 2, summary: "Split CORE-1 in three.", version: "e9a250" };
     await act(() => client.invalidateQueries({ queryKey: goingWaitingPlansQuery().queryKey }));
     await waitFor(() =>
-      expect(screen.getByTestId("inbox-going-plan")).toHaveTextContent("Split CORE-1 in three.")
+      expect(screen.getByTestId("inbox-going-plan-title")).toHaveTextContent("Change 2 issues")
     );
     expect(within(screen.getByTestId("inbox-going-plan")).queryByRole("alert")).toBeNull();
   } finally {
     list.mockRestore();
+    plan.mockRestore();
   }
 });
 
@@ -93,6 +209,7 @@ test("a plan that changed since the list read it is refused under it, and the ne
       total: 1,
     };
   });
+  const plan = spyOn(api, "goingPlan").mockResolvedValue(planOf("run-1", 1, [change(1, "CORE-1")]));
   const approve = answerRoute<
     (run: string, body: unknown, bounds: WriteBounds) => Promise<GoingPlanAnswer>
   >("POST", "/api/v1/going/runs/*/plan/approve");
@@ -121,7 +238,7 @@ test("a plan that changed since the list read it is refused under it, and the ne
     // The list is read again, and the refusal stays under the plan, which is still plan 1.
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
     expect(within(screen.getByTestId("inbox-going-plan")).getByRole("alert")).toHaveTextContent(
-      "This plan changed since the list read it. Open it to read what it does now before you approve it."
+      "This plan changed since the list read it. Review it to read what it does now before you approve it."
     );
     await user.click(screen.getByTestId("inbox-going-plan-approve"));
     await waitFor(() =>
@@ -133,5 +250,6 @@ test("a plan that changed since the list read it is refused under it, and the ne
     );
   } finally {
     list.mockRestore();
+    plan.mockRestore();
   }
 });

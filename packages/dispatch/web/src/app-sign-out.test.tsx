@@ -480,7 +480,7 @@ test("a sign-out answered 401 lands while the sign-in check cannot be read", asy
 });
 
 // A sign-out that lands ends the person's command bar with their session: whoever signs in next in
-// this tab finds none of their runs - no chip at the foot of the page names one - and none of their
+// this tab finds none of their runs - no chip at the top of the page names one - and none of their
 // runs' streams is read any more.
 test("a sign-out forgets the command bar's runs and stops reading their streams", async () => {
   const user = userEvent.setup();
@@ -518,7 +518,7 @@ test("a sign-out forgets the command bar's runs and stops reading their streams"
   try {
     await screen.findByText("Signed in as alice");
     await act(() => startRun("count the moons", { path: "/" }, "alice"));
-    expect(await screen.findByTestId("going-chip")).toHaveTextContent("1 run working");
+    expect(await screen.findByTestId("going-chip")).toHaveTextContent("Working · count the moons");
 
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     await screen.findByRole("link", { name: "Sign in with Google" });

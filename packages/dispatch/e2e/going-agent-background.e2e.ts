@@ -164,7 +164,7 @@ test("a run that makes a plan, closed at once, ends with the chip saying a plan 
     await bar(page).getByTestId("going-close").click();
     await expect(bar(page)).toHaveCount(0);
     const chip = page.getByTestId("going-chip");
-    await expect(chip).toContainText("A plan waits", { timeout: RUN_STEPS_MS });
+    await expect(chip).toContainText("Needs you", { timeout: RUN_STEPS_MS });
     const waiting = page.getByTestId("inbox-going-plan");
     await expect(waiting).toContainText(words, { timeout: RUN_STEPS_MS });
     await waiting.getByTestId("inbox-going-plan-approve").click();

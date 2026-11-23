@@ -7,13 +7,16 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { GoingRun } from "../../api/types";
-import { resetGoingStore, setPlace } from "./going-store";
+import { goingState, resetGoingStore, setPlace } from "./going-store";
 import { SidePanel } from "./SidePanel";
 
-// The conversation kept at the side of the page (spec R1, R11): a click on the page names the item
-// the next request is about, in place of the page's own issue and project, and History, read again
-// once a run starts there, lists that run. Its box is the bar's (design v2, state 2): what Enter
-// does now, the chip, Stop while the run works, and words sent during the run held until it ends.
+// The conversation kept at the side of the page (spec R1, R11; design v3, state 10): a panel
+// 420 px wide whose header moves it back over the page and whose × closes it; Esc in it puts the
+// focus on the page and the panel stays; a click on the page names the item the next request is
+// about, in place of the page's own issue and project, and the box's chip says it; and History,
+// read again once a run starts there, lists that run. Its box is the bar's (design v3, states 2
+// and 12): what Enter does now, the chip, the mode, Stop while the run works, and words sent
+// during the run held until it ends.
 
 const PAGE = "/issues/CORE-1";
 
@@ -82,6 +85,7 @@ test("a click on a project's document is the next request's context, and the pag
   try {
     renderPanel(<span data-dispatch-ref="/projects/OPS/documents/runbook">The runbook</span>);
     await user.click(screen.getByText("The runbook"));
+    expect(screen.getByTestId("going-box-chip")).toHaveTextContent("the project OPS");
     await user.type(
       screen.getByRole("textbox", { name: "Ask the command bar" }),
       `${started.words}{Enter}`
@@ -94,6 +98,111 @@ test("a click on a project's document is the next request's context, and the pag
       path: PAGE,
       project: "OPS",
     });
+  } finally {
+    starts.restore();
+  }
+});
+
+test("a click on an issue on the page makes it the box's chip and the context of the next request", async () => {
+  const user = userEvent.setup();
+  const starts = answerStarts();
+  try {
+    renderPanel(<span data-dispatch-ref="/issues/CORE-7">Track the comet</span>);
+    const chip = screen.getByTestId("going-box-chip");
+    expect(chip).toHaveTextContent("CORE-1");
+    await user.click(screen.getByText("Track the comet"));
+    expect(chip).toHaveTextContent("CORE-7");
+    await user.type(
+      screen.getByRole("textbox", { name: "Ask the command bar" }),
+      `${started.words}{Enter}`
+    );
+
+    await waitFor(() => expect(starts.start).toHaveBeenCalledTimes(1));
+    expect(starts.start.mock.calls[0]?.[0].context).toEqual({
+      block: "",
+      issue: "CORE-7",
+      path: PAGE,
+      project: "CORE",
+    });
+  } finally {
+    starts.restore();
+  }
+});
+
+test("the panel is 420 px wide; Open over the page moves it back, and its × closes it", async () => {
+  const user = userEvent.setup();
+  renderPanel();
+  const panel = screen.getByTestId("going-side-panel");
+  expect(panel.className).toContain("sm:w-[420px]");
+  // The panel has the bar's header, conversation and box, and no search list.
+  expect(within(panel).queryByRole("listbox")).toBeNull();
+  await user.click(within(panel).getByRole("button", { name: "Open over the page" }));
+  expect(goingState().place).toBe("over");
+  expect(screen.queryByTestId("going-side-panel")).toBeNull();
+
+  act(() => setPlace("side"));
+  const close = within(screen.getByTestId("going-side-panel")).getByRole("button", {
+    name: "Close",
+  });
+  expect(close).toHaveTextContent("×");
+  await user.click(close);
+  expect(goingState().place).toBe("closed");
+  expect(screen.queryByTestId("going-side-panel")).toBeNull();
+});
+
+test("Esc in the panel puts the focus on the page and the panel stays; in the empty box while its run works, it stops the run", async () => {
+  const user = userEvent.setup();
+  const starts = answerStarts();
+  const stop = spyOn(api, "stopGoingRun").mockResolvedValue({
+    ...started,
+    state: "stopped",
+    stop_reason: "STOPPED: its person stopped it",
+  });
+  try {
+    renderPanel(
+      <main id="main-content" tabIndex={-1}>
+        The page
+      </main>
+    );
+    const box = screen.getByRole("textbox", { name: "Ask the command bar" });
+    await user.type(box, "half a thought");
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("main")).toHaveFocus();
+    expect(goingState().place).toBe("side");
+    expect(screen.getByTestId("going-side-panel")).toBeInTheDocument();
+
+    // Esc on any part of the panel does the same.
+    screen.getByTestId("going-history-button").focus();
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("main")).toHaveFocus();
+
+    await user.clear(box);
+    await user.type(box, `${started.words}{Enter}`);
+    await screen.findByTestId("going-run");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+    expect(stop.mock.calls[0]?.[0]).toBe(started.id);
+    expect(box).toHaveFocus();
+    expect(goingState().place).toBe("side");
+  } finally {
+    stop.mockRestore();
+    starts.restore();
+  }
+});
+
+test("the mode chosen in the panel's box is the level of the next run", async () => {
+  const user = userEvent.setup();
+  const starts = answerStarts();
+  try {
+    renderPanel();
+    await user.click(screen.getByTestId("going-level-button"));
+    await user.click(screen.getByRole("menuitemradio", { name: /^Fast/ }));
+    const box = screen.getByRole("textbox", { name: "Ask the command bar" });
+    expect(box).toHaveFocus();
+    await user.keyboard(`${started.words}{Enter}`);
+
+    await waitFor(() => expect(starts.start).toHaveBeenCalledTimes(1));
+    expect(starts.start.mock.calls[0]?.[0]).toMatchObject({ level: "fast", words: started.words });
   } finally {
     starts.restore();
   }

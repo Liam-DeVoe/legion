@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 import { api, apiErrorCodeIn, apiErrorMessage, goingPlanApproveRequest } from "../../api/client";
 import { goingConversationsQuery, goingPlanQuery, goingWaitingPlansQuery } from "../../api/queries";
@@ -17,6 +17,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { openConversation } from "./going-store";
+import { planTitle } from "./plan-rows";
 import { PLAN_CHANGED, planTarget } from "./usePlan";
 
 /** Opens the conversation of a waiting plan in the bar: the conversation as History lists it
@@ -34,11 +35,38 @@ async function openPlanConversation(
   openConversation({ id: run.conversation, newest_at: run.created_at, runs: [run] });
 }
 
-/** One plan that waits: the words its run was asked, what the plan does, Approve, which runs
- *  every change that waits as the plan shows it and says how many (as the plan card's Approve
- *  does), and Open, which shows its conversation in the bar to tick, edit or revise it there. */
-function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNode {
+/** The separator between the parts of a row's line, which a screen reader does not read out. */
+const dot = <span aria-hidden="true"> · </span>;
+
+/**
+ * One plan that waits, as the Inbox lists it (R11; design v3, state 11): "Plan · Change DEMO-10
+ * · from ‹title› · 2 h ago" - the plan named as its card names it, once its rows are read (its
+ * summary until then), and the conversation it came from by that conversation's title - with
+ * Review, which opens the bar on that conversation and its plan's card, and Approve, which runs
+ * every change that waits as the plan shows it and says how many, as the card's Approve does.
+ */
+function WaitingPlanRow({
+  plan,
+  title,
+}: {
+  readonly plan: GoingWaitingPlan;
+  /** The title of the plan's conversation: its first question. */
+  readonly title: string;
+}): ReactNode {
   const queryClient = useQueryClient();
+  const read = useQuery(goingPlanQuery(plan.run));
+  // The row names the plan the list names: where the run proposed another plan since the plan
+  // was last read, it is read again.
+  const shown = read.data?.plan === plan.plan ? read.data : undefined;
+  const behind = read.data !== undefined && read.data.plan < plan.plan;
+  useEffect(() => {
+    if (behind) {
+      void queryClient.invalidateQueries({
+        exact: true,
+        queryKey: goingPlanQuery(plan.run).queryKey,
+      });
+    }
+  }, [behind, plan.run, queryClient]);
   // The row stays mounted as its run proposes another plan, so a refusal names the plan it was
   // about and shows only while the row shows that plan.
   const [refused, setRefused] = useState<{
@@ -57,7 +85,7 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
       const changed = apiErrorCodeIn(error, PLAN_CHANGED);
       setRefused({
         message: changed
-          ? "This plan changed since the list read it. Open it to read what it does now before you approve it."
+          ? "This plan changed since the list read it. Review it to read what it does now before you approve it."
           : apiErrorMessage(error, "The approval did not reach Dispatch."),
         plan: waiting.plan,
         run: waiting.run,
@@ -82,30 +110,30 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
   });
   return (
     <li
-      className={`space-y-1 border-t py-2 first:border-t-0 ${borderDefault}`}
+      className={`space-y-2 border-t py-2 first:border-t-0 ${borderDefault}`}
       data-run={plan.run}
       data-testid="inbox-going-plan"
     >
-      <p className={`text-sm font-medium ${textPrimaryOnSurface}`}>{plan.words}</p>
-      {plan.summary === "" ? null : (
-        <p className={`text-sm ${textSecondaryOnSurface}`}>{plan.summary}</p>
-      )}
+      <p className={`text-sm ${textSecondaryOnSurface}`}>
+        <span className={textMutedOnSurface}>Plan</span>
+        {dot}
+        <span
+          className={`font-medium ${textPrimaryOnSurface}`}
+          data-testid="inbox-going-plan-title"
+        >
+          {shown === undefined ? plan.summary : planTitle(shown.rows ?? [])}
+        </span>
+        {dot}
+        <span data-testid="inbox-going-plan-from">from {title}</span>
+        {dot}
+        <span className={textMutedOnSurface}>
+          <Timestamp at={plan.created_at} />
+        </span>
+      </p>
       <div className="flex flex-wrap items-center gap-2">
         <button
           className={primaryButton}
-          data-testid="inbox-going-plan-approve"
-          disabled={approve.isPending}
-          onClick={() => {
-            setRefused(undefined);
-            approve.mutate(plan);
-          }}
-          type="button"
-        >
-          {plan.waiting === 1 ? "Approve 1 change" : `Approve ${plan.waiting} changes`}
-        </button>
-        <button
-          className={secondaryButtonCompact}
-          data-testid="inbox-going-plan-open"
+          data-testid="inbox-going-plan-review"
           onClick={() => {
             setRefused(undefined);
             queryClient
@@ -121,11 +149,20 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
           }}
           type="button"
         >
-          Open
+          Review
         </button>
-        <span className={`text-xs ${textMutedOnSurface}`}>
-          <Timestamp at={plan.created_at} />
-        </span>
+        <button
+          className={secondaryButtonCompact}
+          data-testid="inbox-going-plan-approve"
+          disabled={approve.isPending}
+          onClick={() => {
+            setRefused(undefined);
+            approve.mutate(plan);
+          }}
+          type="button"
+        >
+          {plan.waiting === 1 ? "Approve 1 change" : `Approve ${plan.waiting} changes`}
+        </button>
       </div>
       {refusal === undefined ? null : (
         <p className={`text-xs ${dangerText}`} role="alert">
@@ -140,15 +177,21 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
  * The plans of the person's runs that wait for them (R11), at the head of the Inbox
  * (`GET /api/v1/me/going-plans`): a run whose bar was closed made its plan, and the person can
  * approve it here hours later. The list is read again on each `going_plan.updated` that names the
- * person (`event-refresh.ts`), so a plan answered in another tab leaves it. Nothing shows while no
- * plan waits.
+ * person (`event-refresh.ts`), so a plan answered in another tab leaves it. Each row names its
+ * conversation by its title, its first question, as History lists it, else by the words of the
+ * plan's own run. Nothing shows while no plan waits.
  */
 export function WaitingPlans(): ReactNode {
   const plans = useQuery(goingWaitingPlansQuery());
   const rows = plans.data?.rows ?? [];
+  const conversations = useQuery({ ...goingConversationsQuery(), enabled: rows.length > 0 });
   if (rows.length === 0) {
     return null;
   }
+  // History lists a conversation's runs the newest first: its first question is its last run's.
+  const titles = new Map(
+    (conversations.data?.rows ?? []).map((listed) => [listed.id, listed.runs?.at(-1)?.words])
+  );
   return (
     <section
       aria-labelledby="inbox-going-plans-heading"
@@ -163,7 +206,11 @@ export function WaitingPlans(): ReactNode {
       </h2>
       <ul>
         {rows.map((plan) => (
-          <WaitingPlanRow key={plan.run} plan={plan} />
+          <WaitingPlanRow
+            key={plan.run}
+            plan={plan}
+            title={titles.get(plan.conversation) ?? plan.words}
+          />
         ))}
       </ul>
     </section>

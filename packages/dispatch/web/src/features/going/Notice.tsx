@@ -20,7 +20,7 @@ import { planTarget } from "./usePlan";
  * The notice at the bottom right of the page (design v3, states 11 and 13): one short line about
  * something the bar did while the person was not looking at it, such as "Filed DEMO-46 · Open ·
  * Undo", for a few seconds. One notice shows at a time; a newer one takes the place of the one on
- * the screen. It lives in the shell's status corner, beside the run chip, so it outlives the bar.
+ * the screen. It lives in the shell's status corner at the bottom right, so it outlives the bar.
  */
 
 /** One action of a notice: a page it opens (`to`), or a press of its own. Either one lets the
