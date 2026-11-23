@@ -23,8 +23,7 @@ dispatch search --query 'reviewer threads OR review comments'
 
 ## What you find
 
-`dispatch issue` and `dispatch ask` also search. Open each `advice.suggestions` hit too.
-
+- `dispatch issue` and `dispatch ask` also search. Open each `advice.suggestions` hit too.
 - **Work already tracked:** put the finding on that issue. File a new issue only when no hit covers the work, citing the nearest one you ruled out (`dispatch://KEY`).
 - **Question already decided:** the answered ask is the record. Cite it (`dispatch://KEY/ask/<id>`). Never ask again.
 - **Duplicate found, or a likely duplicate a create names:** read it. Fold only when it is the same work:
@@ -42,9 +41,13 @@ dispatch search --query 'reviewer threads OR review comments'
 
 ## Reach a person only through Dispatch
 
-- The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them. A Legion phase worker sends decisions to its architect instead. Before you say you wait on a person, run `dispatch open-asks`.
+- The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them.
+- A Legion phase worker sends decisions to its architect instead.
+- Before you say you wait on a person, run `dispatch open-asks`.
 - A result a person asked for is the same: end its document with an ask block asking their next step, else `dispatch ask`.
-- Record every request you accept in Dispatch before you start it: an issue, or a line in your issue's `open-items.md` artifact. Before you end a turn, read that record. Each item is done, in progress, or an open ask. Never drop one.
+- Record every request you accept in Dispatch before you start it: an issue, or a line in your issue's `open-items.md` artifact.
+- Before you end a turn, read that record.
+- Each item is done, in progress, or an open ask. Never drop one.
 
 ## Which skill to read
 
