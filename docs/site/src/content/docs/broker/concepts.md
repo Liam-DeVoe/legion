@@ -714,9 +714,9 @@ refused by its own name (`github-app-no-profile`), as is a `github-installations
 The profile `DISPATCH_RESULTS_TOKEN`, a name and a proxy block of kind `dpop` and
 nothing else, is served by a CI run's result grant and has no stored secret as its source: with
 none of its name, the policy refuses it as `profile-source-missing`, and a stored secret of its
-name is never released, as a value or as a placeholder. The profiles file is refused when that
-profile has no proxy block, or when a profile of kind `dpop` sets a `source`, `tier`,
-`requesters`, `maxGrant`, `github` or `google`.
+name is never released, as a value or as a placeholder: a session's release of it is answered
+`403 MINTED_ONLY`. The profiles file is refused when that profile has no proxy block, or when a
+profile of kind `dpop` sets a `source`, `tier`, `requesters`, `maxGrant`, `github` or `google`.
 A profile's `requesters` may name a Google group as a `requesters` tag does, and a full load reads
 every group a profile names as it reads the stored secrets' groups. Against a source's list, a
 group entry is matched by that same group alone: a profile that names a person in the source's
