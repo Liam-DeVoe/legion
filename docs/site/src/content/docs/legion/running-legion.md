@@ -1091,9 +1091,11 @@ To stand it up:
    unfilled.
 
 Name every role Legion's agents use in `modelRoles` (`default`, `review`, `oracle`, `deep`, `smol`,
-`slow`, and the rest the example names): the daemon refuses to boot when an agent's role has no
-model, or its model's key does not work, rather than let it run silently on another model. Set
-every variable your route depends on in `pod.env`, which outranks a repository's own `.env`.
+`slow`, and the rest the example names). The daemon refuses to boot when an agent's role has no
+model, or its model's key does not work. `smol` and `slow` left unset take the `default` role's
+model, which the daemon accepts. Nothing refuses a missing `default`: an Oh My Pi session whose role
+names no model then starts, silently, on one of Oh My Pi's built-in models. Set every variable your
+route depends on in `pod.env`, which outranks a repository's own `.env`.
 
 To change a role's model later, edit its line under `modelRoles` in your `overlay.yml` and run the
 same `apply.sh` command. Pods started after that use it; a running pod keeps its files until it is
