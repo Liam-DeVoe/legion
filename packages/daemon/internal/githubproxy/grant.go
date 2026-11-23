@@ -14,10 +14,10 @@
 // the forwarder opens itself, so a broker outage stops only the calls that need a credential.
 //
 // The forwarder asks for the next grant with ten minutes of the hour left, and asks again at once
-// when the broker's proxy answers 407, which it does for a grant the broker ended early; it then
-// retries the connection with the new grant. It revokes the grants it holds when it stops, at the
-// end of the role's generation, and the daemon's revocation of the generation's enrollment ends
-// any it missed.
+// when the broker's proxy answers 407, which it does for a grant the broker ended early; that one
+// connection fails, and the role's next call reads the new grant's placeholders. It revokes the
+// grants it holds when it stops, at the end of the role's generation, and the daemon's revocation
+// of the generation's enrollment ends any it missed.
 package githubproxy
 
 import (

@@ -202,9 +202,12 @@ func (f *Forwarder) direct(client net.Conn, reader *bufio.Reader, target string)
 
 // throughBroker tunnels the client to target through the broker's proxy, opening that connection
 // with grant's password. A 407 is the broker saying the grant no longer opens a connection — it
-// ended it early — so the forwarder asks for a new grant at once and tries once more with that,
-// within recoveryBound. Every other answer of the broker's is relayed to the client as it came,
-// with its Cipher-Proxy-Code.
+// ended it early — so the forwarder asks for a new grant at once, within recoveryBound, which
+// rewrites the bundle, and answers this one connection 503. It does not carry the connection under
+// the new grant: the client wrote its request with a placeholder of the ended grant, read before
+// the bundle was rewritten, which the new grant never swaps, so the broker would take that
+// placeholder to GitHub. The client's next call reads the new bundle. Every other answer of the
+// broker's is relayed to the client as it came, with its Cipher-Proxy-Code.
 func (f *Forwarder) throughBroker(ctx context.Context, client net.Conn, reader *bufio.Reader, target string, grant *Grant) {
 	upstream, resp, upstreamReader, err := connectThrough(grant, target)
 	if err == nil && resp.StatusCode == http.StatusProxyAuthRequired {
@@ -217,7 +220,8 @@ func (f *Forwarder) throughBroker(ctx context.Context, client net.Conn, reader *
 			reply(client, http.StatusBadGateway, "the broker ended the role's grant and gave no new one")
 			return
 		}
-		upstream, resp, upstreamReader, err = connectThrough(replaced, target)
+		reply(client, http.StatusServiceUnavailable, "the broker ended the role's grant; the forwarder now holds a new one, so call again")
+		return
 	}
 	if err != nil {
 		f.log.Warn("forwarder: could not reach the broker's proxy", "host", target, "err", err)

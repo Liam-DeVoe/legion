@@ -324,29 +324,39 @@ func TestAnotherHostIsOpenedDirectly(t *testing.T) {
 	}
 }
 
-// TestA407GetsANewGrantAndTheConnectionRetries: once the broker ends the grant early, its proxy
-// answers 407; the forwarder asks for a new grant at once, rewrites the bundle with its
-// placeholders, and the same connection goes through with the new grant's password.
+// TestA407GetsANewGrantAndFailsOnlyThatConnection: once the broker ends the grant early, its
+// proxy answers 407; the forwarder asks for a new grant at once and rewrites the bundle with its
+// placeholders, and answers that one connection 503 rather than carry it under the new grant: the
+// client sent it with a placeholder of the ended grant, which the new grant never swaps, so a
+// retry would take the old placeholder to GitHub. The client's next call reads the new bundle and
+// goes through with the new grant's password.
 //
-// The named revert: relay the 407 to the client, and the CONNECT answers 407.
-func TestA407GetsANewGrantAndTheConnectionRetries(t *testing.T) {
+// The named revert: carry the connection under the new grant, and the broker's proxy sees a
+// second CONNECT for it and the client gets 200.
+func TestA407GetsANewGrantAndFailsOnlyThatConnection(t *testing.T) {
 	r := newRig(t, nil)
 	first := r.awaitGrant()
 	r.proxy.setLive("pw-"+first.ID, false)
 
-	status, echoed := r.connect("github.com:443")
-	if !strings.HasPrefix(status, "200") || echoed != "bound:ping" {
-		t.Fatalf("CONNECT after the grant ended = %q, echo %q; want 200 through a new grant", status, echoed)
+	if status, _ := r.connect("github.com:443"); !strings.HasPrefix(status, "503") {
+		t.Fatalf("CONNECT after the grant ended = %q; want 503, that connection failed", status)
 	}
 	calls := r.proxy.calls()
-	if len(calls) != 2 || calls[0].password != "pw-"+first.ID || calls[1].password == calls[0].password {
-		t.Fatalf("the broker's proxy saw %+v; want the ended grant's password refused, then a new one", calls)
+	if len(calls) != 1 || calls[0].password != "pw-"+first.ID {
+		t.Fatalf("the broker's proxy saw %+v; want the ended grant's password once and no retry under a new one", calls)
 	}
-	if current := r.fwd.Current(); current == nil || current.ID == first.ID {
+	current := r.fwd.Current()
+	if current == nil || current.ID == first.ID {
 		t.Fatalf("the forwarder holds %+v; want a new grant in place of %s", current, first.ID)
 	}
-	if token := hostsToken(t, r.ghDir, "acct-a"); token != "ph-a-"+r.fwd.Current().ID {
+	if token := hostsToken(t, r.ghDir, "acct-a"); token != "ph-a-"+current.ID {
 		t.Fatalf("acct-a's hosts.yml holds %q; want the new grant's placeholder", token)
+	}
+	if status, echoed := r.connect("github.com:443"); !strings.HasPrefix(status, "200") || echoed != "bound:ping" {
+		t.Fatalf("the next CONNECT = %q, echo %q; want 200 under the new grant", status, echoed)
+	}
+	if calls := r.proxy.calls(); len(calls) != 2 || calls[1].password != "pw-"+current.ID {
+		t.Fatalf("the broker's proxy saw %+v; want the next CONNECT with the new grant's password", calls)
 	}
 }
 
