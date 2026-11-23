@@ -1144,9 +1144,10 @@ with Go.
 
 ## Start the controller
 
-The controller runs in one of two places, as `controller` in `legion.yaml` says: on your own
-machine, in your terminal, which is the default (`controller: operator`), or in the cluster, as a
-pod the daemon launches and keeps running (`controller: daemon`).
+The controller runs in one of two ways, as `controller` in `legion.yaml` says. By default
+(`controller: operator`) it runs on your own machine, in your terminal. Under `controller: daemon`
+the daemon launches it and keeps it running: as a pod in the cluster, or as a pane under
+`runtime: tmux`.
 
 ### In the cluster
 
