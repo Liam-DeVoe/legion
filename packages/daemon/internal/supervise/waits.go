@@ -389,7 +389,7 @@ func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 		// for one (refreshPlugin), and row 26 takes its take back as a cut turn (interrupted).
 		m.atReconnectDeadline = true
 		defer func() { m.atReconnectDeadline = false }()
-		return m.refreshPlugin(ctx, m.askTrigger, false)
+		return m.refreshPlugin(ctx, m.askTrigger, nil)
 	}
 	m.markTurnUnseen()
 	if m.connSeen == viewAsked {

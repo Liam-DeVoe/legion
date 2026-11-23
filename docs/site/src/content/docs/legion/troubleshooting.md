@@ -593,6 +593,17 @@ go. The notice is the claim's own — the issue and the role that names it — s
 two claims of one issue each get a notice of their own, and in a provider outage every claim that
 reaches six is told.
 
+**When the memory guard of the controller's own pod ends one of the controller's programs**, the
+controller is told of that kill, as `memory-guard-kill on <PROJECT>`, under the project key as a
+`tick` is (`workflow: the controller whose program the memory guard ended is told why`). The
+notice names the program by its executable, with none of its arguments, and its pid, the memory
+it held, the pod's reading and the pod's limit. The controller's session and the pod's other
+processes go on; nothing is held. Each kill is a notice of its own, and a report the launcher
+sends twice is still one notice. The notice's own reason tells the controller what to do: not to
+run the same program again unchanged, but to bound its output or send heavy work where the
+deployment's instructions say. An `eval` cell of the controller that answered
+`Kernel died during execution; completion is uncertain` at that moment is that kill.
+
 When an agent's budget runs out (launches that failed, deaths with work outstanding, tasks it did
 not take or started no turn for within their bounds, takes whose adoption of the working copy the
 shim refused) the daemon stops relaunching it and holds
@@ -1569,7 +1580,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   delivery of the daemon's own tells its agent what the relaunch ended`): a numbered task of
   origin `notice`, whose delivery id starts `relaunch:`, which the worker takes and which the
   report naming its number finishes as any task, or the end of its turn for a worker whose plugin
-  is below contract 221 and names no task in its reports. A newer task replaces
+  is below contract 232 and names no task in its reports. A newer task replaces
   it while no take of it is accepted, and carries the sentence in front of itself instead. The
   same task is given when the claim's held task is dropped rather than taken: the issue left the
   task's phase, the task is an ask an older daemon queued for an update round, or a root

@@ -555,7 +555,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerIssueRecord: {roots: typesOf(Issue{}), bodies: issues},
 		AnswerHealth:      {roots: typesOf(Health{}), bodies: []any{Health{Status: "ok", Project: "legion"}}},
 		// The register golden's own value (TestRegisterResponseGolden): a claim whose bucket holds
-		// a value, which writes every key of `task` (contract 221).
+		// a value, which writes every key of `task` (contract 232).
 		AnswerRegister: {roots: typesOf(claim.RegisterResponse{}), bodies: []any{claim.RegisterResponse{
 			ClaimToken:   "legion-legion-legion-208-architect",
 			Tree:         "LEGION-208",
@@ -684,13 +684,13 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Pause: ended, Released: 3,
 		}}},
 		// Richer than the golden, which reads a bucket that holds no value: the record describes
-		// every key of the value a read answers (contract 221).
+		// every key of the value a read answers (contract 232).
 		AnswerTask: {roots: typesOf(claim.TaskResponse{}), bodies: []any{claim.TaskResponse{
 			Task:     &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
 			Finished: 3,
 		}}},
 		// The three goldens' own values (TestTakeResponseGolden), one for each outcome of a take,
-		// which between them carry every key of the answer (contract 221).
+		// which between them carry every key of the answer (contract 232).
 		AnswerTake: {roots: typesOf(claim.TakeResponse{}), bodies: []any{
 			claim.TakeResponse{Outcome: string(supervise.TakeOutcomeAccepted),
 				Text: "Implement LEGION-209 on its branch, then complete the phase with legion handoff_complete."},

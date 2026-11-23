@@ -1311,7 +1311,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
    first move back after the upgrade.
 
-   **The first upgrade to a release where a worker takes its task** (daemon API contract 221)
+   **The first upgrade to a release where a worker takes its task** (daemon API contract 232)
    goes out in this order, so nothing is used before it exists: first the `envoy-infra` release
    whose grants carry the task bucket `legion_tasks` (the daemon's user may create, update, read,
    write and purge it, the listener's user may only read it, and no session user gets anything of
@@ -1345,7 +1345,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    running pod still uses") has the details.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
-   or a resumed worker, runs the new one. To move a long-running agent over now, suspend and resume
+   or a resumed worker, runs the new one. At a release that moves the daemon API contract, the
+   daemon moves its own controller (`controller: daemon`) for you where it knows a plugin pair to
+   install: it relaunches the controller at once onto the release's plugins, and that relaunch
+   replaces the controller's pod when the pod runs another image. `legion config check` prints the
+   gap that leaves it relaunching none. To move a long-running agent over now, suspend and resume
    its claim:
 
    ```sh
