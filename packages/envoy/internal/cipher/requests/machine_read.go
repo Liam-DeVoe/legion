@@ -1269,6 +1269,22 @@ func writtenBeforeMigration13(alias string) string {
 		".created_at < (select applied_at from broker_schema_migrations where version = 13))"
 }
 
+// inReuseWindow is reuseLiveGrant's rule of how long a live grant may be handed back to an ask
+// for the same names (SQL over the grants row g and the requests row r it rests on). A grant a
+// person or the model judge decided (r.decided_by set) is handed back for as long as it lives,
+// since a new ask would ask them again, and so is a grant with no expiry, which lasts until its
+// session ends. An automatic grant, which nobody decided (r.decided_by null), is handed back only
+// while at least half of its own life (expires_at - created_at) is left. In its second half the
+// ask gets a new automatic grant, which costs nobody anything, and the old grant stays live
+// until its own expiry, so a client that renews ahead of an expiry (a Legion role's forwarder
+// asks again with ten minutes of an hour left) moves to the new grant while calls it made under
+// the old one still finish. The new grant is in its own first half, so every later ask is handed
+// that one.
+func inReuseWindow(g, r string) string {
+	return "(" + r + ".decided_by is not null or " + g + ".expires_at is null or " +
+		g + ".expires_at - now() >= (" + g + ".expires_at - " + g + ".created_at) / 2)"
+}
+
 // reuseLiveGrant answers Create's own "request (or reuse the live grant)" contract: an exact
 // name-set match (never a subset or superset — the same matching rule coalescing uses for pending
 // requests) of the same target (the zero record.Target for none: a grant
@@ -1287,10 +1303,14 @@ func writtenBeforeMigration13(alias string) string {
 // session (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules
 // still give its name, over the lifetime this reuse matched it on, the grant's own, and refuses
 // one whose secret the policy now tags as an administrator's), and its whole approval chain still
-// verifies (verifyChainForRelease, the same check Values makes, read first). A caller that already
-// holds a live grant for these exact names never re-asks a human who already approved it, a policy
-// tightened since then is never bypassed by reuse, and neither is a chain that no longer verifies.
-// Every exact match is a candidate, newest grant first, and each gets those checks in turn. A
+// verifies (verifyChainForRelease, the same check Values makes, read first). A grant is a
+// candidate only inside its reuse window (inReuseWindow): an automatic grant only while at least
+// half of its life is left, and a grant a person or the judge decided, or one with no expiry, for
+// as long as it lives. A caller that already holds a live grant for these exact names never
+// re-asks a human who already approved it, a policy tightened since then is never bypassed by
+// reuse, and neither is a chain that no longer verifies.
+// Every exact match inside its reuse window is a candidate, newest grant first, and each gets
+// those checks in turn. A
 // candidate whose chain fails, or whose group approval has lapsed, is passed over for the next,
 // and logged (GrantChainInvalidMessage, GrantApproverLapsedMessage, at=reuse). A grant a
 // requesters group not read in the last two hours pauses (policy.ReasonRequesterGroupUnread)
@@ -1339,7 +1359,7 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 		join grants g on g.request_id=r.id
 		where r.enrollment_id=$1 and (
 			r.lifetime_seconds is not distinct from $2 or ($2::int is null and `+writtenBeforeMigration13("r")+`)
-		) and r.state='granted' and g.revoked_at is null and `+grantUnexpired("g")+`
+		) and r.state='granted' and g.revoked_at is null and `+grantUnexpired("g")+` and `+inReuseWindow("g", "r")+`
 		group by r.id, g.id order by g.created_at desc`, enr.ID, lifetime, sorted)
 	if err != nil {
 		return Request{}, false, err
