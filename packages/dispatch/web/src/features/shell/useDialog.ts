@@ -100,6 +100,12 @@ export function dialogOpen(): boolean {
   return openDialogs.size > 0;
 }
 
+/** The mark of an element a dialog gives the focus back to as it closes where the control that
+ *  held the focus as it opened has gone since: a row of the new issue page, whose acts are drawn
+ *  only while the row holds the focus, so a dialog opened from an act takes the act away as it
+ *  takes the focus (decision 396). No element of today's pages carries it. */
+export const DIALOG_RETURN_ATTRIBUTE = "data-dialog-return";
+
 export interface UseDialogOptions {
   /** Element to focus first instead of the container's first focusable descendant. */
   initialFocusRef?: RefObject<HTMLElement | null>;
@@ -118,6 +124,9 @@ export interface DialogHandle<T extends HTMLElement> {
  * and global binding, and registers Escape there for the innermost open dialog, whatever
  * element holds focus; a descendant that owns its Escape (the margin Composer dismissing its
  * picker) stops propagation before the dispatcher sees it. Tab trapping listens on the container.
+ * At close the focus goes back to the element that held it at open; where that element has gone,
+ * to the nearest element around it marked `DIALOG_RETURN_ATTRIBUTE` while that one is on the
+ * page; else to the body.
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
@@ -151,6 +160,11 @@ export function useDialog<T extends HTMLElement>({
     const container = containerRef.current;
     const previouslyFocused =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // The nearest element around the control that held the focus that carries the return mark,
+    // which takes the focus back at close where that control has gone by then.
+    const returnTo =
+      previouslyFocused?.parentElement?.closest<HTMLElement>(`[${DIALOG_RETURN_ATTRIBUTE}]`) ??
+      null;
     scrollLock.acquire();
 
     // Deferred a frame so a descendant's own synchronous autofocus (e.g. the composer this
@@ -194,6 +208,15 @@ export function useDialog<T extends HTMLElement>({
       openDialogs.delete(container);
       container?.removeEventListener("keydown", handleTab);
       scrollLock.release();
+      if (
+        previouslyFocused !== null &&
+        !document.contains(previouslyFocused) &&
+        returnTo !== null &&
+        document.contains(returnTo)
+      ) {
+        returnTo.focus();
+        return;
+      }
       if (previouslyFocused !== null && document.contains(previouslyFocused)) {
         previouslyFocused.focus();
       } else {
