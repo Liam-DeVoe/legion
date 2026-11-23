@@ -120,12 +120,9 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 // names by the time it runs. In `implementer:a reviewer:b implementer:b`, key b's start of step 3
 // at entry 3 waited on its row's backoff:
 //   - while the task went back to step 1, whose row, key a's, was raised above every row of its
-//     role, to 4: the outbox finishes it without acting, and no claim is made or handed a task;
-//   - while the task went back to step 1, whose row, key a's, stands at entry 3, the entry key b's
-//     start carries: the entry passes and the claim decides, since a start of another claim than
-//     the row now names is of another step (record.StartLeft), so the outbox finishes it without
-//     acting. The raise above every row of the role leaves no such row, and the claim test keeps
-//     the fence whole whatever numbers a row was left with;
+//     role, to 4: the outbox finishes it without acting, and no claim is made or handed a task. A
+//     step's start raises its entry above every row of its role, so no row of the role stands on
+//     the entry key b's start carries;
 //   - while the implementer's row stood on no step at entry 3, naming key b's claim: it starts key
 //     b, the claim it was queued for, with its task. A start that named no claim acted on the
 //     claim the row gave the role, its own token, which is key a's. The record leaves such a row
@@ -133,10 +130,9 @@ func TestAStartOfAnotherStepsRoleFinishesWithoutActing(t *testing.T) {
 //     generation it keeps (record.Store.ClearTreeGeneration); the case holds the outbox to the
 //     claim a start names whatever row it reads.
 //
-// The controls: key b's start with the task at its step 3 starts key b; key a's start at the entry
-// of its step 1, where the task went back, starts key a; and a start the release before wrote,
-// which names no claim, starts the claim of the row now: key b's at step 3, and on the row of no
-// step the role's own token, key a's.
+// The controls: key b's start with the task at its step 3 starts key b; and a start the release
+// before wrote, which names no claim, starts the claim of the row now: key b's at step 3, and on
+// the row of no step the role's own token, key a's.
 func TestAStartActsOnTheClaimItWasQueuedFor(t *testing.T) {
 	const key = stepStartKey
 	keyA, keyB := mustClaimToken(t, key, claim.RoleImplementer), mustClaimToken(t, key, claim.RoleReviewer)
@@ -158,8 +154,6 @@ func TestAStartActsOnTheClaimItWasQueuedFor(t *testing.T) {
 		starts claim.Token
 	}{
 		{"key b's start of step 3 with the task back at key a's step 1", 1, []record.PhaseRow{stepOne(4, later), stepThree(earlier)}, keyB, ""},
-		{"key b's start of step 3 at the entry of key a's step 1, where the task went back", 1, []record.PhaseRow{stepOne(3, later), stepThree(earlier)}, keyB, ""},
-		{"the control: key a's start at the entry of its step 1, where the task went back", 1, []record.PhaseRow{stepOne(3, later), stepThree(earlier)}, keyA, keyA},
 		{"key b's start of step 3 with the role's row on no step", 3, []record.PhaseRow{cleared}, keyB, keyB},
 		{"the control: key b's start with the task at its step 3", 3, []record.PhaseRow{stepOne(1, earlier), stepThree(later)}, keyB, keyB},
 		{"a start the release before wrote with the task at step 3", 3, []record.PhaseRow{stepOne(1, earlier), stepThree(later)}, "", keyB},
