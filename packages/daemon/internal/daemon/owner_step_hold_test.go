@@ -114,10 +114,11 @@ func (r *ownerHoldRig) published() []string {
 
 // A stale owner-step is not delivered: the notice names the run it tells, and once that run has
 // ended it finishes unpublished with the log line of a step that no longer runs, asking the runtime
-// nothing. The owner's retro of `implementer:owner`: its notice while the retro runs is published;
-// the same notice once the retro ended is not. A role at two steps, `implementer:owner reviewer
-// implementer:owner` standing at step 3: the notice of step 1, whose run ended, is not delivered,
-// and the notice of step 3 is.
+// nothing. The owner's retro of `implementer:owner`: its notice while the retro runs is published,
+// once the slot's gh files hold the owner's own App, which no write changes; the same notice once
+// the retro ended is not. A role at two steps, `implementer:owner reviewer implementer:owner`
+// standing at step 3: the notice of step 1, whose run ended, is not delivered, and the notice of
+// step 3 is.
 //
 // The control: the hold that judged the App alone published the retro's notice after the retro
 // ended (the architect's App is what the slot holds wherever the owner does no step), and the
@@ -150,8 +151,8 @@ func TestAStaleOwnerStepIsNotDelivered(t *testing.T) {
 		if lines := strings.Count(r.logged.String(), "outbox owner-step finished undelivered: its step no longer runs"); lines != 1 {
 			t.Fatalf("the log holds %d lines of the stale notice, want one:\n%s", lines, r.logged.String())
 		}
-		if calls := slotCalls(r.rt, r.owner); len(calls) != 0 {
-			t.Fatalf("the retro's notices asked the runtime %q of the owner's slot, want nothing: the retro is done as the owner's own App", calls)
+		if calls := slotCalls(r.rt, r.owner); len(calls) != 1 || calls[0] != "SlotHoldsCredential architect" {
+			t.Fatalf("the retro's notices asked the runtime %q of the owner's slot, want the running retro's one ask whether it holds the owner's own App, and no write", calls)
 		}
 	})
 
@@ -182,7 +183,7 @@ func TestAStaleOwnerStepIsNotDelivered(t *testing.T) {
 // R20: no notice waits on a credential the owner's slot already holds. The owner's acceptance of
 // the default steps acts as the review App, the App of the owner's own role, so with the pod on the
 // image before this release (its launcher cannot say what the slot holds,
-// runtime.ErrAwaitsPodUpdate) the acceptance's owner-step is published without asking the slot,
+// runtime.ErrAwaitsPodUpdate) the acceptance's owner-step is published after one ask and no write,
 // and the reviewer's phase-finished queued after it is published too, held behind nothing. A step
 // whose App the slot does not hold, the owner's `implementer:owner`, still waits for the slot.
 //
@@ -203,8 +204,8 @@ func TestAnOwnersStepWhoseAppTheSlotHoldsWaitsForNothing(t *testing.T) {
 		if got := r.published(); len(got) != 2 {
 			t.Fatalf("the notices published = %v, want the owner-step and the phase-finished", got)
 		}
-		if calls := slotCalls(r.rt, r.owner); len(calls) != 0 {
-			t.Fatalf("the acceptance's owner-step asked the runtime %q of the owner's slot, want nothing", calls)
+		if calls := slotCalls(r.rt, r.owner); len(calls) != 1 || calls[0] != "SlotHoldsCredential acceptance" {
+			t.Fatalf("the acceptance's owner-step asked the runtime %q of the owner's slot, want one ask and no write", calls)
 		}
 	})
 
@@ -218,6 +219,42 @@ func TestAnOwnersStepWhoseAppTheSlotHoldsWaitsForNothing(t *testing.T) {
 			t.Fatalf("the implementer's owner-step on a pod of the image before = %v, want it held for the slot", err)
 		}
 	})
+}
+
+// A step done as the owner's own App waits until the slot's gh files hold that App: after the
+// owner's `implementer:owner` step the write-back of the owner's own App has run, but the kubelet
+// has not synced it into the pod yet, so the slot's files still hold the implement App
+// (runtime.ErrSlotCredentialPending). The owner's acceptance is then held as a notice held for its
+// architect, and published nothing, with no write of the slot; once the files hold the review App
+// it is published.
+//
+// The control: the hold that told a step of the owner's own App without asking the slot published
+// the acceptance while the owner's gh still acted as the implement App.
+func TestAnOwnersStepOfItsOwnAppWaitsForTheSlotToHoldIt(t *testing.T) {
+	r := newOwnerHoldRig(t, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "implementer:owner", "acceptance:owner")
+	r.started(t, "step", 1, true)
+	r.started(t, "step", 2, false)
+	r.rt.ScriptSlotHolds(runtime.ErrSlotCredentialPending)
+	notice := record.Notice{Kind: record.OwnerStepNotice, Role: "acceptance", Phase: phase.Accepting, Reason: "Step 2 of 2: acceptance:owner.",
+		OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 2, Starts: 1}}
+	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", notice, r.now))
+	if err := r.runner.execute(context.Background(), row); !errors.Is(err, errNoticeWaits) || !errors.Is(err, runtime.ErrSlotCredentialPending) {
+		t.Fatalf("the acceptance's owner-step while the slot still holds the implement App = %v, want a notice held for its architect", err)
+	}
+	if got := r.published(); len(got) != 0 {
+		t.Fatalf("the acceptance's owner-step published %v while the slot still holds the implement App, want nothing", got)
+	}
+	r.rt.ScriptSlotHolds(nil)
+	row.LeaseToken = leaseOutboxRow(t, r.pool, row.ID)
+	if err := r.runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("the acceptance's owner-step once the slot holds the review App = %v", err)
+	}
+	if got := r.published(); len(got) != 1 {
+		t.Fatalf("the acceptance's owner-step published %v once the slot holds the review App, want one", got)
+	}
+	if calls := slotCalls(r.rt, r.owner); len(calls) != 2 || calls[0] != "SlotHoldsCredential acceptance" || calls[1] != "SlotHoldsCredential acceptance" {
+		t.Fatalf("the acceptance's owner-step asked the runtime %q of the owner's slot, want two asks and no write", calls)
+	}
 }
 
 // The end of an owner's step writes the owner's slot back to its own App once, and the next notice
