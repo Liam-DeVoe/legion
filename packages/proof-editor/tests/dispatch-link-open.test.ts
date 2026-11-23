@@ -612,10 +612,11 @@ test("a press held across a reconfigure of the editor's plugins opens the link o
   );
 });
 
-// dispatch://INFRA-2160, R1: a click no pointer makes (`detail` 0) opens the link it lands on,
-// whatever press came before it, a press no click ended included: Chromium sends no click for a
-// press held across a reconfigure of the editor's plugins, and no browser sends one once the
-// pressed element is gone or the browser has turned the press into a drag of its own.
+// dispatch://INFRA-2160, R1: a click no pointer makes (`detail` 0, or an empty `pointerType`)
+// opens the link it lands on, whatever press came before it, a press no click ended included:
+// Chromium sends no click for a press held across a reconfigure of the editor's plugins, and no
+// browser sends one once the pressed element is gone or the browser has turned the press into a
+// drag of its own.
 test("Enter's click on a link opens it once after a drag on the link that no click ended, and once in a new tab with Ctrl", async () => {
   const { openLink, opened } = recordedOpener();
   await withMarksEditor(
@@ -645,6 +646,54 @@ test("Enter's click on a link opens it once after a drag on the link that no cli
           ["dispatch://CORE-2", true],
         ],
         prevented: { afterDrag: true, afterNativeDrag: true, newTab: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a click is a `PointerEvent`, and an empty `pointerType` is what says
+// no pointer made it. Firefox sends Enter's click on a focused link with `detail` 1 and an empty
+// `pointerType`, and Chromium with `detail` 0 (builds Job `infra-2160-probe-click-new-6gxl8`,
+// 2026-11-23); a mouse's click names its pointer in both, and opens nothing here with no press
+// before it, as the end of a drag would not.
+test("a click whose pointerType is empty opens a link once whatever its detail, and a mouse's click with no press before it opens nothing", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+      const send = (init: PointerEventInit): boolean => {
+        const page = issue.ownerDocument;
+        let prevented = false;
+        const read = (event: Event) => {
+          prevented = event.defaultPrevented;
+          event.preventDefault();
+        };
+        page.addEventListener("click", read);
+        try {
+          issue.dispatchEvent(
+            new window.PointerEvent("click", {
+              bubbles: true,
+              button: 0,
+              cancelable: true,
+              ...init,
+            })
+          );
+        } finally {
+          page.removeEventListener("click", read);
+        }
+        return prevented;
+      };
+      const firefoxEnter = send({ detail: 1, pointerType: "" });
+      const chromiumEnter = send({ detail: 0, pointerType: "" });
+      const mouse = send({ clientX: 60, clientY: 10, detail: 1, pointerType: "mouse" });
+      expect({ opened, prevented: { chromiumEnter, firefoxEnter, mouse } }).toEqual({
+        opened: [
+          ["dispatch://CORE-2", false],
+          ["dispatch://CORE-2", false],
+        ],
+        prevented: { chromiumEnter: true, firefoxEnter: true, mouse: true },
       });
     },
     { openLink }

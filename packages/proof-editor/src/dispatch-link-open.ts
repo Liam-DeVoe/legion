@@ -37,7 +37,7 @@
  *   prevents the release's default and selects nothing for it (`selectClickedLeaf`,
  *   `selectClickedNode`).
  * - The DOM `click` event opens, with neither Shift nor Alt held, and in a new tab with Ctrl or
- *   Cmd: a click no pointer made, whose `detail` is 0 (Enter on a focused link, assistive
+ *   Cmd: a click no pointer made (`noPointerMade`: Enter on a focused link, assistive
  *   technology, a script); a Ctrl or Cmd primary click, whose press `takeLinkPress` takes, so
  *   that ProseMirror never sees that press and `handleClick` never runs for it; and any primary
  *   click on a link whose press never reaches ProseMirror, a title's and the picture fallback's.
@@ -51,7 +51,7 @@
  *   (`runCustomHandler`) for every click inside the editor, with no `eventBelongsToView` check: a
  *   widget's and a node view's included, whatever their `stopEvent` says.
  * - Every other click on a link only prevents the browser's default, and opens nothing: a
- *   pointer click (`detail` 1 or more) on a link whose press reaches ProseMirror, which
+ *   pointer's click on a link whose press reaches ProseMirror, which
  *   `handleClick` opened if ProseMirror read it as a click and which ended a drag if not, and a
  *   Shift or Alt click. So nothing opens twice, and the browser never follows the `href`.
  * - A middle click (`auxclick`, button 1) opens it in a new tab, which also cancels the browser's
@@ -303,6 +303,19 @@ function takeLinkPress(view: EditorView, event: MouseEvent): boolean {
   return true;
 }
 
+/** Whether no pointer made the click `event`: Enter on a focused link, assistive technology or a
+ *  script. A click is a `PointerEvent` in the engines Dispatch runs in, whose `pointerType` is
+ *  empty for such a click and names the pointer ("mouse", "pen", "touch") for a pointer's.
+ *  `detail`, the click count, does not tell them apart in every engine: Enter's click on a focused
+ *  link carries `detail` 0 in Chromium but 1 in Firefox (with `mozInputSource` 6, the keyboard),
+ *  measured in builds Job `infra-2160-probe-click-new-6gxl8` at b1ede4f7 (2026-11-23), where a
+ *  mouse's click carried `pointerType` "mouse" in both. So `detail` is read only for a click that
+ *  carries no `pointerType`. */
+function noPointerMade(event: MouseEvent): boolean {
+  const pointerType: unknown = (event as Partial<PointerEvent>).pointerType;
+  return typeof pointerType === "string" ? pointerType === "" : event.detail === 0;
+}
+
 /** The plugin that opens the document's links through the host's `openLink` (the module's doc
  *  says which links, through which path, and why). */
 export function dispatchLinkOpenPlugin(openLink: OpenLink) {
@@ -339,7 +352,10 @@ export function dispatchLinkOpenPlugin(openLink: OpenLink) {
               const opens =
                 !event.shiftKey &&
                 !event.altKey &&
-                (event.detail === 0 || event.ctrlKey || event.metaKey || !link.pressReachesEditor);
+                (noPointerMade(event) ||
+                  event.ctrlKey ||
+                  event.metaKey ||
+                  !link.pressReachesEditor);
               if (opens) {
                 open(link, event.ctrlKey || event.metaKey);
               }
