@@ -70,6 +70,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/cipherclient/**'
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/natscred/*'
@@ -84,6 +85,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/id/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/**'
   - 'packages/envoy/internal/pgmigrate/*'
   - 'packages/envoy/internal/ratelimit/*'
@@ -105,6 +107,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/testnatsimages/*'
+  - 'packages/envoy/testnatsinprocess/*'
   - 'packages/envoy/steprecord/*'
 dispatch_server: &dispatch_server
   - 'packages/envoy/cmd/dispatch/*'
@@ -113,6 +116,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/ctxlock/*'
@@ -179,6 +183,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/legionagents/*'
   - 'packages/envoy/internal/logging/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
@@ -234,6 +239,7 @@ legion_command: &legion_command
   - 'packages/daemon/internal/ompsessions/*'
   - 'packages/daemon/internal/pause/*'
   - 'packages/daemon/internal/phase/*'
+  - 'packages/daemon/internal/plan/*'
   - 'packages/daemon/internal/pods/**'
   - 'packages/daemon/internal/podsafety/**'
   - 'packages/daemon/internal/procgroup/*'
@@ -259,6 +265,7 @@ legion_command: &legion_command
   - 'packages/daemon/internal/stream/*'
   - 'packages/daemon/internal/supervise/*'
   - 'packages/daemon/internal/tlsalert/*'
+  - 'packages/daemon/internal/termsafe/*'
   - 'packages/daemon/internal/treelifecycle/*'
   - 'packages/daemon/internal/volumestat/*'
   - 'packages/daemon/internal/wait/*'
@@ -281,6 +288,7 @@ legion_command: &legion_command
   - 'packages/envoy/internal/dispatch/text/*'
   - 'packages/envoy/internal/fold/*'
   - 'packages/envoy/internal/googleidentity/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/redact/*'
   - 'packages/envoy/internal/tlsalert/*'
   - 'packages/envoy/internal/redirects/*'
@@ -299,7 +307,9 @@ listener_command: &listener_command
   - 'packages/envoy/cmd/listener/*'
   - 'packages/envoy/internal/cipher/oauthwire/*'
   - 'packages/envoy/internal/ciphertoken/*'
+  - 'packages/envoy/internal/cipher/netaddr/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/redact/*'
@@ -321,6 +331,7 @@ listener_command: &listener_command
   - 'packages/envoy/internal/legionagents/*'
   - 'packages/envoy/internal/logging/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/internal/ratelimit/*'
   - 'packages/envoy/internal/roles/*'
@@ -351,6 +362,8 @@ daemon_go_tests:
   - *daemon_envoy_deps
   - *dispatch_server
   - *listener_command
+  - 'packages/envoy/scripts/forced-order.sh'
+  - 'packages/envoy/internal/testnats/testdata/hooked/**'
   - 'packages/envoy/internal/contracts/**'
   - 'packages/contracts/fixtures/capability-redaction.json'
   - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'
@@ -407,6 +420,8 @@ daemon_go_tests:
   - '!packages/daemon/internal/daemon/live_issue_proof_test.go'
   - '!packages/daemon/internal/daemon/localruntime_live_test.go'
   - '!packages/daemon/internal/daemon/merge_wait_readable_live_test.go'
+  - '!packages/daemon/internal/daemon/owner_steps_client_live_test.go'
+  - '!packages/daemon/internal/daemon/owner_steps_live_test.go'
   - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
   - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
   - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
@@ -451,6 +466,7 @@ plugin_pack:
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/steprecord/*'
   - 'packages/envoy/testnatsimages/*'
+  - 'packages/envoy/testnatsinprocess/*'
   - 'packages/contracts/**'
   - 'packages/envoy-client/**'
   - 'packages/pi-envoy/**'
@@ -500,6 +516,8 @@ plugin_pack:
   - '!packages/daemon/internal/daemon/live_issue_proof_test.go'
   - '!packages/daemon/internal/daemon/localruntime_live_test.go'
   - '!packages/daemon/internal/daemon/merge_wait_readable_live_test.go'
+  - '!packages/daemon/internal/daemon/owner_steps_client_live_test.go'
+  - '!packages/daemon/internal/daemon/owner_steps_live_test.go'
   - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
   - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
   - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
@@ -529,6 +547,7 @@ plugin_pack:
   - '!packages/daemon/internal/ompsessions/**/*_test.go'
   - '!packages/daemon/internal/pause/**/*_test.go'
   - '!packages/daemon/internal/phase/**/*_test.go'
+  - '!packages/daemon/internal/plan/**/*_test.go'
   - '!packages/daemon/internal/podsafety/**/*_test.go'
   - '!packages/daemon/internal/procgroup/**/*_test.go'
   - '!packages/daemon/internal/programbound/**/*_test.go'
@@ -548,6 +567,7 @@ plugin_pack:
   - '!packages/daemon/internal/store/**/*_test.go'
   - '!packages/daemon/internal/stream/**/*_test.go'
   - '!packages/daemon/internal/supervise/**/*_test.go'
+  - '!packages/daemon/internal/termsafe/**/*_test.go'
   - '!packages/daemon/internal/testbin/**/*_test.go'
   - '!packages/daemon/internal/testfifo/**/*_test.go'
   - '!packages/daemon/internal/testnats/**/*_test.go'
@@ -602,6 +622,7 @@ claude_envoy:
   - '.github/actions/install-claude-code/**'
   - 'packages/contracts/fixtures/daemon-api/**'
   - 'packages/contracts/fixtures/envelope-without-role.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   - 'packages/envoy-client/test/**'
   - 'packages/pi-shared/test/image-manifest.ts'
   - 'packages/test-fixtures/src/**'
@@ -910,6 +931,7 @@ ci_ok_report_test: &ci_ok_report_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/ci-ok-report.test.sh'
   - '.github/scripts/ci-ok-report.sh'
+  - '.github/scripts/ci-ok-hold.sh'
   - '.github/scripts/post-check-run.sh'
   - '.github/scripts/gh-read.sh'
   - '.github/scripts/runner-shutdown.sh'
@@ -960,6 +982,14 @@ dispatch_browser_latest_blobs_test: &dispatch_browser_latest_blobs_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.test.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.sh'
+dispatch_browser_reading_rows_test: &dispatch_browser_reading_rows_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.test.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.sh'
+  - '.github/workflows/dispatch-browser.yaml'
 dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - *ci_router
   - *ci_filters_data
@@ -1003,6 +1033,13 @@ priorities_seed_check_test: &priorities_seed_check_test
   - '.github/workflows/ci-job-test.yaml'
   - 'scripts/priorities-seed-check.test.sh'
   - 'scripts/priorities-seed-check.sh'
+architecture_check_test: &architecture_check_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/actions/architecture-check/check.test.sh'
+  - '.github/actions/architecture-check/check.sh'
 check_ci_filters_test: &check_ci_filters_test
   - *ci_router
   - *ci_filters_data
@@ -1016,6 +1053,7 @@ check_ci_filters_test: &check_ci_filters_test
   - '.github/scripts/go_build_tags.py'
   - '.github/scripts/ci_job_reads.py'
   - '.github/workflows/ci-job-typecheck.yaml'
+  - 'packages/envoy/scripts/forced-order.sh'
 check_ts_filters_test: &check_ts_filters_test
   - *ci_router
   - *ci_filters_data
@@ -1096,12 +1134,14 @@ test:
   - *main_bypass_check_test
   - *edited_migrations_base_test
   - *dispatch_browser_latest_blobs_test
+  - *dispatch_browser_reading_rows_test
   - *dispatch_browser_run_reads_test
   - *gh_read_test
   - *dispatch_browser_samples_test
   - *race_memory_test
   - *disk_watch_test
   - *priorities_seed_check_test
+  - *architecture_check_test
   - *check_ci_filters_test
   - *check_ts_filters_test
   - *go_test_step_expansion_test
@@ -1278,6 +1318,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/dispatch/**'
   - 'packages/envoy/internal/bus/*'
   - 'packages/envoy/internal/bus/bustest/*'
+  - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/internal/ctxlock/*'
@@ -1295,6 +1336,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/logging/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/**'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
@@ -1393,6 +1435,7 @@ pi_envoy:
   - 'packages/test-fixtures/src/**'
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envelope-without-role.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   - 'skills/**'
   - 'packages/daemon/internal/prompts/**'
   - 'scripts/pi-plugin-prepack.sh'
@@ -1735,6 +1778,7 @@ envoy_go:
   - 'packages/contracts/fixtures/live/**'
   - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   # why: .github/ci-notes/ci.md#envoy_go-its-natslive-step-runs-cmdlisteners-natslive-tests
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
@@ -2240,6 +2284,7 @@ listener_server_change:
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/natsgrant/*'
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - '.github/scripts/go-tagged-tests.sh'
@@ -2330,6 +2375,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/logging/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/**'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
@@ -2459,6 +2505,7 @@ envoy_smoke:
   - '!packages/envoy/internal/logging/**/*_test.go'
   - '!packages/envoy/internal/mcpbridge/**/*_test.go'
   - '!packages/envoy/internal/metrics/**/*_test.go'
+  - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
@@ -2584,6 +2631,7 @@ worker_image:
   - 'packages/envoy/natsversion/**'
   - 'packages/envoy/steprecord/**'
   - 'packages/envoy/testnatsimages/**'
+  - 'packages/envoy/testnatsinprocess/**'
   - '.omp-pin'
   - '.bun-version'
   - '.dockerignore'
@@ -2657,6 +2705,7 @@ tool_fallback:
   - '.github/actions/install-uv/**'
   - '.github/actions/install-pulumi/**'
   - '.github/actions/install-docker-plugin/**'
+  - '.github/actions/install-helm/**'
   - '.bun-version'
   - 'packages/daemon/docker/worker.Dockerfile'
   - *ci_router
@@ -2705,6 +2754,7 @@ envoy_client:
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - 'packages/contracts/fixtures/envelope-without-role.json'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   - 'packages/envoy/internal/dispatch/api/testdata/**'
   - 'skills/**'
   - 'packages/*/AGENTS.md'
@@ -2876,6 +2926,7 @@ envoy_go_race:
   - '!packages/envoy/internal/logging/**/*_test.go'
   - '!packages/envoy/internal/mcpbridge/**/*_test.go'
   - '!packages/envoy/internal/metrics/**/*_test.go'
+  - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/oidctest/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
@@ -2887,7 +2938,21 @@ envoy_go_race:
   - '!packages/envoy/internal/serverwait/**/*_test.go'
   - '!packages/envoy/internal/smoke/**/*_test.go'
   - '!packages/envoy/internal/stacktest/**/*_test.go'
-  - '!packages/envoy/internal/testnats/**/*_test.go'
+  - '!packages/envoy/internal/testnats/callout_image_test.go'
+  - '!packages/envoy/internal/testnats/callout_test.go'
+  - '!packages/envoy/internal/testnats/cluster_test.go'
+  - '!packages/envoy/internal/testnats/handshake_hold_test.go'
+  - '!packages/envoy/internal/testnats/image_test.go'
+  - '!packages/envoy/internal/testnats/image_url_test.go'
+  - '!packages/envoy/internal/testnats/loopback_test.go'
+  - '!packages/envoy/internal/testnats/nats_test.go'
+  - '!packages/envoy/internal/testnats/proxy_test.go'
+  - '!packages/envoy/internal/testnats/relay_test.go'
+  - '!packages/envoy/internal/testnats/responsetimer_test.go'
+  - '!packages/envoy/internal/testnats/start_wait_test.go'
+  - '!packages/envoy/internal/testnats/stream_create_test.go'
+  - '!packages/envoy/internal/testnats/wait_bound_test.go'
+  - '!packages/envoy/internal/testnats/cmd/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/testwait/**/*_test.go'
@@ -2947,6 +3012,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/ciphertoken/ciphertokentest/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/cputest/*'
   - 'packages/envoy/internal/ctxlock/*'
@@ -3035,6 +3101,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/legionagents/*'
   - 'packages/envoy/internal/logtest/*'
   - 'packages/envoy/internal/metrics/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/internal/oidc/oidctest/*'
   - 'packages/envoy/internal/pglisten/*'
@@ -3193,6 +3260,7 @@ envoy_go_race_api:
   - '!packages/envoy/internal/kvwatch/**/*_test.go'
   - '!packages/envoy/internal/legionagents/**/*_test.go'
   - '!packages/envoy/internal/metrics/**/*_test.go'
+  - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
@@ -3305,6 +3373,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/logging/**/*_test.go'
   - '!packages/envoy/internal/mcpbridge/**/*_test.go'
   - '!packages/envoy/internal/metrics/**/*_test.go'
+  - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
@@ -3391,6 +3460,7 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/githubappjwt/*'
   - 'packages/envoy/internal/goroutinetest/*'
   - 'packages/envoy/internal/logtest/*'
+  - 'packages/envoy/internal/oauthrefusal/*'
   - 'packages/envoy/internal/oidc/*'
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
@@ -3427,6 +3497,7 @@ envoy_go_race_docs:
   - '!packages/envoy/internal/explaintest/**/*_test.go'
   - '!packages/envoy/internal/fold/**/*_test.go'
   - '!packages/envoy/internal/goroutinetest/**/*_test.go'
+  - '!packages/envoy/internal/oauthrefusal/**/*_test.go'
   - '!packages/envoy/internal/oidc/**/*_test.go'
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'

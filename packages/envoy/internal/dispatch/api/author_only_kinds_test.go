@@ -115,6 +115,7 @@ func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
 // written through the one write path of its kind (writeReasoningNodes), and each run through the
 // going POST's own record (recordGoingRequest), the token's as the token resolves.
 func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()

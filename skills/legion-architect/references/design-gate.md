@@ -112,9 +112,11 @@ For each gated step, once every child is filed:
 
 ## After approval
 
-An approval is pinned to its version: any new version closes that step, with no wake. Two keep it:
-a version whose only change is a person's answer to a decision block, and one equal to the approved
-text (an accidental edit undone exactly).
+An approval is pinned to its version: any new version closes that step, with no wake. Dispatch
+carries it over a version equal to the approved text with no ask block decided since, or whose
+every change is a reading in a decision or an answered ask, a server-owned ask attribute or the
+decisions step's `## Decisions` write: it records an `approved` review, the daemon sends
+`design-approved`, and you request nothing. A close's version carries none; the reopen's does.
 
 Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
 decision changes: put the problem to the person as a decision block at the end of the section it

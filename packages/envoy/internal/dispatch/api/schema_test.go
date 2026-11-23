@@ -35,6 +35,7 @@ func readBlockSchemaRoute(t *testing.T, handler http.Handler) (blockSchemaRead, 
 // that declare no block type, with their attributes in order, and the lens catalogue, read from
 // the store.
 func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	read, body := readBlockSchemaRoute(t, handler)
 
@@ -61,14 +62,22 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 		names[index] = typ.Name
 	}
 	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading"}
-	if served.Version != 5 || !slices.Equal(names, want) {
-		t.Fatalf("schema = version %d, types %v; want version 5 and %v", served.Version, names, want)
+	if served.Version != 6 || !slices.Equal(names, want) {
+		t.Fatalf("schema = version %d, types %v; want version 6 and %v", served.Version, names, want)
 	}
 	if ciCheck, declared := served.Types[4].Attributes.Lookup("ci_check"); !declared || ciCheck.Kind != pmdoc.BlockAttributeString {
 		t.Fatalf("check attribute ci_check = %+v (declared %v), want a string", ciCheck, declared)
 	}
 	if parents := served.Types[6].Parents; !slices.Equal(parents, []string{"decision", "ask"}) {
 		t.Fatalf("reading parents = %v, want decision and ask", parents)
+	}
+	for _, typ := range served.Types[5:] {
+		if typ.Since != 6 || typ.CreatableSince != 6 {
+			t.Fatalf("typed block %s = since %d, creatable_since %d; want it read and created from version 6", typ.Name, typ.Since, typ.CreatableSince)
+		}
+	}
+	if steps, declared := served.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
+		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
 	}
 
 	types := map[string][]storeAttributeRead{}

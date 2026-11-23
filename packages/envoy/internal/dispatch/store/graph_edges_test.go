@@ -22,10 +22,7 @@ type graphEdgeRow struct {
 // moves this expectation with it.
 func TestGraphEdgesUnionsMentionsWithEveryStructuralRelation(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	var ids struct {
 		Spec, ProjectDoc, BlockAsk, AnchoredAsk, ProjectAsk, PlainAsk, AnchoredComment, ProjectComment, Reply, AskReply, Message, MessageReply string
 	}
@@ -155,10 +152,7 @@ func TestGraphEdgesUnionsMentionsWithEveryStructuralRelation(t *testing.T) {
 // structural, carries none.
 func TestGraphEdgesCarryBlockMentionsAndPartOf(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, `
 		with p as (insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example') returning key),
 		issue as (insert into issues (key, project_key, number, title, created_by, rank) select 'CORE-1', key, 1, 'One', '{"kind":"user","id":"alice"}', 'A' from p returning key),
@@ -211,10 +205,7 @@ func TestGraphEdgesCarryBlockMentionsAndPartOf(t *testing.T) {
 // reply reaches ask_block and the comment block's reply comment_block.
 func TestItemBlockArmsAreGraphEdges(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	var comment, reply, message, messageReply, ask, askReply string
 	if err := store.Pool.QueryRow(ctx, `
 		with p as (insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example') returning key),
@@ -307,10 +298,7 @@ func sortGraphEdges(edges []graphEdgeRow) {
 // as the function plans it, finds its target's rows through document_blocks_node_id.
 func TestBlockRefListedFindsItsTargetByTheNodeIDIndex(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	var body string
 	if err := store.Pool.QueryRow(ctx, `select prosrc from pg_proc where proname = 'block_ref_listed'`).Scan(&body); err != nil {
 		t.Fatalf("read block_ref_listed: %v", err)
@@ -366,8 +354,7 @@ func explainWithoutSeqScan(t *testing.T, store *Store, query string, setup ...st
 // view casts it on every row and one bad anchor would break every to=artifact read.
 func TestMigrate0032RefusesNonUUIDAnchorArtifactIDs(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 31)
+	store := openMigratedTestStore(t, 31)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank) values ('CORE-1', 'CORE', 1, 'Issue', '{"kind":"user","id":"alice"}', 'A');

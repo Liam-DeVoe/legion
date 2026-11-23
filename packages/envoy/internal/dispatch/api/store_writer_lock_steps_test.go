@@ -98,6 +98,7 @@ const storeStepWait = 20 * time.Second
 // lock an event's project is taken with (projectKeyShare). A run of the command bar appends no
 // event.
 func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
 	for _, writer := range []storeWriter{

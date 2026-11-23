@@ -50,6 +50,7 @@ import (
 // document's row, held at the cascade's state tuples waits at the gone statement's append
 // instead, and held at the event holds no lock of graph_tuples.
 func TestEveryObjectNodeWriterTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
 	for _, writer := range []storeWriter{

@@ -82,6 +82,7 @@ func (rig goingRig) age(t *testing.T, requestID string, created, ends time.Durat
 // back to whoever holds the id, on any pod. An id the record does not hold is pgx.ErrNoRows, the
 // absence its caller decides what to answer.
 func TestAGoingRequestRecordsItsWindowAndReadsBack(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	recorded := rig.record(t, "what is going on?")
 	if window := recorded.EndsAt.Sub(recorded.CreatedAt); window != contracts.GoingRunWindow {
@@ -107,6 +108,7 @@ func TestAGoingRequestRecordsItsWindowAndReadsBack(t *testing.T) {
 // The frames of one stream take their sequences one after another, and a reader resuming from
 // Last-Event-ID is answered the frames past the one it holds, in order.
 func TestGoingEventsAppendInSequenceAndReadAfterOne(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	run := rig.record(t, "who closed INFRA-1?")
 	ctx := context.Background()
@@ -152,6 +154,7 @@ func TestGoingEventsAppendInSequenceAndReadAfterOne(t *testing.T) {
 // itself - stores nothing and is answered that stored frame, with its sequence, rather than
 // storing a second ending at the next sequence.
 func TestASecondTerminalWriteOfAGoingRunAnswersTheStoredFrame(t *testing.T) {
+	t.Parallel()
 	for name, test := range map[string]struct{ first, second going.Event }{
 		"the answer ends, then the deadline": {going.End(12, 2), going.Fault(contracts.GoingErrorAnswerDidNotArrive)},
 		"the deadline ends, then the answer": {going.Fault(contracts.GoingErrorAnswerFailed), going.End(3, 0)},
@@ -202,6 +205,7 @@ func TestASecondTerminalWriteOfAGoingRunAnswersTheStoredFrame(t *testing.T) {
 // reader or the sweep ended its run is told so (pgx.ErrNoRows) rather than appending after the
 // frame a reader stopped on. And a frame that ends no stream is no way to end a run.
 func TestAGoingRunTakesNoFrameOnceItHasEnded(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	run := rig.record(t, "is it over?")
@@ -225,6 +229,7 @@ func TestAGoingRunTakesNoFrameOnceItHasEnded(t *testing.T) {
 // sequence. A second pass stores nothing more, a run already ended is untouched, and a run still
 // inside its window is left to run.
 func TestTheGoingSweepEndsARunPastItsWindowOnce(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	abandoned := rig.record(t, "who is answering this?")
@@ -284,6 +289,7 @@ func TestTheGoingSweepEndsARunPastItsWindowOnce(t *testing.T) {
 // kept inside the hour: the sweep's second step removes a run an hour after its created_at
 // (goRunsPastTheHour), and what this holds is the first step, which reads ends_at alone.
 func TestTheGoingSweepEndsARunOverdueByMoreThanADay(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	const overdueBy = 25 * time.Hour
@@ -315,6 +321,7 @@ func TestTheGoingSweepEndsARunOverdueByMoreThanADay(t *testing.T) {
 // table, and no aggregate runs over the run's frames, so a frame costs the same however many frames
 // its run already holds.
 func TestTheNextFrameReadsTwoIndexProbes(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	run := rig.record(t, "how many frames does this read?")
@@ -358,6 +365,7 @@ func TestTheNextFrameReadsTwoIndexProbes(t *testing.T) {
 // The maintenance pass sweeps the runs beside the keys and the owed deliveries, so a run nobody
 // reads is ended with no loop of its own.
 func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	abandoned := rig.record(t, "nobody is answering this")
 	rig.age(t, abandoned.ID, time.Minute, time.Second)
@@ -386,6 +394,7 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 // (goingNextFrame), so the run is gone exactly between the read and the write. A frame of a run
 // nobody recorded stores nothing either, and writes no node for it.
 func TestAGoingTerminalWriteForAMissingRunFailsNoSweep(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	stale := rig.record(t, "asked an age ago")
