@@ -1518,13 +1518,15 @@ and sets `NO_PROXY` so the entry's bound hosts reach the proxy while loopback an
 ranges stay direct. It writes neither file and sets no trust variable, so the command keeps the
 trust it has, only where all of these hold: the machine's own system trust bundle, read with no
 variable (`/etc/ssl/certs/ca-certificates.crt` on Debian), trusts every root the release carries;
-the command's environment carries the eight settings that make each client family read that
-store, as a pod image and a launcher session set them (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+the command's environment carries the settings that make each client family read that store, as
+a pod image and a launcher session set them (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
 `REQUESTS_CA_BUNDLE`, `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE`, `AWS_CA_BUNDLE` and
-`GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` naming a file that holds every root, `NODE_USE_SYSTEM_CA=1`
-and `UV_SYSTEM_CERTS=1`); every other trust file it names holds every root; the last
-`ca_directory` of wget's startup files does too; and the command has no `SSL_CERT_DIR` at all.
-Any other command, such as one from a shell started before those settings were set, gets the
+`GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` naming a file that holds every root; `NODE_USE_SYSTEM_CA=1`,
+or `NODE_EXTRA_CA_CERTS` naming a file that holds every root; and `UV_SYSTEM_CERTS` set to a value
+uv reads as true, such as `1`); every other trust file it names holds every root, and so does
+`NODE_EXTRA_CA_CERTS`'s unless `NODE_USE_SYSTEM_CA=1`; the last `ca_directory` of wget's startup
+files does too; and the command has no `SSL_CERT_DIR` at all. Any other command, such as one from
+a shell started before those settings were set, gets the
 bundle. The command calls the service as it did before. The value reaches no answer
 of the broker's, no file and no variable: the proxy swaps the placeholder for it in the headers
 the entry names, inside the connection it carries to the bound host, and an answer of the proxy's

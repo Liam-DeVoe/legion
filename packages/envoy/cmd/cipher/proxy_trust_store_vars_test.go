@@ -16,8 +16,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 )
 
 // storeVarsChildInput is what TestProxyTrustStoreVarsChild reads: the environment the command has,
@@ -113,17 +111,15 @@ func runStoreVarsChild(t *testing.T, caPEM string, environ []string) storeVarsCh
 	return out
 }
 
-// TestPrepareAirlockWritesTheBundleWhereOnlyTheCommandsStoreVariablesNameTheRoot: the system store
-// here is this machine's own, which lacks a root made for this test. The command's SSL_CERT_FILE
-// (the system bundle plus the root) or SSL_CERT_DIR (a directory holding the root) names the
-// root, so x509.SystemCertPool trusts it, but git and wget read neither variable. The bundle must
-// still be written, with GIT_SSL_CAINFO and WGETRC naming it, as before the change.
-func TestPrepareAirlockWritesTheBundleWhereOnlyTheCommandsStoreVariablesNameTheRoot(t *testing.T) {
-	authority, err := proxyrulestest.NewAuthority("test proxy root for the store variables")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := string(authority.CertificatePEM())
+// TestPrepareAirlockReadsTheStoreWithNoVariableWhereEveryClientSettingIsSet: the machine's own
+// system bundle lacks a root made for this test, and the command carries the eight settings, the
+// six file settings naming one file that holds that bundle's roots plus the root, SSL_CERT_FILE
+// among them. x509.SystemCertPool would read the root through SSL_CERT_FILE, but git and wget read
+// the system bundle alone, so the bundle must be written, with GIT_SSL_CAINFO and WGETRC naming
+// it. The command carries all eight because one missing setting gets the bundle whatever the store
+// holds, which would hide a store read through SSL_CERT_FILE.
+func TestPrepareAirlockReadsTheStoreWithNoVariableWhereEveryClientSettingIsSet(t *testing.T) {
+	root := proxyTestRoot(t, "test proxy root for the store with every setting")
 	system := ""
 	for _, path := range systemTrustFiles {
 		if data, err := os.ReadFile(path); err == nil {
@@ -131,30 +127,21 @@ func TestPrepareAirlockWritesTheBundleWhereOnlyTheCommandsStoreVariablesNameTheR
 			break
 		}
 	}
-	if system != "" && strings.Contains(system, strings.TrimSpace(root)) {
+	if strings.Contains(system, strings.TrimSpace(root)) {
 		t.Fatalf("the system bundle already holds the root made for this test")
 	}
-	fileWithRoot := writeLoginFile(t, "system-and-root.pem", system+root)
-	dirWithRoot := filepath.Dir(writeLoginFile(t, "root.pem", root))
-	for _, row := range []struct{ name, key, value string }{
-		{name: "SSL_CERT_FILE names the system bundle plus the root", key: "SSL_CERT_FILE", value: fileWithRoot},
-		{name: "SSL_CERT_DIR names a directory holding the root", key: "SSL_CERT_DIR", value: dirWithRoot},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			runtimeDir := t.TempDir()
-			out := runStoreVarsChild(t, root, []string{"XDG_RUNTIME_DIR=" + runtimeDir, row.key + "=" + row.value})
-			t.Logf("the child answered: %+v", out)
-			if out.Bundle == "" {
-				t.Fatalf("prepareAirlock wrote no bundle, though the system store lacks the root and only the command's %s names it; git and wget, which read no %s, then refuse the proxy", row.key, row.key)
-			}
-			for _, key := range []string{"GIT_SSL_CAINFO", "CURL_CA_BUNDLE", "SSL_CERT_FILE"} {
-				if out.Vars[key] != out.Bundle {
-					t.Errorf("the command's %s is %q, want the bundle %q", key, out.Vars[key], out.Bundle)
-				}
-			}
-			if out.Vars["WGETRC"] == "" {
-				t.Errorf("the command's WGETRC is not set; wget reads the bundle from no other place")
-			}
-		})
+	environ := append([]string{"XDG_RUNTIME_DIR=" + t.TempDir()}, proxyStoreSettings(t, writeLoginFile(t, "system-and-root.pem", system+root))...)
+	out := runStoreVarsChild(t, root, environ)
+	t.Logf("the child answered: %+v", out)
+	if out.Bundle == "" {
+		t.Fatalf("prepareAirlock wrote no bundle, though the system bundle lacks the root and only the command's settings name it; git and wget read the system bundle alone")
+	}
+	for _, key := range []string{"GIT_SSL_CAINFO", "CURL_CA_BUNDLE", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"} {
+		if out.Vars[key] != out.Bundle {
+			t.Errorf("the command's %s is %q, want the bundle %q", key, out.Vars[key], out.Bundle)
+		}
+	}
+	if out.Vars["WGETRC"] == "" {
+		t.Errorf("the command's WGETRC is not set; wget reads the bundle from no other place")
 	}
 }

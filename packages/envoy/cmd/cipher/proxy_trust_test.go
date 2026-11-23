@@ -31,8 +31,8 @@ func proxyTestRoot(t *testing.T, name string) string {
 	return string(authority.CertificatePEM())
 }
 
-// proxyTestPool is a certificate pool that holds the roots given, standing for a system store.
-func proxyTestPool(t *testing.T, roots ...string) *x509.CertPool {
+// proxyTestPool answers a certificate pool that holds the roots given, standing for a system store.
+func proxyTestPool(t *testing.T, roots ...string) func() *x509.CertPool {
 	t.Helper()
 	pool := x509.NewCertPool()
 	for _, root := range roots {
@@ -40,17 +40,20 @@ func proxyTestPool(t *testing.T, roots ...string) *x509.CertPool {
 			t.Fatalf("the test pool took no certificate from %q", root)
 		}
 	}
-	return pool
+	return func() *x509.CertPool { return pool }
 }
 
-// proxyStoreSettingNames are the eight settings with which a pod image and a launcher session
-// make each client family that does not read the system store by default read it: six that name
-// the system bundle, Node's switch and uv's. Written out here rather than taken from airlock.go,
-// so a name dropped there fails a row here.
-var proxyStoreSettingNames = []string{
-	"SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
-	"AWS_CA_BUNDLE", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH", "NODE_USE_SYSTEM_CA", "UV_SYSTEM_CERTS",
-}
+// proxyStoreFileSettingNames and proxyStoreSettingNames are the eight settings with which a pod
+// image and a launcher session make each client family that does not read the system store by
+// default read it: six that name the system bundle, then Node's switch and uv's. Written out here
+// rather than taken from airlock.go, so a name dropped there fails a row here.
+var (
+	proxyStoreFileSettingNames = []string{
+		"SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
+		"AWS_CA_BUNDLE", "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+	}
+	proxyStoreSettingNames = append(slices.Clone(proxyStoreFileSettingNames), "NODE_USE_SYSTEM_CA", "UV_SYSTEM_CERTS")
+)
 
 // proxyStoreSettings is a command environment with the eight settings, each file setting naming
 // file, and a home and a system wgetrc of the test's own that hold no wget setting, so no startup
@@ -58,7 +61,7 @@ var proxyStoreSettingNames = []string{
 func proxyStoreSettings(t *testing.T, file string) []string {
 	t.Helper()
 	environ := []string{"HOME=" + t.TempDir(), "SYSTEM_WGETRC=" + writeLoginFile(t, "system-wgetrc", "")}
-	for _, key := range proxyStoreSettingNames[:6] {
+	for _, key := range proxyStoreFileSettingNames {
 		environ = append(environ, key+"="+file)
 	}
 	return append(environ, "NODE_USE_SYSTEM_CA=1", "UV_SYSTEM_CERTS=1")
@@ -272,13 +275,7 @@ func TestProxyRootsTrustedReadsWgetsStartupFilesInWgetsOrder(t *testing.T) {
 	settings := proxyStoreSettings(t, writeLoginFile(t, "system.pem", root))
 	emptyDir := t.TempDir()
 	dirWith := filepath.Dir(writeLoginFile(t, "root.pem", root))
-	home := func(wgetrc string) string {
-		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, ".wgetrc"), []byte(wgetrc), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return "HOME=" + dir
-	}
+	home := func(wgetrc string) string { return "HOME=" + filepath.Dir(writeLoginFile(t, ".wgetrc", wgetrc)) }
 	noSetting := writeLoginFile(t, "plain-wgetrc", "tries = 3\n")
 	system := func(wgetrc string) string { return "SYSTEM_WGETRC=" + writeLoginFile(t, "system-wgetrc", wgetrc) }
 	for _, row := range []struct {
@@ -312,6 +309,30 @@ func TestProxyRootsTrustedReadsWgetsStartupFilesInWgetsOrder(t *testing.T) {
 	}
 	if !proxyRootsTrusted(settings, root, store) {
 		t.Errorf("the built-in system wgetrc has an empty ca_directory, SYSTEM_WGETRC names a file with no setting: proxyRootsTrusted = false, want true")
+	}
+}
+
+// TestHomeWgetrcIsTheFileWgetReads: wget's user startup file, where WGETRC names none, is
+// $HOME/.wgetrc when HOME is set, even empty (wget joins the two with '/', so an empty HOME reads
+// /.wgetrc), and the password database's home only when HOME is unset.
+func TestHomeWgetrcIsTheFileWgetReads(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		environ []string
+		want    string
+	}{
+		{name: "HOME set", environ: []string{"HOME=/home/someone"}, want: "/home/someone/.wgetrc"},
+		{name: "HOME set and empty", environ: []string{"HOME="}, want: "/.wgetrc"},
+		{name: "HOME set empty after a value", environ: []string{"HOME=/home/someone", "HOME="}, want: "/.wgetrc"},
+	} {
+		if got := homeWgetrc(row.environ); got != row.want {
+			t.Errorf("%s: homeWgetrc(%q) = %q, want %q", row.name, row.environ, got, row.want)
+		}
+	}
+	if home := passwdHome(); home != "" {
+		if got, want := homeWgetrc([]string{"PATH=/usr/bin"}), home+"/.wgetrc"; got != want {
+			t.Errorf("HOME unset: homeWgetrc = %q, want the password database's home %q", got, want)
+		}
 	}
 }
 
@@ -393,10 +414,7 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 	dirWith := filepath.Dir(writeLoginFile(t, "root.pem", newRoot))
 	wgetrcWithoutRoot := writeLoginFile(t, "wgetrc", "ca_directory = "+dirWithout+"\n")
 	wgetrcEmptyDir := writeLoginFile(t, "wgetrc", "ca_directory =\n")
-	homeEmptyDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(homeEmptyDir, ".wgetrc"), []byte("ca_directory =\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	homeEmptyDir := filepath.Dir(writeLoginFile(t, ".wgetrc", "ca_directory =\n"))
 	missing := filepath.Join(t.TempDir(), "not-there.crt")
 	unreadable := t.TempDir() // a directory: there, and not a file any client reads
 	type row struct {
@@ -404,7 +422,7 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 		before     []string // system bundles listed ahead of the one holding store
 		store      []string
 		release    string
-		unset      []string // settings the command does not carry
+		unset      string // a setting the command does not carry
 		environ    []string
 		wantBundle bool
 	}
@@ -433,7 +451,7 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 		{name: "the command's SSL_CERT_DIR is set and empty", store: []string{newRoot}, release: newRoot, environ: []string{"SSL_CERT_DIR="}, wantBundle: true},
 	}
 	for _, key := range proxyStoreSettingNames {
-		rows = append(rows, row{name: "the command has no " + key, store: []string{newRoot}, release: newRoot, unset: []string{key}, wantBundle: true})
+		rows = append(rows, row{name: "the command has no " + key, store: []string{newRoot}, release: newRoot, unset: key, wantBundle: true})
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -441,8 +459,8 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 			useSystemTrustFiles(t, append(slices.Clone(row.before), system)...)
 			runtimeDir := t.TempDir()
 			environ := append([]string{"XDG_RUNTIME_DIR=" + runtimeDir}, proxyStoreSettings(t, system)...)
-			for _, key := range row.unset {
-				environ = withoutSetting(environ, key)
+			if row.unset != "" {
+				environ = withoutSetting(environ, row.unset)
 			}
 			environ = withSettings(environ, row.environ...)
 			release := testRelease("AIRLOCK_ME", []string{"api.example.com"}, nil)
@@ -494,39 +512,5 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 				t.Errorf("the command's WGETRC is %q, want %q", vars["WGETRC"], want)
 			}
 		})
-	}
-}
-
-// TestPrepareAirlockReadsTheStoreWithNoVariableWhereEveryClientSettingIsSet: the machine's own
-// system bundle lacks a root made for this test, and the command carries the eight settings, each
-// naming that bundle plus the root, SSL_CERT_FILE among them. x509.SystemCertPool would read the
-// root through SSL_CERT_FILE, but git and wget read the system bundle alone, so the bundle must be
-// written. It runs in a child process (runStoreVarsChild) because x509.SystemCertPool reads the
-// process's own environment, once.
-func TestPrepareAirlockReadsTheStoreWithNoVariableWhereEveryClientSettingIsSet(t *testing.T) {
-	root := proxyTestRoot(t, "test proxy root for the store with every setting")
-	system := ""
-	for _, path := range systemTrustFiles {
-		if data, err := os.ReadFile(path); err == nil {
-			system = string(data)
-			break
-		}
-	}
-	if strings.Contains(system, strings.TrimSpace(root)) {
-		t.Fatalf("the system bundle already holds the root made for this test")
-	}
-	environ := append([]string{"XDG_RUNTIME_DIR=" + t.TempDir()}, proxyStoreSettings(t, writeLoginFile(t, "system-and-root.pem", system+root))...)
-	out := runStoreVarsChild(t, root, environ)
-	t.Logf("the child answered: %+v", out)
-	if out.Bundle == "" {
-		t.Fatalf("prepareAirlock wrote no bundle, though the system bundle lacks the root and only the command's settings name it; git and wget read the system bundle alone")
-	}
-	for _, key := range []string{"GIT_SSL_CAINFO", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"} {
-		if out.Vars[key] != out.Bundle {
-			t.Errorf("the command's %s is %q, want the bundle %q", key, out.Vars[key], out.Bundle)
-		}
-	}
-	if out.Vars["WGETRC"] == "" {
-		t.Errorf("the command's WGETRC is not set; wget reads the bundle from no other place")
 	}
 }

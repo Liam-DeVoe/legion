@@ -4,9 +4,9 @@
 // (client.go's AirlockRelease). The command gets a placeholder where the secret was, the proxy in
 // HTTPS_PROXY with that grant's proxy password, a NO_PROXY that keeps the bound hosts going
 // through the proxy and everything else direct, and a trust bundle that holds the trust it would
-// have had plus the proxy's own certificate — unless the machine's system trust store already
-// trusts every root the release carries, where the command keeps the trust it has and nothing is
-// written. The broker side is internal/cipher/proxy and internal/cipher/requests/airlock.go.
+// have had plus the proxy's own certificate — unless the command already reaches the proxy with
+// the trust it has (proxyRootsTrusted), where it keeps that trust and nothing is written. The
+// broker side is internal/cipher/proxy and internal/cipher/requests/airlock.go.
 package main
 
 import (
@@ -92,7 +92,7 @@ var systemTrustFiles = []string{
 func systemTrust() *x509.CertPool {
 	pool := x509.NewCertPool()
 	for _, path := range systemTrustFiles {
-		data, err := os.ReadFile(path)
+		data, err := readRegularFile(path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -247,7 +247,7 @@ const airlockBuildLifetime = time.Hour
 // wgetrcFor skip a file they cannot read, and print nothing of it.
 func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
 	// First, since a command that needs no bundle has no directory to make, tidy or name.
-	if proxyRootsTrusted(environ, release.CACertificate, systemTrust()) {
+	if proxyRootsTrusted(environ, release.CACertificate, systemTrust) {
 		return airlockFiles{}, nil
 	}
 	// The grant id becomes one path element, so it must be one: the broker's ids are opaque, and
@@ -462,7 +462,8 @@ func trustBundle(environ []string, caPEM string) []byte {
 // verification, exactly as it does on a machine with no system bundle. It is skipped rather than
 // refused because such a variable names no trust the command would have had either — the file is
 // as unreadable to the command as it is here — and refusing would take away a run that works
-// today.
+// today. A variable naming something other than a regular file, such as a named pipe, is skipped
+// the same way, unopened (readRegularFile), so agent-secrets does not wait on it.
 func readTrustFile(environ []string, key string) ([]byte, bool) {
 	var candidates []string
 	if named := envValue(environ, key); named != "" {
@@ -472,20 +473,21 @@ func readTrustFile(environ []string, key string) ([]byte, bool) {
 		candidates = append(candidates, systemTrustFiles...)
 	}
 	for _, path := range candidates {
-		if data, err := os.ReadFile(path); err == nil {
+		if data, err := readRegularFile(path); err == nil {
 			return data, true
 		}
 	}
 	return nil, false
 }
 
-// wgetrcFor is the wgetrc the child gets: the lines of an inherited WGETRC, when it names a file
-// that can be read, and then the bundle. wget reads none of the bundle variables, so this file is
-// the only way the proxy's certificate reaches it.
+// wgetrcFor is the wgetrc the child gets: the lines of an inherited WGETRC, when it names a regular
+// file that can be read (readRegularFile, so a named pipe there is not opened), and then the
+// bundle. wget reads none of the bundle variables, so this file is the only way the proxy's
+// certificate reaches it.
 func wgetrcFor(environ []string, bundle string) []byte {
 	var out []byte
 	if named := envValue(environ, "WGETRC"); named != "" {
-		if data, err := os.ReadFile(named); err == nil {
+		if data, err := readRegularFile(named); err == nil {
 			out = data
 			if len(out) > 0 && !bytes.HasSuffix(out, []byte("\n")) {
 				out = append(out, '\n')
@@ -527,10 +529,10 @@ var proxyStoreFileVars = []string{
 }
 
 // proxyRootsTrusted reports whether the command reaches the proxy with the trust it already has,
-// so that it needs no bundle: system, the machine's system trust store, trusts every root the
-// release carries; the command's environment shows that every client family reads that store
-// (proxyClientsReadTheStore); each file a trust variable of the command names holds every root
-// too, as does wget's ca_directory (wgetTrusts); and the command has no SSL_CERT_DIR.
+// so that it needs no bundle: the command's environment shows that every client family reads the
+// system store (proxyClientsReadTheStore) and has no SSL_CERT_DIR; that store, which system
+// answers, trusts every root the release carries; each file a trust variable of the command names
+// holds every root too, as does wget's ca_directory (wgetTrusts).
 //
 // Every root, not one of them: during a change of the proxy's root a release carries two, the
 // old and the new, and a store that trusts one of them is not yet one the proxy can rely on. A
@@ -559,25 +561,26 @@ var proxyStoreFileVars = []string{
 // its subject-hash name. So any SSL_CERT_DIR entry, even an empty one, gets the bundle: its
 // SSL_CERT_FILE reaches httpx, uv and OpenSSL beside the directory, and its NODE_EXTRA_CA_CERTS
 // reaches Node.
-func proxyRootsTrusted(environ []string, caPEM string, system *x509.CertPool) bool {
-	roots := proxyRoots(caPEM)
-	if len(roots) == 0 || !poolTrustsEvery(system, roots) {
+func proxyRootsTrusted(environ []string, caPEM string, system func() *x509.CertPool) bool {
+	// The command's environment first: it alone answers most commands, and then the system
+	// bundle is not read.
+	if !proxyClientsReadTheStore(environ) || envHas(environ, "SSL_CERT_DIR") {
 		return false
 	}
-	if !proxyClientsReadTheStore(environ) || envHas(environ, "SSL_CERT_DIR") || !wgetTrusts(environ, roots) {
+	roots := proxyRoots(caPEM)
+	if len(roots) == 0 || !poolTrustsEvery(system(), roots) || !wgetTrusts(environ, roots) {
 		return false
 	}
 	// One file is often named by several of these, as the system bundle is, and is read once.
-	nodeReadsTheStore := envValue(environ, "NODE_USE_SYSTEM_CA") == "1"
 	var named []string
 	for _, key := range airlockBundleVars {
-		if path := envValue(environ, key); path != "" && (key != "NODE_EXTRA_CA_CERTS" || !nodeReadsTheStore) {
+		if path := envValue(environ, key); path != "" && (key != "NODE_EXTRA_CA_CERTS" || !nodeReadsTheStore(environ)) {
 			named = append(named, path)
 		}
 	}
 	slices.Sort(named)
 	for _, path := range slices.Compact(named) {
-		data, err := os.ReadFile(path)
+		data, err := readRegularFile(path)
 		if err != nil {
 			return false
 		}
@@ -602,7 +605,7 @@ func proxyClientsReadTheStore(environ []string) bool {
 			return false
 		}
 	}
-	if envValue(environ, "NODE_USE_SYSTEM_CA") != "1" && envValue(environ, "NODE_EXTRA_CA_CERTS") == "" {
+	if !nodeReadsTheStore(environ) && envValue(environ, "NODE_EXTRA_CA_CERTS") == "" {
 		return false
 	}
 	switch strings.ToLower(envValue(environ, "UV_SYSTEM_CERTS")) {
@@ -612,6 +615,12 @@ func proxyClientsReadTheStore(environ []string) bool {
 	return false
 }
 
+// nodeReadsTheStore reports whether Node reads the system store: NODE_USE_SYSTEM_CA=1, the one
+// value Node v24.22.1 reads as on ("true" and "yes" are off).
+func nodeReadsTheStore(environ []string) bool {
+	return envValue(environ, "NODE_USE_SYSTEM_CA") == "1"
+}
+
 // systemWgetrcFile is the system wgetrc built into wget, Debian's, which wget reads when
 // SYSTEM_WGETRC names no file that is there. A test replaces it.
 var systemWgetrcFile = "/etc/wgetrc"
@@ -619,31 +628,25 @@ var systemWgetrcFile = "/etc/wgetrc"
 // wgetTrusts reports whether wget's startup files leave it trusting every root. wget reads no
 // trust variable, only those files, and the command keeps them when no bundle is written: first
 // the system wgetrc (the file SYSTEM_WGETRC names when it is there, else systemWgetrcFile when
-// that is there), then the user's (the file WGETRC names, or ~/.wgetrc when it is there and
-// WGETRC is unset or empty); measured with wget 1.25.0 and 1.21.4. wget built on GnuTLS, as
-// Debian's is, reads its ca_directory in place of the system store and adds a ca_certificate to
-// that trust rather than replacing it (measured with wget 1.25.0). So the last ca_directory across
-// those files, the one wget reads, must hold every root, an empty one loads no directory and no
-// system store at all, and a ca_certificate takes nothing away. A startup file this process
-// cannot read, or a WGETRC naming none, is one it cannot vouch for. wget ignores case, '_' and
-// '-' in a command's name, and skips a line that opens with '#'.
+// that is there), then the user's (the file WGETRC names, or homeWgetrc when it is there and
+// WGETRC is unset or empty); "there" is wget's own test, a stat; measured with wget 1.25.0 and
+// 1.21.4. wget built on GnuTLS, as Debian's is, reads its ca_directory in place of the system
+// store and adds a ca_certificate to that trust rather than replacing it (measured with wget
+// 1.25.0). So the last ca_directory across those files, the one wget reads, must hold every root,
+// an empty one loads no directory and no system store at all, and a ca_certificate takes nothing
+// away. A startup file this process cannot read, or a WGETRC naming none, is one it cannot vouch
+// for. wget ignores case, '_' and '-' in a command's name, and skips a line that opens with '#'.
 func wgetTrusts(environ []string, roots []*x509.Certificate) bool {
 	var files []string
-	if named := envValue(environ, "SYSTEM_WGETRC"); named != "" && fileThere(named) {
+	if named := envValue(environ, "SYSTEM_WGETRC"); named != "" && exists(named) {
 		files = append(files, named)
-	} else if fileThere(systemWgetrcFile) {
+	} else if exists(systemWgetrcFile) {
 		files = append(files, systemWgetrcFile)
 	}
 	if named := envValue(environ, "WGETRC"); named != "" {
 		files = append(files, named)
-	} else {
-		home := envValue(environ, "HOME")
-		if home == "" {
-			home = passwdHome()
-		}
-		if user := filepath.Join(home, ".wgetrc"); home != "" && fileThere(user) {
-			files = append(files, user)
-		}
+	} else if user := homeWgetrc(environ); user != "" && exists(user) {
+		files = append(files, user)
 	}
 	directory, set := "", false
 	for _, file := range files {
@@ -666,19 +669,26 @@ func wgetTrusts(environ []string, roots []*x509.Certificate) bool {
 	return directory != "" && certDirTrustsEvery(directory, roots)
 }
 
+// homeWgetrc is the user wgetrc wget reads where WGETRC names none: $HOME/.wgetrc, HOME being the
+// command's own when it is set, even empty (wget joins the two with '/', so an empty HOME reads
+// /.wgetrc), and the password database's home only when HOME is unset; "" where it has neither.
+func homeWgetrc(environ []string) string {
+	home := envValue(environ, "HOME")
+	if !envHas(environ, "HOME") {
+		if home = passwdHome(); home == "" {
+			return ""
+		}
+	}
+	return home + "/.wgetrc"
+}
+
 // wgetrcCommand folds a wgetrc command's name to the one wget reads it as.
 var wgetrcCommand = strings.NewReplacer("_", "", "-", "")
 
-// fileThere reports whether path names something that is there, as wget's own test of a startup
-// file does (stat).
-func fileThere(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-// proxyCertFileMaxBytes and proxyCertDirMaxFiles bound what is read of a file or directory the
-// command's own settings name: a certificate is a few kilobytes and Debian's whole bundle is under
-// 250 KB, and Debian's /etc/ssl/certs holds about 300 roots, each under two names.
+// proxyCertFileMaxBytes and proxyCertDirMaxFiles bound what is read of wget's startup files and
+// of the ca_directory they name: a certificate is a few kilobytes and Debian's whole bundle is
+// under 250 KB, and Debian's /etc/ssl/certs holds about 300 entries, each root under two names
+// and the bundle. The trust files the bundle variables name are read whole (readRegularFile).
 const (
 	proxyCertFileMaxBytes = 1 << 20
 	proxyCertDirMaxFiles  = 4096
@@ -713,9 +723,11 @@ func certDirTrustsEvery(dir string, roots []*x509.Certificate) bool {
 
 // readBoundedFile is the regular file at path, read whole, and false where path names no regular
 // file (a symbolic link is followed to what it names) or one of more than proxyCertFileMaxBytes.
-// It looks before it opens, so it opens no named pipe, device or socket.
+// It looks before it opens, so it opens no named pipe, device or socket, and sizes its buffer
+// from the look, so a file is read into one allocation.
 func readBoundedFile(path string) ([]byte, bool) {
-	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() || info.Size() > proxyCertFileMaxBytes {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > proxyCertFileMaxBytes {
 		return nil, false
 	}
 	f, err := os.Open(path)
@@ -723,11 +735,33 @@ func readBoundedFile(path string) ([]byte, bool) {
 		return nil, false
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, proxyCertFileMaxBytes+1))
-	if err != nil || len(data) > proxyCertFileMaxBytes {
+	var data bytes.Buffer
+	data.Grow(int(info.Size()) + bytes.MinRead)
+	if _, err := data.ReadFrom(io.LimitReader(f, proxyCertFileMaxBytes+1)); err != nil || data.Len() > proxyCertFileMaxBytes {
 		return nil, false
 	}
-	return data, true
+	return data.Bytes(), true
+}
+
+// errNotRegular is readRegularFile's answer for a path that names something other than a regular
+// file.
+var errNotRegular = errors.New("not a regular file")
+
+// readRegularFile is the regular file at path, read whole however large (a symbolic link is
+// followed to what it names), for the trust files the command's own settings name. It looks
+// before it opens, so it opens no named pipe, device or socket: opening a named pipe for reading
+// waits for a writer that may never come, and agent-secrets would hang before the command runs.
+// Its error is the look's where that fails, so a path that is not there answers os.ErrNotExist,
+// and errNotRegular where the path names something else.
+func readRegularFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errNotRegular
+	}
+	return os.ReadFile(path)
 }
 
 // proxyRoots is every certificate of the release's PEM, and nil when any block of it is not a
