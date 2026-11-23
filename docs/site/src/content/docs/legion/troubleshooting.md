@@ -1462,7 +1462,9 @@ These arrive as messages on the Dispatch issue:
   A hook of your `legion.yaml` ([hooks](/legion/legion/running-legion/#legionyaml)) counted that
   move back and fired: the daemon wrote the hook's words once for each role the line names, on the
   topic of the claim of the agent that works that role's step (the architect's, for a step it does
-  itself), and posted this record of it. Nothing is held: the move started the agent of the step it
+  itself). For `implementer` that is the agent of the task's step of the type implementation,
+  whatever that step's role is called, and nobody where the task has no such step. The daemon then
+  posted this record of it. Nothing is held: the move started the agent of the step it
   opened, or told the architect that step in an `owner-step` where the step is its own, and each
   agent answers in its own turn. A hook names no architect role: the daemon's own wake to an
   architect is a notice.
