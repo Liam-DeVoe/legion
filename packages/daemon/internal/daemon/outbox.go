@@ -449,29 +449,30 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 }
 
 // startRowEnded asks the workflow to read a claim's queued starts again (intake.RefusedStartEnded)
-// once a start row that reached that claim has finished while the claim's last launch stands
-// refused by its issue's pod (supervise's Machine.RefusedPod). The refusal's own report (workflow's
-// podRefusedLaunch) reads the outbox in its transaction and queues the claim's start where none
-// stands, and a row whose launch the wake pacing parked, or whose launch's write failed and is
-// retried, has delivered its task and returned when that launch is refused on its timer: the report
-// can read such a row while its finish has not committed, take it for the claim's start and queue
-// none. Read after the finish has committed, the machine holds the refusal if it was made before:
-// then this fact reads the outbox with the row gone, and the two facts, applied one at a time
-// (intake.ApplyFact), leave one start whichever runs second. A refusal made after the read is one
-// whose report reads the outbox after the finish.
+// once a start row of that claim has finished while the claim's last launch stands refused by its
+// issue's pod (supervise's Machine.RefusedPod), so that the workflow queues the claim's start where
+// none stands (workflow's refusedStartEnded). Two kinds of refusal need it. The refusal's own report
+// (workflow's podRefusedLaunch) reads the outbox in its transaction and queues the claim's start
+// where none stands, and a row whose launch the wake pacing parked, or whose launch's write failed
+// and is retried, has delivered its task and returned when that launch is refused on its timer: the
+// report can read such a row while its finish has not committed, take it for the claim's start and
+// queue none. And a refusal no start row raised — the boot's resume by rule, an operator's resume,
+// the machine's own relaunch — reads whatever start of the claim stands as its start, and that
+// start can then end without reaching the claim, at a fence above Machine.StartedBy: a phase or a
+// step the issue has left, an earlier generation. Read after the finish has committed, the machine
+// holds the refusal if it was made before: then this fact reads the outbox with the row gone, and
+// the two facts, applied one at a time (intake.ApplyFact), leave one start whichever runs second. A
+// refusal made after the read is one whose report reads the outbox after the finish.
 //
-// Only a row that reached the claim is such a row: the claim records it as the newest start run
-// against it (supervise.Claim.LastStartRow, Machine.StartedBy), and a launch it raised is the only
-// one the report could have read it behind. A row the outbox finished at a fence above that record
-// — a phase or a step the issue has left, a stopped task's step, a lingering tree — raised no
-// launch, so its end tells the workflow nothing; asking there would queue a start the same fence
-// finishes, whose end would ask again, at the database's speed.
-//
-// Nor does a start the refusal itself queued ask again while that refusal stands: it is marked
-// with the pod whose refusal queued it (record.SuperviseRequest.RefusedPod), and while the machine
-// reports that same pod a start queued for it again would end the same way. A start marked with a
-// pod that no longer refuses the claim asks again, as an unmarked start does, for the refusal of
-// the pod that stands now, which the fact carries for the start it queues.
+// The start a refusal queued keeps this from feeding itself: it is marked with the pod whose
+// refusal queued it (record.SuperviseRequest.RefusedPod), and its end asks nothing while the machine
+// reports that same pod, since a start queued for that refusal again would end the same way. A
+// start marked with a pod that no longer refuses the claim asks again, as an unmarked start does,
+// for the refusal the machine reports now, whose pod the fact carries onto the start it queues. So
+// an unmarked start — a transition's, a wake's, the boot's, an operator's — adds at most one marked
+// start, whichever fence ends it. A start that reaches the claim while the pod stands waits for the
+// pod rather than ending (supervise.Machine.RefusalStands, the start below), and the workflow
+// queues no start the outbox would end without acting (workflow's queueRefusedStart).
 //
 // It runs on a goroutine of its own, since the read waits out the decision in flight on the
 // claim's machine, which can hold a Sandbox relaunch for minutes, and the lane goes on meanwhile.
@@ -508,9 +509,6 @@ func (r *outbox) startRowEnded(ctx context.Context, row record.OutboxRow) {
 			return
 		}
 		held := machine.Claim()
-		if held.LastStartRow != row.ID {
-			return
-		}
 		fact := intake.RefusedStartEnded{Issue: held.Issue, Role: held.Role, Claim: token, Pod: pod}
 		id := fmt.Sprintf("refused-start-ended:%s:%d", token, row.ID)
 		retryUntilApplied(ctx, r.log, "apply the end of a start row of a claim its pod refused", refusalRetryFirst, refusalRetryMost, func(ctx context.Context) error {

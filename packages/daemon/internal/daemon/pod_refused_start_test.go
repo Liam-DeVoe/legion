@@ -377,15 +377,15 @@ func TestARefusalWhileItsParkedStartRowIsStillFinishingQueuesAStartOnceTheRowEnd
 	r.outboxSettles()
 }
 
-// A start row that ended without reaching the claim — one the outbox finished at a fence, above
-// the claim's record of its start (supervise's Machine.StartedBy) — asks the workflow nothing, and
-// the workflow queues a refused claim no start that the outbox would finish without acting. The
-// tester's launch is refused and its owed entry queued; then its owner stops its task, and the
-// outbox runs that start once: it serves a phase the issue has left and finishes at the phase
-// fence. Nothing follows it: no start, no fact. Were the finish of any start row of a refused
-// claim to read the claim's starts again (intake.RefusedStartEnded), it would queue a start of no
-// phase, which the outbox finishes at the stopped step's fence, whose finish would queue another,
-// at the database's speed, one row, one fact and one log line a turn, telling nobody.
+// A start a refusal queued that ends at a fence while the refusal stands asks the workflow nothing,
+// and the workflow queues a refused claim no start that the outbox would finish without acting. The
+// tester's launch is refused and its owed entry queued, marked with pod-1, whose refusal queued it
+// (record.SuperviseRequest.RefusedPod); then its owner stops its task, and the outbox runs that
+// start once: it serves a phase the issue has left and finishes at the phase fence. Nothing follows
+// it: no start, no fact, since the machine still reports pod-1's refusal. Were the end of such a
+// start to read the claim's starts again (intake.RefusedStartEnded), it would queue a start of no
+// phase, which the outbox finishes at the stopped step's fence, whose end would ask again, at the
+// database's speed, one row, one fact and one log line a turn, telling nobody.
 func TestAStartRowThatEndedAtAFenceQueuesARefusedClaimNoStartOfItsStoppedTask(t *testing.T) {
 	r := newPodRefusalRig(t, engineAnswers, nil)
 	r.refuseOnPod1()
@@ -404,7 +404,7 @@ func TestAStartRowThatEndedAtAFenceQueuesARefusedClaimNoStartOfItsStoppedTask(t 
 			t.Fatalf("after the owed entry finished at the phase fence the outbox holds the starts %+v, want none: the outbox would finish each without acting", left)
 		}
 		if now := r.factsApplied(); now != facts {
-			t.Fatalf("after the owed entry finished at the phase fence %d facts were applied, want none: the row never reached the claim", now-facts)
+			t.Fatalf("after the owed entry finished at the phase fence %d facts were applied, want none: the start was queued for pod-1's refusal, which still stands", now-facts)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

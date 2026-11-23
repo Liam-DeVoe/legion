@@ -2267,9 +2267,9 @@ func (m *Machine) Claim() Claim {
 // pod's update round or its release (podRefused), and "" where no launch was refused since the one
 // tried last (podStillRefuses drops it once another pod stands). It waits for the decision in
 // flight, as Claim does, so a refusal is read either whole or not yet made: the outbox reads it once
-// a start row that reached the claim (Claim.LastStartRow) has finished (internal/daemon's
-// startRowEnded), and a refusal it does not read then is one whose own report reads the outbox
-// after that finish.
+// a start row of the claim has finished (internal/daemon's startRowEnded), and each try of a fact
+// about the refusal reads it before it applies (internal/daemon's applyRefusalFact). A refusal the
+// row's end does not read is one whose own report reads the outbox after that finish.
 func (m *Machine) RefusedPod() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
