@@ -47,9 +47,10 @@ import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 // its first line, so that its model_change line is in its second part; in the fifth a file made
 // here, F4 with a long line before its first assistant message, whose head models.sql cuts at 256
 // Ki; in the sixth, for pull.sql and tasks.sql, the made-up sessions the pull tests describe; and
-// in the seventh a made-up session and three forks of it, which the fork tests describe. Two
+// in the seventh a made-up session and three forks of it, which the fork tests describe. Three
 // digest-times.sql rows each make one more database, and drop it in their own `finally`: F1's
-// session cut inside its digest line, and a made-up root of 256 MiB.
+// session cut inside its digest line, a made-up root of 256 MiB, and a made-up root with digest
+// lines whose timestamps are no times.
 // The rows of count.sql, models.sql and the pull, tasks and sessions queries on the fixture
 // databases must equal those of their F7 captures (psql-rows.test.ts and this header give the
 // capture commands), so a change to one of those queries that changes such a result fails here
@@ -1220,5 +1221,52 @@ describe.skipIf(serverDsn === undefined)(
         await server.close();
       }
     }, 120_000);
+
+    // Catches: the digests ordered by `at::timestamptz` with no guard, so one digest line whose
+    // timestamp is no time failed the whole query (count.sql, tasks.sql and subagents.sql guard
+    // their times with pg_input_is_valid).
+    test("digest-times.sql: a digest line whose timestamp is no time is kept, after the lines whose timestamps are times, by its data; the query does not fail", async () => {
+      const ROOT = "made-up/2026-11-01T10-00-00-000Z_0a0b0c0d-0000-4000-8000-000000000002.jsonl";
+      const digest = (data: string, at: string) =>
+        `{"type":"custom","customType":"system-prompt-digest","data":"${data}","id":"i-${data}","parentId":null,"timestamp":"${at}"}\n`;
+      const lines = [
+        digest("b-bad", "not a time"),
+        digest("d2", "2026-11-01T10:05:00.000Z"),
+        digest("a-bad", "later"),
+        digest("d1", "2026-11-01T10:00:00.000Z"),
+      ];
+      const root = pathHash(ROOT);
+      const name = `skill_cuts_count_${stamp}_digest_bad_time`;
+      const server = new SQL(serverDsn ?? "");
+      try {
+        await server.unsafe(`CREATE DATABASE ${name}`);
+        await loadFixtures(dsnOf(name), [], { parts: 2 });
+        const db = new SQL(dsnOf(name));
+        try {
+          await db`
+            INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len)
+            VALUES (${ROOT}, ${lines.join("")}, ${0}, ${0})
+          `;
+        } finally {
+          await db.close();
+        }
+        expect(run(name, digestTimesSql([root]))).toEqual([
+          {
+            hash: root,
+            root,
+            rootHeld: true,
+            digests: [
+              { at: "2026-11-01T10:00:00.000Z", digest: "d1" },
+              { at: "2026-11-01T10:05:00.000Z", digest: "d2" },
+              { at: "later", digest: "a-bad" },
+              { at: "not a time", digest: "b-bad" },
+            ],
+          },
+        ]);
+      } finally {
+        await server.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+        await server.close();
+      }
+    }, 60_000);
   }
 );

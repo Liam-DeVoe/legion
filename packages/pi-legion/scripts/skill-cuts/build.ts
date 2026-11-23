@@ -7203,7 +7203,11 @@ async function reprofileCases(
  *  from the same. The texts are digests of what the run read (`digestOf`); the paths are only
  *  for a reader of the summary. `new` is every file of `--new`, or null for a run given none; it
  *  is absent from a summary written before build-cases took `--new`, so a build does not go on
- *  from that one. */
+ *  from that one. A symbolic link in `--new` counts as the file it reaches, by that file's bytes,
+ *  since the build reads `--new` through its links (`pathFormIn`'s `statSync` and `readFileSync`
+ *  follow them; the link's own text is read by nothing here); a link that reaches nothing counts
+ *  as a missing file, and a directory a link reaches is listed by its files (`readdirSync` goes
+ *  through it). */
 const CasesInputs = z.strictObject({
   cut: z.string(),
   skill: z.string(),
@@ -7483,7 +7487,14 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         : digestOf(
             newDir,
             readdirSync(newDir, { recursive: true, withFileTypes: true })
-              .filter((entry) => entry.isFile())
+              .filter(
+                (entry) =>
+                  entry.isFile() ||
+                  (entry.isSymbolicLink() &&
+                    !statSync(path.join(entry.parentPath, entry.name), {
+                      throwIfNoEntry: false,
+                    })?.isDirectory())
+              )
               .map((entry) => path.relative(newDir, path.join(entry.parentPath, entry.name)))
               .sort()
           ),
@@ -9710,6 +9721,8 @@ async function buildControlTasks(
       return no("pull-failed", messageFor(error));
     }
     record.pulls = pulled.calls;
+    // A pull that returns no row is dropped as build-cases and offeredMessages drop it.
+    if (pulled.bytes === 0) return no("pull-failed", "the pull returned no row");
     let t: Transcript;
     try {
       t = readTranscript(spool);

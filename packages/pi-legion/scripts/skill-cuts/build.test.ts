@@ -1,7 +1,15 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -4324,6 +4332,30 @@ describe("build-cases goes on from where a run stopped", () => {
   }, 60_000);
 });
 
+// Catches: the --new input digest taking regular files alone, so a file --new holds through a
+// symbolic link was in no digest: a run went on from an earlier one though that file had changed.
+// The build reads --new through its links (pathFormIn), so the digest takes the file a link
+// reaches.
+test("a build-cases run whose --new reaches a changed file through a symbolic link does not go on from the earlier run: --new's digest holds the file the link reaches", async () => {
+  const root = path.join(scratch, "new-link");
+  const linked = path.join(root, "alpha");
+  const target = path.join(root, "elsewhere", "extra.md");
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, "One extra note.\n");
+  cpSync(newDir, linked, { recursive: true });
+  mkdirSync(path.join(linked, "references"), { recursive: true });
+  symlinkSync("../../elsewhere/extra.md", path.join(linked, "references", "extra.md"));
+  const out = path.join(root, "cases.jsonl");
+  const args = buildArgs(sessionsFile("new-link.jsonl", ["no-step"]), out, "1").map((arg) =>
+    arg === newDir ? linked : arg
+  );
+  expect(await main(args, io([]))).toBe(EXIT.ok);
+  writeFileSync(target, "Two extra notes.\n");
+  const lines: string[] = [];
+  expect(await main(args, io(lines))).toBe(EXIT.refused);
+  expect(lines.join("\n")).toContain(`--new was ${linked} (sha256 `);
+}, 60_000);
+
 test("--concurrency 3 keeps the same cases, in the same order, as one session at a time", async () => {
   const names = [
     "good",
@@ -4505,6 +4537,28 @@ test("build-tasks --first-read takes the first requests of sessions whose first 
   expect(summary.sessionQueries).toBe(1);
   expect(lines.join("\n")).toContain("the sessions gave 3 control tasks, fewer than --max 10");
   expect(existsSync(`${out}.found.jsonl`)).toBe(false);
+}, 60_000);
+
+// Catches: --first-read reading the empty spool of a pull that returned no row (the store holds no
+// file at the path the sessions file names), so the session was dropped as unparseable or as
+// having no first request, where build-cases and offeredMessages drop it as pull-failed.
+test("build-tasks --first-read drops a session whose pull returns no row as pull-failed, as build-cases does", async () => {
+  const absent = "/sessions/c-absent.jsonl";
+  const sessions = path.join(setupDir, "control-absent.jsonl");
+  writeFileSync(
+    sessions,
+    `${JSON.stringify({ store: "store_a", hash: fileHash(absent), path: absent })}\n`
+  );
+  const out = path.join(scratch, "control-absent", "tasks.jsonl");
+  await main(controlArgs(sessions, out, "1", "--max", "1"), io([]));
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect(summary.sessions).toEqual([
+    expect.objectContaining({
+      hash: fileHash(absent),
+      outcome: "pull-failed",
+      detail: "the pull returned no row",
+    }),
+  ]);
 }, 60_000);
 
 test("build-tasks --first-read stops once --max requests are kept, and killed after its first session and run again gives the tasks and summary of one uninterrupted run", async () => {

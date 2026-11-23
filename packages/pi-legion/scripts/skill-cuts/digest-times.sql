@@ -36,8 +36,11 @@ SET LOCAL statement_timeout = '15min';
 --   {"hash": the session's path hash,
 --    "root": its root's path hash,
 --    "rootHeld": whether the store holds the root's file,
---    "digests": each of the root's digest lines, earliest first, as {"at": its timestamp,
---      "digest": its data}}
+--    "digests": each of the root's digest lines, earliest first (ties by data), as {"at": its
+--      timestamp, "digest": its data}; a line whose timestamp Postgres does not read as a time
+--      (`pg_input_is_valid`) is kept, after every line it does read, by its data and then its
+--      timestamp's text, so one such line fails no query (build.ts's `parentLoad` compares each
+--      timestamp with `Date.parse`, and takes a line it cannot read for no build)}
 WITH wanted AS MATERIALIZED (
   SELECT DISTINCT unnest({{hashes}}) AS hash
 ),
@@ -92,7 +95,10 @@ SELECT json_build_object(
   'digests', coalesce((
     SELECT json_agg(
       json_build_object('at', d.at, 'digest', d.digest)
-      ORDER BY d.at::timestamptz, d.digest COLLATE "C"
+      ORDER BY
+        CASE WHEN pg_input_is_valid(d.at, 'timestamptz') THEN d.at::timestamptz END NULLS LAST,
+        d.digest COLLATE "C",
+        d.at COLLATE "C"
     )
     FROM digests d
     WHERE d.root = s.root
