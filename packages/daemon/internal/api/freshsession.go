@@ -38,9 +38,9 @@ type FreshSessionResponse struct {
 	//
 	// It is absent wherever the claim came back started and holding whatever it owes, and
 	// wherever no phase restart was due — a claim that still owes a task, and an architect at no
-	// step of its own, whose work no phase start hands it. The answer carries it because the
-	// state records neither: a reader of the claim sees the state it is in, and nothing of what
-	// this request asked for and did not get.
+	// place of its own as its issue's owner (a step or a retro it does itself), whose work no phase
+	// restart hands it. The answer carries it because the state records neither: a reader of the
+	// claim sees the state it is in, and nothing of what this request asked for and did not get.
 	PhaseNotRestarted string `json:"phaseNotRestarted,omitempty"`
 }
 
@@ -451,11 +451,12 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// restart the start of a stopped claim runs (restartWorkedPhase): the resume above starts
 	// the agent and nothing more, so without it a tester waiting on CI, or a worker an idle
 	// release suspended, comes back in a new session with nothing to do. A claim that still
-	// owes a task keeps it — the resume sends that one. An architect is started through its
-	// issue's phase only as the owner at a step of its own, which that restart tells it again
-	// with one more owner-step notice. The daemon's own delivery of a relaunch's record is no
-	// task it owes (supervise.HoldsTask), so a claim holding that alone is read as owing nothing,
-	// and the phase's task takes its place (supervise's queue).
+	// owes a task keeps it — the resume sends that one. An architect's phase is restarted only
+	// where it is its issue's owner at a place of its own (ownersOwnPlace: a step it does, its
+	// acceptance among them, or its retro), and that restart starts no run: it queues one more
+	// owner-step that tells the architect its step again. The daemon's own delivery of a relaunch's
+	// record is no task it owes (supervise.HoldsTask), so a claim holding that alone is read as
+	// owing nothing, and the phase's task takes its place (supervise's queue).
 	status = http.StatusOK
 	if !supervise.HoldsTask(m.Claim().Pending) {
 		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {

@@ -255,7 +255,7 @@ func freshSessionCases() []freshSessionCase {
 // worker that comes back owing no task is started through its issue's phase, which is what
 // hands it that phase's task: without it a tester waiting on CI, or a worker an idle release
 // suspended, would come back in a new session with nothing to do. A claim that still owes a
-// task keeps it, and a root architect at no step of its own, as here, is started through no phase.
+// task keeps it, and a root architect at no place of its own, as here, has no phase restarted.
 func TestAFreshSessionStartsEveryClaimThatIsNotInATurn(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		for _, tc := range freshSessionCases() {
