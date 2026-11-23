@@ -732,6 +732,44 @@ func TestABootStopsATaskWhoseRoleTheDeploymentLost(t *testing.T) {
 	}
 }
 
+// A keyed agent runs in the slot of its name, the role of its first step (record.NameAgents), so
+// in `implementer checker:a tester:a` key a's agent is named checker and runs the tester's step in
+// the checker's slot. A daemon that restarts with settings that no longer define the checker,
+// while the task stands at that tester step, stops the task at its boot as it stops a step of the
+// checker itself: the reason names the step, the agent and its slot's role, and the owner is told
+// once, in a task-stopped notice that names the checker. The control is the same task under a
+// deployment that defines the checker, which the boot leaves running.
+func TestABootStopsATaskWhoseAgentIsNamedForARoleTheDeploymentLost(t *testing.T) {
+	keyedAtTester := func(t *testing.T, pool *pgxpool.Pool) record.Issue {
+		t.Helper()
+		root := stepRoot(t, pool, phase.Testing)
+		seedStepsAt(t, pool, root.Key, root.Generation, 3, map[string]string{"checker": "testing"}, "implementer", "checker:a", "tester:a")
+		seedTreeLifecycle(t, pool, root.Key)
+		return root
+	}
+	pool := migratedPool(t)
+	engine := lostChecker()
+	root := keyedAtTester(t, pool)
+
+	applyRefusingNothing(t, pool, engine, intake.DaemonBooted{Boot: 1})
+
+	const why = "step 3 is the work of the agent checker, which runs in the slot of the role checker, which the deployment no longer defines"
+	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.StoppedReason != why {
+		t.Fatalf("task a after the boot = %s stopped with %q, want stopped with %q", task.State, task.StoppedReason, why)
+	}
+	stopped := noticesOf(t, pool, root.Key, "task-stopped")
+	if len(stopped) != 1 || stopped[0].Role != "checker" || stopped[0].Reason != "task a of LEGION-208 was stopped: "+why {
+		t.Fatalf("the task-stopped notices = %+v, want exactly one, naming the checker, with the reason", stopped)
+	}
+
+	kept := migratedPool(t)
+	defined := keyedAtTester(t, kept)
+	applyRefusingNothing(t, kept, deploymentEngine(), intake.DaemonBooted{Boot: 1})
+	if task := taskOf(t, kept, deploymentEngine(), defined.Key); task.State != record.TaskRunning {
+		t.Fatalf("task a under a deployment that defines the checker = %s (%q) after the boot, want running", task.State, task.StoppedReason)
+	}
+}
+
 // A person's todo on a root held for its stopped task starts nothing while a step of the task names
 // a role the deployment no longer defines: the task stays stopped, its reason now the lost step's,
 // the issue stays held as it was, the status the record keeps is written back over the todo with

@@ -124,3 +124,52 @@ func TestAMergeForwardTellsNoRoleTheDeploymentLost(t *testing.T) {
 		})
 	}
 }
+
+// A merge forward tells nothing to a claim that runs in the slot of a role the deployment no longer
+// defines, whatever its step's role: in `implementer checker:a tester:a` key a's agent is named
+// checker (record.NameAgents) and runs the tester's step in the checker's slot, so with the checker
+// dropped from the settings, the issue at that tester step has the implementer asked to merge the
+// base forward and the tester's claim, key a's, sent no hold, and the landing sends it no landed
+// message: its task is stopped, and a message held for it would wake a claim no pod of the
+// deployment has a slot for. The control is the same issue under a deployment that defines the
+// checker, whose tester is told both.
+func TestAMergeForwardTellsNoClaimInTheSlotOfARoleTheDeploymentLost(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	for _, tc := range []struct {
+		name          string
+		lost          bool
+		asked, landed []string
+	}{
+		{name: "the checker lost", lost: true, asked: []string{"implementer ask"}, landed: []string{}},
+		{name: "control: the checker defined", asked: []string{"implementer ask", "tester hold"}, landed: []string{"tester landed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := func(after time.Duration) *Engine {
+				e := readsAfter(after)
+				if tc.lost {
+					e.cfg.Deployment = plan.Deployment{Roles: plan.BuiltinRoles()}
+				}
+				return e
+			}
+			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+			seedStepsPlan(t, pool, "LEGION-208", 1, "implementer", "checker:a", "tester:a")
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 3}, record.TaskRunning)
+			})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "legion-legion-legion-208-checker", StepTask: "a",
+				StepPlace: 3, Entry: 1})
+
+			applyRefusingNothing(t, pool, engine(0), conflictingRead(requiresCI))
+			applyRefusingNothing(t, pool, engine(conflictConfirmWait), conflictingRead(requiresCI))
+			if got := toldWho(mergeForwardMessages(t, pool)); !reflect.DeepEqual(got, tc.asked) {
+				t.Fatalf("the merge forward queued %v, want %v", got, tc.asked)
+			}
+			asked := len(mergeForwardMessages(t, pool))
+			applyRefusingNothing(t, pool, engine(3*time.Minute), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
+				Branch: "legion/LEGION-208", Base: "main", HeadSHA: forwardHead, Before: conflictHead, Sender: "legion-implementer[bot]"})
+			if got := toldWho(mergeForwardMessages(t, pool)[asked:]); !reflect.DeepEqual(got, tc.landed) {
+				t.Fatalf("the landing queued %v, want %v", got, tc.landed)
+			}
+		})
+	}
+}

@@ -169,3 +169,37 @@ func TestARefusedLaunchOfTheRolesWorkerIsSentTheOwedEntryWhateverClaimItsRowName
 	}
 	wantOwedEntryStart(t, got[0])
 }
+
+// A refused launch of a claim of a role the deployment no longer defines, or of a claim that runs
+// in the slot of such a role whatever its step's role (a keyed agent named for the checker, on the
+// tester's step), queues no start: the boot stopped its task, no pod the deployment builds has its
+// slot, and the start would wait for one for ever. The issue and the controller are still told.
+// The engine's deployment is Legion's own roles, which define no checker.
+func TestARefusedLaunchInTheSlotOfARoleTheDeploymentLostQueuesNoStart(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		role  claim.Role
+		token claim.Token
+	}{
+		{name: "the checker's own claim", role: "checker", token: "legion-legion-legion-209-checker"},
+		{name: "a keyed agent named checker on the tester's step", role: claim.RoleTester, token: "legion-legion-legion-209-checker"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedTestingIssue(t, pool, "LEGION-209")
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: tc.token, Entry: 3, EntryTask: refusedTesterTask,
+				EntryRaisedAt: time.Now().UTC().Add(-time.Hour)})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "pod-refused:1", intake.PodRefusedLaunch{Issue: "LEGION-209", Role: tc.role,
+				Claim: tc.token, Pod: "pod-1", Detail: "the pod pod-1 of LEGION-209 was built without checker"}, engine, admissionStub{}); err != nil {
+				t.Fatalf("apply the refusal's report: %v", err)
+			}
+			if got := queuedStarts(t, pool); len(got) != 0 {
+				t.Fatalf("the report queued %+v, want no start", got)
+			}
+			if kinds := controllerNoticeKinds(t, pool); len(kinds) != 1 || kinds[0] != string(record.PodWaitHeldNotice) {
+				t.Fatalf("the controller was told %v, want one %s notice", kinds, record.PodWaitHeldNotice)
+			}
+		})
+	}
+}
