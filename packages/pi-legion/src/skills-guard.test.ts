@@ -950,18 +950,21 @@ test("the skills say what Dispatch and the tool do with no pull request and at t
       /Read it with `--at <head>`, which compares every check with that one commit\./,
     ]),
     ...lacks("legion-worker/references/ci-checks.md", [
-      /On an issue with no pull request each such check reads `no_head`[^.]*\. No role waits for it or fails a round for it\./,
+      /On an issue with no pull request each such check reads `no_head`: no run can prove it, so its words are wrong for that task\./,
+      /hold their verdict with a `WAITING` line until the check is rewritten/,
+      /No step passes while such a check stands, and the retro holds its completion for it/,
     ]),
     ...lacks("legion-retro/SKILL.md", [
-      /`dispatch results --issue <issue> --at <the head the last step passed>`/,
-      /Send a name that no run answers \(`absent`\), or `no_head`, to the architect as a finding/,
+      /`dispatch results --issue <issue> --at <head>`/,
+      /A `no_head` check can never pass: it is a defect, held as \*When retro stops\* says\./,
     ]),
     ...lacks("legion-worker/SKILL.md", [
       /Then read each handoff your task's `Step <j> \(<role>\) reported:` lines name/,
       /Commit nothing in the copy\./,
     ]),
     ...lacks("legion-architect/references/plan.md", [
-      /A `ci_check` that reads `absent` or `no_head` moves nothing back either/,
+      /A `ci_check` that reads `absent` moves nothing back either/,
+      /One that reads `no_head`, on an issue with no pull request, can never pass: it holds the retro until you rewrite the check\./,
     ]),
     ...lacks("legion-architect/references/acceptance.md", [
       /or its verdict with no pull request or at `reviewer:owner`/,
