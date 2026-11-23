@@ -86,6 +86,9 @@ func TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarrie
 
 	r.get(client, "https://"+boundHost+"/v1/second", "X-Second", "Token "+secondPlaceholder)
 	seen := r.requests()
+	if len(seen) != 1 {
+		t.Fatalf("the service saw %d requests; want the second grant's one", len(seen))
+	}
 	if got, want := seen[0].Header.Get("X-Second"), "Token "+secondValue; got != want {
 		t.Fatalf("the service saw X-Second %q; want %q: the request carried the second grant's placeholder on the first grant's connection", got, want)
 	}
@@ -96,6 +99,9 @@ func TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarrie
 
 	r.get(client, "https://"+boundHost+"/v1/own", "Authorization", "Bearer "+workerPlaceholder)
 	seen = r.requests()
+	if len(seen) != 2 {
+		t.Fatalf("the service saw %d requests; want two", len(seen))
+	}
 	if got := seen[1].Header.Get("Authorization"); got != "Bearer "+workerValue {
 		t.Errorf("the service saw Authorization %q; want the connection's own grant's value", got)
 	}
@@ -349,5 +355,13 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 	seen := r.requests()
 	if len(seen) != 2 || seen[0].Header.Get("Authorization") != "Bearer "+workerValue || seen[1].Header.Get("X-Second") != "Token "+secondValue {
 		t.Fatalf("the controls reached the service as %v; want the own grant's and the second grant's values swapped in", seen)
+	}
+	// The prefix with no whole placeholder after it is no placeholder, in a header or inside a
+	// Basic credential, so it travels as the command wrote it.
+	prefixOnly := requests.PlaceholderPrefix + "abc and the docs"
+	r.get(client, "https://"+boundHost+"/v1/note", "Authorization", "Bearer "+workerPlaceholder, "X-Note", prefixOnly, "X-Second", gitBasic(prefixOnly))
+	seen = r.requests()
+	if len(seen) != 3 || seen[2].Header.Get("X-Note") != prefixOnly || seen[2].Header.Get("X-Second") != gitBasic(prefixOnly) {
+		t.Fatalf("the request carrying the prefix alone reached the service as %v; want it sent with its headers as written", seen)
 	}
 }

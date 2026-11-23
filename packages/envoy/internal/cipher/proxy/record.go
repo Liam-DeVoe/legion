@@ -55,8 +55,10 @@ const (
 	// serveBound: an azure access slot whose token this pod neither holds nor could exchange for
 	// (azureAccess).
 	codeAccessToken = "ACCESS_TOKEN_UNAVAILABLE"
-	// serveBound: a request that still carries a placeholder after the swap - one no live grant
-	// of the session swaps here, or one outside the headers its entry names (leftoverPlaceholder).
+	// serveBound: a request that still carries a whole placeholder after the swap - one no live
+	// grant of the session swaps here, or one outside the headers its entry names
+	// (leftoverPlaceholder). It scans the default prefix, requests.PlaceholderPrefix, alone: a kind
+	// that sets a placeholder prefix of its own adds that prefix to placeholderIn's scan.
 	codePlaceholderLeft = "PLACEHOLDER_NOT_SWAPPED"
 	// serveBound: a request proxyrules.Decide refuses, in its own words.
 	codeNotAllowed = "REQUEST_NOT_ALLOWED"

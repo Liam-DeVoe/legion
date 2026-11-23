@@ -1175,21 +1175,21 @@ func accountSlot(host, path string, slots map[string]string) (string, bool) {
 const placeholderLeft = "this request still carries a placeholder after the swap - one no live grant of this session swaps on this host, or one outside the headers its entry names - so it is not sent: send a live grant's placeholder, in the header its entry names"
 
 // leftoverPlaceholder is the first placeholder a request about to go upstream still carries, and
-// false when it carries none: in a header, as proxyrules.Carries reads one, which is the reading
-// the swap makes and reaches inside a Basic credential, and then in the path, its raw form, the
-// query and the query unescaped. A placeholder is read as the broker mints it, the prefix and up
-// to PlaceholderLength letters and digits after it. Headers are read in headersOf's order only
-// once one has been found to carry one, so which placeholder a line names does not depend on the
-// run, and a request that carries none - every request the swap served - costs no sort.
+// false when it carries none: in a header, in the value itself or inside the Basic credential it
+// is, as the swap reaches one, and then in the path, its raw form, the query and the query
+// unescaped. A placeholder is one as the broker mints it (placeholderIn). Headers are read in
+// headersOf's order only once one has been found to carry one, so which placeholder a line names
+// does not depend on the run, and a request that carries none - every request the swap served -
+// costs no sort.
 func leftoverPlaceholder(header http.Header, path, rawPath, rawQuery string) (string, bool) {
 	for _, values := range header {
 		for _, v := range values {
-			if !proxyrules.Carries(requests.PlaceholderPrefix, v) {
+			if headerPlaceholder(v) == "" {
 				continue
 			}
 			for _, h := range headersOf(header) {
-				if proxyrules.Carries(requests.PlaceholderPrefix, h[1]) {
-					return placeholderIn(h[1]), true
+				if placeholder := headerPlaceholder(h[1]); placeholder != "" {
+					return placeholder, true
 				}
 			}
 		}
@@ -1199,33 +1199,53 @@ func leftoverPlaceholder(header http.Header, path, rawPath, rawQuery string) (st
 		query = ""
 	}
 	for _, text := range [...]string{path, rawPath, rawQuery, query} {
-		if i := strings.Index(text, requests.PlaceholderPrefix); i >= 0 {
-			return placeholderAt(text[i:]), true
+		if placeholder := placeholderIn(text); placeholder != "" {
+			return placeholder, true
 		}
 	}
 	return "", false
 }
 
-// placeholderIn is the placeholder a header value carries, read in the value itself or in the
-// Basic credential it is, for the refusal line to name its grant by. A value whose placeholder
-// only proxyrules.Carries' own reading of a Basic credential finds answers the prefix alone, which
-// names no grant.
-func placeholderIn(v string) string {
-	if i := strings.Index(v, requests.PlaceholderPrefix); i >= 0 {
-		return placeholderAt(v[i:])
+// headerPlaceholder is the first placeholder a header value carries, in the value itself or in
+// the Basic credential it is, as git sends a token, and "" when it carries none.
+func headerPlaceholder(v string) string {
+	if placeholder := placeholderIn(v); placeholder != "" {
+		return placeholder
 	}
 	if scheme, payload, ok := strings.Cut(v, " "); ok && strings.EqualFold(scheme, "basic") {
 		if decoded, err := base64.StdEncoding.DecodeString(strings.Trim(payload, " \t")); err == nil {
-			if i := strings.Index(string(decoded), requests.PlaceholderPrefix); i >= 0 {
-				return placeholderAt(string(decoded)[i:])
-			}
+			return placeholderIn(string(decoded))
 		}
 	}
-	return requests.PlaceholderPrefix
+	return ""
 }
 
-// placeholderAt is the placeholder text opens with: the prefix and the letters and digits after
-// it, at most PlaceholderLength of them.
+// placeholderIn is the first placeholder text holds, and "" when it holds none. A placeholder is
+// one as the broker mints it: requests.PlaceholderPrefix and then PlaceholderLength letters and
+// digits of PlaceholderAlphabet. The prefix with fewer of them after it is no placeholder and
+// opens nothing - a code search for the prefix itself is one - so it is not read as one. A whole
+// placeholder is, whether or not a grant holds it: the broker deletes an ended grant's rows, so a
+// placeholder it no longer knows and one it never minted cannot be told apart.
+//
+// It scans the default prefix alone, the one prefix every placeholder has today. A kind that sets
+// a prefix of its own (placeholder_prefix) adds that prefix to what this scans, or a placeholder of
+// that kind left after the swap would go upstream.
+func placeholderIn(text string) string {
+	for rest := text; ; {
+		i := strings.Index(rest, requests.PlaceholderPrefix)
+		if i < 0 {
+			return ""
+		}
+		rest = rest[i:]
+		if placeholder := placeholderAt(rest); len(placeholder) == len(requests.PlaceholderPrefix)+requests.PlaceholderLength {
+			return placeholder
+		}
+		rest = rest[len(requests.PlaceholderPrefix):]
+	}
+}
+
+// placeholderAt is what text opens with of a placeholder: the prefix and the letters and digits of
+// PlaceholderAlphabet after it, at most PlaceholderLength of them.
 func placeholderAt(text string) string {
 	end := len(requests.PlaceholderPrefix)
 	for end < len(text) && end-len(requests.PlaceholderPrefix) < requests.PlaceholderLength && strings.IndexByte(requests.PlaceholderAlphabet, text[end]) >= 0 {
@@ -1236,12 +1256,8 @@ func placeholderAt(text string) string {
 
 // placeholderGrant is the grant the broker minted placeholder for, live or ended, which the
 // refusal of a request that still carried it after the swap names, and "" where no row holds it.
-// Only a whole placeholder is looked up, since nothing else is a row. A read that failed is logged
-// and names nothing: the request is refused either way.
+// A read that failed is logged and names nothing: the request is refused either way.
 func (s *Server) placeholderGrant(ctx context.Context, placeholder string) string {
-	if len(placeholder) != len(requests.PlaceholderPrefix)+requests.PlaceholderLength {
-		return ""
-	}
 	grantID, err := s.grants.ProxyPlaceholderGrant(ctx, placeholder)
 	if err != nil {
 		s.log.Error("proxy: the grant of a placeholder left after the swap could not be read", "error", err)
