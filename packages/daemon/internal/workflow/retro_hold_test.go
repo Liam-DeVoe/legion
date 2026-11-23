@@ -265,8 +265,8 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 
 // A parent whose plan holds the owner's sign-off before another step passes the sign-off with no
 // issue beneath it in the workflow, and a child enters the workflow beneath it after that. No
-// sign-off is left to refuse the parent while the child runs, and its head proves its children's
-// merged work, so the pass of its last step, the reviewer's approval, holds it before its retro:
+// sign-off is left to refuse the parent while the child runs, and a parent is accepted after the
+// work beneath it, so the pass of its last step, the reviewer's approval, holds it before its retro:
 // issues.phase held, from retro for its children, its task at the retro's place, no retro
 // started, and its owner told once in a retro-held notice naming the child. The child's leave
 // starts the retro, told the review the reviewer passed. The known pass is a plan whose sign-off

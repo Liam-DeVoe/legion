@@ -15,7 +15,7 @@ import (
 
 // beneathRetro is the issues beneath issue still in the workflow (openBeneath) where issue moves
 // into the retro (to) and its task's last step is not the owner's sign-off, and nothing for every
-// other move. A parent's head proves its children's merged work. The owner's sign-off is refused
+// other move. A parent is accepted after the work beneath it. The owner's sign-off is refused
 // while one of them runs (SIGNOFF_CHILD_IN_WORKFLOW), so a task whose last step is the sign-off
 // passes into its retro with none of them in the workflow. A task whose last step is another has
 // no such refusal before its retro: a task with no step acceptance:owner, and a task whose
