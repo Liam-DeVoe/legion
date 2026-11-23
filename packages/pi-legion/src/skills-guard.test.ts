@@ -742,10 +742,12 @@ test("an issue runs the default steps unless its architect registers a plan befo
 
 // A decision of the owner for an agent of a task goes into the task's text, in a later version of
 // the plan, which every later start of the task holds; the agent at work reads no new start, so
-// the owner also messages the agent of the step register_plan's answer names. An issue that
-// started before Legion took plans has no task text, so there the decision goes in a comment and a
-// message. The rule holds over any place a general skill offers, and the issue and its plan are
-// the one record. A later version that changes only a running task's text is taken.
+// the owner also messages the agent of the step register_plan's answer names. On the default steps
+// that version's one block is the task `default`, with no steps, which Legion takes while the task
+// runs. An issue that started before Legion took plans has no task text, so there the decision
+// goes in a comment and a message. The rule holds over any place a general skill offers, and the
+// issue and its plan are the one record. A later version that changes only a running task's text
+// is taken.
 test("a decision for an agent goes into its task's text, and a message reaches the agent that runs", () => {
   expect(
     lacks("legion-architect/references/plan-changes.md", [
@@ -754,6 +756,10 @@ test("a decision for an agent goes into its task's text, and a message reaches t
       /Every later start of the task holds that text[^.;]*new session/,
       /agent at work now reads no new start/,
       /answer of `register_plan` names the step[^.;]*`running`[^.;]*send that step's agent[^.;]*by message/,
+      /On the project's default steps, the task is `default`/,
+      /one task block is `:::plan_task\{#default\}`[^.;]*no `steps`[^.;]*text holds the decision/,
+      /Legion takes that version while the task runs[^.;]*stops nothing/,
+      /refuses a version that removes the task `default`/,
       /started its work before Legion took plans has no task text/,
       /such an issue[^.;]*comment on the issue[^.;]*by message/,
       /hold also where a general skill offers another place/,
@@ -971,4 +977,13 @@ test("no skill holds a code precedence sentence; the role prompts and agent defi
     .map((file) => path.relative(REPO_ROOT, file))
     .sort();
   expect(holding).toEqual([]);
+});
+
+// A decision in a document beside the issue, the task and the handoffs reaches no worker, because
+// no start task names that document. This shows the text ships, never that a role follows it.
+test("a worker's first step reads the issue, its task and the handoffs, and no other document for decisions", () => {
+  countedOncePerFile(
+    "Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`). Your architect's decisions for you come in your task and your messages: read no other document for them.",
+    ["skills/legion-worker/SKILL.md"]
+  );
 });
