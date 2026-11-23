@@ -17,10 +17,11 @@ import {
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
-import { panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
+import { rows as listRows, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import {
   answerAskSnoozes,
   answerInboxDismisses,
@@ -1030,18 +1031,7 @@ test("an agent title longer than the chips line draws the agent chip no wider th
   const title = `Planner of ${"the release train ".repeat(12).trim()}`;
   const fromPlanner = issueAsk({ id: "ask-planner", question: "Planner question" });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([fromPlanner]);
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
-    ask: fromPlanner,
-    answers: [],
-    edits: [],
-    claimant: null,
-    followers: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-    replies: [],
-  });
+  const getAsk = mockAskReads([fromPlanner]);
   const listAgents = plannerAgents(title);
   const css = document.createElement("style");
   css.textContent = CHIP_WIDTH_CSS;
@@ -3284,7 +3274,8 @@ test("a snooze still saving says Snoozing…, not Un-snoozing…, in the band it
   const { unmount } = renderInbox();
   try {
     await screen.findByText("Which format?");
-    await pickIn(user, () => screen.getByLabelText("Snooze CORE-1: Which format?"), "Tomorrow");
+    const snooze = screen.getByLabelText("Snooze CORE-1: Which format?");
+    await pickIn(user, () => snooze, "Tomorrow");
 
     // The optimistic update has already given the row the moment it is going to, and the row
     // stays in the band the reader saw it in until the save lands, but the label must say what
@@ -3327,7 +3318,8 @@ test("a refused snooze rolls the row back and says why, where the reader can sti
   const { unmount } = renderInbox("/?group=waiting-on");
   try {
     await screen.findByText("Which format?");
-    await pickIn(user, () => screen.getByLabelText("Snooze CORE-1: Which format?"), "Tomorrow");
+    const snooze = screen.getByLabelText("Snooze CORE-1: Which format?");
+    await pickIn(user, () => snooze, "Tomorrow");
 
     // The row comes back to the band it was in, and the reason comes with it - the control is
     // kept mounted through the fold, so the refusal is not thrown away with the row.
@@ -3357,11 +3349,8 @@ test("a snooze the reader stopped says what Retry does, not a message's words", 
   try {
     await screen.findByText("Which format?");
     jest.useFakeTimers();
-    await pickIn(
-      userOnFakeClock(),
-      () => screen.getByLabelText("Snooze CORE-1: Which format?"),
-      "Tomorrow"
-    );
+    const snooze = screen.getByLabelText("Snooze CORE-1: Which format?");
+    await pickIn(userOnFakeClock(), () => snooze, "Tomorrow");
     await stopTheLateWrite(queryClient);
 
     // The alert's paragraph, without its Retry button's name.
@@ -3403,7 +3392,8 @@ test("a snooze's Retry is of the ask its press was of, under its key, from the c
   );
   const view = render(drawn("ask-a"));
   try {
-    await pickIn(user, () => screen.getByLabelText("Snooze ask-a"), "Tomorrow");
+    const snooze = screen.getByLabelText("Snooze ask-a");
+    await pickIn(user, () => snooze, "Tomorrow");
     await stopTheLateWrite(queryClient);
     const stoppedKey = snoozeAsk.mock.calls[0]?.[2]?.key;
     const stopped = snoozeAsk.mock.calls.length;
@@ -3451,7 +3441,8 @@ test("a snooze out when the control is drawn for another ask holds the row of th
   );
   const view = render(drawn("ask-a"));
   try {
-    await pickIn(user, () => screen.getByLabelText("Snooze ask-a"), "Tomorrow");
+    const snooze = screen.getByLabelText("Snooze ask-a");
+    await pickIn(user, () => snooze, "Tomorrow");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
     expect(held).toEqual([[], ["ask-a"]]);
 
@@ -3682,7 +3673,8 @@ test("the bar's Snooze keeps its rows in their band until its write lands", asyn
     await user.click(within(rowOf("ask-a")).getByRole("checkbox", { name: /^Select / }));
     await user.click(within(rowOf("ask-b")).getByRole("checkbox", { name: /^Select / }));
     await screen.findByText("2 selected");
-    await pickIn(user, () => screen.getByLabelText("Snooze selected asks"), "Tomorrow");
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(user, () => picker, "Tomorrow");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
 
     // Out, both rows are where the reader saw them.
@@ -3733,7 +3725,8 @@ test("a bulk Snooze deep in a long list hands the focus to the row that moves up
     await user.click(within(rowOf(last)).getByRole("checkbox", { name: /^Select / }));
     await screen.findByText("2 selected");
     const landing = within(rowOf(next)).getByRole("checkbox", { name: /^Select / });
-    await pickIn(user, () => screen.getByLabelText("Snooze selected asks"), "Tomorrow");
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(user, () => picker, "Tomorrow");
     await waitFor(() => expect(rowIds()).not.toContain(last));
     expect(screen.queryByRole("toolbar", { name: "Selected rows" })).not.toBeInTheDocument();
     await waitFor(() => expect(landing).toHaveFocus());
@@ -4146,7 +4139,8 @@ test("a bulk Snooze that lands with the pointer on a row below the marked rows l
     await user.click(markOf(marked));
     await user.click(markOf(last));
     await screen.findByText("2 selected");
-    await pickIn(user, () => screen.getByLabelText("Snooze selected asks"), "Tomorrow");
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(user, () => picker, "Tomorrow");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
     const row = document.querySelector<HTMLElement>(`[data-inbox-row="${resting}"]`);
     if (row === null) throw new Error(`${resting} row missing`);
@@ -4268,7 +4262,8 @@ test("a press on the Snooze of a row the bar's Snooze is saving writes nothing, 
       await user.click(within(rowOf(askId)).getByRole("checkbox", { name: /^Select / }));
     }
     await screen.findByText("2 selected");
-    await pickIn(user, () => screen.getByLabelText("Snooze selected asks"), "Tomorrow");
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(user, () => picker, "Tomorrow");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
 
     for (const [askId, label] of marked) await pressDrawnSnooze(user, askId, label);
@@ -4325,7 +4320,8 @@ test("a refused bar Snooze leaves its refused row where it was, with its own Sno
       await user.click(within(rowOf(askId)).getByRole("checkbox", { name: /^Select / }));
     }
     await screen.findByText("2 selected");
-    await pickIn(user, () => screen.getByLabelText("Snooze selected asks"), "Tomorrow");
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(user, () => picker, "Tomorrow");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
     expect(drawnSnooze("ask-b", label)).toBe("Snooze held");
 
@@ -4773,7 +4769,8 @@ test("a snooze or an un-snooze out says so in the control's status, which says n
   const view = render(drawn(null));
   try {
     expect(screen.getByRole("status").textContent).toBe("");
-    await pickIn(user, () => screen.getByLabelText("Snooze CORE-1"), "Tomorrow");
+    const snooze = screen.getByLabelText("Snooze CORE-1");
+    await pickIn(user, () => snooze, "Tomorrow");
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Snoozing CORE-1…"));
     await act(async () => {
       snoozed.resolve({ snoozed_until: soon() });
@@ -4822,13 +4819,9 @@ test("a row's Snooze list opens with a text box, a typed word narrows the preset
     const box = within(panel).getByRole("combobox", { name: "Search snooze times" });
     expect(textBoxes().length).toBe(1);
     expect(box).toHaveFocus();
-    const shown = () =>
-      within(panel)
-        .getAllByRole("option")
-        .map((option) => option.textContent);
-    expect(shown()).toEqual(["Later today", "Tomorrow", "Next week", "Until I clear it"]);
+    expect(listRows(panel)).toEqual(["Later today", "Tomorrow", "Next week", "Until I clear it"]);
     await user.keyboard("week");
-    expect(shown()).toEqual(["Next week"]);
+    expect(listRows(panel)).toEqual(["Next week"]);
     await user.keyboard("{Enter}");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
     const [askId, body] = snoozeAsk.mock.calls[0] ?? [];
@@ -4870,13 +4863,9 @@ test("the bar's Snooze list opens with a text box, a typed word narrows the pres
     const box = within(panel).getByRole("combobox", { name: "Search snooze times" });
     expect(textBoxes().length).toBe(boxes + 1);
     expect(box).toHaveFocus();
-    const shown = () =>
-      within(panel)
-        .getAllByRole("option")
-        .map((option) => option.textContent);
-    expect(shown()).toEqual(["Later today", "Tomorrow", "Next week", "Until I clear it"]);
+    expect(listRows(panel)).toEqual(["Later today", "Tomorrow", "Next week", "Until I clear it"]);
     await user.keyboard("tom");
-    expect(shown()).toEqual(["Tomorrow"]);
+    expect(listRows(panel)).toEqual(["Tomorrow"]);
     await user.keyboard("{Enter}");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
     expect(snoozeAsk.mock.calls.map(([id]) => id).sort()).toEqual(["ask-a", "ask-b"]);
@@ -4925,8 +4914,7 @@ test("the bar's Snooze, held while its write is out, keeps the focus and sends n
     await pickIn(user, () => trigger, "Tomorrow");
     await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(2));
     expect(trigger).toHaveFocus();
-    expect(trigger).toHaveAttribute("aria-disabled", "true");
-    expect(trigger).not.toHaveAttribute("disabled");
+    expect(heldNotDisabled(trigger as HTMLButtonElement, "the bar's Snooze")).toBe(true);
 
     for (const keys of ["{Enter}", " ", "{ArrowDown}", "n"]) {
       await user.keyboard(keys);

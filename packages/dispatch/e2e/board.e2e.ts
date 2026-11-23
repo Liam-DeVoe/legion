@@ -17,6 +17,7 @@ import {
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
+import { expandedState } from "./settled";
 import { expect, type Locator, type Page, test } from "./test";
 import { centerOf, pressFinger, touchDrag, touchHold } from "./touch";
 import { asUser } from "./users";
@@ -870,8 +871,9 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     await sleep(100);
     expect(patches).toEqual([]);
     expect(new URL(page.url()).pathname).toBe("/projects/CORE/issues");
-    // A list the long press opened is closed, so the tap below reaches the title.
-    if ((await priority.getAttribute("aria-expanded")) === "true") {
+    // A list the long press opened is closed, so the tap below reaches the title. Which of the two
+    // the list is in is read once it has settled (`expandedState`).
+    if ((await expandedState("the priority list", priority)) === "open") {
       await page.keyboard.press("Escape");
       await expect(priority).toHaveAttribute("aria-expanded", "false");
     }

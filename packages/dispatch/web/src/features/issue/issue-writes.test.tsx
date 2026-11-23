@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
+import { pickIn } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { panelOf, pickNamed, rows } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -517,8 +518,7 @@ test("IssuePage keeps an optimistic priority selection while its save is pending
 
   try {
     const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
-    await user.click(priority);
-    await user.click(within(panelOf(priority)).getByRole("option", { name: "P0" }));
+    await pickIn(user, () => priority, "P0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
@@ -544,8 +544,7 @@ test("IssuePage restores the previous priority after a failed save", async () =>
 
   try {
     const priority = await screen.findByRole("button", { name: pickNamed("Priority of CORE-1") });
-    await user.click(priority);
-    await user.click(within(panelOf(priority)).getByRole("option", { name: "P0" }));
+    await pickIn(user, () => priority, "P0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );

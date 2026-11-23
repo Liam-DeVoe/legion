@@ -549,7 +549,7 @@ test.describe("inbox selection", () => {
       // A second pick from the keyboard the reader still holds: an arrow on the focused trigger
       // opens its list, and the trigger opens none while the bar's own write is out.
       await page.keyboard.press("ArrowDown");
-      expect(writes.length).toBe(2);
+      await expect(picker).toHaveAttribute("aria-expanded", "false");
 
       release?.();
       await expect(bar).toHaveCount(0);

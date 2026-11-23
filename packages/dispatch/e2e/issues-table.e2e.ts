@@ -99,8 +99,7 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await expect(page.getByText(new RegExp(`${epic.key} · Table epic`)).first()).toBeVisible();
     await expect(page.getByText(/next in queue #1/)).toBeVisible();
     const perPage = listTrigger(page, "Rows per page");
-    await perPage.click();
-    await listOf(perPage).getByRole("option", { exact: true, name: "25 per page" }).click();
+    await pickFromList(perPage, "25 per page");
     await page.getByRole("button", { name: "Next ›", exact: true }).click();
     await expect(page.getByText("Page 2 of 2", { exact: true })).toBeVisible();
     await expect(page.getByText("(continued)", { exact: true })).toBeVisible();
@@ -153,8 +152,7 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
 
     await chooseDisplay(page, "Group by", "");
     await page.keyboard.press("Escape");
-    await perPage.click();
-    await listOf(perPage).getByRole("option", { exact: true, name: "50 per page" }).click();
+    await pickFromList(perPage, "50 per page");
     const selected = rows[25];
     if (!selected) throw new Error("The queue seed did not create 26 issues");
     await page.getByRole("checkbox", { name: `Select ${selected.key}`, exact: true }).check();

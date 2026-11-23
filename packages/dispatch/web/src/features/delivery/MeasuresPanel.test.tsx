@@ -278,8 +278,8 @@ test("the per-day table pads its cells 2 px above and below, in a box with a rou
   // Every one of the window's 29 days, six cells each.
   expect(cells.length).toBe(29 * 6);
   // `py-0.5` is 0.125rem: a row is the 16 px line, 2 px above and below it, and its top border.
-  const padded = cells.filter((cell) => !cell.classList.contains("py-0.5"));
-  expect(padded.map((cell) => `${cell.textContent}: ${cell.className}`)).toEqual([]);
+  const unpadded = cells.filter((cell) => !cell.classList.contains("py-0.5"));
+  expect(unpadded.map((cell) => `${cell.textContent}: ${cell.className}`)).toEqual([]);
   const box = table.closest('[data-control="table-shell"]');
   expect(box?.className.split(" ")).toEqual(
     expect.arrayContaining(["rounded", "border", ...borderDefault.split(" ")])

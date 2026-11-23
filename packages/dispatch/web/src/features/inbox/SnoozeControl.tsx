@@ -24,8 +24,11 @@ export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BULK_SN
 /** The presets' ids, in the order the list offers them. */
 const PRESET_IDS: readonly string[] = SNOOZE_PRESETS.map((preset) => preset.id);
 
-/** The row's own Snooze writes this on its list's trigger, which the Inbox's `h` focuses. */
-const ROW_SNOOZE_MARKS: ListMarks = { trigger: { "data-inbox-snooze": "" } };
+const ROW_SNOOZE_ATTRIBUTE = "data-inbox-snooze";
+const ROW_SNOOZE_MARKS: ListMarks = { trigger: { [ROW_SNOOZE_ATTRIBUTE]: "" } };
+/** The row's own Snooze list's trigger, which the Inbox's `h` finds by it and focuses: the shared
+ *  list hands out no element of its own. */
+export const ROW_SNOOZE_SELECTOR = `[${ROW_SNOOZE_ATTRIBUTE}]`;
 
 /**
  * The Snooze badge and the list it opens: the badge is the trigger of the shared list's single

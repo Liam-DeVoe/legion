@@ -129,7 +129,12 @@ import { useFoldedGroups } from "./preferences";
 import { questionLine } from "./question-line";
 import { ReadingPane } from "./ReadingPane";
 import { RowKindIcon, RowPriorityTag, RowUrgencyMark } from "./RowMarks";
-import { BulkSnoozingContext, SnoozeControl, SnoozePick } from "./SnoozeControl";
+import {
+  BulkSnoozingContext,
+  ROW_SNOOZE_SELECTOR,
+  SnoozeControl,
+  SnoozePick,
+} from "./SnoozeControl";
 import {
   EVERYONE_FILTER_VALUE,
   type InboxSection,
@@ -240,10 +245,11 @@ function InboxRowChip({ ask }: { ask: InboxRow }): ReactNode {
   return null;
 }
 
+const BULK_PICKER_ATTRIBUTE = "data-inbox-bulk-snooze";
+const BULK_PICKER_MARKS: ListMarks = { trigger: { [BULK_PICKER_ATTRIBUTE]: "" } };
 /** The bulk bar's snooze picker, its list's trigger: `h` hands it focus and Escape takes it back
  *  to the list. */
-const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
-const BULK_PICKER_MARKS: ListMarks = { trigger: { "data-inbox-bulk-snooze": "" } };
+const BULK_PICKER_SELECTOR = `[${BULK_PICKER_ATTRIBUTE}]`;
 
 /** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
 const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
@@ -1729,7 +1735,7 @@ function InboxBody({
         if (selectedAsks.length === 0) {
           // The selected short row carries no Snooze of its own: the reading column's head does,
           // for the row it is showing.
-          inHand("[data-inbox-snooze]")?.focus();
+          inHand(ROW_SNOOZE_SELECTOR)?.focus();
           return;
         }
         bulkPicker()?.focus();
@@ -1742,7 +1748,7 @@ function InboxBody({
       // column's own.
       when: () =>
         (selectedAsks.length > 0 && outsideAskCard()) ||
-        (inHand("[data-inbox-snooze]") !== null && (!paneShown || outsideAskCard())),
+        (inHand(ROW_SNOOZE_SELECTOR) !== null && (!paneShown || outsideAskCard())),
     },
     {
       id: "back-from-bulk",
@@ -1963,7 +1969,7 @@ function InboxBody({
               onClick={clearAgent}
               removable
               selected
-              title={`Asks from ${agentText.part(agentSubject)}${waitingOnYou}`}
+              title={`Asks from ${agentTitle}${waitingOnYou}`}
             >
               Asks from {name}
               {waitingOnYou}

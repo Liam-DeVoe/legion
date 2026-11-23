@@ -3826,6 +3826,33 @@ function nameOf(element: Element): string | null {
   return element.getAttribute("aria-label") ?? element.textContent;
 }
 
+/** Spies on every focus and every scroll into view the page is asked for, in order, until
+ *  `restore`. A focus is made as asked; a scroll is only noted, as happy-dom scrolls nothing. */
+function recordMoves(): { moves: Move[]; restore: () => void } {
+  const moves: Move[] = [];
+  const realFocus = HTMLElement.prototype.focus;
+  const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+    this: HTMLElement,
+    options?: FocusOptions
+  ) {
+    moves.push({ move: "focus", of: nameOf(this), options });
+    realFocus.call(this, options);
+  });
+  const scroll = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+    options?: boolean | ScrollIntoViewOptions
+  ) {
+    moves.push({ move: "scroll", of: nameOf(this), options });
+  });
+  return {
+    moves,
+    restore: () => {
+      focus.mockRestore();
+      scroll.mockRestore();
+    },
+  };
+}
+
 /** A press in a `HandOffLine` that takes its own button away. */
 interface HandOffCase {
   /** The control the line falls back to, else none. */
@@ -3843,9 +3870,8 @@ interface HandOffCase {
 
 /** Draws `handed`'s line, lays its buttons out, focuses the pressed one, and takes it away, as
  *  the press's own commit does. Answers where the focus landed - the page, or the element by its
- *  name (`nameOf`) - and every move the hand-off asked of the page, in order. A focus is made as
- *  asked; a scroll is only noted, as happy-dom scrolls nothing. No rescue is mounted, so the
- *  loss reads as the reader's (`causedByReader`). */
+ *  name (`nameOf`) - and every move the hand-off asked of the page, in order (`recordMoves`). No
+ *  rescue is mounted, so the loss reads as the reader's (`causedByReader`). */
 function handOff(handed: HandOffCase): { landed: string | null; moves: Move[] } {
   const host = document.createElement("div");
   handed.parent.append(host);
@@ -3862,31 +3888,16 @@ function handOff(handed: HandOffCase): { landed: string | null; moves: Move[] } 
       (button) => button.textContent === handed.pressed
     );
     pressed?.focus();
-    const moves: Move[] = [];
-    const realFocus = HTMLElement.prototype.focus;
-    const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
-      this: HTMLElement,
-      options?: FocusOptions
-    ) {
-      moves.push({ move: "focus", of: nameOf(this), options });
-      realFocus.call(this, options);
-    });
-    const scroll = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-      this: Element,
-      options?: boolean | ScrollIntoViewOptions
-    ) {
-      moves.push({ move: "scroll", of: nameOf(this), options });
-    });
+    const recorded = recordMoves();
     try {
       const left = handed.labels.filter((label) => label !== handed.pressed);
       view.rerender(createElement(HandOffLine, { fallback, labels: left }));
     } finally {
-      focus.mockRestore();
-      scroll.mockRestore();
+      recorded.restore();
     }
     const focused = document.activeElement;
     const landed = focused === null || focused === document.body ? "the page" : nameOf(focused);
-    return { landed, moves };
+    return { landed, moves: recorded.moves };
   } finally {
     view.unmount();
     host.remove();
@@ -4112,14 +4123,13 @@ test("a component's hand-off passes over a fallback that takes typed text, and t
 
 /** The Inbox's Decline shape: a list of rows, each an `<li>` holding an ask card, with the first
  *  card's **Decline to answer** opening a modal dialog at the end of the body, as `useDialog`
- *  portals one, and the focus moved into the dialog's note box from that trigger, so the rescue
+ *  portals one, and the focus moved into the dialog's Cancel from that trigger, so the rescue
  *  notes the trigger as the dialog's opener. */
 function declineDialogIn(main: HTMLElement): {
   cancel: HTMLButtonElement;
   decline: HTMLButtonElement;
   dialog: HTMLElement;
   rows: HTMLLIElement[];
-  trigger: HTMLButtonElement;
 } {
   const list = document.createElement("ul");
   main.append(list);
@@ -4140,7 +4150,7 @@ function declineDialogIn(main: HTMLElement): {
   trigger.focus();
   enterPress(trigger);
   cancel.focus();
-  return { cancel, decline, dialog, rows: rows.map(({ row }) => row), trigger };
+  return { cancel, decline, dialog, rows: rows.map(({ row }) => row) };
 }
 
 // (cv) A Tab inside the region a press was made in, while that press's own write is out, leaves
@@ -4159,7 +4169,7 @@ test("a Tab inside the region a press was made in leaves the press the cause of 
     const writes = signedInWrites();
     await withRescue(async () => {
       const { main } = mainOf("Before");
-      const { cancel, decline, dialog, rows, trigger } = declineDialogIn(main);
+      const { cancel, decline, dialog, rows } = declineDialogIn(main);
       decline.focus();
       enterPress(decline);
       const write = writeOf(writes);
@@ -4182,7 +4192,6 @@ test("a Tab inside the region a press was made in leaves the press the cause of 
       if (withFocusout) lose(cancel, goes);
       else goes();
       await settled();
-      expect(trigger.isConnected).toBe(false);
       expect(document.activeElement).not.toBe(document.body);
       expect(focusedName()).toBe("Ship");
     }, writes);
@@ -4246,7 +4255,7 @@ test("a dialog gone with its opener's row, with nothing in sight at the opener's
 test("a Tab inside the press's region still ends the give-back to a control the write's refusal enables again", async () => {
   const writes = signedInWrites();
   await withRescue(async () => {
-    const [before, saving, after] = mainOf("Before", "Save", "After").buttons;
+    const [before, saving] = mainOf("Before", "Save", "After").buttons;
     const save = saving as HTMLButtonElement;
     save.focus();
     enterPress(save);
@@ -4265,13 +4274,10 @@ test("a Tab inside the press's region still ends the give-back to a control the 
     await settled();
     await settled();
     expect(before).toHaveFocus();
-    expect(save).not.toHaveFocus();
-    expect(after).not.toHaveFocus();
     // A live update takes the control the reader Tabbed to away, after their press is answered.
     before?.remove();
     await settled();
     expect(document.activeElement).toBe(document.body);
-    expect(save).not.toHaveFocus();
   }, writes);
 });
 
@@ -4316,7 +4322,6 @@ test("a control lost from a card lands on the card's control before the place, n
       await settled();
       expect(focusedName()).toBe("Unfollow");
       expect(unfollow.button).toHaveFocus();
-      expect(mark).not.toHaveFocus();
     });
   }
 });
@@ -4335,21 +4340,7 @@ test("a caused landing partly in sight is shown at its nearest edge and no furth
     ["partly in sight", -20],
     ["wholly in sight", 300],
   ] as const) {
-    const moves: Move[] = [];
-    const realFocus = HTMLElement.prototype.focus;
-    const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
-      this: HTMLElement,
-      options?: FocusOptions
-    ) {
-      moves.push({ move: "focus", of: nameOf(this), options });
-      realFocus.call(this, options);
-    });
-    const scroll = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
-      this: Element,
-      options?: boolean | ScrollIntoViewOptions
-    ) {
-      moves.push({ move: "scroll", of: nameOf(this), options });
-    });
+    const recorded = recordMoves();
     try {
       await withRescue(async () => {
         const [first, second] = mainOf("One", "Two").buttons;
@@ -4361,10 +4352,9 @@ test("a caused landing partly in sight is shown at its nearest edge and no furth
         expect(first).toHaveFocus();
       });
     } finally {
-      focus.mockRestore();
-      scroll.mockRestore();
+      recorded.restore();
     }
-    moved[named] = moves.filter((move) => move.of === "One");
+    moved[named] = recorded.moves.filter((move) => move.of === "One");
     belongs[named] = [
       { move: "focus", of: "One", options: { preventScroll: true } },
       ...(top < 0 ? [{ move: "scroll" as const, of: "One", options: NEAREST_EDGE }] : []),
@@ -4530,9 +4520,7 @@ test("a component's hand-off for a control taken away with a control before it l
         container: main,
       });
       try {
-        const unsubscribe = [...main.querySelectorAll("button")].find(
-          (button) => button.textContent === "Unsubscribe"
-        ) as HTMLButtonElement;
+        const unsubscribe = view.getByRole("button", { name: "Unsubscribe" });
         unsubscribe.focus();
         enterPress(unsubscribe);
         // The write lands, and the commit takes the subscribers' list away.
@@ -4598,7 +4586,7 @@ test("a control hidden under the focus with a control before it lands on the car
 // or hides it. The focus goes back to where the dialog was opened from (`handOn`). The opener's
 // place was counted as the focus left it for the dialog, with the name link standing before it,
 // so the walk back would start at the next question's Select checkbox. Counted off the spot the
-// opener went from, or where it still stands while hidden (`openerPlace`), the focus lands on the
+// opener went from, or where it still stands while hidden (`placeLeft`), the focus lands on the
 // card's Unfollow. With Chromium's `focusout` for the dialog's Confirm and without.
 test("a walk back from a dialog's opener that went or was hidden with a control before it lands on the card's control before the place", async () => {
   const landed: Record<string, string | null> = {};

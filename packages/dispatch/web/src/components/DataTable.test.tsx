@@ -10,6 +10,7 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
+import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
 import { openList, rows as optionsOf, pickNamed } from "../__tests__/list-picks";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymapScope } from "../features/shell/keymap";
@@ -60,30 +61,6 @@ const COLUMNS: ColumnDef<Deploy>[] = [
 const LAYOUT_COLUMNS: LayoutColumns = {
   ids: COLUMNS.flatMap((column) => (column.id === undefined ? [] : [column.id])),
   rowAttribute: "data-deploy-row",
-};
-
-/** The caller's own words for its deploys, which the core reads: a scope of its own, the keys
- *  of the page that draws it, and the attributes its rows and links carry. */
-const DEPLOY_NAMES: DataTableNames = {
-  groupAttribute: "data-deploy-group",
-  keymap: {
-    next: { id: "deploys-next", keys: "j", label: "Next deploy" },
-    open: { id: "deploys-open", keys: "o", label: "Open deploy" },
-    openOnEnter: { id: "deploys-open-enter", keys: "Enter", label: "Open the focused deploy" },
-    previous: { id: "deploys-previous", keys: "k", label: "Previous deploy" },
-    scope: "agents",
-    select: { id: "deploys-select", keys: "x", label: "Select or deselect the focused deploy" },
-  },
-  linkAttribute: "data-deploy-link",
-  rowAttribute: "data-deploy-row",
-};
-
-/** What the deploys table calls its rows, which its filters and its pager count in. */
-const DEPLOY_NOUN: RowNoun = {
-  group: { one: "group", many: "groups" },
-  line: { one: "row", many: "rows" },
-  many: "deploys",
-  one: "deploy",
 };
 
 /** The line under the deploys table, with the page sizes the caller offers. */

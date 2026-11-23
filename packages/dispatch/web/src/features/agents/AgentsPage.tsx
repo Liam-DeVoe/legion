@@ -20,7 +20,7 @@ import {
   userAgentStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import { waitingForPausedReads } from "../../api/query-client";
+import { invalidateWaitingForPaused } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type {
   Agent,
@@ -412,11 +412,7 @@ function AgentMessageList({
   const [unsettled, holdThrough] = useReadBound();
   const holdThroughRead = () =>
     holdThrough(
-      // Read again waiting on a fetch the network has paused: this hold has a bound of its own
-      // (`waitingForPausedReads`, `useReadBound`).
-      waitingForPausedReads(queryClient, () =>
-        queryClient.invalidateQueries({ queryKey: agentMessagesQuery(agent.session_id).queryKey })
-      )
+      invalidateWaitingForPaused(queryClient, agentMessagesQuery(agent.session_id).queryKey)
     );
   const clearedBefore = agentState.data?.[agent.session_id]?.cleared_before;
   const all = messages.data ?? [];
@@ -1298,7 +1294,9 @@ function BroadcastComposer({
       </ul>
       <div className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:order-2 narrow-or-short:mt-0">
         {/* The shared list's single pick of the modes, whose text box narrows them as the reader
-            types; its trigger shows the mode the broadcast sends in. */}
+            types; its trigger shows the mode the broadcast sends in. A pick of that mode changes
+            nothing, as a select set to the value it holds fires nothing: a restored broadcast
+            stays the one refused, and a mode the selection takes stays unpicked. */}
         <MultiSelect
           emptyMessage="No mode matches that."
           label="Delivery mode"
@@ -1306,13 +1304,14 @@ function BroadcastComposer({
           onOpenChange={setModeListOpen}
           onPick={(picked) => {
             const mode = deliveryMode(picked);
-            if (mode !== undefined) onDelivery(mode);
+            if (mode !== undefined && mode !== delivery) onDelivery(mode);
           }}
           open={modeListOpen}
           optionLabel={capabilityLabel}
           options={DELIVERY_CAPABILITIES}
           searchLabel="Search delivery modes"
-          triggerClassName={`min-h-11 rounded-lg border px-3 py-2 text-left text-sm ${inputClasses(true)}`}
+          size="comfortable"
+          triggerClassName={`rounded-lg border text-left text-sm ${inputClasses(true)}`}
           value={delivery}
         />
       </div>
@@ -1645,25 +1644,24 @@ export function AgentsPage(): ReactNode {
   // any other way (the registry's own, say) would name the recipients in an order the reader
   // never sees, and send them in it.
   const matching = AGENT_GROUPS.flatMap((group) => matchingIn[group]);
-  /** The row a pin was made from while it held focus, until the render that moves it. A pin no
-   *  longer moves a row out of its group (D3), but it does move it within one - pinned rows
-   *  come first - and React moves its node, which can drop focus to the document. Focus follows
-   *  the row to where it lands, or to its group's heading when the row is hidden there, as
-   *  `IssueBoard`'s `focusAfterMove` lands on a collapsed rail, so the next `j`/`k` go on from
-   *  the reader's place rather than from the top (`useAgentsKeymap` steps from a heading too). */
-  const focusAfterPin = useRef<string | null>(null);
-  /** Where that row stood among the rows the list drew, until the render that moves it: the
-   *  place the row after it moves into, which takes the focus where the moved row's own control
-   *  ends out of the reader's sight. -1 while no pin is waiting. */
-  const pinnedFromPlace = useRef(-1);
+  /** The row a pin was made from while it held focus, and where that row stood among the rows the
+   *  list drew, until the render that moves it. A pin no longer moves a row out of its group
+   *  (D3), but it does move it within one - pinned rows come first - and React moves its node,
+   *  which can drop focus to the document. Focus follows the row to where it lands, or to its
+   *  group's heading when the row is hidden there, as `IssueBoard`'s `focusAfterMove` lands on a
+   *  collapsed rail, so the next `j`/`k` go on from the reader's place rather than from the top
+   *  (`useAgentsKeymap` steps from a heading too). The place is the one the row after it moves
+   *  into, which takes the focus where the moved row's own control ends out of the reader's
+   *  sight. Null while no pin is waiting. */
+  const focusAfterPin = useRef<{ readonly place: number; readonly sessionID: string } | null>(null);
   const togglePin = (sessionID: string) => {
     if (
       closestMatching(document.activeElement, AGENT_ROW_SELECTOR)?.dataset.agentRow === sessionID
     ) {
-      focusAfterPin.current = sessionID;
-      pinnedFromPlace.current = drawnRows(listRef.current).findIndex(
-        (node) => node.dataset.agentRow === sessionID
-      );
+      focusAfterPin.current = {
+        place: drawnRows(listRef.current).findIndex((node) => node.dataset.agentRow === sessionID),
+        sessionID,
+      };
     }
     writePin(sessionID, !pinned.includes(sessionID));
   };
@@ -1763,11 +1761,10 @@ export function AgentsPage(): ReactNode {
   // A layout effect, so the frame the move paints already has focus where the row went.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `pinned` is the trigger, not a read
   useLayoutEffect(() => {
-    const sessionID = focusAfterPin.current;
-    if (sessionID === null) return;
+    const pin = focusAfterPin.current;
+    if (pin === null) return;
     focusAfterPin.current = null;
-    const place = pinnedFromPlace.current;
-    pinnedFromPlace.current = -1;
+    const { place, sessionID } = pin;
     const row = rowNode(listRef.current, sessionID);
     if (row === null) return;
     // A row the pin leaves hidden is in a collapsed group: it held focus, so the filters match

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, mock, test } from "bun:test";
 import type {
   ColumnDef,
   ColumnFiltersState,
@@ -11,9 +11,10 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
+import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
 import { openList, pickNamed, rows } from "../__tests__/list-picks";
 import type { ControlSize } from "./control-names";
-import { type DataTableNames, type RowNoun, useDataTable } from "./DataTable";
+import { useDataTable } from "./DataTable";
 import { Pager } from "./Pager";
 import { type LayoutColumns, useTableLayout } from "./table-layout";
 
@@ -33,27 +34,6 @@ const LAYOUT_COLUMNS: LayoutColumns = {
   rowAttribute: "data-deploy-row",
 };
 
-const NAMES: DataTableNames = {
-  groupAttribute: "data-deploy-group",
-  keymap: {
-    next: { id: "deploys-next", keys: "j", label: "Next deploy" },
-    open: { id: "deploys-open", keys: "o", label: "Open deploy" },
-    openOnEnter: { id: "deploys-open-enter", keys: "Enter", label: "Open the focused deploy" },
-    previous: { id: "deploys-previous", keys: "k", label: "Previous deploy" },
-    scope: "agents",
-    select: { id: "deploys-select", keys: "x", label: "Select or deselect the focused deploy" },
-  },
-  linkAttribute: "data-deploy-link",
-  rowAttribute: "data-deploy-row",
-};
-
-const NOUN: RowNoun = {
-  group: { many: "groups", one: "group" },
-  line: { many: "rows", one: "row" },
-  many: "deploys",
-  one: "deploy",
-};
-
 /** The page size that means every row, as the project List's is. */
 const ALL_ROWS = Number.MAX_SAFE_INTEGER;
 
@@ -64,8 +44,8 @@ const DEPLOYS: Deploy[] = Array.from({ length: 12 }, (_, index) => ({
 }));
 
 /** The pager under a table of `DEPLOYS` paged five at a time, drawn at `size` where one is
- *  given. */
-function PagedDeploys({ size }: { size?: ControlSize }): ReactNode {
+ *  given. `onPaged` hears each change the table makes to its pages. */
+function PagedDeploys({ onPaged, size }: { onPaged?: () => void; size?: ControlSize }): ReactNode {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [grouping, setGrouping] = useState<GroupingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -77,11 +57,14 @@ function PagedDeploys({ size }: { size?: ControlSize }): ReactNode {
     columns: COLUMNS,
     getRowId: (row) => row.id,
     layout,
-    names: NAMES,
+    names: DEPLOY_NAMES,
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange: setGlobalFilter,
     onGroupingChange: setGrouping,
-    onPaginationChange: setPagination,
+    onPaginationChange: (update) => {
+      onPaged?.();
+      setPagination(update);
+    },
     onSortingChange: setSorting,
     rows: DEPLOYS,
     state,
@@ -90,7 +73,7 @@ function PagedDeploys({ size }: { size?: ControlSize }): ReactNode {
   return (
     <Pager
       allRows={ALL_ROWS}
-      noun={NOUN}
+      noun={DEPLOY_NOUN}
       pageSizes={[5, 10, ALL_ROWS]}
       size={size}
       table={model.table}
@@ -158,6 +141,27 @@ test("Rows per page opens a list whose text box narrows the page sizes, and a pi
     expect(within(pager).getByText("All 12 rows")).toBeInTheDocument();
     expect(within(pager).getByText("Page 1 of 1")).toBeInTheDocument();
     expect(trigger).toHaveTextContent("All rows");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A `<select>` set to the value it holds fires no change when that value is picked again. The
+// list opens on the size a page holds, so Enter at once picks that size, and the table is asked
+// for no new pagination: it neither builds new pages nor tells its page to write them.
+test("a pick of the size a page holds sets nothing", async () => {
+  const user = userEvent.setup();
+  const paged = mock();
+  const view = render(<PagedDeploys onPaged={paged} />);
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Rows per page") });
+    await openList(user, "Rows per page");
+    paged.mockClear();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(paged).not.toHaveBeenCalled();
+    expect(trigger).toHaveTextContent("5 per page");
+    expect(trigger).toHaveFocus();
   } finally {
     view.unmount();
   }

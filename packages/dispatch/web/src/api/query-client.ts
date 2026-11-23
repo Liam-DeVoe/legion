@@ -222,6 +222,18 @@ export function waitingForPausedReads<T>(client: QueryClient, read: () => T): T 
 }
 
 /**
+ * Reads again every query under `queryKey` (`invalidateQueries`), waiting on a fetch the network
+ * has paused (`waitingForPausedReads`), and answers once that read has. It is for a write that
+ * holds its control through the read its landing starts, under a bound of its own
+ * (`useReadBound`'s `holdThrough`): a retry's read of an agent's conversation, a Dismiss's read
+ * of the pending credentials, a Save's read of the delivery settings, an Unfollow's or an
+ * Unsubscribe's read of an ask's recipients, and a table action's read of the issues.
+ */
+export function invalidateWaitingForPaused(client: QueryClient, queryKey: QueryKey): Promise<void> {
+  return waitingForPausedReads(client, () => client.invalidateQueries({ queryKey }));
+}
+
+/**
  * Reads who is signed in (`whoAmIQuery`) again for news that it may have changed, cancelling a
  * check still out first: that check was sent before the news and may name the person signed in
  * before, and an invalidation would wait for its answer rather than start another (TanStack's

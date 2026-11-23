@@ -248,9 +248,11 @@ function priorityTriggers(): HTMLElement[] {
 }
 
 /** Picks `priority` - `P0` to `P3`, or `Unset` - from the `index`th priority list of CORE-1,
- *  as a reader does: a press of its trigger, then of the option. */
+ *  as a reader does: a press of its trigger, then of the option. The trigger is found once: it is
+ *  the same element with its list open or shut. */
 async function pickPriority(user: UserEvent, priority: string, index = 0): Promise<void> {
-  await pickIn(user, () => priorityTriggers()[index] as HTMLElement, priority);
+  const trigger = priorityTriggers()[index] as HTMLElement;
+  await pickIn(user, () => trigger, priority);
 }
 
 /** The priority the `index`th priority list of CORE-1 shows: `P0` to `P3`, or `Priority`. */

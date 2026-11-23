@@ -583,11 +583,8 @@ test("a bulk snooze the reader stopped says it may have been saved, not that it 
     await user.click(asksMark as HTMLElement);
     await screen.findByText("1 selected");
     jest.useFakeTimers();
-    await pickIn(
-      userOnFakeClock(),
-      () => screen.getByLabelText("Snooze selected asks"),
-      "Tomorrow"
-    );
+    const picker = screen.getByLabelText("Snooze selected asks");
+    await pickIn(userOnFakeClock(), () => picker, "Tomorrow");
     await stopTheLateWrite(client);
     await waitFor(() =>
       expect(screen.getByRole("alert").textContent).toBe(

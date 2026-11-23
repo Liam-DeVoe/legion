@@ -4,8 +4,21 @@
  * target of `controlPadding` (`components/control-names.ts`), or a map of its own beside it, as
  * the column filter's funnel keeps the target alone. happy-dom applies a stylesheet it is given but
  * loads none of the application's generated CSS, so a case puts Tailwind's own definitions of
- * those utilities in the document and reads what they compute.
+ * those utilities in the document and reads what they compute. A case that reads only which size
+ * a control was given reads its classes instead (`drawnSize`).
  */
+import { type ControlSize, controlPadding } from "../components/control-names";
+
+/** The size `control` draws (`controlPadding`): the one whose every class it carries, else
+ *  none of the two. */
+export function drawnSize(control: Element): ControlSize | "a size of its own" {
+  const drawn = control.className.split(/\s+/);
+  const sizes: ControlSize[] = ["compact", "comfortable"];
+  return (
+    sizes.find((size) => controlPadding[size].split(" ").every((name) => drawn.includes(name))) ??
+    "a size of its own"
+  );
+}
 
 /** Tailwind's definitions of the utilities a size draws below `md`: the 44 px target and each
  *  padding a control's size takes. */
