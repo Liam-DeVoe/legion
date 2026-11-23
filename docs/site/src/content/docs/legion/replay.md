@@ -385,6 +385,16 @@ Last, it prints each assumption that the run rests on, with the number of outbox
 | `run.json` | What ran, what it counted, the gap of each measure between the two timelines, and the conflict model. |
 | `segments.jsonl` | Each work segment, with `--trace-segments` alone. |
 
+`run.json` names the code that made the run, and the time at which the run started:
+
+- `buildCommit` is the commit of the `legion` binary that made the run.
+  It is the commit that the build linked in, else the commit that Go recorded from the checkout.
+  Where the binary has neither, it is `unknown`.
+
+- `startedAt` is the time at which the run started, on the wall clock and not on the simulated clock, in RFC 3339 and UTC.
+
+- `ruleCommit` is a different commit: the commit at which the rule was first written as a value ([The slot rules](#the-slot-rules)).
+
 A replay's scorecard names the assumptions from 1 to 25 that its measures rest on.
 `run.json` and the output of `run` also name the tool's own assumptions, from 26 on.
 The gap between the two timelines is the error of reading a record from its lines, which the scorecard of every record rests on.
@@ -400,8 +410,8 @@ An issue that no line gives such a number takes its key's number where no other 
 GitHub numbers the pull requests of each repository, and the daemon finds a pull request by its repository, compared without case, and its number, so no two records of a run share a number in one repository.
 
 A run is a function of its window, its rule, its branch, its seed and f.
-Two runs of the same window, rule, branch, seed and f write the same `log.jsonl`, the same two scorecards and the same `run.json`, byte for byte.
-The one exception is the fields of `run.json` that measure or name the run itself: `wallSeconds`, `meanPassMillis`, `peakMemoryBytes` and `database`.
+Two runs of the same window, rule, branch, seed and f, made by the same `legion` binary, write the same `log.jsonl`, the same two scorecards and the same `run.json`, byte for byte.
+The one exception is the fields of `run.json` that measure or name the run itself: `startedAt`, `wallSeconds`, `meanPassMillis`, `peakMemoryBytes` and `database`.
 
 ### `legion replay scorecard`
 
@@ -481,6 +491,8 @@ It compares each `--rule`, or every rule that the repository keeps where you giv
 Under each rule, it replays each window on every branch, and on the main branch at each f from 1 to 2 in steps of 0.1 for the break-even search.
 
 The document gives:
+
+- the build commit of each run, the commit of the `legion` binary that made it, with the number of runs that each build commit made
 
 - each window's scorecard, read from its record
 

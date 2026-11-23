@@ -522,10 +522,13 @@ func TestBreakEvenFactor(t *testing.T) {
 // with its seeds and the break-even search, and is read for each window's scorecard, validation
 // and table of each branch, every rule in each table, every measure in each, what each rule with a
 // grace keeps on each window, the forecast with the workflow commits it carries, which window
-// measures conflicts, each rule's break-even factor, the decision and the assumptions. With
+// measures conflicts, each rule's break-even factor, the decision, the assumptions and the build
+// commit of the runs: each window's runs were made by a binary of its own, the window after's
+// first, so the document names after's commit before before's, each with its count of runs. With
 // LEGION_TEST_PG_DSN set it also replays two fixture windows whole and in parts and holds the two
 // documents equal: a document written from one process's runs and one written from the runs of
-// parts, each run in a process of its own, are the same.
+// parts, each run in a process of its own, are the same, and it names the build commit the runs
+// were given.
 func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 	dir := t.TempDir()
 	to := compareFrom.Add(compareHours * time.Hour)
@@ -537,6 +540,13 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 	before.Stretches = 4
 	after := recorded("window-one", 1, "legion-v20.42.5", "2222222222222222222222222222222222222222")
 	after.Stretches, after.Conflicted = 10, 3
+	type build struct {
+		commit  string
+		started time.Time
+		runs    int
+	}
+	builds := map[string]*build{before.Name: {commit: "3333333333333333333333333333333333333333", started: compareFrom.Add(48 * time.Hour)},
+		after.Name: {commit: "4444444444444444444444444444444444444444", started: compareFrom.Add(24 * time.Hour)}}
 	plan := fullPlan()
 	var cards []Scorecard
 	for _, w := range []windowRecord{before, after} {
@@ -555,8 +565,11 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 					line := snapshot
 					line.SlotHoursInTurn += 0.5
 					cards = append(cards, snapshot)
-					ran := runRecord{Rule: rule.Name, RuleCommit: rule.Commit, Branch: at.Branch, Seed: seed, Slowdown: at.Slowdown, Scenario: at.Branch.NeverStarted,
-						Assumptions: []int{1, 3, 4}, Gaps: Gaps(snapshot, line)}
+					b := builds[w.Name]
+					b.runs++
+					ran := runRecord{Rule: rule.Name, RuleCommit: rule.Commit, BuildCommit: b.commit, Branch: at.Branch, Seed: seed, Slowdown: at.Slowdown,
+						Scenario: at.Branch.NeverStarted, Assumptions: []int{1, 3, 4}, StartedAt: b.started.Add(time.Duration(b.runs) * time.Minute),
+						Gaps: Gaps(snapshot, line)}
 					runDirectory := runDir(dir, w.Name, rule.Name, at, seed)
 					for name, value := range map[string]any{runFile: ran, scorecardFile: snapshot, lineScorecardFile: line} {
 						if err := writeJSON(filepath.Join(runDirectory, name), value); err != nil {
@@ -596,6 +609,9 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		"window-two does not measure how a rule changes conflicts", "window-one measures how a rule changes conflicts",
 		"## The gap between the snapshot and the line timelines", "## The break-even slowdown factor of each rule against main",
 		"## The assumptions and scenarios each run used", "3. "+Assumptions[2].Text)
+	total := builds[before.Name].runs + builds[after.Name].runs
+	want = append(want, fmt.Sprintf("- The build commit of each run, the commit of the `legion` binary that made it: `%s` (%d of the %d runs), `%s` (%d of the %d runs).\n",
+		builds[after.Name].commit, builds[after.Name].runs, total, builds[before.Name].commit, builds[before.Name].runs, total))
 	for _, rule := range record.SlotRules() {
 		if rule.Name != record.MainRule.Name {
 			want = append(want, "| `"+rule.Name+"` | no factor up to 2 changes it")
@@ -640,7 +656,8 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		dsn := replayDSN(t)
 		windows := []string{filepath.Join(fixtureWindowsDir, "review-and-test-kept"), filepath.Join(fixtureWindowsDir, "conflict-from-fitted-rate")}
 		small := &runPlan{branches: []BranchAt{MainBranchAt}, breakEven: []float64{1.1}, perDraw: 2}
-		config := CompareConfig{Windows: windows, Rules: []record.SlotRule{record.MainRule}, PGDSN: dsn, Parallel: 2, plan: small}
+		const fixtureBuild = "5555555555555555555555555555555555555555"
+		config := CompareConfig{Windows: windows, Rules: []record.SlotRule{record.MainRule}, PGDSN: dsn, Parallel: 2, BuildCommit: fixtureBuild, plan: small}
 		whole := config
 		whole.Runs = t.TempDir()
 		if err := RunCompare(context.Background(), whole); err != nil {
@@ -677,7 +694,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 			t.Fatalf("the document written in parts differs from the one written whole at line %d:\nwhole: %s\nparts: %s", line, a, b)
 		}
 		for _, line := range []string{"## The rule named best (R7)", "### review-and-test-kept, `main@1`", "### conflict-from-fitted-rate, `main@1`",
-			"- `legion-v20.42.5`, `main@1.1`"} {
+			"- `legion-v20.42.5`, `main@1.1`", "- The build commit of each run, the commit of the `legion` binary that made it: `" + fixtureBuild + "` ("} {
 			if !strings.Contains(wholeDocument, line) {
 				t.Errorf("the document of the fixture windows holds no %q:\n%s", line, wholeDocument)
 			}

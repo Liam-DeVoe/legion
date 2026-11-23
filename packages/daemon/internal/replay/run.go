@@ -58,6 +58,9 @@ type RunConfig struct {
 	KeepDB bool
 	// TraceSegments writes each work segment's n, m and length (Segment) to Out and to the result.
 	TraceSegments bool
+	// BuildCommit is the commit of the legion binary that runs the replay, which run.json names
+	// (runRecord.BuildCommit); unknownBuild where it is empty.
+	BuildCommit string
 
 	// afterFact, where set, runs after each fact the replay applies, with the replay's pool and
 	// its copy of Dispatch, between facts: a test's look at the replay's state as each pass leaves
@@ -226,6 +229,11 @@ const (
 // the ones a scorecard names; the tool's own after them (26 on) are named in run.json alone.
 const specAssumptionsTop = 25
 
+// unknownBuild is the build commit a run names where nothing names the commit of the legion binary
+// that ran it: a build that linked no commit in and recorded none from a checkout, or a run.json
+// written before runs named one.
+const unknownBuild = "unknown"
+
 // Run replays cfg.Window under cfg.Rule and cfg.Branch. It makes a database of its own on
 // cfg.PGDSN's server, migrated with the daemon's migrations; applies every fact of the window —
 // the project's Dispatch events, the recorded phase moves, the ticks and the boots — each in one
@@ -361,7 +369,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	}
 	result.LineScorecard = d.scorecard(Measure(lined))
 	result.Gaps = Gaps(result.Scorecard, result.LineScorecard)
-	if err := d.writeOutputs(result, time.Since(began)); err != nil {
+	if err := d.writeOutputs(result, began); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -500,14 +508,17 @@ func (d *driver) lineTimeline() (Timeline, error) {
 }
 
 // runRecord is a run's run.json: what it ran — the rule, the branch, the seed, the slowdown, the
-// scenario and every assumption it used by number — and what it counted: the facts it applied and
-// the passes they ran, the mean time of a pass, the run's wall time and peak memory, the issues the
+// scenario and every assumption it used by number — what ran it — the commit of the legion binary
+// (BuildCommit, where RuleCommit is the commit the rule was first written as a value at) and the
+// moment on the wall clock the run started — and what it counted: the facts it applied and the
+// passes they ran, the mean time of a pass, the run's wall time and peak memory, the issues the
 // start state could not place, the segments it ran, its divergence counters, the gap of each
 // measure between its snapshot and line timelines, and the conflict model it drew by. It holds
 // numbers and names alone, never an assumption's text.
 type runRecord struct {
 	Rule            string        `json:"rule"`
 	RuleCommit      string        `json:"ruleCommit"`
+	BuildCommit     string        `json:"buildCommit"`
 	Branch          Branch        `json:"branch"`
 	Seed            int64         `json:"seed"`
 	Slowdown        float64       `json:"slowdown"`
@@ -518,6 +529,7 @@ type runRecord struct {
 	Facts           int           `json:"facts"`
 	Passes          int           `json:"passes"`
 	MeanPassMillis  float64       `json:"meanPassMillis"`
+	StartedAt       time.Time     `json:"startedAt"`
 	WallSeconds     float64       `json:"wallSeconds"`
 	PeakMemoryBytes uint64        `json:"peakMemoryBytes"`
 	Unplaced        int           `json:"unplaced"`
@@ -529,17 +541,18 @@ type runRecord struct {
 
 // writeOutputs writes the run's scorecard.json (its snapshot timeline's), scorecard-line.json (its
 // line timeline's) and run.json into its output directory, and its segments.jsonl under
-// TraceSegments.
-func (d *driver) writeOutputs(result RunResult, wall time.Duration) error {
+// TraceSegments. began is the moment on the wall clock the run started, which run.json names in
+// UTC beside the wall time since.
+func (d *driver) writeOutputs(result RunResult, began time.Time) error {
 	mean := 0.0
 	if d.facts > 0 {
 		mean = float64(d.passTime.Microseconds()) / 1000 / float64(d.facts)
 	}
-	ran := runRecord{Rule: d.rule.Name, RuleCommit: d.rule.Commit, Branch: d.cfg.Branch, Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown,
-		Scenario: result.Scorecard.Scenario, Assumptions: result.Assumptions, Database: result.Database,
-		KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, WallSeconds: wall.Seconds(),
-		PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments), Divergence: result.Divergence,
-		Gaps: result.Gaps, Conflicts: result.Conflicts}
+	ran := runRecord{Rule: d.rule.Name, RuleCommit: d.rule.Commit, BuildCommit: cmp.Or(d.cfg.BuildCommit, unknownBuild), Branch: d.cfg.Branch,
+		Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown, Scenario: result.Scorecard.Scenario, Assumptions: result.Assumptions, Database: result.Database,
+		KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, StartedAt: began.UTC(),
+		WallSeconds: time.Since(began).Seconds(), PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments),
+		Divergence: result.Divergence, Gaps: result.Gaps, Conflicts: result.Conflicts}
 	for name, value := range map[string]any{scorecardFile: result.Scorecard, lineScorecardFile: result.LineScorecard, runFile: ran} {
 		data, err := json.MarshalIndent(value, "", "  ")
 		if err != nil {

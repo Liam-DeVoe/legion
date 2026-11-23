@@ -63,10 +63,10 @@ func rowsInOrder(descending bool) func(context.Context, *store.Pool, *shadow) er
 	}
 }
 
-// hostFields is what run.json measures of the run itself, which no two runs share: its wall time,
-// its mean pass time, its peak memory, and the name of its database, drawn so two runs on one
-// server never meet.
-var hostFields = []string{"wallSeconds", "meanPassMillis", "peakMemoryBytes", "database"}
+// hostFields is what run.json measures of the run itself, which no two runs share: its start on the
+// wall clock, its wall time, its mean pass time, its peak memory, and the name of its database,
+// drawn so two runs on one server never meet.
+var hostFields = []string{"startedAt", "wallSeconds", "meanPassMillis", "peakMemoryBytes", "database"}
 
 // A replay is a function of its window, its rule, its branch and its seed, so a rule's difference
 // from another is never noise of the run: two replays of one window under one rule, branch and seed

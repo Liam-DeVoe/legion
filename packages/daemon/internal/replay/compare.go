@@ -9,6 +9,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -289,7 +290,8 @@ func fullPlan() runPlan {
 
 // CompareConfig is a comparison of slot rules on two recorded windows (RunCompare): the windows,
 // the rules, the server the runs make their databases on, how many run at once, where they are
-// written, and which part of the comparison this process runs.
+// written, which part of the comparison this process runs, and the commit of the legion binary
+// that makes the runs.
 type CompareConfig struct {
 	// Windows is the directory of each recorded window, the window before the change of the rule
 	// first.
@@ -314,6 +316,9 @@ type CompareConfig struct {
 	KeepLogs bool
 	// Progress, where set, is told of each run as it ends.
 	Progress func(RunDone)
+	// BuildCommit is the commit of the legion binary that makes the runs, which each run's run.json
+	// names (RunConfig.BuildCommit).
+	BuildCommit string
 
 	// plan, where set, replaces the comparison's plan: a test's smaller one.
 	plan *runPlan
@@ -373,7 +378,7 @@ func RunCompare(ctx context.Context, cfg CompareConfig) error {
 		specs = append(specs, spec)
 	}
 	return runWindows(ctx, specs, runOptions{root: cfg.Runs, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: plan.perDraw,
-		keepLogs: cfg.KeepLogs, progress: cfg.Progress})
+		keepLogs: cfg.KeepLogs, progress: cfg.Progress, build: cfg.BuildCommit})
 }
 
 // compareRules is the rules a comparison runs, in the order of record.SlotRules: named, main, and
@@ -427,16 +432,17 @@ func distinctNames(before, after string) error {
 }
 
 // ValidateConfig is a validation of one window (RunValidate): the window, the rule its daemon ran,
-// the server the runs make their databases on, how many run at once, and the directory of runs
-// they are written under.
+// the server the runs make their databases on, how many run at once, the directory of runs they
+// are written under, and the commit of the legion binary that makes them (RunConfig.BuildCommit).
 type ValidateConfig struct {
-	Window   string
-	Rule     record.SlotRule
-	PGDSN    string
-	Parallel int
-	Out      string
-	KeepLogs bool
-	Progress func(RunDone)
+	Window      string
+	Rule        record.SlotRule
+	PGDSN       string
+	Parallel    int
+	Out         string
+	KeepLogs    bool
+	Progress    func(RunDone)
+	BuildCommit string
 
 	// plan, where set, replaces the validation's branches and seeds: a test's smaller one.
 	plan *runPlan
@@ -464,7 +470,7 @@ func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 	}
 	spec := windowSpec{dir: cfg.Window, name: name, parts: []partSpec{{rule: rule, branches: plan.branches}}}
 	if err := runWindows(ctx, []windowSpec{spec}, runOptions{root: cfg.Out, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: plan.perDraw,
-		keepLogs: cfg.KeepLogs, progress: cfg.Progress}); err != nil {
+		keepLogs: cfg.KeepLogs, progress: cfg.Progress, build: cfg.BuildCommit}); err != nil {
 		return Validation{}, err
 	}
 	runs, err := ReadRuns(cfg.Out)
@@ -476,16 +482,18 @@ func RunValidate(ctx context.Context, cfg ValidateConfig) (Validation, error) {
 
 // ForecastConfig is a forecast across a recorded change of the rule (RunForecast): the window
 // before the change, the window after it, the rule after it, the server the runs make their
-// databases on, how many run at once, and the directory of runs they are written under.
+// databases on, how many run at once, the directory of runs they are written under, and the commit
+// of the legion binary that makes them (RunConfig.BuildCommit).
 type ForecastConfig struct {
-	Before   string
-	After    string
-	Rule     record.SlotRule
-	PGDSN    string
-	Parallel int
-	Out      string
-	KeepLogs bool
-	Progress func(RunDone)
+	Before      string
+	After       string
+	Rule        record.SlotRule
+	PGDSN       string
+	Parallel    int
+	Out         string
+	KeepLogs    bool
+	Progress    func(RunDone)
+	BuildCommit string
 
 	// perDraw, where above zero, replaces SeedsPerDraw: a test's fewer seeds.
 	perDraw int
@@ -512,7 +520,7 @@ func RunForecast(ctx context.Context, cfg ForecastConfig) (ForecastResult, error
 		{dir: cfg.After, name: after, order: 1},
 	}
 	if err := runWindows(ctx, specs, runOptions{root: cfg.Out, pgDSN: cfg.PGDSN, parallel: cfg.Parallel, perDraw: cmp.Or(cfg.perDraw, SeedsPerDraw),
-		keepLogs: cfg.KeepLogs, progress: cfg.Progress}); err != nil {
+		keepLogs: cfg.KeepLogs, progress: cfg.Progress, build: cfg.BuildCommit}); err != nil {
 		return ForecastResult{}, err
 	}
 	runs, err := ReadRuns(cfg.Out)
@@ -663,15 +671,15 @@ func (c comparison) breakEven(window, rule string) BreakEvenResult {
 
 // Comparison is the document of a comparison of slot rules (spec R7), written in Markdown from the
 // runs alone, so it is the same whether one process made every run or many processes each made a
-// part: the windows, rules, branches, seeds and factors it read; the rule it names best, or that
-// none is, with each rule's trade; each window's scorecard read from its record; what each rule's
-// grace keeps over the waits that gave a slot back in each window's record; each window's
-// validation; the forecast across the change, with the workflow commits it carries too; which
-// window measures how a rule changes conflicts; the value of every measure for every rule, window
-// and branch, read from the snapshot timeline, with the lowest and the highest seed; the gap of
-// each measure between the snapshot and the line timelines; each rule's break-even slowdown
-// factor; and the assumptions and the scenario each run used. Every number in it is computed from
-// the runs.
+// part: the windows, rules, build commits of the runs, branches, seeds and factors it read; the
+// rule it names best, or that none is, with each rule's trade; each window's scorecard read from
+// its record; what each rule's grace keeps over the waits that gave a slot back in each window's
+// record; each window's validation; the forecast across the change, with the workflow commits it
+// carries too; which window measures how a rule changes conflicts; the value of every measure for
+// every rule, window and branch, read from the snapshot timeline, with the lowest and the highest
+// seed; the gap of each measure between the snapshot and the line timelines; each rule's
+// break-even slowdown factor; and the assumptions and the scenario each run used. Every number in
+// it is computed from the runs.
 func (r Runs) Comparison() (string, error) {
 	c, err := r.readComparison()
 	if err != nil {
@@ -714,8 +722,8 @@ func (r Runs) Comparison() (string, error) {
 }
 
 // writeHead writes the document's title and what it read: each window with its span, place and
-// rule, the rules with their commits, the branches, the seeds and the factors of the break-even
-// search.
+// rule, the rules with their commits, the build commit of each run (buildsText), the branches, the
+// seeds and the factors of the break-even search.
 func (c comparison) writeHead(p *printer, forecast ForecastResult) {
 	before, after := c.windows[0], c.windows[1]
 	p.line("# Slot rules compared on %s and %s", before.Name, after.Name)
@@ -735,6 +743,7 @@ func (c comparison) writeHead(p *printer, forecast ForecastResult) {
 		rules = append(rules, fmt.Sprintf("`%s` (commit `%s`)", rule, c.commits[rule]))
 	}
 	p.line("- The rules: %s.", strings.Join(rules, ", "))
+	p.line("- The build commit of each run, the commit of the `legion` binary that made it: %s.", c.buildsText())
 	labels := make([]string, 0, len(c.branches))
 	for _, at := range c.branches {
 		labels = append(labels, "`"+at.Label()+"`")
@@ -760,6 +769,43 @@ func (c comparison) writeHead(p *printer, forecast ForecastResult) {
 	p.line("- A branch's value of a measure is the mean of its seeds; where it ran more than one, the lowest and the highest seed's value follow in parentheses.")
 	p.line("- The forecast across the change replays %s under `%s`, the rule of %s.", forecast.Before, forecast.Rule, forecast.After)
 	p.line("")
+}
+
+// buildsText is each build commit the comparison's runs name (runRead.build) with how many of its
+// runs name it, in the order of the first start of a run of each (runRead.started), then by commit,
+// so the commits read in the order the code that made the runs ran.
+func (c comparison) buildsText() string {
+	type build struct {
+		commit string
+		runs   int
+		first  time.Time
+	}
+	builds := map[string]*build{}
+	total := 0
+	for _, part := range c.runs.parts {
+		for _, runs := range part.runs {
+			for _, run := range runs {
+				b, seen := builds[run.build]
+				if !seen {
+					b = &build{commit: run.build, first: run.started}
+					builds[run.build] = b
+				}
+				b.runs++
+				if run.started.Before(b.first) {
+					b.first = run.started
+				}
+				total++
+			}
+		}
+	}
+	ordered := slices.SortedFunc(maps.Values(builds), func(a, b *build) int {
+		return cmp.Or(a.first.Compare(b.first), strings.Compare(a.commit, b.commit))
+	})
+	texts := make([]string, 0, len(ordered))
+	for _, b := range ordered {
+		texts = append(texts, fmt.Sprintf("`%s` (%d of the %d runs)", b.commit, b.runs, total))
+	}
+	return strings.Join(texts, ", ")
 }
 
 // partsText is a window's parts as the document names them: each part's release, commit and rule.

@@ -267,7 +267,8 @@ Nothing outside is asked: no Dispatch, no GitHub, no NATS.
 --out receives log.jsonl (the daemon's lines on the simulated clock), scorecard.json (the
 measures read from the states the daemon's own admission passes left), scorecard-line.json (the
 same measures read back from log.jsonl and the replay's Dispatch events, as a record's are),
-run.json (what ran, what it counted, the gap of each measure between the two scorecards and the
+run.json (what ran, the commit this binary was built from, or unknown, and the run's start on
+the wall clock, what it counted, the gap of each measure between the two scorecards and the
 conflict model) and, with --trace-segments, segments.jsonl. The output names the branch, each
 assumption the run rests on and the scenario it gave the work of an issue that never started.`
 
@@ -310,7 +311,7 @@ func newReplayRunCommand(stdout, stderr io.Writer) *cobra.Command {
 			return 1
 		}
 		result, err := replay.Run(ctx, replay.RunConfig{Window: window, Rule: rule, Branch: branch, Seed: *seed, Slowdown: *slowdown,
-			PGDSN: *dsn, Out: *out, KeepDB: *keepDB, TraceSegments: *traceSegments})
+			PGDSN: *dsn, Out: *out, KeepDB: *keepDB, TraceSegments: *traceSegments, BuildCommit: binaryCommit()})
 		if err != nil {
 			fmt.Fprintf(stderr, "legion replay run: %v\n", err)
 			return 1
@@ -495,7 +496,7 @@ func newReplayValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 			}
 			var err error
 			validation, err = replay.RunValidate(ctx, replay.ValidateConfig{Window: *windowDir, Rule: rule, PGDSN: *dsn, Parallel: *parallel,
-				Out: *out, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "validate")})
+				Out: *out, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "validate"), BuildCommit: binaryCommit()})
 			if err != nil {
 				fmt.Fprintf(stderr, "legion replay validate: %v\n", err)
 				return 1
@@ -590,7 +591,7 @@ func newReplayForecastCommand(stdout, stderr io.Writer) *cobra.Command {
 			}
 			var err error
 			forecast, err = replay.RunForecast(ctx, replay.ForecastConfig{Before: *before, After: *after, Rule: rule, PGDSN: *dsn,
-				Parallel: *parallel, Out: *out, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "forecast")})
+				Parallel: *parallel, Out: *out, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "forecast"), BuildCommit: binaryCommit()})
 			if err != nil {
 				fmt.Fprintf(stderr, "legion replay forecast: %v\n", err)
 				return 1
@@ -626,16 +627,17 @@ alone into --runs and write no document, so each pod of an indexed Job can run o
 --from-runs <dir>... --out <file> writes the document from the directories the parts wrote,
 running nothing; it is the same document a single process writes.
 
-The document gives each window's scorecard read from its record; for each rule with a grace, how
-many of the waits on another issue that gave a slot back in each window's record the grace keeps
-the slot through, of how many, and the slot-hours it keeps; each window's validation under its own
-rule, with which branches give no comparison; the forecast across the change, which replays the
-window before under the rule of the window after, with the workflow commits it carries too; which
-window measures how a rule changes conflicts; the value of every measure for every rule, window
-and branch, read from the snapshot timeline, with the lowest and the highest seed; the gap of each
-measure between the snapshot and the line timelines; each rule's break-even slowdown factor
-against main; the rule it names best, or that none is, with each rule's trade; and the
-assumptions and the scenario each run used.`
+The document names the build commit of the runs it read, the commit of the legion binary that
+made them, with how many runs each made. It gives each window's scorecard read from its record;
+for each rule with a grace, how many of the waits on another issue that gave a slot back in each
+window's record the grace keeps the slot through, of how many, and the slot-hours it keeps; each
+window's validation under its own rule, with which branches give no comparison; the forecast
+across the change, which replays the window before under the rule of the window after, with the
+workflow commits it carries too; which window measures how a rule changes conflicts; the value of
+every measure for every rule, window and branch, read from the snapshot timeline, with the lowest
+and the highest seed; the gap of each measure between the snapshot and the line timelines; each
+rule's break-even slowdown factor against main; the rule it names best, or that none is, with
+each rule's trade; and the assumptions and the scenario each run used.`
 
 // newReplayCompareCommand is `legion replay compare` (replay.RunCompare, replay.Runs.Comparison).
 func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -693,7 +695,8 @@ func newReplayCompareCommand(stdout, stderr io.Writer) *cobra.Command {
 				rules = record.SlotRules()
 			}
 			if err := replay.RunCompare(ctx, replay.CompareConfig{Windows: *windows, Rules: rules, PGDSN: *dsn, Parallel: *parallel, Runs: *runsDir,
-				OnlyWindow: *onlyWindow, OnlyRule: *onlyRule, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "compare")}); err != nil {
+				OnlyWindow: *onlyWindow, OnlyRule: *onlyRule, KeepLogs: *keepLogs, Progress: replayProgress(stderr, "compare"),
+				BuildCommit: binaryCommit()}); err != nil {
 				fmt.Fprintf(stderr, "legion replay compare: %v\n", err)
 				return 1
 			}

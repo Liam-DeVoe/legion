@@ -213,7 +213,8 @@ type RunDone struct {
 
 // runOptions is how a process runs its parts: the directory of runs, the server each run makes its
 // database on, how many runs at once, the seeds of a branch with a draw, whether each run's log is
-// kept, and who is told of each run as it ends.
+// kept, who is told of each run as it ends, and the commit of the legion binary that makes the runs
+// (RunConfig.BuildCommit).
 type runOptions struct {
 	root     string
 	pgDSN    string
@@ -221,6 +222,7 @@ type runOptions struct {
 	perDraw  int
 	keepLogs bool
 	progress func(RunDone)
+	build    string
 }
 
 // runWindows runs every part of windows, one window at a time so one window's inputs are in memory
@@ -363,7 +365,7 @@ func runOne(ctx context.Context, w Window, inputs func() (*windowInputs, error),
 		}
 	} else {
 		if _, err := Run(ctx, RunConfig{Window: w, Rule: rule, Branch: p.at.Branch, Seed: p.seed, Slowdown: p.at.Slowdown, PGDSN: opts.pgDSN, Out: p.dir,
-			inputs: inputs}); err != nil {
+			BuildCommit: opts.build, inputs: inputs}); err != nil {
 			return done, fmt.Errorf("replay: %s under %s on %s, seed %d: %w", window, rule.Name, p.at.Label(), p.seed, err)
 		}
 		if !opts.keepLogs {
@@ -447,9 +449,11 @@ type partRead struct {
 
 // runRead is what a report reads of one run: its seed, its scorecard from the snapshot timeline
 // with the decision's costs read from it, its scorecard from the line timeline, the gap of each
-// measure between the two (run.json's, each issue's own left out), and the assumptions and the
-// scenario it ran under. A run of a part that no validation or forecast reads keeps no issue's
-// times of its line scorecard, and no run keeps its snapshot scorecard's, which no report reads.
+// measure between the two (run.json's, each issue's own left out), the assumptions and the
+// scenario it ran under, and the commit of the legion binary that made it (unknownBuild for a
+// run.json that names none) with the moment on the wall clock it started. A run of a part that no
+// validation or forecast reads keeps no issue's times of its line scorecard, and no run keeps its
+// snapshot scorecard's, which no report reads.
 type runRead struct {
 	seed        int64
 	snapshot    Scorecard
@@ -458,6 +462,8 @@ type runRead struct {
 	gaps        []MeasureGap
 	assumptions []int
 	scenario    string
+	build       string
+	started     time.Time
 }
 
 // ReadRuns reads every window's record and every part, with its runs, that dirs hold. A part found
@@ -588,6 +594,7 @@ func readRun(dir string, keepIssues bool) (runRead, error) {
 		}
 	}
 	read.assumptions, read.scenario = ran.Assumptions, ran.Scenario
+	read.build, read.started = cmp.Or(ran.BuildCommit, unknownBuild), ran.StartedAt
 	return read, nil
 }
 
