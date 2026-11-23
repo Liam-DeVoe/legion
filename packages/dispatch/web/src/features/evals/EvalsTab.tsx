@@ -1,8 +1,15 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
+import { Link } from "react-router-dom";
 
-import { type EvalKind, evalsViewQuery, legionDaemonQuery } from "../../api/queries";
+import {
+  type EvalKind,
+  evalsViewQuery,
+  legionDaemonQuery,
+  projectDeliverySettingsQuery,
+} from "../../api/queries";
 import type { EvalListResponse } from "../../api/types";
+import { linkText, textMutedOnCanvas } from "../../theme/classes";
 import { CiHealth } from "./CiHealth";
 import { DeploysSection } from "./DeploysSection";
 import { EvalPanelHost } from "./EvalPanel";
@@ -17,19 +24,6 @@ import { narrowingQuery, useSettledSearch, useTimelineUrlState } from "./timelin
 import { brushDays, useTabScopes } from "./useEvalsScope";
 import type { EvalsScope, EvalsViewSelect, EvalsViewState } from "./useEvalsViews";
 
-/** The views each section reads, by kind: the target cards read the delivery and the Legion evals
- *  (plan D3), the Deploys and lead time section the same delivery view as the cards, the merge
- *  timeline none, since it reads a view of its own once it is opened (spec R13), and the Logged
- *  section every view the tab reads, since a logged eval may be of any kind (plan D7). */
-const CARDS: readonly EvalKind[] = ["delivery", "legion"];
-const CARDS_WITHOUT_LEGION: readonly EvalKind[] = ["delivery"];
-const LEGION: readonly EvalKind[] = ["legion"];
-const CI: readonly EvalKind[] = ["ci"];
-const DEPLOYS: readonly EvalKind[] = ["delivery"];
-const TIMELINE: readonly EvalKind[] = [];
-const EVERY_KIND: readonly EvalKind[] = ["delivery", "legion", "ci", "experiment"];
-const EVERY_KIND_BUT_LEGION: readonly EvalKind[] = ["delivery", "ci", "experiment"];
-
 /** One section of the tab: what it is, its heading, the kinds of eval it reads, what it keeps
  *  of each page of their views (all of it where absent), and whether no eval it draws is narrowed
  *  by the facets (plan D3). */
@@ -43,25 +37,71 @@ interface Section {
 
 /** The tab's sections, in the order dispatch://INFRA-2918/spec R2 sets: the target cards, the
  *  Legion measures, CI health, deploys and lead time, the merge timeline, and then every eval the
- *  project's agents and jobs log, of every view the tab reads. The Legion section, the Legion
- *  cards and the Legion view show only where the project has a Legion daemon (spec R5). No facet
- *  narrows a Legion or a CI eval (plan D7a). */
-function sectionsOf(legion: boolean): Section[] {
-  return [
-    { id: "cards", title: "Target cards", kinds: legion ? CARDS : CARDS_WITHOUT_LEGION },
-    ...(legion
-      ? [{ id: "legion", title: "Legion measures", kinds: LEGION, windowOnly: true } as const]
-      : []),
-    { id: "ci", title: "CI health", kinds: CI, windowOnly: true },
-    { id: "deploys", title: "Deploys and lead time", kinds: DEPLOYS },
-    { id: "timeline", title: "Merge timeline", kinds: TIMELINE },
-    {
-      id: "logged",
-      title: "Logged",
-      kinds: legion ? EVERY_KIND : EVERY_KIND_BUT_LEGION,
-      select: keepLogged,
-    },
-  ];
+ *  project's agents and jobs log. Each reads the views of its kinds: the target cards the delivery
+ *  and the Legion evals (plan D3), the Deploys and lead time section the same delivery view as the
+ *  cards, the merge timeline none, since it reads a view of its own once it is opened (spec R13),
+ *  and the Logged section every view the tab reads, since a logged eval may be of any kind (plan
+ *  D7). No facet narrows a Legion or a CI eval (plan D7a). */
+const SECTIONS: readonly Section[] = [
+  { id: "cards", title: "Target cards", kinds: ["delivery", "legion"] },
+  { id: "legion", title: "Legion measures", kinds: ["legion"], windowOnly: true },
+  { id: "ci", title: "CI health", kinds: ["ci"], windowOnly: true },
+  { id: "deploys", title: "Deploys and lead time", kinds: ["delivery"] },
+  { id: "timeline", title: "Merge timeline", kinds: [] },
+  {
+    id: "logged",
+    title: "Logged",
+    kinds: ["delivery", "legion", "ci", "experiment"],
+    select: keepLogged,
+  },
+];
+
+/** The sections a project's sources show (spec R5, R19): the Legion evals only where it has a
+ *  Legion daemon, and the delivery and CI evals only where its delivery is on, each section with
+ *  the views of the kinds it shows and none with no kind left, but the merge timeline, which reads
+ *  no evals view. */
+function sectionsOf(legion: boolean, delivery: boolean): Section[] {
+  const shown = (kind: EvalKind) =>
+    kind === "experiment" || (kind === "legion" ? legion : delivery);
+  return SECTIONS.flatMap((section) => {
+    const kinds = section.kinds.filter(shown);
+    return section.id === "timeline" || kinds.length > 0 ? [{ ...section, kinds }] : [];
+  });
+}
+
+/** The line the header shows for a project with no delivery settings (spec R5, plan D3):
+ *  "Delivery: not set up", linking to the project's settings, where its delivery is set up
+ *  (dispatch://INFRA-978); or, with no Legion daemon either (`everySource`), one line naming both
+ *  settings, each linked, the daemon's on the Settings page. */
+function MissingSources({
+  everySource,
+  project,
+}: {
+  everySource: boolean;
+  project: string;
+}): ReactNode {
+  const settings = `/projects/${project}/settings`;
+  return (
+    <p className={`text-sm ${textMutedOnCanvas}`} data-missing-sources>
+      {everySource ? (
+        <>
+          Nothing to show yet: set this project's{" "}
+          <Link className={linkText} to="/settings">
+            Legion daemon
+          </Link>{" "}
+          or its{" "}
+          <Link className={linkText} to={settings}>
+            delivery settings
+          </Link>
+          .
+        </>
+      ) : (
+        <Link className={linkText} to={settings}>
+          Delivery: not set up
+        </Link>
+      )}
+    </p>
+  );
 }
 
 /** The window and compare range of an answer, which are the same in every view of one scope. */
@@ -146,14 +186,18 @@ function drawSection(
  * one page of numbers, every project's alike, under one header. It is a subscriber: it opens one
  * evals view per kind it shows, all at once, and each section paints from its own as it lands,
  * never waiting for another's (plan D3). In parallel it reads the project's Legion daemon, which
- * decides whether the Legion section and cards show; until that read answers they show, so their
- * view is opened with the others rather than after it. The merge timeline opens no view until the
- * reader opens it (spec R13); its brush sets the target cards' days and its Repository facet the
- * repository every number reads (decision 3). Its other facets and its search, which the URL holds
- * whether it is open or not, narrow the delivery view the cards and the Deploys and lead time
- * section read (D7a); the first paint is never narrowed, so a tab opened with one set paints from
- * the unnarrowed delivery view and draws the narrowed one once it lands (`useTabScopes`). A card's
- * or a chart's title opens the number's panel (plan D12).
+ * decides whether the Legion section and cards show, and its delivery settings, which decide
+ * whether the delivery and CI sections, cards and targets show: with no settings row or delivery
+ * off they do not, though Dispatch's eval reads still hold those evals, and with no row the header
+ * says delivery is not set up; with no daemon either, the tab shows that one line and no section.
+ * Until each read answers its sections show, so their views are opened with the others rather
+ * than after them. The merge timeline opens no view until the reader opens it (spec R13); its
+ * brush sets the target cards' days and its Repository facet the repository every number reads
+ * (decision 3). Its other facets and its search, which the URL holds whether it is open or not,
+ * narrow the delivery view the cards and the Deploys and lead time section read (D7a); the first
+ * paint is never narrowed, so a tab opened with one set paints from the unnarrowed delivery view
+ * and draws the narrowed one once it lands (`useTabScopes`). A card's or a chart's title opens the
+ * number's panel (plan D12).
  *
  * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
  * with the window the server moves (`useEvalsScope`).
@@ -163,21 +207,27 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
   const [timeline] = useTimelineUrlState();
   const search = useSettledSearch(timeline.filters);
   const daemon = useQuery(legionDaemonQuery(project));
+  const settings = useQuery(projectDeliverySettingsQuery(project));
   const legion = daemon.data !== null;
-  // Whether the project's delivery is on, which draws the delivery cards: every project's until
-  // the tab reads the project's delivery settings (plan T24).
-  const delivery = true;
+  // Off for no settings row (null) and for delivery off; on until the read answers.
+  const delivery = settings.data === undefined || settings.data?.delivery === true;
+  const everySourceMissing = daemon.data === null && settings.data === null;
   const { cards: cardsScope, scope } = useTabScopes(
     project,
     state,
     narrowingQuery(timeline.filters, search)
   );
   const days = useMemo(() => brushDays(state.brush), [state.brush]);
-  const sections = sectionsOf(legion);
+  const sections = everySourceMissing ? [] : sectionsOf(legion, delivery);
   const kinds = [...new Set(sections.flatMap((section) => section.kinds))];
   return (
     <div className="flex flex-col gap-6">
-      <LiveHeader kinds={kinds} onChange={setState} scope={scope} state={state} />
+      <div className="flex flex-col gap-2">
+        <LiveHeader kinds={kinds} onChange={setState} scope={scope} state={state} />
+        {settings.data === null ? (
+          <MissingSources everySource={everySourceMissing} project={project} />
+        ) : null}
+      </div>
       <EvalPanelHost kinds={kinds} scope={scope}>
         {sections.map((section) =>
           section.id === "timeline" ? (

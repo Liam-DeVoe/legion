@@ -297,9 +297,12 @@ test("renders header, tabs, and the Issues panel; /documents selects Documents",
 test("the Evals tab shows on a project with no source, and /evals selects it", async () => {
   const user = userEvent.setup();
   // The tab subscribes its evals views over the live socket and reads the project's Legion
-  // daemon; this project names none.
+  // daemon and its delivery settings; this project has neither.
   const sockets = installFakeLiveSockets();
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    null
+  );
   try {
     const issues = renderPage("/projects/CORE/issues");
     try {
@@ -316,14 +319,25 @@ test("the Evals tab shows on a project with no source, and /evals selects it", a
       await screen.findByRole("heading", { name: "Core" });
       expect(screen.getByRole("tab", { name: "Evals" })).toHaveAttribute("aria-selected", "true");
       const panel = screen.getByRole("tabpanel", { name: "Evals" });
-      expect(within(panel).getByRole("region", { name: "Target cards" })).toBeTruthy();
+      // With no source, the tab holds the one line naming both settings, and no section.
+      expect(await within(panel).findByRole("link", { name: "Legion daemon" })).toHaveAttribute(
+        "href",
+        "/settings"
+      );
+      expect(within(panel).getByRole("link", { name: "delivery settings" })).toHaveAttribute(
+        "href",
+        "/projects/CORE/settings"
+      );
+      expect(panel.querySelector("[data-section]")).toBeNull();
       expect(screen.queryByRole("tabpanel", { name: "Issues" })).not.toBeInTheDocument();
-      await waitFor(() => expect(getLegionDaemon).toHaveBeenCalledWith("CORE"));
+      expect(getLegionDaemon).toHaveBeenCalledWith("CORE");
+      expect(getProjectDeliverySettings).toHaveBeenCalledWith("CORE");
     } finally {
       evals.restore();
     }
   } finally {
     getLegionDaemon.mockRestore();
+    getProjectDeliverySettings.mockRestore();
     sockets.restore();
   }
 });

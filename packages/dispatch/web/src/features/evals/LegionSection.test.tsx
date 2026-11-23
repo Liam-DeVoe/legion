@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
+import { deliverySettings } from "../../__tests__/delivery-settings";
 import {
   evalItem,
   evalSeries,
@@ -269,7 +270,10 @@ test("a phase part opens the issues holding hours on its bar", async () => {
 test("the section is absent with no daemon", async () => {
   const sockets = installFakeLiveSockets();
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
-  spies.push(getLegionDaemon, { mockRestore: sockets.restore });
+  const settings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    deliverySettings("ACME")
+  );
+  spies.push(getLegionDaemon, settings, { mockRestore: sockets.restore });
   render(
     <MemoryRouter initialEntries={["/projects/ACME/evals?window=28d"]}>
       <QueryClientProvider

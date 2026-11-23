@@ -765,6 +765,14 @@ export const deliverySettingsQuery = () =>
     queryFn: () => api.getDeliverySettings(),
   });
 
+/** One project's delivery settings, or `null` for a project that has none: the Evals tab reads
+ *  them to decide its delivery and CI sections, and `/delivery` its default project. */
+export const projectDeliverySettingsQuery = (project: string) =>
+  queryOptions({
+    queryKey: ["project-delivery-settings", project],
+    queryFn: () => api.getProjectDeliverySettings(project),
+  });
+
 /** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
  *  project is its own entry: the Settings page's Legion section reads one entry per project
  *  (`useLegionDaemons`), since no route lists them. */

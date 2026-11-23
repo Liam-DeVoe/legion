@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { deliverySettings } from "../../__tests__/delivery-settings";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import {
   errorFrame,
@@ -31,6 +32,7 @@ import type {
   LegionSetting,
   LiveServerFrame,
   LiveSubscribe,
+  ProjectDeliverySettings,
 } from "../../api/types";
 import { applyRevs } from "../delivery/lib/applyDelta";
 import * as timeline from "../delivery/Timeline";
@@ -41,7 +43,7 @@ import { EvalsTab } from "./EvalsTab";
 
 // The state table of a section (dispatch://INFRA-2918/artifact/plan-md, "The state table of a
 // section"): each row a test driven by a fake live socket that sends the frames in the order the
-// row names. The rows a later task builds are `test.todo`, naming that task.
+// row names.
 
 const DAEMON: LegionSetting = {
   created_by: { id: "alice", kind: "user" },
@@ -165,15 +167,30 @@ function detailOf(docText: string | null): EvalDetailResponse {
   };
 }
 
-/** The tab at `search`, its project's daemon read answering `daemon` ("pending" never answers),
- *  and each eval's detail read answering no method and no declared chart. */
-function renderTab(daemon: LegionSetting | null | "pending" = DAEMON, search = "?window=28d") {
-  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockImplementation(() =>
-    daemon === "pending" ? Promise.withResolvers<never>().promise : Promise.resolve(daemon)
+/** A read's answer as a row names it: the row, `null` for none, "pending" for a read that never
+ *  answers, or a promise the row settles. */
+type Answer<T> = T | null | "pending" | Promise<T | null>;
+
+function answerOf<T>(named: Answer<T>): Promise<T | null> {
+  if (named === "pending") return Promise.withResolvers<never>().promise;
+  return named instanceof Promise ? named : Promise.resolve(named);
+}
+
+/** The tab at `search`, its project's daemon read answering `daemon` and its delivery settings
+ *  read `settings` (delivery on, by default), and each eval's detail read answering no method and
+ *  no declared chart. */
+function renderTab(
+  daemon: Answer<LegionSetting> = DAEMON,
+  search = "?window=28d",
+  settings: Answer<ProjectDeliverySettings> = deliverySettings("ACME")
+) {
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockImplementation(() => answerOf(daemon));
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockImplementation(
+    () => answerOf(settings)
   );
   const listIssues = spyOn(api, "listIssues");
   const getEval = spyOn(api, "getEval").mockResolvedValue(detailOf(null));
-  spies.push(getLegionDaemon, listIssues, getEval);
+  spies.push(getLegionDaemon, getProjectDeliverySettings, listIssues, getEval);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <MemoryRouter initialEntries={[`/projects/ACME/evals${search}`]}>
@@ -182,7 +199,7 @@ function renderTab(daemon: LegionSetting | null | "pending" = DAEMON, search = "
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { getEval, getLegionDaemon, listIssues };
+  return { getEval, getLegionDaemon, getProjectDeliverySettings, listIssues };
 }
 
 /** The page's live socket, once it has opened one, as Dispatch accepts it. */
@@ -249,6 +266,27 @@ function listed(name: string): string[] {
   return [...region(name).querySelectorAll("[data-eval]")].map(
     (row) => row.getAttribute("data-eval") ?? ""
   );
+}
+
+/** The sections the tab draws, by id, in order. */
+function sectionsDrawn(): string[] {
+  return [...document.querySelectorAll("[data-section]")].map(
+    (section) => section.getAttribute("data-section") ?? ""
+  );
+}
+
+/** The target cards drawn, by eval slug, in order. */
+function cardsDrawn(): string[] {
+  return [...region("Target cards").querySelectorAll("[data-card]")].map(
+    (card) => card.getAttribute("data-card") ?? ""
+  );
+}
+
+/** The kinds of the evals views `socket` holds now, sorted. */
+function heldKinds(socket: FakeLiveSocket): string[] {
+  return heldViews(socket)
+    .map((frame) => queryOf(frame).get("kind") ?? "")
+    .sort();
 }
 
 /** A brush dragged over part of three UTC days, and the whole days it touches. */
@@ -992,6 +1030,50 @@ const stateRows: [string, () => Promise<void>][] = [
       expect(heldViews(socket).filter((frame) => frame.sub === sub)).toHaveLength(1);
     },
   ],
+  [
+    'subscribed | sources answer "delivery off" | hidden (delivery, CI)',
+    async () => {
+      const settings = Promise.withResolvers<ProjectDeliverySettings | null>();
+      renderTab(DAEMON, "?window=28d", settings.promise);
+      const socket = await openSocket();
+      // Until the settings answer, the delivery and CI views open with the others and paint.
+      const delivery = await answerView(socket, "delivery");
+      const ci = await answerView(socket, "ci");
+      await answerView(socket, "legion");
+      expect(cardsDrawn()).toContain("deploy-frequency");
+
+      act(() => settings.resolve(deliverySettings("ACME", { delivery: false })));
+      await waitFor(() =>
+        expect(sectionsDrawn()).toEqual(["cards", "legion", "timeline", "logged"])
+      );
+      // The delivery view held the delivery evals: the tab hides them from the settings alone.
+      expect(cardsDrawn()).toEqual(["legion-work-time", "legion-rework"]);
+      await waitFor(() =>
+        expect(socket.unsubscribes().map((frame) => frame.sub)).toEqual(
+          expect.arrayContaining([delivery, ci])
+        )
+      );
+      expect(heldKinds(socket)).toEqual(["experiment", "legion"]);
+      // The project has its settings, with delivery off: no "not set up" line.
+      expect(document.querySelector("[data-missing-sources]")).toBeNull();
+    },
+  ],
+  [
+    'subscribed | sources answer "no settings row" | hidden (delivery, CI); the header\'s "Delivery: not set up" line with its link',
+    async () => {
+      renderTab(DAEMON, "?window=28d", null);
+      const socket = await openSocket();
+      const link = await screen.findByRole("link", { name: "Delivery: not set up" });
+      expect(link).toHaveAttribute("href", "/projects/ACME/settings");
+      expect(document.querySelectorAll("[data-missing-sources]")).toHaveLength(1);
+      await waitFor(() =>
+        expect(sectionsDrawn()).toEqual(["cards", "legion", "timeline", "logged"])
+      );
+      await waitFor(() => expect(heldKinds(socket)).toEqual(["experiment", "legion"]));
+      await answerView(socket, "legion");
+      expect(cardsDrawn()).toEqual(["legion-work-time", "legion-rework"]);
+    },
+  ],
 ];
 
 bunTest.each(stateRows)("%s", async (_row, run) => {
@@ -1002,27 +1084,48 @@ bunTest.each(stateRows)("%s", async (_row, run) => {
   }
 });
 
-/** The rows of the table a later task builds, each with the task that builds it. Their bodies run
- *  only under `bun test --todo`, where each says which task it waits for. */
-const laterRows: [string, string][] = [
-  [
-    'subscribed | sources answer "delivery off" | hidden (delivery, CI)',
-    "T24, the per-project delivery settings read",
-  ],
-  [
-    'subscribed | sources answer "no settings row" | hidden (delivery, CI); the header\'s "Delivery: not set up" line with its link',
-    "T24",
-  ],
-];
-
-for (const [row, task] of laterRows) {
-  bunTest.todo(`${row} (waits for ${task})`, () => {
-    throw new Error(`${task} builds this row`);
+test("with no daemon and no settings row, one line names both settings with links, and no section shows", async () => {
+  renderTab(null, "?window=28d", null);
+  const socket = await openSocket();
+  const line = await waitFor(() => {
+    const found = document.querySelector<HTMLElement>("[data-missing-sources]");
+    expect(found?.textContent).toBe(
+      "Nothing to show yet: set this project's Legion daemon or its delivery settings."
+    );
+    return found as HTMLElement;
   });
-}
+  expect(within(line).getByRole("link", { name: "Legion daemon" })).toHaveAttribute(
+    "href",
+    "/settings"
+  );
+  expect(within(line).getByRole("link", { name: "delivery settings" })).toHaveAttribute(
+    "href",
+    "/projects/ACME/settings"
+  );
+  expect(screen.queryByRole("link", { name: "Delivery: not set up" })).toBeNull();
+  expect(sectionsDrawn()).toEqual([]);
+  await waitFor(() => expect(heldKinds(socket)).toEqual([]));
+});
 
-test("the four views open at once, with the Legion daemon read in parallel", async () => {
-  const { getLegionDaemon } = renderTab("pending");
+test('a live section with no data reads "no data", not 0', async () => {
+  renderTab();
+  const socket = await openSocket();
+  // The delivery view holds deploy-frequency with no series, and no deployment-rework-rate.
+  await answerView(socket, "delivery");
+  for (const slug of ["deploy-frequency", "deployment-rework-rate"]) {
+    const card = region("Target cards").querySelector<HTMLElement>(`[data-card="${slug}"]`);
+    if (card === null) throw new Error(`no ${slug} card`);
+    expect(within(card).getAllByText("no data").length).toBeGreaterThan(0);
+    expect(within(card).queryByText(/^0/)).toBeNull();
+  }
+});
+
+test("the four views open at once, with the Legion daemon and delivery settings reads in parallel", async () => {
+  const { getLegionDaemon, getProjectDeliverySettings } = renderTab(
+    "pending",
+    "?window=28d",
+    "pending"
+  );
   const socket = await openSocket();
   await waitFor(() =>
     expect(
@@ -1032,6 +1135,7 @@ test("the four views open at once, with the Legion daemon read in parallel", asy
     ).toEqual(["ci", "delivery", "experiment", "legion"])
   );
   expect(getLegionDaemon).toHaveBeenCalledWith("ACME");
+  expect(getProjectDeliverySettings).toHaveBeenCalledWith("ACME");
   for (const frame of heldViews(socket)) {
     expect(frame.view).toMatchObject({ kind: "evals", project: "ACME", window: { preset: 28 } });
     expect(queryOf(frame).get("limit")).toBe("200");

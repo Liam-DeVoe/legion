@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { deliverySettings } from "../../__tests__/delivery-settings";
 import { evalItem, evalsAnswer, WINDOW } from "../../__tests__/evals-fixture";
 import {
   type IntersectionControl,
@@ -70,6 +71,9 @@ beforeEach(() => {
     );
   });
   const daemon = spyOn(api, "getLegionDaemon").mockResolvedValue(DAEMON);
+  const settings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    deliverySettings("ACME")
+  );
   // The tab reads the detail of each eval no section draws by name, which `answerEvals`' are, to
   // learn whether it declares charts: none, and no method.
   const detail = spyOn(api, "getEval").mockResolvedValue({
@@ -85,6 +89,7 @@ beforeEach(() => {
   restores.push(
     () => chart.mockRestore(),
     () => daemon.mockRestore(),
+    () => settings.mockRestore(),
     () => detail.mockRestore()
   );
 });

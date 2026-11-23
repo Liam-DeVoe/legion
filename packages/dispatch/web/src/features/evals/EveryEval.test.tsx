@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { deliverySettings } from "../../__tests__/delivery-settings";
 import {
   evalItem,
   evalSeries,
@@ -115,10 +116,13 @@ async function openSocket(): Promise<FakeLiveSocket> {
   return socket;
 }
 
-/** The tab of a project with a Legion daemon, and its live socket, open. */
+/** The tab of a project with a Legion daemon and delivery on, and its live socket, open. */
 async function renderTab(): Promise<FakeLiveSocket> {
   const daemon = spyOn(api, "getLegionDaemon").mockResolvedValue(DAEMON);
-  spies.push(daemon);
+  const settings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    deliverySettings("ACME")
+  );
+  spies.push(daemon, settings);
   render(
     <MemoryRouter initialEntries={["/projects/ACME/evals?window=28d"]}>
       <QueryClientProvider
