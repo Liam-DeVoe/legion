@@ -941,6 +941,8 @@ What each part is for:
   runs no ladder leaves the daemon nothing to wait for.
   `LEGION_STALL_CALL_GRACE_MS` is the grace over a deadline a call declared for itself, 300000
   (5 minutes). `LEGION_STALL_STEP_MS` is the gap between the ladder's steps, 120000 (2 minutes).
+  The worker checks its open calls every quarter of that gap, but never more often than once a
+  second and never less often than every 5 seconds, so the default gap gives a check every 5 seconds.
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
   reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),
@@ -1325,12 +1327,12 @@ Closing the terminal leaves the project without one, and the daemon logs
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
    role of an open issue live and idle between phases and while the root waits on a person. A child
-   that left the workflow and is set back to `todo` gets its own architect and its planner back,
-   on their kept sessions, at its next first phase start, and each other role at the start of its
-   phase. A claim whose session supervise's `forgetSession` has dropped comes back in a new
-   session instead. The daemon suspends or ends claims only when an issue leaves the workflow,
-   when a claim moves to another tree, or for a production check after the issue is done. A phase
-   start gives its task to that live claim. At boot the daemon
+   that left the workflow and is set back to `todo` gets its own architect and the agent of its
+   first step back, on their kept sessions, at its next first phase start, and each other role at
+   the start of its phase. A claim whose session supervise's `forgetSession` has dropped comes back
+   in a new session instead. The daemon suspends or ends claims only when an issue leaves the
+   workflow, when a claim moves to another tree, or for a production check after the issue is done.
+   A phase start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
    operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
    operator-suspended architect waits until the operator resumes it. A notice for a child whose
