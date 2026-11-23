@@ -122,6 +122,7 @@ func (rig *copyRig) enqueue(t *testing.T, issue string, payload record.OutboxPay
 // takes another task's, or the issue's own (its control: the removal of the issue's Location in
 // place of the task's name, which removes legion-208).
 func TestTheRemovalOfARemovedTasksWorkingCopyRemovesThatCopyAlone(t *testing.T) {
+	t.Parallel()
 	rig := newCopyRig(t, copyIssue, "a", "c")
 	row := rig.enqueue(t, copyIssue.Key, record.TaskCopyRemove{Generation: 1, Task: "b", Branch: "legion/LEGION-208.b"})
 	if err := rig.runner.execute(context.Background(), row); err != nil {
@@ -145,6 +146,7 @@ func TestTheRemovalOfARemovedTasksWorkingCopyRemovesThatCopyAlone(t *testing.T) 
 // The fault it catches is a late removal that takes the working copy of a live task (its controls:
 // the executor without the plan's read, and without the pods' fence; each removes legion-208.b).
 func TestTheRemovalOfAWorkingCopyFinishesWithoutActingWhereALiveTaskHoldsItOrAPodHoldsIt(t *testing.T) {
+	t.Parallel()
 	later := copyIssue
 	later.Generation = 2
 	rig := newCopyRig(t, later, "a", "b")
@@ -177,6 +179,7 @@ func TestTheRemovalOfAWorkingCopyFinishesWithoutActingWhereALiveTaskHoldsItOrAPo
 // the executor without the step_stop's read, and without the read of the claims' deliveries; each
 // removes legion-208.b while the test expects a wait).
 func TestTheRemovalOfAWorkingCopyWaitsForTheStopOfItsStepAndForAnyDeliveryOnItsBranch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newCopyRig(t, copyIssue, "a")
 	stop := record.SuperviseRequest{Op: "step_stop", Tree: copyIssue.Tree, Role: claim.RoleImplementer, Generation: 1, Reason: "task b was stopped"}
@@ -242,6 +245,7 @@ func TestTheRemovalOfAWorkingCopyWaitsForTheStopOfItsStepAndForAnyDeliveryOnItsB
 // the issue's tree closes (its control: removeWorkspace without the task copies, which removes
 // legion-208 alone).
 func TestTheRemovalOfAnIssuesWorkspaceRemovesEachTasksWorkingCopy(t *testing.T) {
+	t.Parallel()
 	until := time.Now().Add(-time.Minute)
 	done := copyIssue
 	done.Phase, done.Status, done.Generation, done.LingerUntil = phase.Done, "done", 2, &until
@@ -295,6 +299,7 @@ func TestTheRemovalOfAnIssuesWorkspaceRemovesEachTasksWorkingCopy(t *testing.T) 
 // The fault it catches is a removed task's working copy carried from pod to pod for the issue's
 // life (its control: savedWorkspaceBundle answering the take as it is, with b's working copy).
 func TestTheRestoreOfASavedBundlePutsBackTheWorkingCopiesOfThePlansTasksAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := testpg.CloneStore(t, "legion_outbox_test")
 	records := record.NewStore()

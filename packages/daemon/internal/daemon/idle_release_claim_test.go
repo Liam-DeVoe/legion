@@ -111,6 +111,7 @@ func releaseTwoClaims(t *testing.T, rig *idleRig) {
 // claim of the worker on the tester's step for both stops, so the fresh tester was never stopped
 // and the teardown waited on it.
 func TestTheReleaseRowsNameEachLiveClaimAndSuspendIt(t *testing.T) {
+	t.Parallel()
 	rig, fresh := twoClaimIdleRig(t)
 	releaseTwoClaims(t, rig)
 	if got, want := claimsOfRows(t, rig, string(record.OutboxKindIssueBundle), ""), []claim.Token{rig.token}; !slices.Equal(got, want) {
@@ -138,6 +139,7 @@ func TestTheReleaseRowsNameEachLiveClaimAndSuspendIt(t *testing.T) {
 // tester's step twice and left the fresh tester released in a pod that stands, where a later wake
 // could take it.
 func TestACancelledReleaseResumesEachClaimByItsToken(t *testing.T) {
+	t.Parallel()
 	rig, fresh := twoClaimIdleRig(t)
 	ctx := context.Background()
 	releaseTwoClaims(t, rig)

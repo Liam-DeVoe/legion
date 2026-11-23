@@ -31,6 +31,7 @@ func noAppOwners(claim.Role) []string { return nil }
 // worker is told, and with the model its settings give it; one of Legion's roles names no model;
 // a role the deployment does not define is refused, with no prompt and no panic.
 func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

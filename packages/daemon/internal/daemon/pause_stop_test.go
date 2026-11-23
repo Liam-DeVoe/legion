@@ -1080,6 +1080,7 @@ func (r *pauseRig) backstopsDue() []string {
 // key, on the checker's step, whose token names the implementer. The pause's stop of that claim
 // arms its backstop; the stop of the checker's own claim beside it, which works no step, arms none.
 func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	worker, other := r.atTheCheckersStep()
 	held := r.pauseLegion()
@@ -1099,6 +1100,7 @@ func TestAPauseStopOfAStepsWorkerArmsItsBackstop(t *testing.T) {
 // does: at step, the claim the record gives the running step (workflow.OpenWorkers), here the agent
 // of a key, and not the checker's own claim beside it.
 func TestAPausedCancelOfAReleaseArmsTheBackstopOfTheStepsWorker(t *testing.T) {
+	t.Parallel()
 	r := newPauseRig(t)
 	r.atTheCheckersStep()
 	if _, err := r.pool.Exec(r.ctx, `insert into issue_releases

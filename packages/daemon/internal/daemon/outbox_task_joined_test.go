@@ -138,6 +138,7 @@ func runJoinOfD(t *testing.T, rig *taskBranchRig, issue record.Issue) {
 // The fault it catches is a first step whose task is composed before its join ended (its control:
 // the workflow's start without the join's check, so d's start row is queued before its row ran).
 func TestTheFirstStepWaitsForTheEndOfItsJoin(t *testing.T) {
+	t.Parallel()
 	rig, issue := seedConflictingJoin(t)
 
 	if d := rig.task(t, "d"); d.State != record.TaskRunning || d.StepWait != record.StepWaitJoin {
@@ -172,6 +173,7 @@ func TestTheFirstStepWaitsForTheEndOfItsJoin(t *testing.T) {
 // the step's task, under which the start row names no join; the join branch left out of the
 // sentence, under which the second case fails).
 func TestAJoinThatConflictsIsInTheFirstStepsText(t *testing.T) {
+	t.Parallel()
 	t.Run("a task that merges, joined on its branch", func(t *testing.T) {
 		rig, issue := seedConflictingJoin(t)
 		runJoinOfD(t, rig, issue)

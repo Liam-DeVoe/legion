@@ -29,6 +29,7 @@ import (
 // record gives the role while that claim runs: once the step's stop suspended it, the round asks
 // it nothing (supervise's PassedOverByRound), so the ask runs before the stop.
 func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -129,6 +130,7 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 // session. A start of no entry (a wake) of the tester for the same claim starts it with the role it
 // holds and changes no role.
 func TestAReRolesStartWaitsForTheTurnsEnd(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

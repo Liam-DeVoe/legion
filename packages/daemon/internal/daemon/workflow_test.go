@@ -66,6 +66,7 @@ func TestTheProjectsDefaultStepsReachTheEngine(t *testing.T) {
 // and each role of `roles`, each with its type, which a step of that role is stored with.
 // The package names its resolved configuration plan, so the types are written as their words.
 func TestTheDeploymentReachesTheEngine(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Project: "DEMO", Projects: map[string]config.Project{"DEMO": {}},
 		Roles: []config.Role{{Name: "checker", Type: "testing"}}}
 	deployment := engineConfig(cfg, "legion-reviewer[bot]", nil).Deployment

@@ -67,6 +67,7 @@ func (rig *taskBranchRig) joinFailedNotices(t *testing.T) []string {
 // control: the start's fence on every older task_branch row of its issue, so a's start waits), and
 // a join that cannot end, told to nobody (its control: the executor without its notice).
 func TestAJoinHoldsOnlyItsOwnTask(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newTaskBranchRig(t, plannedTask{id: "a"}, plannedTask{id: "c"}, plannedTask{id: "d", needs: []string{"c"}})
 	var failing atomic.Bool

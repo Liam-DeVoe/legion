@@ -29,6 +29,7 @@ func putPhaseRow(t *testing.T, pool *store.Pool, records record.Store, row recor
 // role's step names another agent by the time the row runs. A prompt the release before wrote
 // names no claim, and reaches the claim of the worker on its role's step when it runs.
 func TestAHookPromptReachesTheClaimItNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, _, pool := hookRunner(t, publisher)

@@ -48,6 +48,7 @@ func claimFiles(token claim.Token) []string {
 // neither its own files, nor a file of a secret whose name holds no "_" (`…-code-checker-token`),
 // which no rule about how secrets are named could tell from a file of `…-code`'s.
 func TestTheEndOfAClaimLeavesTheFilesOfAClaimWhoseTokenItsOwnBegins(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	project, _ := claim.ProjectToken("omp")
 	code, err := claim.AgentToken(project, "LEGION-1", "code")

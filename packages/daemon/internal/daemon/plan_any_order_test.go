@@ -36,6 +36,7 @@ import (
 // the walk at done. The control is a second issue given the same steps as `implementer tester
 // reviewer`: it launches its tester before its reviewer, and the same check of the order must fail.
 func TestAPlanInAnyOrderRunsToDone(t *testing.T) {
+	t.Parallel()
 	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2, config.Project{})
 	walked, control := r.issues[0].key, r.issues[1].key
 	order := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester}
@@ -129,6 +130,7 @@ func joinRoles(roles []claim.Role) string {
 // planner starts after that completion with the pull request recorded open, and the retro and the
 // merge end the walk at done.
 func TestAStepThatReadsAPullRequestWaitsForAnImplementer(t *testing.T) {
+	t.Parallel()
 	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1, config.Project{})
 	r.testerFirstRefused()
 
@@ -212,6 +214,7 @@ const releaseBeforeTaskText = "Make the change the issue asks for."
 // before the boot: it walks today's line, the approval moves it to accepting, and the same check of
 // the move into the retro must fail on it.
 func TestAnIssueOfTheReleaseBeforeGoesOn(t *testing.T) {
+	t.Parallel()
 	r := newReleaseBeforeRig(t)
 	walked := r.walks[0]
 	r.on(walked.key)

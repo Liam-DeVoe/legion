@@ -789,6 +789,7 @@ func TestAPhaseTaskWaitsForASendInFlightOnAnotherClaimOfItsIssue(t *testing.T) {
 // for the length of another task's step. The controls are the cases of the same working copy, of
 // the message and of the replaced task, which must still wait.
 func TestAPhaseTaskWaitsOnlyForATurnInTheWorkingCopyItAdopts(t *testing.T) {
+	t.Parallel()
 	const taskC = "legion/LEGION-209.c"
 	for _, tc := range []struct {
 		name string

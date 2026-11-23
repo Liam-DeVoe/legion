@@ -81,6 +81,7 @@ func seedTwoTasks(t *testing.T, pool *store.Pool) {
 // nobody is told (its control: the read on the issue's branch and the issue's first pull request,
 // a's #86, so no notice is written).
 func TestAMissingPullRequestIsOfTheCompletingTask(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedTwoTasks(t, pool)
 	var listed []string
@@ -129,6 +130,7 @@ func TestAMissingPullRequestIsOfTheCompletingTask(t *testing.T) {
 // pull request, so the review's own pull request is not read when its next step is decided (its
 // control: the completion queued without its task).
 func TestTheReadAfterACompletionJudgesTheCompletingTasksPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedTwoTasks(t, pool)
 	github := newIssueReadStandIn(t, time.Date(2026, 11, 23, 1, 0, 0, 0, time.UTC))
@@ -162,6 +164,7 @@ func TestTheReadAfterACompletionJudgesTheCompletingTasksPullRequest(t *testing.T
 // implementer's phases row names, b, and leaves a's pull request as its lost webhooks left it (its
 // control: the start queuing each issue's key alone).
 func TestTheStartReadReadsTheOpenPullRequestOfEachTask(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedTwoTasks(t, pool)
 	b := record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets", Number: 87, Branch: "legion/CAPTURE-1.b", HeadSHA: "pushed", Failing: []string{}}
@@ -188,6 +191,7 @@ func TestTheStartReadReadsTheOpenPullRequestOfEachTask(t *testing.T) {
 // The fault it catches is a held step read as implementing, so the read applies a fact for a task
 // that waits on its owner (its control: the read of implementing that takes a held step).
 func TestAHeldTaskIsNotToldItsPullRequestIsMissing(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	seedTwoTasks(t, pool)
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -227,6 +231,7 @@ func TestAHeldTaskIsNotToldItsPullRequestIsMissing(t *testing.T) {
 // named, and a row raised before a plan of several tasks judging none, so the read of such an issue
 // reads no pull request (its control: the read with no fallback to the task that merges).
 func TestTheReadJudgesTheNamedTaskElseTheImplementersElseTheOneThatMerges(t *testing.T) {
+	t.Parallel()
 	one := &record.StoredPlan{Tasks: []record.PlanTask{{Task: "a"}}}
 	chain := &record.StoredPlan{Tasks: []record.PlanTask{{Task: "a"}, {Task: "b", Needs: []string{"a"}}}}
 	apart := &record.StoredPlan{Tasks: []record.PlanTask{{Task: "a"}, {Task: "b"}}}

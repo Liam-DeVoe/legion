@@ -91,6 +91,7 @@ func (g *closingGitHub) calls() []string {
 // The fault it catches is the pull requests of the other tasks left open after the issue merged,
 // which GitHub leaves open (its control: merged without the row).
 func TestTheMergeClosesEachOtherPullRequestOfTheIssue(t *testing.T) {
+	t.Parallel()
 	rig := newTaskBranchRig(t, plannedTask{id: "a"}, plannedTask{id: "b", needs: []string{"a", "c", "d"}}, plannedTask{id: "c"}, plannedTask{id: "d"})
 	closing := &closingGitHub{state: map[int]string{1: "open", 3: "open"}}
 	rig.runner.githubAPI = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
