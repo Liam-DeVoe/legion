@@ -26,10 +26,11 @@ import (
 // supports under a heading of its id. The import writes each statement whose fields resolve, and
 // each component, as an approved node, with the person's approval of the level as provenance. A
 // statement that does not resolve - a kind no approved form names, an about or a supports naming
-// nothing, a field its notes write where the reader cannot place it, a parent nothing holds or that
-// is itself held - is kept as a node of kind spec_import_hold, with its text, its provenance and the
-// fields it lacks, until a change request that supplies them is approved (Apply clears the hold of
-// each node it writes). A row of the Components table that reads as no component refuses the
+// nothing, a field its notes write where the reader cannot place it, a field its note leaves out
+// (an About or a Supports of `none` is a value, the relation to nothing), a parent nothing holds or
+// that is itself held - is kept as a node of kind spec_import_hold, with its text, its provenance
+// and the fields it lacks, until a change request that supplies them is approved (Apply clears the
+// hold of each node it writes). A row of the Components table that reads as no component refuses the
 // level (ParseLevel), so no component is left out either; and so does an id that two nodes of the
 // level hold, or that no node of the approved spec can have (Import), so no node is written or held
 // at an address another node of the level takes or the store cannot hold.
@@ -50,15 +51,17 @@ var levelKinds = map[string]specgraph.Kind{
 }
 
 // LevelStatement is one statement of a level as its documents give it: its id, its text, its
-// parent from the level's structure, the notes' kind, about and supports, as written, and each
-// field its notes write where the reader cannot place it (Unread), which the import holds the
-// statement for.
+// parent from the level's structure, the notes' kind, about and supports, as written, each field
+// its notes write where the reader cannot place it (Unread), and each field its note leaves out or
+// writes with no value (Missing). The import holds the statement for each field of either list: a
+// field its note does not supply is no approved value, as `none` is.
 type LevelStatement struct {
 	ID, Text, Parent string
 	Kind             string
 	About, Supports  []string
 	Noted            bool
 	Unread           []string
+	Missing          []string
 }
 
 // Level is a level read from its two documents: its statements in their order, and its
@@ -139,7 +142,8 @@ func ParseLevel(level, notes string) (Level, error) {
 	for index := range parsed.Statements {
 		statement := &parsed.Statements[index]
 		if note, held := noted[statement.ID]; held {
-			statement.Noted, statement.Kind, statement.About, statement.Supports, statement.Unread = true, note.Kind, note.About, note.Supports, note.Unread
+			statement.Noted, statement.Kind, statement.About, statement.Supports = true, note.Kind, note.About, note.Supports
+			statement.Unread, statement.Missing = note.Unread, note.Missing
 		}
 	}
 	return parsed, nil
@@ -247,8 +251,12 @@ func cellMarkdown(cell *pmdoc.Node) (string, error) {
 	return strings.TrimSpace(markdown), err
 }
 
-// noteFields is each field a note writes, by the name its item gives it.
-var noteFields = map[string]string{"Kind": "kind", "About": "about", "Supports": "supports"}
+// noteFields is each field a note writes, by the name its item gives it, and noteFieldOrder each
+// field in the order a note writes them.
+var (
+	noteFields     = map[string]string{"Kind": "kind", "About": "about", "Supports": "supports"}
+	noteFieldOrder = []string{"kind", "about", "supports"}
+)
 
 // notesOf reads, from a notes document parsed as the level is, the kind, about and supports of
 // each statement under a heading `### <id>` of the document's top, from the blocks after it up to
@@ -256,8 +264,10 @@ var noteFields = map[string]string{"Kind": "kind", "About": "about", "Supports":
 // depth, each from the item's first paragraph, read whole. Two headings of one id are one note. A
 // field the note writes where no such item holds it - a paragraph of its own, an item's later
 // paragraph, an item in a quote or in a table - or writes twice is unread (LevelStatement.Unread),
-// with no value, and the import holds the statement for it, so no field is left out of a statement
-// the import writes. A code block is an example, and none of its lines is a field.
+// with no value; a field the note leaves out, or writes with nothing after its colon, is missing
+// (LevelStatement.Missing), and `none` is a value, the relation to nothing. The import holds the
+// statement for each unread and each missing field, so no field is left out of a statement the
+// import writes. A code block is an example, and none of its lines is a field.
 func notesOf(notes string) (map[string]LevelStatement, error) {
 	doc, err := pmdoc.ParseRendering(notes)
 	if err != nil {
@@ -282,13 +292,19 @@ func notesOf(notes string) (map[string]LevelStatement, error) {
 	}
 	noted := make(map[string]LevelStatement, len(readings))
 	for id, reading := range readings {
-		noted[id] = reading.statement
+		statement := reading.statement
+		for _, field := range noteFieldOrder {
+			if !reading.read[field] && !slices.Contains(statement.Unread, field) {
+				statement.Missing = append(statement.Missing, field)
+			}
+		}
+		noted[id] = statement
 	}
 	return noted, nil
 }
 
 // noteReading is one note as notesOf reads it: the statement's fields so far, and each field read
-// from an item.
+// from an item, true where the item gives it a value.
 type noteReading struct {
 	statement LevelStatement
 	read      map[string]bool
@@ -326,15 +342,16 @@ func (n *noteReading) visit(node *pmdoc.Node, listed bool) {
 func (n *noteReading) field(paragraph *pmdoc.Node, placed bool) {
 	name, value, written := strings.Cut(strings.ReplaceAll(pmdoc.TextContent(paragraph), "\n", " "), ":")
 	field, known := noteFields[name]
+	_, read := n.read[field]
 	switch {
 	case !written || !known || slices.Contains(n.statement.Unread, field):
 		return
-	case !placed || n.read[field]:
+	case !placed || read:
 		n.statement.Unread = append(n.statement.Unread, field)
 		n.set(field, "")
 		return
 	}
-	n.read[field] = true
+	n.read[field] = strings.TrimSpace(value) != ""
 	n.set(field, value)
 }
 
@@ -510,17 +527,20 @@ func Import(ctx context.Context, tx pgx.Tx, in ImportInput) (Imported, error) {
 		}
 		return ""
 	}
-	// lacks is each field of a statement no approved form or node resolves, or that its notes write
-	// where the reader cannot place it (LevelStatement.Unread); held statements are found again until
-	// none is added, since a statement under a held one, or supporting one, is held too.
+	// lacks is each field of a statement no approved form or node resolves, that its notes write
+	// where the reader cannot place it (LevelStatement.Unread), or that its note leaves out or writes
+	// with no value (LevelStatement.Missing); held statements are found again until none is added,
+	// since a statement under a held one, or supporting one, is held too.
 	lacks := map[string][]string{}
 	for _, statement := range in.Level.Statements {
 		var missing []string
-		unread := func(field string) bool { return slices.Contains(statement.Unread, field) }
-		if _, ok := levelKinds[statement.Kind]; !ok || unread("kind") {
+		unsupplied := func(field string) bool {
+			return slices.Contains(statement.Unread, field) || slices.Contains(statement.Missing, field)
+		}
+		if _, ok := levelKinds[statement.Kind]; !ok || unsupplied("kind") {
 			missing = append(missing, "kind")
 		}
-		resolves := !unread("about")
+		resolves := !unsupplied("about")
 		for _, id := range statement.About {
 			if kind := approvedKind(id); !components[id] && kind != specchange.KindComponent && kind != specchange.KindInterface {
 				resolves = false
@@ -530,7 +550,7 @@ func Import(ctx context.Context, tx pgx.Tx, in ImportInput) (Imported, error) {
 		if !resolves {
 			missing = append(missing, "about")
 		}
-		resolves = !unread("supports")
+		resolves = !unsupplied("supports")
 		for _, id := range statement.Supports {
 			if !statements[id] && approvedKind(id) != specchange.KindStatement {
 				resolves = false
