@@ -40,17 +40,18 @@ Run every step, even on a mechanical change.
 ## Steps
 
 1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the implementer's handoff.
-   Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step, and the review at the version your task's `Handoff:` line names (`--phase review --version <n>`) where it has a reviewer step.
+   Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step.
+   Read the review (`--phase review`) where it has a reviewer step, at the version your `Handoff:` line names when that line names one.
    - **A pass must stand at the last worker step's head for every `before_merge` check.** The body's `Checks` block carries each.
    - **A check carrying `ci_check` is CI's:** its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
    - **A `ci_check` check has no pass standing at that head** when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
 
    | The check | Do |
    | --- | --- |
-   | A `ci_check` run that has not concluded, or one GitHub could not be read for | It is neither a pass nor a fail yet: never wait for, watch or poll it, as your role prompt says of CI. Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on. When CI settles, the daemon tells the architect and the worker of the phase the issue then stands in |
+   | A `ci_check` run that has not concluded, or one GitHub could not be read for | It is neither a pass nor a fail yet: never wait for, watch or poll it. Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on. When CI settles, the daemon tells the architect and the worker of the phase the issue then stands in |
    | A `ci_check` name that no run answers (`absent`) | Send it to the architect as a finding, since the check's words are wrong |
    | A check whose `run` is a whole test suite | The same |
-   | A `ci_check` check whose derived result is a fail | It is the merger's: the change is accepted. The merger decides at the merge whether the base or the change broke it. Name it in your retro message and complete |
+   | A `ci_check` check whose derived result is a fail | It is the merger's: the change passed every step of its task, and the merger decides at the merge whether the base or the change broke it. Name it in your retro message and complete |
    | Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite | `request_backward_move` with `to: implementing` for the implementer's result, or, where the task has a tester step, `to: testing` for the tester's result; name the check's block id in the reason |
 
    Neither a run still going nor that finding moves the issue back.
