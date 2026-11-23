@@ -26,7 +26,7 @@ import (
 
 // goingDecisionModel is the measured model the decision tests configure: the one the committed
 // record names chosen, so the tests run what production runs.
-const goingDecisionModel = "jev-preview"
+const goingDecisionModel = "jev-latest"
 
 // decisionStandIn is a System One endpoint that answers each decision with the answer the test
 // last set, counts the calls and keeps each body it was sent. It calls nothing and holds no

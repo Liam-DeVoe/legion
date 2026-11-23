@@ -33,9 +33,11 @@ const (
 )
 
 // Record is one measured model and its measurement. Chosen marks the model R7's rule named
-// (Choose), or the architect where it named none. A run may ask every case more than once
-// (Repeats); every accuracy, latency and display rate here then pools every answer of every
-// repeat.
+// (Choose), or the one a tie-break named where it named none. A run may ask every case more than
+// once (Repeats); every accuracy, latency and display rate here then pools every answer of every
+// repeat. Every count and rate is of the cases R13 names, the cases R7's rule and check c14 are
+// measured on; a case of the case set outside them is kept apart in OutsideCases, which the rule
+// and its floors never read.
 type Record struct {
 	Model    string `json:"model"`
 	Endpoint string `json:"endpoint"`
@@ -73,24 +75,49 @@ type Record struct {
 	// the same cases and repeats. It is evidence of how far a lead in right choices can be
 	// trusted, recorded beside the choice; it names no model.
 	PairedTests []PairedTest `json:"paired_tests"`
+	// OutsideCases is each case of the case set outside the cases R13 names, with what the model
+	// chose for it over every repeat; none where the set holds no such case.
+	OutsideCases []OutsideCase `json:"outside_cases,omitempty"`
 	// Chosen marks the model the choice named, and ChosenBy how (ChosenByRightChoices or
-	// ChosenByPerson). ChosenReason is the architect's reason for a model they named, on a
-	// ChosenByPerson entry alone. Both are empty on every entry not chosen.
+	// ChosenByTieBreak). Chooser is who broke the tie and ChosenReason why, on a ChosenByTieBreak
+	// entry alone. All three are empty on every entry not chosen.
 	Chosen       bool   `json:"chosen"`
 	ChosenBy     string `json:"chosen_by,omitempty"`
+	Chooser      string `json:"chooser,omitempty"`
 	ChosenReason string `json:"chosen_reason,omitempty"`
 }
 
+// OutsideCase is one case of the case set outside the cases R13 names (cmd/going-bakeoff's
+// outside_r13), with why it is there, its label, and what one model chose for it: Right of Of
+// answers chose its label, each choice made with how many answers, and the calls that gave none.
+type OutsideCase struct {
+	Words      string        `json:"words"`
+	Note       string        `json:"note"`
+	Action     string        `json:"action"`
+	Right      int           `json:"right"`
+	Of         int           `json:"of"`
+	Chose      []ChoiceCount `json:"chose"`
+	Unanswered int           `json:"unanswered"`
+}
+
+// ChoiceCount is one action a model chose and how many answers chose it.
+type ChoiceCount struct {
+	Action string `json:"action"`
+	Count  int    `json:"count"`
+}
+
 // How the chosen Record was named, which its ChosenBy holds: by the key of R7's rule that named
-// it, or by the architect where the rule names none.
+// it, or by a tie-break where the rule names none. Who broke a tie is the entry's Chooser, apart
+// from ChosenBy, which says only how the model was named, so every reader of ChosenBy compares it
+// with these two keys.
 const (
 	// ChosenByRightChoices is the candidate with the most right choices pooled over every
 	// repeat, alone at that count; the one model that meets the floors is that too.
 	ChosenByRightChoices = "right_choices"
-	// ChosenByPerson is the candidate the architect named where the rule names none, the
-	// leading candidates being level on right choices (going-bakeoff --tie-break); the entry's
-	// ChosenReason says why.
-	ChosenByPerson = "person"
+	// ChosenByTieBreak is the candidate a tie-break named where the rule names none, the leading
+	// candidates being level on right choices (going-bakeoff --tie-break): the entry's Chooser
+	// says who broke the tie, as R7 gives it to the issue's architect, and its ChosenReason why.
+	ChosenByTieBreak = "tie_break"
 )
 
 // RepeatRight is one repeat's right choices: on the cases that name their action, on the rest,
@@ -187,7 +214,7 @@ const (
 	// model is named.
 	NoCandidate ChoiceOutcome = "no_candidate"
 	// Named is a run whose one candidate ranked first the rule names (ChosenByRightChoices), or
-	// a full tie the architect broke (Break, ChosenByPerson).
+	// a full tie a tie-break broke (Break, ChosenByTieBreak).
 	Named ChoiceOutcome = "named"
 	// FullTie is a run whose candidates ranked first are several, level on right choices: the
 	// rule names none, and the architect may name one of them (Break).
@@ -201,15 +228,15 @@ type Candidate struct {
 	Right int
 }
 
-// Choice is what R7's rule came to over one run's records (Choose), or the architect's choice
+// Choice is what R7's rule came to over one run's records (Choose), or a tie-break's choice
 // where the rule names none (Break), with the counts the rule ranked by, so a reader says what
 // the rule came to and ranks nothing again.
 type Choice struct {
-	// Outcome is what the rule came to, and Named on a tie the architect broke.
+	// Outcome is what the rule came to, and Named on a tie a tie-break broke.
 	Outcome ChoiceOutcome
 	// Model is the model named and By how, a ChosenBy value; both are empty unless Outcome is
-	// Named. Reason is the architect's, on a Choice they made alone.
-	Model, By, Reason string
+	// Named. Chooser is who broke the tie and Reason why, on a tie-break's Choice alone.
+	Model, By, Chooser, Reason string
 	// Ranked is every candidate in the order the rule ranks them: by right choices, and the
 	// records' order last, which names nothing. It is empty where no model meets the floors.
 	Ranked []Candidate
@@ -220,8 +247,8 @@ type Choice struct {
 	// where it puts several, and nothing where no model meets the floors.
 	Level []string
 	// Why is, where the rule names no model, why: no model meets the floors, or the models
-	// ranked first are a full tie. A person's choice keeps the Why of the tie it broke. It is
-	// empty where the rule names a model.
+	// ranked first are a full tie. A tie-break's choice keeps the Why of the tie it broke. It
+	// is empty where the rule names a model.
 	Why string
 }
 
@@ -266,27 +293,30 @@ func Choose(records []Record) Choice {
 	return choice
 }
 
-// Break is the architect's choice of model, for reason, where the rule names none. It refuses
-// every Outcome but FullTie - a run the rule decides, a run with no candidate - a model outside
-// the full tie and a reason that says nothing, returning c as it was: a person names a model only
-// among models the measurement cannot tell apart, and the record keeps why.
-func (c Choice) Break(model, reason string) (Choice, error) {
+// Break is a tie-break's choice of model where the rule names none: chooser names the model, for
+// reason. It refuses every Outcome but FullTie - a run the rule decides, a run with no candidate
+// - a model outside the full tie, and a chooser or a reason that says nothing, returning c as it
+// was: a model is named by hand only among models the measurement cannot tell apart, and the
+// record keeps who named it and why.
+func (c Choice) Break(model, chooser, reason string) (Choice, error) {
 	switch c.Outcome {
 	case Named:
-		return c, fmt.Errorf("R7's rule names %s (%s), and a person names a model only where the leading candidates are level on right choices", c.Model, c.By)
+		return c, fmt.Errorf("R7's rule names %s (%s), and a tie-break names a model only where the leading candidates are level on right choices", c.Model, c.By)
 	case NoCandidate:
 		return c, errors.New("no model meets R7's floors, so there is no tie to break")
 	case FullTie:
 	default:
-		return c, fmt.Errorf("R7's rule came to %q, an outcome a person cannot break", c.Outcome)
+		return c, fmt.Errorf("R7's rule came to %q, an outcome a tie-break cannot break", c.Outcome)
 	}
 	switch {
 	case !slices.Contains(c.Level, model):
 		return c, fmt.Errorf("%q is not one of the level models, %s", model, strings.Join(c.Level, ", "))
+	case strings.TrimSpace(chooser) == "":
+		return c, fmt.Errorf("naming %s names no chooser, and the record keeps who broke the tie", model)
 	case strings.TrimSpace(reason) == "":
-		return c, fmt.Errorf("naming %s gives no reason, and the record keeps why a person named a model", model)
+		return c, fmt.Errorf("naming %s gives no reason, and the record keeps why the tie was broken so", model)
 	}
-	c.Outcome, c.Model, c.By, c.Reason = Named, model, ChosenByPerson, reason
+	c.Outcome, c.Model, c.By, c.Chooser, c.Reason = Named, model, ChosenByTieBreak, chooser, reason
 	return c, nil
 }
 

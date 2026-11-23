@@ -85,26 +85,118 @@ func TestScorePoolsEveryRepeat(t *testing.T) {
 	}
 }
 
+// A case outside R13's set is asked with the others and counted in none of the record's numbers:
+// not the cases, the right choices, the accuracies, the latencies, the display rates or the pairs
+// the paired test reads. Its answers are kept apart in OutsideCases, the report gives it a line of
+// its own with what each model chose, and the misses name only R13's cases.
+func TestACaseOutsideR13IsCountedApart(t *testing.T) {
+	closing := testCase{Words: "close DEMO-12", Action: "close_issue", NamesAction: true}
+	status := testCase{Words: "what changed on DEMO-12", Action: going.ActionNone}
+	drag := testCase{Words: "board drag", Action: going.ActionNone, OutsideR13: true, Note: "added after the spec named its cases"}
+	chose := func(c testCase, action string, ms int) answer {
+		return answer{
+			c: c, answered: true,
+			action:  agentloop.Decision{Choice: action, Confidence: 0.9},
+			display: agentloop.Decision{Choice: going.DisplayChart, Confidence: 0.9},
+			latency: time.Duration(ms) * time.Millisecond,
+		}
+	}
+	answered := func(model string) *measured {
+		return &measured{record: going.Record{Model: model, Repeats: 2}, repeats: [][]answer{
+			{chose(closing, "close_issue", 100), chose(drag, "dispatch_issue_update", 900), chose(status, going.ActionNone, 200)},
+			{chose(closing, "close_issue", 100), {c: drag, fault: "timeout: no answer", latency: 950 * time.Millisecond}, chose(status, going.ActionNone, 200)},
+		}}
+	}
+	m := answered("model-a")
+	score(m)
+	r := &m.record
+	if r.Cases != 2 || r.NamedCases != 1 || r.OtherCases != 1 || r.Right() != 4 || r.Unanswered != 0 || r.NamedAccuracy != 1 || r.OtherAccuracy != 1 {
+		t.Errorf("the record holds %d cases (%d named, %d other), %d right, %d unanswered, accuracies %v and %v; want R13's 2 cases, 4 right of 4, none unanswered",
+			r.Cases, r.NamedCases, r.OtherCases, r.Right(), r.Unanswered, r.NamedAccuracy, r.OtherAccuracy)
+	}
+	if r.P95MS != 200 {
+		t.Errorf("the p95 is %v ms, want 200 over R13's answers, not the outside case's 900 and 950", r.P95MS)
+	}
+	if want := (going.DisplayRate{Label: going.LabelNotChartWorthy, Answered: going.DisplayChart, Count: 4, Of: 4, Rate: 1}); !slices.Contains(r.DisplayRates, want) {
+		t.Errorf("the display rates %+v lack %+v, R13's four answers alone", r.DisplayRates, want)
+	}
+	if want := [][]bool{{true, true}, {true, true}}; !slices.EqualFunc(m.rights, want, slices.Equal) {
+		t.Errorf("the paired test pairs %v, want R13's cases alone %v", m.rights, want)
+	}
+	want := []going.OutsideCase{{
+		Words: drag.Words, Note: drag.Note, Action: going.ActionNone, Right: 0, Of: 2,
+		Chose: []going.ChoiceCount{{Action: "dispatch_issue_update", Count: 1}}, Unanswered: 1,
+	}}
+	if !slices.EqualFunc(r.OutsideCases, want, func(a, b going.OutsideCase) bool {
+		return a.Words == b.Words && a.Note == b.Note && a.Action == b.Action && a.Right == b.Right && a.Of == b.Of &&
+			a.Unanswered == b.Unanswered && slices.Equal(a.Chose, b.Chose)
+	}) {
+		t.Errorf("the outside cases are %+v, want %+v", r.OutsideCases, want)
+	}
+
+	other := answered("model-b")
+	score(other)
+	report := render([]going.Record{m.record, other.record}, going.Choose([]going.Record{m.record, other.record}), "a test run")
+	line := `- "board drag", labelled none (added after the spec named its cases): model-a chose dispatch_issue_update in 1 of 2, gave no answer in 1 of 2; model-b chose dispatch_issue_update in 1 of 2, gave no answer in 1 of 2.`
+	if !strings.Contains(report, "2 of the cases R13 names per model") || !strings.Contains(report, "| model-a |  | 100.0% (4 of 4) |") || !strings.Contains(report, line) {
+		t.Errorf("the report reads\n%s\nwant R13's 2 cases, model-a right on 4 of 4, and the line %s", report, line)
+	}
+	var misses bytes.Buffer
+	printMisses(&misses, m)
+	if strings.Contains(misses.String(), drag.Words) {
+		t.Errorf("the misses name the outside case:\n%s", misses.String())
+	}
+}
+
+// A case outside R13's set says why it was added, and a case of the set carries no note.
+func TestACaseOutsideR13CarriesItsNote(t *testing.T) {
+	actions := []going.Action{{Name: "close_issue"}}
+	for name, tc := range map[string]struct {
+		cases string
+		says  string
+	}{
+		"an outside case with no note": {`[{"words":"board drag","action":"none","outside_r13":true}]`, "no note"},
+		"a note on a case of the set":  {`[{"words":"close DEMO-12","action":"close_issue","note":"why"}]`, "has a note"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cases.json")
+			if err := os.WriteFile(path, []byte(tc.cases), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readCases(path, actions); err == nil || !strings.Contains(err.Error(), tc.says) {
+				t.Errorf("readCases reads %v, want a refusal saying %q", err, tc.says)
+			}
+		})
+	}
+	path := filepath.Join(t.TempDir(), "cases.json")
+	if err := os.WriteFile(path, []byte(`[{"words":"board drag","action":"none","outside_r13":true,"note":"added later"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if cases, err := readCases(path, actions); err != nil || len(cases) != 1 || !cases[0].OutsideR13 || cases[0].Note != "added later" {
+		t.Errorf("readCases reads %+v, %v; want the outside case with its note", cases, err)
+	}
+}
+
 // A run the rule decides is written with the rule's model chosen, by the right choices.
 func TestARunTheRuleDecidesIsWrittenWithItsChoice(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "decision_models.json")
-	if err := conclude(io.Discard, []going.Record{floored("model-a", 103), floored("model-b", 104)}, "a test run", "", "", out); err != nil {
+	if err := conclude(io.Discard, []going.Record{floored("model-a", 103), floored("model-b", 104)}, "a test run", tieBreak{}, out); err != nil {
 		t.Fatal(err)
 	}
-	if chosen := chosenIn(t, out); len(chosen) != 1 || chosen[0].Model != "model-b" || chosen[0].ChosenBy != going.ChosenByRightChoices || chosen[0].ChosenReason != "" {
+	if chosen := chosenIn(t, out); len(chosen) != 1 || chosen[0].Model != "model-b" || chosen[0].ChosenBy != going.ChosenByRightChoices || chosen[0].Chooser != "" || chosen[0].ChosenReason != "" {
 		t.Errorf("the record chooses %+v, want model-b by its right choices", chosen)
 	}
 }
 
 // A full tie on right choices is written with no model chosen, and the tool fails, saying the
-// architect names one; a tie-break on that record then names one of the level models, with the
-// reason kept.
+// architect names one; a tie-break on that record then names one of the level models, with who
+// broke the tie and why kept.
 func TestAFullTieWaitsForTheArchitect(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "decision_models.json")
 	tied := []going.Record{floored("model-a", 101, 100), floored("model-b", 100, 101)}
-	err := conclude(io.Discard, tied, "a test run", "", "", out)
-	if err == nil || !strings.Contains(err.Error(), "--tie-break") {
-		t.Fatalf("a full tie concludes with %v, want an error naming --tie-break", err)
+	err := conclude(io.Discard, tied, "a test run", tieBreak{}, out)
+	if err == nil || !strings.Contains(err.Error(), "--tie-break") || !strings.Contains(err.Error(), "--tie-chooser") {
+		t.Fatalf("a full tie concludes with %v, want an error naming --tie-break and --tie-chooser", err)
 	}
 	if chosen := chosenIn(t, out); len(chosen) != 0 {
 		t.Fatalf("a full tie is written with %+v chosen, want none", chosen)
@@ -113,11 +205,12 @@ func TestAFullTieWaitsForTheArchitect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := conclude(io.Discard, written, "a test run", "model-b", "the cheaper of two level models", out); err != nil {
+	if err := conclude(io.Discard, written, "a test run", tieBreak{"model-b", "architect of DEMO-1", "the cheaper of two level models"}, out); err != nil {
 		t.Fatal(err)
 	}
-	if chosen := chosenIn(t, out); len(chosen) != 1 || chosen[0].Model != "model-b" || chosen[0].ChosenBy != going.ChosenByPerson || chosen[0].ChosenReason != "the cheaper of two level models" {
-		t.Errorf("the broken tie chooses %+v, want model-b by a person, with the reason", chosen)
+	if chosen := chosenIn(t, out); len(chosen) != 1 || chosen[0].Model != "model-b" || chosen[0].ChosenBy != going.ChosenByTieBreak ||
+		chosen[0].Chooser != "architect of DEMO-1" || chosen[0].ChosenReason != "the cheaper of two level models" {
+		t.Errorf("the broken tie chooses %+v, want model-b by a tie-break of the architect of DEMO-1, with the reason", chosen)
 	}
 }
 
@@ -143,14 +236,14 @@ func TestTheChoiceLineSaysWhatTheRuleCameTo(t *testing.T) {
 		{"a decided run", []going.Record{floored("model-c", 101), floored("model-a", 103), floored("model-b", 104)}, "",
 			going.Named, "model-b", []string{"104 of 117", "model-a", "103", "model-c", "101"}},
 		{"a full tie", tied(), "", going.FullTie, "", []string{"model-a", "model-b", "101 of 117"}},
-		{"a full tie the architect broke", tied(), "model-b", going.Named, "model-b", []string{"model-a", "model-b", "101 of 117", "the cheaper of two level models"}},
+		{"a full tie the architect broke", tied(), "model-b", going.Named, "model-b", []string{"architect of DEMO-1", "model-a", "model-b", "101 of 117", "the cheaper of two level models"}},
 		{"no model meeting the floors", []going.Record{unfloored}, "", going.NoCandidate, "", []string{"floors"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			choice := going.Choose(tc.records)
 			if tc.tieBreak != "" {
 				var err error
-				if choice, err = choice.Break(tc.tieBreak, "the cheaper of two level models"); err != nil {
+				if choice, err = choice.Break(tc.tieBreak, "architect of DEMO-1", "the cheaper of two level models"); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -162,7 +255,7 @@ func TestTheChoiceLineSaysWhatTheRuleCameTo(t *testing.T) {
 			if named := namedIn(line); named != choice.Model || (named != "") != (choice.Outcome == going.Named) {
 				t.Errorf("the line %q names %q, where Choose comes to %q, naming %q", line, named, choice.Outcome, choice.Model)
 			}
-			if offered := strings.Contains(line, "--tie-break"); offered != (choice.Outcome == going.FullTie) {
+			if offered := strings.Contains(line, "--tie-break") && strings.Contains(line, "--tie-chooser"); offered != (choice.Outcome == going.FullTie) {
 				t.Errorf("the line %q offers a tie-break: %t, where Choose comes to %q", line, offered, choice.Outcome)
 			}
 			rest := line
@@ -214,14 +307,14 @@ func TestARecordedTieBreakIsKept(t *testing.T) {
 	dir := t.TempDir()
 	broken, again := filepath.Join(dir, "broken.json"), filepath.Join(dir, "again.json")
 	tied := []going.Record{floored("model-a", 101), floored("model-b", 101)}
-	if err := conclude(io.Discard, tied, "a test run", "model-b", "the cheaper of two level models", broken); err != nil {
+	if err := conclude(io.Discard, tied, "a test run", tieBreak{"model-b", "architect of DEMO-1", "the cheaper of two level models"}, broken); err != nil {
 		t.Fatal(err)
 	}
 	read, err := readRecords(broken)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := conclude(io.Discard, read, "a test run", "", "", again); err != nil {
+	if err := conclude(io.Discard, read, "a test run", tieBreak{}, again); err != nil {
 		t.Fatalf("a plain read of the broken tie concludes with %v", err)
 	}
 	want, err := os.ReadFile(broken)
@@ -247,11 +340,11 @@ func TestARecordedTieBreakTheRuleDoesNotBearOutIsRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			for i := range tc.records {
 				if r := &tc.records[i]; r.Model == tc.model {
-					r.Chosen, r.ChosenBy, r.ChosenReason = true, going.ChosenByPerson, "the cheaper model"
+					r.Chosen, r.ChosenBy, r.Chooser, r.ChosenReason = true, going.ChosenByTieBreak, "architect of DEMO-1", "the cheaper model"
 				}
 			}
 			out := filepath.Join(t.TempDir(), "decision_models.json")
-			if err := conclude(io.Discard, tc.records, "a test run", "", "", out); err == nil {
+			if err := conclude(io.Discard, tc.records, "a test run", tieBreak{}, out); err == nil {
 				t.Error("conclude takes the recorded tie-break")
 			}
 			if _, err := os.Stat(out); !errors.Is(err, fs.ErrNotExist) {
@@ -262,24 +355,25 @@ func TestARecordedTieBreakTheRuleDoesNotBearOutIsRefused(t *testing.T) {
 }
 
 // Nothing is written where no model meets the floors or a tie-break is refused: on a run the
-// rule decides, for a model outside the tie, or with no reason.
+// rule decides, for a model outside the tie, with no chooser, or with no reason.
 func TestARunWithNoChoiceToRecordWritesNothing(t *testing.T) {
 	level := []going.Record{floored("model-a", 101), floored("model-b", 101)}
 	unfloored := floored("model-a", 117)
 	unfloored.P95MS = going.P95CeilingMS
 	for _, tc := range []struct {
-		name          string
-		records       []going.Record
-		model, reason string
+		name    string
+		records []going.Record
+		tie     tieBreak
 	}{
-		{"no model meeting the floors", []going.Record{unfloored}, "", ""},
-		{"a tie-break on a run the right choices decide", []going.Record{floored("model-a", 102), floored("model-b", 101)}, "model-b", "a reason"},
-		{"a tie-break for a model outside the tie", level, "model-c", "a reason"},
-		{"a tie-break with no reason", level, "model-a", " "},
+		{"no model meeting the floors", []going.Record{unfloored}, tieBreak{}},
+		{"a tie-break on a run the right choices decide", []going.Record{floored("model-a", 102), floored("model-b", 101)}, tieBreak{"model-b", "architect of DEMO-1", "a reason"}},
+		{"a tie-break for a model outside the tie", level, tieBreak{"model-c", "architect of DEMO-1", "a reason"}},
+		{"a tie-break naming no chooser", level, tieBreak{"model-a", " ", "a reason"}},
+		{"a tie-break with no reason", level, tieBreak{"model-a", "architect of DEMO-1", " "}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := filepath.Join(t.TempDir(), "decision_models.json")
-			if err := conclude(io.Discard, tc.records, "a test run", tc.model, tc.reason, out); err == nil {
+			if err := conclude(io.Discard, tc.records, "a test run", tc.tie, out); err == nil {
 				t.Error("conclude takes it")
 			}
 			if _, err := os.Stat(out); !errors.Is(err, fs.ErrNotExist) {
@@ -334,9 +428,10 @@ func chosenIn(t *testing.T, path string) []going.Record {
 }
 
 // Answers --answers-out saved are scored by --score against the cases it is given, with no call:
-// a model that chose each committed case's label is right on every case, with the latencies it
-// saved; the same answers against the case set with 10 labels changed are right on 10 fewer, under
-// 95%; and against a case set whose words they do not answer they are refused.
+// a model that chose each committed case's label is right on every case R13 names, with the
+// latencies it saved, and its answer to each case outside them is kept apart; the same answers
+// against the case set with 10 labels changed are right on 10 fewer, under 95%; and against a
+// case set whose words they do not answer they are refused.
 func TestSavedAnswersScoreAgainstTheCasesGiven(t *testing.T) {
 	root, err := moduleRoot()
 	if err != nil {
@@ -371,9 +466,10 @@ func TestSavedAnswersScoreAgainstTheCasesGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Model != "jev-test" || record.Right() != len(cases) || record.P95MS != 120 {
-		t.Errorf("the saved answers scored %s right on %d of %d cases at p95 %v ms; want jev-test right on every case at 120 ms",
-			record.Model, record.Right(), len(cases), record.P95MS)
+	r13 := len(slices.DeleteFunc(slices.Clone(cases), func(c testCase) bool { return c.OutsideR13 }))
+	if record.Model != "jev-test" || record.Cases != r13 || record.Right() != r13 || record.P95MS != 120 || len(record.OutsideCases) != len(cases)-r13 {
+		t.Errorf("the saved answers scored %s right on %d of %d cases at p95 %v ms, with %d kept apart; want jev-test right on every one of R13's %d at 120 ms, and the other %d kept apart",
+			record.Model, record.Right(), record.Cases, record.P95MS, len(record.OutsideCases), r13, len(cases)-r13)
 	}
 
 	named := slices.IndexFunc(cases, func(c testCase) bool { return c.Action != going.ActionNone })
@@ -389,9 +485,9 @@ func TestSavedAnswersScoreAgainstTheCasesGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if share := float64(record.Right()) / float64(len(cases)); record.Right() != len(cases)-10 || share >= 0.95 {
+	if share := float64(record.Right()) / float64(r13); record.Right() != r13-10 || share >= 0.95 {
 		t.Errorf("the saved answers against 10 changed labels are right on %d of %d (%.3f); want %d, under 95%%",
-			record.Right(), len(cases), share, len(cases)-10)
+			record.Right(), r13, share, r13-10)
 	}
 
 	other := slices.Clone(cases)

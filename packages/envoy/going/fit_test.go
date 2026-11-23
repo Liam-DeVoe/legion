@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/going"
@@ -18,7 +19,13 @@ type bakeoffCase struct {
 	Action      string            `json:"action"`
 	NamesAction bool              `json:"names_action"`
 	ChartWorthy bool              `json:"chart_worthy"`
+	OutsideR13  bool              `json:"outside_r13"`
+	Note        string            `json:"note"`
 }
+
+// r13Cases is how many cases of cases.json spec v61's R13 names: every case but those marked
+// outside_r13, which were added after it and which no count of R7's or check c14's includes.
+const r13Cases = 117
 
 func committedCases(t *testing.T) []bakeoffCase {
 	t.Helper()
@@ -33,25 +40,31 @@ func committedCases(t *testing.T) []bakeoffCase {
 	return cases
 }
 
-// The committed set is what R7 measures on: at least 80 cases and 20 chart-worthy ones, every
-// label an action of the catalogue or none, no request for a change labelled chart-worthy, and
-// every catalogue action asked for both in words that name it and in words that do not.
+// The committed set is what R7 measures on: the 117 cases R13 names, 20 or more of them
+// chart-worthy, every label an action of the catalogue or none, no request for a change labelled
+// chart-worthy, and every catalogue action asked for both in words that name it and in words that
+// do not. Each case outside R13's set says why it was added.
 func TestTheCaseSetCoversTheCatalogue(t *testing.T) {
 	catalogue, err := api.BuildGoingCatalogue()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cases := committedCases(t)
-	worthy := 0
+	measured, worthy := 0, 0
 	named, unnamed := map[string]int{}, map[string]int{}
-	for _, c := range cases {
+	for _, c := range committedCases(t) {
 		_, held := catalogue.Lookup(c.Action)
 		switch {
 		case !held && c.Action != going.ActionNone:
 			t.Errorf("%q is labelled %q, which is no catalogue action", c.Words, c.Action)
 		case c.ChartWorthy && c.Action != going.ActionNone:
 			t.Errorf("%q asks for a change and is labelled chart-worthy", c.Words)
+		case c.OutsideR13 && strings.TrimSpace(c.Note) == "":
+			t.Errorf("%q is outside R13's cases and has no note saying why it was added", c.Words)
 		}
+		if c.OutsideR13 {
+			continue
+		}
+		measured++
 		if c.ChartWorthy {
 			worthy++
 		}
@@ -61,8 +74,8 @@ func TestTheCaseSetCoversTheCatalogue(t *testing.T) {
 			unnamed[c.Action]++
 		}
 	}
-	if len(cases) < going.LeastCases || worthy < going.LeastChartCases {
-		t.Errorf("%d cases, %d chart-worthy; R7 needs at least %d and %d", len(cases), worthy, going.LeastCases, going.LeastChartCases)
+	if measured != r13Cases || worthy < going.LeastChartCases {
+		t.Errorf("R13's set holds %d cases, %d chart-worthy; spec v61's R13 names %d, and R7 needs %d chart-worthy", measured, worthy, r13Cases, going.LeastChartCases)
 	}
 	for _, action := range catalogue.Actions() {
 		if named[action.Action] < 2 || unnamed[action.Action] < 1 {

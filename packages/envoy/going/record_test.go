@@ -16,8 +16,9 @@ import (
 
 // TestTheRecordReadsBack reads each entry the bake-off wrote back through DecisionRecord, by its
 // model's name, as the file holds it, and holds the chosen entry to R7: one model is chosen, it
-// was measured on at least 80 cases and 20 chart-worthy ones, and it reaches 90% on the cases
-// that name their action and 70% on the rest at a p95 under 500 ms.
+// was measured on at least 80 cases and 20 chart-worthy ones, it reaches 90% on the cases that
+// name their action and 70% on the rest at a p95 under 500 ms, and a model a tie-break named
+// names who broke the tie and why.
 func TestTheRecordReadsBack(t *testing.T) {
 	raw, err := os.ReadFile("decision_models.json")
 	if err != nil {
@@ -51,6 +52,8 @@ func TestTheRecordReadsBack(t *testing.T) {
 		case record.NamedAccuracy < going.NamedFloor || record.OtherAccuracy < going.OtherFloor || record.P95MS >= going.P95CeilingMS:
 			t.Errorf("the chosen %s reaches %.3f named, %.3f on the rest at p95 %.0f ms; R7 needs %v, %v and under %v",
 				record.Model, record.NamedAccuracy, record.OtherAccuracy, record.P95MS, going.NamedFloor, going.OtherFloor, going.P95CeilingMS)
+		case record.ChosenBy == going.ChosenByTieBreak && (strings.TrimSpace(record.Chooser) == "" || strings.TrimSpace(record.ChosenReason) == ""):
+			t.Errorf("the chosen %s was named by a tie-break that names chooser %q and reason %q, want both", record.Model, record.Chooser, record.ChosenReason)
 		}
 	}
 	if chosen != 1 {
@@ -230,25 +233,30 @@ func TestOnlyAModelThatMeetsTheFloorsIsACandidate(t *testing.T) {
 }
 
 // The architect names a model only where the rule names none: one of the models level on right
-// choices, with a reason.
+// choices, naming who broke the tie, with a reason.
 func TestATieBreakIsTakenOnlyOnAFullTie(t *testing.T) {
 	tie := going.Choose([]going.Record{candidate("model-a", 101), candidate("model-b", 101)})
 	if tie.Outcome != going.FullTie {
 		t.Fatalf("a run level on right choices comes to %q, want a full tie", tie.Outcome)
 	}
-	broken, err := tie.Break("model-b", "the cheaper of two level models")
-	if err != nil || broken.Outcome != going.Named || broken.Model != "model-b" || broken.By != going.ChosenByPerson || broken.Reason != "the cheaper of two level models" {
+	broken, err := tie.Break("model-b", "architect of DEMO-1", "the cheaper of two level models")
+	if err != nil || broken.Outcome != going.Named || broken.Model != "model-b" || broken.By != going.ChosenByTieBreak ||
+		broken.Chooser != "architect of DEMO-1" || broken.Reason != "the cheaper of two level models" {
 		t.Fatalf("a full tie broken for model-b reads %+v, %v", broken, err)
 	}
 	for name, refused := range map[string]func() (going.Choice, error){
 		"a run the right choices decide": func() (going.Choice, error) {
-			return going.Choose([]going.Record{candidate("model-a", 102), candidate("model-b", 101)}).Break("model-b", "a reason")
+			return going.Choose([]going.Record{candidate("model-a", 102), candidate("model-b", 101)}).Break("model-b", "architect of DEMO-1", "a reason")
 		},
-		"a model outside the tie":     func() (going.Choice, error) { return tie.Break("model-c", "a reason") },
-		"an empty reason":             func() (going.Choice, error) { return tie.Break("model-a", "") },
-		"a reason of spaces":          func() (going.Choice, error) { return tie.Break("model-a", "  ") },
-		"a tie already broken":        func() (going.Choice, error) { return broken.Break("model-a", "a reason") },
-		"no model meeting the floors": func() (going.Choice, error) { return going.Choose(nil).Break("model-a", "a reason") },
+		"a model outside the tie": func() (going.Choice, error) { return tie.Break("model-c", "architect of DEMO-1", "a reason") },
+		"an empty chooser":        func() (going.Choice, error) { return tie.Break("model-a", "", "a reason") },
+		"a chooser of spaces":     func() (going.Choice, error) { return tie.Break("model-a", "  ", "a reason") },
+		"an empty reason":         func() (going.Choice, error) { return tie.Break("model-a", "architect of DEMO-1", "") },
+		"a reason of spaces":      func() (going.Choice, error) { return tie.Break("model-a", "architect of DEMO-1", "  ") },
+		"a tie already broken":    func() (going.Choice, error) { return broken.Break("model-a", "architect of DEMO-1", "a reason") },
+		"no model meeting the floors": func() (going.Choice, error) {
+			return going.Choose(nil).Break("model-a", "architect of DEMO-1", "a reason")
+		},
 	} {
 		if got, err := refused(); err == nil {
 			t.Errorf("%s: the tie-break is taken, naming %q by %q", name, got.Model, got.By)
@@ -256,7 +264,7 @@ func TestATieBreakIsTakenOnlyOnAFullTie(t *testing.T) {
 	}
 }
 
-// Break refuses each outcome a person cannot break with that outcome's own reason.
+// Break refuses each outcome a tie-break cannot break with that outcome's own reason.
 func TestABreakRefusalSaysWhatTheRuleCameTo(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -269,7 +277,7 @@ func TestABreakRefusalSaysWhatTheRuleCameTo(t *testing.T) {
 		{"an outcome Break does not know", going.Choice{Outcome: "made_up"}, `"made_up"`, "floors"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := tc.choice.Break("model-b", "a reason")
+			_, err := tc.choice.Break("model-b", "architect of DEMO-1", "a reason")
 			if err == nil || !strings.Contains(err.Error(), tc.says) || strings.Contains(err.Error(), tc.notSays) {
 				t.Errorf("Break on %q refuses with %v, want it to say %q and not %q", tc.choice.Outcome, err, tc.says, tc.notSays)
 			}
@@ -278,13 +286,13 @@ func TestABreakRefusalSaysWhatTheRuleCameTo(t *testing.T) {
 }
 
 // A record whose chosen model is not the one R7's rule names fails the check the committed
-// record is held to, however it says the model was chosen; a person's choice passes only where
-// the record itself shows the full tie and keeps a reason.
+// record is held to, however it says the model was chosen; a tie-break passes only where the
+// record itself shows the full tie and keeps who broke it and why.
 func TestARecordTheRuleDidNotNameFails(t *testing.T) {
-	chose := func(records []going.Record, model, by, reason string) []going.Record {
+	chose := func(records []going.Record, model, by, chooser, reason string) []going.Record {
 		for i := range records {
 			if records[i].Model == model {
-				records[i].Chosen, records[i].ChosenBy, records[i].ChosenReason = true, by, reason
+				records[i].Chosen, records[i].ChosenBy, records[i].Chooser, records[i].ChosenReason = true, by, chooser, reason
 			}
 		}
 		return records
@@ -295,22 +303,25 @@ func TestARecordTheRuleDidNotNameFails(t *testing.T) {
 	level := func() []going.Record {
 		return []going.Record{candidate("model-a", 101), candidate("model-b", 101)}
 	}
+	const architect = "architect of DEMO-1"
 	for _, tc := range []struct {
 		name    string
 		records []going.Record
 		passes  bool
 	}{
-		{"the rule's model by the right choices", chose(decided(), "model-a", going.ChosenByRightChoices, ""), true},
-		{"a full tie the architect broke, with a reason", chose(level(), "model-b", going.ChosenByPerson, "the cheaper of two level models"), true},
-		{"a hand-chosen model where the rule names another", chose(decided(), "model-b", going.ChosenByPerson, "it reads better"), false},
-		{"another model said to be the rule's", chose(decided(), "model-b", going.ChosenByRightChoices, ""), false},
-		{"the rule's model said to be a person's", chose(decided(), "model-a", going.ChosenByPerson, "it reads better"), false},
-		{"the rule's model by a paired test's verdict", chose(decided(), "model-a", "noise", ""), false},
-		{"the rule's model with a reason no person gave", chose(decided(), "model-a", going.ChosenByRightChoices, "a reason"), false},
-		{"a full tie broken with no reason", chose(level(), "model-b", going.ChosenByPerson, " "), false},
-		{"a full tie said to be the rule's", chose(level(), "model-b", going.ChosenByRightChoices, ""), false},
+		{"the rule's model by the right choices", chose(decided(), "model-a", going.ChosenByRightChoices, "", ""), true},
+		{"a full tie the architect broke, with a reason", chose(level(), "model-b", going.ChosenByTieBreak, architect, "the cheaper of two level models"), true},
+		{"a hand-chosen model where the rule names another", chose(decided(), "model-b", going.ChosenByTieBreak, architect, "it reads better"), false},
+		{"another model said to be the rule's", chose(decided(), "model-b", going.ChosenByRightChoices, "", ""), false},
+		{"the rule's model said to be a tie-break's", chose(decided(), "model-a", going.ChosenByTieBreak, architect, "it reads better"), false},
+		{"the rule's model by a paired test's verdict", chose(decided(), "model-a", "noise", "", ""), false},
+		{"the rule's model with a reason no tie-break gave", chose(decided(), "model-a", going.ChosenByRightChoices, "", "a reason"), false},
+		{"the rule's model with a chooser", chose(decided(), "model-a", going.ChosenByRightChoices, architect, ""), false},
+		{"a full tie broken with no reason", chose(level(), "model-b", going.ChosenByTieBreak, architect, " "), false},
+		{"a full tie broken by nobody named", chose(level(), "model-b", going.ChosenByTieBreak, "", "the cheaper of two level models"), false},
+		{"a full tie said to be the rule's", chose(level(), "model-b", going.ChosenByRightChoices, "", ""), false},
 		{"no model chosen", decided(), false},
-		{"two models chosen", chose(chose(decided(), "model-a", going.ChosenByRightChoices, ""), "model-b", going.ChosenByRightChoices, ""), false},
+		{"two models chosen", chose(chose(decided(), "model-a", going.ChosenByRightChoices, "", ""), "model-b", going.ChosenByRightChoices, "", ""), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := ruleFault(tc.records); (err == nil) != tc.passes {
@@ -337,7 +348,11 @@ func TestARecordEntryRoundTrips(t *testing.T) {
 		PairedTests: []going.PairedTest{{
 			Against: "other-model", Pairs: 234, Better: 1, Worse: 3, PValue: 0.625, MeanDifference: -1, Interval: &[2]float64{-13.7, 11.7},
 		}},
-		Chosen: true, ChosenBy: going.ChosenByPerson, ChosenReason: "the cheaper of two level models",
+		OutsideCases: []going.OutsideCase{{
+			Words: "board drag", Note: "added after the spec named its cases", Action: "none", Right: 0, Of: 2,
+			Chose: []going.ChoiceCount{{Action: "dispatch_issue_update", Count: 2}},
+		}},
+		Chosen: true, ChosenBy: going.ChosenByTieBreak, Chooser: "architect of DEMO-1", ChosenReason: "the cheaper of two level models",
 	}
 	raw, err := json.Marshal(want)
 	if err != nil {
@@ -368,8 +383,9 @@ func committedRecords(t *testing.T) []going.Record {
 
 // ruleFault is what is wrong with a record's choice, nil where nothing is: one entry is chosen,
 // and it is the model R7's rule names (going.Choose) by the key that named it, or, where the
-// rule names none, the model a person named among the level ones with the reason kept
-// (going.Choice.Break). An entry not chosen holds no way it was chosen and no reason.
+// rule names none, the model a tie-break named among the level ones with its chooser and reason
+// kept (going.Choice.Break). An entry not chosen holds no way it was chosen, no chooser and no
+// reason.
 func ruleFault(records []going.Record) error {
 	var chosen *going.Record
 	for i := range records {
@@ -379,24 +395,24 @@ func ruleFault(records []going.Record) error {
 			return fmt.Errorf("%s and %s are both chosen", chosen.Model, r.Model)
 		case r.Chosen:
 			chosen = r
-		case r.ChosenBy != "" || r.ChosenReason != "":
-			return fmt.Errorf("%s is not chosen, yet holds chosen_by %q and chosen_reason %q", r.Model, r.ChosenBy, r.ChosenReason)
+		case r.ChosenBy != "" || r.Chooser != "" || r.ChosenReason != "":
+			return fmt.Errorf("%s is not chosen, yet holds chosen_by %q, chooser %q and chosen_reason %q", r.Model, r.ChosenBy, r.Chooser, r.ChosenReason)
 		}
 	}
 	if chosen == nil {
 		return errors.New("no entry is chosen")
 	}
 	want := going.Choose(records)
-	if chosen.ChosenBy == going.ChosenByPerson {
-		broken, err := want.Break(chosen.Model, chosen.ChosenReason)
+	if chosen.ChosenBy == going.ChosenByTieBreak {
+		broken, err := want.Break(chosen.Model, chosen.Chooser, chosen.ChosenReason)
 		if err != nil {
-			return fmt.Errorf("a person chose %s, which the record does not bear out: %w", chosen.Model, err)
+			return fmt.Errorf("a tie-break chose %s, which the record does not bear out: %w", chosen.Model, err)
 		}
 		want = broken
 	}
-	if chosen.Model != want.Model || chosen.ChosenBy != want.By || chosen.ChosenReason != want.Reason {
-		return fmt.Errorf("%s is chosen by %q with the reason %q, but R7's rule names %q by %q (level: %v)",
-			chosen.Model, chosen.ChosenBy, chosen.ChosenReason, want.Model, want.By, want.Level)
+	if chosen.Model != want.Model || chosen.ChosenBy != want.By || chosen.Chooser != want.Chooser || chosen.ChosenReason != want.Reason {
+		return fmt.Errorf("%s is chosen by %q (chooser %q) with the reason %q, but R7's rule names %q by %q (level: %v)",
+			chosen.Model, chosen.ChosenBy, chosen.Chooser, chosen.ChosenReason, want.Model, want.By, want.Level)
 	}
 	return nil
 }

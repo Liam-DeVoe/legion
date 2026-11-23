@@ -728,7 +728,9 @@
     "context": { "path": "/issues/DEMO-1", "project": "DEMO", "issue": "DEMO-1" },
     "action": "none",
     "names_action": false,
-    "chart_worthy": false
+    "chart_worthy": false,
+    "outside_r13": true,
+    "note": "Added after spec v61, whose R13 names the 117 cases before it: the preview's line on top read Do for these search words (INFRA-1588)."
   },
 
   {
