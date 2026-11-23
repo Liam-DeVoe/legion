@@ -273,9 +273,10 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 	}
 }
 
-// Each label of a step's task is one constant, and the task writes a line of each. The forms of
-// its lines, filled with a step's values, are the task's words exactly, and the task of the retro
-// and of the merger, which runs no step, ends with the task alone and its steps.
+// The task writes a line of each label by the label's exact text, which the prompts and the skills
+// name to a worker, so a change of one label's constant alone fails here. The forms of its lines,
+// filled with a step's values, are the task's words exactly, and the task of the retro and of the
+// merger, which runs no step, ends with the task alone and its steps.
 func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
@@ -288,7 +289,7 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1, Verdict: "pass"}
 	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "the reviewer asked again")
 
-	for _, label := range []string{phaseLabel, workingCopyLabel, planTaskLabel, stepsLabel, taskTextLabel, reportedLabel, handoffLabel, pullRequestLabel, reasonLabel} {
+	for _, label := range []string{"Phase", "Working copy", "Task", "Steps", "Task text", "reported", "Handoff", "Pull request", "Reason"} {
 		if !strings.Contains(written, " "+label+": ") {
 			t.Errorf("the task %q writes no %q line", written, label)
 		}
