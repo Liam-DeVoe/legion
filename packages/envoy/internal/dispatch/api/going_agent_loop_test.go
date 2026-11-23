@@ -228,6 +228,7 @@ func (rig goingAgentRig) endFrame(t *testing.T, run string) agentwire.EndFrame {
 // http://169.254.169.254/, and of an address in no word and no tool result, are refused; and a
 // GitHub read of a repository no project maps is refused.
 func TestTheAgentActsAsThePerson(t *testing.T) {
+	t.Parallel()
 	t.Run("every route a person can call has a tool, or is left out with its reason", goingRouteInventory)
 
 	rig := newGoingAgentRig(t, nil)
@@ -308,6 +309,7 @@ func TestTheAgentActsAsThePerson(t *testing.T) {
 // with a budget of its own; and a run whose token is revoked stops at its next call, naming the
 // revoked token.
 func TestARunKeepsItsBoundsAndItsRecord(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
 	rig.served.deps.Identity = headerIdentity(rig.database)
 	loop := newGoingLoop(t, rig)
@@ -684,6 +686,7 @@ func TestARunKeepsItsBoundsAndItsRecord(t *testing.T) {
 // that holds a number of the model's is refused back to the model, BLOCK_REFUSED, and draws
 // nothing.
 func TestARunsBlockIsDrawnFromItsSavedResults(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
 	loop := newGoingLoop(t, rig)
 	const words = "chart how many issues DEMO holds"
@@ -754,6 +757,7 @@ func TestARunsBlockIsDrawnFromItsSavedResults(t *testing.T) {
 // of its label, and with the prose its model call streamed so far; the reply frame, saved once the
 // model call's tools ran, comes after both and names the call with the same words.
 func TestACallsFrameReachesTheRunsEventsBeforeItsToolFrame(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
 	loop := newGoingLoop(t, rig)
 	issue := rig.issue(t, "The issue the run reads")
@@ -827,6 +831,7 @@ func TestACallsFrameReachesTheRunsEventsBeforeItsToolFrame(t *testing.T) {
 // two calls, so its second call waits up to paceWait, less the time since its first call, and its
 // record says so.
 func TestARunsRecordSaysWhereItsTimeWent(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
 	rig.served.deps.Identity = headerIdentity(rig.database)
 	loop := newGoingLoop(t, rig)
@@ -962,6 +967,7 @@ func TestARunsRecordSaysWhereItsTimeWent(t *testing.T) {
 // UNKNOWN_TOOL naming the tool, and its model is never called (R15, check c25's last row); a run
 // whose own model makes a tool name up is told so and goes on to its answer.
 func TestARunWhoseSavedStepNamesAToolThisBuildLacksFails(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
 	loop := newGoingLoop(t, rig)
 

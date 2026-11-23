@@ -21,6 +21,7 @@ import (
 // tool's rule is not ported: the bar holds no read to its tool's schema. Each port keeps its own
 // spec's example.
 func TestEveryWriteToolsRuleIsPortedOnce(t *testing.T) {
+	t.Parallel()
 	stated := map[string]contracts.DispatchTool{}
 	for _, tool := range contracts.DispatchTools {
 		stated[tool.Name] = tool
@@ -102,6 +103,7 @@ var goingRuleBreaks = map[string]struct {
 // alone, so such a row was approved and its route answered 400 when it ran: a replace with no
 // with is 400 REPLACE_FIELDS, a restore that carries seen_replies 400 at the dismissal.
 func TestAPlanRowBreakingItsToolsRuleIsRefusedBeforeAnyRequest(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatal(err)
@@ -141,6 +143,7 @@ func TestAPlanRowBreakingItsToolsRuleIsRefusedBeforeAnyRequest(t *testing.T) {
 // departures: a close with no reason, which the bar sends with none (barTool), and an upload
 // naming no owner, a file of the calling session's own conversation, which takes any name.
 func TestEachPortedRuleRefusesThePartACallBreaks(t *testing.T) {
+	t.Parallel()
 	ruleOf := map[string]string{}
 	for _, tool := range contracts.DispatchTools {
 		ruleOf[tool.Name] = tool.Validation
@@ -210,6 +213,7 @@ func TestEachPortedRuleRefusesThePartACallBreaks(t *testing.T) {
 // taken. Before, the check read no bound, so a session group of no session was approved and its
 // route answered 400.
 func TestThePlanCheckHoldsEachBoundItsSchemaStates(t *testing.T) {
+	t.Parallel()
 	bound := func(min, max float64) (*float64, *float64) { return &min, &max }
 	textMin, textMax := bound(1, 3)
 	listMin, listMax := bound(1, 2)

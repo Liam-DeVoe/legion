@@ -24,6 +24,7 @@ import (
 // refused, not given the deployment's label in their place; and a run its person stops after its
 // create landed names the issue in its end and offers Undo.
 func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	const session = "0199e2a0-1111-7000-8000-00000000c10a"
 	rig.served.newIssueOverride.Store(&newIssueSettings{Label: "from-the-bar", Session: session})

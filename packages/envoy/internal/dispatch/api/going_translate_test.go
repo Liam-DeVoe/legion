@@ -248,6 +248,7 @@ func goingGuardWrite(action string, route GoingRoute, args map[string]any, value
 // cannot take: goingUnsendable) or refuses the translation is visibly consumed, not silently
 // dropped, and passes.
 func TestEveryTranslatorForwardsOrConsumesEveryArgument(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatal(err)
@@ -314,6 +315,7 @@ func TestEveryTranslatorForwardsOrConsumesEveryArgument(t *testing.T) {
 // takes the every-source route. Before the one-source row existed, a repo was dropped and both
 // calls took the every-source route.
 func TestGoingArchitectureSyncRoutesOneSourceByRepo(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatal(err)
@@ -382,6 +384,7 @@ func (d *goingStateDoer) Do(request *http.Request) (*http.Response, error) {
 // next one of the row it read. Before, the tool sent the call's items alone, so a call naming one
 // new item deleted the issue's pins and earlier dismissals; and it took the seq from the agent.
 func TestSetIssueStateAddsItsItemsToTheStoredList(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatal(err)

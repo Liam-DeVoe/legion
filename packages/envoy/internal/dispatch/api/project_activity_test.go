@@ -41,6 +41,7 @@ func seedActivityFixture(t *testing.T, database *store.Store) {
 // the span listed oldest first with a quiet week as zero, and nothing of another project's issues
 // or of a week before the span.
 func TestProjectActivityCountsTheProjectsEventsByKindPerWeek(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedActivityFixture(t, database)
 
@@ -92,6 +93,7 @@ func TestProjectActivityCountsTheProjectsEventsByKindPerWeek(t *testing.T) {
 // A weeks outside 1 to 52 is 400 INVALID_QUERY, a key that is no project key 400 INVALID_PROJECT,
 // and a project Dispatch does not hold 404 PROJECT_NOT_FOUND.
 func TestProjectActivityRefusesABadSpanKeyOrProject(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedActivityFixture(t, database)
 	for target, code := range map[string]string{

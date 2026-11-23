@@ -186,6 +186,7 @@ func (rig goingWritesRig) ask(t *testing.T, issue, question string) string {
 // person, read ask until they set it, read back as they set it, refused when it is neither mode,
 // and nobody else's.
 func TestGoingSettingsAreThePersonsOwnAndReadAskUntilSet(t *testing.T) {
+	t.Parallel()
 	rig := newGoingWritesRig(t)
 	read := func(login string) goingSettings {
 		t.Helper()
@@ -453,6 +454,7 @@ func goingRowName(action GoingAction, route GoingRoute) string {
 // with its case's arguments translated into what the route takes; and each call reaches the row
 // the catalogue names and is taken by it.
 func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T) {
+	t.Parallel()
 	rig := newGoingWritesRig(t)
 	cases := goingRowCases(newGoingRowFixtures(t, rig))
 	catalogue, err := BuildGoingCatalogue()
@@ -545,6 +547,7 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 // TestEveryGoingRowRefusesAnActionTheCatalogueDoesNotHoldWithNoRequest: an action the catalogue
 // does not hold is refused with its own error and nothing is sent.
 func TestEveryGoingRowRefusesAnActionTheCatalogueDoesNotHoldWithNoRequest(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatal(err)
@@ -561,6 +564,7 @@ func TestEveryGoingRowRefusesAnActionTheCatalogueDoesNotHoldWithNoRequest(t *tes
 // DPoP is offered no action, since the bar acts with a person's own credential and a broker token
 // is none; the same credential presented as a bearer is offered the catalogue.
 func TestGoingOffersNoActionToACallerWhoseTokenNeedsAProof(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatal(err)
@@ -583,6 +587,7 @@ func TestGoingOffersNoActionToACallerWhoseTokenNeedsAProof(t *testing.T) {
 // write's line carries the state and the error of the message's last delivery: a failed send is
 // told apart from one that reached the session.
 func TestGoingWriteOfASendToAgentRecordsItsLastDeliverysState(t *testing.T) {
+	t.Parallel()
 	prepared := goingPrepared{action: "dispatch_send_to_agent", call: goingCall{path: map[string]string{"session_id": goingPlanner}}}
 	answer := []byte(`{"id":"msg-1","deliveries":[
 		{"attempt":1,"state":"sent","error":null},

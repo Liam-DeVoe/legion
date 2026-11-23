@@ -158,6 +158,7 @@ var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f
 // own code, and nothing is written. These are the conditions TestAnOutsideRequestNamingAnOld
 // ConditionMemberIsNotConditional sends in a body, which its routes take unconditioned.
 func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
+	t.Parallel()
 	rig := newGoingWritesRig(t)
 	f := newGoingConditionFixtures(t, rig)
 	never, bob := "2000-01-01T00:00:00Z", &model.Actor{Kind: "user", ID: "bob"}
@@ -195,6 +196,7 @@ func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
 // another artifact under the name, refuses it, 409 DOCUMENT_CHANGED, and nothing is written; at
 // the file's latest version it lands as the next version.
 func TestACommandBarUploadOverAFileWrittenSinceItsReadIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newGoingWritesRig(t)
 	target := "/api/v1/agents/" + goingPlanner + "/artifacts"
 	status, body := goingMultipartUpload(t, rig.mux, target, map[string]string{"name": "plan-notes.txt"}, "The first words.")
@@ -244,6 +246,7 @@ func rigCount(t *testing.T, rig goingWritesRig, query string, arguments ...any) 
 // upload over a document with no token, which expects its version (ExpectVersion). Each is taken,
 // and the counter reads none.
 func TestACommandBarUploadThatSaysWhatItReplacesIsNoUnguardedReplacement(t *testing.T) {
+	t.Parallel()
 	registry := metrics.New()
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour, metrics: registry})
 	issue := createArtifactIssue(t, handler)
@@ -275,6 +278,7 @@ func TestACommandBarUploadThatSaysWhatItReplacesIsNoUnguardedReplacement(t *test
 // while the command bar's upload waits for it is seen: the upload expecting the version it read is
 // refused, 409 DOCUMENT_CHANGED, and the document keeps that writer's text and its two versions.
 func TestACommandBarUploadOverAProjectDocumentSeesAVersionWrittenUnderItsOwnersLock(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	createArtifactIssue(t, handler)
 	guide := uploadDocument(t, handler, "/api/v1/projects/TEST", "guide.md", "# Guide\n\nRead this first.\n")
@@ -360,6 +364,7 @@ func TestACommandBarUploadOverAProjectDocumentSeesAVersionWrittenUnderItsOwnersL
 // upload compares (review round 5, thread 7) - 500 GOING_CONDITION_MISSING, and writes nothing.
 // The same write carrying no mark is made, as every caller but the undo makes it.
 func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing.T) {
+	t.Parallel()
 	rig := newGoingWritesRig(t)
 	f := newGoingConditionFixtures(t, rig)
 	empty := ""
@@ -436,6 +441,7 @@ func goingMultipartUpload(t *testing.T, handler http.Handler, target string, fie
 // JSON upload replaces a document, so it names the token of the version it replaces, as main's
 // upload precondition asks of every caller, and the old member is all that could refuse it.
 func TestAnOutsideRequestNamingAnOldConditionMemberIsNotConditional(t *testing.T) {
+	t.Parallel()
 	rig := newGoingWritesRig(t)
 	f := newGoingConditionFixtures(t, rig)
 	owner := "/api/v1/issues/" + f.issue

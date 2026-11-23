@@ -36,6 +36,7 @@ func (rig goingWritesRig) goingReasonsOn(t *testing.T, issue string, body any) i
 // recovery point. A landing on an issue adds the issue to the run's issues, and a request its route
 // refused writes no landing.
 func TestALandedRequestIsNotSentAgain(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
 	ctx := context.Background()
 
@@ -214,6 +215,7 @@ func TestALandedRequestIsNotSentAgain(t *testing.T) {
 // wrote and built the write under the next one, another request than the one that landed: the
 // call was refused CALL_CHANGED though its change stood.
 func TestASecondTryOfALandedCallAnswersItsLanding(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
 	issue := rig.issue(t, "Holds an event to dismiss")
 	run, token := rig.working(t, "alice", "dismiss an event of "+issue)
@@ -278,6 +280,7 @@ func goingAnswerMembers(t *testing.T, encoded []byte) map[string]any {
 // Commit ran. The advice the route answers beside the value is no part of what its transaction
 // found and left, and no landing records it.
 func TestGoingLandingRecordsWhatItsRouteAnsweredOnceTheWritePhaseRan(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
 	asked := rig.issue(t, "Asked through the bar")
 	for _, tc := range []struct {

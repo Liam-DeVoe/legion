@@ -131,6 +131,7 @@ func rosterFrameOf(t *testing.T, frames []goingEvent) goingRosterFrame {
 // prose with no block, and the roster frame says how old Dispatch's copy of the listener's list
 // was: the stored copy was read three seconds before the run.
 func TestGoingStatusSummaryIsAnsweredFromStoredDataWithNoAgentMessaged(t *testing.T) {
+	t.Parallel()
 	listener := newStatusListener(t, func(_ int, w http.ResponseWriter) { _, _ = w.Write([]byte(statusSessions)) })
 	rig := newBlockRig(t, testServerOptions{envoyURL: listener.url},
 		goingtest.Reply{ToolCalls: []goingtest.ToolCall{
@@ -235,6 +236,7 @@ func TestGoingStatusSummaryIsAnsweredFromStoredDataWithNoAgentMessaged(t *testin
 // alone - the sessions Dispatch's own rows name, each with its open asks and last activity - and
 // the roster frame says stored. An agent-status block asked for draws those stored rows.
 func TestGoingStatusUnavailableRosterIsServedFromStoredRows(t *testing.T) {
+	t.Parallel()
 	listener := newStatusListener(t, func(_ int, w http.ResponseWriter) {
 		http.Error(w, "listener restarting", http.StatusServiceUnavailable)
 	})
@@ -272,6 +274,7 @@ func TestGoingStatusUnavailableRosterIsServedFromStoredRows(t *testing.T) {
 // configured, answers from the stored rows: there is no listener to ask on the run's own context,
 // so the read neither asks one nor fails, and its frame says stored.
 func TestGoingStatusRosterWithNoListenerDuringAShutdownIsServedFromStoredRows(t *testing.T) {
+	t.Parallel()
 	lifetime, shutdown := context.WithCancel(t.Context())
 	shutdown()
 	rig := newBlockRig(t, testServerOptions{lifetime: lifetime})
@@ -298,6 +301,7 @@ func TestGoingStatusRosterWithNoListenerDuringAShutdownIsServedFromStoredRows(t 
 // When the listener answers 503 refilling with a Retry-After, the roster read waits it out and
 // reads again, and the roster frame reports the live roster.
 func TestGoingStatusRefillingRosterIsWaitedOutThenLive(t *testing.T) {
+	t.Parallel()
 	listener := newStatusListener(t, func(call int, w http.ResponseWriter) {
 		if call == 1 {
 			answerListRefilling(w, "1")
@@ -336,6 +340,7 @@ func TestGoingStatusRefillingRosterIsWaitedOutThenLive(t *testing.T) {
 // roster and the delivery reads - and a run asked of one project reads no other, whatever project
 // the model names, while a person asking of every project is offered every read.
 func TestGoingStatusReadsStayInsideTheAuthorsProject(t *testing.T) {
+	t.Parallel()
 	rig := newBlockRig(t, testServerOptions{})
 	seedActivityFixture(t, rig.database)
 	person := goingCredential{cookie: true, credential: &model.Credential{Scopes: []string{model.ScopePerson, model.ScopeApprove}}}

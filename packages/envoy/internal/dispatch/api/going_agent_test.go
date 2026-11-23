@@ -282,6 +282,7 @@ func goingEventually(t *testing.T, what string, done func() bool) {
 // and of no other server's, and a renew is answered at once when its run is stopped, after which
 // its step and its frames are refused.
 func TestTheAgentWireCalls(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, func(agent *AgentListener) { agent.renewWait = goingRenewWait })
 	ctx := context.Background()
 

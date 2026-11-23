@@ -54,6 +54,7 @@ var goingUndoKinds = map[string]goingUndoKind{
 // of the four undos, the one R6 gives its action, the same on every row of one action, and writes
 // only through rows the served table classes as writes.
 func TestGoingUndoEveryRowStatesItsUndo(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatal(err)
@@ -180,6 +181,7 @@ func replaceText(find, with string) []any {
 // conversation's newest run is 8 days old answers 404. A second press answers each row whose undo
 // landed from that landing, sending nothing twice, and resumes where the first press ended.
 func TestUndoOfOneRun(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	ctx := context.Background()
 
@@ -427,6 +429,7 @@ func TestUndoOfOneRun(t *testing.T) {
 // the label it did not name. The person's edit of the labels on such a row, the whole set the
 // label picker closed on, takes labels_add's place and writes that set.
 func TestARowThatAddsALabelKeepsTheOthersAndItsUndoPutsThemBack(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	labelled := func(t *testing.T, title string) string {
 		t.Helper()
@@ -632,6 +635,7 @@ func goingTakesTheCallingSession(name string) bool {
 // and so does a case of a tool that states none. A tool every row of whose path takes the calling
 // session is left out, since a run acts as a person and no session, so no run writes it.
 func TestEveryStatedUndoRuns(t *testing.T) {
+	t.Parallel()
 	var stated []string
 	for _, name := range slices.Sorted(maps.Keys(goingWriteTools)) {
 		if goingWriteTools[name].Undo != goingUndoNotUndone && !goingTakesTheCallingSession(name) {

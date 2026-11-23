@@ -66,6 +66,7 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 // of the module. A test inserts events directly on purpose -- a backlog to page through, a row
 // shape to serve -- so test sources are outside it, as they are outside that scan.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -128,6 +129,7 @@ func otherEventInserter(path string) (string, bool) {
 // through by its own path alone: an insert in another file, one of the same name in another
 // directory included, is an offence.
 func TestTheEventInsertGuardSeesAPlantedInserter(t *testing.T) {
+	t.Parallel()
 	if _, ok := otherEventInserter("../../../going/eval/write.go"); !ok {
 		t.Error("the guard does not know the eval seed's insert by its path")
 	}

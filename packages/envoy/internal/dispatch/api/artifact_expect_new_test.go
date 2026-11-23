@@ -18,6 +18,7 @@ import (
 // holds for an issue's JSON upload, a project's, and a multipart upload, and it cannot be carried
 // with an expected content (ExpectSHA256), which asks for the opposite.
 func TestAnUploadMadeACreateAloneMakesADocumentAndNeverWritesOverOne(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "DEMO", "Uploads that only make", "The spec.\n").Key
 	versions := func(t *testing.T, owner, name string) int {

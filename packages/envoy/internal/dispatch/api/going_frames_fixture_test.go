@@ -34,6 +34,7 @@ func goingFixtureBlock(t *testing.T, kind, title, spec string, tables map[string
 // `go test ./internal/dispatch/api -run TestTheGoingFrameFixturesAreWhatTheServerWrites -update`
 // rewrites them.
 func TestTheGoingFrameFixturesAreWhatTheServerWrites(t *testing.T) {
+	t.Parallel()
 	frames := map[string]any{
 		"decision.json": goingDecision{Action: "dispatch_issue_update", Line: goingLineDo, Context: going.ContextPage},
 		"block_chart.json": goingFixtureBlock(t, going.BlockChart, "Events by week",

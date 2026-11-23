@@ -78,6 +78,7 @@ var c28Leaks []struct {
 // Each leak c28 named in production is fixed, and a test that drives its path holds the heap of the
 // function c28 named flat (c28Leaks). c28 named no leak, so the test holds no subtest, and says so.
 func TestTheLeaksOfC28AreFixed(t *testing.T) {
+	t.Parallel()
 	if len(c28Leaks) == 0 {
 		t.Logf("c28 named no leak in production's heap over %s (%s), so this test holds no subtest", c28Window, c28Attachment)
 		return
@@ -108,6 +109,7 @@ const (
 //     more than 2 MB an hour over the time between the sets, and the hook's function is among the
 //     five whose flat heap grew most.
 func TestTheC28MethodFindsAPlantedLeak(t *testing.T) {
+	t.Parallel()
 	t.Run("a hook that keeps every closed room's document", func(t *testing.T) {
 		memory := newMemoryHarness(t)
 		// The documents are written by a server of their own, stopped before the measured one

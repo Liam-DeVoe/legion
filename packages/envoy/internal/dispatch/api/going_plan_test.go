@@ -119,6 +119,7 @@ func retitle(issue, title string) map[string]any {
 // server refuses both, each saved as a refused step of the run; A holds the approved priority and
 // B none.
 func TestTheServerRefusesAChangeOutsideTheApprovedPlan(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	a, b := rig.issue(t, "Issue A"), rig.issue(t, "Issue B")
 	const words = "set the priority of issue A to 1"
@@ -185,6 +186,7 @@ func goingToolNames(request *agenttest.Request) []string {
 // Before the write of an approved plan a session takes a claim of its item, and that row waits
 // again.
 func TestWhatWaitsInEachMode(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	everyRow := func(rows int) []any {
 		asked := make([]any, rows)
@@ -327,6 +329,7 @@ const toolReviewPlanName = "review_plan"
 // TestThePlanRunsInOrder: a plan whose row 2 sets a title that row 3 sets again ends with row 3's
 // title, and its rows land in their order.
 func TestThePlanRunsInOrder(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	issue := rig.issue(t, "In order")
 	const words = "comment, then rename In order twice"
@@ -373,6 +376,7 @@ func TestThePlanRunsInOrder(t *testing.T) {
 // already holds at version 2 shows that document as its item, and once approved lands as the
 // document's version 3.
 func TestAPlanUploadsANewVersionOfADocument(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	issue := rig.issue(t, "Holds notes")
 	owner := "/api/v1/issues/" + issue
@@ -407,6 +411,7 @@ func TestAPlanUploadsANewVersionOfADocument(t *testing.T) {
 // waits for the person again, showing that document, which keeps its one version, and their
 // approval of it again lands the upload as the document's next version.
 func TestAnUploadApprovedAsACreateWaitsAgainOverADocumentMadeSince(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	issue := rig.issue(t, "Gets notes")
 	owner := "/api/v1/issues/" + issue
@@ -496,6 +501,7 @@ func goingNowText(row goingPlanRow) string {
 // later, and which this server holds back - showing that text, and the document keeps it; the
 // approval of the row again lands the upload over it.
 func TestAnUploadRowShowsTheDocumentsTextAndWaitsAgainOverAnEditSinceItsApproval(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRigOver(t, newGoingWritesRigServing(t, func(database *store.Store) *store.Store { return database }, time.Hour))
 	issue := rig.issue(t, "Holds edited notes")
 	notes := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "notes.md", "# Notes\n\nOne.\n")
@@ -543,6 +549,7 @@ func TestAnUploadRowShowsTheDocumentsTextAndWaitsAgainOverAnEditSinceItsApproval
 // lock, is not written over: the upload is refused, 409 DOCUMENT_CHANGED, the row fails so, and the
 // document holds that person's text.
 func TestAnUploadRowOverADocumentWithNoTokenWritesNothingOverAVersionWrittenSinceItsRead(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	issue := rig.issue(t, "Holds a broken document")
 	broken := createCorruptedDocument(t, rig.mux, rig.database, rig.served.deps, issue, "broken.md", outsideSchemaCorruptions[0].Corrupt)
@@ -644,6 +651,7 @@ func (rig goingPlanRig) partlyLandedWaiting(t *testing.T, title string) (run, is
 // the reason over: the issue holds the reason once and is closed, and the run's record holds the
 // close and its reason under one call.
 func TestARetryOfAPartlyLandedRowReadsItsItemAgainAndPostsItsReasonOnce(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	run, issue, reason := rig.partlyLandedWaiting(t, "Closed after a crash")
 	rig.answer(t, run, "approve", map[string]any{"plan": 1})
@@ -669,6 +677,7 @@ func TestARetryOfAPartlyLandedRowReadsItsItemAgainAndPostsItsReasonOnce(t *testi
 // the issue holds the reason once, and the reason's landing is the row's own: Undo of the run
 // answers one line, the row's, which names the reason sent, not undone.
 func TestARowApprovedAgainAfterItsReasonLandedSaysSoWhenItsIssueClosedMeanwhile(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	run, issue, reason := rig.partlyLandedWaiting(t, "Closed by another meanwhile")
 	rig.answer(t, run, "approve", map[string]any{"plan": 1})
@@ -726,6 +735,7 @@ func goingNamesNone(t *testing.T, what, text string, tokens ...string) {
 // waits for its person again (partlyLandedWaiting) is unticked: Undo of the run answers the row's
 // line for the reason that landed, sent, not undone, and no line of a call that names no row.
 func TestAnUntickedRowsLandedReasonStaysTheRowsToUndo(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	run, issue, _ := rig.partlyLandedWaiting(t, "Unticked after its reason landed")
 	rig.answer(t, run, "approve", map[string]any{"plan": 1, "rows": []map[string]any{{"row": 0, "tick": false}}})
@@ -737,6 +747,7 @@ func TestAnUntickedRowsLandedReasonStaysTheRowsToUndo(t *testing.T) {
 // reason, which its next try posts with the close. Undo of the run answers two lines of the row:
 // the close, written back, and the first reason, sent, not undone.
 func TestARowApprovedAgainWithAnotherReasonKeepsTheFirstReasonToUndo(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	run, issue, reason := rig.partlyLandedWaiting(t, "Approved again with another reason")
 	edited := "Shipped, and announced in the release notes."
@@ -761,6 +772,7 @@ func TestARowApprovedAgainWithAnotherReasonKeepsTheFirstReasonToUndo(t *testing.
 // landed and that waits for its person again (partlyLandedWaiting) is approved again, and Undo is
 // pressed before the row's next try: it answers the row's line for the reason, sent, not undone.
 func TestARowApprovedAgainKeepsItsLandedReasonToUndoBeforeItRunsAgain(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	run, issue, _ := rig.partlyLandedWaiting(t, "Undone before its next try")
 	rig.answer(t, run, "approve", map[string]any{"plan": 1})
@@ -770,6 +782,7 @@ func TestARowApprovedAgainKeepsItsLandedReasonToUndoBeforeItRunsAgain(t *testing
 // TestAFailedChangeSkipsWhatNeedsIt: a row whose write its route refuses fails, the row that needs
 // it is skipped and says so, and a row that needs neither runs.
 func TestAFailedChangeSkipsWhatNeedsIt(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	held, free := rig.issue(t, "Held by bob"), rig.issue(t, "Free")
 	rig.fixture(t, "bob", http.MethodPost, "/api/v1/issues/"+held+"/claim", map[string]any{})
@@ -811,6 +824,7 @@ func TestAFailedChangeSkipsWhatNeedsIt(t *testing.T) {
 // argument and which value; an approval whose edit puts one in is refused 400 GOING_PLAN_VALUES,
 // in words that name the row and each new issue as the page does, never by number.
 func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	// split is an epic with a sub-issue, and the create and the move under the new issue that
 	// split it.
@@ -1127,6 +1141,7 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 // another writer's change right after the first lands and before the second runs makes the second
 // wait again, though the plan's own first write changed the item too.
 func TestARowWhoseItemChangedWaitsAgain(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	moved, still := rig.issue(t, "Moved meanwhile"), rig.issue(t, "Still")
 	const words = "rename Moved meanwhile and Still"
@@ -1185,6 +1200,7 @@ func TestARowWhoseItemChangedWaitsAgain(t *testing.T) {
 // value, and nothing is written. The first try kept nothing, since it failed in the server, or kept
 // the refusal its route answered, and its agent died before it saved the step.
 func TestASecondTryOfARowReadsItsItemAgain(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	for _, first := range []struct{ name, state, record string }{
 		{"after a try that failed in the server", "running", `{}`},
@@ -1224,6 +1240,7 @@ func TestASecondTryOfARowReadsItsItemAgain(t *testing.T) {
 // write that fails - its route answers 500 - ends the row's call failed with nothing written, and the
 // row is left approved; it is never passed over to write the row unchecked.
 func TestARowWhoseItemCannotBeReadAgainIsNotWritten(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	issue := rig.issue(t, "Unreadable for a while")
 	const words = "rename Unreadable for a while"
@@ -1261,6 +1278,7 @@ func TestARowWhoseItemCannotBeReadAgainIsNotWritten(t *testing.T) {
 // of its key reads the row's item again before it writes: a change another person made since makes
 // the row wait for its person again, and that person's title is kept.
 func TestARowWhoseRouteCrashedFailsAndIsReadAgainBeforeItsRetry(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	issue := rig.issue(t, "Crashed on")
 	const words = "rename Crashed on"
@@ -1315,6 +1333,7 @@ func TestARowWhoseRouteCrashedFailsAndIsReadAgainBeforeItsRetry(t *testing.T) {
 // the issue holds the reason and is open. A retry of its key sends the close alone, and the issue
 // holds the reason once and is closed.
 func TestARowWhoseRouteCrashedPartwaySaysWhatWasWritten(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	issue := rig.issue(t, "Closed partway")
 	const words = "close Closed partway, saying why"
@@ -1372,6 +1391,7 @@ func TestARowWhoseRouteCrashedPartwaySaysWhatWasWritten(t *testing.T) {
 // reasoned close of an issue another person closed meanwhile - fails saying the issue closed, and
 // the undo of a write whose record holds nothing of what it left says nothing was put back.
 func TestARowAndAnUndoLineSayWhatHappenedInWords(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	t.Run("a row its translation refused", func(t *testing.T) {
 		issue := rig.issue(t, "Closed meanwhile")
@@ -1412,6 +1432,7 @@ func TestARowAndAnUndoLineSayWhatHappenedInWords(t *testing.T) {
 // event: approve, untick (which unticks each row that needs it), edit, revise, item changed and
 // row failed.
 func TestThePlanStates(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	start := func(t *testing.T, words string, changes func(n int) agenttest.Reply) string {
 		t.Helper()
@@ -1527,6 +1548,7 @@ func TestThePlanStates(t *testing.T) {
 // GOING_PLAN_CHANGED, with nothing written, so its person never approves a value their page did
 // not show; the page that read the plan last approves it.
 func TestAnApprovalOfAPlanAnotherPageReadSinceIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	issue := rig.issue(t, "Read in two tabs")
 	const words = "rename Read in two tabs"
@@ -1565,6 +1587,7 @@ func TestAnApprovalOfAPlanAnotherPageReadSinceIsRefused(t *testing.T) {
 // and it moved, the Inbox names the new version, an approval naming the one it named before is
 // refused 409 GOING_PLAN_CHANGED with nothing written, and one naming the new version runs.
 func TestTheInboxNamesTheVersionOfEachWaitingPlan(t *testing.T) {
+	t.Parallel()
 	rig := newGoingPlanRig(t)
 	issue := rig.issue(t, "Approved from the Inbox")
 	const words = "rename Approved from the Inbox"

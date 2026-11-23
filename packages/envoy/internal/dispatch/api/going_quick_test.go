@@ -98,6 +98,7 @@ func (rig goingRoutesRig) terminalWithin(t *testing.T, run string, within time.D
 // Jev call too, until one is answered; a stream past 4 MiB fails the answer; and an answer still
 // unanswered at 30 s fails, the 30 s bounding the whole loop of its model calls, not each call.
 func TestTheShortAnswerAndJevAreBoundedInTheServer(t *testing.T) {
+	t.Parallel()
 	t.Run("one in flight for each person", func(t *testing.T) {
 		held := newHeldAnswerer()
 		rig := newGoingRoutesRig(t, held)

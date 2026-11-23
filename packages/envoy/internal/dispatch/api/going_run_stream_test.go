@@ -67,6 +67,7 @@ func (rig goingAgentRig) goingRunHeld(t *testing.T, run string) (row, below int)
 // follow-up's earlier run is kept, with everything below it, while the conversation's newest run
 // is younger than seven days, so History lists the conversation whole and the earlier run reads.
 func TestAConversationIsDeletedWhole(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
 	rig.served.deps.Identity = headerIdentity(rig.database)
 	const day = 24 * time.Hour
@@ -201,6 +202,7 @@ func (s goingRunStream) next(t *testing.T, within time.Duration, what string) go
 // GOING_RUN_READERS_FULL, and once one closes another is admitted; and the run's Stop ends every
 // stream with the run's end frame.
 func TestTheRunStreamResumes(t *testing.T) {
+	t.Parallel()
 	rig := newGoingAgentRig(t, nil)
 	rig.served.deps.Identity = headerIdentity(rig.database)
 	server := httptest.NewServer(rig.mux)
@@ -326,6 +328,7 @@ func TestTheRunStreamResumes(t *testing.T) {
 // the person's waiting plans, each with its version, in two round trips however many plans the
 // page holds: the list, and every listed plan's rows in one read.
 func TestTheInboxReadsAPageOfWaitingPlansInTwoRoundTrips(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}

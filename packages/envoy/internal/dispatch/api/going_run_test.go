@@ -178,6 +178,7 @@ func askRun(t *testing.T, rig goingRoutesRig, login string, body map[string]any)
 // then the answer's text, and the end last. The answer only reads: the pause writes nothing, no
 // landing and no run of the bar's agent (going_runs).
 func TestGoingRunDecidesBeforeItAnswers(t *testing.T) {
+	t.Parallel()
 	standIn := newDecisionStandIn(t)
 	standIn.answer(t, decidedAnswer{
 		action: "dispatch_issue_update", confidence: 0.9,
@@ -229,6 +230,7 @@ func TestGoingRunDecidesBeforeItAnswers(t *testing.T) {
 // table's own auth class: a person at a browser is never offered a handoff, which
 // only a bearer may write, while the same person's own token is.
 func TestGoingDecisionOffersOnlyTheActionsTheCallersCredentialMayRun(t *testing.T) {
+	t.Parallel()
 	standIn := newDecisionStandIn(t)
 	standIn.answer(t, decidedAnswer{action: going.ActionNone, confidence: 1, about: going.ContextNone, display: going.DisplayProse, displayConfidence: 1})
 	answerer := &fakeAnswerer{frames: []going.Event{going.End(0, 0)}}
@@ -257,6 +259,7 @@ func TestGoingDecisionOffersOnlyTheActionsTheCallersCredentialMayRun(t *testing.
 // any other words the decision model's action names the line the decision frame carries - none
 // gives Ask, the create of an issue gives File as a new issue, and any other action gives Do.
 func TestTheLineOnTop(t *testing.T) {
+	t.Parallel()
 	standIn := newDecisionStandIn(t)
 	answerer := &fakeAnswerer{frames: []going.Event{going.Text("The answer."), going.End(2, 0)}}
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{answerer: answerer, decider: standIn.decider(t, staticToken)})
@@ -295,6 +298,7 @@ func TestTheLineOnTop(t *testing.T) {
 // With no decision model configured, and with one whose token cannot be read, the answer streams
 // as it always did: no decision frame, and no call to the decision endpoint.
 func TestGoingRunWithNoDecisionModelOrAnUnreachableOneAnswersWithNoDecision(t *testing.T) {
+	t.Parallel()
 	standIn := newDecisionStandIn(t)
 	standIn.answer(t, decidedAnswer{action: "dispatch_claim", confidence: 1, about: going.ContextPage, display: going.DisplayProse, displayConfidence: 1})
 	unreadable := func(context.Context) (string, error) { return "", errors.New("the token file is absent") }
@@ -325,6 +329,7 @@ func TestGoingRunWithNoDecisionModelOrAnUnreachableOneAnswersWithNoDecision(t *t
 // run here at once; "another process" marks the record alone, as a cancel landing on another pod
 // does, and the run's next frame write is what stops it.
 func TestGoingCancelStopsARunAtItsNextFrame(t *testing.T) {
+	t.Parallel()
 	for _, where := range []string{"this process", "another process"} {
 		t.Run(where, func(t *testing.T) {
 			answer := strings.Repeat("The pelicans arrive in spring and leave in autumn. ", 12)
@@ -381,6 +386,7 @@ func TestGoingCancelStopsARunAtItsNextFrame(t *testing.T) {
 // Only a run's author may cancel it, and a stranger is answered as the stream answers one: 404,
 // the run left running. An id that is no run, and one that is not a uuid, are answered alike.
 func TestGoingCancelOfAnotherCallersRunIsNotFound(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRoutesRig(t, &fakeAnswerer{frames: []going.Event{going.End(0, 0)}})
 	id := askRun(t, rig, "alice", map[string]any{"words": "whose run is this?"})
 	rig.awaitTerminal(t, id)

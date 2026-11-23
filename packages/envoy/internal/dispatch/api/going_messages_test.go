@@ -241,6 +241,7 @@ func requireByThePerson(t *testing.T, message model.Message, run, session, deliv
 // its own conversation, a broadcast is one row the broadcasts list holds, and each row's result
 // says whether its message was sent, queued or refused.
 func TestAMessageIsARowOfAPlan(t *testing.T) {
+	t.Parallel()
 	rig, listener := newGoingMessageRig(t)
 
 	t.Run("a message to the agent of an issue is one row and lands on the issue after approval", func(t *testing.T) {

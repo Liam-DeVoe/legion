@@ -107,6 +107,7 @@ func goingConversationIDs(page goingConversationsPage) []string {
 // run started last first; a second person reads none of it, and the route takes no login that
 // could name another.
 func TestGoingRunsAreReadByTheirCallerAloneNewestFirst(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRunsRig(t)
 	older := rig.run(t, "alice", "what moved yesterday?")
 	rig.age(t, older, time.Hour)
@@ -135,6 +136,7 @@ func TestGoingRunsAreReadByTheirCallerAloneNewestFirst(t *testing.T) {
 // A follow-up is listed in the conversation of the run it follows, its runs newest first, and
 // the conversation is listed by its newest run.
 func TestGoingRunsAConversationHoldsItsRunsNewestFirst(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRunsRig(t)
 	first := rig.run(t, "alice", "which colour are plums?")
 	rig.age(t, first, 2*time.Hour)
@@ -156,6 +158,7 @@ func TestGoingRunsAConversationHoldsItsRunsNewestFirst(t *testing.T) {
 // ?issue= keeps the caller's conversations with a run whose landed requests touched the issue,
 // and a second person who has no such run reads nothing over the same issue.
 func TestGoingRunsIssueFilterReadsThePersonsRunAlone(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRunsRig(t)
 	wrote := rig.run(t, "alice", "start DEMO-12")
 	rig.touched(t, wrote, "DEMO-12")
@@ -176,6 +179,7 @@ func TestGoingRunsIssueFilterReadsThePersonsRunAlone(t *testing.T) {
 
 // ?q= keeps the conversations with a run whose words hold the text in any case.
 func TestGoingRunsWordsFilter(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRunsRig(t)
 	for _, words := range []string{"Start DEMO-1", "start DEMO-2", "start DEMO-3", "start DEMO-4", "what is DEMO-5?"} {
 		rig.run(t, "alice", words)
@@ -193,6 +197,7 @@ func TestGoingRunsWordsFilter(t *testing.T) {
 // started with no line (a follow-up typed in the box, the side panel, a Continue) carries null,
 // and a line that is none of ask, do and file starts nothing.
 func TestGoingRunsRecordTheLineOnTopTheyWereStartedFrom(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRunsRig(t)
 	lineOf := func(run goingRun) string {
 		if run.Line == nil {
@@ -260,6 +265,7 @@ func TestGoingRunsRecordTheLineOnTopTheyWereStartedFrom(t *testing.T) {
 // A conversation whose newest run is older than seven days is not read, even before the sweep
 // deletes it; one inside them is.
 func TestGoingRunsOlderThanSevenDaysAreNotReturned(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRunsRig(t)
 	old := rig.run(t, "alice", "eight days ago")
 	rig.touched(t, old, "DEMO-12")
@@ -281,6 +287,7 @@ func TestGoingRunsOlderThanSevenDaysAreNotReturned(t *testing.T) {
 // The maintenance pass deletes a conversation whose newest run is older than seven days and keeps
 // one inside them.
 func TestGoingRunsSweepDeletesARunPastSevenDays(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRunsRig(t)
 	old := rig.run(t, "alice", "eight days ago")
 	rig.age(t, old, 8*24*time.Hour)
@@ -312,6 +319,7 @@ func TestGoingRunsSweepDeletesARunPastSevenDays(t *testing.T) {
 // lease ran out with more of its working time left than has passed since; and a run that waits, is
 // queued or is done, though its lease ran out an hour ago.
 func TestTheReaperEndsOnlyARunPastItsBudgetWithNoLease(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRunsRig(t)
 	budget := agent.Levels["standard"].Time
 	// record stores a standard run of alice's in state, started started ago, that has worked worked

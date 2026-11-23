@@ -94,6 +94,7 @@ func goingRouteInventory(t *testing.T) {
 // through, or one the bar leaves out by name and reason, so a route added later with no tool
 // fails here.
 func TestEveryPersonRouteHasATool(t *testing.T) {
+	t.Parallel()
 	goingRouteInventory(t)
 	called := goingCalledRoutes(t)
 	t.Logf("%d routes a tool calls, %d excluded", len(called), len(goingExcludedRoutes))
@@ -107,6 +108,7 @@ var goingEventType = regexp.MustCompile(`^[a-z_]+(\.[a-z_]+)+$`)
 // one of the classes, and its event, an event type or goingNoEvent for a route that appends none;
 // a reverse undoes through routes of the table.
 func TestEveryWriteToolNamesItsUndoKindClassAndEvent(t *testing.T) {
+	t.Parallel()
 	mutating := mutatingRoutes((&server{}).routes())
 	specs := make(map[string]contracts.DispatchTool, len(contracts.DispatchTools))
 	for _, spec := range contracts.DispatchTools {
@@ -155,6 +157,7 @@ func TestEveryWriteToolNamesItsUndoKindClassAndEvent(t *testing.T) {
 // arguments as a JSON body, and a read sends its query arguments, a list as one parameter per
 // item - and a version that is a number fills its path as an argument that is a text does.
 func TestABoundToolCallsTheRouteItsSpecBinds(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatalf("build the catalogue: %v", err)
@@ -216,6 +219,7 @@ func TestABoundToolCallsTheRouteItsSpecBinds(t *testing.T) {
 // reads the reference graph), a bound read by its spec's binding; and it names none for a call the
 // server refuses before it picks a row, a write tool, and a tool the server has not.
 func TestGoingToolReadRouteIsTheRowTheServerPicks(t *testing.T) {
+	t.Parallel()
 	const serverURL = "https://dispatch.test"
 	for _, test := range []struct {
 		name, tool string

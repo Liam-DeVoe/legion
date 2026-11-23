@@ -30,6 +30,7 @@ import (
 // connection itself. The web server of this test listens on loopback, which the reads admit beside
 // the public addresses the server's own check admits; the check itself is held to addresses.
 func TestTheServerReadsGitHubAndTheWeb(t *testing.T) {
+	t.Parallel()
 	web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/large":
@@ -293,6 +294,7 @@ var goingReadsNoPersonCalls = map[string]string{
 // reaches a row of its own with each argument where that row's route reads it: in its path, under
 // a query key the route reads, or in a field of the body it reads (routeShapes).
 func TestTheAgentReadsWhatItsArgumentsName(t *testing.T) {
+	t.Parallel()
 	writes := newGoingWritesRig(t)
 	record := &goingServedRecord{mux: writes.mux.(*http.ServeMux)}
 	writes.served.inProcess = record.wrap(writes.served.inProcess)
@@ -497,6 +499,7 @@ func TestTheAgentReadsWhatItsArgumentsName(t *testing.T) {
 // refused in the command's words, and no route of the file is read. A document still reads its
 // markdown.
 func TestTheAgentReadsAnUploadedFileAsDocReadDoes(t *testing.T) {
+	t.Parallel()
 	writes := newGoingWritesRig(t)
 	record := &goingServedRecord{mux: writes.mux.(*http.ServeMux)}
 	writes.served.inProcess = record.wrap(writes.served.inProcess)

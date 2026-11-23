@@ -72,6 +72,7 @@ func staticToken(context.Context) (string, error) { return "decision-bearer", ni
 // A deployment that configured nothing reads every part unset, blocks unknown, to any caller
 // Dispatch admits and to nobody else.
 func TestGoingCapabilityWithNothingConfiguredReadsEveryPartUnset(t *testing.T) {
+	t.Parallel()
 	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{})
 	if got := readGoingCapability(t, handler); got != goingCapabilityUnset {
 		t.Fatalf("with nothing configured the capability reads %s, want %s", got, goingCapabilityUnset)
@@ -85,6 +86,7 @@ func TestGoingCapabilityWithNothingConfiguredReadsEveryPartUnset(t *testing.T) {
 // three unset, so a deployment that answers and cannot decide is told from one that does
 // neither, and the session from the label. The models are named; their endpoints never are.
 func TestGoingCapabilityReadsTheFourPartsApart(t *testing.T) {
+	t.Parallel()
 	standIn := newSystemOneCalls(t)
 	decider, measured := NewDecider(standIn.model("jev-latest", staticToken))
 	if !measured {
@@ -140,6 +142,7 @@ func TestGoingCapabilityReadsTheFourPartsApart(t *testing.T) {
 // the decision endpoint. One the record holds reads configured, named, with the record's own
 // entry, and unreachable while its token does not read.
 func TestGoingCapabilityReadsAnUnmeasuredDecisionModelUnset(t *testing.T) {
+	t.Parallel()
 	standIn := newSystemOneCalls(t)
 	if decider, measured := NewDecider(standIn.model("unmeasured-model", staticToken)); measured || decider != nil {
 		t.Fatalf("NewDecider(unmeasured-model) = %v, %v, want no decider", decider, measured)
@@ -199,6 +202,7 @@ func TestGoingCapabilityReadsAnUnmeasuredDecisionModelUnset(t *testing.T) {
 // answer.blocks follows the answerer: unknown while it knows nothing, true once a structured
 // reply was accepted, false once its service refused one.
 func TestGoingCapabilityBlocksFollowTheAnswerer(t *testing.T) {
+	t.Parallel()
 	answerer := &fakeAnswerer{}
 	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{answerer: answerer, answerModel: "chat-model"})
 	for _, tc := range []struct {
@@ -221,6 +225,7 @@ func TestGoingCapabilityBlocksFollowTheAnswerer(t *testing.T) {
 // prose and the capability then reads blocks false; against one that takes the schema it reads
 // true. Before either run it reads unknown (c20's capability leg).
 func TestStructuredOutputRefusedTellsTheGoingCapabilityNoBlocks(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		reply goingtest.Reply
 		want  string

@@ -35,6 +35,7 @@ import (
 // approved, the whole change since her approval, carries that approval to the version it settles
 // into, as her own answer at a browser does, and the answer names the bar.
 func TestTheBarsMarkOnAWrite(t *testing.T) {
+	t.Parallel()
 	rig := newGoingWritesRig(t)
 	document := createInteractionIssue(t, rig.mux, "DEMO", "Carried through the bar", "Context\n")
 
@@ -258,6 +259,7 @@ func goingBarPerson(login, run string) resolvedCaller {
 // refuses nothing; and a broker-issued token, the shared token and a service-account token start
 // no run.
 func TestTheGrantResolvesAsTheRequestWould(t *testing.T) {
+	t.Parallel()
 	rig := newGoingGrantRig(t)
 	ctx := context.Background()
 

@@ -466,6 +466,8 @@ func grewMost(t *testing.T, before, after c28Set) []functionGrowth {
 // before them and, at rest once they have ended, comes back to within 5% of it, and the agent's
 // total Go memory stays under its GOMEMLIMIT.
 func TestTheServerHeapUnderEightDeepRuns(t *testing.T) {
+	// Not parallel: it reads one server's heap and its agent's memory at limits set from the
+	// container's memory, which the servers of the parallel memory tests would share.
 	rig := startLoad(t)
 
 	base := rig.server.scrape(t)[`envoy_dispatch_process_memory_total_bytes{process="agent"}`]
@@ -1035,6 +1037,8 @@ const cpuAgentShare = 4
 // of its own, since other pods on a shared node delay every process of the test's pod, the agent
 // included (cmd/dispatch/README.md, "c29").
 func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
+	// Not parallel: it holds the server's read latency beside its agent to its idle latency on the
+	// runner's CPUs, which the servers of the parallel memory tests would share.
 	if preemptLazy() {
 		t.Skipf("this kernel preempts lazily (%s), where a woken thread waits for the next tick for the CPU a running one holds, whatever its policy; c29 runs on the GKE kernel line production runs", kernelFacts())
 	}

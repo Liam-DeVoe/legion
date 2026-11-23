@@ -207,6 +207,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 // paths run the same statements and the same scans, so an issue holding one of everything reads
 // the same either way.
 func TestBatchedIssueReadAnswersTheSequentialLoadersBytes(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	fixture := buildFullIssueRead(t, handler)
 
@@ -283,6 +284,7 @@ func TestBatchedIssueReadAnswersTheSequentialLoadersBytes(t *testing.T) {
 // its comments, and never read the comments that held the answer. An issue with none leaves the
 // count out.
 func TestAnIssueReadSaysHowManyCommentsItHolds(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "TALK")
 	commented := createReferenceAPIIssue(t, handler, "TALK")
@@ -326,6 +328,7 @@ func TestAnIssueReadSaysHowManyCommentsItHolds(t *testing.T) {
 // the read's lists, so a reader that keeps only the start of a long read still has it, and the
 // listing's rows carry none.
 func TestIssueReadNamesTheIssuesItBlocks(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "WAIT")
 	blocker := createOutcomeIssue(t, handler, "WAIT", "API: rate limit headers")
@@ -443,6 +446,7 @@ func (r *roundTrips) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEnd
 // The issue read costs two round trips, and one for an issue with nothing the second batch is
 // for, where the sequential loaders spent a statement on each part of the answer.
 func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -504,6 +508,7 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 // A key no issue carries answers what it always has: the issue row's callback records the missing
 // row, and the read answers that row's pgx.ErrNoRows once its batch has closed.
 func TestBatchedIssueReadStillAnswersAMissingKey(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/NOPE-1", nil, "alice")
 	if response.Code != http.StatusNotFound {
@@ -525,6 +530,7 @@ func TestBatchedIssueReadStillAnswersAMissingKey(t *testing.T) {
 // prepared statements - is that connection's. Every read on it runs through the same statement
 // cache a request's does: the pool is opened from the server's own configuration.
 func TestMissingIssueReadKeepsTheConnectionsPreparedStatements(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := buildFullIssueRead(t, handler)
 	deps.Store = storetest.SingleConnection(t, database)

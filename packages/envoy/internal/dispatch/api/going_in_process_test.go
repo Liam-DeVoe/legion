@@ -38,6 +38,7 @@ func goingInProcessSend(t *testing.T, doer GoingDoer, spec goingSend) (int, stri
 // held to the same; and so is a document edit, whose route reads its body's bytes again
 // (decodeJSONBody), on its slug route and its id route alike.
 func TestGoingInProcessRequestsRefuseAMemberTheirRouteDoesNotDeclare(t *testing.T) {
+	t.Parallel()
 	rig := newGoingWritesRig(t)
 	created := createInteractionIssue(t, rig.mux, "DEMO", "An issue to reply on", "The spec.\n")
 	issue := created.Key

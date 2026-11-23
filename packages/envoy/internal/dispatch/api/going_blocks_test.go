@@ -114,6 +114,7 @@ func seedProgressFixture(t *testing.T, rig blockRig) {
 // .../architecture, the issue list from GET /api/v1/issues, the agent status from GET
 // /api/v1/agents, and the metric and the timeline from the delivery measures and timeline.
 func TestGoingBlockEachKindsNumbersAreItsReads(t *testing.T) {
+	t.Parallel()
 	t.Run("chart", func(t *testing.T) {
 		spec := `{"source":"read_project_activity","params":{"project":"DEMO","weeks":4},"table":"weeks","x":"week","y":"events"}`
 		rig := newBlockRig(t, testServerOptions{}, readCall(going.ReadProjectActivity, `{"project":"DEMO","weeks":4}`), blockAnswer(going.BlockChart, spec))
@@ -294,6 +295,7 @@ func TestGoingBlockEachKindsNumbersAreItsReads(t *testing.T) {
 // read refuses (a project Dispatch does not hold), and a delivery block on a deployment with no
 // delivery settings.
 func TestGoingBlockWithNoReadBehindItIsNotDrawn(t *testing.T) {
+	t.Parallel()
 	for name, test := range map[string]struct{ kind, spec, words string }{
 		"a read outside its kind": {going.BlockAgentStatus, `{"source":"read_progress","params":{"project":"DEMO"}}`, "agent status"},
 		"a table the read lacks":  {going.BlockChart, `{"source":"read_project_activity","params":{"project":"DEMO"},"table":"deploys","x":"day","y":"count"}`, "chart DEMO's deploys"},
@@ -317,6 +319,7 @@ func TestGoingBlockWithNoReadBehindItIsNotDrawn(t *testing.T) {
 // A chart whose read returns fewer than two points is not drawn (R9): one week of activity is one
 // point.
 func TestGoingBlockUnderTwoPointsDrawsNoChart(t *testing.T) {
+	t.Parallel()
 	spec := `{"source":"read_project_activity","params":{"project":"DEMO","weeks":1},"table":"weeks","x":"week","y":"events"}`
 	rig := newBlockRig(t, testServerOptions{}, blockAnswer(going.BlockChart, spec))
 	seedActivityFixture(t, rig.database)
@@ -329,6 +332,7 @@ func TestGoingBlockUnderTwoPointsDrawsNoChart(t *testing.T) {
 // seven: the words decide, and the list is closed (R2). The structured call is told
 // to write no block, since the words name none.
 func TestGoingBlockUnaskedOrOfAnUnknownKindIsDropped(t *testing.T) {
+	t.Parallel()
 	table := `{"source":"read_project_activity","params":{"project":"DEMO"},"table":"kinds","columns":["kind","count"]}`
 	for name, test := range map[string]struct{ kind, words string }{
 		"unasked for a plain question": {going.BlockTable, "what happened in DEMO lately"},

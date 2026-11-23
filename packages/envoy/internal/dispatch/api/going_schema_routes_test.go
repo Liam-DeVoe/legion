@@ -1129,6 +1129,7 @@ var goingSchemaStateOnly = map[string]string{
 // goingSchemaStateOnly's writes at least one of its calls, and the log tallies what each tool's
 // calls were answered.
 func TestEveryWriteToolsSchemaTakesOnlyWhatItsRouteTakes(t *testing.T) {
+	t.Parallel()
 	rig := newGoingSchemaRig(t)
 	seed := newGoingSchemaSeed(t, rig)
 	catalogue, err := BuildGoingCatalogue()
