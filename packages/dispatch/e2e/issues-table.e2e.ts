@@ -1,8 +1,13 @@
 import type { Issue } from "../web/src/api/types";
 import { SEND_DEADLINE_MS } from "../web/src/features/writes/keyed-write";
-import { type FakeSession, setLiveSessions, setSessionLive } from "./agents";
 import {
-  createAgentMessage,
+  type FakeSession,
+  listedSession,
+  seedUnreadReply,
+  setLiveSessions,
+  setSessionLive,
+} from "./agents";
+import {
   createAsk,
   createIssue,
   createMessage,
@@ -12,11 +17,19 @@ import {
   listIssueMessages,
   listIssues,
   patchIssue,
-  replyToMessageDelivery,
   seedAgentStreamConversations,
 } from "./api";
 import { filterPicker } from "./filters";
-import { openWithFloats, routeFloats, seedRefusedMove, updateBanner } from "./foot-floats";
+import {
+  discardPending,
+  dismissBanner,
+  openWithFloats,
+  refuseChanges,
+  routeFloats,
+  seedFillers,
+  seedRefusedMove,
+  updateBanner,
+} from "./foot-floats";
 import { expectNoEndRoom } from "./foot-probe";
 import { nextFrames } from "./frames";
 import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
@@ -359,11 +372,7 @@ test("with a refused change pending, New epic from these and Clear selection sti
   try {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1600, height: 1000 });
-    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
-      if (route.request().method() === "PATCH")
-        await route.fulfill({ status: 403, json: { error: "Move refused" } });
-      else await route.continue();
-    });
+    await refuseChanges(page, refused.key);
     await page.goto("/projects/CORE/issues");
     const select = (key: string) =>
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true });
@@ -584,7 +593,7 @@ async function footBoxes(
  * press picks are drawn. Each size is one reading, taken again until it holds: the list of what
  * is wrong there.
  */
-async function expectFootClear(
+async function expectFootElementsClear(
   page: Page,
   shown: FootElement[],
   sizes: { width: number; height: number }[],
@@ -696,13 +705,8 @@ test("no two of the selection bar, Pending changes and the update banner meet, a
   const other = await createIssue({ project: "CORE", title: "Ship the parser" });
   // Enough issues after those two that the table's box scrolls at the desktop sizes, as in the
   // row for the table's last row below. They come after, so the two rows a press picks are drawn
-  // while the box is at its start. Nothing reads their order among themselves, so they go out
-  // side by side.
-  await Promise.all(
-    Array.from({ length: 40 }, (_, index) =>
-      createIssue({ project: "CORE", title: `Filler issue number ${index}` })
-    )
-  );
+  // while the box is at its start.
+  await seedFillers();
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -745,32 +749,31 @@ test("no two of the selection bar, Pending changes and the update banner meet, a
       own.width >= 640 ? { controls: [], scroller: tableScroller(page) } : undefined;
 
     await expect(banner).toBeVisible();
-    await expectFootClear(page, [update], sizes, end);
+    await expectFootElementsClear(page, [update], sizes, end);
 
     await select(refused.key).check();
-    await expectFootClear(page, [bar, update], sizes, end);
+    await expectFootElementsClear(page, [bar, update], sizes, end);
 
     await toolbar.getByRole("button", { name: "Take out of epic" }).click({ timeout: 5_000 });
     await expect(pending).toContainText(refused.key);
     await select(refused.key).setChecked(false);
     await select(other.key).check();
-    await expectFootClear(page, [bar, pendingChanges, update], sizes, end);
+    await expectFootElementsClear(page, [bar, pendingChanges, update], sizes, end);
 
     await toolbar.getByRole("button", { name: "Clear selection" }).click({ timeout: 5_000 });
     await expect(toolbar).toHaveCount(0);
-    await expectFootClear(page, [pendingChanges, update], sizes, end);
+    await expectFootElementsClear(page, [pendingChanges, update], sizes, end);
 
-    await banner.getByRole("button", { name: "Dismiss update notice" }).click({ timeout: 5_000 });
-    await expect(banner).toHaveCount(0);
-    await expectFootClear(page, [pendingChanges], sizes, end);
+    await dismissBanner(page);
+    await expectFootElementsClear(page, [pendingChanges], sizes, end);
 
     await select(other.key).check();
-    await expectFootClear(page, [bar, pendingChanges], sizes, end);
+    await expectFootElementsClear(page, [bar, pendingChanges], sizes, end);
 
-    await pending.getByRole("button", { name: "Discard", exact: true }).click({ timeout: 5_000 });
-    await expect(pending).toHaveCount(0);
-    await expectFootClear(page, [bar], sizes, end);
-    await expectNoEndRoom(page, "issues-table bar");
+    await discardPending(page);
+    await expectFootElementsClear(page, [bar], sizes, end);
+    const lastSize = sizes[sizes.length - 1];
+    await expectNoEndRoom(page, `issues-table ${lastSize.width}x${lastSize.height} bar`);
   } finally {
     await context.close();
   }
@@ -793,17 +796,6 @@ test("no two of the selection bar, Pending changes and the update banner meet, a
 test("no two of the broadcast composer, Pending changes and the update banner meet on the Agents page, its ended session's row scrolls clear of the floats, and nothing covers the centre of a control of any of them @phone @foot", async ({
   browser,
 }) => {
-  /** A live session for the Agents page to list. Each id is a UUID, which Dispatch's agent
-   *  routes require. */
-  const session = (sessionID: string, title: string): FakeSession => ({
-    capabilities: ["aside", "btw"],
-    dir: `/workspaces/${title.toLowerCase()}`,
-    last_seen: Date.now() - 5_000,
-    machine_id: `${title.toLowerCase()}-host`,
-    roles: [title.toLowerCase()],
-    session_id: sessionID,
-    title,
-  });
   // The setup of `agents-groups.e2e.ts`'s row for the composer: fourteen live sessions, which run
   // the Agents page's list past a short window, and one that has ended with an unread reply to
   // the reader, which keeps it a row of the section of ended sessions under them.
@@ -818,19 +810,14 @@ test("no two of the broadcast composer, Pending changes and the update banner me
     (async () => {
       await setLiveSessions([
         ...titles.map((title, index) =>
-          session(`01a04731-0c07-7000-8000-0000000001${String(index).padStart(2, "0")}`, title)
+          listedSession(
+            `01a04731-0c07-7000-8000-0000000001${String(index).padStart(2, "0")}`,
+            title
+          )
         ),
-        session(endedSession, "Ended"),
+        listedSession(endedSession, "Ended"),
       ]);
-      const asked = await createAgentMessage(endedSession, {
-        body: "How far along?",
-        delivery: "aside",
-      });
-      await replyToMessageDelivery(
-        asked.id,
-        { attempt: 1, body: "Done and gone." },
-        { id: endedSession, kind: "session" }
-      );
+      await seedUnreadReply(endedSession);
       await setSessionLive(endedSession, false);
     })(),
     seedRefusedMove(),
@@ -894,20 +881,15 @@ test("no two of the broadcast composer, Pending changes and the update banner me
         rows: 'section[aria-label="Replied, no longer connected"] > article',
       },
     };
-    await expectFootClear(page, [composer, pendingChanges, update], sizes, end);
+    await expectFootElementsClear(page, [composer, pendingChanges, update], sizes, end);
 
-    await pendingChanges.box
-      .getByRole("button", { name: "Discard", exact: true })
-      .click({ timeout: 5_000 });
-    await expect(pendingChanges.box).toHaveCount(0);
-    await expectFootClear(page, [composer, update], sizes, end);
+    await discardPending(page);
+    await expectFootElementsClear(page, [composer, update], sizes, end);
 
-    await update.box
-      .getByRole("button", { name: "Dismiss update notice" })
-      .click({ timeout: 5_000 });
-    await expect(update.box).toHaveCount(0);
-    await expectFootClear(page, [composer], sizes, end);
-    await expectNoEndRoom(page, "agents broadcast-composer");
+    await dismissBanner(page);
+    await expectFootElementsClear(page, [composer], sizes, end);
+    const lastSize = sizes[sizes.length - 1];
+    await expectNoEndRoom(page, `agents ${lastSize.width}x${lastSize.height} none`);
   } finally {
     await context.close();
   }
@@ -998,9 +980,10 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
      * Fails unless, at 1280x720, 1600x1000 and 1920x1080, the last content of `scroller` meets
      * neither float at the real end of its scroll: each size one reading, taken again until it
      * holds. Then closes both floats, and fails unless, once every scroller is back at its start,
-     * no element is marked any more as a scroller that takes end room for them.
+     * no element is marked any more as a scroller that takes end room for them; that reading's
+     * `FOOT-CELL` line names it `<cell> 1920x1080 none`, `cell` one word.
      */
-    const expectEndClear = async (scroller: Scroller) => {
+    const expectEndClear = async (scroller: Scroller, cell: string) => {
       for (const size of DESKTOP_SIZES) {
         await page.setViewportSize(size);
         await scrollToItsEnd(scroller);
@@ -1017,45 +1000,49 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
           )
           .toEqual([]);
       }
-      await update.box
-        .getByRole("button", { name: "Dismiss update notice" })
-        .click({ timeout: 5_000 });
-      await expect(update.box).toHaveCount(0);
-      await pendingChanges.box
-        .getByRole("button", { name: "Discard", exact: true })
-        .click({ timeout: 5_000 });
-      await expect(pendingChanges.box).toHaveCount(0);
-      await expectNoEndRoom(page, scroller.name);
+      await dismissBanner(page);
+      await discardPending(page);
+      const lastSize = DESKTOP_SIZES[DESKTOP_SIZES.length - 1];
+      await expectNoEndRoom(page, `${cell} ${lastSize.width}x${lastSize.height} none`);
     };
 
     // The margin's column from xl up, holding a card for each question.
     await openWithFloats(page, refused.key, `/issues/${reviewed.key}/spec`);
     const margin = page.getByTestId("margin-sheet");
     await expect(margin.locator("[data-margin-item]")).toHaveCount(words.length);
-    await expectEndClear({
-      element: margin,
-      last: "the margin column's last element child",
-      name: "the margin's column",
-    });
+    await expectEndClear(
+      {
+        element: margin,
+        last: "the margin column's last element child",
+        name: "the margin's column",
+      },
+      "margin-column"
+    );
 
     // The live view's transcript, with the whole conversation drawn.
     await openWithFloats(page, refused.key, `/agents/${live.session_id}/live`);
     await expectConversationInFront(page, live.session_id);
-    await expectEndClear({
-      element: frontLiveView(page).getByTestId("agent-thread"),
-      last: "the transcript's last element child",
-      name: "the live view's transcript",
-    });
+    await expectEndClear(
+      {
+        element: frontLiveView(page).getByTestId("agent-thread"),
+        last: "the transcript's last element child",
+        name: "the live view's transcript",
+      },
+      "live-view-transcript"
+    );
 
     // The Inbox's reading pane, holding the approval's long document.
     await openWithFloats(page, refused.key, inboxAt(approval.approvalAskId));
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", approval.approvalAskId);
     await expect(inboxPane(page)).toContainText(APPROVAL_FOOT);
-    await expectEndClear({
-      element: paneScroller(page),
-      last: "the reading pane's last element child",
-      name: "the Inbox reading pane",
-    });
+    await expectEndClear(
+      {
+        element: paneScroller(page),
+        last: "the reading pane's last element child",
+        name: "the Inbox reading pane",
+      },
+      "inbox-pane"
+    );
   } finally {
     await context.close();
   }
@@ -1083,7 +1070,7 @@ test("with the update banner shown, every control of the selection bar takes a p
     );
     await page.goto("/projects/CORE/issues");
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    await expect(page.getByRole("status", { name: "A new version is available" })).toBeVisible();
+    await expect(updateBanner(page)).toBeVisible();
     await page.getByRole("checkbox", { name: `Select ${other.key}`, exact: true }).check();
     const bar = page.getByRole("toolbar");
     // Move takes a press only once an epic is picked, and picking one sends nothing.
@@ -1689,8 +1676,8 @@ const STEADY_EVERY_MS = 250;
 // The Priorities page draws its list in flight under no priority above a second table, so at
 // 1280x800 the end of the document's scroll lies past the first table's pager. From there the
 // window goes to 1920x1080, to 1600x1000 and back, and then, read every 250 ms for 2 s, the first
-// table's box and the document each keep one `scrollHeight`, and the box's stays under what its
-// header and its rows can take.
+// table's box and the document each end at the `scrollHeight` they began at, within a pixel, and
+// the box's stays under what its header and its rows can take.
 // SLOW(>=2s): forty issues seeded and moved into work, three resizes, and readings over two seconds
 // of rest.
 test("a window resize made while scrolled past the issues table keeps the table's box at its size", async ({
@@ -1715,11 +1702,14 @@ test("a window resize made while scrolled past the issues table keeps the table'
     const pager = table.getByTestId("issues-table-pager");
     await expect(pager).toContainText(`of ${IN_FLIGHT_ISSUES}`);
     await expect(box.locator("[data-issue-row]").first()).toBeVisible();
-    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await expect
-      .poll(() => pager.evaluate((element) => element.getBoundingClientRect().bottom), {
-        message: "the table's pager above the window at the end of the document's scroll",
-      })
+      .poll(
+        async () => {
+          await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+          return pager.evaluate((element) => element.getBoundingClientRect().bottom);
+        },
+        { message: "the table's pager above the window at the end of the document's scroll" }
+      )
       .toBeLessThanOrEqual(0);
     for (const size of [
       { width: 1920, height: 1080 },
@@ -1923,11 +1913,7 @@ test("a refused merge move leaves the source open without a close reason", async
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    await page.route(`**/api/v1/issues/${bad.key}`, async (route) => {
-      if (route.request().method() === "PATCH")
-        await route.fulfill({ status: 403, json: { error: "Move refused" } });
-      else await route.continue();
-    });
+    await refuseChanges(page, bad.key);
     await page.goto("/projects/CORE/issues?group=epic");
     // The childless destination epic keeps a heading of its own, so the merge starts at the
     // source's rather than at whichever heading comes first.

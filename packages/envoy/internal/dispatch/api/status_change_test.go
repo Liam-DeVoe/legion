@@ -51,7 +51,7 @@ type statusChangeRig struct {
 func newStatusChangeRig(t *testing.T, on bool) statusChangeRig {
 	t.Helper()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{parentStatusRule: on})
-	createProjects(t, handler, ruleProject)
+	createTestProject(t, handler, ruleProject)
 	return statusChangeRig{ruleRig: ruleRig{handler: handler, database: database, deps: deps}, served: served}
 }
 

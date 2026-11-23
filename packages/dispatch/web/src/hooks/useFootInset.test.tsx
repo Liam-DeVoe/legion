@@ -12,8 +12,8 @@ import { DOCUMENT_SCROLL_ATTRIBUTE, MARK_ATTRIBUTE, useFootInset } from "./useFo
 // bottom edge on the screen, and sizes each scroll container's padding box and content (`sized`).
 // Every other element has no box. happy-dom computes no initial value for `top` and `bottom`, so
 // each sticky element states its own, as a browser's computed style reads them.
-const FLOAT_HEIGHT = 48;
-const TALL_FLOAT_HEIGHT = 96;
+/** The height of each float, by its testid. */
+const FLOAT_HEIGHTS: Readonly<Record<string, number>> = { float: 48, "tall-float": 96 };
 const REM = 16;
 
 /** The top and bottom edge, on the screen, of each element that has a box, by its testid. */
@@ -49,9 +49,9 @@ beforeEach(() => {
     this: Element
   ) {
     const name = this.getAttribute("data-testid") ?? "";
-    if (name === "float" || name === "tall-float") {
-      const height = name === "float" ? FLOAT_HEIGHT : TALL_FLOAT_HEIGHT;
-      return rect(window.innerHeight - REM - height, window.innerHeight - REM, 600, 900);
+    const floatHeight = FLOAT_HEIGHTS[name];
+    if (floatHeight !== undefined) {
+      return rect(window.innerHeight - REM - floatHeight, window.innerHeight - REM, 600, 900);
     }
     const placed = boxes[name];
     return placed === undefined ? rect(0, 0, 0, 0) : rect(placed.top, placed.bottom, 0, 1000);
@@ -213,8 +213,6 @@ test("a float over the frame's column gives the end room to the column that stat
   const height = window.innerHeight;
   boxes = {
     column: { bottom: height, top: 100 },
-    contents: { bottom: height, top: 63 },
-    row: { bottom: height, top: 100 },
     words: { bottom: height - 10, top: height - 40 },
   };
   under = "words";
@@ -256,7 +254,7 @@ function TableUnderFloats({ float, tall = false }: { float: boolean; tall?: bool
 }
 
 /** Scrolls `box` to `top`, as a reader's scroll does, which the hook hears on `window`. */
-function scrollTo(box: HTMLElement, top: number): void {
+function scrollBox(box: HTMLElement, top: number): void {
   box.scrollTop = top;
   window.dispatchEvent(new Event("scroll"));
 }
@@ -276,7 +274,7 @@ async function withTheTable(
     await nextFrame();
     await read(box, view);
   } finally {
-    scrollTo(box, 0);
+    scrollBox(box, 0);
     await nextFrame();
     view.unmount();
   }
@@ -300,10 +298,10 @@ test("end room kept after its float went stays through a scroll inside it, and g
     box.scrollTop = 1400;
     view.rerender(<TableUnderFloats float={false} />);
     await nextFrame();
-    scrollTo(box, 1350);
+    scrollBox(box, 1350);
     await nextFrame();
     expect(box).toHaveAttribute(MARK_ATTRIBUTE);
-    scrollTo(box, 1300);
+    scrollBox(box, 1300);
     await nextFrame();
     expect(box).not.toHaveAttribute(MARK_ATTRIBUTE);
     expect(box.getAttribute("style") ?? "").not.toContain("80px");
@@ -326,7 +324,7 @@ test("a float that goes while the reader stands in the part of the end room only
     view.rerender(<TableUnderFloats float />);
     await nextFrame();
     expect(box.getAttribute("style")).toContain("128px");
-    scrollTo(box, 1340);
+    scrollBox(box, 1340);
     await nextFrame();
     expect(box.getAttribute("style")).toContain("80px");
   });
@@ -367,18 +365,18 @@ test("the document's scroller keeps its room while taking it would clamp a box t
 
     // The reader stands at the end of the box, which the page gave way for: the document's own
     // scroll is at its start and would clamp nothing, and the box would be clamped by 80px.
-    scrollTo(box, 1400);
+    scrollBox(box, 1400);
     view.rerender(<PageGivingWay float={false} />);
     await nextFrame();
     expect(main).toHaveAttribute(MARK_ATTRIBUTE, "padding");
     expect(main.style.paddingBottom).toBe("80px");
 
-    scrollTo(box, 1300);
+    scrollBox(box, 1300);
     await nextFrame();
     expect(main).not.toHaveAttribute(MARK_ATTRIBUTE);
     expect(main.style.paddingBottom).toBe("");
   } finally {
-    scrollTo(box, 0);
+    scrollBox(box, 0);
     await nextFrame();
     view.unmount();
   }

@@ -13,30 +13,45 @@
  *  Three kinds of row read it. The rows by route group open every reviewed route of
  *  `e2e/review-routes.ts` against the review corpus (`e2e/review-seed.ts`) at three desktop
  *  sizes with both floats shown, then close both and read that no end room is left. The rows of
- *  the fixed surface open eight pages, one row each and two for the issues table (the selection
- *  bar hidden and shown), seeded so each page's scrollers reach the foot, and read every
- *  combination of the floats at seven sizes from a phone's up. And two rows hold the steps the
- *  architect named: a float over a sticky column, a box that scrolls only sideways under a
- *  float, and a float that shows for a moment at the end of a scroll.
+ *  the fixed surface open eight pages, one row each and three for the issues table (the selection
+ *  bar hidden; shown with the update banner; shown with the banner dismissed), seeded so each
+ *  page's scrollers reach the foot, and read every combination of the floats at seven sizes from
+ *  a phone's up. And two rows hold three steps of their own: a float over a sticky column, a box
+ *  that scrolls only sideways under a float, and a float that shows for a moment at the end of a
+ *  scroll.
  *
  *  Each reading prints one `FOOT-CELL <page> <WxH> <floats> <clean|problems…>` line, so a run's
  *  output is the table of every cell. Every title carries `@foot`, which the check c-foot-clear
  *  reads from the full lane; none carries `@pr`, so the pull-request lane runs none of them. None
  *  carries `@phone` either: each row sets every size it reads itself, the phone sizes included,
  *  so the `iphone` project would read the same sizes again. */
-import { MARK_ATTRIBUTE } from "../web/src/hooks/useFootInset";
-import { type FakeSession, setLiveSessions, setSessionLive } from "./agents";
+import { CLEARANCE_PROPERTY, MARK_ATTRIBUTE } from "../web/src/hooks/useFootInset";
 import {
-  createAgentMessage,
+  type FakeSession,
+  listedSession,
+  seedUnreadReply,
+  setLiveSessions,
+  setSessionLive,
+} from "./agents";
+import {
   createAsk,
   createIssue,
   createMessage,
   listIssues,
-  replyToMessageDelivery,
   seedAgentStreamConversations,
 } from "./api";
 import { expectTimeout } from "./expect-timeout";
-import { openWithFloats, routeFloats, seedRefusedMove, updateBanner } from "./foot-floats";
+import {
+  discardPending,
+  dismissBanner,
+  openWithFloats,
+  refuseChanges,
+  reloadWithBanner,
+  routeFloats,
+  seedFillers,
+  seedRefusedMove,
+  updateBanner,
+} from "./foot-floats";
 import {
   expectFootClear,
   expectNoEndRoom,
@@ -89,8 +104,8 @@ const STICKY_SIZES: readonly Size[] = [
  *  issue page's document column there. */
 const SIDEWAYS_SIZE: Size = { width: 1600, height: 1000 };
 
-/** The sizes the moment step reads at, as the architect named them: a small laptop's and a
- *  desktop's, both from `xl` up, where the chord indicator stands on its lower floor. */
+/** The sizes the moment step reads at: a small laptop's and a desktop's, both from `xl` up,
+ *  where the chord indicator stands on its lower floor. */
 const MOMENT_SIZES: readonly Size[] = [
   { width: 1280, height: 720 },
   { width: 1600, height: 1000 },
@@ -189,30 +204,6 @@ async function readEverySize(
   }
 }
 
-/** Dismisses the update banner, which stays dismissed for the page's life. */
-async function dismissBanner(page: Page): Promise<void> {
-  const banner = updateBanner(page);
-  await banner.getByRole("button", { name: "Dismiss update notice" }).click({ timeout: 5_000 });
-  await expect(banner).toHaveCount(0);
-}
-
-/** Discards the refused change, which closes Pending changes. */
-async function discardPending(page: Page): Promise<void> {
-  const pending = pendingWrites(page);
-  await pending.getByRole("button", { name: "Discard", exact: true }).click({ timeout: 5_000 });
-  await expect(pending).toHaveCount(0);
-}
-
-/** Loads `path` on `page` again with the update banner shown, as a load of the page shows it
- *  from the builds `routeFloats` answers; Pending changes keeps the change to `refusedKey`
- *  across the load. */
-async function reloadWithBanner(page: Page, refusedKey: string, path: string): Promise<void> {
-  await page.goto(path);
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect(updateBanner(page)).toBeVisible();
-  await expect(pendingWrites(page)).toContainText(refusedKey);
-}
-
 // ---------------------------------------------------------------------------------------------
 // The rows by route group.
 // ---------------------------------------------------------------------------------------------
@@ -303,12 +294,14 @@ for (const routes of routeRows()) {
 // ---------------------------------------------------------------------------------------------
 
 /** One page of the fixed surface: its name in a cell, the address it opens at, and what it has
- *  drawn once it is ready to read, after each load. Where `stuck`, each reading with a float
- *  shown is followed by `expectStuckInPlace`. */
+ *  drawn once it is ready to read, after each load. `first` runs once, after the first load,
+ *  before the page is read. Where `stuck`, each reading with a float shown is followed by
+ *  `expectStuckInPlace`. */
 interface Surface {
   readonly name: string;
   readonly path: string;
   readonly ready: (page: Page) => Promise<void>;
+  readonly first?: (page: Page) => Promise<void>;
   readonly stuck?: true;
 }
 
@@ -316,18 +309,12 @@ interface Surface {
  * Reads `surface` at every size of the fixed surface with each combination of the floats: both,
  * Pending changes alone, the banner alone and neither. The banner, once dismissed, stays so for
  * the page's life, so the page is loaded afresh for the banner alone: Pending changes keeps the
- * refused change across the load, and is then discarded. `first` runs once, after the first
- * load, before the page is read.
+ * refused change across the load, and is then discarded.
  */
-async function sweepSurface(
-  page: Page,
-  refusedKey: string,
-  surface: Surface,
-  first?: (page: Page) => Promise<void>
-): Promise<void> {
+async function sweepSurface(page: Page, refusedKey: string, surface: Surface): Promise<void> {
   await routeFloats(page, refusedKey);
   await openWithFloats(page, refusedKey, surface.path);
-  await first?.(page);
+  await surface.first?.(page);
   await surface.ready(page);
   const stuck = surface.stuck === true;
   await readEverySize(page, surface.name, ["pending", "banner"], stuck);
@@ -339,16 +326,6 @@ async function sweepSurface(
   await readEverySize(page, surface.name, ["banner"], stuck);
   await dismissBanner(page);
   await readEverySize(page, surface.name, []);
-}
-
-/** Issues enough to run the issues table's box, and the Board's Triage column, past the window
- *  at every size. Nothing reads their order among themselves, so they go out side by side. */
-async function seedFillers(): Promise<void> {
-  await Promise.all(
-    Array.from({ length: 40 }, (_, index) =>
-      createIssue({ project: "CORE", title: `Filler issue number ${index}` })
-    )
-  );
 }
 
 /** The session that asks the margin's questions and writes the Conversation's messages. */
@@ -522,26 +499,22 @@ test("the floats leave the foot of the Board clear in every combination at seven
   try {
     const page = await context.newPage();
     const board = page.getByRole("region", { name: "Project board" });
-    await sweepSurface(
-      page,
-      refused.key,
-      {
-        name: "board",
-        path: "/projects/CORE/issues",
-        ready: async () => {
-          await expect(
-            board.getByRole("article").filter({ hasText: "Filler issue number 39" })
-          ).toHaveCount(1);
-        },
+    await sweepSurface(page, refused.key, {
+      name: "board",
+      path: "/projects/CORE/issues",
+      ready: async () => {
+        await expect(
+          board.getByRole("article").filter({ hasText: "Filler issue number 39" })
+        ).toHaveCount(1);
       },
-      async () => {
+      first: async () => {
         await page.getByRole("button", { name: "Board" }).click();
         await expect(page.getByRole("button", { name: "Board" })).toHaveAttribute(
           "aria-pressed",
           "true"
         );
-      }
-    );
+      },
+    });
   } finally {
     await context.close();
   }
@@ -555,17 +528,6 @@ test("the floats leave the foot of the Board clear in every combination at seven
 test("the floats leave the foot of the Agents page clear in every combination at seven sizes @foot", async ({
   browser,
 }) => {
-  /** A live session for the Agents page to list. Each id is a UUID, which Dispatch's agent
-   *  routes require. */
-  const session = (sessionID: string, title: string): FakeSession => ({
-    capabilities: ["aside", "btw"],
-    dir: `/workspaces/${title.toLowerCase()}`,
-    last_seen: Date.now() - 5_000,
-    machine_id: `${title.toLowerCase()}-host`,
-    roles: [title.toLowerCase()],
-    session_id: sessionID,
-    title,
-  });
   const titles = Array.from(
     { length: 14 },
     (_, index) => `Agent ${String(index + 1).padStart(2, "0")}`
@@ -577,19 +539,14 @@ test("the floats leave the foot of the Agents page clear in every combination at
     (async () => {
       await setLiveSessions([
         ...titles.map((title, index) =>
-          session(`01a04731-0c07-7000-8000-0000000004${String(index + 1).padStart(2, "0")}`, title)
+          listedSession(
+            `01a04731-0c07-7000-8000-0000000004${String(index + 1).padStart(2, "0")}`,
+            title
+          )
         ),
-        session(endedSession, "Ended"),
+        listedSession(endedSession, "Ended"),
       ]);
-      const asked = await createAgentMessage(endedSession, {
-        body: "How far along?",
-        delivery: "aside",
-      });
-      await replyToMessageDelivery(
-        asked.id,
-        { attempt: 1, body: "Done and gone." },
-        { id: endedSession, kind: "session" }
-      );
+      await seedUnreadReply(endedSession);
       await setSessionLive(endedSession, false);
     })(),
     seedRefusedMove(),
@@ -644,10 +601,10 @@ test("the floats leave the foot of the issue page clear in every combination at 
 
 // The new issue page, in its frame, which `withIssuePage` turns on for alice as every row of
 // `e2e/issue-page-*.e2e.ts` does: the same issue, its words and its questions, read in the frame.
-// The document scrolls the frame's `main`, which takes end room for the floats, so each reading
-// with a float shown is followed by one of the frame's icon rail, its Contents pane and every
-// element stuck in `main` at the end of the scroll (`expectStuckInPlace`): the room must carry
-// none of them off its place.
+// The document scrolls the frame's column (`IssueOutlinePage.tsx`), which takes end room for the
+// floats, so each reading with a float shown is followed by one of the frame's icon rail, its
+// Contents pane and every element stuck in `main` at the end of the scroll
+// (`expectStuckInPlace`): the room must carry none of them off its place.
 // SLOW(>=2s): twelve questions seeded one at a time, and four combinations of the floats at seven
 // sizes, each a settled reading at the end of every scroller, and the stuck elements' places.
 test("the floats leave the foot of the new issue page's frame clear in every combination at seven sizes @foot", async ({
@@ -739,6 +696,18 @@ test("the floats leave the foot of an agent's live view clear in every combinati
  *  desktop window (`e2e/conversation.e2e.ts` measured 2,700 px at 1280x720). */
 const CONVERSATION_MESSAGES = 40;
 
+/** An issue whose Conversation holds `CONVERSATION_MESSAGES` messages, the newest last written.
+ *  Answers its key. */
+async function seedLongConversation(): Promise<string> {
+  const issue = await createIssue({ project: "CORE", title: "A long conversation" });
+  // One at a time: the server appends one event at a time per issue, so a burst costs the same,
+  // and the tab lists the messages in the order they were written.
+  for (let index = 1; index <= CONVERSATION_MESSAGES; index += 1) {
+    await createMessage(issue.key, { body: `Conversation message ${index}` }, agent);
+  }
+  return issue.key;
+}
+
 // An issue's Conversation tab, run past the window by forty messages, with its composer: docked
 // at the foot below `sm`, and stuck at the top from `sm` up. Its `Jump to latest` is a float of
 // the foot's top layer, which shows once the reader leaves the top, where the newest turn is
@@ -751,18 +720,13 @@ test("the floats leave the foot of an issue's Conversation clear in every combin
   browser,
 }) => {
   const refused = await seedRefusedMove();
-  const issue = await createIssue({ project: "CORE", title: "A long conversation" });
-  // One at a time: the server appends one event at a time per issue, so a burst costs the same,
-  // and the tab lists the messages in the order they were written.
-  for (let index = 1; index <= CONVERSATION_MESSAGES; index += 1) {
-    await createMessage(issue.key, { body: `Conversation message ${index}` }, agent);
-  }
+  const conversation = await seedLongConversation();
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await sweepSurface(page, refused.key, {
       name: "conversation",
-      path: `/issues/${issue.key}/conversation`,
+      path: `/issues/${conversation}/conversation`,
       ready: async () => {
         await expect(page.getByRole("list", { name: "Conversation turns" })).toContainText(
           `Conversation message ${CONVERSATION_MESSAGES}`
@@ -775,7 +739,7 @@ test("the floats leave the foot of an issue's Conversation clear in every combin
 });
 
 // ---------------------------------------------------------------------------------------------
-// The steps the architect named.
+// The sticky, sideways and moment steps.
 // ---------------------------------------------------------------------------------------------
 
 /** The lines of a code block wider than any document column here, which the sideways step puts
@@ -821,38 +785,45 @@ async function expectStickyClear(page: Page, cell: string): Promise<void> {
       .poll(
         async () => {
           const ends = await page.evaluate(readFootEnds);
-          const read = await page.evaluate((attribute) => {
-            const column = document.querySelector<HTMLElement>('aside[aria-label="Review margin"]');
-            const pending = document.querySelector('[aria-label="Pending changes"]');
-            const shell = document.getElementById("main-content");
-            const mainRoom = shell?.hasAttribute(attribute)
-              ? `main holds ${shell.style.paddingBottom} of end room`
-              : "main holds no end room";
-            if (column === null) return { main: mainRoom, problems: ["no Review margin shows"] };
-            if (pending === null) return { main: mainRoom, problems: ["no Pending changes shows"] };
-            const a = column.getBoundingClientRect();
-            const b = pending.getBoundingClientRect();
-            const over =
-              Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
-              Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
-            // The margin's own room lengthens its scroll, so its content is measured without it.
-            const room = Number.parseFloat(column.style.getPropertyValue("--foot-clearance")) || 0;
-            return {
-              main: mainRoom,
-              problems: [
-                ...(over ? [] : ["Pending changes does not lie over the Review margin"]),
-                ...(column.scrollHeight - room > column.clientHeight + 1
-                  ? ["the Review margin's content does not fit it"]
-                  : []),
-                ...(column.hasAttribute(attribute)
-                  ? []
-                  : [`the Review margin carries no ${attribute}`]),
-                ...(document.body.hasAttribute(attribute)
-                  ? [`body carries ${attribute} (${document.body.style.paddingBottom})`]
-                  : []),
-              ],
-            };
-          }, MARK_ATTRIBUTE);
+          const read = await page.evaluate(
+            ({ attribute, property }) => {
+              const column = document.querySelector<HTMLElement>(
+                'aside[aria-label="Review margin"]'
+              );
+              const pending = document.querySelector('[aria-label="Pending changes"]');
+              const shell = document.getElementById("main-content");
+              const mainRoom = shell?.hasAttribute(attribute)
+                ? `main holds ${shell.style.paddingBottom} of end room`
+                : "main holds no end room";
+              if (column === null) return { main: mainRoom, problems: ["no Review margin shows"] };
+              if (pending === null) {
+                return { main: mainRoom, problems: ["no Pending changes shows"] };
+              }
+              const a = column.getBoundingClientRect();
+              const b = pending.getBoundingClientRect();
+              const over =
+                Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 &&
+                Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
+              // The margin's own room lengthens its scroll, so its content is measured without it.
+              const room = Number.parseFloat(column.style.getPropertyValue(property)) || 0;
+              return {
+                main: mainRoom,
+                problems: [
+                  ...(over ? [] : ["Pending changes does not lie over the Review margin"]),
+                  ...(column.scrollHeight - room > column.clientHeight + 1
+                    ? ["the Review margin's content does not fit it"]
+                    : []),
+                  ...(column.hasAttribute(attribute)
+                    ? []
+                    : [`the Review margin carries no ${attribute}`]),
+                  ...(document.body.hasAttribute(attribute)
+                    ? [`body carries ${attribute} (${document.body.style.paddingBottom})`]
+                    : []),
+                ],
+              };
+            },
+            { attribute: MARK_ATTRIBUTE, property: CLEARANCE_PROPERTY }
+          );
           main = read.main;
           problems = [
             ...read.problems,
@@ -920,7 +891,7 @@ function readSideways(page: Page, toBanner: boolean): Promise<SidewaysReading> {
   );
 }
 
-// Two steps the architect named, each read as a settled state.
+// Two steps, each read as a settled state.
 // A float over a sticky element: from 1280 px Pending changes sits at the window's lower right,
 // over the issue page's Review margin, a column stuck at the screen's height whose content fits.
 // The margin is the scroller that takes end room for it, so the walk never reaches `body`, which
@@ -1014,7 +985,7 @@ test("a float over a sticky column leaves body without end room and the Navigati
   }
 });
 
-/** How long the moment step goes on reading after a float has gone, as the architect named it. */
+/** How long the moment step goes on reading after a float has gone. */
 const AFTER_IT_GOES_MS = 500;
 
 /** The end of a scroll the moment step stands at: the selector of the box that scrolls its
@@ -1103,7 +1074,7 @@ async function standAtTheEnd(page: Page, end: MomentEnd, cell: string): Promise<
  *  has a box. The first frame is read at once, before anything the row presses next. */
 function watchTheEnd(page: Page, end: MomentEnd, float: string): Promise<void> {
   return page.evaluate(
-    ({ attribute, float, last }) => {
+    ({ attribute, float, last, property }) => {
       const frames: EndFrame[] = [];
       let reading = true;
       const read = () => {
@@ -1114,7 +1085,7 @@ function watchTheEnd(page: Page, end: MomentEnd, float: string): Promise<void> {
             .map(
               (element) =>
                 `${element.tagName}${element.id ? `#${element.id}` : ""}:${
-                  element.style.getPropertyValue("--foot-clearance") || element.style.paddingBottom
+                  element.style.getPropertyValue(property) || element.style.paddingBottom
                 }`
             )
             .join(","),
@@ -1136,7 +1107,7 @@ function watchTheEnd(page: Page, end: MomentEnd, float: string): Promise<void> {
         },
       };
     },
-    { attribute: MARK_ATTRIBUTE, float, last: end.last }
+    { attribute: MARK_ATTRIBUTE, float, last: end.last, property: CLEARANCE_PROPERTY }
   );
 }
 
@@ -1170,7 +1141,8 @@ async function framesOfTheMoment(page: Page, cell: string): Promise<readonly End
  * the content at the end of the scroll: the top of its last content before the press, while the
  * float showed, one frame after it went and `AFTER_IT_GOES_MS` after that, for the cell's line;
  * and each move of that top by 1px or more, at the frame it moved in, with the end room then
- * held, which is a problem.
+ * held, which is a problem; so is a first frame that read no last content, since no move of it
+ * can then be seen.
  */
 function momentReading(frames: readonly EndFrame[]): { readonly line: string; problems: string[] } {
   const round = (value: number | undefined) =>
@@ -1185,7 +1157,10 @@ function momentReading(frames: readonly EndFrame[]): { readonly line: string; pr
     `${round(Math.max(...shown))}, one frame after it went ${round(frames[gone + 1]?.top)}, ` +
     `${AFTER_IT_GOES_MS} ms later ${round(later?.top)}; end room before ${first?.marks || "nowhere"}, ` +
     `as it went ${frames[gone]?.marks || "nowhere"}`;
-  const problems: string[] = [];
+  const problems: string[] =
+    first === undefined || Number.isNaN(first.top)
+      ? ["the scroll's last content was not read in the first frame, before the press"]
+      : [];
   let top = first?.top ?? Number.NaN;
   let held = first?.marks ?? "";
   for (const frame of frames) {
@@ -1249,21 +1224,11 @@ async function expectStillWhenItGoes(
 test("a float that shows for a moment moves no content when it goes @foot", async ({ browser }) => {
   const refused = await seedRefusedMove();
   await seedFillers();
-  const issue = await createIssue({ project: "CORE", title: "A long conversation" });
-  // One at a time: the server appends one event at a time per issue, so a burst costs the same,
-  // and the tab lists the messages in the order they were written.
-  for (let index = 1; index <= CONVERSATION_MESSAGES; index += 1) {
-    await createMessage(issue.key, { body: `Conversation message ${index}` }, agent);
-  }
+  const conversation = await seedLongConversation();
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    // Every PATCH of the refused issue is refused, which leaves its change pending.
-    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
-      if (route.request().method() === "PATCH")
-        await route.fulfill({ status: 403, json: { error: "Move refused" } });
-      else await route.continue();
-    });
+    await refuseChanges(page, refused.key);
     const { select, toolbar, toStart } = tableControls(page);
     const turns = page.getByRole("list", { name: "Conversation turns" });
     for (const size of MOMENT_SIZES) {
@@ -1298,7 +1263,7 @@ test("a float that shows for a moment moves no content when it goes @foot", asyn
         () => Promise.resolve(),
         () => discardPending(page)
       );
-      await page.goto(`/issues/${issue.key}/conversation`);
+      await page.goto(`/issues/${conversation}/conversation`);
       await expect(turns).toContainText(`Conversation message ${CONVERSATION_MESSAGES}`);
       for (const { end, name } of CHORD_ENDS) {
         await expectStillWhenItGoes(

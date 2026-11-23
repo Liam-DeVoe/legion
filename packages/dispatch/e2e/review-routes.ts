@@ -646,9 +646,12 @@ async function waitForInboxCountSettled(page: Page): Promise<void> {
   await expect
     .poll(
       async () => {
-        const waiting = requestsOfThisDocument(page, await page.requests()).some(
-          (request) => feedsInboxCount(request) && stillAnswering(request)
-        );
+        // Every request is asked, not only those up to the first still in flight, so the next
+        // poll has heard of each one that has already ended.
+        let waiting = false;
+        for (const request of await requestsOfThisDocument(page)) {
+          if (feedsInboxCount(request) && stillAnswering(request)) waiting = true;
+        }
         const reading = (await count.allTextContents()).join(" | ");
         if (waiting || reading !== held) {
           held = reading;
@@ -664,15 +667,16 @@ async function waitForInboxCountSettled(page: Page): Promise<void> {
     .toBeGreaterThanOrEqual(INBOX_COUNT_QUIET_MS);
 }
 
-/** The requests of `requests`, `page.requests()`'s list in the order they were sent, that the
- *  document `page` shows now sent: those after the last navigation request of its main frame. A
- *  request sent before that belongs to a document that is gone, so it can no longer answer, and
- *  nothing may say so: Chromium can cancel a request of a document being replaced with neither
+/** The requests of `page.requests()`'s list, in the order they were sent, that the document
+ *  `page` shows now sent: those after the last navigation request of its main frame. A request
+ *  sent before that belongs to a document that is gone, so it can no longer answer, and nothing
+ *  may say so: Chromium can cancel a request of a document being replaced with neither
  *  `requestfinished` nor `requestfailed` (e2e/two-builds.multiprocess.e2e.ts met it), and a
  *  request no one reports ended would hold `stillAnswering`, and this wait, for ever. The app's
  *  own history navigations send no navigation request and keep their document, so the requests
  *  sent around them stay this document's. */
-function requestsOfThisDocument(page: Page, requests: readonly Request[]): readonly Request[] {
+async function requestsOfThisDocument(page: Page): Promise<readonly Request[]> {
+  const requests = await page.requests();
   const mainFrame = page.mainFrame();
   let first = 0;
   for (const [index, request] of requests.entries()) {
@@ -681,10 +685,9 @@ function requestsOfThisDocument(page: Page, requests: readonly Request[]): reado
   return requests.slice(first);
 }
 
-/** The requests `stillAnswering` has asked Playwright's server about, and those of them whose
- *  end the server has reported. */
-const askedServer = new WeakSet<Request>();
-const endedOnServer = new WeakSet<Request>();
+/** Each request `stillAnswering` has asked Playwright's server about: false until the server
+ *  has reported its end, and true after. */
+const endedOnServer = new WeakMap<Request, boolean>();
 
 /** Whether `request` can still answer: neither its response nor its failure has come.
  *
@@ -692,27 +695,30 @@ const endedOnServer = new WeakSet<Request>();
  *  Playwright 1.64.1, a `Request` records its failure only if the test already held that object,
  *  or something listened for `requestfailed`, when it failed: Playwright's server sends the
  *  failure of no other request, and `page.requests()` hands a request over with the response it
- *  has but never with its failure. So a read aborted before this wait first lists it - by the
- *  page, or by a navigation away, which `openWithFloats` (e2e/foot-floats.ts) makes two of per
- *  route - read as neither answered nor failed for as long as it stayed among the page's latest
- *  hundred, and the wait never saw its quiet window: 20 of 20 aborted `/api/v1/inbox` reads read
- *  back with neither, and on `/answers` one read aborted in the page failed this wait after
- *  15,131 ms where a `requestfailed` listener let it settle in 935 ms. The server does hold the
- *  end: `request.response()` answers at once with the response of an answered request and with
- *  null for a failed one. So each request that shows neither is asked once, and it counts as in
- *  flight until that answer comes, which for a request already ended costs the wait one poll.
- *  Asking needs no listener installed before the page opens, so every layer that waits here is
- *  covered as it stands. */
+ *  has but never with its failure. So a read the page aborted before this wait first listed it
+ *  read as neither answered nor failed for as long as it stayed among the page's latest hundred,
+ *  and the wait never saw its quiet window: 20 of 20 aborted `/api/v1/inbox` reads read back with
+ *  neither, and on `/answers` one read aborted in the page failed this wait after 15,131 ms where
+ *  a `requestfailed` listener let it settle in 935 ms. (A read cut off by a navigation away, which
+ *  `openWithFloats` (e2e/foot-floats.ts) makes two of per route, belongs to a document that is
+ *  gone: `requestsOfThisDocument` leaves it out, and it never reaches this function.) The server
+ *  does hold the end: `request.response()` answers at once with the response of an answered
+ *  request and with null for a failed one. So each request that shows neither is asked once, and
+ *  it counts as in flight until that answer comes. The wait asks every such request of a poll in
+ *  that poll, so however many of them have already ended, they cost it one poll. Asking needs no
+ *  listener installed before the page opens, so every layer that waits here is covered as it
+ *  stands. */
 function stillAnswering(request: Request): boolean {
   if (request.existingResponse() !== null || request.failure() !== null) return false;
-  if (endedOnServer.has(request)) return false;
-  if (!askedServer.has(request)) {
-    askedServer.add(request);
-    const ended = () => {
-      endedOnServer.add(request);
+  const ended = endedOnServer.get(request);
+  if (ended === true) return false;
+  if (ended === undefined) {
+    endedOnServer.set(request, false);
+    const end = () => {
+      endedOnServer.set(request, true);
     };
     // Rejected only once the page has closed, which ends the request too.
-    void request.response().then(ended, ended);
+    void request.response().then(end, end);
   }
   return true;
 }

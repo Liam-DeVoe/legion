@@ -379,8 +379,10 @@ function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
   const read = () => {
     const foot = element.getBoundingClientRect().bottom;
     above = foot <= 0;
-    under = contentUnder(element, foot);
-    at = where();
+    // Only a body wholly above the top of the page is corrected, so only then is the content
+    // under it read.
+    under = above ? contentUnder(element, foot) : null;
+    at = under === null ? foot : under.getBoundingClientRect().top;
     placedAt = window.scrollY;
   };
   read();

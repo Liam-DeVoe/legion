@@ -245,15 +245,16 @@ import { type RefObject, useLayoutEffect } from "react";
  *   can clamp, which is what that walk reads first.
  * - Why it runs only while a float shows or a scroller holds room. With no float nothing lies
  *   over content, so no scroller needs room, and a pass reads layout on every scroll. So while no
- *   float has a box and no scroller holds room the hook listens to nothing (`follow`). When the
- *   last float loses its box it runs a pass at once, which unmarks every scroller whose reader is
- *   out of its room, and stops listening once none is left. While a float has a box, or a
- *   scroller holds room, a pass runs at most once per animation frame: after each `publish`, on
- *   any scroll, on a window resize, and when elements join or leave the page (a
- *   `MutationObserver` over `body`, for `childList` and `subtree` only). The observer does not
- *   watch attributes or styles, so the hook's marks and end room do not wake it. Only taking end
- *   room away from a scroller scrolled to its end can clamp its scroll and wake one more pass,
- *   which then finds the same marks; and the hook takes none from under the reader.
+ *   float has a box and no scroller holds room the hook listens to nothing
+ *   (`listenWhileNeeded`). When the last float loses its box it runs a pass at once, which
+ *   unmarks every scroller whose reader is out of its room, and stops listening once none is
+ *   left. While a float has a box, or a scroller holds room, a pass runs at most once per
+ *   animation frame: after each `publish`, on any scroll, on a window resize, and when elements
+ *   join or leave the page (a `MutationObserver` over `body`, for `childList` and `subtree`
+ *   only). The observer does not watch attributes or styles, so the hook's marks and end room do
+ *   not wake it. Only taking end room away from a scroller scrolled to its end can clamp its
+ *   scroll and wake one more pass, which then finds the same marks; and the hook takes none from
+ *   under the reader.
  *
  * `--foot-clearance` is registered as not inherited (`styles.css`), so a scroller inside a marked
  * one, while it holds no room of its own, reads 0, never the room of the scroller around it. The
@@ -322,7 +323,7 @@ const marks = new Map<HTMLElement, Mark>();
 export const MARK_ATTRIBUTE = "data-foot-clearance";
 
 /** The custom property that holds a scroller's end room, on its own inline style. */
-const CLEARANCE_PROPERTY = "--foot-clearance";
+export const CLEARANCE_PROPERTY = "--foot-clearance";
 
 /** The attribute by which the page states, on `<main>` or, in the new issue page's frame, on the
  *  frame's column, that the document scrolls that element's content (`FOOT_LAYERS` says why the
@@ -349,7 +350,7 @@ let resized = false;
 /** What wakes a pass when elements join or leave the page, made at the first float. */
 let mutations: MutationObserver | undefined;
 
-/** Whether the hook listens for what moves content under the floats (`follow`). */
+/** Whether the hook listens for what moves content under the floats (`listenWhileNeeded`). */
 let listening = false;
 
 function floatsOf(layer: FootLayer): Map<Element, Float> {
@@ -658,7 +659,7 @@ function standsInRoom(scroller: HTMLElement, room: number): boolean {
  * unmarks every scroller first, so each mark it keeps is read afresh. It reads every box before
  * it writes anything, and between unmarking and marking a scroller it reads only styles, so the
  * browser never lays out a scroller without its end room and clips a scroll at its end. It
- * then listens, or stops, as `follow` says.
+ * then listens, or stops, as `listenWhileNeeded` says.
  */
 function clearScrollers(): void {
   clearFrame = 0;
@@ -701,7 +702,7 @@ function clearScrollers(): void {
     if (!next.has(scroller) && !kept.has(scroller)) unmark(scroller);
   }
   for (const [scroller, taken] of next) if (!kept.has(scroller)) mark(scroller, taken);
-  follow();
+  listenWhileNeeded();
 }
 
 /** Asks for a pass at the next animation frame, once however often it is asked. */
@@ -721,7 +722,7 @@ function clearAfterResize(): void {
  * why): a pass leaves a scroller its room while the reader stands in it, and only a pass after
  * the scroll that leaves it takes it away.
  */
-function follow(): void {
+function listenWhileNeeded(): void {
   const wanted = placedFloats.length > 0 || marks.size > 0;
   if (wanted === listening) return;
   listening = wanted;
@@ -732,9 +733,6 @@ function follow(): void {
     mutations.observe(document.body, { childList: true, subtree: true });
     return;
   }
-  cancelAnimationFrame(clearFrame);
-  clearFrame = 0;
-  resized = false;
   window.removeEventListener("scroll", clearNextFrame, { capture: true });
   window.removeEventListener("resize", clearAfterResize);
   mutations?.disconnect();
@@ -747,14 +745,14 @@ function follow(): void {
  * keeps it (`FOOT_LAYERS` says why).
  */
 function followFloats(placed: readonly PlacedFloat[]): void {
-  const wasFollowing = placedFloats.length > 0;
+  const hadFloats = placedFloats.length > 0;
   placedFloats = placed;
   if (placed.length > 0) {
-    follow();
+    listenWhileNeeded();
     clearNextFrame();
     return;
   }
-  if (!wasFollowing) return;
+  if (!hadFloats) return;
   cancelAnimationFrame(clearFrame);
   clearScrollers();
 }
@@ -846,7 +844,7 @@ export function useFootInset(
     };
     let following = false;
     let parent: Element | null = null;
-    const follow = (moves: boolean) => {
+    const followMoves = (moves: boolean) => {
       if (moves !== following) {
         following = moves;
         if (moves) {
@@ -870,7 +868,7 @@ export function useFootInset(
       const { position, top } = getComputedStyle(element);
       const placed = box.height > 0 && !(position === "sticky" && top !== "auto");
       const fixed = position === "fixed";
-      follow(placed && !fixed);
+      followMoves(placed && !fixed);
       const screen = window.innerHeight;
       if (placed && box.top < screen && box.bottom > 0) {
         pageBands.set(element, {
@@ -894,7 +892,7 @@ export function useFootInset(
     window.addEventListener("resize", measure);
     measure();
     return () => {
-      follow(false);
+      followMoves(false);
       sizes.disconnect();
       window.removeEventListener("resize", measure);
       cancelAnimationFrame(frame);
