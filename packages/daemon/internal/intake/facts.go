@@ -1062,8 +1062,8 @@ type HandoffComplete struct {
 	// it. 0 on every other completion, and on a tester's that names none.
 	ReturnTo int
 	// Fix is the fix whose task the completion ends (record.TaskFix), 0 for a completion of no
-	// fix: the claim's delivery names the fix its task is of, and the route reads it there. A
-	// fix's completion ends the fix, not the step of the phase the issue stands in.
+	// fix: the route reads it from the entry the claim serves, the running fix's entry. A fix's
+	// completion ends the fix, not the step of the phase the issue stands in.
 	Fix int
 }
 
@@ -1074,8 +1074,8 @@ func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 // claim of the architect, the issue's generation and the run of the step the issue stood in
 // (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
 // lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three. Fix is
-// the fix whose task the worker's move ends (record.TaskFix), 0 for a move of no fix, read from the
-// claim's delivery as HandoffComplete.Fix is.
+// the fix whose task the worker's move ends (record.TaskFix), 0 for a move of no fix: the route
+// reads it from the entry the claim serves, the running fix's entry, as HandoffComplete.Fix is.
 type BackwardMove struct {
 	Issue      string
 	Requester  claim.Role

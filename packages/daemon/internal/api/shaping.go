@@ -567,6 +567,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: FixBesideReviewContract, issue: withoutFix, dropped: "the issues' fix"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -1069,6 +1070,17 @@ func withoutAssignments(issue Issue) (Issue, bool) {
 func withoutEntryTimes(issue Issue) (Issue, bool) {
 	moved := issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0
 	issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
+	return issue, moved
+}
+
+// withoutFix is the issue with no `fix`, the one key FixBesideReviewContract added to an issue
+// (Issue.Fix). No plugin before that contract completes a fix: the daemon relaunches each claim
+// of an older plugin on this contract at its boot (internal/daemon's refreshStalePlugins), and
+// until then such a plugin is served no fix, so its completion is the step's as before. The key is
+// written only while a fix runs, so the band reports a move only for an issue that carries one.
+func withoutFix(issue Issue) (Issue, bool) {
+	moved := issue.Fix != nil
+	issue.Fix = nil
 	return issue, moved
 }
 
