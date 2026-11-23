@@ -819,6 +819,7 @@ func seededProbePath(pattern string, owned crossProject) string {
 		{"/documents/{id}", "/documents/" + owned.document},
 		{"/priorities/{id}", "/priorities/" + owned.priority},
 		{"/near-copy-checks/{id}", "/near-copy-checks/" + owned.nearCopyCheck},
+		{"/going/runs/{id}", "/going/runs/" + owned.goingRun},
 		{"{block_id}", owned.documentBlock},
 	} {
 		path = strings.ReplaceAll(path, replacement.from, replacement.to)
@@ -893,14 +894,18 @@ type crossProject struct {
 	architectureSource string
 	// nearCopyCheck is the id of the near-copy gate's record of one of the project's creates.
 	nearCopyCheck string
+	// goingRun is the id of a command-bar run of the person every read is sent as, ended, with
+	// a frame its stream writes and a plan.
+	goingRun string
 }
 
 // seedTwoProjects writes one project with an issue, a document of the issue (design.md), a
 // comment, an ask, a message, a run of a step of the issue and a run of its retro, a project
 // document and a block of each document, an architecture source, and the Legion daemon it names
 // with a read of it; a second project with an issue, which the cross-project probe addresses them
-// under; and one priority, which belongs to neither project and is read at its own id. Under the
-// second project's key the probe sends each route the object of the first its path names
+// under; one priority, which belongs to neither project and is read at its own id; and a
+// command-bar run of alice's, which no project's key addresses either. Under the second
+// project's key the probe sends each route the object of the first its path names
 // (crossProjectPath): design.md to a route of an issue document, the project document to a route
 // of a project document, the message to the message read, the run of a step to the step write,
 // the retro's run to the rating write and the architecture source's repository to the source's
@@ -981,6 +986,31 @@ func seedTwoProjects(t *testing.T, handler http.Handler, database *store.Store) 
 		t.Fatalf("the project's creates left no near-copy check record, so its read by id has no row to answer")
 	}
 	owned.nearCopyCheck = checks.Checks[0].ID
+	// A command-bar run of alice's, written into its tables as this package's going tests record
+	// an ended one (going_run_stream_test.go's conversationRun): the run's reads answer only the
+	// caller's own run, and at a placeholder id they answer 404 GOING_RUN_NOT_FOUND, so their
+	// traversal probes would read nothing. It has ended, so its stream writes its one frame and
+	// ends, and it holds a plan of one row, which its plan read answers.
+	owned.goingRun = uuid.NewString()
+	for _, seeded := range []struct {
+		statement string
+		args      []any
+	}{
+		{`insert into going_runs (id, author_login, words, conversation_id, level, mode, state, shape, created_at, finished_at)
+		  values ($1::uuid, 'alice', 'A run of this project.', $1::uuid, 'standard', 'ask', 'done', $2, now(), now())`,
+			[]any{owned.goingRun, goingRunShape}},
+		{`insert into going_run_events (run_id, sequence, name, data) values ($1::uuid, 1, 'text', '{}'::jsonb)`,
+			[]any{owned.goingRun}},
+		{`insert into going_plans (run_id, plan, state, summary) values ($1::uuid, 1, 'done', 'The change the words asked for.')`,
+			[]any{owned.goingRun}},
+		{`insert into going_plan_rows (run_id, plan, row, change, state)
+		  values ($1::uuid, 1, 0, jsonb_build_object('tool', 'dispatch_issue_update', 'arguments', jsonb_build_object('issue', $2::text)), 'done')`,
+			[]any{owned.goingRun, issue.Key}},
+	} {
+		if _, err := database.Pool.Exec(t.Context(), seeded.statement, seeded.args...); err != nil {
+			t.Fatalf("seed a command-bar run: %v", err)
+		}
+	}
 	// The Legion board answers 404 LEGION_NOT_CONFIGURED for a project that names no Legion
 	// daemon, and its cards are what the sampler recorded of the daemon a project names. So the
 	// project names one, and a good read of it recorded the project's issue in a phase, written as

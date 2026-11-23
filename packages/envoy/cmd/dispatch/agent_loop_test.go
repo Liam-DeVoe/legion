@@ -129,7 +129,7 @@ func TestStopCancelsAStreamInFlight(t *testing.T) {
 // and a service-account token are refused the start with RUN_NEEDS_PERSON_CREDENTIAL.
 func TestTheGrantIsCheckedAtEachCall(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	server := startModelServer(t, map[string]string{
 		"DISPATCH_IDENTITY":             "cookie",
 		"DISPATCH_SIGNIN_ISSUER":        issuer.URL(),

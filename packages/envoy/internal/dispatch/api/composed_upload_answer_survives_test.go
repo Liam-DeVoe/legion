@@ -52,8 +52,15 @@ func TestAnAgentsComposedUploadLeavesTheAnsweredAskAndOpensNoSecondInboxItem(t *
 	before := fixture.answered
 
 	fixture.upload(t, composedBody(t, before.text))
-	fixture.await(t, "the settlement of the body the agent composed", func(state answerSurvivesState) bool {
-		return state.settled()
+	// The upload replaces the document's words inside its own request (docs.Service.ReplaceText),
+	// so what follows is the settlement's, and it writes what it holds in several writes: each ask
+	// block's state onto its opener, the carried id of a block the agent wrote afresh, and the
+	// answer back onto the block the person answered. A wait for a state alone reads the document
+	// between them - the block stated open before its answer is carried back, which is how this
+	// case failed under load - so the wait is for the document the upload must leave, the one it
+	// read before it. The margin below is then what proves it stays that way.
+	fixture.await(t, "the answer written onto the block the agent composed again", func(state answerSurvivesState) bool {
+		return state.settled() && state.text == before.text
 	})
 	// A second ask row is opened by a settlement of its own, so the measurement that says none
 	// was opened is taken after the settlements that would have.
@@ -103,8 +110,12 @@ func TestAnUploadThatDropsAnAskBlockStillRetractsItsAsk(t *testing.T) {
 	fixture := seedAnswerSurvives(t)
 
 	fixture.upload(t, composedBody(t, withoutAskBlock(t, fixture.answered.text, "rollout")))
-	fixture.await(t, "the settlement of the body the agent composed", func(state answerSurvivesState) bool {
-		return state.settled()
+	// The settlement retracts the ask whose block the body dropped in a write of its own, after
+	// the states it writes onto the blocks the body kept, so the wait is for that retraction and
+	// not for a state alone (as above). The margin below proves what it left stays.
+	fixture.await(t, "the settlement's retraction of the ask whose block the body removed", func(state answerSurvivesState) bool {
+		row, held := state.row(fixture.removedAsk)
+		return state.settled() && !slices.Contains(state.blocks, "rollout") && held && row.State == "resolved"
 	})
 	time.Sleep(answerSurvivesSettleMargin)
 	state := fixture.measure(t)
