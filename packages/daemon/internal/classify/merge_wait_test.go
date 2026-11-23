@@ -24,7 +24,8 @@ import (
 // whose head GitHub has answered `blocked` or `behind` for, for the round still waiting for a
 // first answer, whose state is unread, and for a `dirty` head whose first conflicting read waits
 // for its second, alike: each waits on GitHub's next answer about the same head. At a review step
-// the owner does, the engine settles no round whatever this answers (workflow's settleRound).
+// the owner does it answers false, since the engine settles no round there (workflow's
+// settleRound).
 func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNotMergeFrom(t *testing.T) {
 	const issue, head = "LEGION-208", "h2"
 	reviewing := record.Issue{Key: issue, Tree: issue, Phase: phase.Reviewing}
