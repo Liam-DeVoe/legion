@@ -4574,7 +4574,7 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	}); err != nil {
 		return fmt.Errorf("read the plan of %s for the branch of its task %s: %w", issue.Key, payload.Task, err)
 	}
-	task, ok := planTaskOf(stored, payload.Task)
+	task, ok := stored.TaskOf(payload.Task)
 	if !ok {
 		r.log.Info("outbox task branch of a task the plan no longer holds; finished without acting", "row", row.ID, "issue", issue.Key,
 			"task", payload.Task, "generation", payload.Generation)
@@ -4582,7 +4582,7 @@ func (r *outbox) taskBranch(ctx context.Context, row record.OutboxRow, payload r
 	}
 	needs := make([]record.PlanTask, 0, len(task.Needs))
 	for _, id := range task.Needs {
-		need, ok := planTaskOf(stored, id)
+		need, ok := stored.TaskOf(id)
 		if !ok {
 			return fmt.Errorf("make the branch of task %s of %s: it needs %s, which its plan holds no task of", task.Task, issue.Key, id)
 		}
@@ -4643,8 +4643,9 @@ func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, ta
 }
 
 // closeTaskPullRequests closes each pull request the row names, of tasks of the row's issue (the
-// other tasks' at the merge, a removed task's at the version that removed it), as branchClient
-// makes each write of a branch (the implement App), within branchRowTimeout:
+// other tasks' at the merge, a removed task's at the version that removed it, an earlier run's at
+// the first step of a run started again), as branchClient makes each write of a branch (the
+// implement App), within branchRowTimeout:
 // the row's comment is written on each, then it is closed (ghbranch.ClosePullRequest). A pull
 // request GitHub shows closed already is done, so a row that runs again, or one that a failure cut
 // short and that runs again on its backoff, closes only those still open. A row of a generation the
@@ -4797,19 +4798,6 @@ func (r *outbox) joinCannotEnd(ctx context.Context, row record.OutboxRow, issue 
 	return fmt.Errorf("%s%s: %w", taskJoinToldPrefix, words, missing.err)
 }
 
-// planTaskOf is the task of stored whose id is id, and whether it holds one: a nil plan holds none.
-func planTaskOf(stored *record.StoredPlan, id string) (record.PlanTask, bool) {
-	if stored == nil {
-		return record.PlanTask{}, false
-	}
-	for _, task := range stored.Tasks {
-		if task.Task == id {
-			return task, true
-		}
-	}
-	return record.PlanTask{}, false
-}
-
 // removeWorkspace removes the workspace of the row's issue once its tree's linger expired: the
 // working copy of each task of the issue beside the issue's own (workspace.TaskCopies), whichever
 // generation made it, then the issue's own, since nothing of the issue runs in any of them once
@@ -4902,8 +4890,10 @@ func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payl
 // the next pod (savedWorkspaceBundle).
 //
 // A task of the plan the issue runs now that holds the branch (record.PlanTask.BranchOf) works in
-// that copy: a generation gives a name to one task, but a later generation gives the names of an
-// earlier one again, so a late row finishes without acting.
+// that copy. The record gives a task's name once in all the issue's generations
+// (record.Store.AssignTaskBranch), but a record of a release before gave a later generation's
+// tasks the names an earlier one gave, so the row reads the plan, and finishes without acting where
+// a task holds the branch.
 //
 // The process of the removed task's step may still work in the copy: the row waits while a
 // step_stop row queued before it, the stop of that step (workflow's stopTask), is still in the

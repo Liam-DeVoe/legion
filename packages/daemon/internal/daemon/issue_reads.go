@@ -243,11 +243,7 @@ func judgedTask(stored *record.StoredPlan, implementer record.PhaseRow, named st
 	if named == "" {
 		named = implementer.StepTask
 	}
-	at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.Task == named })
-	if at < 0 {
-		return record.PlanTask{}, false
-	}
-	return stored.Tasks[at], true
+	return stored.TaskOf(named)
 }
 
 // issueRecord is key's records as the reads of its pull requests read them (issueRecords), in one

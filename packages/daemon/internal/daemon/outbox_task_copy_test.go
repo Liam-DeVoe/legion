@@ -136,11 +136,11 @@ func TestTheRemovalOfARemovedTasksWorkingCopyRemovesThatCopyAlone(t *testing.T) 
 }
 
 // A removal finishes without acting where the branch it names is held by a task of the plan the
-// issue runs now: a later generation gives the names of an earlier one again, so the working copy
-// of legion/LEGION-208.b is then a task's of that generation. The issue stands at generation 2,
-// whose plan's task b holds legion/LEGION-208.b; the row of generation 1's removal of b removes
-// nothing, and so does one on a runtime that provisions each claim's workspace in its pod, whose
-// disk the daemon does not reach.
+// issue runs now: a record of a release before gave a later generation's tasks the names an earlier
+// one gave, so the working copy of legion/LEGION-208.b is then a task's of that generation. The
+// issue stands at generation 2, whose plan's task b holds legion/LEGION-208.b; the row of
+// generation 1's removal of b removes nothing, and so does one on a runtime that provisions each
+// claim's workspace in its pod, whose disk the daemon does not reach.
 //
 // The fault it catches is a late removal that takes the working copy of a live task (its controls:
 // the executor without the plan's read, and without the pods' fence; each removes legion-208.b).
