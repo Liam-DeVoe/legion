@@ -95,12 +95,14 @@ type StoreReport struct {
 	// Sizing is what the sizing pass found, or nil when it was not asked for.
 	Sizing *SizingReport
 	// ReadSeq is the read sequence the census saw: the highest graph_tuples.seq its snapshot
-	// holds, which is graph_tuples.seq at the commit the census read, and 0 for a store that
-	// holds no tuple or is Absent. R29 of the parent change's specification has a query, a census
-	// and an approval each record the read sequence it saw, so storeCensus reads it inside the
-	// census's own repeatable-read transaction, in the snapshot every kind is read in. Read on
-	// any other snapshot, it could name a tuple a write committed after the census's snapshot was
-	// taken, which none of the census's counts saw.
+	// holds, and 0 for a store that holds no tuple or is Absent. It is no commit position: seq is
+	// a bigserial taken when a tuple is inserted, not when it commits, so a write holding a lower
+	// seq may commit after the census's snapshot was taken, and the census saw none of it. R29 of
+	// the parent change's specification has a query, a census and an approval each record the read
+	// sequence it saw, so storeCensus reads it inside the census's own repeatable-read
+	// transaction, in the snapshot every kind is read in. Read on any other snapshot, it could name
+	// a tuple a write committed after the census's snapshot was taken, which none of the census's
+	// counts saw.
 	ReadSeq int64
 }
 

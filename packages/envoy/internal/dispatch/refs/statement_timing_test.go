@@ -25,11 +25,13 @@ import (
 // CI never runs a measurement; api/search_bench_test.go and api/related_recall_test.go are gated
 // the same way.
 //
-// A pair of one text with itself measures no change and passes or fails by chance, so a read whose
-// text is main's is no pair of main's text against the head's: refs.Edges' out reads and
-// refs.BacklinkCounts carry heldByABlock in main's one form and keep main's text. The pairs below
-// measure refs.BacklinkCounts against the release before this change, and under main's index of
-// targets.
+// A pair of one text with itself measures no change and passes or fails by chance, so a read is
+// paired here only against a text other than its own. refs.Edges' out reads carry heldByABlock in
+// main's one form, and differ from main's text only by the visibility predicates every read of
+// the graph binds (VisibleEnd over each link's target, VisibleKind over a source block: Edges' out
+// arms in graph.go); no pair below measures them. refs.BacklinkCounts carries heldByABlock in
+// main's one form too, and the pairs below measure it against the release before this change,
+// and under main's index of targets.
 //
 // Which protocol each measurement is under, and why:
 //

@@ -198,7 +198,7 @@ func (r *writersRig) request(t *testing.T, method, target string, body any, logi
 }
 
 // uploadBase is the token an upload replacing the document artifact names, the one it carries
-// now: Dispatch refuses a replacement that names none (docs.ErrPreconditionRequired).
+// now, which Dispatch checks under the write's own locks (docs.Service.ReplaceText).
 func (r *writersRig) uploadBase(t *testing.T, artifact string) map[string]string {
 	t.Helper()
 	document := decoded[struct {
