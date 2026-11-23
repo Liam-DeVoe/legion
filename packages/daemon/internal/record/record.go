@@ -2180,6 +2180,14 @@ type Store interface {
 	// own, and answers true; it queues nothing (workflow's OpenUncountedRuns). False, and nothing
 	// written, where the place's row is open or ended.
 	OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error)
+	// CountOwnerRestart spends one of the limit restarts of the owner of place on issue in the run
+	// there, answering the count with it and true, or false with nothing spent once limit are
+	// spent or where the place has no row (Postgres.CountOwnerRestart). A new run of the place
+	// starts with none spent (RaiseStepStarts, OpenUncountedStep).
+	CountOwnerRestart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, limit int) (int, bool, error)
+	// ResetOwnerRestarts gives the owner of place on issue every restart of the run there again,
+	// for the operator's retry of the owner (Postgres.ResetOwnerRestarts).
+	ResetOwnerRestarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) error
 	// StepRuns is every row of starts of each of issues, by issue and place, in one read: what the
 	// end of a step's run reads of the issues one fact touched (workflow's settleRuns).
 	StepRuns(ctx context.Context, tx pgx.Tx, issues []string) ([]IssueStepRun, error)

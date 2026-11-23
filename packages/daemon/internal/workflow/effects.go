@@ -525,9 +525,11 @@ func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
 // claim failed and holds no start of it queued that the outbox will act on: a failed sub-architect
-// starts again at its child's next phase start (dispatch://INFRA-3915 R2), and one that failed while
-// its child stands at a step of its own waits for the operator's retry, which the stranded list
-// names; until then its child's notices but an owner-step, which waits for that architect
+// starts again at its child's next phase start (dispatch://INFRA-3915 R2). One that failed while
+// its child stands at a place only it ends, which no phase start follows, is started again at its
+// failure, at most OwnerRestarts times in the step's run, and then waits for the operator's retry,
+// which the stranded list names (restartFailedOwner). Until it runs again its child's notices but
+// an owner-step, which waits for that architect
 // (record.OwnerClaim), go to the architect above it (record.OwningArchitect). The outbox's start
 // retries a failed claim with fresh budgets (supervise.RequestRetry), in the session it recorded,
 // or a new one once supervise's Machine.forgetSession has dropped it. This start asks for no new
@@ -598,8 +600,9 @@ func architectStartQueued(run record.RoleRun, current phase.Phase) bool {
 // (claimReady). A root architect's start carries the task its record derives and the entry it
 // raises (StartArchitect); a child's architect is handed no entry, and the rule that closes the
 // difference between an architect's owed and held work reaches a tree's root alone
-// (ArchitectAtWork). The child's first phase start queues it (gateOpened), and so does its next
-// phase start while the claim has failed (reviveArchitect).
+// (ArchitectAtWork). The child's first phase start queues it (gateOpened), and so do its next
+// phase start while the claim has failed (reviveArchitect) and the failure of the claim while the
+// child stands at a place only that architect ends (restartFailedOwner).
 func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}
 }
@@ -625,9 +628,13 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // a worker it starts.
 //
 // The architect's phase starts nobody, except where the issue stands at a step or a retro the
-// owner does (the role the caller reads there, record.Issue.RoleAt, is the architect): the retry
-// of the owner's claim (`legion claims retry`, restartPhase) tells the owner its step again, with
-// the retry's task, as a worker is sent its task again, and starts no run (tellOwner).
+// owner does (the role the caller reads there, record.Issue.RoleAt, is the architect): there the
+// retry tells the owner its step again, with the retry's task, as a worker is sent its task again,
+// and starts no run (tellOwner). The operator's retry of the owner's claim (`legion claims retry`)
+// reaches it through restartPhase, after the route relaunched the claim through its machine (api's
+// retryStart), and it gives the owner every restart of the step's run again
+// (record.Store.ResetOwnerRestarts): a retry is a person's move, and the daemon starts the owner
+// again after a later failure as it did after the first (restartFailedOwner).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession bool) error {
 	if role == "" {
 		return nil
@@ -643,6 +650,9 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		}
 		at, err := e.standingPart(ctx, tx, issue, w)
 		if err != nil {
+			return err
+		}
+		if err := e.store.ResetOwnerRestarts(ctx, tx, issue.Key, step.place); err != nil {
 			return err
 		}
 		return e.tellOwner(ctx, tx, issue, step, told(at))

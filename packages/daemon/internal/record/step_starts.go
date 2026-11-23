@@ -55,12 +55,13 @@ type StepStart struct {
 // moment that write names, which the run's end writes again, and the write itself — the identity
 // of the record, its id among them, and the moment; a start writes nothing else (workflow's
 // startStep) — which the roll forward of a rollback ends the record under where an earlier
-// release ended the run (store migration 20261117064152_step_starts_roll_forward). It is called
-// in the transaction that writes the start's record.
+// release ended the run (store migration 20261117064152_step_starts_roll_forward). The new run
+// starts with none of the owner's restarts spent (CountOwnerRestart). It is called in the
+// transaction that writes the start's record.
 func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error) {
 	var starts int64
 	if err := tx.QueryRow(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, run) values ($1, $2, $3, $4, 1, '', 'open')
-		on conflict (issue, task, kind, place) do update set starts = step_starts.starts + 1, run = 'open'
+		on conflict (issue, task, kind, place) do update set starts = step_starts.starts + 1, run = 'open', owner_restarts = 0
 		returning starts`, issue, place.Task, place.Kind, place.Place).Scan(&starts); err != nil {
 		return StepRecord{}, fmt.Errorf("count a start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
@@ -99,6 +100,36 @@ func (s *Postgres) StepStarts(ctx context.Context, tx pgx.Tx, issue string, plac
 		return StepStart{}, fmt.Errorf("read the starts of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	return start, nil
+}
+
+// CountOwnerRestart spends one of the restarts limit allows the owner of place on issue in the run
+// of the step there, and answers the count with it spent and true; it spends nothing and answers
+// false where the run has spent limit already, and where the place has no row, since a count
+// that cannot be kept cannot bound anything (workflow's restartFailedOwner). The update locks the
+// row, so two failures read at one time spend two restarts.
+func (s *Postgres) CountOwnerRestart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, limit int) (int, bool, error) {
+	var spent int
+	err := tx.QueryRow(ctx, `update step_starts set owner_restarts = owner_restarts + 1
+		where issue = $1 and task = $2 and kind = $3 and place = $4 and owner_restarts < $5
+		returning owner_restarts`, issue, place.Task, place.Kind, place.Place, limit).Scan(&spent)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("count a restart of the owner of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+	}
+	return spent, true, nil
+}
+
+// ResetOwnerRestarts gives the owner of place on issue every restart of the run there again: the
+// operator's retry of the owner's claim (workflow's restart) is a person's move, and the daemon
+// starts the owner again after a later failure as it did after the first.
+func (s *Postgres) ResetOwnerRestarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) error {
+	if _, err := tx.Exec(ctx, `update step_starts set owner_restarts = 0 where issue = $1 and task = $2 and kind = $3 and place = $4`,
+		issue, place.Task, place.Kind, place.Place); err != nil {
+		return fmt.Errorf("reset the restarts of the owner of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+	}
+	return nil
 }
 
 // StepEntry is one run of a step of an issue: the place it runs at and the count of starts of that
@@ -163,7 +194,7 @@ func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, pl
 // one opened it.
 func (s *Postgres) OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (bool, error) {
 	var starts int64
-	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, run = 'open'
+	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, run = 'open', owner_restarts = 0
 		where issue = $1 and task = $2 and kind = $3 and place = $4 and run = 'uncounted'
 		returning starts`, issue, place.Task, place.Kind, place.Place).Scan(&starts)
 	if errors.Is(err, pgx.ErrNoRows) {

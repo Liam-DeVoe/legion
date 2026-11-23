@@ -92,9 +92,11 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //     Its tree moves through its phases without it, and stops at the first decision that needs it.
 //     One the daemon or its own exit suspended, one that failed, and one a close retired while its
 //     tree runs again, are each stranded once no admission start is queued (StartFor).
-//   - A child's own architect that failed while its child stands at a step its owner does: only
-//     the owner's report moves the child on, so no later phase start comes to start it again
-//     (reviveArchitect), and the child waits for the operator's retry, which relaunches the claim
+//   - A child's own architect that failed while its child stands at a place only it ends, a step
+//     of the key owner or the owner's retro (ownerAlone): only its report moves the child on, so
+//     no phase start comes to start it again (reviveArchitect). The daemon starts it again at its
+//     failure, at most OwnerRestarts times in the step's run (restartFailedOwner); once no start of
+//     it is queued (StartFor), the child waits for the operator's retry, which relaunches the claim
 //     and tells it its step again (one more owner-step).
 //
 // A retired claim is here for the reason a failed one is, and a queued start is what takes either
@@ -133,9 +135,10 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // architect (the daemon's noticeArchitect), and a later start of the role brings it back, as
 // supervise's table decides for the state it stands in. The workflow queues such a start itself
 // at its child's first phase start and, for a failed one, at each later phase start
-// (StartFirstPhase, reviveArchitect); others come from elsewhere, an operator's retry or the
-// controller's fresh_session among them. One that its own exit retired gets no worker-died, and
-// nothing reports it, this report included.
+// (StartFirstPhase, reviveArchitect); an acceptance the owner does is followed by one, since an
+// architect above it ends that acceptance with sign_off as well. Others come from elsewhere, an
+// operator's retry or the controller's fresh_session among them. One that its own exit retired
+// gets no worker-died, and nothing reports it, this report included.
 // A tree that is not running is a lingering tree — a root that leaves the workflow, closed or
 // moved out by a person, always lingers first (leave) — whose members its re-admission starts
 // again, and a root that never ran, whose architect receives its first task only when the line
@@ -209,18 +212,22 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 			continue
 		}
 		// current is the phase the start that would wake the claim names; the architect's names
-		// none. A child's own architect is no phase worker, in accepting or elsewhere, so none is
-		// reported here (the default case). A failed one has its report already: a worker-died
-		// to the architect above it (Engine.claimFailed), and the daemon starts it again at its
-		// child's next phase start (Engine.reviveArchitect). A stranded claim goes to the
-		// controller, whose remedy is an operator's retry, which a claim the daemon starts again
-		// does not need. One an operator stopped or suspended is that operator's own move, which
-		// its retry or resume undoes. One the child's leave suspended or retired comes back at the
-		// child's next first phase start. One that its own exit retired is reported nowhere, as
-		// Stranded's comment says.
+		// none. A child's own architect is no phase worker, in accepting or elsewhere, so it is
+		// reported here only where it failed while its child stands at a place only it ends
+		// (ownerAlone), and then only while no start of it is queued: the daemon starts it again
+		// there itself, until its restarts in the step's run are spent (Engine.restartFailedOwner),
+		// and after that only the operator's retry does. Every other failed one has its report
+		// already: a worker-died to the architect above it (Engine.claimFailed), and the daemon
+		// starts it again at its child's next phase start (Engine.reviveArchitect). A stranded
+		// claim goes to the controller, whose remedy is an operator's retry, which a claim the
+		// daemon starts again does not need. One an operator stopped or suspended is that operator's
+		// own move, which its retry or resume undoes. One the child's leave suspended or retired
+		// comes back at the child's next first phase start. One that its own exit retired is
+		// reported nowhere, as Stranded's comment says.
 		var current phase.Phase
 		switch {
 		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):
+		case c.Role == claim.RoleArchitect && c.State == supervise.StateFailed && ownerAlone(issue):
 		case c.Role != claim.RoleArchitect && issue.RoleAt(issue.WorkingPhase()) == c.Role:
 			if c.State == supervise.StateSuspended && c.SuspendedBy.ByRule() {
 				continue
