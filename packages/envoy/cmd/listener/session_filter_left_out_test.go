@@ -122,7 +122,7 @@ func TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow(t *testing.T) {
 	// (recipientCounts, read as the publish route reads it).
 	recipients := func(t *testing.T, subject string) int {
 		t.Helper()
-		total, _ := recipientCounts(rig.deps, subject, recipientSender)
+		total, _ := recipientCounts(t.Context(), rig.deps, subject, recipientSender)
 		if total == nil {
 			t.Fatalf("a publish on %s carries no count, so the count cannot be read", subject)
 		}
