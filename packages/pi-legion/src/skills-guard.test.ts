@@ -597,14 +597,34 @@ test("the worker prompt's push step leaves out a check CI proves", () => {
 // architect corrects, and no role sends that to an implementer who cannot cure it
 // (`ci-checks.md`, "A name that no run answers"). Retro's step that sends a CI check with no pass
 // back names that case and gives it to the architect, so the two texts say the same thing
-// (dispatch://INFRA-3204, tester round 5).
+// (dispatch://INFRA-3204, tester round 5). The one exception is a job held back without its
+// label: a job of a called workflow whose caller is skipped never starts, so its check has no run,
+// and the implementer's label cures it (`ci-checks.md`, the same section's held-back step). Retro
+// and the architect's acceptance each name that case as a check with no pass standing, so neither
+// sends a missing label to the architect as wrong words.
 test("retro gives a ci_check that no run answers to the architect, not to the implementer", () => {
   const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
   const sentences = retro.split(/(?<=\.)\s+/);
   const absent = sentences.filter((sentence) => sentence.includes("`absent`"));
   expect(absent.length).toBeGreaterThan(0);
-  expect(absent.some((sentence) => sentence.includes("architect"))).toBe(true);
+  expect(
+    absent.some((sentence) => sentence.includes("architect") && sentence.includes("any other name"))
+  ).toBe(true);
   expect(absent.some((sentence) => sentence.includes("to: implementing"))).toBe(false);
+  expect(
+    absent.some(
+      (sentence) =>
+        sentence.includes("no pass standing") &&
+        sentence.includes("held back without its label") &&
+        !sentence.includes("architect")
+    )
+  ).toBe(true);
+});
+
+test("the architect's acceptance does not correct the words of a check that names a job held back without its label", () => {
+  expect(collapsed(path.join(staged, "legion-architect", "SKILL.md"))).toContain(
+    "a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label"
+  );
 });
 
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites

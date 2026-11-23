@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The Legion plugin's retro and architect skills say that a `ci_check` check naming a job held back
+  without its label has no pass standing, whether its run is `absent` or `skipped`: the label cures
+  it, and only another name that no run answers goes to the architect as a check with wrong words.
