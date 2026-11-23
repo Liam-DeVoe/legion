@@ -12,7 +12,7 @@ Run every step, even on a mechanical change.
 
 Retro commits nothing and pushes nothing of its own: the merger merges the branch's head, and a push would put a commit above the head the last worker step passed.
 A merge forward that the daemon's merge-forward message asks of you is no part of retro (`skill://legion-worker/references/conflicts-and-rewrites.md`, *The daemon's ask*).
-No Legion check compares the head that merges with a review's head.
+Outside a forward merge of the base, no Legion check compares the head that merges with a review's head.
 Where the task has a reviewer step, Legion asks the reviewer to read a merge forward it asked for.
 Whether another push after a review needs a new review is the repository's own rule.
 Never rebase the branch or make another branch or bookmark.
@@ -33,7 +33,8 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 ## Steps
 
 1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the implementer's handoff.
-   Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step, and the review at the version your task's `Handoff:` line names (`--phase review --version <n>`) where it has a reviewer step.
+   Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step.
+   Read the review (`--phase review`) where it has a reviewer step, at the version your `Handoff:` line names when that line names one.
    A step of a role of the deployment writes no handoff: `dispatch steps --issue <issue>` shows how each of its runs ended.
    A pass must stand at the last worker step's head for every `before_merge` check, and the body's `Checks` block carries each.
 
@@ -44,8 +45,11 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
      Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
      Neither that run nor that finding moves the issue back.
 
+   - A `ci_check` check whose derived result is a fail is the merger's: the change passed every step of its task, and the merger decides at the merge whether the base or the change broke it.
+     Name it in your retro message and complete.
+
    - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite:
-     `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check` check, or, where the task has a tester step, `to: testing` for the tester's result;
+     `request_backward_move` with `to: implementing` for the implementer's result, or, where the task has a tester step, `to: testing` for the tester's result;
      name the check's block id in the reason.
 
    - With no reviewer step, list the unresolved bot threads and answer the ones you find, as `skill://legion-worker/references/review-threads.md` says.

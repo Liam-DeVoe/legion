@@ -242,7 +242,7 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // mid-phase children, is admission's own start and is proven where it lives (internal/admit's
 // TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot). A sign-off's start into the
 // retro waits for no slot, since retro keeps none (record.KeepsSlot), and is proven in
-// internal/admit's TestAPhasePastReviewRunsWithNoSlot; a sign-off into a later step whose phase
+// internal/admit's TestAcceptingRetroAndMergingRunWithNoSlot; a sign-off into a later step whose phase
 // keeps a slot owes a start that waits for one, as these returns do.
 //
 // Two transitions before the slot start the worker once: the second takes out the pending row
@@ -282,7 +282,7 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 			// Two transitions before the slot, each into a phase that keeps a row, which is
 			// what the coalescing is for: a sign-off's start into retro waits for no row at all
 			// now (record.KeepsSlot), so it coalesces with nothing and is proven where it runs
-			// (internal/admit's TestAPhasePastReviewRunsWithNoSlot).
+			// (internal/admit's TestAcceptingRetroAndMergingRunWithNoSlot).
 			name: "a backward move, and a second one before the slot comes",
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				readyRoot(t, pool, phase.Merging, "retro")

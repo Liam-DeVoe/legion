@@ -156,9 +156,11 @@ type IdleView struct {
 	Root        IdleRoot
 	Claims      []IdleClaim
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
-	// role of its pod. The rule reads only whether there is one, so the store reads only that. A
-	// start that waits because the pod was built before its role (StartWaitsForPodPrefix) is no
-	// such delivery: the pod cannot run it, so it is counted in StartsWaitingForPod instead.
+	// role of its pod. A start queued for news of the approved design alone is not counted: it
+	// wakes the claim a release suspends (store's idleWaitingRow). A start that waits because the
+	// pod was built before its role (StartWaitsForPodPrefix) is no such delivery either: the pod
+	// cannot run it, so it is counted in StartsWaitingForPod instead. The rule reads only whether
+	// there is one, so the store reads only that.
 	Waiting bool
 	// StartsWaitingForPod are the roles, distinct and in the order their rows were queued, whose
 	// start waits because the issue's pod was built before the deployment defined them (an outbox
