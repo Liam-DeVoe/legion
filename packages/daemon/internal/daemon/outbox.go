@@ -703,9 +703,7 @@ func statusWriteRefused(issue string, payload record.StatusWrite, cause error, w
 	if wrote.status {
 		told += fmt.Sprintf(" The status %s was set on the issue all the same.", payload.Status)
 	} else {
-		told += fmt.Sprintf(" The status %s is not set, so the issue keeps the status it has while the daemon's own record reads %s: the two disagree, and settling that is yours."+
-			" Have a person on your tree's root asked to set the status on the issue."+
-			" The root's architect asks with `dispatch ask`, and a child's architect sends the question to the architect above it.",
+		told += fmt.Sprintf(" The status %s is not set, so the issue keeps the status it has while the daemon's own record reads %s: the two disagree, and settling that is yours — ask a person with `dispatch ask` to set the status on the issue.",
 			payload.Status, payload.Status)
 	}
 	if payload.Reason != "" {
