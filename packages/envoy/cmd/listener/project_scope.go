@@ -526,7 +526,7 @@ func (h *edgeTopicHold) releaseRefusedRoles(ctx context.Context, registry *store
 // nothing of a session of another project.
 func unknownSession(sessionID string) listenerwire.NoLiveSessionRefusal {
 	return listenerwire.NoLiveSessionRefusal{
-		Error: fmt.Sprintf("no live session %s; this listener does not know when it last registered", sessionID),
+		Error: contracts.NoLiveSession + " " + sessionID + "; this listener does not know when it last registered",
 		State: session.Gone,
 	}
 }

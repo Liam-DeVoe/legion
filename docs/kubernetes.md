@@ -4512,7 +4512,7 @@ A file that gives a pod a request below its limit passes and prints, after the c
 resources: Burstable (a request below the limit): the issue pod; every other pod is Guaranteed
 ```
 
-Legion holds no model route for its agents; the daemon's own answer loop, with `answers` set, calls the providers that block names ([The answer loop](#the-answer-loop)).
+Legion holds no model route for its agents; the daemon's own answer loop, when it is on, calls the providers its `answers` block names ([The answer loop](#the-answer-loop)).
 `pod` is the operator's: `env`, `volumes` (each a `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` and `service_account`, added to every pod, the image probe's included, and refused where they name a path or variable of Legion's own or the worker image's.
 A ConfigMap or Secret a volume names must exist in the daemon's namespace, with every key the volume asks of it:
 the image probe refuses the boot at once, naming it, when it does not, for every volume a `volume_mounts` entry mounts (the kubelet attempts no other) ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)).
