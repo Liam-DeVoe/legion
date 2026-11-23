@@ -179,7 +179,7 @@ func modelName(model string) string {
 // deployment or of p at any place, and a task needs no step of any role: acceptance with no key is
 // a fresh agent of the role acceptance, a step that reads its task's pull request where none exists
 // reads what its task text names, and the agent of a task's last step of the type implementation
-// does its retro, the owner that of a task with none (RetroAgent). A task that names no steps runs
+// does its retro, the owner that of a task with none (record.PlaceWorker). A task that names no steps runs
 // the project's default steps, which the configuration loader holds to these same checks.
 func Supported(p Plan) []Refusal {
 	var refusals []Refusal

@@ -148,7 +148,7 @@ func TestAKeyOnAnyStepIsTaken(t *testing.T) {
 }
 
 // A task with no step implementer is taken, whatever steps it names: the owner does its retro
-// (RetroAgent), and a step that reads its task's pull request reads what its task text names
+// (record.PlaceWorker), and a step that reads its task's pull request reads what its task text names
 // where none exists. So is acceptance with no key, a fresh agent of the role acceptance, and a
 // step of the tester or the reviewer before the implementer.
 func TestAPlanWithNoImplementerIsTaken(t *testing.T) {
@@ -326,7 +326,7 @@ func withRole(name string, typ Type) Deployment {
 // A step of any role stands at any place: a step that reads its task's pull request before any
 // step of the implementer reads what its task text names where none exists, and a role of the
 // deployment of the type implementation after the implementer does its task's retro
-// (RetroAgent). Each plan below is taken, under a deployment whose coder does implementation work
+// (record.PlaceWorker). Each plan below is taken, under a deployment whose coder does implementation work
 // and whose critic does review work.
 func TestAStepOfAnyRoleStandsAnywhere(t *testing.T) {
 	d := withRole("coder", TypeImplementation)
@@ -356,7 +356,7 @@ func TestSupportedTakesARoleBlock(t *testing.T) {
 
 // A role the plan defines of the type implementation stands at any place, as one of the deployment
 // does: its row records the type it has as the plan's steps name it (RolesOf), and after the
-// implementer its agent does its task's retro (RetroAgent), the retro of the last step of the type
+// implementer its agent does its task's retro (record.PlaceWorker), the retro of the last step of the type
 // implementation. The same role of the type testing stands at any place too, and does no retro.
 func TestARoleOfAPlanOfTheTypeImplementationStandsAnywhere(t *testing.T) {
 	withCoder := func(steps string, typ Type) Plan {
