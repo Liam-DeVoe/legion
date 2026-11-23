@@ -196,17 +196,19 @@ func withoutTime(groups []string, a slog.Attr) slog.Attr {
 	return a
 }
 
-// TestEachFailedLoginLogsItsClassItsScheduleAndItsCause drives the ten classes a failed token
-// login falls in, each against a real server or a real resolver rather than a planted error, as
+// TestEachFailedLoginLogsItsClassItsScheduleAndItsCause drives the classes a failed token login
+// falls in, each against a real server or a real resolver rather than a planted error, as
 // internal/dispatch/unreachable_test.go drives transportFailure's own shapes.
 //
-// The five long-retry rows are what changed: a TLS handshake that fails, a TLS alert the far side
-// sent or the daemon sent itself, and a name that does not resolve are faults on the daemon's own
-// side, which asking again in seconds only repeats, so they now wait the schedule a refusal waits
-// instead of the pod renewer's. The five short-retry rows — a refused connection, a connection
-// reset after it was accepted, a timeout, a DNS failure that is not "not found", and a 5xx — are
-// the behaviour this client already had, and are new coverage of it rather than proof of a
-// change.
+// The five long-retry rows of faults on the daemon's own side were a change: a TLS handshake that
+// fails, a TLS alert the far side sent or the daemon sent itself, and a name that does not resolve
+// are faults on the daemon's own side, which asking again in seconds only repeats, so they wait
+// the schedule a refusal waits instead of the pod renewer's. The 408 and the 429 are the latest
+// change: like a 5xx they are an outage, a broker that could not take the login now, so they wait
+// the short schedule, where they waited a refusal's. The other short-retry rows — a refused
+// connection, a connection reset after it was accepted, a timeout, a DNS failure that is not "not
+// found", and a 5xx — and the 403 refusal on the long schedule are the behaviour this client
+// already had, and are coverage of it rather than proof of a change.
 //
 // Each row reads the whole log the login wrote, not a line of it: one failed login is one line,
 // and a second line per failure would be a regression an operator sees.
@@ -380,6 +382,47 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 				}))
 				t.Cleanup(server.Close)
 				return server.URL, server.Client(), fixed("broker answered 500 INTERNAL: token login failed")
+			},
+		},
+		{
+			name:     "a 408",
+			class:    "broker-unavailable",
+			schedule: "short",
+			rig: func(t *testing.T) (string, *http.Client, func() string) {
+				// A front door that did not take the login in time, with a page of its own.
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusRequestTimeout)
+					fmt.Fprint(w, "request timed out")
+				}))
+				t.Cleanup(server.Close)
+				return server.URL, server.Client(), fixed("broker answered 408 UNKNOWN: request timed out")
+			},
+		},
+		{
+			name:     "a 429",
+			class:    "broker-unavailable",
+			schedule: "short",
+			rig: func(t *testing.T) (string, *http.Client, func() string) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusTooManyRequests)
+					fmt.Fprint(w, `{"code":"RATE_LIMITED","error":"too many token logins"}`)
+				}))
+				t.Cleanup(server.Close)
+				return server.URL, server.Client(), fixed("broker answered 429 RATE_LIMITED: too many token logins")
+			},
+		},
+		{
+			name:     "a 403",
+			class:    "broker-refusal",
+			schedule: "long",
+			rig: func(t *testing.T) (string, *http.Client, func() string) {
+				// The broker refusing the token, as it refuses a ServiceAccount no entry lists.
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprint(w, `{"code":"TOKEN_REFUSED","error":"no entry lists this account"}`)
+				}))
+				t.Cleanup(server.Close)
+				return server.URL, server.Client(), fixed("broker answered 403 TOKEN_REFUSED: no entry lists this account")
 			},
 		},
 	} {

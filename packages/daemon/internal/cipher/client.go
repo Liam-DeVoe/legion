@@ -43,18 +43,18 @@ import (
 const launcherService = "legion-daemon"
 
 // loginRetryInitial and loginRetryMax bound the wait after a token login that no wait of seconds
-// changes: one the broker refused (any answer but a 5xx or a 200 with a body of the contract's
-// shape, so every 4xx, 429 included), one a fault on the daemon's own side ended (a TLS handshake
-// that failed or a TLS alert, or a host name that does not resolve — daemonSideFault), and one
-// that could not be made at all (a token file that could not be read or was empty). The first wait
-// is loginRetryInitial, each one after it doubles, up to loginRetryMax.
+// changes: one the broker refused (any answer but an outage or a 200 with a body of the contract's
+// shape, so every 4xx but a 408 and a 429), one a fault on the daemon's own side ended (a TLS
+// handshake that failed or a TLS alert, or a host name that does not resolve — daemonSideFault),
+// and one that could not be made at all (a token file that could not be read or was empty). The
+// first wait is loginRetryInitial, each one after it doubles, up to loginRetryMax.
 // unavailableRetryInitial and unavailableRetryMax bound the wait after a login the broker was not
-// there to decide: one given no HTTP answer at all, or a 5xx answer from the broker or its front
-// door. They bound it the same way and on the pod renewer's schedule: the broker is down, out of
-// reach or cannot reach its database, nothing it decided needs a slower retry, and every pod
-// enrollment waits on the login, so the daemon logs in again within seconds of the broker serving
-// again. A login that succeeds resets both. No person sees a failed login, so nothing is asked of
-// anyone while it retries.
+// there to decide: one given no HTTP answer at all, or an outage from the broker or its front door
+// (outage: a 5xx, a 408 or a 429). They bound it the same way and on the pod renewer's schedule:
+// the broker is down, out of reach, cannot reach its database or will not take a login yet,
+// nothing it decided needs a slower retry, and every pod enrollment waits on the login, so the
+// daemon logs in again within seconds of the broker serving again. A login that succeeds resets
+// both. No person sees a failed login, so nothing is asked of anyone while it retries.
 // Package-level so tests can shrink them.
 var (
 	loginRetryInitial       = 30 * time.Second
@@ -175,17 +175,21 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("broker answered %d %s: %s", e.Status, e.Code, e.Message)
 }
 
-// Permanent is a refusal a retry cannot change: every 4xx but 408, 429, POD_TOKEN_EXPIRED and
-// POD_REGISTRAR_NOT_LISTED. A 408 (the broker, or a proxy before it, did not take the request)
-// and a 429 (it will not take one yet) are an outage, as every 5xx is, the set the envoy module's
-// oauthrefusal.Outage states, which this module cannot import (it is internal to that module). A
-// client-side NO_MACHINE_CREDENTIAL (Status 0) is never permanent — the caller retries once the
-// daemon's next token login wins a credential — and neither is an expired pod token, which the
-// pod's current token replaces under the same key (TokenExpired), nor a registrar the broker does
-// not yet list (RegistrarNotListed).
+// Permanent is a refusal a retry cannot change: every 4xx but an outage (a 408 or a 429),
+// POD_TOKEN_EXPIRED and POD_REGISTRAR_NOT_LISTED. A client-side NO_MACHINE_CREDENTIAL (Status 0)
+// is never permanent — the caller retries once the daemon's next token login wins a credential —
+// and neither is an expired pod token, which the pod's current token replaces under the same key
+// (TokenExpired), nor a registrar the broker does not yet list (RegistrarNotListed).
 func (e *APIError) Permanent() bool {
-	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusRequestTimeout && e.Status != http.StatusTooManyRequests &&
-		!e.TokenExpired() && !e.RegistrarNotListed()
+	return e.Status >= 400 && e.Status < 500 && !outage(e.Status) && !e.TokenExpired() && !e.RegistrarNotListed()
+}
+
+// outage reports whether status is a broker, or a proxy before it, that could not answer now: any
+// 5xx, a 408 (it did not take the request) and a 429 (it will not take one yet). It is the set the
+// envoy module's oauthrefusal.Outage states, which this module cannot import (it is internal to
+// that module).
+func outage(status int) bool {
+	return status >= 500 || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests
 }
 
 // TokenExpired is the broker refusing the pod token presented because it has expired
@@ -251,10 +255,11 @@ func (c *Client) Login(ctx context.Context) (time.Time, error) {
 }
 
 // tokenLogin is one POST /v1/launcher-credentials/token, answering the credential the broker
-// issued. A POST the broker gave no HTTP answer to, while ctx has not ended, or one answered with a
-// 5xx, fails with a *brokerUnavailableError; the 5xx one wraps the answer's *APIError. A transport
-// failure that is a fault on the daemon's own side is wrapped the same way, and classify reads it
-// out of the wrapper, so the login loop waits the long schedule for that one.
+// issued. A POST the broker gave no HTTP answer to, while ctx has not ended, or one answered with
+// an outage (a 5xx, a 408 or a 429), fails with a *brokerUnavailableError; the outage one wraps
+// the answer's *APIError. A transport failure that is a fault on the daemon's own side is wrapped
+// the same way, and classify reads it out of the wrapper, so the login loop waits the long
+// schedule for that one.
 func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 	token, err := c.serviceToken()
 	if err != nil {
@@ -278,7 +283,7 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 		}
 		return nil, err
 	}
-	if status >= 500 && status <= 599 {
+	if outage(status) {
 		return nil, &brokerUnavailableError{err: refusal(status, body, cut)}
 	}
 	if status != http.StatusOK {
@@ -473,12 +478,13 @@ type enrollmentAnswer struct {
 // the caller retries after the next token login. Any other broker answer is an *APIError, a
 // transport failure a plain error.
 //
-// A broker from before the claim refuses the field as unknown, and a 4xx is permanent to the
-// caller, which would drop the pod's identity and enrol it never (supervise.PermanentError). So
-// that one refusal, met by a body that carries a new field, is asked once more without the new
-// fields (withoutNewFields), and what that answers is the enrollment: the pod enrols, and its
-// requests stay its own enrollment's, as every pod's were before the claim. Any other refusal,
-// and the second answer whatever it is, is returned as it came.
+// A broker from before the claim refuses the field as unknown, and a 4xx other than a 408 or a
+// 429 is permanent to the caller (APIError.Permanent), which would drop the pod's identity and
+// enrol it never (supervise.PermanentError). So that one refusal, met by a body that carries a new
+// field, is asked once more without the new fields (withoutNewFields), and what that answers is
+// the enrollment: the pod enrols, and its requests stay its own enrollment's, as every pod's were
+// before the claim. Any other refusal, and the second answer whatever it is, is returned as it
+// came.
 func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error) {
 	body := enrollmentBody{
 		Kind: "pod", RuntimeID: e.PodUID, Slot: e.Slot, Operator: nil,
@@ -765,13 +771,13 @@ func (b backoff) wait() time.Duration {
 }
 
 // loginRetry is the login loop's wait after failed logins, on two schedules. short counts the run
-// of logins the broker was not there to decide — no HTTP answer, or a 5xx from the broker or its
-// front door — at unavailableRetryInitial doubling to unavailableRetryMax, because the broker
-// serving again is all such a login waits for. long counts the run of every other failed login —
-// the broker's refusal, a fault on the daemon's own side, and a login that could not be made at
-// all — at loginRetryInitial doubling to loginRetryMax, because no wait of seconds changes one of
-// those. A failure of one kind ends the other kind's run, so when the kind changes, that kind's
-// schedule starts fresh; a login that wins ends both.
+// of logins the broker was not there to decide — no HTTP answer, or an outage (a 5xx, a 408 or a
+// 429) from the broker or its front door — at unavailableRetryInitial doubling to
+// unavailableRetryMax, because the broker serving again is all such a login waits for. long counts
+// the run of every other failed login — the broker's refusal, a fault on the daemon's own side,
+// and a login that could not be made at all — at loginRetryInitial doubling to loginRetryMax,
+// because no wait of seconds changes one of those. A failure of one kind ends the other kind's
+// run, so when the kind changes, that kind's schedule starts fresh; a login that wins ends both.
 type loginRetry struct {
 	short, long backoff
 }
@@ -788,7 +794,7 @@ func newLoginRetry() loginRetry {
 type loginClass string
 
 const (
-	// brokerUnavailable: the broker was not there to decide — no HTTP answer, or a 5xx.
+	// brokerUnavailable: the broker was not there to decide — no HTTP answer, or an outage.
 	brokerUnavailable loginClass = "broker-unavailable"
 	// daemonSide: the fault is on the daemon's own side (daemonSideFault).
 	daemonSide loginClass = "daemon-side-fault"
@@ -801,9 +807,9 @@ const (
 
 // classify sorts a failed login into its class. A fault on the daemon's own side is read first:
 // tokenLogin wraps every transport failure that was not ctx ending as a *brokerUnavailableError,
-// and daemonSideFault reads such a fault out of that wrapper, since errors.As walks Unwrap. A 5xx
-// is a *brokerUnavailableError around the answer's *APIError, so the broker's absence is read
-// before its refusal.
+// and daemonSideFault reads such a fault out of that wrapper, since errors.As walks Unwrap. An
+// outage (a 5xx, a 408 or a 429) is a *brokerUnavailableError around the answer's *APIError, so
+// the broker's absence is read before its refusal.
 func classify(err error) loginClass {
 	var unavailable *brokerUnavailableError
 	var refused *APIError
@@ -850,12 +856,13 @@ func (r *loginRetry) failed(err error) (loginClass, time.Duration) {
 func (r *loginRetry) won() { r.short.failed, r.long.failed = 0, 0 }
 
 // brokerUnavailableError is a token login the broker gave no answer this client could read: the
-// POST failed before a response came back, or while it was read, or it was answered with a 5xx,
-// by the broker or by a front door with no broker behind it. err is the transport's error, which
-// names the route and never the token or the request object, or the 5xx answer's *APIError; its
-// message is err's. A transport failure that is a fault on the daemon's own side comes wrapped in
-// one of these too, and classify reads it out again (daemonSideFault), so it is no sign on its
-// own that waiting a few seconds is what the login needs.
+// POST failed before a response came back, or while it was read, or it was answered with an
+// outage (a 5xx, a 408 or a 429), by the broker or by a front door with no broker behind it. err
+// is the transport's error, which names the route and never the token or the request object, or
+// the outage answer's *APIError; its message is err's. A transport failure that is a fault on the
+// daemon's own side comes wrapped in one of these too, and classify reads it out again
+// (daemonSideFault), so it is no sign on its own that waiting a few seconds is what the login
+// needs.
 type brokerUnavailableError struct{ err error }
 
 func (e *brokerUnavailableError) Error() string { return e.err.Error() }
