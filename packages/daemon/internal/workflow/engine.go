@@ -3152,7 +3152,10 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	if stored == nil {
 		return e.transition(ctx, tx, noPlanScope(issue), TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, nil, "")
 	}
-	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
+	// The gate's opening is the move out of admitted (Table's one row of TriggerGateOpened): an
+	// issue that has left admitted starts nothing, and tells nothing, at a second opening, and a
+	// tree that lingers starts nothing, as no move runs in it.
+	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers || issue.Phase != phase.Admitted {
 		return err
 	}
 	written, err := e.startReady(ctx, tx, issue, stored, TriggerGateOpened)
