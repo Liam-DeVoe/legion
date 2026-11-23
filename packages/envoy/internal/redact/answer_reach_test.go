@@ -1,6 +1,7 @@
 package redact_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -102,15 +103,27 @@ func TestDecodeHoldsABoxBehindAnInterfaceTheCallerSet(t *testing.T) {
 // TestAnAnswerRefusesAWholeBodyDestinationBehindPointers: a pointer to a pointer to a
 // json.RawMessage, an interface value, a string or a byte slice takes the body whole as plain
 // text as the pointer to it does, since encoding/json allocates each pointer it meets; Decode
-// refuses each. The control is a struct behind the same two pointers, which it fills.
+// refuses each. Each is given an answer encoding/json fills it from - the refusal for the
+// json.RawMessage and the interface value, the refusal's words as a JSON string for the string,
+// and those words in base64 for the byte slice - and the capture holds what each kept, so one
+// filled prints the bearer: the string's above all, which whole alone refuses, since a member
+// that is a string is no plain-text member. The control is a struct behind the same two
+// pointers, which it fills.
 func TestAnAnswerRefusesAWholeBodyDestinationBehindPointers(t *testing.T) {
-	answer := answerOf(t, http.StatusOK, refusedWith)
+	refusal := answerOf(t, http.StatusOK, refusedWith)
+	quoted := answerOf(t, http.StatusOK, func(auth string) string { return strconv.Quote("the token " + auth + " was refused") })
+	encoded := answerOf(t, http.StatusOK, func(auth string) string {
+		return `"` + base64.StdEncoding.EncodeToString([]byte("the token "+auth+" was refused")) + `"`
+	})
 	var raw *json.RawMessage
 	var a *any
 	var s **string
 	var b *[]byte
-	for name, into := range map[string]any{"raw": &raw, "any": &a, "string": &s, "bytes": &b} {
-		if err := answer.Decode(into); err == nil {
+	for name, c := range map[string]struct {
+		answer redact.Answer
+		into   any
+	}{"raw": {refusal, &raw}, "any": {refusal, &a}, "string": {quoted, &s}, "bytes": {encoded, &b}} {
+		if err := c.answer.Decode(c.into); err == nil {
 			t.Errorf("Decode filled a pointer to a %s with the body whole", name)
 		}
 	}
@@ -121,10 +134,133 @@ func TestAnAnswerRefusesAWholeBodyDestinationBehindPointers(t *testing.T) {
 	if a != nil {
 		printed += fmt.Sprint(*a)
 	}
+	if s != nil && *s != nil {
+		printed += **s
+	}
+	if b != nil {
+		printed += string(*b)
+	}
 	redacttest.RequireNone(t, "redact.answer-whole-behind-pointers", printed)
 	var control *echoed
-	if err := answer.Decode(&control); err != nil || control == nil || control.Message.IsEmpty() {
+	if err := refusal.Decode(&control); err != nil || control == nil || control.Message.IsEmpty() {
 		t.Fatalf("control: Decode of a struct behind two pointers = %v, %+v; want it filled", err, control)
+	}
+}
+
+// rawDetail holds a json.RawMessage member, which encoding/json fills with the member's bytes as
+// they came.
+type rawDetail struct {
+	Detail json.RawMessage `json:"detail"`
+}
+
+// selfDecoded decodes its JSON itself, into an interface member, as a type of another module may
+// (a JSON Web Key does): what it keeps is its own code's, and encoding/json fills none of its
+// members.
+type selfDecoded struct {
+	Value any
+}
+
+func (s *selfDecoded) UnmarshalJSON(data []byte) error {
+	s.Value = len(data)
+	return nil
+}
+
+// TestAnAnswerRefusesADestinationThatHoldsAPlainTextMember: encoding/json fills a json.RawMessage
+// or a byte slice with a member's bytes as they came, and an interface value with a JSON value of
+// its own, text and all, so each keeps the answer's text with no record of the answer and prints
+// a credential the answer echoes. Decode refuses a destination that holds one at any depth it
+// decodes to - a struct's member, an embedded struct's, a list's item, an array's, a map's value,
+// behind a nil pointer, in an interface value the caller set to a pointer, an interface value the
+// caller set to a value (which encoding/json replaces), the destination a map or a list itself -
+// before it decodes anything, with fixed text that quotes no word of the answer. The controls are
+// a json.RawMessage encoding/json does not fill (`json:"-"`, unexported) and an interface member
+// of a type that decodes its JSON itself, each of which Decode fills. Captures
+// redact.answer-plain-member/<case>.
+func TestAnAnswerRefusesADestinationThatHoldsAPlainTextMember(t *testing.T) {
+	type anyDetail struct {
+		Detail any `json:"detail"`
+	}
+	echo := func(auth string) string { return `{"detail":` + refusedWith(auth) + `}` }
+	nested := func(auth string) string { return `{"detail":` + echo(auth) + `}` }
+	said := func(auth string) string { return `{"detail":` + strconv.Quote("the token "+auth+" was refused") + `}` }
+	encoded := func(auth string) string {
+		return `{"detail":"` + base64.StdEncoding.EncodeToString([]byte("the token "+auth+" was refused")) + `"}`
+	}
+	listed := func(auth string) string { return `{"detail":[` + refusedWith(auth) + `]}` }
+	for _, c := range []struct {
+		name   string
+		answer func(auth string) string
+		into   func() any
+	}{
+		{"raw", echo, func() any { return new(rawDetail) }},
+		{"bytes", encoded, func() any {
+			return new(struct {
+				Detail []byte `json:"detail"`
+			})
+		}},
+		{"interface", said, func() any { return new(anyDetail) }},
+		{"map-value", echo, func() any {
+			return new(struct {
+				Detail map[string]any `json:"detail"`
+			})
+		}},
+		{"list-item", listed, func() any {
+			return new(struct {
+				Detail []any `json:"detail"`
+			})
+		}},
+		{"array-item", listed, func() any {
+			return new(struct {
+				Detail [1]any `json:"detail"`
+			})
+		}},
+		{"embedded", echo, func() any { return new(struct{ rawDetail }) }},
+		{"nil-pointer", nested, func() any {
+			return new(struct {
+				Detail *rawDetail `json:"detail"`
+			})
+		}},
+		{"interface-set-to-a-pointer", nested, func() any { return &anyDetail{Detail: &rawDetail{}} }},
+		{"interface-set-to-a-value", echo, func() any { return &anyDetail{Detail: rawDetail{}} }},
+		{"map-destination", echo, func() any { return new(map[string]json.RawMessage) }},
+		{"list-destination", func(auth string) string { return `[` + echo(auth) + `]` }, func() any { return new([]rawDetail) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			into := c.into()
+			err := answerOf(t, http.StatusForbidden, c.answer).Decode(into)
+			marshaled, _ := json.Marshal(into)
+			printed := fmt.Sprintf("%s %s", into, marshaled)
+			redacttest.RequireNone(t, "redact.answer-plain-member/"+c.name, fmt.Sprintf("%s | %v", printed, err))
+			switch {
+			case err == nil:
+				t.Errorf("Decode filled %s, whose member keeps the answer's text as it came: %s", c.name, printed)
+			case strings.Contains(err.Error(), "was refused") || !strings.Contains(err.Error(), "which holds"):
+				t.Errorf("Decode's refusal %q quotes the answer or does not name what the destination holds", err)
+			case strings.Contains(printed, "was refused"):
+				t.Errorf("Decode refused %s after it filled it: %s", c.name, printed)
+			}
+		})
+	}
+	for _, c := range []struct {
+		name string
+		into any
+	}{
+		{"skipped", &struct {
+			Detail  json.RawMessage   `json:"-"`
+			Message redact.RemoteText `json:"message"`
+		}{}},
+		{"unexported", &struct {
+			detail  json.RawMessage
+			Message redact.RemoteText `json:"message"`
+		}{}},
+		{"decodes-itself", &struct {
+			Message selfDecoded `json:"message"`
+		}{}},
+	} {
+		if err := answerOf(t, http.StatusForbidden, refusedWith).Decode(c.into); err != nil {
+			t.Errorf("control %s: Decode = %v, want it filled: encoding/json keeps no text as it came there", c.name, err)
+		}
+		redacttest.RequireNone(t, "redact.answer-plain-member-control/"+c.name, fmt.Sprintf("%s", c.into))
 	}
 }
 

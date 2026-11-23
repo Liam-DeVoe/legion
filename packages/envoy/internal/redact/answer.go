@@ -209,16 +209,18 @@ func ContainsFold(body []byte, phrase string) bool {
 // a field another party wrote prints with the request's credentials redacted, as Words prints the
 // body, and compares as it came. A destination that would take the body whole - a string, a byte
 // slice, a json.RawMessage or an interface value, behind however many pointers - is refused, since
-// its text would leave the answer as plain text. So is one that would fill a box no record can
-// reach (unreached), before anything is decoded into it: a box in a map's key, which
-// encoding/json fills through UnmarshalText and which has no address. So is one that embeds a
-// RemoteText itself under an unexported name (an alias of it), whose box no record can reach
-// either (recordBoxes); that box is left as encoding/json filled it, and the error says the
-// destination holds it. Its error is fixed text: it names the destination's type and, where it
-// can, the member that did not decode and the JSON kind it held, and never a value of the answer,
-// since encoding/json's errors, and the errors of the types it decodes into (time.Time's among
-// them), quote the value they could not read; it unwraps to nothing, so no caller reaches the
-// decoder's own error.
+// its text would leave the answer as plain text. So is one that holds a member encoding/json would
+// fill with the answer's text as it came (plainMember), at any depth it decodes to: a byte slice,
+// a json.RawMessage, or an interface value the caller did not set to a non-nil pointer. So is one
+// that would fill a box no record can reach (unreached), before anything is decoded into it: a
+// box in a map's key, which encoding/json fills through UnmarshalText and which has no address.
+// So is one that embeds a RemoteText itself under an unexported name (an alias of it), whose box
+// no record can reach either (recordBoxes); that box is left as encoding/json filled it, and the
+// error says the destination holds it. Its error is fixed text: it names the destination's type
+// and, where it can, the member that did not decode and the JSON kind it held, and never a value
+// of the answer, since encoding/json's errors, and the errors of the types it decodes into
+// (time.Time's among them), quote the value they could not read; it unwraps to nothing, so no
+// caller reaches the decoder's own error.
 func (a Answer) Decode(v any) error {
 	rv := reflect.ValueOf(v)
 	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
@@ -229,6 +231,9 @@ func (a Answer) Decode(v any) error {
 	}
 	if held := unreached(rv, map[followed]bool{}); held != "" {
 		return fmt.Errorf("redact: an answer does not decode into %T, which holds %s, where no record of the answer reaches it", v, held)
+	}
+	if held := plainMember(rv, map[followed]bool{}); held != "" {
+		return fmt.Errorf("redact: an answer does not decode into %T, which holds %s, whose text would leave the answer as plain text", v, held)
 	}
 	data := a.bytes()
 	err := json.Unmarshal(data, v)
@@ -339,6 +344,107 @@ func unreachedType(t reflect.Type, seen map[reflect.Type]bool) string {
 		}
 	}
 	return ""
+}
+
+// plainMember is what of v encoding/json would fill with the answer's text as it came, where no
+// record of the answer reaches it, as Decode's refusal names it (plainText), or "": a byte slice,
+// json.RawMessage among them, which it fills with a member's bytes, and an interface value, which
+// it fills with a JSON value of its own, text and all. It reads v as unreached does, as
+// encoding/json decodes into it - the value a non-nil pointer points at, an interface value the
+// caller set to a non-nil pointer, each struct field it fills (filled) and each element a list
+// holds, and the type (plainMemberType) of what it makes - and goes into no value whose type
+// decodes its JSON itself (decodesItself), none of whose members encoding/json fills: what such a
+// type keeps is its own code's, as what a RemoteText keeps is.
+func plainMember(v reflect.Value, seen map[followed]bool) string {
+	if held := plainText(v.Type()); held != "" && (v.Kind() != reflect.Interface || !pointsAt(v)) {
+		return held
+	}
+	if decodesItself(v.Type()) {
+		return ""
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		at := followed{v.Pointer(), v.Type()}
+		switch {
+		case v.IsNil():
+			return plainMemberType(v.Type().Elem(), map[reflect.Type]bool{})
+		case seen[at]:
+			return ""
+		}
+		seen[at] = true
+		return plainMember(v.Elem(), seen)
+	case reflect.Interface:
+		return plainMember(v.Elem(), seen)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if filled(v.Type().Field(i)) {
+				if held := plainMember(v.Field(i), seen); held != "" {
+					return held
+				}
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			if held := plainMember(v.Index(i), seen); held != "" {
+				return held
+			}
+		}
+		return plainMemberType(v.Type().Elem(), map[reflect.Type]bool{})
+	case reflect.Map:
+		return plainMemberType(v.Type().Elem(), map[reflect.Type]bool{})
+	}
+	return ""
+}
+
+// plainMemberType is plainMember of a value of t that encoding/json makes: what it holds through
+// a pointer, a list's item, a map's value or a struct field it fills. An interface value it makes
+// holds a JSON value of its own.
+func plainMemberType(t reflect.Type, seen map[reflect.Type]bool) string {
+	if held := plainText(t); held != "" {
+		return held
+	}
+	if seen[t] || decodesItself(t) {
+		return ""
+	}
+	seen[t] = true
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+		return plainMemberType(t.Elem(), seen)
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if f := t.Field(i); filled(f) {
+				if held := plainMemberType(f.Type, seen); held != "" {
+					return held
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// plainText is how Decode's refusal names a value of t that encoding/json fills with the answer's
+// text as it came, or "": a byte slice, json.RawMessage among them, or an interface value.
+func plainText(t reflect.Type) string {
+	switch {
+	case t.Kind() == reflect.Interface:
+		return "an interface value"
+	case t.Kind() != reflect.Slice || t.Elem().Kind() != reflect.Uint8:
+		return ""
+	case t.Name() != "":
+		return "a " + t.String()
+	}
+	return "a byte slice"
+}
+
+// filled reports whether encoding/json fills field f of a struct: one it decodes (decoded) whose
+// tag does not skip it.
+func filled(f reflect.StructField) bool { return decoded(f) && f.Tag.Get("json") != "-" }
+
+// decodesItself reports whether encoding/json hands a value of t its JSON whole, through the
+// type's own UnmarshalJSON or UnmarshalText, and fills none of its members itself.
+func decodesItself(t reflect.Type) bool {
+	p := reflect.PointerTo(t)
+	return p.Implements(jsonUnmarshalerType) || p.Implements(textUnmarshalerType)
 }
 
 // decodeText is the fixed text of err, encoding/json's error decoding data into a value of type
@@ -533,10 +639,10 @@ func failingValue(dec *json.Decoder, t reflect.Type) ([]string, reflect.Type, er
 
 // opens is the delimiter of the JSON value encoding/json decodes a value of t from member by
 // member: '{' for a struct or a map and '[' for a list, and 0 for every other value, which it
-// decodes whole: one whose type decodes its JSON itself, through its own UnmarshalJSON or
-// UnmarshalText, a byte slice (from base64 text), a scalar or an interface value.
+// decodes whole: one whose type decodes its JSON itself (decodesItself), a byte slice (from base64
+// text), a scalar or an interface value.
 func opens(t reflect.Type) json.Delim {
-	if p := reflect.PointerTo(t); p.Implements(jsonUnmarshalerType) || p.Implements(textUnmarshalerType) {
+	if decodesItself(t) {
 		return 0
 	}
 	switch t.Kind() {
@@ -554,7 +660,7 @@ func opens(t reflect.Type) json.Delim {
 }
 
 // jsonUnmarshalerType and textUnmarshalerType are the interfaces through which encoding/json hands
-// a type its JSON whole (opens).
+// a type its JSON whole (decodesItself).
 var (
 	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
 	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()

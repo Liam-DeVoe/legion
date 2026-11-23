@@ -2527,6 +2527,20 @@
       }
     },
     {
+      "id": "answer-decode-plain-member",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestAnAnswerRefusesADestinationThatHoldsAPlainTextMember",
+      "production": "redact Answer.Decode: a destination that holds a byte slice, a json.RawMessage or an interface value the caller did not set to a pointer, at any depth encoding/json decodes to, which it would fill with the answer's text as it came, is refused before anything is decoded (plainMember, plainMemberType)",
+      "function": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode",
+      "capture": "redact.answer-plain-member/raw",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "if held := plainMember(rv, map[followed]bool{}); held != \"\" {",
+        "replacement": "if held := \"\"; held != \"\" {"
+      }
+    },
+    {
       "id": "listener-build-unsubscribe",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/envoy",
@@ -9167,6 +9181,11 @@
       "site": "Answer.Decode filled a RemoteText in a map's key with no record of the answer (recordBoxes and holdsBox walked map values only), so a key that echoed the request's bearer printed it as it came",
       "source": "the review of #4368 at de683f95d2, finding 7",
       "guard": "answer-decode-box-key"
+    },
+    {
+      "site": "Answer.Decode refused a destination that takes the body whole at its top level only, so Dispatch's event log, decoded into a []json.RawMessage, took each event as it came with no record of the answer, and the daemon's decoders printed the bearer an event echoed",
+      "source": "the review of #4368 at de683f95d2, finding 1",
+      "guard": "answer-decode-plain-member"
     },
     {
       "site": "daemon dispatchError: Dispatch's code taken through SendBack, so a message that quotes ISSUE_NOT_FOUND made a permanent refusal codeless and retried for ever",
