@@ -70,6 +70,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/cipherclient/**'
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/consumernames/*'
   - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/ctxlock/*'
@@ -116,6 +117,7 @@ dispatch_server: &dispatch_server
   - 'packages/envoy/internal/cipher/wire/*'
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/consumernames/*'
   - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
@@ -308,6 +310,7 @@ listener_command: &listener_command
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/cipher/netaddr/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/consumernames/*'
   - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cipherclient/*'
   - 'packages/envoy/cipheraddr/*'
@@ -364,7 +367,6 @@ daemon_go_tests:
   - 'packages/envoy/scripts/forced-order.sh'
   - 'packages/envoy/internal/testnats/testdata/hooked/**'
   - 'packages/envoy/internal/contracts/**'
-  - 'packages/envoy/consumernames/*'
   - 'packages/contracts/fixtures/capability-redaction.json'
   - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'
   - 'packages/contracts/fixtures/checks-settlement/*'
@@ -451,7 +453,6 @@ plugin_pack:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-plugin-pack.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - *bun_install
   - *omp_install
@@ -588,7 +589,6 @@ typecheck:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-typecheck.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
@@ -1083,7 +1083,6 @@ test:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-test.yaml'
-  - 'packages/envoy/consumernames/*'
   - *bun_install
   - *biome
   # why: .github/ci-notes/ci.md#test-the-workspace-of-the-one-go-command-left-here---the-listener
@@ -1194,7 +1193,6 @@ docs:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/docs-pages.yaml'
-  - 'packages/envoy/consumernames/*'
   - '.github/workflows/docs-site.yaml'
   - *bun_install
   - *go_workspace
@@ -1275,7 +1273,6 @@ go_notices:
   - 'packages/envoy/cmd/cipher/*'
   - 'packages/envoy/cmd/cipher-helper/*'
   - *listener_command
-  - 'packages/envoy/consumernames/*'
   - 'packages/envoy/infra/go.mod'
   - 'packages/envoy/infra/go.sum'
   - 'packages/envoy/infra/go.work'
@@ -1315,6 +1312,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/dispatch/**'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/consumernames/*'
   - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cipherclient/*'
@@ -1581,7 +1579,6 @@ dispatch_browser:
   - *ci_router
   - *ci_filters_data
   - *bun_install
-  - 'packages/envoy/consumernames/*'
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'
   # why: .github/ci-notes/ci.md#dispatch_browser-dispatch_uis-set-which-the-spa-and-the-e2e-helpers-load
@@ -1722,7 +1719,6 @@ envoy_infra_go:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-infra-go.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - 'packages/envoy/infra/**'
   - '.github/scripts/go_build_tags.py'
@@ -1887,7 +1883,6 @@ dispatch_memory:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-memory.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -1930,7 +1925,6 @@ dispatch_multiprocess:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -1975,7 +1969,6 @@ dispatch_two_builds_go:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-two-builds.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -2073,7 +2066,6 @@ dispatch_two_builds:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-two-builds.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -2174,7 +2166,6 @@ listener_server_change:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-listener-server-change.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - *listener_command
   # why: .github/ci-notes/ci.md#listener_server_change-what-cmdlisteners-test-binary-compiles-that-go-list
@@ -2287,7 +2278,6 @@ broker_multiprocess:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-broker-multiprocess.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - 'packages/envoy/cipheraddr/*'
   - 'packages/envoy/agentloop/*'
@@ -2327,6 +2317,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/cipher/wake/*'
   - 'packages/envoy/internal/cipher/natscallout/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/consumernames/*'
   - 'packages/envoy/internal/id/*'
   - 'packages/envoy/natscred/*'
   - 'packages/envoy/natsgrant/*'
@@ -2515,7 +2506,6 @@ envoy_e2e_local:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-e2e-local.yaml'
-  - 'packages/envoy/consumernames/*'
   - *bun_install
   - *go_workspace
   - 'packages/envoy/scripts/e2e-local.sh'
@@ -2954,7 +2944,6 @@ envoy_go_race_api:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go-race-api.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/cipheraddr/*'
@@ -2991,6 +2980,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/ciphertoken/*'
   - 'packages/envoy/internal/ciphertoken/ciphertokentest/*'
   - 'packages/envoy/internal/bus/*'
+  - 'packages/envoy/consumernames/*'
   - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/contracts/*'
   - 'packages/envoy/internal/cputest/*'
