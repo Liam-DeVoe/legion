@@ -179,7 +179,7 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 		}
 		assertHeldForChildren(t, pool, inRetro, "while its tree lingers")
 
-		assertRetriesRefused(t, pool, admission, engine, inRetro, inRetro+" waits before its retro, and nothing beneath it is open: its tree "+finishedRoot+
+		assertRetriesRefused(t, pool, admission, engine, inRetro, inRetro+" waits before its retro, and no issue holds it any longer: its tree "+finishedRoot+
 			" lingers after its root left the workflow, and Legion starts the retro once the tree runs again. This retry changed nothing.")
 	})
 
@@ -229,7 +229,7 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 		}
 		assertHeldForChildren(t, pool, parent, "while it waits in the line")
 
-		waits := parent + " waits before its retro, and nothing beneath it is open: its tree " + parent +
+		waits := parent + " waits before its retro, and no issue holds it any longer: its tree " + parent +
 			" waits in the line to be opened, and Legion starts the retro once the tree runs."
 		assertRetriesRefused(t, pool, admission, engine, parent, waits+" This retry changed nothing.")
 

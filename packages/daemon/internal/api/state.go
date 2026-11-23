@@ -714,10 +714,10 @@ type Issue struct {
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
 	// it ran (record.HoldTaskStopped), and `children` while a parent whose task's last step is not
-	// the owner's acceptance waits, before its retro, for the issues beneath it
-	// (record.HoldForChildren). A hold of either of the last two is no architect's to retry or
-	// escalate: a later version of the plan
-	// starts a stopped task again, and the last issue beneath a parent to leave starts its retro. A
+	// the owner's acceptance waits, before its retro, for the issues beneath it, the roots that rest
+	// on its approval or its open Dispatch children (record.HoldForChildren). A hold of either of
+	// the last two is no architect's to retry or escalate: a later version of the plan
+	// starts a stopped task again, and a parent's retro starts once none of those holds it. A
 	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
 	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
 	// reason, and the view shows it again once the tree is re-admitted.

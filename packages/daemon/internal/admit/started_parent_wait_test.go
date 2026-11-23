@@ -204,7 +204,7 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		if got.Phase != phase.AwaitingChildren || wait == nil || wait.Start != phase.Accepting || !wait.Since.Equal(fixedNow) {
 			t.Fatalf("the parent = phase %s, held start %+v; want awaiting_children holding accepting since %s", got.Phase, wait, fixedNow)
 		}
-		if !strings.Contains(wait.Task, "Phase: accepting.") || !strings.Contains(wait.Reason, "its reviewed head waited in accepting") ||
+		if !strings.Contains(wait.Task, "Phase: accepting.") || !strings.Contains(wait.Reason, "the head the step before accepting passed waited in accepting") ||
 			!strings.Contains(wait.Reason, spChild+" (todo)") {
 			t.Fatalf("the held start = %+v, want accepting's task and a reason naming the wait and %s", wait, spChild)
 		}

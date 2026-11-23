@@ -21,9 +21,10 @@ const heldParentChild = "LEGION-209"
 
 // heldParentReason is the reason of the retro-held notice LEGION-208 gets while heldParentChild is
 // in the workflow beneath it: it ends with the daemon's sentence on a status not taken yet and its
-// rules for ending a child, as the pr-merged notice does.
+// rules for ending a child, as the pr-merged notice does. retroHeldStarts is the sentence every
+// retro-held notice ends its own words with.
 const heldParentReason = "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. " +
-	"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
+	"A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it. " + retroHeldStarts + " " +
 	record.StatusNotTakenYet + " " + record.EndChildRule
 
 // approveReview settles LEGION-208's review round as approved, as settleRound moves it: the
@@ -175,7 +176,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		if got := noticesOf(t, pool, "LEGION-208", "retro-held"); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the retro-held notices = %+v, want %+v", got, want)
 		}
-		if line := logged.String(); strings.Count(line, "workflow: a parent is held before its retro for the issues beneath it") != 1 || !strings.Contains(line, heldParentChild) {
+		if line := logged.String(); strings.Count(line, "workflow: a parent is held before its retro") != 1 || !strings.Contains(line, "hold="+signOffChildInWorkflow) || !strings.Contains(line, heldParentChild) {
 			t.Fatalf("the log of the approval = %q, want one line of the hold naming %s", line, heldParentChild)
 		}
 		statuses = statusWrites(t, pool, "LEGION-208")
@@ -302,7 +303,7 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 		if got := noticesOf(t, pool, root.Key, "retro-held"); !reflect.DeepEqual(got, want) {
 			t.Fatalf("the retro-held notices = %+v, want %+v", got, want)
 		}
-		if line := logged.String(); strings.Count(line, "workflow: a parent is held before its retro for the issues beneath it") != 1 || !strings.Contains(line, heldParentChild) {
+		if line := logged.String(); strings.Count(line, "workflow: a parent is held before its retro") != 1 || !strings.Contains(line, "hold="+signOffChildInWorkflow) || !strings.Contains(line, heldParentChild) {
 			t.Fatalf("the log of the approval = %q, want one line of the hold naming %s", line, heldParentChild)
 		}
 

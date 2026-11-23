@@ -399,7 +399,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	if waits.accepting, err = awaitingAcceptance(ctx, tx, store, issue, accepting); err != nil {
 		return record.CatchUp{}, treeWaits{}, err
 	}
-	resting, err := restingRootsOn(ctx, tx, store, live)
+	resting, err := record.RestingRootsOn(ctx, tx, store, live)
 	if err != nil {
 		return record.CatchUp{}, treeWaits{}, err
 	}

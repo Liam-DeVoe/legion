@@ -1819,8 +1819,9 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 
 // childrenWaits is the admission pass's reading of the started parents' wait on their open
 // Dispatch children (record.LineFacts.StartedParentWaits, dispatch://INFRA-3320 R9 and R12), and
-// answers whether it wrote anything, which tells the pass to take its shared reads again. It makes
-// two moves and one write, each through the engine, and no other:
+// of each parent held before its retro (record.HoldForChildren, R8), and answers whether it wrote
+// anything, which tells the pass to take its shared reads again. It makes three moves and one
+// write, each through the engine, and no other:
 //
 //   - a started parent an open child now holds moves into awaiting_children
 //     (workflow.Engine.StopForChildren): a parent in accepting, one whose start is written and
@@ -1830,7 +1831,13 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 //     open under it on the wait's children (workflow.Engine.KeepWaitChildren), so a child filed
 //     or released during the wait is one the return names if it merged;
 //   - a parent in awaiting_children that no open child holds any longer goes back
-//     (workflow.Engine.ReturnFromChildren), on this pass and with nobody acting.
+//     (workflow.Engine.ReturnFromChildren), on this pass and with nobody acting;
+//   - a parent held before its retro that nothing holds any longer — no issue beneath it in the
+//     workflow, no root that rests on its approval in the workflow, no open Dispatch child — has
+//     its retro started (workflow.Engine.ReleaseHeldRetro), on this pass and with nobody acting.
+//     The close of an open Dispatch child, or its move to icebox or out from under the parent,
+//     changes the daemon's mirror of Dispatch alone, a child never released among them, so no
+//     settle of the engine reads it and this pass is what releases the parent.
 //
 // Each reads an issue of this project in the workflow whose tree runs (record.RunningRoots: its
 // lifecycle open under the workflow, its root neither lingering nor waiting in the line as a
@@ -1838,10 +1845,10 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 // member where it stands, a queued root is left alone (record.QueuedRoot), and a root handed over
 // in awaiting_children comes back once its promotion has opened its tree. A key a hold still names
 // (held, the pass's own predicate) is read on the first pass after the hold ends, as the promotion
-// reads it. The engine leaves alone a parent held, in retro or in merging, whose pull request has
-// merged, or whose phase's role stands on an entry a role's move back raised out of retro or
-// merging (record.PhaseRow.EntryFrom), and a second pass finds a moved parent in awaiting_children
-// already, so it sends nothing again.
+// reads it. The engine leaves alone a parent held for any other reason, in retro or in merging,
+// whose pull request has merged, or whose phase's role stands on an entry a role's move back raised
+// out of retro or merging (record.PhaseRow.EntryFrom), and a second pass finds a moved parent in
+// awaiting_children already, so it sends nothing again.
 //
 // It runs before the releases (promoteHolds), so the slot a stopped parent held is freed on this
 // very pass by the one rule for a phase that keeps none (releaseSlots, record.NeedsSlot), and the
@@ -1849,12 +1856,12 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts,
 	held func(string) bool,
 ) (bool, error) {
-	// Either move reaches a parent in awaiting_children or one an open child holds, and nothing
-	// else, and on most passes there is neither: the rest is read for those alone, in byte order
-	// of their keys (SQL's `order by key` may collate otherwise).
+	// Each move reaches a parent in awaiting_children, one an open child holds, or one held before
+	// its retro, and nothing else, and on most passes there is none: the rest is read for those
+	// alone, in byte order of their keys (SQL's `order by key` may collate otherwise).
 	var parents []record.Issue
 	for _, issue := range issues {
-		if _, open := facts.StartedParentWaits[issue.Key]; open || issue.Phase == phase.AwaitingChildren {
+		if _, open := facts.StartedParentWaits[issue.Key]; open || issue.Phase == phase.AwaitingChildren || record.HeldForChildren(issue) {
 			parents = append(parents, issue)
 		}
 	}
@@ -1877,6 +1884,12 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 		}
 		wait, open := facts.StartedParentWaits[parent.Key]
 		switch {
+		case record.HeldForChildren(parent):
+			released, err := a.engine.ReleaseHeldRetro(ctx, tx, parent)
+			if err != nil {
+				return wrote, fmt.Errorf("start the held retro of %s: %w", parent.Key, err)
+			}
+			wrote = wrote || released
 		case parent.Phase == phase.AwaitingChildren && !open:
 			if err := a.engine.ReturnFromChildren(ctx, tx, parent); err != nil {
 				return wrote, fmt.Errorf("take %s back to the start it held: %w", parent.Key, err)
@@ -1987,11 +2000,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, nil, err
 		}
 	}
-	// A started parent an open Dispatch child holds stops, and one whose last open child has gone
-	// goes back to the start it held (childrenWaits). Both are written before the releases and
-	// read again where either was, so a stopped parent's slot is freed on this pass by the release
-	// below (awaiting_children keeps none), and a returned parent's start stands in this pass's
-	// line among the issues whose work came back, at the moment its wait ended.
+	// A started parent an open Dispatch child holds stops, one whose last open child has gone goes
+	// back to the start it held, and one held before its retro that nothing holds any longer starts
+	// its retro (childrenWaits). Each is written before the releases and read again where any was,
+	// so a stopped parent's slot is freed on this pass by the release below (awaiting_children
+	// keeps none), and a returned parent's start stands in this pass's line among the issues whose
+	// work came back, at the moment its wait ended.
 	waited, err := a.childrenWaits(ctx, tx, issues, facts, heldKeys)
 	if err != nil {
 		return 0, nil, err

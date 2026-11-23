@@ -388,8 +388,10 @@ const HoldEscalated HoldReason = "escalated"
 const HoldTaskStopped HoldReason = "task-stopped"
 
 // HoldForChildren is a hold that stands in place of the retro of an issue whose task's last step
-// is not the owner's acceptance, while issues beneath it are still open (From is phase.Retro,
-// which holds no slot): the retro starts once the last of them has left.
+// is not the owner's acceptance, while one of the three holds on its acceptance holds it: an
+// issue beneath it still in the workflow, a root that rests on its approval still in the
+// workflow, or an open Dispatch child of it (workflow's acceptanceHeld, dispatch://INFRA-3320 R8).
+// From is phase.Retro, which holds no slot: the retro starts once none of them holds it.
 const HoldForChildren HoldReason = "children"
 
 // Awaiting is what a root in awaiting_person waits on: an ask its architect opened on the root

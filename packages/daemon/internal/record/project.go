@@ -616,6 +616,16 @@ type LineFacts struct {
 	// the judgement reads the mirror against the daemon's records in the transaction the line is
 	// never given; it is never stored, and each read of the facts judges it again.
 	StartedParentWaits map[string]ChildWait
+	// RetroHeldChildren is the open Dispatch children of each parent held before its retro
+	// (HoldForChildren), by parent key, judged as StartedParentWaits is (readChildWaits over
+	// RetroHeldParents), and RetroHeldResting the roots still in the workflow that rest on each
+	// such parent's approval (RestingRootsOn): with the issues beneath it still in the workflow
+	// (OpenBeneath), the three holds on its acceptance that hold its retro (workflow's
+	// acceptanceHeld), which the held word children_before_retro names in R8's order
+	// (HeldReasonOf). A parent nothing holds so has no entry in either. ReadLineFacts fills both
+	// and reads nothing for them where no parent is held before its retro.
+	RetroHeldChildren map[string]ChildWait
+	RetroHeldResting  map[string][]RestingRoot
 	// childrenFirst is the children-first judgement ReadLineFacts made from the read of the
 	// children it judged StartedParentWaits from (readChildWaits), which ChildWaitsOf hands the
 	// caller to fill ChildWaits with; nil in facts ReadLineFacts did not read.
@@ -825,7 +835,10 @@ func ReadLineFacts(ctx context.Context, tx pgx.Tx, store Store, project string, 
 	// The children are read last, since the gates say which issues are children-first
 	// candidates, an issue owing a start is a started parent (StartedParents), and the cycle walk
 	// crosses the records above the pass's own.
-	if facts.childrenFirst, facts.StartedParentWaits, err = readChildWaits(ctx, tx, store, project, issues, facts); err != nil {
+	if facts.childrenFirst, facts.StartedParentWaits, facts.RetroHeldChildren, err = readChildWaits(ctx, tx, store, project, issues, facts); err != nil {
+		return LineFacts{}, err
+	}
+	if facts.RetroHeldResting, err = RestingRootsOn(ctx, tx, store, RetroHeldParents(issues)); err != nil {
 		return LineFacts{}, err
 	}
 	return facts, nil

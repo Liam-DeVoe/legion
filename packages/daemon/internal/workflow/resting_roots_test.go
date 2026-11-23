@@ -368,7 +368,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 					t.Fatalf("the resting-root notice = %#v, want it to name P's spec at version 3 to its architect", notice)
 				}
 			}
-			want := tc.said + " Its spec step rests on the approval of LEGION-100. The sign-off and the close of LEGION-100 no longer wait for LEGION-208. " +
+			want := tc.said + " Its spec step rests on the approval of LEGION-100. The sign-off and the close of LEGION-100, and its retro where its task has no acceptance step, no longer wait for LEGION-208. " +
 				"The checks of LEGION-208 serve these requirements of LEGION-100: dispatch://LEGION-100/spec#b-p2@v3."
 			if resting[1].Reason != want {
 				t.Fatalf("the leave's resting-root reason = %q, want %q", resting[1].Reason, want)
@@ -406,7 +406,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 				t.Fatalf("resting-root notices keyed by P = %#v, want the registration's and the close's", resting)
 			}
 			want := "LEGION-208 is done. Its criteria and spec steps rest on the approval of LEGION-100. " +
-				"The sign-off and the close of LEGION-100 no longer wait for LEGION-208. " +
+				"The sign-off and the close of LEGION-100, and its retro where its task has no acceptance step, no longer wait for LEGION-208. " +
 				"The checks of LEGION-208 serve these requirements of LEGION-100: dispatch://LEGION-100/spec#b-p2@v3."
 			if closed := resting[1]; closed.Reason != want || closed.Ref != tc.ref || closed.Version != tc.version {
 				t.Fatalf("the close's resting-root notice = %#v, want %q naming %s at version %d", closed, want, tc.ref, tc.version)
@@ -454,7 +454,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		seedRecord(t, pool, func(tx pgx.Tx) error { return engine.StartArchitect(t.Context(), tx, ancestor) })
 		start := architectStartOf(t, pool, basisAncestor)
 		resting := "These roots rest on the approval of LEGION-100 and are still in the workflow: " + restingNamed + ". " +
-			"The daemon refuses the sign-off and the close of LEGION-100 while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
+			"The daemon refuses the sign-off and the close of LEGION-100, and holds its retro where its task has no acceptance step, while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
 			"Each root's own architect, or a person, moves it."
 		fresh := ArchitectStartTask(ArchitectStart{Root: ancestor, Gate: record.TreeGate{Steps: engine.GatedSteps()}})
 		if want := resting + "\n\n" + fresh; start.Task != want || start.Kept != nil || start.Entry == 0 {
@@ -488,7 +488,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		claimReady(t, pool, engine, basisAncestor, claim.RoleArchitect, 1)
 		want := "the tree of LEGION-100 at generation 1 as the daemon records it now; start or resume it as your role says" +
 			"; resting on the approval of LEGION-100 and still in the workflow: " + restingNamed +
-			" (the daemon refuses the sign-off and the close of LEGION-100 while any of them is; each root's own architect, or a person, moves it)"
+			" (the daemon refuses the sign-off and the close of LEGION-100, and holds its retro where its task has no acceptance step, while any of them is; each root's own architect, or a person, moves it)"
 		if got := lastCatchUpReason(t, pool); got != want {
 			t.Fatalf("P's catch-up reason = %q, want %q", got, want)
 		}

@@ -803,7 +803,8 @@ const legionIssue = z.object({
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
    * the controller; and from contract 219 `task-stopped` once its owner stopped its task with
    * stop_task, and `children` while a parent whose task's last step is not the owner's acceptance
-   * waits, before its retro, for the issues beneath it. A caller whose contract (the one it states, else its pod's
+   * waits, before its retro, for the issues beneath it, the roots that rest on its approval or its
+   * open Dispatch children. A caller whose contract (the one it states, else its pod's
    * lowest) is below 219 is served an issue held for either of those two with no `holdReason`
    * (the daemon's value strip `withoutUnadmittedHoldReason`). `heldFrom` beside it is the phase
    * the hold took the issue out of, and is absent for an issue that is not held. The linger

@@ -2010,39 +2010,50 @@ func stoppedSentence(issue, task, reason string) string {
 }
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
-// a parent whose last step is not the owner's acceptance, waits before its retro for the issues beneath it,
-// beneath (record.HoldForChildren): the last of them to leave starts the retro.
-func RetryOfHeldParent(issue string, beneath []string) *Refusal {
-	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForChildren(issue, beneath) + " This retry changed nothing."}
+// a parent whose last step is not the owner's acceptance, waits before its retro while holding,
+// the first of the holds on its acceptance that holds it, still holds it (record.HoldForChildren,
+// HeldParentWaitsForChildren).
+func RetryOfHeldParent(issue, holding string) *Refusal {
+	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForChildren(issue, holding) + " This retry changed nothing."}
 }
 
-// HeldParentWaitsForChildren says why issue, a parent held before its retro for the issues beneath
-// it (record.HoldForChildren), still waits: beneath, the issues beneath it still open, the last of
-// which to leave starts the retro. It says what is true of the issue for whoever reads it, a
-// person beside a set-back todo included, and carries none of the architect's rules for ending a
-// child, which the architect's own retro-held notice gives.
-func HeldParentWaitsForChildren(issue string, beneath []string) string {
-	return fmt.Sprintf("%s waits before its retro for these issues beneath it: %s. Legion starts the retro when the last one leaves.", issue, strings.Join(beneath, ", "))
+// HeldParentWaitsForChildren says why issue, a parent held before its retro (record.HoldForChildren),
+// still waits: holding, the first of the three holds on its acceptance that holds it, which names
+// each issue of that hold in the words of the sign-off's refusal of it — the issues beneath it
+// still in the workflow, the roots that rest on its approval still in the workflow, or its open
+// Dispatch children (workflow's acceptanceHold.holding) — and then what starts the retro
+// (HeldParentRetroStarts). It says what is true of the issue for whoever reads it, a person beside
+// a set-back todo included, and carries none of the architect's rules for ending a child, which
+// the architect's own retro-held notice gives.
+func HeldParentWaitsForChildren(issue, holding string) string {
+	return fmt.Sprintf("%s waits before its retro while %s. %s", issue, holding, HeldParentRetroStarts)
 }
+
+// HeldParentRetroStarts is what starts the retro of a parent held before it (record.HoldForChildren):
+// none of the three holds on its acceptance holding it any longer, which Legion reads again at the
+// settle of each fact and at each admission pass, with nobody acting (workflow's startHeldRetro).
+// The reason beside a held root's set-back todo, the refusal of a release of the hold
+// (HeldParentWaitsForChildren) and the architect's retro-held notice say it in these words.
+const HeldParentRetroStarts = "Legion starts the retro by itself once nothing holds it any longer: no issue beneath it is still in the workflow, " +
+	"no root that rests on its approval is still in the workflow, and no Dispatch child of it is open."
 
 // RetryOfHeldParentUntilTreeRuns is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold
-// where issue, a parent held before its retro for the issues beneath it (record.HoldForChildren),
-// has none of them open, so its retro waits only for its tree to run (HeldParentWaitsForTree).
+// where issue, a parent held before its retro (record.HoldForChildren), has no issue holding it any
+// longer, so its retro waits only for its tree to run (HeldParentWaitsForTree).
 func RetryOfHeldParentUntilTreeRuns(issue, tree string, lingers bool) *Refusal {
 	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForTree(issue, tree, lingers) + " This retry changed nothing."}
 }
 
-// HeldParentWaitsForTree says why issue, a parent held before its retro for the issues beneath it
-// with none of them open, still waits: its retro waits only for its tree, tree, to run. The tree
-// lingers after its root left the workflow, where lingers says so, and otherwise its root waits in
-// the line for the tree to be opened. The reopen or the promotion that runs the tree starts the
-// retro.
+// HeldParentWaitsForTree says why issue, a parent held before its retro that no issue holds any
+// longer, still waits: its retro waits only for its tree, tree, to run. The tree lingers after its
+// root left the workflow, where lingers says so, and otherwise its root waits in the line for the
+// tree to be opened. The reopen or the promotion that runs the tree starts the retro.
 func HeldParentWaitsForTree(issue, tree string, lingers bool) string {
 	waits := fmt.Sprintf("its tree %s waits in the line to be opened, and Legion starts the retro once the tree runs", tree)
 	if lingers {
 		waits = fmt.Sprintf("its tree %s lingers after its root left the workflow, and Legion starts the retro once the tree runs again", tree)
 	}
-	return fmt.Sprintf("%s waits before its retro, and nothing beneath it is open: %s.", issue, waits)
+	return fmt.Sprintf("%s waits before its retro, and no issue holds it any longer: %s.", issue, waits)
 }
 
 // ChildInOtherTree is the 409 CHILD_IN_OTHER_TREE refusal of key, a child recorded in the tree of

@@ -120,20 +120,37 @@ func OpenChildHolds(p phase.Phase) bool {
 // parent with an open child into awaiting_children and takes one whose last open child has gone
 // back to the start it held (admit's childrenWaits), and the held list names the children of a
 // parent in awaiting_children (HeldReasonOf), each from this one judgement of the pass.
-func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, facts LineFacts) (childrenFirst, started map[string]ChildWait, err error) {
+func readChildWaits(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, facts LineFacts) (childrenFirst, started, retroHeld map[string]ChildWait, err error) {
 	candidates := ChildrenFirstCandidates(issues, facts.Gates)
 	parents := StartedParents(issues, facts.Owed)
-	both := slices.Concat(candidates, parents)
-	slices.Sort(both)
-	children, err := store.DispatchChildren(ctx, tx, project, slices.Compact(both))
+	held := RetroHeldParents(issues)
+	all := slices.Concat(candidates, parents, held)
+	slices.Sort(all)
+	children, err := store.DispatchChildren(ctx, tx, project, slices.Compact(all))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	waits, records, err := judgeChildren(ctx, tx, store, project, issues, children, facts.Parents)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return waitsOf(waits, candidates), withoutHeldUnderAccepted(waitsOf(waits, parents), records, issues, facts.Parents), nil
+	return waitsOf(waits, candidates), withoutHeldUnderAccepted(waitsOf(waits, parents), records, issues, facts.Parents),
+		withoutHeldUnderAccepted(waitsOf(waits, held), records, issues, facts.Parents), nil
+}
+
+// RetroHeldParents is every issue of issues in the workflow held before its retro
+// (HoldForChildren), in key order: the parents whose open Dispatch children and resting roots
+// ReadLineFacts reads (LineFacts.RetroHeldChildren, LineFacts.RetroHeldResting), which the held
+// word children_before_retro names (HeldReasonOf). A pass with none reads nothing for them.
+func RetroHeldParents(issues []Issue) []string {
+	var keys []string
+	for _, issue := range issues {
+		if InWorkflow(issue) && HeldForChildren(issue) {
+			keys = append(keys, issue.Key)
+		}
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // waitsOf is the entries of waits whose parent is one of parents, in a map of their own.

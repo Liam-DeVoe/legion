@@ -212,9 +212,10 @@ is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's passes must na
 carries every needed child's merge, `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:
 its last step passing starts the retro, or holds a parent before its retro.
 A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from
-you: Legion holds it before its retro while issues beneath it are still in the workflow
-(`retro-held`) and starts the retro once they have left, so give a parent whose finished work
-you want to read the step `acceptance:owner`.
+you: Legion holds it before its retro while an issue beneath it or a root that rests on its
+approval is still in the workflow, or a Dispatch child of it is open (`retro-held`), and starts
+the retro once none of them is, so give a parent whose finished work you want to read the step
+`acceptance:owner`.
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.

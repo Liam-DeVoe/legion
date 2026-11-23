@@ -241,8 +241,11 @@ requires an approving review the merger waits and tells the architect which revi
 The implementer then writes the pull request body's `Look at first` and `Not proven / risk` lines
 at each round, and before each completion, its retro's included, answers and resolves each bot
 review thread still open, naming each one it declined to the architect. With no acceptance step,
-the last step passing starts the retro; a parent that gets there while an issue beneath it is
-still in the workflow is held before its retro until the last one leaves.
+the last step passing starts the retro; a parent that gets there while something holds its
+acceptance is held before its retro, and its architect is told what holds it: an issue beneath it
+still in the workflow, a root of another tree whose design rests on its approval and is still in
+the workflow, or an open Dispatch child of it, one never released included. Legion starts the
+retro by itself once none of them holds it.
 `dispatch steps --issue <KEY>` prints each run of each step of an issue.
 
 ## Admission and the `legion` label

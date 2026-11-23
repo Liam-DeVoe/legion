@@ -695,7 +695,8 @@ claim's `state` is `failed` with its `failure` beside it. A phase worker held fo
 its architect's to retry or escalate, and `holdReason: "escalated"` means it went to the
 controller. A hold whose `holdReason` is `task-stopped` (its owner stopped its task, or a step
 failed with no earlier step of the type implementation to take its work back, which stops the
-task) or `children` (a parent waits, before its retro, for the issues beneath it) is no failure,
+task) or `children` (a parent waits, before its retro, for the issues beneath it, the roots that
+rest on its approval or its open Dispatch children, and the refusal names which) is no failure,
 and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
