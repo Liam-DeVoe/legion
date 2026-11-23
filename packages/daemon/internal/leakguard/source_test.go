@@ -554,7 +554,8 @@ func closedAddress(t *testing.T) string {
 // of its own in its query, and a redirect can name a userinfo too. A read whose redirect leads to
 // a port nothing listens on fails, and Go's client writes the URL it last asked into that error:
 // its query whole, and its user name (it masks only a password). The read is refused with a cause
-// that names the failure and the URL's host and path, and holds no part of the credential.
+// that names the URL the daemon asked and the failure by its class (redact.Unanswered): no part of
+// the redirect's target, which is the answering party's own words, and none of the credential.
 func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
 	dead := closedAddress(t)
 	const download = "/example-org/deployment/legacy.tar.gz/refs/tags/" + theTag
@@ -597,8 +598,11 @@ func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t
 				t.Fatalf("the read through the redirect to %s was served, want it refused", dead)
 			}
 			cause := err.Error()
-			if want := RefusalPrefix + "the daemon could not read " + checkRepository.String() + " at " + theTag + `: Get "http://` + dead + download + `": `; !strings.HasPrefix(cause, want) {
-				t.Errorf("the cause is %q, want it to begin %q: the URL's host and path, and nothing of its credential", cause, want)
+			if want := RefusalPrefix + "the daemon could not read " + checkRepository.String() + " at " + theTag + `: Get "` + api + tarballRoute + theTag + `": the request was redirected to another host`; !strings.HasPrefix(cause, want) {
+				t.Errorf("the cause is %q, want it to begin %q: the URL the daemon asked and the failure's class, nothing of the redirect's target", cause, want)
+			}
+			if strings.Contains(cause, dead) || strings.Contains(cause, download) {
+				t.Errorf("the cause %q names the redirect's target", cause)
 			}
 			if part := partOf(cause, plantedToken); part != "" {
 				t.Errorf("the cause %q holds %q of the planted token", cause, part)
