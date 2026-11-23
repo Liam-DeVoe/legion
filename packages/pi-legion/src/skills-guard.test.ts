@@ -967,3 +967,24 @@ test("every file of the Legion role skills fits the skill budget", () => {
   });
   expect(over).toEqual([]);
 });
+
+// A worker copies the `dispatch handoff-read` command a role skill gives, and the command takes
+// the issue and the phase it reads (`dispatch_handoff_read` in packages/contracts'
+// dispatch-tools.ts: `issue` and `phase`, `version` optional), so each such command names both: one
+// without `--issue` answers a usage error before it reads the report. The worker skill gives the
+// command for each earlier step's report once, in that form.
+test("every dispatch handoff-read a Legion role skill gives names the issue and the phase", () => {
+  const skillFiles = files(staged).filter((file) =>
+    /^legion-[a-z-]+\/(SKILL|references\/[^/]+)\.md$/.test(path.relative(staged, file))
+  );
+  const commands = skillFiles.flatMap((file) =>
+    [...readFileSync(file, "utf8").matchAll(/`(dispatch handoff-read\b[^`]*)`/g)].map(
+      (match) => `${path.relative(staged, file)}: ${match[1]}`
+    )
+  );
+  expect(commands.length).toBeGreaterThan(4);
+  expect(commands.filter((command) => !/ --issue <[^>]+> --phase \S/.test(command))).toEqual([]);
+  countedOncePerFile("`dispatch handoff-read --issue <issue> --phase <word> [--version <v>]`", [
+    "skills/legion-worker/SKILL.md",
+  ]);
+});

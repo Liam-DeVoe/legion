@@ -1117,9 +1117,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// agent's step. The fence refuses it HANDOFF_NOT_CURRENT_PHASE naming that agent and telling
 	// the claim no task of the step comes to it (intake.AnotherAgentsStep), which says more than
 	// this refusal does. Any other completion from a claim that does not work the step is refused
-	// here before the fence, as the completion route refuses it before its own (api's
-	// answerCompletion), since the fence's HANDOFF_STALE_ENTRY would promise it the task of an
-	// entry its claim never served.
+	// here before the fence, as the completion route refuses it before its own where the role
+	// works the issue's phase (api's answerCompletion), since the fence's HANDOFF_STALE_ENTRY
+	// would promise it the task of an entry its claim never served.
 	served := record.ServedClaim(rows, fact.Role, fact.Entry)
 	if refusal := intake.StepsWorkerFence(issue.Key, fact.Role, fact.Claim, row.Claim, served, row.StepTask); refusal != nil {
 		return intake.Result{Refusal: refusal, Unspent: true}, nil
