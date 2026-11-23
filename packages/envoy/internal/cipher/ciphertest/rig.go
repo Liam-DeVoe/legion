@@ -440,6 +440,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+		Projects: config.projectAccess,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	enr.Chain.EdgeAudience = edgeURL
@@ -458,7 +459,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
-		PodOperators: podOperators,
+		PodOperators: podOperators, Projects: config.projectAccess,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	// The token exchange's entries, built once and given to both the OAuth provider and the API
