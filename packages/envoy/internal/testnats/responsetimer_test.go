@@ -36,7 +36,7 @@ func TestTheSystemAccountsExportsOutliveEveryTestAndStillAnswer(t *testing.T) {
 	}
 	check := func(when string) {
 		t.Helper()
-		conn, err := ConnectSeed(t, grant.URL, seed)
+		conn, err := AwaitConnectSeed(t, grant.URL, seed)
 		if err != nil {
 			t.Fatalf("%s: connect as the granted user: %v", when, err)
 		}

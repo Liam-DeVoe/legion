@@ -67,7 +67,7 @@ func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string)
 			t.Error(err)
 		}
 	}
-	watcher, err := natsgo.Connect(member.URL(), natsgo.Name("create-watcher"))
+	watcher, err := AwaitConnectSeed(t, member.URL(), "", natsgo.Name("create-watcher"))
 	if err != nil {
 		t.Fatalf("watch member %s's creates: %v", member.Name(), err)
 	}
@@ -332,26 +332,29 @@ func dialsSince(server *Server) func() int {
 
 const (
 	// unansweredBucketChildEnv has TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline
-	// run as its own child, which makes the create under a deadline of unansweredBucketDeadline.
+	// run as its own child, which makes the create under a deadline of unansweredBucketDeadline on
+	// the server the parent started, whose URL the variable holds.
 	unansweredBucketChildEnv = "TESTNATS_UNANSWERED_BUCKET_CHILD"
 
 	// unansweredBucketDeadline is the child's go test -timeout, and accountInfoDelay how late the
 	// child's stand-in for JetStream answers the account information a bucket's create reads first.
 	// One send of the create then takes accountInfoDelay and createSendWait, as nothing answers the
 	// create of the bucket's stream: 18 s of the child's 48. The shared wait gives up 30 s before the
-	// child's deadline, 18 s in, so the child's setup, the server's start (awaitReady) among it, has
-	// 18 s: more than main's 16 s, as main's wait for that start ended halfway to the child's 32 s
-	// deadline, and main records a server start past 30 s at a load near 1,000. Each step of the
-	// setup that waits is a shared wait, which asks only once more past the give-up, or the
-	// stand-in's flush, which the give-up ends (Context) and which fails at once when it begins past
-	// it. Of those asks only a connect's takes long: nats.go's default 2 s for its dial (giveUpDial)
-	// and its 2 s for the handshake (processConnectInit). The second connect begins only once the
-	// flush has succeeded, which it does only before the give-up, so at most one connect runs past
-	// the give-up, and the setup ends, or fails naming the step the give-up ended, about 22 s in at
-	// the latest. The first send begins once the setup ends, later than 0 s in, and ends 18 s after
-	// it began, past the give-up, so it is the last: the create fails naming its sends at the setup's
-	// end plus 18 s, about 40 s in at the latest, so about 8 s before go test's timeout panic at the
-	// least, and about 30 s before it when the setup is quick.
+	// child's deadline, 18 s in, so the child's setup has 18 s, and it is the two connects and the
+	// stand-in's flush alone: the parent starts the server, under its own deadline, and passes its URL
+	// to the child, so a server whose start is slow on a loaded machine costs the parent time and not
+	// the child's 18 s. Main's child started the server itself, in a setup of 16 s, and main records a
+	// server start past 30 s at a load near 1,000. Each step of the setup that waits is a shared
+	// wait, which asks only once more past the give-up, or the stand-in's flush, which the give-up
+	// ends (Context) and which fails at once when it begins past it. Of those asks only a connect's
+	// takes long: nats.go's default 2 s for its dial (giveUpDial) and its 2 s for the handshake
+	// (processConnectInit). The second connect begins only once the flush has succeeded, which it
+	// does only before the give-up, so at most one connect runs past the give-up, and the setup ends,
+	// or fails naming the step the give-up ended, about 22 s in at the latest. The first send begins
+	// once the setup ends, later than 0 s in, and ends 18 s after it began, past the give-up, so it is
+	// the last: the create fails naming its sends at the setup's end plus 18 s, about 40 s in at the
+	// latest, so about 8 s before go test's timeout panic at the least, and about 30 s before it when
+	// the setup is quick.
 	unansweredBucketDeadline = 48 * time.Second
 	accountInfoDelay         = 8 * time.Second
 )
@@ -360,12 +363,13 @@ const (
 // deadline, though one send of it makes two requests, each bounded by createSendWait, and the
 // first is answered late: a send under way as the shared wait gives up is its last.
 func TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline(t *testing.T) {
-	if os.Getenv(unansweredBucketChildEnv) != "" {
-		createUnansweredBucket(t)
+	if uri := os.Getenv(unansweredBucketChildEnv); uri != "" {
+		createUnansweredBucket(t, uri)
 		return
 	}
+	server := start(t, "", nil)
 	child := exec.Command(os.Args[0], "-test.run", "^"+t.Name()+"$", "-test.count=1", "-test.timeout="+unansweredBucketDeadline.String())
-	child.Env = append(os.Environ(), unansweredBucketChildEnv+"=1")
+	child.Env = append(os.Environ(), unansweredBucketChildEnv+"="+server.URL())
 	output, _ := child.CombinedOutput() // the child fails by design: its create draws no answer
 	if strings.Contains(string(output), "panic: test timed out") ||
 		!strings.Contains(string(output), "gave up waiting for create KV bucket UNANSWERED: an answer to one of its sends") ||
@@ -375,12 +379,11 @@ func TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline(t *test
 }
 
 // createUnansweredBucket is the child of
-// TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline: a bucket create on a server
-// without JetStream, whose stand-in answers each read of the account's JetStream information
-// accountInfoDelay late and never answers the create of the bucket's stream.
-func createUnansweredBucket(t *testing.T) {
-	server := start(t, "", nil)
-	standIn := connectWithoutJetStream(t, server.URL(), "the stand-in for JetStream")
+// TestAnUnansweredBucketCreateFailsByNameBeforeTheTestBinarysDeadline: a bucket create on the server
+// without JetStream the parent started at uri, whose stand-in answers each read of the account's
+// JetStream information accountInfoDelay late and never answers the create of the bucket's stream.
+func createUnansweredBucket(t *testing.T, uri string) {
+	standIn := connectWithoutJetStream(t, uri, "the stand-in for JetStream")
 	if _, err := standIn.Subscribe("$JS.API.INFO", func(msg *natsgo.Msg) {
 		time.AfterFunc(accountInfoDelay, func() {
 			_ = msg.Respond([]byte(`{"type":"io.nats.jetstream.api.v1.account_info_response"}`))
@@ -394,7 +397,7 @@ func createUnansweredBucket(t *testing.T) {
 	if err := standIn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush the stand-in's subscriptions: %v", err)
 	}
-	conn := connectWithoutJetStream(t, server.URL(), "the creating client")
+	conn := connectWithoutJetStream(t, uri, "the creating client")
 	(&Cluster{}).CreateKeyValue(t, conn, &natsgo.KeyValueConfig{Bucket: "UNANSWERED"})
 	t.Fatal("the create of a bucket nothing answers returned")
 }
@@ -421,7 +424,7 @@ func connectWithoutJetStream(t testing.TB, uri, who string) *natsgo.Conn {
 func TestARefusedBucketCreateFailsNamingTheRefusalAfterItsOneSend(t *testing.T) {
 	seed, public := User(t)
 	uri := StartNkeyDenied(t, public, "$JS.API.STREAM.CREATE.>")
-	conn, err := ConnectSeed(t, uri, seed)
+	conn, err := AwaitConnectSeed(t, uri, seed)
 	if err != nil {
 		t.Fatalf("connect as the refused user: %v", err)
 	}

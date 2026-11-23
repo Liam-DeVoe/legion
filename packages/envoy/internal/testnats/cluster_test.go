@@ -19,12 +19,12 @@ func TestEveryClusterMemberTakesTheConfigItIsGiven(t *testing.T) {
 	_, fallback := User(t)
 	cluster := StartClusterConfig(t, 3, fmt.Sprintf("authorization {\n  users = [ {nkey: %q}, {nkey: %q} ]\n}\nno_auth_user: %q\n", public, fallback, fallback))
 	for i, uri := range cluster.URLs() {
-		conn, err := ConnectSeed(t, uri, seed)
+		conn, err := AwaitConnectSeed(t, uri, seed)
 		if err != nil {
 			t.Fatalf("member %s refused a user its authorization holds: %v", cluster.Name(i), err)
 		}
 		conn.Close()
-		if _, err := ConnectSeed(t, uri, stranger); !errors.Is(err, natsgo.ErrAuthorization) {
+		if _, err := AwaitConnectSeed(t, uri, stranger); !errors.Is(err, natsgo.ErrAuthorization) {
 			t.Fatalf("member %s answered a user its authorization does not hold with %v, want an authorization violation", cluster.Name(i), err)
 		}
 	}

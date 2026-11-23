@@ -55,7 +55,7 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 }
 `, public, bus.SessionReplies("ses_one"))
 	_, uri := testnats.StartConfig(t, config, nil, false)
-	watcher, err := natsgo.Connect(uri, natsgo.UserInfo("watcher", "watcher"))
+	watcher, err := testnats.AwaitConnectSeed(t, uri, "", natsgo.UserInfo("watcher", "watcher"))
 	if err != nil {
 		t.Fatalf("connect the watcher: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var refused []string
-	session, err := testnats.ConnectSeed(t, uri, seed, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
+	session, err := testnats.AwaitConnectSeed(t, uri, seed, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
 		mu.Lock()
 		defer mu.Unlock()
 		refused = append(refused, err.Error())

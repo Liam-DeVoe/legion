@@ -438,7 +438,7 @@ func TestARefusedReloadAnswersWithTheServersReasonAndKeepsTheOldConfiguration(t 
 		t.Fatalf("the refusal is %v, want it to say %s", err, want)
 	}
 
-	conn, err := ConnectSeed(t, uri, seed)
+	conn, err := AwaitConnectSeed(t, uri, seed)
 	if err != nil {
 		t.Fatalf("the user of the configuration the server kept was refused: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestARefusedReloadAnswersWithTheServersReasonAndKeepsTheOldConfiguration(t 
 	if err := conn.Publish("first.one", nil); err != nil {
 		t.Fatalf("publish to the subject the kept grant allows: %v", err)
 	}
-	if _, err := ConnectSeed(t, uri, ""); !errors.Is(err, natsgo.ErrAuthorization) {
+	if _, err := AwaitConnectSeed(t, uri, ""); !errors.Is(err, natsgo.ErrAuthorization) {
 		t.Fatalf("a client with no credential after the refused reload: %v, want %v", err, natsgo.ErrAuthorization)
 	}
 }
@@ -484,7 +484,7 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 	failures := make(chan error, reloadConnections*reloadRequesters)
 	var requesters sync.WaitGroup
 	for range reloadConnections {
-		conn, err := ConnectSeed(t, uri, seed)
+		conn, err := AwaitConnectSeed(t, uri, seed)
 		if err != nil {
 			t.Fatalf("connect as the user: %v", err)
 		}
@@ -535,7 +535,7 @@ func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
 	seed, public := User(t)
 	grant := func(subjects ...string) string { return publishGrantConfig(public, subjects) }
 	server, uri := StartConfig(t, grant("traced.>"), []string{"-js"}, false)
-	conn, err := ConnectSeed(t, uri, seed)
+	conn, err := AwaitConnectSeed(t, uri, seed)
 	if err != nil {
 		t.Fatalf("connect as the user: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestARestartServesItsNewConfiguration(t *testing.T) {
 	server, uri := StartConfig(t, granted, []string{"-js"}, false)
 	subscribe := func() error {
 		t.Helper()
-		conn, err := ConnectSeed(t, uri, seed)
+		conn, err := AwaitConnectSeed(t, uri, seed)
 		if err != nil {
 			t.Fatalf("connect as the user: %v", err)
 		}
@@ -607,7 +607,7 @@ func TestStartConfigRunsTheArgumentsItWasGivenAndNoOther(t *testing.T) {
 	seed, public := User(t)
 	config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\n", public)
 	server, uri := StartConfig(t, config, []string{"-DV"}, false)
-	conn, err := ConnectSeed(t, uri, seed)
+	conn, err := AwaitConnectSeed(t, uri, seed)
 	if err != nil {
 		t.Fatalf("connect with the seed: %v", err)
 	}

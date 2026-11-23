@@ -1015,8 +1015,9 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 
 // ConnectSeed connects to uri as the nkey user whose seed is seed, or with no credential when seed
 // is "", with no reconnect, then opts, and returns the connection or the server's answer: a test
-// that expects a refusal reads it from the error. The dial's own budget is nats.go's default,
-// which a caller may replace by passing natsgo.Timeout among opts.
+// that expects a refusal reads it from the error. It makes one try, whose dial and handshake
+// nats.go bounds at its default timeout, which a caller may replace by passing natsgo.Timeout among
+// opts; a test whose verdict needs the server's answer connects through AwaitConnectSeed instead.
 func ConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, error) {
 	t.Helper()
 	options := []natsgo.Option{natsgo.NoReconnect()}
@@ -1034,21 +1035,55 @@ func ConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo
 	return natsgo.Connect(uri, append(options, opts...)...)
 }
 
-// giveUpDial is the dial of each connect a wait of t makes (Connect, awaitAuth, awaitSeed): a dial
-// with nats.go's default timeout, as nats.go's own dialer makes it (nats.go v1.55.0
-// nats.go:2017-2020), whose connection carries the shared wait's give-up (testwait.GiveUpAt) as its
-// deadline. nats.go runs a wss:// URL's TLS handshake on the dialled connection (createConn,
-// wsInitHandshake and makeTLSConn: nats.go:2549-2550, ws.go:598-603, nats.go:2600-2601) before it
-// sets its connect's own deadline (processConnectInit, nats.go:2944), so with no deadline from the
-// dial a server that accepts and sends nothing would hold the connect, and the wait asking it, past
-// the give-up, to go test's timeout panic; with it the handshake ends at the give-up, and the wait
-// fails naming the connect. A dial begun later than nats.go's default timeout before the give-up,
-// the one more ask a wait makes once the give-up has passed among them, carries that timeout from
-// the dial instead, so that ask is still answered. The deadline bounds the connect alone:
-// processConnectInit sets its own over it before its first read or write of a nats:// URL, and
-// clears both before the connect returns (nats.go:2944-2945), and with NoReconnect, which each such
-// connect sets, no later dial is made. Under -timeout 0, where a wait has no end, the connection
-// carries no deadline.
+// AwaitConnectSeed is ConnectSeed made through the shared wait, for a test whose verdict needs the
+// server's answer to the connect: the connection, or the server's refusal, which it returns as
+// ConnectSeed returns them. nats.go bounds each try's handshake at its default timeout (2 s,
+// processConnectInit, nats.go v1.55.0 nats.go:2944), and the try's dial at the same (giveUpDial),
+// and on a loaded machine a server that answers can answer later than that. So a try that ends on
+// a timeout (timedOut) is made again, and a slow answer costs the test time and not its result; a
+// server that never answers fails the test at the shared wait's give-up, naming the wait and its
+// last try's timeout. Each try's dial carries the wait's give-up (giveUpDial). Any other answer
+// ends the wait at once and is returned: a refusal, which a test that expects one reads from the
+// error, and any other failure, which the test reports. A try that timed out may have reached the
+// server, which then acted on it as on any connect. opts are applied anew at each try, on the
+// goroutine that called AwaitConnectSeed, as natsgo.Connect applies each option once (nats.go
+// v1.55.0 nats.go:1147-1153), so a test that counts what the server did per try can count and
+// name the tries through an option of its own.
+func AwaitConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, error) {
+	t.Helper()
+	opts = append([]natsgo.Option{giveUpDial(t)}, opts...)
+	dial := testwait.Until(t, fmt.Sprintf("an answer of the NATS server at %s to a connect, a connection or a refusal rather than a timeout", uri), func() (dialAttempt, bool) {
+		conn, err := ConnectSeed(t, uri, seed, opts...)
+		return dialAttempt{conn: conn, err: err}, !timedOut(err)
+	})
+	return dial.conn, dial.err
+}
+
+// timedOut reports whether a connect ended on a timeout of its own: its dial ran past the dialer's
+// timeout, or a read or write of its handshake past the deadline nats.go set on the socket. nats.go
+// returns the socket's error as it is (createConn and processConnectInit, nats.go v1.55.0
+// nats.go:2538-2546 and :2944-2968), and wrapped in ErrTLS for a TLS handshake (makeTLSConn,
+// :2602).
+func timedOut(err error) bool {
+	var timeout net.Error
+	return errors.As(err, &timeout) && timeout.Timeout()
+}
+
+// giveUpDial is the dial of each connect a wait of t makes (Connect, awaitAuth, awaitSeed,
+// AwaitConnectSeed): a dial with nats.go's default timeout, as nats.go's own dialer makes it
+// (nats.go v1.55.0 nats.go:2017-2020), whose connection carries the shared wait's give-up
+// (testwait.GiveUpAt) as its deadline. nats.go runs a wss:// URL's TLS handshake on the dialled
+// connection (createConn, wsInitHandshake and makeTLSConn: nats.go:2549-2550, ws.go:598-603,
+// nats.go:2600-2601) before it sets its connect's own deadline (processConnectInit, nats.go:2944),
+// so with no deadline from the dial a server that accepts and sends nothing would hold the connect,
+// and the wait asking it, past the give-up, to go test's timeout panic; with it the handshake ends
+// at the give-up, and the wait fails naming the connect. A dial begun later than nats.go's default
+// timeout before the give-up, the one more ask a wait makes once the give-up has passed among them,
+// carries that timeout from the dial instead, so that ask is still answered. The deadline bounds
+// the connect alone: processConnectInit sets its own over it before its first read or write of a
+// nats:// URL, and clears both before the connect returns (nats.go:2944-2945), and with
+// NoReconnect, which each such connect sets, no later dial is made. Under -timeout 0, where a wait
+// has no end, the connection carries no deadline.
 func giveUpDial(t testing.TB) natsgo.Option {
 	return natsgo.SetCustomDialer(giveUpDialer{t: t})
 }

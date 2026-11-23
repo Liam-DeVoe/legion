@@ -54,7 +54,8 @@ func TestHoldWriteLockReturnsHoldingTheConnectionLock(t *testing.T) {
 }
 
 // holdChildEnv tells the re-executed test binary to run TestTakeWriteLockOnAHooksGoroutineChild,
-// which skips in an ordinary run.
+// which skips in an ordinary run, and holds the URL of the shared server the parent started, which
+// the child's handshake hold relays to.
 const holdChildEnv = "TESTNATS_HOLD_CHILD"
 
 // hookWentOn is the line the child logs once a TakeWriteLock called on a goroutine of its own has
@@ -66,14 +67,17 @@ const hookWentOn = "the hook's goroutine went on after TakeWriteLock"
 // the moment the wait gives up, so the hook goes on and the test goroutine fails the row by name. A
 // t.Fatal there would end the hook's goroutine rather than the test, and the child would log that
 // TakeWriteLock never returned. The child runs under -timeout 45s, so its wait gives up about 15 s
-// in, and its setup (URL, StartHandshakeHold, proxiedClient) has those 15 s, as main's had: main's
-// child ran under the same 45 s, and its first row's take of the lock (takeConnLock) failed that
-// row with testwait.Left's "deadline leaves" text, not the guard's text the parent wants, once the
-// setup had left the binary's deadline connLockSpare (30 s) or less away, 15 s in, though main's
-// own waits of that setup ended only halfway to the deadline, 22.5 s in.
+// in, and its setup (StartHandshakeHold, proxiedClient) has those 15 s, as main's had: main's child
+// ran under the same 45 s, and its first row's take of the lock (takeConnLock) failed that row with
+// testwait.Left's "deadline leaves" text, not the guard's text the parent wants, once the setup had
+// left the binary's deadline connLockSpare (30 s) or less away, 15 s in, though main's own waits of
+// that setup ended only halfway to the deadline, 22.5 s in. The parent starts the shared server
+// (URL) and passes its URL to the child, so a server whose start is slow on a loaded machine costs
+// the parent time and not the child's 15 s; main's child started it within them.
 func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
+	uri := URL(t)
 	child := exec.Command(os.Args[0], "-test.run=^TestTakeWriteLockOnAHooksGoroutineChild$", "-test.timeout=45s", "-test.v")
-	child.Env = append(os.Environ(), holdChildEnv+"=1")
+	child.Env = append(os.Environ(), holdChildEnv+"="+uri)
 	output, err := child.CombinedOutput()
 	text := string(output)
 	if err == nil {
@@ -100,10 +104,11 @@ func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
 // the TakeWriteLock its hook calls waits until the shared wait gives up. It runs only when the
 // parent re-executes this binary.
 func TestTakeWriteLockOnAHooksGoroutineChild(t *testing.T) {
-	if os.Getenv(holdChildEnv) == "" {
+	uri := os.Getenv(holdChildEnv)
+	if uri == "" {
 		t.Skip(holdChildEnv + " is not set: this test is the child of TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns")
 	}
-	hold := StartHandshakeHold(t, URL(t))
+	hold := StartHandshakeHold(t, uri)
 	conn, _, _ := proxiedClient(t, hold.Proxy)
 	lock := connLock(t, conn)
 	lock.Lock()
