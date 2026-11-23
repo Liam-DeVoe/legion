@@ -254,7 +254,7 @@ func (e *Engine) retext(ctx context.Context, tx pgx.Tx, issue record.Issue, rete
 		if err != nil {
 			return err
 		}
-		task := WithTaskText(row.EntryTask, stored.Tasks[at].BlockText)
+		task, _ := WithTaskText(row.EntryTask, stored.Tasks[at].BlockText)
 		if task == row.EntryTask {
 			continue
 		}

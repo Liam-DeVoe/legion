@@ -470,7 +470,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
 		plan.cacheRepositories = workflow.cacheRepositories
-		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
+		plan.rootTask, plan.designNews, plan.taskText = workflow.rootTask, workflow.designNews, workflow.taskText
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		// From here on, a claim write that changes a role holder queues its issue's publication in
@@ -891,6 +891,7 @@ type plan struct {
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
 	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	taskText     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
 	// cacheRepositories is the repositories the runtime keeps a repository cache of: those of the
 	// project's live issue records and of the launches since their last read
@@ -1799,6 +1800,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		DesignNews:              p.designNews,
+		TaskText:                p.taskText,
 		TreeClosable:            p.treeClosable,
 		ClaimActivity:           st.ClaimActivity,
 		TaskConfirmed:           p.taskConfirmed,

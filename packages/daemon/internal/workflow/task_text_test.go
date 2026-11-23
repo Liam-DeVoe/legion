@@ -497,17 +497,17 @@ func TestAStoredTaskTakesALaterTextInPlaceOfItsOwnersPart(t *testing.T) {
 			if tc.retold == (before == after) {
 				t.Fatalf("the task composed with each text = %q and %q, want them to differ %v", before, after, tc.retold)
 			}
-			if got := WithTaskText(before, now); got != after {
-				t.Fatalf("WithTaskText(%q) = %q,\nwant the task composed with the later text %q", before, got, after)
+			if got, holds := WithTaskText(before, now); got != after || holds != tc.retold {
+				t.Fatalf("WithTaskText(%q) = %q, %v,\nwant the task composed with the later text %q, %v", before, got, holds, after, tc.retold)
 			}
-			if got := WithTaskText(after, now); got != after {
-				t.Fatalf("WithTaskText of the task that holds the later text = %q, want it as it is", got)
+			if got, holds := WithTaskText(after, now); got != after || holds != tc.retold {
+				t.Fatalf("WithTaskText of the task that holds the later text = %q, %v, want it as it is, %v", got, holds, tc.retold)
 			}
 		})
 	}
 	unplanned := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Implementing}
 	today := task(unplanned, WorkingCopy(unplanned, dir), handoff, nil, reason)
-	if got := WithTaskText(today, now); got != today {
-		t.Fatalf("WithTaskText of the task of an issue with no plan rows = %q, want it whole", got)
+	if got, holds := WithTaskText(today, now); got != today || holds {
+		t.Fatalf("WithTaskText of the task of an issue with no plan rows = %q, %v, want it whole, false", got, holds)
 	}
 }

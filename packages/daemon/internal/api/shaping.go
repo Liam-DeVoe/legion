@@ -294,18 +294,25 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		default:
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
+	case AnswerPlanRegister:
+		taken, isTaken := body.(PlanRegisterResponse)
+		if !isTaken {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < runningStepContract {
+			return withoutRunningSteps(taken), took
+		}
+		return taken, took
 	case AnswerHealth, AnswerRegister, AnswerRegisterController, AnswerNoContent,
 		AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
-		AnswerPlanRegister:
+		AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume:
 		// The identity, one row each: every contract this daemon serves one of these answers
 		// reads the body it writes. No key has arrived on any of them since that answer arrived.
 		// One key has gone: AnswerHandoffComplete lost its `note` at stateMachineContract, and
 		// no reader from ServingFloor to 85 requires it, so no stand-in is written for it
-		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract,
-		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, and
-		// AnswerPlanRegister arrived whole at OwnerPlanContract, so no older contract records any
-		// of the four at all.
+		// (version.go's 86). AnswerTurnOutcome arrived whole at stateMachineContract, and
+		// AnswerProjectPause and AnswerProjectResume arrived whole at pauseContract, so no older
+		// contract records any of the three at all.
 		return body, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -1723,6 +1730,24 @@ func withoutResumePauses(records ReleaseRecordsResponse) ReleaseRecordsResponse 
 	}
 	records.Resumes = resumes
 	return records
+}
+
+// withoutRunningSteps is taken with no task carrying `running`, the one key runningStepContract
+// added to register_plan's answer. The key is `omitempty` and absent from a task that does not
+// run, so an answer whose tasks carry none is returned as it is, with no copy made. Otherwise the
+// tasks are copied before one is written, so the body the route built is left as it was, and the
+// list stays non-nil, as register_plan writes it (RegisteredPlan).
+func withoutRunningSteps(taken PlanRegisterResponse) PlanRegisterResponse {
+	if !slices.ContainsFunc(taken.Plan.Tasks, func(task RegisteredTask) bool { return task.Running != nil }) {
+		return taken
+	}
+	tasks := make([]RegisteredTask, len(taken.Plan.Tasks))
+	for i, task := range taken.Plan.Tasks {
+		task.Running = nil
+		tasks[i] = task
+	}
+	taken.Plan.Tasks = tasks
+	return taken
 }
 
 // withoutClaimRoundReport is the issue with no claim view carrying `updateState` or `wake`, the

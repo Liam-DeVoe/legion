@@ -154,7 +154,7 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 // TestRegisterPlanTakesAPlanAndRefusesWithReasons holds the same for one task through the route.
 func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	answer := PlanRegisterResponse{Plan: registeredPlan(plan.Plan{ArtifactID: planDoc, Version: 7,
-		Tasks: []plan.Task{{ID: "a"}, {ID: "b", Steps: []plan.Step{{Role: "implementer"}}}}})}
+		Tasks: []plan.Task{{ID: "a"}, {ID: "b", Steps: []plan.Step{{Role: "implementer"}}}}}, nil)}
 	shaped, _ := shapeAnswer(AnswerPlanRegister, answer, OwnerPlanContract, OwnerPlanContract)
 	encoded, err := json.Marshal(shaped)
 	if err != nil {

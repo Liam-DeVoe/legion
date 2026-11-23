@@ -1,16 +1,21 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
@@ -35,12 +40,28 @@ type RegisteredPlan struct {
 }
 
 // RegisteredTask is one task of a plan register_plan took: its id and the steps its block names,
-// each as the plan writes it (`role` or `role:key`). A task whose block names none has no step
+// each as the plan writes them (`role` or `role:key`). A task whose block names none has no step
 // here, never null: it runs the project's default steps, which the workflow reads when the task's
 // work starts, so the answer names none rather than guessing what the project will run then.
+// Running is where the task stands once the version is taken, where it runs (RunningStep), and is
+// left out for a task that does not run: one that waits, is stopped or is done. It arrived at
+// runningStepContract.
 type RegisteredTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID      string       `json:"id"`
+	Steps   []string     `json:"steps"`
+	Running *RunningStep `json:"running,omitempty"`
+}
+
+// RunningStep is the act a running task stands at once register_plan took the version, read in
+// the transaction that took it (record.StoredPlan.Running): its kind, `step`, `retro` or `merge`,
+// its place, from 1 for a step of the task and 0 for the retro and the merge, and the role whose
+// agent works it. A later version takes a running task whose text alone it changes, and the agent
+// at work reads no new start of that task, so this is the agent the owner sends a message to for
+// a decision about the act that runs now. Every later start of the task reads the new text.
+type RunningStep struct {
+	Kind  string `json:"kind"`
+	Place int    `json:"place"`
+	Role  string `json:"role"`
 }
 
 // PlanRefusal is the answer to a plan Legion does not take, 409 PLAN_REFUSED: the code and the
@@ -71,8 +92,16 @@ const registerPlanRoute = "register_plan"
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and it is the last number of SupportedContracts.
+// only with this change's own number.
 const OwnerPlanContract = 219
+
+// runningStepContract is the daemon contract that added `running` to each task of
+// register_plan's answer (version.go's 233, RegisteredTask.Running): the act a running task stands
+// at once a later version that changes its text alone is taken. A caller below it is served each
+// task without it (shaping.go's AnswerPlanRegister row, withoutRunningSteps). It is a literal of
+// its own and the last number of SupportedContracts, for the reason OwnerPlanContract is one: a
+// later contract moves DaemonAPIVersion, and the contract this key arrived at stays where it is.
+const runningStepContract = 233
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
 // (PlanRefusal), and every other refusal as its code and its sentence (writeFailure). Both are
@@ -100,11 +129,14 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // reads the plan's blocks at the version given (planAt), and refuses with one reason for each
 // cause of a plan this release does not carry out (plan.Supported) or no release can
 // (plan.Validate); each of those answers records nothing. A plan both take is recorded as
-// intake.PlanGiven, whose rules of a later version are the workflow's.
+// intake.PlanGiven, whose rules of a later version are the workflow's, and answered with each
+// running task's act (RunningStep), which the workflow read in the transaction that took the
+// version.
 //
 // The fact's id is the issue, the generation the plan is given at, the document and the version:
-// a retry of a registration taken is that fact, answered the same, and the same version given at
-// a later generation of the issue is a new one.
+// a retry of a registration taken is that fact, answered as the same plan, and the same version
+// given at a later generation of the issue is a new one. A retry applies nothing, so it is
+// answered with each running task's act as the record holds it at the retry (runningAt).
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	var req PlanRegisterRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -152,9 +184,39 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return
 	}
-	s.applyFactAnswering(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
-		intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim},
-		AnswerPlanRegister, PlanRegisterResponse{Plan: registeredPlan(given)})
+	result, ok := s.applyFactResult(w, r, fmt.Sprintf("plan:%s:%d:%s:%d", req.Issue, generation, artifactID, req.Version),
+		intake.PlanGiven{Issue: req.Issue, Generation: generation, Plan: given, GivenBy: grant.Claim})
+	if !ok {
+		return
+	}
+	running := result.Running
+	if result.Duplicate {
+		var err error
+		if running, err = s.runningAt(r.Context(), req.Issue, generation); err != nil {
+			s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read where the tasks of the plan stand")
+			return
+		}
+	}
+	s.writeAnswer(w, r, AnswerPlanRegister, http.StatusOK, PlanRegisterResponse{Plan: registeredPlan(given, running)})
+}
+
+// runningAt is each running task of the plan of issue at generation and where it stands, as the
+// record holds it now (record.StoredPlan.Running), read in one short read-only transaction; none
+// where the generation holds no plan.
+func (s *server) runningAt(ctx context.Context, issue string, generation uint64) ([]record.RunningStep, error) {
+	if s.pool == nil || s.records == nil {
+		return nil, errors.New("record dependencies are unavailable")
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err := s.records.Plan(ctx, tx, issue, generation)
+	if err != nil || stored == nil {
+		return nil, err
+	}
+	return stored.Running(), tx.Commit(ctx)
 }
 
 // planOwner authorizes register_plan for an architect of the issue's tree, and answers the
@@ -265,11 +327,16 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 	return given, true
 }
 
-// registeredPlan is given as register_plan answers it.
-func registeredPlan(given plan.Plan) RegisteredPlan {
+// registeredPlan is given as register_plan answers it, each task that runs with the act it stands
+// at (running, record.StoredPlan.Running).
+func registeredPlan(given plan.Plan, running []record.RunningStep) RegisteredPlan {
 	tasks := make([]RegisteredTask, len(given.Tasks))
 	for i, task := range given.Tasks {
 		tasks[i] = RegisteredTask{ID: task.ID, Steps: plan.Words(task.Steps)}
+		if at := slices.IndexFunc(running, func(step record.RunningStep) bool { return step.Task == task.ID }); at >= 0 {
+			step := running[at]
+			tasks[i].Running = &RunningStep{Kind: step.Place.Kind, Place: step.Place.Position, Role: string(step.Role)}
+		}
 	}
 	return RegisteredPlan{Version: given.Version, Tasks: tasks}
 }

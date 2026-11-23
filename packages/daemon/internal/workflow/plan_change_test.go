@@ -399,7 +399,8 @@ func TestALaterVersionChangesAWaitingOrStoppedTaskAndARunningTasksText(t *testin
 			t.Fatalf("version 3 moved %s or queued %d outbox rows, want no move and one row, the plan node", key, kept.outbox-before.outbox)
 		}
 		retold := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
-		if retold.Entry != started.Entry || retold.EntryTask != WithTaskText(started.EntryTask, manual.Text) ||
+		retask, _ := WithTaskText(started.EntryTask, manual.Text)
+		if retold.Entry != started.Entry || retold.EntryTask != retask ||
 			!strings.Contains(retold.EntryTask, "\nBuild the widget, and its manual.\n") || strings.Contains(retold.EntryTask, "\nBuild the widget.\n") {
 			t.Fatalf("the implementer's stored start task after version 3 = entry %d %q, want entry %d holding version 3's text and not version 1's",
 				retold.Entry, retold.EntryTask, started.Entry)
