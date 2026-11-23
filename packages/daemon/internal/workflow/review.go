@@ -309,7 +309,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		}
 		green := classify.GreenContexts(*pr)
 		if why := classify.ConflictNeedsMerge(*issue, w.Line, fact.Rules, green); why != "" {
-			if err := e.mergeForward(ctx, tx, *issue, w.Line, pr, why); err != nil {
+			if err := e.mergeForward(ctx, tx, *issue, w, pr, why); err != nil {
 				return intake.Result{}, err
 			}
 		} else {
@@ -1402,9 +1402,9 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 }
 
 // askMergeStateFor queues the read for one pull request when a fact of kind fact asks for it, by
-// one of the gate's two reasons (classify.MergeStateReadOwed, on the walk's line: a head move of
-// an issue in implementing or a phase after it, a base push of an issue in a phase after it) or by
-// the
+// one of the gate's two reasons (classify.MergeStateReadOwed, at the place the walk's task stands
+// at on its line: a head move of a task at the implementer's place or after it, a base push of one
+// after it) or by the
 // third, which the gate does not hold: the issue's review round waiting on GitHub's answer for the
 // head (reviewRound's waitsOnMergeState), worked out here only for a fact the gate owes no read
 // for. The guard on a daemon with no reader is here as well as in askMergeState, because a base
@@ -1425,7 +1425,8 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if err != nil {
 		return err
 	}
-	owed := classify.MergeStateReadOwed(*issue, w.Line, fact)
+	place, _ := w.placeIn(record.StandsAt(*issue))
+	owed := classify.MergeStateReadOwed(w.Line, place, fact)
 	if !owed {
 		// The round's own answer matters only where the fact and the phase owe no read: every
 		// phase a round can wait on GitHub in already owes one on a head move or a base push.

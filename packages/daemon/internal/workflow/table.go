@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"math"
 	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -195,20 +194,6 @@ func placeAt(line []phase.Phase, at int) record.TaskPlace {
 		return record.TaskPlace{Kind: record.PlaceMerge}
 	}
 	return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}
-}
-
-// placeRank orders the places of one line: no place first, then each step by its place, then the
-// retro, then the merge.
-func placeRank(place record.TaskPlace) int {
-	switch place.Kind {
-	case record.PlaceStep:
-		return place.Position
-	case record.PlaceRetro:
-		return math.MaxInt - 1
-	case record.PlaceMerge:
-		return math.MaxInt
-	}
-	return 0
 }
 
 // effectsInto is what a row into to does beyond the move: it starts to's role and tells the

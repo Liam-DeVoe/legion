@@ -1162,7 +1162,7 @@ const (
 // MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
 // in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
 // the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
-// implementing, or a phase after it on the task's line). The ask's row goes to it
+// the task at the implementer's place, or a place after it on the task's line). The ask's row goes to it
 // (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
 func MergeForwardAsker(at phase.Phase) claim.Role {
 	if at == phase.Merging {
