@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  `dispatch review` from a session on a box where a person signed in goes through Cipher's proxy: the session trades the person's sign-in for a placeholder of the approve capability and sends the review to the Dispatch URL's host through the proxy that release names, with the placeholder as `Authorization: DPoP` and no proof of its own, and the broker swaps in an approve token it holds. A Dispatch URL of another host, scheme or port than the capability's is refused and nothing is sent. A session that trades the machine's own identity, and one with a personal token, send the review directly, as before.

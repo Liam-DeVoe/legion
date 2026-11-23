@@ -1587,6 +1587,22 @@ refuse_pair --callout --project-access
 refuse_pair --project-access --callout
 printf 'PASS: --callout and --project-access together, in either order, are refused with exit 2 and one line naming the pair, before anything is created or started\n'
 
+# (t2) --approve beside --callout or --project-access, each of which takes the broker's proxy port,
+# and --approve-allow-all without --approve, whose block it opens: each refused with exit 2 and one
+# line naming it, before anything is created or started. The control is approve-check.sh, which
+# runs --approve and --approve-allow-all to ready against a real Postgres.
+approve_refused() { # <line> <dev-stack.sh arguments...>
+  local line="$1"
+  shift
+  refuse_run "a run given $*" 2 "$@"
+  [[ "$(<"$refusal")" == "$line" ]] || fail "a run given $* printed '$(<"$refusal")', not '$line'"
+}
+approve_pair_line="dev-stack: --approve runs alone of --callout and --project-access: each takes the broker's proxy port"
+approve_refused "$approve_pair_line" --approve --callout
+approve_refused "$approve_pair_line" --project-access --approve
+approve_refused "dev-stack: --approve-allow-all opens the allow list of --approve's block, so it needs --approve" --approve-allow-all
+printf 'PASS: --approve beside --callout or --project-access, and --approve-allow-all alone, are refused with exit 2 and one line each, before anything is created or started\n'
+
 # (j) --callout: natsd behind the auth callout with a monitor port, two brokers each running the
 # auth service on it with the listener and Dispatch listed under their machine ids, the issuer
 # writing each of those two a NATS-audience token, which each is started with, the exports

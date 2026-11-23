@@ -103,7 +103,10 @@ async function described(answer: Response): Promise<Record<string, unknown>> {
     proxy_code: answer.headers.get("Cipher-Proxy-Code"),
     forwarded: answer.headers.get("Cipher-Proxy-Forwarded"),
     // Dispatch's error, or the proxy's own refusal, which is plain text naming its rule.
-    error: (typeof record["error"] === "string" ? String(record["error"]) : text.trim()).slice(0, 300),
+    error: (typeof record["error"] === "string" ? String(record["error"]) : text.trim()).slice(
+      0,
+      300
+    ),
     body: record,
   };
 }
