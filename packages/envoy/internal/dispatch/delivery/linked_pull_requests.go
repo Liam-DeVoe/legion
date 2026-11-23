@@ -141,15 +141,18 @@ func (head HeadOfChangedLink) AttributionEvents() []model.Event {
 }
 
 // linksChangedRowsQuery is LinksChanged's read of the rows a change of the links of the issue $1
-// names, $2 the lowercased URLs of the links it added or removed and $3 whether it removed a link
-// to a GitHub issue (githubIssueLink): each row whose own URL is one of those links, each row
-// whose stored citations (attribution_cited_issues) name one, and, where a GitHub-issue link went,
-// each row the issue holds by a citation that stores none, since such a row cannot say which
-// citation that was. Each row is locked before it is read, so a writer of the same row waits for
-// this transaction rather than having its issue read before its write and overwritten after it.
-// No index serves `lower(url)` or the citations: a change of an issue's links is a person's edit,
-// rare beside the reads of the table, and one scan of a row per pull request Dispatch has seen
-// costs that edit a few milliseconds.
+// names, $2 the lowercased URLs of the links it added or removed, each under every name a rename
+// pair gives its repository (refs.Renames.URLSpellings), and $3 whether it removed a link to a
+// GitHub issue (githubIssueLink): each row whose own URL is one of those links, each row whose
+// stored citations (attribution_cited_issues) name one, and, where a GitHub-issue link went, each
+// row the issue holds by a citation that stores none, since such a row cannot say which citation
+// that was. A row the build before this one wrote during a roll can store a URL under the name its
+// repository was renamed away from until the boot's pass rewrites it, so the spellings find it as
+// the attribution's link sources do (attributionCandidates). Each row is locked before it is
+// read, so a writer of the same row waits for this transaction rather than having its issue read
+// before its write and overwritten after it. No index serves `lower(url)` or the citations: a
+// change of an issue's links is a person's edit, rare beside the reads of the table, and one scan
+// of a row per pull request Dispatch has seen costs that edit a few milliseconds.
 var linksChangedRowsQuery = `
 	select p.repo, p.number, p.url, p.issue_key, p.attribution_source,
 		p.attribution_title_keys, p.attribution_cited_issues, p.attribution_branch_keys,
@@ -235,8 +238,12 @@ func (a *Attributor) LinksChanged(ctx context.Context, q linkChangeQuerier, issu
 		return nil, nil
 	}
 	lowered := make([]string, 0, len(urls))
+	spellings := make([]string, 0, len(urls))
 	for _, url := range urls {
 		lowered = append(lowered, strings.ToLower(url))
+		for _, spelling := range a.renames.URLSpellings(url) {
+			spellings = append(spellings, strings.ToLower(spelling))
+		}
 	}
 	links, err := q.Query(ctx, linksOfIssueQuery, issueKey)
 	if err != nil {
@@ -249,7 +256,7 @@ func (a *Attributor) LinksChanged(ctx context.Context, q linkChangeQuerier, issu
 	removedIssueLink := slices.ContainsFunc(lowered, func(url string) bool {
 		return githubIssueLink.MatchString(url) && !slices.Contains(linked, url)
 	})
-	read, err := q.Query(ctx, linksChangedRowsQuery, issueKey, lowered, removedIssueLink)
+	read, err := q.Query(ctx, linksChangedRowsQuery, issueKey, spellings, removedIssueLink)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull requests whose links of %s changed: %w", issueKey, err)
 	}
@@ -281,14 +288,18 @@ func (a *Attributor) LinksChanged(ctx context.Context, q linkChangeQuerier, issu
 // judgeChangedLinkRow is the issue, the source and the rule LinksChanged writes for one row
 // (LinksChanged's doc comment): headAttribution's judgement over the row's stored inputs, read
 // through q so the candidates read the links this transaction wrote, and rule 0 for a row those
-// inputs cannot judge whole.
+// inputs cannot judge whole. A link of the row's own URL counts under any name a rename pair gives
+// its repository (refs.Renames.URLSpellings), as the attribution compares it.
 func (a *Attributor) judgeChangedLinkRow(
 	ctx context.Context, q refs.Queryer, issueKey string, row changedLinkRow, linked []string, removedIssueLink bool,
 ) (*string, string, int, error) {
 	none := string(sourceNone)
 	if row.titleKeys == nil || row.citedIssues == nil || row.branchKeys == nil || row.headInRepo == nil {
+		ownLinked := slices.ContainsFunc(a.renames.URLSpellings(row.url), func(spelling string) bool {
+			return slices.Contains(linked, strings.ToLower(spelling))
+		})
 		gone := row.issue != nil && *row.issue == issueKey &&
-			(row.source == string(sourceExternalLink) && !slices.Contains(linked, strings.ToLower(row.url)) ||
+			(row.source == string(sourceExternalLink) && !ownLinked ||
 				row.source == string(sourceGitHubIssueLink) && removedIssueLink)
 		if gone {
 			return nil, none, 0, nil
