@@ -420,7 +420,8 @@ const ok = (write: Write) => write.error === undefined && (write.status === "sql
 // ---------------------------------------------------------------------------------------------
 // Setup
 
-const tracked = (await rows<{ on: string }>("select current_setting('track_commit_timestamp') as on"))[0]?.on === "on";
+const tracked =
+  (await rows<{ setting: string }>("select current_setting('track_commit_timestamp') as setting"))[0]?.setting === "on";
 const [source] = await rows<{ repo: string; prod: string; e2e: string | null; apply: string | null; id: string }>(
   `select coalesce(s.repo, p.default_repo) as repo, s.production_job_names[1] as prod, s.staging_e2e_job_name as e2e,
      s.staging_apply_job_name as apply, s.id::text as id
