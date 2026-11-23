@@ -313,6 +313,8 @@ So the daemon's reads that compare a session with the sessions of the claims ans
 The start state writes the claim of each turn under way at the window's start.
 It also writes the claim of the architect of each root that waits on a person at the start, between that architect's turns, where the record shows the architect's session.
 The daemon keeps that claim through the wait, and at each pass it keeps the root only while the session that holds the root's Dispatch claim has a claim in the root's tree.
+The start state's copy of Dispatch holds each issue's Dispatch claim as the newest event before the window's start that shows a claim shows it, as the record's daemon held it then.
+The replay's copy of Dispatch also takes the claim of each `issue.claimed` and `issue.released` event, so a later boot or tick reads the claim that Dispatch showed.
 Each work segment runs its recorded length times `f^((n − m)/42)`, where n is the number of issues in flight in the replay at the segment's start, and m the number in the record.
 Each stretch draws, with `--seed`, whether its head conflicts with its base, from a model that the run fits on the stretches that begin and end inside the window.
 A stretch that began in the reach is not in the fit, because the reach can be of a release that recorded a conflict as another move back.

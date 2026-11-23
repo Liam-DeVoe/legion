@@ -32,7 +32,8 @@ const seedSession = "replay-seed"
 
 // Seed writes into a replay's database, in tx, the state t's record shows at at (assumption 6): what
 // every line and event before at made, and nothing at or after it, which the replay applies itself.
-// It writes the Dispatch mirror row of every issue an event before at shows; the record of every
+// It writes the Dispatch mirror row of every issue an event before at shows, with the Dispatch
+// claim the newest event before at that shows one shows; the record of every
 // issue that entered the workflow before at, with its phase (held, or awaiting a person, where the
 // trace holds that wait at at), Dispatch status, rank, parent, tree, generation, hold, awaiting and
 // whether it is handed to Legion, and a lingering root's linger; the design gate rows of each such
@@ -201,20 +202,41 @@ func dispatchBefore(iss *IssueTrace, at time.Time) (*DispatchEvent, int64) {
 	return newest, seq
 }
 
-// mirror writes iss's Dispatch mirror row as its newest issue event before the start shows it,
-// through the daemon's own writer of the copy (blockers.Mirror), as the daemon writes a reading of
-// an event: the copy of Dispatch's issues is written by a reading alone, and the record's newest
-// event before the start is the reading the start state stands on.
-func (s *seeder) mirror(iss *IssueTrace) error {
-	event, _ := dispatchBefore(iss, s.at)
-	if event == nil {
-		return nil
+// claimBefore is the newest event of iss before at that shows its Dispatch claim
+// (DispatchEvent.ClaimShown), nil where none does: the claim the daemon's mirror held at at, which
+// takes each claim an event shows over one an older event showed.
+func claimBefore(iss *IssueTrace, at time.Time) *DispatchEvent {
+	var newest *DispatchEvent
+	for i := range iss.Dispatch {
+		event := &iss.Dispatch[i]
+		if event.ClaimShown && event.At.Before(at) && (newest == nil || event.Seq > newest.Seq) {
+			newest = event
+		}
 	}
-	shown := event.Issue
-	fact := intake.DispatchIssue{Key: iss.Key, Seq: event.Seq, Status: shown.Status, Parent: shown.Parent,
-		Blockers: append([]string{}, shown.BlockedBy...), Labels: append([]string{}, shown.Labels...), Rank: shown.Rank}
-	if _, err := blockers.NewMirror(s.records, cmp.Or(event.Project, iss.Project)).Apply(s.ctx, s.tx, fact); err != nil {
-		return fmt.Errorf("replay: seed the mirror row of %s: %w", iss.Key, err)
+	return newest
+}
+
+// mirror writes iss's Dispatch mirror row as its newest issue event before the start shows it, and
+// its Dispatch claim as the newest event before the start that shows one shows it (claimBefore),
+// through the daemon's own writer of the copy (blockers.Mirror), as the daemon writes a reading of
+// an event and a claim event: the copy of Dispatch's issues is written by a reading alone, and the
+// record's newest events before the start are the readings the start state stands on. So every
+// read of an issue's Dispatch claim (record.Store.DispatchClaim, workflow.Unresumable's at the
+// first pass among them) answers from the start as the record's daemon read it then.
+func (s *seeder) mirror(iss *IssueTrace) error {
+	if event, _ := dispatchBefore(iss, s.at); event != nil {
+		shown := event.Issue
+		fact := intake.DispatchIssue{Key: iss.Key, Seq: event.Seq, Status: shown.Status, Parent: shown.Parent,
+			Blockers: append([]string{}, shown.BlockedBy...), Labels: append([]string{}, shown.Labels...), Rank: shown.Rank}
+		if _, err := blockers.NewMirror(s.records, cmp.Or(event.Project, iss.Project)).Apply(s.ctx, s.tx, fact); err != nil {
+			return fmt.Errorf("replay: seed the mirror row of %s: %w", iss.Key, err)
+		}
+	}
+	if event := claimBefore(iss, s.at); event != nil {
+		claimed := intake.DispatchClaim{Key: iss.Key, Seq: event.Seq, ClaimedBy: event.Claim}
+		if _, err := blockers.NewMirror(s.records, iss.Project).Apply(s.ctx, s.tx, claimed); err != nil {
+			return fmt.Errorf("replay: seed the Dispatch claim of %s: %w", iss.Key, err)
+		}
 	}
 	return nil
 }

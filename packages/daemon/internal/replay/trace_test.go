@@ -47,7 +47,8 @@ type capturedEntry struct {
 // type, msg and time, its issue, tree, phases and trigger, the slots in use and the cap, the issue
 // and role a supervise: line's claim token names, the issues an issue waits on, and the pull
 // request and the issues a merged issue's close waits for; an event's type, actor, the claim its
-// actor's session title names, and time, and the status, blocked_by, parent and rank it shows;
+// actor's session title names, and time, and the status, blocked_by, parent, rank and Dispatch
+// claim it shows;
 // each merge's commit and time. It fails for a file a reader refuses, drops (a line read as no kind
 // the trace reads, an event read without its type's part) or misreads, for a captured file this
 // test holds no reading of, and for a reading of a file that is not there. Window two's ready line
@@ -316,25 +317,28 @@ func capturedEventReadings(t *testing.T) map[string]DispatchEvent {
 		"issue-created.json": {ID: 410494, Seq: 1, Key: "ACME-29", Project: "ACME", Type: "issue.created",
 			Actor: session("00000000-0000-4000-8000-000000000011"), At: capturedTime(t, "2026-11-12T02:33:45.794899Z"),
 			Issue: &DispatchIssueState{Changed: []string{"title", "status", "rank", "priority", "assignee", "labels", "repo"},
-				Status: "triage", Rank: rank(95, "k"), Labels: []string{"legion"}}},
+				Status: "triage", Rank: rank(95, "k"), Labels: []string{"legion"}}, ClaimShown: true},
 		"issue-updated-status.json": {ID: 411144, Seq: 2, Key: "ACME-29", Project: "ACME", Type: "issue.updated",
 			Actor: daemon, At: capturedTime(t, "2026-11-12T02:48:18.305772Z"),
-			Issue: &DispatchIssueState{Changed: []string{"status"}, Status: "todo", Rank: rank(95, "k"), Labels: []string{"legion"}}},
+			Issue:      &DispatchIssueState{Changed: []string{"status"}, Status: "todo", Rank: rank(95, "k"), Labels: []string{"legion"}},
+			ClaimShown: true},
 		"issue-updated-blocked-by.json": {ID: 891022, Seq: 3, Key: "ACME-58", Project: "ACME", Type: "issue.updated",
 			Actor: session("00000000-0000-4000-8000-000000000015"), ActorClaim: runs("ACME-15", claim.RoleArchitect),
 			At: capturedTime(t, "2026-11-21T01:54:00.399322Z"),
 			Issue: &DispatchIssueState{Changed: []string{"components", "blocked_by"}, Status: "triage",
-				BlockedBy: []string{"ACME-42", "ACME-52", "ACME-53"}, Parent: "ACME-15", Rank: rank(145, "Z")}},
+				BlockedBy: []string{"ACME-42", "ACME-52", "ACME-53"}, Parent: "ACME-15", Rank: rank(145, "Z")}, ClaimShown: true},
 		"issue-updated-parent.json": {ID: 868069, Seq: 3, Key: "ACME-55", Project: "ACME", Type: "issue.updated",
 			Actor: session("00000000-0000-4000-8000-000000000013"), At: capturedTime(t, "2026-11-20T17:44:47.764822Z"),
 			Issue: &DispatchIssueState{Changed: []string{"status", "parent", "external_links"}, Status: "in_progress",
-				Parent: "ACME-54", Rank: rank(142, "j")}},
+				Parent: "ACME-54", Rank: rank(142, "j")}, Claim: "session:00000000-0000-4000-8000-000000000013", ClaimShown: true},
 		"issue-updated-rank.json": {ID: 701064, Seq: 11, Key: "ACME-29", Project: "ACME", Type: "issue.updated",
 			Actor: session("00000000-0000-4000-8000-000000000012"), At: capturedTime(t, "2026-11-18T00:12:10.182106Z"),
-			Issue: &DispatchIssueState{Changed: []string{"rank"}, Status: "todo", Rank: rank(113, "fzzU"), Labels: []string{"legion"}}},
+			Issue:      &DispatchIssueState{Changed: []string{"rank"}, Status: "todo", Rank: rank(113, "fzzU"), Labels: []string{"legion"}},
+			ClaimShown: true},
 		"issue-closed.json": {ID: 502249, Seq: 99, Key: "ACME-27", Project: "ACME", Type: "issue.closed",
 			Actor: daemon, At: capturedTime(t, "2026-11-13T21:26:48.67625Z"),
-			Issue: &DispatchIssueState{Changed: []string{"status", "closed_at"}, Status: "done", Parent: "ACME-24", Rank: rank(93, "r")}},
+			Issue:      &DispatchIssueState{Changed: []string{"status", "closed_at"}, Status: "done", Parent: "ACME-24", Rank: rank(93, "r")},
+			ClaimShown: true},
 		"artifact-approved.json": {ID: 886533, Seq: 58, Key: "ACME-29", Project: "ACME", Type: "artifact.approved",
 			Actor: person, At: capturedTime(t, "2026-11-21T00:17:12.362358Z"),
 			Verdict: &DispatchVerdict{Artifact: spec, Name: "spec.md", Version: 5}},

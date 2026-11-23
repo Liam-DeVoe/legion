@@ -185,8 +185,10 @@ func (s *shadow) seedEvent(e envelope, seq int64, at time.Time) error {
 }
 
 // take applies e to iss at at, at the sequence iss stands at: an issue event changes the payload
-// by the fields it changed in the record, and every event's asks and documents are read
-// (notePayload). It answers the event as applied, which joins the issue's log.
+// by the fields it changed in the record, a claim event (issue.claimed, issue.released) changes
+// the claim the payload shows where it shows one, as Dispatch's next read of the issue would show
+// it (DispatchEvent.Claim), and every event's asks and documents are read (notePayload). It answers
+// the event as applied, which joins the issue's log.
 func (s *shadow) take(iss *shadowIssue, e envelope, at time.Time) (json.RawMessage, error) {
 	fields := maps.Clone(e.fields)
 	if issueEvent(e.kind) && e.payload != nil {
@@ -209,6 +211,12 @@ func (s *shadow) take(iss *shadowIssue, e envelope, at time.Time) (json.RawMessa
 			return nil, err
 		}
 		fields["payload"] = payload
+	}
+	if (e.kind == "issue.claimed" || e.kind == "issue.released") && iss.payload != nil {
+		raw := e.payload["claim"]
+		if holder, shown := eventClaim(raw); shown && (holder != "" || e.kind == "issue.released") {
+			iss.payload["claim"] = raw
+		}
 	}
 	if err := s.notePayload(iss, e, at); err != nil {
 		return nil, err

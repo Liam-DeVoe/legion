@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -8,9 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // architectSession is the id of the session that runs the claim of sessionClaimWindow's root
@@ -26,11 +30,11 @@ const releasedRootLine = "admission: released a root no tree of which runs and n
 // ACME-1`. That session claims ACME-1 in Dispatch at 09:06, writes version 1 of the spec at 09:17
 // and asks a person to approve it at 09:18; at 09:20 its turn ends, the registration hands the
 // document to the person, and the root waits on them, keeping its slot. The window starts at 09:30
-// with the root waiting and its architect between turns. At 10:00 a person retitles ACME-1, an
-// event that, as every issue event since the claim, carries the claim of the architect's session.
-// At 10:20 the person approves the version: the gate opens, the root's architect resumes and
-// ACME-2, its child, starts.
-func sessionClaimWindow(t *testing.T) Window {
+// with the root waiting and its architect between turns. Where retitled, at 10:00 a person retitles
+// ACME-1, an event that, as every issue event since the claim, carries the claim of the architect's
+// session; otherwise only the claim's own event, before the start, shows it. At 10:20 the person
+// approves the version: the gate opens, the root's architect resumes and ACME-2, its child, starts.
+func sessionClaimWindow(t *testing.T, retitled bool) Window {
 	b := newWindowBuilder(t, clock(9, 30), clock(15, 0))
 	b.gated(record.DesignStepSpec)
 	b.boot(clock(9, 0))
@@ -48,7 +52,9 @@ func sessionClaimWindow(t *testing.T) Window {
 		"step", string(record.DesignStepSpec), "version", 1, "since_seq", since)
 	b.info(clock(9, 20), "workflow: root waits on a person and keeps its admission slot", "issue", "ACME-1", "tree", "ACME-1",
 		"reason", "spec version 1 is awaiting a person's review", "since_seq", since)
-	b.edit(clock(10, 0), "ACME-1", func(issue *builtIssue) { issue.Title = "Export the widget list as a sheet" })
+	if retitled {
+		b.edit(clock(10, 0), "ACME-1", func(issue *builtIssue) { issue.Title = "Export the widget list as a sheet" })
+	}
 	b.approves(clock(10, 20), "ACME-1", approvalAsk)
 	b.info(clock(10, 20), "workflow: design gate opened", "issue", "ACME-1", "artifact", b.artifact("ACME-1"), "event", "approved", "version", 1)
 	b.info(clock(10, 20), "workflow: a person's review or a newer spec version answered a root's wait", "issue", "ACME-1",
@@ -63,13 +69,13 @@ func sessionClaimWindow(t *testing.T) Window {
 // claim is held by a session that claims within its tree (workflow.Unresumable), which admission
 // asks at every pass. In the record that session is the root architect's own, whose claim the
 // daemon holds between the architect's turns. The test replays sessionClaimWindow under main: the
-// person's retitle at 10:00 brings the claim of the architect's session into the replay's copy of
-// Dispatch, and the root is kept as the record kept it — no release of it — until the person's
-// approval at 10:20, which opens its gate and starts ACME-2 then. A start state that writes no claim
-// of the architect between its turns, or claims that run another session than the record's,
-// releases the root at the retitle, and ACME-2 never starts.
+// person's retitle at 10:00 shows the claim of the architect's session to the replay's copy of
+// Dispatch again, and the root is kept as the record kept it — no release of it — until the
+// person's approval at 10:20, which opens its gate and starts ACME-2 then. A start state that writes
+// no claim of the architect between its turns, or claims that run another session than the
+// record's, releases the root at the retitle, and ACME-2 never starts.
 func TestARootWaitingOnAPersonKeepsItsArchitectsSession(t *testing.T) {
-	_, log := knobRun(t, sessionClaimWindow(t), mainRule(t), "main")
+	_, log := knobRun(t, sessionClaimWindow(t, true), mainRule(t), "main")
 	if released := linesAt(log, func(line replayLine) bool { return line.Msg == releasedRootLine && line.Issue == "ACME-1" }); len(released) != 0 {
 		t.Errorf("the replay released ACME-1 at %s, which the record kept waiting on the person", describeTimes(released))
 	}
@@ -90,6 +96,50 @@ func TestARootWaitingOnAPersonKeepsItsArchitectsSession(t *testing.T) {
 	}))
 	if want := []time.Time{clock(10, 20)}; !slices.EqualFunc(started, want, time.Time.Equal) {
 		t.Errorf("ACME-2 moved into planning at %s, want at %s, as its root's gate opened", describeTimes(started), describeTimes(want))
+	}
+}
+
+// The replay's copy of Dispatch holds, from the window's start, each issue's Dispatch claim as the
+// record's newest event before the start that shows one shows it, the claim the record's daemon
+// held then, so every read of it — the waiting root's (workflow.Unresumable) at the first pass
+// among them — answers as in the record before any later event, boot or tick shows the claim
+// again. The test replays sessionClaimWindow with no retitle, so only the claim's own event at
+// 09:06, before the start, shows ACME-1's claim, and reads that claim from the replay's copy after
+// every fact: from the first fact on it is the claim of the architect's session, and the root is
+// kept, its gate opening at the person's approval at 10:20.
+func TestTheStartStateMirrorsTheDispatchClaimTheRecordShows(t *testing.T) {
+	records := record.NewStore()
+	var read []string
+	look := func(ctx context.Context, pool *store.Pool, _ *shadow) error {
+		return pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			holder, err := records.DispatchClaim(ctx, tx, "ACME-1")
+			read = append(read, holder)
+			return err
+		})
+	}
+	out := t.TempDir()
+	if _, err := Run(context.Background(), RunConfig{Window: sessionClaimWindow(t, false), Rule: mainRule(t), Branch: MainBranch, Seed: 1,
+		Slowdown: 1, PGDSN: replayDSN(t), Out: out, afterFact: look}); err != nil {
+		t.Fatalf("replay the window under main: %v", err)
+	}
+	want := "session:" + architectSession
+	if len(read) == 0 || read[0] != want {
+		t.Fatalf("the replay's copy of Dispatch shows ACME-1 claimed by %q after its first fact, want %q, the claim the record shows before the start",
+			read, want)
+	}
+	if i := slices.IndexFunc(read, func(holder string) bool { return holder != want }); i >= 0 {
+		t.Errorf("the replay's copy of Dispatch shows ACME-1 claimed by %q after fact %d, want %q throughout: no event of the window moves the claim",
+			read[i], i+1, want)
+	}
+	log := replayLog(t, out)
+	if released := linesAt(log, func(line replayLine) bool { return line.Msg == releasedRootLine && line.Issue == "ACME-1" }); len(released) != 0 {
+		t.Errorf("the replay released ACME-1 at %s, which the record kept waiting on the person", describeTimes(released))
+	}
+	opened := linesAt(log, func(line replayLine) bool {
+		return line.Msg == "workflow: design gate opened" && line.Issue == "ACME-1"
+	})
+	if len(opened) != 1 || !opened[0].Truncate(time.Second).Equal(clock(10, 20)) {
+		t.Errorf("ACME-1's gate opened at %s, want once at 10:20:00, the person's approval", describeTimes(opened))
 	}
 }
 

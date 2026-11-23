@@ -1106,6 +1106,38 @@ type DispatchEvent struct {
 	Ask *DispatchAsk
 	// Handoff is a handoff.recorded event's handoff; nil for an event of another type.
 	Handoff *DispatchHandoff
+	// Claim is the issue's Dispatch claim the event shows, `<kind>:<id>` ("" for nobody), where it
+	// shows one (ClaimShown): the claim an issue event's payload carries, and an issue.claimed or
+	// issue.released event's, read as the daemon's decoder reads them (intake's issueEventClaim). A
+	// claim that names no actor, and an issue.claimed that names none, show no claim.
+	Claim      string
+	ClaimShown bool
+}
+
+// eventClaim reads the claim of an event's payload as the daemon's decoder does (intake's
+// issueEventClaim): `<kind>:<id>`, "" for null, and whether the payload shows it. An absent claim,
+// one that is not a claim object and one that names no actor show none, as the daemon then writes
+// no claim: such a claim is read as unknown and never refused.
+func eventClaim(raw json.RawMessage) (string, bool) {
+	if raw == nil {
+		return "", false
+	}
+	var claimed *struct {
+		Actor struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		} `json:"actor"`
+	}
+	if json.Unmarshal(raw, &claimed) != nil {
+		return "", false
+	}
+	if claimed == nil {
+		return "", true
+	}
+	if claimed.Actor.Kind == "" || claimed.Actor.ID == "" {
+		return "", false
+	}
+	return claimed.Actor.Kind + ":" + claimed.Actor.ID, true
 }
 
 // DispatchIssueState is an issue as an issue event shows it once the event applied: the fields the
@@ -1161,7 +1193,9 @@ type DispatchHandoff struct {
 // intake reads them, since an event retained from an older Dispatch lacks some; a field present
 // with another JSON type is refused all the same. A session actor's title (origin.session_title)
 // is read where the actor carries one (ActorClaim), and refused where it is of another JSON type.
-// An event without its project is of the project its key begins with.
+// The claim an issue event, an issue.claimed or an issue.released event shows is read as the
+// daemon's decoder reads it (Claim), and never refused. An event without its project is of the
+// project its key begins with.
 func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 	var envelope struct {
 		ID        *int64     `json:"id"`
@@ -1203,12 +1237,13 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 	switch parsed.Type {
 	case "issue.created", "issue.updated", "issue.closed":
 		var payload struct {
-			Changed   []string `json:"changed"`
-			Status    *string  `json:"status"`
-			BlockedBy []string `json:"blocked_by"`
-			Parent    *string  `json:"parent"`
-			Rank      *string  `json:"rank"`
-			Labels    []string `json:"labels"`
+			Changed   []string        `json:"changed"`
+			Status    *string         `json:"status"`
+			BlockedBy []string        `json:"blocked_by"`
+			Parent    *string         `json:"parent"`
+			Rank      *string         `json:"rank"`
+			Labels    []string        `json:"labels"`
+			Claim     json.RawMessage `json:"claim"`
 		}
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 			return refuse(err)
@@ -1224,6 +1259,17 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 			state.Rank = *payload.Rank
 		}
 		parsed.Issue = state
+		parsed.Claim, parsed.ClaimShown = eventClaim(payload.Claim)
+	case "issue.claimed", "issue.released":
+		var payload struct {
+			Claim json.RawMessage `json:"claim"`
+		}
+		if json.Unmarshal(envelope.Payload, &payload) == nil {
+			parsed.Claim, parsed.ClaimShown = eventClaim(payload.Claim)
+		}
+		if parsed.Type == "issue.claimed" && parsed.Claim == "" {
+			parsed.ClaimShown = false
+		}
 	case "artifact.approved", "artifact.changes_requested":
 		var payload struct {
 			ArtifactID *string `json:"artifact_id"`
