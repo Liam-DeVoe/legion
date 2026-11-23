@@ -231,6 +231,8 @@ async function switchBothWays(page: Page, threads: readonly Drawn[], pane: boole
   await expect(menu).toHaveCount(0);
 }
 
+// SLOW(>=2s): twelve long replies seeded over three threads, then the order switched both ways
+// four times, three in the pane and once over three cards, each read part by part.
 test("the thread order switch reorders the open thread with no reload", async ({ browser }) => {
   // Three threads seeded, then three switches in the pane and one over three cards.
   test.slow();

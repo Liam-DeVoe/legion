@@ -129,6 +129,8 @@ async function seedAskWaitingOnTheReader(issueKey: string, question: string): Pr
   return ask.id;
 }
 
+// SLOW(>=2s): an answer and two replies sent from the pane, then three replies by others waited
+// back live; the Dismissed view is read six times, each on a page of its own.
 test("an answer or a reply takes the thread out of the Inbox until somebody else writes", async ({
   browser,
 }) => {
@@ -285,6 +287,8 @@ async function expectTheColumnStop(
   );
 }
 
+// SLOW(>=2s): two Sends whose responses the test holds two seconds each, both reached by the
+// keyboard alone through j, k, l and Tab walks.
 test("the focus after an own Send goes to the column's own stop", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });

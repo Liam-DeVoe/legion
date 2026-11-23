@@ -218,6 +218,8 @@ test("a child issue of a gated project keeps the header's one chip: only a root 
   }
 });
 
+// SLOW(>=2s): the project's gate changed twice while the issue page is open, each change waited on
+// until the page redraws its steps with no reload.
 // The issue page draws its steps from the issue read's own gate (`approval_gate`), which the
 // project's publish of its gated steps (`project.updated`) reads again with no reload.
 test("the issue page follows a change of its project's gate", async ({ browser }) => {

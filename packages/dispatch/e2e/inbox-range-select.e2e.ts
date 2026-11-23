@@ -154,6 +154,8 @@ async function selectWithKeys(page: Page, ids: readonly string[], to: number): P
   await expect(row(page, ids[to] ?? "")).toHaveAttribute("data-inbox-selected", "true");
 }
 
+// SLOW(>=2s): a Dismiss, three snoozes and a Move to Inbox over ten seeded rows, then 300
+// dismissed threads seeded and the Dismissed view scrolled 600 px at a time to its 150th row.
 test("a shift-click selects the drawn rows between two checkboxes", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
@@ -291,6 +293,8 @@ test("a shift-click selects the drawn rows between two checkboxes", async ({ bro
   }
 });
 
+// SLOW(>=2s): fourteen seeded rows ranged by thirteen shift-clicks, a filter set and cleared, a
+// live arrival waited on, a Dismiss, and a second page that dismisses a held row.
 test("the anchor of a range is the row marked last without the shift key", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
@@ -525,6 +529,8 @@ test("one Dismiss over a range of 300 rows is one request", async ({ browser }) 
   }
 });
 
+// SLOW(>=2s): ten seeded rows ranged from the keyboard in four ways, and the help and the palette
+// each opened and read for the three range keys.
 test("the keyboard makes the same range from the anchor", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
@@ -636,6 +642,8 @@ test("the keyboard makes the same range from the anchor", async ({ browser }) =>
   }
 });
 
+// SLOW(>=2s): twelve seeded rows drawn as cards, a shift-click ten rows down, then a scroll back
+// and a five-step pointer drag across one row's words.
 test("a shift-click selects no text and keeps the focus on its checkbox", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
@@ -692,6 +700,8 @@ test("a shift-click selects no text and keeps the focus on its checkbox", async 
   }
 });
 
+// SLOW(>=2s): twelve seeded rows, a range of six made and dismissed from the keyboard, then a
+// second Inbox page opened to dismiss a marked row and its live update waited on.
 test("a range Dismiss hands the focus to a row that stays", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
@@ -763,6 +773,8 @@ test("a range Dismiss hands the focus to a row that stays", async ({ browser }) 
   }
 });
 
+// SLOW(>=2s): eight seeded rows, the Agents page loaded and the drawer opened over it, then one
+// range made by click and another by key.
 test("the drawer makes the same range by click and by key", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
@@ -819,6 +831,8 @@ test("the drawer makes the same range by click and by key", async ({ browser }) 
   }
 });
 
+// SLOW(>=2s): forty seeded rows drawn twice, over a reload, with a 29-row range and a Select all
+// each cleared and the focus read after.
 test("the bar's return keeps the row marked last, or takes the first row in sight with no mark", async ({
   browser,
 }) => {

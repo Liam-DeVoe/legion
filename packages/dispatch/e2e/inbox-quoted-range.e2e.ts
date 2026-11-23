@@ -92,6 +92,8 @@ async function seedIssueThread(issueKey: string, quote: string, body: string) {
   return root;
 }
 
+// SLOW(>=2s): nine comments seeded over a spec and a project document, an edit polled until it
+// orphans one anchor, then three rows read in the pane and a 600 ms wait for no further read.
 test("the reading pane marks the quoted range of a comment on document text", async ({
   browser,
 }) => {

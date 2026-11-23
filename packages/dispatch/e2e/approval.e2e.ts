@@ -1238,6 +1238,8 @@ async function issueWithThread(project: string, title: string, parent?: string) 
   return { issue, row: replyRowId(thread), spec: issue.primary_artifact_id };
 }
 
+// SLOW(>=2s): eight issues seeded, each with a thread and its own approval history, then each of
+// five rows selected and its pane read, a card read in the drawer and one Approve waited on.
 test("the five approval states of an issue", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "STATES", name: "Five states" });
@@ -1360,6 +1362,8 @@ test("the five approval states of an issue", async ({ browser }) => {
   }
 });
 
+// SLOW(>=2s): three issues seeded with a thread each, then a document written and two approvals,
+// each waited on live in the row's mark and the pane, and two more rows selected and read.
 test("the step that holds the gate", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "FIRSTSTEP", name: "First step" });
@@ -1613,6 +1617,8 @@ async function expectOwnerBesideMarks(page: Page, row: PlacedMark): Promise<void
   ).toBe(true);
 }
 
+// SLOW(>=2s): four issues seeded with a thread, an ask and an approval each, then eight rows
+// measured box by box at two window sizes.
 test("the approval mark stands at one place on every row", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "MARKPLACE", name: "One place" });
@@ -1745,6 +1751,8 @@ async function expectMarkAndKeyInCard(scope: Page | Locator, rowId: string): Pro
   }
 }
 
+// SLOW(>=2s): two issues seeded, a Verification document approved and then edited and polled
+// until stale, then the Inbox and the drawer over an issue page each read and measured to fit.
 // The two short rows beside the pane are read by the five states and the live change, at the
 // pane's width. Below the pane's width each row is a card, a claim the desktop projects cannot
 // make, so the row runs on the phone projects alone. @phone @phone-only
@@ -1824,6 +1832,8 @@ test("the approval mark at phone width @phone @phone-only", async ({ browser }) 
   }
 });
 
+// SLOW(>=2s): six rows seeded over a project document, an agent and three issues, then five rows
+// dismissed one press at a time and the Dismissed view loaded and read.
 test("a row with no issue carries no mark", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "NOISSUE", name: "No issue" });
@@ -1894,6 +1904,8 @@ test("a row with no issue carries no mark", async ({ browser }) => {
   }
 });
 
+// SLOW(>=2s): six approval changes written while the page is open, each waited on live in two
+// marks and the pane's line, then the Dismissed view loaded and one more approval waited on.
 test("a change recorded while the Inbox is open", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "LIVEGATE", name: "A moving gate" });
