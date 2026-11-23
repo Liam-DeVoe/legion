@@ -1068,6 +1068,14 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, declined 
 		return nil, fmt.Errorf("open the census snapshot: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// No statement of the census is JIT-compiled. Each kind is one statement of a few dozen
+	// subplans that runs once, and the planner costs one past jit_inline_above_cost and
+	// jit_optimize_above_cost as soon as a table's statistics count its rows: a Postgres built
+	// with JIT then spends seconds compiling and optimizing each statement before it reads a
+	// row, more than the statement itself takes to run.
+	if _, err := tx.Exec(ctx, `set local jit = off`); err != nil {
+		return nil, fmt.Errorf("turn JIT off for the census snapshot: %w", err)
+	}
 	report := &StoreReport{}
 	// The store is looked up before any kind is read, so a database this build's migrations have
 	// not reached answers that rather than failing at the first statement that names a table or a
@@ -1430,11 +1438,17 @@ func sidesOf(held projection) kindSides {
 // a node a row projects, so a state a later release adds, such as proposed, settled and
 // overtaken (R8 of this change), reads here as live does. It answers (kind, id, digest, state):
 // the kind's nodes answer (id, digest), each is given the kind here, and its state beside its
-// digest, which nodeDifferences names a node with.
+// digest, which nodeDifferences names a node with. Each node's state is one probe of graph_nodes'
+// primary key: the lateral read ends in `limit 1`, so the planner cannot make it a join of the
+// kind's nodes with themselves, which statistics counting one node of a kind that holds thousands
+// plan as a nested loop over every node of the kind for each node.
 func presentNodes(held projection) string {
 	return `select present.kind, node.id, node.digest, present.state from (` + held.nodes + `) node (id, digest)
-		join graph_nodes present on present.kind = '` + held.nodeKind + `' and present.id = node.id
-		                        and present.state <> '` + graphstore.StateGone + `'`
+		cross join lateral (
+			select n.kind, n.state from graph_nodes n
+			where n.kind = '` + held.nodeKind + `' and n.id = node.id and n.state <> '` + graphstore.StateGone + `'
+			limit 1
+		) present`
 }
 
 // rowDifferences reads the row side against the store: every row that names no node, names one
@@ -1443,6 +1457,17 @@ func presentNodes(held projection) string {
 // its own cause rather than a missing node, because a row projecting a node the store has ended is
 // a different defect from a row projecting nothing, and it is the one test of a node's state
 // here: a row may project a node at any other state.
+//
+// The two sides meet in one sorted pass, never in a join: both are laid end to end (union all),
+// each tagged with its side, and each row reads the digests of the present nodes of its own
+// address from a window over (node kind, address), and is read once against each of them, or once
+// against none, as a left join of the two reads it. A join of the two is planned from each side's
+// estimated rows, and where the statistics count one row of a side that holds thousands - a table
+// a bulk write has just filled, before autovacuum reads it again - the planner joins them in a
+// nested loop that reads one whole side, with each node's digest, once for each row of the other:
+// the census of a document of 2,002 blocks took 108 s in one kind and 18 s in another. The node a
+// row names, at any state, is one probe of graph_nodes' primary key per row: the lateral read ends
+// in `limit 1`, so the planner cannot pull it up into a join.
 func rowDifferences(held projection) string {
 	return `
 		select case
@@ -1454,11 +1479,24 @@ func rowDifferences(held projection) string {
 			     || ' and the node ' || coalesce(present.digest, '(none)')
 		end,
 		row.row_label
-		from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
-		left join graph_nodes node on node.kind = row.node_kind and node.id = row.node_address
-		left join (` + presentNodes(held) + `) present (kind, id, digest, state)
-			on present.kind = row.node_kind and present.id = row.node_address
-		where (row.node_kind is null or row.node_address is null or node.kind is null
+		from (
+			select side.row_side, side.row_label, side.node_kind, side.node_address, side.digest,
+			       array_agg(side.node_digest) filter (where not side.row_side)
+			           over (partition by side.node_kind, side.node_address) as present_digests
+			from (
+				select true, row_label, node_kind, node_address, digest, null
+				from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
+				union all
+				select false, null, kind, id, null, digest
+				from (` + presentNodes(held) + `) present (kind, id, digest, state)
+			) side (row_side, row_label, node_kind, node_address, digest, node_digest)
+		) row
+		left join lateral unnest(row.present_digests) present (digest) on true
+		left join lateral (
+			select * from graph_nodes n where n.kind = row.node_kind and n.id = row.node_address limit 1
+		) node on true
+		where row.row_side
+		  and (row.node_kind is null or row.node_address is null or node.kind is null
 		   or node.state = '` + graphstore.StateGone + `'
 		   or row.digest is distinct from present.digest)` + rowNotOwed(held) + `
 		order by 2, 1`
@@ -1467,15 +1505,29 @@ func rowDifferences(held projection) string {
 // nodeDifferences reads the store against the row side: every node of the kind not gone that no
 // row projects, named with the state it is at, so a live one reads as `a live node no row
 // projects`, but a node whose row is owed by a writer that has not run yet (projection.owed).
+//
+// A node is projected where a row of its address stands in its window, the one sorted pass of the
+// two sides rowDifferences makes, which answers what `not exists (... where row.node_kind =
+// node.kind and row.node_address = node.id)` answers without a join: a present node's kind and id
+// are never null, and a row of a null kind or address shares a window with no node, as `=` matches
+// no null.
 func nodeDifferences(held projection) string {
 	return `
 		select case when node.state ~ '^[aeiou]' then 'an ' else 'a ' end || node.state
 		       || ' node no row projects',
 		       node.kind || ' ' || node.id
-		from (` + presentNodes(held) + `) node (kind, id, digest, state)
-		where not exists (
-			select 1 from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
-			where row.node_kind = node.kind and row.node_address = node.id)` + notOwed(held) + `
+		from (
+			select side.row_side, side.kind, side.id, side.state,
+			       bool_or(side.row_side) over (partition by side.kind, side.id) as projected
+			from (
+				select false, kind, id, state
+				from (` + presentNodes(held) + `) present (kind, id, digest, state)
+				union all
+				select true, node_kind, node_address, null
+				from (` + held.rows + `) row (row_label, node_kind, node_address, digest)
+			) side (row_side, kind, id, state)
+		) node
+		where not node.row_side and not node.projected` + notOwed(held) + `
 		order by 2`
 }
 
@@ -1506,6 +1558,12 @@ func rowNotOwed(held projection) string {
 // tuple of the kind states now, each at the row and the triple it states, but a row whose deletion
 // is owed by a writer that has not run yet (projection.rowOwed). As rowDifferences, it tests no
 // state of a node but gone: a row may project a node at any other state.
+//
+// The rows meet the tuples as rowDifferences meets its two sides, in one sorted pass and never in
+// a join: a row is stated where a tuple of its triple, (node kind, address, kind, far end), stands
+// in its window. A row with a null anywhere in its triple is stated by no tuple, as `=` matches no
+// null, so it is a difference whatever its window holds. The node it names is one primary-key
+// probe, as in rowDifferences.
 func tripleRowDifferences(held projection) string {
 	return `
 		select case
@@ -1516,29 +1574,54 @@ func tripleRowDifferences(held projection) string {
 			else 'a row no tuple states'
 		end,
 		row.row_label || ' ' || row.kind || ' -> ' || row.to_kind || ' ' || row.to_id
-		from (` + held.rows + `) row (row_label, node_kind, node_address, kind, to_kind, to_id)
-		left join graph_nodes node on node.kind = row.node_kind and node.id = row.node_address
-		where (row.node_kind is null or row.node_address is null or node.kind is null
+		from (
+			select side.row_side, side.row_label, side.node_kind, side.node_address, side.kind, side.to_kind, side.to_id,
+			       bool_or(not side.row_side) over (
+			           partition by side.node_kind, side.node_address, side.kind, side.to_kind, side.to_id) as stated
+			from (
+				select true, row_label, node_kind, node_address, kind, to_kind, to_id
+				from (` + held.rows + `) row (row_label, node_kind, node_address, kind, to_kind, to_id)
+				union all
+				select false, null, from_kind, from_id, kind, to_kind, to_id
+				from (` + held.tuples + `) stated (from_kind, from_id, kind, to_kind, to_id)
+			) side (row_side, row_label, node_kind, node_address, kind, to_kind, to_id)
+		) row
+		left join lateral (
+			select * from graph_nodes n where n.kind = row.node_kind and n.id = row.node_address limit 1
+		) node on true
+		where row.row_side
+		  and (row.node_kind is null or row.node_address is null or node.kind is null
 		   or node.state = '` + graphstore.StateGone + `'
-		   or not exists (
-			select 1 from (` + held.tuples + `) stated (from_kind, from_id, kind, to_kind, to_id)
-			where stated.from_kind = row.node_kind and stated.from_id = row.node_address
-			  and stated.kind = row.kind and stated.to_kind = row.to_kind and stated.to_id = row.to_id))` + rowNotOwed(held) + `
+		   or row.kind is null or row.to_kind is null or row.to_id is null or not row.stated)` + rowNotOwed(held) + `
 		order by 2, 1`
 }
 
 // tupleDifferences reads the store's tuples of a kind held triple by triple against its rows:
 // every tuple no row states the triple of, at from_kind:from_id kind -> to_kind:to_id, but a tuple
 // of a node whose row is owed by a writer that has not run yet (projection.owed).
+//
+// A tuple is projected where a row of its triple stands in its window, the one sorted pass of the
+// two sides tripleRowDifferences makes; a tuple with a null anywhere in its triple is projected by
+// no row, as `=` matches no null.
 func tupleDifferences(held projection) string {
 	return `
 		select 'a tuple no row projects',
 		       node.kind || ':' || node.id || ' ' || node.tie || ' -> ' || node.to_kind || ':' || node.to_id
-		from (` + held.tuples + `) node (kind, id, tie, to_kind, to_id)
-		where not exists (
-			select 1 from (` + held.rows + `) row (row_label, node_kind, node_address, kind, to_kind, to_id)
-			where row.node_kind = node.kind and row.node_address = node.id
-			  and row.kind = node.tie and row.to_kind = node.to_kind and row.to_id = node.to_id)` + notOwed(held) + `
+		from (
+			select side.row_side, side.kind, side.id, side.tie, side.to_kind, side.to_id,
+			       bool_or(side.row_side) over (
+			           partition by side.kind, side.id, side.tie, side.to_kind, side.to_id) as projected
+			from (
+				select false, kind, id, tie, to_kind, to_id
+				from (` + held.tuples + `) node (kind, id, tie, to_kind, to_id)
+				union all
+				select true, node_kind, node_address, kind, to_kind, to_id
+				from (` + held.rows + `) row (row_label, node_kind, node_address, kind, to_kind, to_id)
+			) side (row_side, kind, id, tie, to_kind, to_id)
+		) node
+		where not node.row_side
+		  and (node.kind is null or node.id is null or node.tie is null or node.to_kind is null or node.to_id is null
+		   or not node.projected)` + notOwed(held) + `
 		order by 2`
 }
 

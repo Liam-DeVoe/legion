@@ -95,11 +95,14 @@ var blockProjections = []projection{{
 	// placement, its shaped, its from_ask, its decided_by, or tuples no block_refs row projects -
 	// its authored_by among them, which the block index states through graphstore.AuthorFacts -
 	// states no link here and is no node of this kind; the block kind holds its placement. A
-	// finding of a lens is a block no document holds, so no block_refs row names it.
+	// finding of a lens is a block no document holds, so no block_refs row names it. The kinds are
+	// one array the statement reads once (an initplan), not a select each node's links run again:
+	// that select reads the store's type nodes, so per node it cost a scan of graph_nodes, the
+	// block count times the store's size over a deployment's blocks.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind in (`+blockRefKinds+`)`) + ` as links
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any (array(`+blockRefKinds+`))`) + ` as links
 			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + `
 		) held
 		where held.links <> ''`,
