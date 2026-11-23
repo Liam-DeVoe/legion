@@ -21,6 +21,7 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  EvalItemsResponse,
   EvalListResponse,
   InboxRow,
   IssueDetails,
@@ -492,11 +493,12 @@ interface DeliveryLiveBodies {
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
   readonly evals: EvalListResponse;
+  readonly items: EvalItemsResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
- *  the pages subscribe - timeline, measures, pipeline and evals - are keyed here; the socket
- *  serves other kinds no page reads. */
+ *  the pages subscribe - timeline, measures, pipeline, evals and items - are keyed here; the
+ *  socket serves other kinds no page reads. */
 function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
   view: DeliveryLiveView & { readonly kind: K }
@@ -586,6 +588,55 @@ export const evalsViewQuery = (params: EvalsViewParams) => {
   return queryOptions({
     ...LIVE,
     queryKey: ["evals", "view", view],
+    queryFn: (context) => subscribeLive(context, view),
+  });
+};
+
+/** One items view of a project's Evals tab: the eval whose rows it shows (`slug`), its window and
+ *  compare range (null for none), the repositories, and what of the rows it keeps: one series,
+ *  one row kind, one row, pr-ci's jobs in one order (`sort`), and the page, `limit` rows at
+ *  `offset`. */
+export interface ItemsViewParams {
+  readonly project: string;
+  readonly slug: string;
+  readonly window: DeliveryLiveWindow;
+  readonly compare: { readonly from: string; readonly to: string } | null;
+  readonly repos: readonly string[];
+  readonly series?: string;
+  readonly rowKind?: string;
+  readonly row?: string;
+  readonly sort?: "median" | "failures";
+  readonly limit: number;
+  readonly offset?: number;
+}
+
+/** The rows behind one eval's numbers, live (dispatch://INFRA-2918/artifact/plan-md, D9): the body
+ *  of `GET /api/v1/projects/{key}/evals/{slug}/items` for the window, sent as the view's window, and
+ *  the rest of its query, sent as the view's query. Keyed by the view, as `evalsViewQuery` is, so
+ *  a change of any of them subscribes its own entry. */
+export const itemsViewQuery = (params: ItemsViewParams) => {
+  const query = new URLSearchParams();
+  if (params.compare !== null) {
+    query.set("compare_from", params.compare.from);
+    query.set("compare_to", params.compare.to);
+  }
+  if (params.series !== undefined) query.set("series", params.series);
+  if (params.rowKind !== undefined) query.set("row_kind", params.rowKind);
+  if (params.row !== undefined) query.set("row", params.row);
+  for (const repo of params.repos) query.append("repo", repo);
+  if (params.sort !== undefined) query.set("sort", params.sort);
+  query.set("limit", String(params.limit));
+  if (params.offset !== undefined && params.offset > 0) query.set("offset", String(params.offset));
+  const view = {
+    kind: "items",
+    project: params.project,
+    slug: params.slug,
+    window: params.window,
+    query: query.toString(),
+  } as const;
+  return queryOptions({
+    ...LIVE,
+    queryKey: ["evals", "items", view],
     queryFn: (context) => subscribeLive(context, view),
   });
 };

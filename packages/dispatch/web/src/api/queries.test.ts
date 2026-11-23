@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 
-import { EVALS_VIEW_LIMIT, type EvalKind, type EvalsViewParams, evalsViewQuery } from "./queries";
+import {
+  EVALS_VIEW_LIMIT,
+  type EvalKind,
+  type EvalsViewParams,
+  evalsViewQuery,
+  itemsViewQuery,
+} from "./queries";
 
 const KINDS: EvalKind[] = ["delivery", "legion", "ci", "experiment"];
 
@@ -70,4 +76,42 @@ test("a view with no compare range names none, one of the project's own rows no 
     window: { preset: 7 },
   });
   expect(second.query).toBe("kind=ci&limit=200&offset=200");
+});
+
+// An items view names the eval whose rows it shows apart, and the rest of what the items route
+// takes as its query (packages/contracts DeliveryLiveView), so the hub reads it as the route does.
+test("an items view carries the project, the eval, the window, and the items route's query", () => {
+  const [scope, name, view] = itemsViewQuery({
+    compare: COMPARE,
+    limit: 5,
+    project: "ACME",
+    repos: ["acme/widgets"],
+    slug: "pr-ci",
+    sort: "median",
+    window: { preset: 28 },
+  }).queryKey;
+  expect([scope, name]).toEqual(["evals", "items"]);
+  expect(view).toEqual({
+    kind: "items",
+    project: "ACME",
+    query: `compare_from=${encodeURIComponent(COMPARE.from)}&compare_to=${encodeURIComponent(COMPARE.to)}&repo=acme%2Fwidgets&sort=median&limit=5`,
+    slug: "pr-ci",
+    window: { preset: 28 },
+  });
+
+  const [, , filtered] = itemsViewQuery({
+    compare: null,
+    limit: 200,
+    offset: 200,
+    project: "ACME",
+    repos: [],
+    row: "ACME-7",
+    rowKind: "issue",
+    series: "hours:roots",
+    slug: "legion-work-time",
+    window: { from: "2026-01-01T00:00:00Z", to: "2026-01-29T00:00:00Z" },
+  }).queryKey;
+  expect(typeof filtered === "string" ? null : filtered?.query).toBe(
+    "series=hours%3Aroots&row_kind=issue&row=ACME-7&limit=200&offset=200"
+  );
 });
