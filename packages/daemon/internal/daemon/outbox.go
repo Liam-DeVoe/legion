@@ -2817,7 +2817,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// release's role stop is cancelled by a turn after its mark. The claim stays live in its
 		// pod, the close's Sandbox suspension waits for it (store.IssueSuspension), and the next
 		// idle pass decides the close again with a read of its own (workflow.LeftPodClose).
-		if fence, turned := payload.TurnStart, machine.Claim().LastTurnStart; fence != nil && turned.After(*fence) {
+		//
+		// The two compare on one precision. The fence is claims.last_turn_start, which the
+		// database keeps to the microsecond, and the machine's stamp of the same turn carries the
+		// nanoseconds of the clock that made it (supervise.Claim.LastTurnStart), so the stamp is
+		// read to the microsecond too: the turn the check saw then reads equal to the fence, not
+		// after it, and only a later turn holds the stop.
+		if fence, turned := payload.TurnStart, machine.Claim().LastTurnStart.Truncate(time.Microsecond); fence != nil && turned.After(*fence) {
 			r.log.Info("outbox suspend of a left pod's close held: the claim started a turn after the close's check; finished without acting",
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "turn-start", turned, "check-turn-start", *fence)
 			return nil
