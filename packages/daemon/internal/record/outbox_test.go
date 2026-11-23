@@ -1143,6 +1143,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: WorkspaceKeptNotice, Role: claim.RoleArchitect,
+			Reason: "The daemon did not delete the pod of LEGION-209 (pod pod-uid). No role process runs in this pod, so the pod's launcher read its workspace before the delete."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

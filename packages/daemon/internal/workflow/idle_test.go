@@ -996,7 +996,7 @@ func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
 // it kept: two holds that printed the same would make the record unreadable.
 func TestEveryIdleHoldHasANameOfItsOwn(t *testing.T) {
 	seen := map[string]IdleHold{}
-	for hold := IdleHoldNone; hold <= IdleHoldUnownedUnpushedWork; hold++ {
+	for hold := IdleHoldNone; hold <= IdleHoldUnownedWorkspaceUnread; hold++ {
 		name := hold.String()
 		if name == "unknown" {
 			t.Fatalf("hold %d has no name", int(hold))
@@ -1006,7 +1006,7 @@ func TestEveryIdleHoldHasANameOfItsOwn(t *testing.T) {
 		}
 		seen[name] = hold
 	}
-	if got := IdleHold(int(IdleHoldUnownedUnpushedWork) + 1).String(); got != "unknown" {
+	if got := IdleHold(int(IdleHoldUnownedWorkspaceUnread) + 1).String(); got != "unknown" {
 		t.Fatalf("an unmapped hold prints %q, want unknown", got)
 	}
 }
