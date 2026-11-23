@@ -187,12 +187,9 @@ func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, 
 			return true
 		default:
 		}
-		var waiting int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and pid in (select pid from pg_locks where not granted)
-		`).Scan(&waiting); err != nil {
-			t.Fatalf("inspect database locks: %v", err)
+		waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
+		if err != nil {
+			t.Fatal(err)
 		}
 		return waiting > 0
 	}) {

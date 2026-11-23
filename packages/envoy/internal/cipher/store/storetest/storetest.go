@@ -188,9 +188,9 @@ type Querier interface {
 // testwait's margin, and a wait that gives up prints the waiters it read last. A backend counts
 // when pg_blocking_pids names holder's backend for it, or a backend already counted: a second
 // waiter for one row waits on the first waiter's tuple lock, and pg_blocking_pids names only that
-// first waiter, never the holder. pg_blocking_pids reads the lock manager's queue, which holds a
-// waiter for its whole wait, where pg_stat_activity's wait_event_type reads no Lock each time the
-// waiter is woken. Waiters behind other holders, in other tests on the same server, never count.
+// first waiter, never the holder. pg_blocking_pids reads the lock manager's queue, as pg_locks
+// does (lockwaittest.Waiting, whose package comment says why not from the wait event). Waiters
+// behind other holders, in other tests on the same server, never count.
 func AwaitLockWaiters(t *testing.T, q Querier, holder pgx.Tx, n int) []uint32 {
 	t.Helper()
 	pid := holder.Conn().PgConn().PID()

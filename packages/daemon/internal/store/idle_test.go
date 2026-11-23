@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -698,14 +699,14 @@ func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
 // waitingOnTheSerializer is whether a backend of this test's database other than the reader waits
 // on an advisory lock: the shared serializer (treelifecycle.Serialize) is the only one the store
 // takes by that name outside a migration, so a waiter here is a transaction held at its head. The
-// wait is read from pg_locks, an ungranted request of the backend's pid, which stays true for the
-// whole wait, where pg_stat_activity's wait_event reads none each time the waiter is woken.
+// wait is read from pg_locks (lockwaittest.WaitingOn, whose package comment says why not from the
+// wait event).
 func waitingOnTheSerializer(t *testing.T, st *Store) bool {
 	t.Helper()
 	var waiting bool
 	if err := st.Pool().QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
 		where datname = current_database() and pid <> pg_backend_pid()
-		and pid in (select pid from pg_locks where not granted and locktype = 'advisory'))`).Scan(&waiting); err != nil {
+		and `+lockwaittest.WaitingOn("advisory")+`)`).Scan(&waiting); err != nil {
 		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}
 	return waiting

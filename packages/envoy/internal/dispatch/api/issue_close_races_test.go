@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // An issue's close races the writers of its asks and documents. Each race below ends in one of
@@ -590,7 +591,7 @@ func lockWaiters(t *testing.T, database *store.Store) int {
 	var waiting int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from pg_stat_activity
-		where datname = current_database() and pid in (select pid from pg_locks where not granted) and pid <> pg_backend_pid()
+		where datname = current_database() and `+lockwaittest.Waiting+` and pid <> pg_backend_pid()
 	`).Scan(&waiting); err != nil {
 		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}

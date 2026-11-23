@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -34,7 +35,7 @@ import (
 // holds that connection with. The test reads pg_locks on its own pool to see the daemon's one
 // backend's lock request queued before it asks, and again after, and checks that the state request
 // is still unanswered, so the connection was busy for the whole of the readiness read
-// (backendWaitingOnALock). A route that
+// (lockwaittest.Waiting, whose package comment says why not from the wait event). A route that
 // touched the pool would wait there with everything else, and the test's client bounds every
 // request at ten seconds (startDaemon), so such a regression fails this test rather than hanging
 // the package.
@@ -86,7 +87,7 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	state := make(chan int, 1)
 	go func() { state <- getStatus(held, d, "/legion/v1/state") }()
 	testwait.Eventually(t, "the daemon's one connection to wait on the test's lock", func() bool {
-		return daemonBackends(t, pool, application, backendWaitingOnALock) == 1
+		return daemonBackends(t, pool, application, lockwaittest.Waiting) == 1
 	})
 
 	close(release)
@@ -103,7 +104,7 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 		t.Fatalf("the state request answered %d before the readiness read, so the daemon's connection was free for it", answered)
 	default:
 	}
-	if waiting := daemonBackends(t, pool, application, backendWaitingOnALock); waiting != 1 {
+	if waiting := daemonBackends(t, pool, application, lockwaittest.Waiting); waiting != 1 {
 		t.Fatalf("%d of the daemon's backends wait on the test's lock after the readiness read, want its one connection still held", waiting)
 	}
 

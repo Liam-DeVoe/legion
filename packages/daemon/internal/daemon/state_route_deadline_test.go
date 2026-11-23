@@ -40,25 +40,14 @@ func (s *heldState) State(ctx context.Context, _ pgx.Tx) (api.State, []supervise
 	return api.State{}, nil, ctx.Err()
 }
 
-// backendIdleInTransaction and backendWaitingOnALock are the two conditions this package's tests
-// count the daemon's backends under: a backend inside an open transaction with no statement
-// running, which is the state the production failure left all 32 production connections in
-// (store's idleBound), and a backend waiting on a lock, which for a pool of one connection is a
-// pool with no free connection — a read the daemon makes from then on waits for the test's
-// transaction to end (readyz_test.go).
-//
-// A backend waits on a lock for as long as pg_locks holds an ungranted request of its pid: the
-// request stays queued from the moment the backend asks until the lock is granted or the wait is
-// cancelled. pg_stat_activity's wait_event_type is not that fact. It reads Lock only while the
-// backend sleeps on its latch, and a waiting backend leaves that sleep each time it is woken —
-// at deadlock_timeout into the wait, to look for a deadlock, and at any signal — and reads NULL
-// until it sleeps again, its request queued throughout. One sample taken in that moment counted
-// 0 of the daemon's backends waiting while its one connection waited (readyz_test.go:106, CI run
-// 45206462019, 1.09 s into the test, about deadlock_timeout's 1 s after the wait began).
-const (
-	backendIdleInTransaction = "state = 'idle in transaction'"
-	backendWaitingOnALock    = "pid in (select pid from pg_locks where not granted)"
-)
+// backendIdleInTransaction is one of the two conditions this package's tests count the daemon's
+// backends under: a backend inside an open transaction with no statement running, which is the
+// state the production failure left all 32 production connections in (store's idleBound). The
+// other is a backend waiting on a lock, read from pg_locks (lockwaittest.Waiting, whose package
+// comment says why not from the wait event), which for a pool of one connection is a pool with no
+// free connection — a read the daemon makes from then on waits for the test's transaction to end
+// (readyz_test.go).
+const backendIdleInTransaction = "state = 'idle in transaction'"
 
 // daemonBackends counts the backends of application that condition holds of now, read on the
 // test's own connection. It selects on the application name alone, the way this package's other

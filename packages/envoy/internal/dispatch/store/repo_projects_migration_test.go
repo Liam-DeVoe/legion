@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // repoProjectsDefaultVersion is the migration that adds a project's default repository and an
@@ -155,7 +156,7 @@ func awaitMigrationLockWait(t *testing.T, store *Store) {
 		var waiting int
 		if err := store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
-			where datname = current_database() and pid in (select pid from pg_locks where not granted) and pid <> pg_backend_pid()
+			where datname = current_database() and `+lockwaittest.Waiting+` and pid <> pg_backend_pid()
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 		}
