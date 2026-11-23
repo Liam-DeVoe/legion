@@ -921,7 +921,8 @@ primary_issue() {
       # implementer as accepted (already resolved, the implementer having closed it first).
       review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
-    # The reviewer's record before the round, which the round's completion replaces.
+    # The reviewer's record as the review is asked for, which the move into reviewing emptied
+    # (workflow's clearHandoff); the wait below takes only a record other than it.
     before_review=$(role_handoff_record "$root_issue" reviewer)
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
     # The review ends the round whether or not the reviewer has completed (workflow's
