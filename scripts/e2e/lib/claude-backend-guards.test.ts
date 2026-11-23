@@ -1,7 +1,17 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import {
+  accessSync,
+  closeSync,
+  constants,
+  copyFileSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, isAbsolute, join } from "node:path";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
 import { rowWaits } from "./row-waits";
@@ -33,15 +43,42 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // nothing to start and every row here is skipped, as on a host without perl, which starts every
 // harness in a group of its own (ownGroup, lib/own-group.ts).
 // The gate is given every name: it walks each one and names the missing ones in its warning.
-// `found` is the run's own walk, whose real binaries the copies of bash and the wrappers' `#!` are.
-const found = new Map(["bash", "sh"].map((name) => [name, hostTool(name)] as const));
+// `found` is the run's own walk: the first bash and sh on PATH that are the programs themselves
+// (native), past every wrapper script and mise shim, as lib/process-tree.sh's first_native finds
+// them, so a wrapper `bash` first on PATH is passed over as a wrapper `sleep` is not copied at all.
+const found = new Map(["bash", "sh"].map((name) => [name, native(name)] as const));
 const skip = skipWithout("bash", "sleep", "sh", "perl");
 // Only the unreadable-environment case needs an interpreter.
 const withoutPython = skipWithout("python3");
 function tool(name: string): string {
   const path = found.get(name) ?? null;
-  if (path === null) throw new Error(`${name} is not on PATH`);
+  if (path === null) throw new Error(`no ${name} on PATH is the program itself`);
   return path;
+}
+/** The real path of the first NAME on PATH that the kernel runs as itself: not a script (`#!`),
+ *  and not a mise shim (a link to mise under another name); null when PATH holds none. */
+function native(name: string): string | null {
+  for (const entry of (process.env.PATH ?? "").split(":")) {
+    if (entry === "") continue;
+    let path: string;
+    try {
+      path = realpathSync(join(entry, name));
+      accessSync(path, constants.X_OK);
+    } catch {
+      continue;
+    }
+    if (basename(path) === "mise" && name !== "mise") continue;
+    const head = Buffer.alloc(2);
+    const fd = openSync(path, "r");
+    try {
+      readSync(fd, head, 0, 2, 0);
+    } finally {
+      closeSync(fd);
+    }
+    if (head.toString("latin1") === "#!") continue;
+    return path;
+  }
+  return null;
 }
 // Every process a guard or await_child judges by its executable (/proc/<pid>/exe) as Claude Code or
 // Oh My Pi is a copy of bash, as the run's legion is, running `keep.sh`, which keeps it alive as
@@ -61,10 +98,12 @@ function tool(name: string): string {
 const work = join(dir, "work");
 // The run's claude is a copy of bash, under a directory whose name holds a space. Beside it: a
 // chain of two wrapper scripts, as a devbox's dotfiles shim is one, the first run by bash and the
-// second by sh, each running as only itself until the row opens its gate (a file under
-// $CLAUDE_GATES, written once a poll has seen that stage) before it execs the next, the last a copy
-// of bash elsewhere; a Claude Code that is a copy of bash, which `keep.sh` has run an Oh My Pi tool
-// below itself; and that Oh My Pi, a copy of bash.
+// second by a copy of sh of its own (`real/sh`), each running as only itself until the row opens its
+// gate (a file under $CLAUDE_GATES, written once a poll has seen that stage) before it execs the
+// next, the last a copy of bash elsewhere; a Claude Code that is a copy of bash, which `keep.sh` has
+// run an Oh My Pi tool below itself; and that Oh My Pi, a copy of bash. The second wrapper's sh is
+// a copy so its executable differs from the first wrapper's bash where the host's sh is bash too
+// (Fedora, Arch, NixOS): with one program for both, a poll could not tell the two stages apart.
 const claudeDir = join(dir, "bin with space");
 const claude = join(claudeDir, "claude");
 const wrapper = join(claudeDir, "claude-wrapper");
@@ -72,6 +111,7 @@ const wrapper2 = join(dir, "real", "claude-wrapper-2");
 const wrapped = join(dir, "real", "claude");
 const claudeWithTool = join(claudeDir, "claude-with-tool");
 const ompTool = join(dir, "real", "omp");
+const wrapper2Sh = join(dir, "real", "sh");
 const cwd = join(dir, "cwd");
 // The script every copy of bash above runs, which the bridge hands its child (as `keep.sh`, in the
 // bridge's working directory): it keeps the process alive as itself until the run stops it, and the
@@ -91,6 +131,7 @@ beforeAll(() => {
   copyFileSync(tool("bash"), wrapped);
   copyFileSync(tool("bash"), ompTool);
   copyFileSync(tool("bash"), claudeWithTool);
+  copyFileSync(tool("sh"), wrapper2Sh);
   // A gate is a file the row writes under $CLAUDE_GATES: a stage that waits on it stays itself until
   // a poll has seen it, however long the poll takes to come round.
   const gate = (name: string) => `until [ -e "$CLAUDE_GATES/${name}" ]; do sleep 0.05; done`;
@@ -101,7 +142,7 @@ beforeAll(() => {
   );
   writeFileSync(
     wrapper2,
-    `#!${tool("sh")}\n${gate("second")}\nexec ${JSON.stringify(wrapped)} "$@"\n`,
+    `#!${wrapper2Sh}\n${gate("second")}\nexec ${JSON.stringify(wrapped)} "$@"\n`,
     { mode: 0o755 }
   );
   mkdirSync(cwd);
@@ -255,8 +296,8 @@ if bridged "$child"; then echo accepted; else echo refused; fi
 spawn "$work/legion" worker-shim -- "$claude_bin" claude-bridge -- "$claude_bin"
 await_child "$claude_bin"
 if bridged "$child"; then echo "worker-shim: accepted"; else echo "worker-shim: refused"; fi
-spawn "$work/legion" claude-bridge -- "$(command -v bash)"
-await_child "$(command -v bash)"
+spawn "$work/legion" claude-bridge -- ${JSON.stringify(tool("bash"))}
+await_child ${JSON.stringify(tool("bash"))}
 if bridged "$child"; then echo "other claude: accepted"; else echo "other claude: refused"; fi
 `);
       expect(r.err).toBe("");
@@ -306,7 +347,7 @@ printf 'argv[0] %s\\n' "$(tr '\\0' '\\n' <"/proc/$below/cmdline" | sed -n 1p)"`;
       const r = run(`export CLAUDE_FORK_HOLD=1 CLAUDE_GATES=$scratch/gates
 mkdir "$CLAUDE_GATES"
 claude_bin=${JSON.stringify(wrapper)} claude_exe=$(realpath -e -- ${JSON.stringify(wrapped)})
-fork_exe=$(realpath -e -- "$work/legion") first_exe=$(realpath -e -- "$(command -v bash)") second_exe=$(realpath -e -- "$(command -v sh)")
+fork_exe=$(realpath -e -- "$work/legion") first_exe=${JSON.stringify(tool("bash"))} second_exe=$(realpath -e -- ${JSON.stringify(wrapper2Sh)})
 spawn bash -c '"$@"; :' pane "$work/legion" pane-shim -- "$work/legion" claude-bridge -- "$claude_bin"
 : >"$scratch/stages"
 found=
