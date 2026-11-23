@@ -205,11 +205,11 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    // Every size of this tree here was measured with `bun run build:web` at `19112b9c` on
-    // 2026-11-22. The largest chunk is ECharts (an `index-*.js` of 1,134,772 bytes raw), which
+    // Every size of this tree here was measured with `bun run build:web` at `53286717` on
+    // 2026-11-23. The largest chunk is ECharts (an `index-*.js` of 1,134,772 bytes raw), which
     // only the Delivery page loads, and the entry - the one `assets/index-*.js` that
-    // dist/index.html names - is 498,001 bytes, where the default branch's own build at
-    // `dbebeb30` the same day writes 1,142,023, before dispatch://INFRA-1109 split the shell: the
+    // dist/index.html names - is 498,613 bytes, where the default branch's own build at
+    // `bd7994df` the same day writes 1,143,308, before dispatch://INFRA-1109 split the shell: the
     // Inbox and its peek, the ask card, the search bar, the Create issue dialog, the shortcut
     // sheet, the reference-preview layer, the event-refresh map, the headless Markdown engine the
     // shell warms at boot, the new issue page's frame shell, the pending-writes indicator, the
