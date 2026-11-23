@@ -30,18 +30,24 @@ const (
 // (cybermonklabs/legion#4851's accounts block in packages/envoy/infra/core, which this module
 // cannot import): JETSTREAM exports, and ENVOY imports, as services the JetStream API, answered as
 // a stream of responses, consumers' acknowledgements, ordered consumers' flow-control replies, KV
-// writes, every subject the notification stream carries (bus.StreamCarriedSubjects) and
-// envoy-measure's publish route (natsgrant.Measure); and as streams the two reply roots a push
-// consumer's deliveries and a stream's republish are published on, nats.go's default _INBOX and
-// the services' _INBOX_envoy (plan E's t-e-74).
+// writes, every subject the notification stream carries (bus.StreamCarriedSubjects) and a
+// backup's acknowledgements, $JS.SNAPSHOT.ACK.>, which the server reads from the subject alone;
+// and as streams the two reply roots a push consumer's deliveries and a stream's republish are
+// published on, nats.go's default _INBOX and the services' _INBOX_envoy (plan E's t-e-74). A
+// restore's chunks, $JS.SNAPSHOT.RESTORE.>, go the other way, as a stream ENVOY exports and
+// JETSTREAM imports (testnats.CalloutAccounts' ClientStreams says why a service import cannot
+// carry them), and the server's answer to each comes back to the client's inbox through the
+// reply roots' stream. The measurement job needs no import of its own: natsgrant.Measure publishes
+// the JetStream API, which $JS.API.> imports, and its own cutover inbox, under _INBOX_envoy._measure
+// or _INBOX_envoy_measure, which it subscribes in ENVOY itself.
 func privateRender() testnats.CalloutAccounts {
-	services := []string{"$JS.API.>", "$JS.ACK.>", "$JS.FC.>", "$KV.>"}
+	services := []string{"$JS.API.>", "$JS.ACK.>", "$JS.FC.>", "$KV.>", "$JS.SNAPSHOT.ACK.>"}
 	services = append(services, bus.StreamCarriedSubjects()...)
-	services = append(services, "envoy-measure.>")
 	return testnats.CalloutAccounts{
 		JetStream: jetStreamAccount, Clients: envoyAccount,
 		Services: services, Streamed: []string{"$JS.API.>"},
-		Streams: []string{"_INBOX.>", "_INBOX_envoy.>"},
+		Streams:       []string{"_INBOX.>", "_INBOX_envoy.>"},
+		ClientStreams: []string{"$JS.SNAPSHOT.RESTORE.>"},
 	}
 }
 
@@ -157,7 +163,8 @@ func TestTheAnswerNamesTheConfiguredAccount(t *testing.T) {
 // and reads it back; the write is the JetStream publish nats.go's KeyValue.Put sends, to
 // $KV.<bucket>.<key>. The operator, with the hold row reading held, reads the info of the same
 // bucket's stream, a protected bucket's, which its grant holds only while the row reads prepare
-// or held (natsgrant.Operator): the grant that follows the hold row works in ENVOY.
+// or held (natsgrant.Operator): one read of the held grant crosses to JETSTREAM from ENVOY.
+// TestAHeldOperatorRestoresAStreamThroughEnvoy shows a held restore does too.
 //
 // The control is the setting left at $G, its default: the auth service places the same clients in
 // $G, which holds no stream and imports nothing. So the same write gets no responders (nats.go's
@@ -242,6 +249,89 @@ func TestAPrivateRenderAdmitsIntoEnvoy(t *testing.T) {
 			})
 		})
 	}
+}
+
+// fixedToken is a service's platform token that never changes, read as a TokenReader.
+type fixedToken string
+
+func (t fixedToken) Read() (string, error) { return string(t), nil }
+
+// TestAHeldOperatorRestoresAStreamThroughEnvoy: on a hub in a private render's two accounts
+// (privateRender), with BROKER_NATS_ACCOUNT set to ENVOY, the operator restores a protected
+// bucket's stream end to end, as a hold's `buckets restore` does: with the hold row reading held,
+// the restore request crosses to JETSTREAM by ENVOY's $JS.API.> import, and each chunk, then the
+// empty request that ends them, is published to the deliver subject the server answers,
+// $JS.SNAPSHOT.RESTORE.<stream>.<id>, which reaches JETSTREAM by the stream JETSTREAM imports from
+// ENVOY; the restored stream holds every key of the backup. The backup is the admin's, a static
+// user of ENVOY, taken before the stream is deleted, so the operator's grant decides the restore
+// alone. With the row reading released, the operator's restore request is refused (released's
+// grant holds no STREAM.RESTORE) and no stream is made.
+//
+// Run by hand, two controls fail the held row. With no layout for the chunks (no
+// $JS.SNAPSHOT.RESTORE.> stream and no service import of it), the first chunk gets no responders,
+// and the failure names the deliver subject. With $JS.SNAPSHOT.> imported as a service in place of
+// the stream, every chunk carries the header the import adds, so the server takes the empty
+// request that ends them for a chunk and answers it empty, and the failure is that empty answer,
+// "restore KV_envoy_webhook_redelivery: ".
+func TestAHeldOperatorRestoresAStreamThroughEnvoy(t *testing.T) {
+	bucket := bus.WebhookRedeliveryBucket
+	stream := kvBucket(bucket)
+	keys := testnats.NewCalloutKeys(t)
+	adminSeed, adminKey := testnats.User(t)
+	url := testnats.StartWithCalloutAccounts(t, keys, privateRender(),
+		testnats.StaticUser{NKey: adminKey, Publish: []string{"$JS.API.>", "$KV.>", "$JS.SNAPSHOT.ACK.>"}, Subscribe: []string{"_INBOX.>"}})
+	admin, err := testnats.ConnectSeed(t, url, adminSeed)
+	require.NoError(t, err)
+	defer admin.Close()
+	adminJS, err := admin.JetStream()
+	require.NoError(t, err)
+	kv, err := adminJS.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket})
+	require.NoError(t, err, "a static user of %s could not make the bucket through its import", envoyAccount)
+	written := map[string]string{"a": "first", "b": "second", "c": "third"}
+	for key, value := range written {
+		_, err := kv.Put(key, []byte(value))
+		require.NoError(t, err)
+	}
+	backup, err := backupStream(admin, stream)
+	require.NoError(t, err, "the admin's backup of %s through %s", stream, envoyAccount)
+	require.EqualValues(t, len(written), backup.messages, "the backup of %s holds another count of messages", stream)
+
+	now := time.Now()
+	tokens := map[string]platformToken{"operator-token": {account: operatorAccount, issued: now, expiry: now.Add(time.Hour)}}
+	signer, hold := newHoldSigner(t), &holdStub{}
+	settings := serviceSettings(t, url, keys)
+	settings.Account = envoyAccount
+	settings.Services = holdServices
+	startServiceWith(t, settings, Deps{ServiceToken: serviceTokens(tokens), Hold: NewHoldView(hold.read, signer.HoldKeys, nil, nil)}, Decide)
+	restoreRequest := map[string]json.RawMessage{"config": backup.config, "state": backup.state}
+
+	t.Run("held", func(t *testing.T) {
+		require.NoError(t, adminJS.DeleteStream(stream))
+		hold.set(rowOf(signer.reading(t, 1, natsgrant.OperatorPhaseHeld, "hold-1")))
+		// The operator's one subscribe is its own inbox prefix, so each chunk's answer is there.
+		operator := connectService(t, url, fixedToken("operator-token"), natsgrant.OperatorInbox)
+		require.Equal(t, envoyAccount, testnats.ConnAccount(t, operator.Conn), "the hub placed the operator in another account")
+		restored, err := restoreStream(t.Context(), operator.Conn, backup, nil)
+		require.NoError(t, err, "the held operator's restore of %s through %s; the server's errors:\n%s", stream, envoyAccount, operator.errs)
+		require.Equal(t, backup.messages, restored, "the restored %s holds another count of messages", stream)
+		restoredKV, err := adminJS.KeyValue(bucket)
+		require.NoError(t, err)
+		for key, value := range written {
+			entry, err := restoredKV.Get(key)
+			require.NoError(t, err, "the restored %s has no key %s", stream, key)
+			require.Equal(t, value, string(entry.Value()))
+		}
+	})
+	t.Run("released", func(t *testing.T) {
+		if err := adminJS.DeleteStream(stream); err != nil {
+			require.ErrorIs(t, err, nats.ErrStreamNotFound)
+		}
+		hold.set(rowOf(signer.reading(t, 2, natsgrant.OperatorPhaseReleased, "hold-1")))
+		operator := connectService(t, url, fixedToken("operator-token"), natsgrant.OperatorInbox)
+		operator.refused(t, "$JS.API.STREAM.RESTORE."+stream, restoreRequest)
+		_, err := adminJS.StreamInfo(stream)
+		require.ErrorIs(t, err, nats.ErrStreamNotFound, "the released operator's refused restore made %s", stream)
+	})
 }
 
 // TestAHubWithoutTheAccountRefusesTheClientsPlacedThere: a hub whose configuration names no

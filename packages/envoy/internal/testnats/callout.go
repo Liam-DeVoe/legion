@@ -90,10 +90,16 @@ func CalloutConfig(keys CalloutKeys, static ...StaticUser) string {
 // this one cannot import): JetStream holds JetStream and no client, and Clients holds every user
 // the configuration names, the auth service's among them, runs the auth callout, and imports from
 // JetStream each of Services as a service and each of Streams as a stream. Streamed are the
-// services of Services whose responses come as a stream rather than one reply.
+// services of Services whose responses come as a stream rather than one reply. ClientStreams go the
+// other way: Clients exports each as a stream and JetStream imports it, for a subject a client
+// publishes that JetStream's own subscription must receive as the client sent it. A service import
+// adds a Nats-Request-Info header to every request it carries (nats-server v2.15.1
+// server/client.go, processServiceImport), and JetStream's restore writes each chunk it receives,
+// header included, and takes only an empty message for the end of the chunks (jetstream_api.go,
+// processStreamRestore's processChunk), so a restore's chunks cross only this way.
 type CalloutAccounts struct {
-	JetStream, Clients          string
-	Services, Streamed, Streams []string
+	JetStream, Clients                         string
+	Services, Streamed, Streams, ClientStreams []string
 }
 
 // CalloutAccountsConfig is CalloutConfig in accounts' layout: the same users, grants and
@@ -141,7 +147,7 @@ authorization {
 }
 `, CalloutAuthTimeout, strings.Join(users, "\n    "), callout("$G"))
 	}
-	var exports, imports []string
+	var exports, imports, clientExports, jetStreamImports []string
 	for _, service := range accounts.Services {
 		export := fmt.Sprintf("{ service: %q }", service)
 		if slices.Contains(accounts.Streamed, service) {
@@ -154,29 +160,35 @@ authorization {
 		exports = append(exports, fmt.Sprintf("{ stream: %q }", stream))
 		imports = append(imports, fmt.Sprintf("{ stream: { account: %q, subject: %q } }", accounts.JetStream, stream))
 	}
+	for _, stream := range accounts.ClientStreams {
+		clientExports = append(clientExports, fmt.Sprintf("{ stream: %q }", stream))
+		jetStreamImports = append(jetStreamImports, fmt.Sprintf("{ stream: { account: %q, subject: %q } }", accounts.Clients, stream))
+	}
+	// block is an account's exports or imports block, or nothing when it lists none.
+	block := func(name string, entries []string) string {
+		if len(entries) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("\n    %s: [\n      %s\n    ]", name, strings.Join(entries, "\n      "))
+	}
 	return fmt.Sprintf(`jetstream {}
 accounts {
   %q {
-    jetstream: enabled
-    exports: [
-      %s
-    ]
+    jetstream: enabled%s%s
   }
   %q {
     users = [
       %s
-    ]
-    imports: [
-      %s
-    ]
+    ]%s%s
   }
 }
 authorization {
   timeout: %d
 %s
 }
-`, accounts.JetStream, strings.Join(exports, "\n      "), accounts.Clients, strings.Join(users, "\n      "),
-		strings.Join(imports, "\n      "), CalloutAuthTimeout, callout(accounts.Clients))
+`, accounts.JetStream, block("exports", exports), block("imports", jetStreamImports),
+		accounts.Clients, strings.Join(users, "\n      "), block("exports", clientExports), block("imports", imports),
+		CalloutAuthTimeout, callout(accounts.Clients))
 }
 
 // GrantedUsersConfig is the configuration of a server with JetStream whose whole authorization is
