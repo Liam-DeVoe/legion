@@ -56,6 +56,7 @@ import (
 //     of planning, the comparison of shares fails, and each issue runs as with no experiment: it
 //     takes its owner's plan.
 func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
+	t.Parallel()
 	t.Run("owner", func(t *testing.T) {
 		issues := tenIssuesUnder(t, []config.Experiment{planningExperiment(config.ExperimentOn, "a")})
 		for _, issue := range issues {
