@@ -3,13 +3,14 @@ description: >-
   The steps of ci.yaml's kind-image job: packages/daemon/docker/worker.Dockerfile built once per
   run as worker-image.yaml's build builds it, from the same context, BuildKit and layer cache
   scope (cache-from: type=gha,scope=worker-image, main's cache, read and never written here),
-  publishing nothing: the image goes into a docker archive, which each leg of the kind job
-  downloads as the artifact kind-image-worker-image. The kind job runs on a merge group and on a
-  dispatched run with the kind-and-agent-harness input, never on a pull request, so no run of it
-  has a worker-image build of its own head to take the image from. Before the upload, the leak
-  guard's test (scripts/e2e/leak-guard-image-probe.sh) runs in the image, as worker-image.yaml's
-  step after its build runs it. The kind filter of .github/ci-areas.yaml names every file the
-  build and that test read.
+  publishing nothing: the image goes into a docker archive with uncompressed layers, which zstd
+  compresses whole, and each leg of the kind job downloads that as the artifact
+  kind-image-worker-image. The kind job runs on a merge group and on a dispatched run with the
+  kind-and-agent-harness input, never on a pull request, so no run of it has a worker-image build
+  of its own head to take the image from. Before the upload, the leak guard's test
+  (scripts/e2e/leak-guard-image-probe.sh) runs in the image, loaded from the compressed archive,
+  as worker-image.yaml's step after its build runs it. The kind filter of .github/ci-areas.yaml
+  names every file the build and that test read.
 runs:
   using: composite
   steps:
@@ -31,7 +32,9 @@ runs:
     # to their pull-request defaults. The two env names keep the run's event out of the metadata
     # the action logs, as that build's comment says. LEGION_PROBE_SKIP_TLS has the build's final
     # probe run no TLS check, which reaches public sites: the kind tests' pods meet the rig's
-    # stand-ins for them (worker.Dockerfile's ARG).
+    # stand-ins for them (worker.Dockerfile's ARG). The archive's layers are uncompressed, cached
+    # ones included (force-compression), so the zstd step below compresses the image's own bytes
+    # rather than gzip streams it cannot shrink.
     - name: Build the worker image into a docker archive
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       env:
@@ -43,7 +46,7 @@ runs:
         platforms: linux/amd64
         provenance: false
         push: false
-        outputs: type=docker,dest=${{ runner.temp }}/worker-image.tar
+        outputs: type=docker,dest=${{ runner.temp }}/worker-image.tar,compression=uncompressed,force-compression=true
         tags: legion-worker:kind
         cache-from: type=gha,scope=worker-image
         build-args: |
@@ -52,34 +55,48 @@ runs:
         secrets: |
           github_token=${{ github.token }}
 
-    # The leak guard's test inside the image this job built, as worker-image.yaml's step after its
-    # build runs it on the pushed digest: the image's `git` and `jj` wrappers send each push
-    # through the pre-push hook to `legion leak-check`, and a run with the wrappers taken off PATH
-    # is its control (the probe's header says what each arm holds). The archive is loaded into the
-    # runner's Docker, and the image runs by the tag the build gave it, never pulled, as the user
-    # it names, one CHECK line per check.
-    - name: Leak guard test of the built image
+    # The whole archive in one zstd frame, multi-threaded (-T0) with a 1 GiB long-distance window
+    # (--long=30), which finds the files one layer repeats of another. On the uncompressed layers
+    # of main's worker image (6,173 MB), zstd 1.5.5, the runner image's own, wrote 1,957 MB at
+    # level 3 in 69 s of CPU, about 20 s on this runner's four cores, where the gzip layers the
+    # archive held before came to 2,344 MB; level 6 saved 80 MB more for twice the time on this
+    # job, which every kind leg waits on. --rm drops the uncompressed archive once it is written.
+    - name: Compress the worker image archive
       shell: bash
       env:
         ARCHIVE: ${{ runner.temp }}/worker-image.tar
+      run: |
+        zstd -T0 -3 --long=30 --rm -q "$ARCHIVE" -o "$ARCHIVE.zst"
+        ls -l "$ARCHIVE.zst"
+
+    # The leak guard's test inside the image this job built, as worker-image.yaml's step after its
+    # build runs it on the pushed digest: the image's `git` and `jj` wrappers send each push
+    # through the pre-push hook to `legion leak-check`, and a run with the wrappers taken off PATH
+    # is its control (the probe's header says what each arm holds). The compressed archive the
+    # kind legs download is loaded into the runner's Docker through zstd, as internal/kindtest
+    # loads it, and the image runs by the tag the build gave it, never pulled, as the user it
+    # names, one CHECK line per check.
+    - name: Leak guard test of the built image
+      shell: bash
+      env:
+        ARCHIVE: ${{ runner.temp }}/worker-image.tar.zst
         KIND_WORKER_IMAGE: legion-worker:kind
       run: |
-        docker load --input "$ARCHIVE"
+        zstd --decompress --stdout --long=31 "$ARCHIVE" | docker load
         docker run --rm --pull never --entrypoint /bin/bash \
           --volume "$GITHUB_WORKSPACE/scripts/e2e/leak-guard-image-probe.sh:/probe/leak-guard-image-probe.sh:ro" \
           "$KIND_WORKER_IMAGE" /probe/leak-guard-image-probe.sh
 
-    # Layers a docker archive holds are compressed already, so the artifact stores them as they
-    # are. A day is long enough for a re-run of the leg that reads it. The name holds no run
-    # attempt and the upload overwrites: `gh run rerun --job <leg>` starts the leg's attempt
-    # without this job, and a download by name reads the run's artifacts of every attempt, so the
-    # leg finds the image the first attempt built; a re-run of this job uploads the same commit's
-    # image under the same name.
+    # The archive is zstd's already, so the artifact stores it as it is. A day is long enough for
+    # a re-run of the leg that reads it. The name holds no run attempt and the upload overwrites:
+    # `gh run rerun --job <leg>` starts the leg's attempt without this job, and a download by name
+    # reads the run's artifacts of every attempt, so the leg finds the image the first attempt
+    # built; a re-run of this job uploads the same commit's image under the same name.
     - name: Upload the worker image
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: kind-image-worker-image
-        path: ${{ runner.temp }}/worker-image.tar
+        path: ${{ runner.temp }}/worker-image.tar.zst
         compression-level: 0
         retention-days: 1
         if-no-files-found: error

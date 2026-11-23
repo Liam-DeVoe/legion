@@ -7,7 +7,8 @@ description: >-
   the rig is scripts/e2e/lib/kind-sandbox.sh's: kind built with `go install`, the node, registry,
   busybox, NFS server and PostgreSQL images by the digests of their .github/ci-images.yaml rows,
   Agent Sandbox's vendored manifest and gVisor's dated release. The image under test is the
-  archive the kind-image job built (internal/kindtest's ImageArchiveEnv).
+  zstd-compressed archive the kind-image job built, which internal/kindtest (ImageArchiveEnv)
+  decompresses through the runner's zstd as each test's `docker load` reads it.
 
   `leg` chooses the one test step that runs, each a step below of its own with its -run, so a
   reader of the file sees which tests each leg runs: rig the rig's measuring test; shares the
@@ -92,7 +93,7 @@ runs:
       shell: bash
       working-directory: packages/daemon
       env:
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-rig-test.json --packages ./internal/kindtest/ -- -count=1 -timeout 15m -run '^(TestABurstableGVisorPodOnTheKindRigClonesFromTheFakeGitHub)$'
 
@@ -103,7 +104,7 @@ runs:
       shell: bash
       working-directory: packages/daemon
       env:
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-shares-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestShareVolumesMountInAnIssuePodLive)$'
 
@@ -114,7 +115,7 @@ runs:
       shell: bash
       working-directory: packages/daemon
       env:
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-burstable-and-sweep-test.json --packages ./internal/daemon/ -- -count=1 -timeout 20m -run '^(TestABurstableIssuePodRendersLive|TestTheControllerOrphanSweepLive)$'
 
@@ -128,7 +129,7 @@ runs:
       working-directory: packages/daemon
       env:
         GO_TEST_RETRY: "off"
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-root-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^root$'
 
@@ -138,7 +139,7 @@ runs:
       working-directory: packages/daemon
       env:
         GO_TEST_RETRY: "off"
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-secrets-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^secrets$'
 
@@ -148,7 +149,7 @@ runs:
       working-directory: packages/daemon
       env:
         GO_TEST_RETRY: "off"
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-roles-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^roles$'
 
@@ -158,7 +159,7 @@ runs:
       working-directory: packages/daemon
       env:
         GO_TEST_RETRY: "off"
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-adopt-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^adopt$'
 
@@ -168,7 +169,7 @@ runs:
       working-directory: packages/daemon
       env:
         GO_TEST_RETRY: "off"
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-image-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^image$'
 
@@ -178,7 +179,7 @@ runs:
       working-directory: packages/daemon
       env:
         GO_TEST_RETRY: "off"
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-issues-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^issues$'
 
@@ -188,7 +189,7 @@ runs:
       working-directory: packages/daemon
       env:
         GO_TEST_RETRY: "off"
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-pod-update-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^pod-update$'
 
@@ -198,7 +199,7 @@ runs:
       working-directory: packages/daemon
       env:
         GO_TEST_RETRY: "off"
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-runtime-pod-update-fleet-test.json --packages ./internal/runtime/sandbox/ -- -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^pod-update-fleet$'
 
@@ -212,7 +213,7 @@ runs:
       shell: bash
       working-directory: packages/daemon
       env:
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
         LEGION_TEST_KIND_NPM_TARBALLS: ${{ runner.temp }}/npm-tarballs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-claude-test.json --packages ./internal/daemon/ -- -count=1 -timeout 20m -run '^(TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive)$'
@@ -222,7 +223,7 @@ runs:
       shell: bash
       working-directory: packages/daemon
       env:
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bSandboxTreeOnTheKindRigLive)$'
 
@@ -231,7 +232,7 @@ runs:
       shell: bash
       working-directory: packages/daemon
       env:
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-restart-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bDaemonRestartsOnTheKindRigLive)$'
 
@@ -240,7 +241,7 @@ runs:
       shell: bash
       working-directory: packages/daemon
       env:
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-address-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bListenerAddressMoveOnTheKindRigLive)$'
 
@@ -249,7 +250,7 @@ runs:
       shell: bash
       working-directory: packages/daemon
       env:
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-move-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bStreamMoveOnTheKindRigLive)$'
 
@@ -258,7 +259,7 @@ runs:
       shell: bash
       working-directory: packages/daemon
       env:
-        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar
+        LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ runner.temp }}/kind-image/worker-image.tar.zst
         LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
       run: ../../.github/scripts/go-test.sh --jsonfile kind-tree-stage4b-controller-test.json --packages ./internal/daemon/ -- -count=1 -timeout 25m -run '^(TestStage4bControllerRestartOnTheKindRigLive)$'
 

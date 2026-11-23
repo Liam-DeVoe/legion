@@ -1,8 +1,5 @@
 name: CI
 
-# A job joins: an area in .github/ci-areas.yaml, the changes output of its name, a job or leg here
-# whose name: is an expression of its check-run name, its steps in .github/actions/<job>, and a
-# place in ci-ok's needs; CI_OK_SELECTED_BY maps it where its output is not its own id.
 # why: .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs
 
 # why: .github/ci-notes/ci.md#why-the-router-runs-on-these-events-and-no-others
@@ -27,7 +24,7 @@ on:
         required: false
         default: false
 
-# why: .github/ci-notes/ci.md#what-a-newer-push-cancels-and-what-is-never-cancelled
+# why: .github/ci-notes/ci.md#the-routers-concurrency
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -42,7 +39,7 @@ env:
   # why: .github/ci-notes/ci.md#the-go-jobs-module-proxy
   GOPROXY: https://proxy.golang.org|direct
   # why: .github/ci-notes/ci.md#what-ci_ok_selected_by-holds-and-which-programs-read-it
-  CI_OK_SELECTED_BY: '{"daemon-go": "go-daemon", "claude-envoy-names": "pi", "kind-image": "kind", "envoy-go": "go-envoy-held", "envoy-go-race-api": "go-envoy-held", "envoy-go-race-docs": "go-envoy-held", "dispatch-memory": "go-envoy-held"}'
+  CI_OK_SELECTED_BY: '{"daemon-go": "go-daemon", "claude-envoy-names": "pi", "kind-image": "kind", "envoy-go-checks": "go-envoy", "envoy-go": "go-envoy-held", "envoy-go-race-api": "go-envoy-held", "envoy-go-race-docs": "go-envoy-held", "dispatch-memory": "go-envoy-held"}'
   CI_OK_PULL_REQUEST_ONLY: '["worker-image"]'
   # why: .github/ci-notes/ci.md#the-jobs-that-run-on-every-change
   CI_OK_ALWAYS_RUN: '["changes", "lint"]'
@@ -80,7 +77,7 @@ jobs:
       # why: .github/ci-notes/ci.md#the-paths-filters-own-verdict-for-every-filter-before-the-full-ci-term
       filter_verdicts: ${{ github.event_name == 'workflow_dispatch' && '{}' || toJSON(steps.filter.outputs) }}
       unnamed_files: ${{ steps.unnamed.outputs.found }}
-      # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
+      # why: .github/ci-notes/ci.md#a-dispatched-runs-check-names
       ref_is_main: ${{ steps.ref.outputs.is_main }}
     steps:
       - if: github.event_name != 'pull_request'
@@ -97,7 +94,7 @@ jobs:
             .github/scripts/workflow_paths.py
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      # why: .github/ci-notes/ci.md#why-the-filter-step-is-skipped-on-a-dispatched-run
+      # why: .github/ci-notes/ci.md#the-filter-step
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         if: github.event_name != 'workflow_dispatch'
@@ -123,7 +120,7 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
-    # why: .github/ci-notes/ci.md#why-the-lint-job-holds-each-of-its-scopes
+    # why: .github/ci-notes/ci.md#the-lint-jobs-scopes
     permissions: {contents: read, actions: read, checks: write, pull-requests: read}
     strategy:
       fail-fast: false
@@ -135,19 +132,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - name: lint
-        if: matrix.leg == 'lint'
-        uses: ./.github/actions/lint/lint
+      - {if: matrix.leg == 'lint', uses: ./.github/actions/lint/lint}
       - name: private-names
         if: matrix.leg == 'private-names'
         env: {PRIVATE_NAME_TERMS: '${{ secrets.PRIVATE_NAME_TERMS }}'}
         run: '"$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh"'
-      - name: typecheck
-        if: matrix.leg == 'typecheck'
-        uses: ./.github/actions/lint/typecheck
+      - {if: matrix.leg == 'typecheck', uses: ./.github/actions/lint/typecheck}
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
-  # why: .github/ci-notes/ci.md#the-fail-open-jobs-and-what-they-buy-while-changes-is-broken
+  # why: .github/ci-notes/ci.md#the-fail-open-jobs
   scripts:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.scripts == 'true') }}
@@ -171,21 +164,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - name: test
-        if: matrix.leg == 'test'
-        uses: ./.github/actions/scripts/test
-      - name: private-names-port
-        if: matrix.leg == 'private-names-port'
-        uses: ./.github/actions/scripts/private-names-port
-      - name: conflicts-script
-        if: matrix.leg == 'conflicts-script'
-        uses: ./.github/actions/scripts/conflicts-script
-      - name: sessions-script
-        if: matrix.leg == 'sessions-script'
-        uses: ./.github/actions/scripts/sessions-script
+      - {if: matrix.leg == 'test', uses: ./.github/actions/scripts/test}
+      - {if: matrix.leg == 'private-names-port', uses: ./.github/actions/scripts/private-names-port}
+      - {if: matrix.leg == 'conflicts-script', uses: ./.github/actions/scripts/conflicts-script}
+      - {if: matrix.leg == 'sessions-script', uses: ./.github/actions/scripts/sessions-script}
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
-  # why: .github/ci-notes/ci.md#what-the-ci-images-job-copies-and-why-the-order-is-the-point
+  # why: .github/ci-notes/ci.md#the-ci-images-job
   ci-images:
     needs: changes
     if: needs.changes.outputs.ci-images == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -202,7 +187,7 @@ jobs:
         uses: ./.github/actions/ci-images
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
-  # why: .github/ci-notes/ci.md#the-tool-fallback-proof-what-it-drives-what-it-only-reasons-about-and-how-to-read-it-when-it-is-red
+  # why: .github/ci-notes/ci.md#the-tool-fallback-job
   # why: .github/ci-notes/ci.md#the-arm64-half-of-the-tool-fallback-proof
   tool-fallback:
     needs: [changes, ci-images]
@@ -301,7 +286,7 @@ jobs:
       - {if: always(), uses: ./.github/actions/tool-fallback/end}
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
-  # why: .github/ci-notes/ci.md#why-the-daemons-go-suite-is-a-job-of-its-own
+  # why: .github/ci-notes/ci.md#the-go-daemon-job
   go-daemon:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.go-daemon == 'true') }}
@@ -332,7 +317,7 @@ jobs:
           race-timeout: ${{ matrix.race }}
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
-  # why: .github/ci-notes/ci.md#the-jobs-that-carry-a-split-jobs-old-check-run-name
+  # why: .github/ci-notes/ci.md#the-carriers
   daemon-go:
     name: ${{ 'daemon-go / daemon-go' }}
     needs: [changes, go-daemon]
@@ -346,7 +331,7 @@ jobs:
         run: .github/scripts/leg-verdict.sh 'daemon-go (1/3)' 'daemon-go (2/3)' 'daemon-go (3/3)'
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
-  # why: .github/ci-notes/ci.md#why-the-three-plugin-pack-tests-are-a-job-of-their-own
+  # why: .github/ci-notes/ci.md#the-plugin-pack-job
   plugin-pack:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.plugin-pack == 'true') }}
@@ -361,7 +346,7 @@ jobs:
         uses: ./.github/actions/plugin-pack
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
-  # why: .github/ci-notes/ci.md#why-the-daemons-whole-daemon-live-tests-are-a-job-of-their-own
+  # why: .github/ci-notes/ci.md#the-daemon-live-job
   daemon-live:
     needs: changes
     if: needs.changes.outputs.daemon-live == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -453,7 +438,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     name: ${{ 'docs' }}
-    # why: .github/ci-notes/ci.md#why-the-docs-job-declares-the-scopes-the-called-workflow-needs
+    # why: .github/ci-notes/ci.md#the-docs-jobs-scopes
     permissions:
       contents: read
       actions: read
@@ -480,24 +465,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - uses: ./.github/actions/setup-bun
-      - name: contracts
-        if: matrix.leg == 'contracts'
-        uses: ./.github/actions/ts/contracts
-      - name: test-fixtures
-        if: matrix.leg == 'test-fixtures'
-        uses: ./.github/actions/ts/test-fixtures
-      - name: broker-client
-        if: matrix.leg == 'broker-client'
-        uses: ./.github/actions/ts/broker-client
-      - name: envoy-client
-        if: matrix.leg == 'envoy-client'
-        uses: ./.github/actions/ts/envoy-client
-      - name: dispatch-ui
-        if: matrix.leg == 'dispatch-ui'
-        uses: ./.github/actions/ts/dispatch-ui
-      - name: proof-sdk-offline
-        if: matrix.leg == 'proof-sdk-offline'
-        uses: ./.github/actions/ts/proof-sdk-offline
+      - {if: matrix.leg == 'contracts', uses: ./.github/actions/ts/contracts}
+      - {if: matrix.leg == 'test-fixtures', uses: ./.github/actions/ts/test-fixtures}
+      - {if: matrix.leg == 'broker-client', uses: ./.github/actions/ts/broker-client}
+      - {if: matrix.leg == 'envoy-client', uses: ./.github/actions/ts/envoy-client}
+      - {if: matrix.leg == 'dispatch-ui', uses: ./.github/actions/ts/dispatch-ui}
+      - {if: matrix.leg == 'proof-sdk-offline', uses: ./.github/actions/ts/proof-sdk-offline}
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
   # why: .github/ci-notes/ci.md#the-pi-job-and-its-legs
@@ -526,19 +499,10 @@ jobs:
       - {if: matrix.omp, uses: ./.github/actions/install-omp}
       - {if: matrix.leg == 'claude-envoy', uses: ./.github/actions/install-claude-code}
       - {if: matrix.leg == 'claude-envoy', uses: ./.github/actions/install-codex}
-      - name: pi-shared
-        if: matrix.leg == 'pi-shared'
-        uses: ./.github/actions/pi/pi-shared
-      - name: pi-envoy
-        if: matrix.leg == 'pi-envoy'
-        uses: ./.github/actions/pi/pi-envoy
-        with: {nats-port: '${{ job.services.nats.ports[''4222''] }}'}
-      - name: pi-legion
-        if: matrix.leg == 'pi-legion'
-        uses: ./.github/actions/pi/pi-legion
-      - name: claude-envoy
-        if: matrix.leg == 'claude-envoy'
-        uses: ./.github/actions/pi/claude-envoy
+      - {if: matrix.leg == 'pi-shared', uses: ./.github/actions/pi/pi-shared}
+      - {if: matrix.leg == 'pi-envoy', uses: ./.github/actions/pi/pi-envoy, with: {nats-port: '${{ job.services.nats.ports[''4222''] }}'}}
+      - {if: matrix.leg == 'pi-legion', uses: ./.github/actions/pi/pi-legion}
+      - {if: matrix.leg == 'claude-envoy', uses: ./.github/actions/pi/claude-envoy}
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
   # why: .github/ci-notes/ci.md#the-claude-envoy-names-job
@@ -572,18 +536,19 @@ jobs:
       lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # why: .github/ci-notes/ci.md#envoy-gos-fast-half-the-go-format-check-the-two-generated-code-checks-the
+  # why: .github/ci-notes/ci.md#the-go-envoy-job-and-its-legs
   go-envoy:
     needs: changes
     if: needs.changes.outputs.go-envoy == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    name: ${{ format('{0} / {0}', matrix.leg) }}
+    name: ${{ matrix.name || format('{0} / {0}', matrix.leg) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {leg: envoy-go-checks, runner: ubuntu-24.04, timeout: 40}
+          - {leg: envoy-go-checks, name: envoy-go-checks (1/2), runner: ubuntu-24.04, timeout: 25}
+          - {leg: envoy-go-checks-scripts, name: envoy-go-checks (2/2), runner: ubuntu-24.04, timeout: 20}
           - {leg: envoy-infra-go, runner: ubuntu-24.04-arm, timeout: 32}
           - {leg: airlock-lean, runner: ubuntu-24.04-arm, timeout: 45}
           - {leg: envoy-session-stall, runner: ubuntu-24.04, timeout: 30, pg: true}
@@ -599,32 +564,30 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - name: envoy-go-checks
-        if: matrix.leg == 'envoy-go-checks'
-        uses: ./.github/actions/go-envoy/envoy-go-checks
-        with: {migration-base: '${{ inputs.migration-base }}'}
-      - name: envoy-infra-go
-        if: matrix.leg == 'envoy-infra-go'
-        uses: ./.github/actions/go-envoy/envoy-infra-go
-      - name: airlock-lean
-        if: matrix.leg == 'airlock-lean'
-        uses: ./.github/actions/go-envoy/airlock-lean
-      - name: envoy-session-stall
-        if: matrix.leg == 'envoy-session-stall'
-        uses: ./.github/actions/go-envoy/envoy-session-stall
-        with: {postgres: '${{ job.services.postgres.id }}'}
-      - name: envoy-e2e-local
-        if: matrix.leg == 'envoy-e2e-local'
-        uses: ./.github/actions/go-envoy/envoy-e2e-local
-      - name: broker-multiprocess
-        if: matrix.leg == 'broker-multiprocess'
-        uses: ./.github/actions/go-envoy/broker-multiprocess
-      - name: listener-server-change
-        if: matrix.leg == 'listener-server-change'
-        uses: ./.github/actions/go-envoy/listener-server-change
+      - {if: matrix.leg == 'envoy-go-checks', uses: ./.github/actions/go-envoy/envoy-go-checks, with: {migration-base: '${{ inputs.migration-base }}'}}
+      - {if: matrix.leg == 'envoy-go-checks-scripts', uses: ./.github/actions/go-envoy/envoy-go-checks-scripts}
+      - {if: matrix.leg == 'envoy-infra-go', uses: ./.github/actions/go-envoy/envoy-infra-go}
+      - {if: matrix.leg == 'airlock-lean', uses: ./.github/actions/go-envoy/airlock-lean}
+      - {if: matrix.leg == 'envoy-session-stall', uses: ./.github/actions/go-envoy/envoy-session-stall, with: {postgres: '${{ job.services.postgres.id }}'}}
+      - {if: matrix.leg == 'envoy-e2e-local', uses: ./.github/actions/go-envoy/envoy-e2e-local}
+      - {if: matrix.leg == 'broker-multiprocess', uses: ./.github/actions/go-envoy/broker-multiprocess}
+      - {if: matrix.leg == 'listener-server-change', uses: ./.github/actions/go-envoy/listener-server-change}
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
-  # why: .github/ci-notes/ci.md#the-twelve-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
+  envoy-go-checks:
+    name: ${{ 'envoy-go-checks / envoy-go-checks' }}
+    needs: [changes, go-envoy]
+    if: ${{ !cancelled() && needs.changes.outputs.go-envoy == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {sparse-checkout: .github, persist-credentials: false}
+      - env: {GH_TOKEN: '${{ github.token }}'}
+        run: .github/scripts/leg-verdict.sh 'envoy-go-checks (1/2)' 'envoy-go-checks (2/2)'
+      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+
+  # why: .github/ci-notes/ci.md#the-go-envoy-held-job-and-its-legs
   go-envoy-held:
     needs: changes
     if: needs.changes.outputs.go-envoy-held == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -761,7 +724,7 @@ jobs:
         uses: ./.github/actions/go-envoy-held/envoy-smoke
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
-  # why: .github/ci-notes/ci.md#the-jobs-that-carry-a-split-jobs-old-check-run-name
+  # why: .github/ci-notes/ci.md#the-carriers
   envoy-go:
     name: ${{ 'envoy-go / envoy-go' }}
     needs: [changes, go-envoy-held]
@@ -882,7 +845,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # why: .github/ci-notes/ci.md#why-the-browser-images-build-runs-on-a-merge-group-too
+  # why: .github/ci-notes/ci.md#the-browser-image-job
   browser-image:
     needs: changes
     if: needs.changes.outputs.browser-image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -899,7 +862,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # why: .github/ci-notes/ci.md#the-pr-title-job-what-it-checks-and-why-it-posts-nothing
+  # why: .github/ci-notes/ci.md#the-pr-title-job
   pr-title:
     name: ${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
@@ -911,21 +874,17 @@ jobs:
       issues: read
       pull-requests: read
     steps:
-      # why: .github/ci-notes/ci.md#why-pr-title-refuses-a-re-run-attempt-in-a-step-of-its-own
-      - name: Refuse a re-run attempt of a merge-group run
-        if: ${{ github.event_name == 'merge_group' && github.run_attempt != '1' }}
-        env:
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          echo "::error::pr-title is failure on attempt $RUN_ATTEMPT of this merge-group run, whatever the pull request's text says: a merge group is tested once, the queue builds a new group rather than re-running one, and this attempt checks a tree the queue is no longer waiting on."
-          exit 1
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
           persist-credentials: false
 
-      # why: .github/ci-notes/ci.md#what-the-pr-title-check-step-maps-and-how-it-runs-its-scripts
+      # why: .github/ci-notes/ci.md#why-pr-title-refuses-a-re-run-attempt-in-a-step-of-its-own
+      - name: Refuse a re-run attempt of a merge-group run
+        if: ${{ github.event_name == 'merge_group' && github.run_attempt != '1' }}
+        run: .github/scripts/refuse-run.sh pr-title-attempt
+
+      # why: .github/ci-notes/ci.md#the-pr-title-check-step
       - name: Check the pull request's title, body, branch name, commits, comments and reviews
         env:
           GH_TOKEN: ${{ github.token }}
@@ -953,18 +912,18 @@ jobs:
           RUN_ID: ${{ github.run_id }}
         run: .github/scripts/cancel-started-act.sh
 
-  # why: .github/ci-notes/ci.md#the-verdict-and-one-of-the-two-checks-mains-ruleset-requires-of
+  # why: .github/ci-notes/ci.md#the-ci-ok-job
   ci-ok:
-    # why: .github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own
+    # why: .github/ci-notes/ci.md#a-dispatched-runs-check-names
     name: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}
-    needs: [changes, lint, scripts, ci-images, tool-fallback, go-daemon, daemon-go, plugin-pack, daemon-live, agent-harness, kind-image, kind, docs, ts, pi, claude-envoy-names, dispatch-browser, go-envoy, go-envoy-held, envoy-go, envoy-go-race-api, envoy-go-race-docs, dispatch-memory, airlock-arm, text-checks, notices, worker-image, browser-image]
+    needs: [changes, lint, scripts, ci-images, tool-fallback, go-daemon, daemon-go, plugin-pack, daemon-live, agent-harness, kind-image, kind, docs, ts, pi, claude-envoy-names, dispatch-browser, go-envoy, envoy-go-checks, go-envoy-held, envoy-go, envoy-go-race-api, envoy-go-race-docs, dispatch-memory, airlock-arm, text-checks, notices, worker-image, browser-image]
     if: ${{ always() }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       checks: write
     steps:
-      # why: .github/ci-notes/ci.md#the-job-reads-nothing-of-the-tree-but-ci-oksh-ci-okjq-ci-ok-reconcilesh-and
+      # why: .github/ci-notes/ci.md#what-ci-ok-checks-out
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
@@ -973,18 +932,12 @@ jobs:
       # why: .github/ci-notes/ci.md#why-a-draft-pull-request-is-refused-in-a-step
       - name: Refuse a draft pull request
         if: ${{ github.event.pull_request.draft }}
-        run: |
-          echo "::error::ci-ok is failure because this pull request is a draft: every other job of this run skipped, so nothing in it has been tested. Mark the pull request ready for review: that starts a run which selects by the same diff and concludes a real verdict over it."
-          exit 1
+        run: .github/scripts/refuse-run.sh ci-ok-draft
 
       # why: .github/ci-notes/ci.md#why-a-re-run-attempt-of-a-merge-group-run-is-refused-in-a-step
       - name: Refuse a re-run attempt of a merge-group run
         if: ${{ github.event_name == 'merge_group' && github.run_attempt != '1' }}
-        env:
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          echo "::error::ci-ok is failure on attempt $RUN_ATTEMPT of this merge-group run, whatever the jobs of it did: a merge group is tested once, the queue builds a new group rather than re-running one, and this attempt judges a tree the queue is no longer waiting on."
-          exit 1
+        run: .github/scripts/refuse-run.sh ci-ok-attempt
 
       - name: Download the Go steps' gotestsum jsonfiles
         if: ${{ always() }}
@@ -999,7 +952,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/go-test-reports"
           .github/scripts/ci-ok-retries.sh "$RUNNER_TEMP/go-test-reports"
 
-      # why: .github/ci-notes/ci.md#needs-is-tojsonneeds-changes-result-and-outputs-with-every-other-jobs-result
+      # why: .github/ci-notes/ci.md#what-needs-holds
       - name: Judge every job of this run
         env:
           NEEDS: ${{ toJSON(needs) }}
@@ -1011,7 +964,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: .github/scripts/ci-ok.sh
 
-      # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
+      # why: .github/ci-notes/ci.md#the-reconcile-step
       - name: Set every other ci-ok on this head to this job's conclusion
         if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}
         env:

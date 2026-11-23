@@ -42,6 +42,11 @@ The docs site's build on a push to main, and its GitHub Pages
 deploy, are docs-pages.yaml's, a workflow of its own whose header says why: it builds on every
 push to main, with no path filter.
 
+A job joins the router in five places: an area in .github/ci-areas.yaml, the `changes` output of
+its name, a job or a leg of this file whose `name:` is an expression of its check-run name, its
+steps in .github/actions/<job>, and a place in ci-ok's `needs:`; CI_OK_SELECTED_BY maps it where
+its output is not its own id.
+
 What a workflow file of this repository holds, and where its longer shell bodies and its prose
 go instead, is the rule .github/ci-notes/README.md writes down. Each `changes` output that hands
 on a filter's verdict reads `steps.filter.outputs.<name>`, and rule 19 of
@@ -65,7 +70,7 @@ to it under a `permissions:` block of its own, and that workflow's job ends with
 An output an event must force is written in `changes`' outputs rather than left to its filter,
 as every output's workflow_dispatch case is, and so is one an event must hold back, as the slow
 suites' pull-request case is
-(.github/ci-notes/ci.md#the-twelve-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
+(.github/ci-notes/ci.md#the-go-envoy-held-job-and-its-legs).
 .github/scripts/check-ci-layout.sh holds all of it, its header numbering each rule, and
 .github/scripts/check-workflow-files.sh holds this file to 30 jobs besides the carriers of a split
 job's old name. The re-run term is on every job but `ci-ok` and
@@ -171,7 +176,7 @@ No `paths:`: every change starts this workflow, and `changes` selects what runs.
 on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts
 no run (pr-title.yaml checks those). `ready_for_review` starts the run a draft skipped. No
 `closed`: tests-closed.yaml cancels a closed pull request's run
-(.github/ci-notes/ci.md#what-a-newer-push-cancels-and-what-is-never-cancelled).
+(.github/ci-notes/ci.md#the-routers-concurrency).
 merge_group runs the router on the merge queue's commit of each queued group: `changes` selects
 by what the queued change touches against the queue base (the group's base_sha..head_sha), and
 ci-ok reports there, so the required checks pass on the merged tree before anything lands. No
@@ -181,7 +186,7 @@ workflow_dispatch is the bypass check's (.github/workflows/main-bypass-check.yam
 run at main's tip when a commit reached main without a passing merge-group ci-ok, and `changes`
 selects every job there. A dispatch of any other ref is a full run started by hand (`gh
 workflow run ci.yaml --ref <branch>`), and it reports under names of its own
-(.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
+(.github/ci-notes/ci.md#a-dispatched-runs-check-names).
 
 ## The migration-base input
 
@@ -197,7 +202,7 @@ The layout's changes job leaves kind and agent-harness out of a dispatched run u
 input is true (main-bypass-check.yaml sets it), since every other dispatched run would add their
 job-minutes.
 
-## What a newer push cancels, and what is never cancelled
+## The router's concurrency
 
 A newer push to a pull request cancels its older run, waiting or running. On pull_request the key
 is the pull request's number: tests-closed.yaml joins this same group when the pull request
@@ -317,7 +322,7 @@ reads it beside filter_verdicts on a merge group.
 On a pull request the paths filter and the unnamed-file step read the file list from the API:
 the filters and what the unnamed-file step runs are the whole checkout they need.
 
-## The twelve slow suites, whose runner time dwarfs every other job's. The
+## The go-envoy-held job and its legs
 
 The twelve slow suites, whose runner time dwarfs every other job's. The merge queue runs
 them on the tree the change lands as, and that is where their result normally comes from;
@@ -349,7 +354,7 @@ ci-ok-report.sh both already have it. It is the one filter step's outputs as one
 On a dispatched run that step is skipped and this is `{}`, which is right - the label
 holds nothing back there, and the changes job's other outputs are all 'true'.
 
-## Why the filter step is skipped on a dispatched run
+## The filter step
 
 A dispatched run selects every job through the changes job's outputs, so there is nothing to
 filter, and paths-filter has no diff base on workflow_dispatch: a step that failed here
@@ -362,7 +367,7 @@ tests no output of it: the R3 search (.github/scripts/check-test-reach.sh) is a 
 leg. .github/actions/lint/<leg> holds a leg's steps; the private-names leg runs one script, the
 one step that reads the deployment's term list.
 
-## Why the lint job holds each of its scopes
+## The lint job's scopes
 
 The ci-ok-report step is the whole of this job's GitHub writing: it posts a failing ci-ok
 with `checks: write` and names the run's jobs in it with `actions: read`. `contents: read`
@@ -371,7 +376,7 @@ about to refuse a change it reads every open pull request of the repository, wit
 each changes, to name a number no other one has taken. The pull request's text is the
 `pr-title` job's, which declares the scopes its own routes read.
 
-## What the ci-images job copies, and why the order is the point
+## The ci-images job
 
 Copies every row .github/ci-images.yaml names into ghcr.io/cybermonklabs/legion/ci, then reads the
 package to check that it holds every row. The order is the point: the read fails a row the
@@ -393,7 +398,7 @@ packages: write is the ghcr.io push, which is `crane copy` for an image row and 
 registry API call .github/scripts/mirror-ci-tools.sh makes for a tool row; actions: read
 and checks: write are the ci-ok-report step's.
 
-## The tool fallback proof: what it drives, what it only reasons about, and how to read it when it is red
+## The tool-fallback job
 
 The live proof of the second source every tool install of this repository now has: it faults
 the host the first source is on, installs all eight tools through the source
@@ -526,7 +531,7 @@ changie-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64, each installed once 
 release asset and once under the fault, where each must read its ghcr copy and each install's
 own 504 is read after a probe of its own (the called file's comments say how). Those faulted
 installs read the copies the ci-images job fills, so this job needs that job for order and
-carries `!cancelled()`, as tool-fallback does and for the reason #the-tool-fallback-proof-what-it-drives-what-it-only-reasons-about-and-how-to-read-it-when-it-is-red gives.
+carries `!cancelled()`, as tool-fallback does and for the reason #the-tool-fallback-job gives.
 
 ## Why the tool-fallback-arm job needs no other scope
 
@@ -534,7 +539,7 @@ contents: read is the checkout's; actions: read and checks: write are the ci-ok-
 step's. Both sources serve this job's bytes without a credential, so it needs no other
 scope.
 
-## The fail-open jobs, and what they buy while changes is broken
+## The fail-open jobs
 
 lint, typecheck, test, daemon-go, plugin-pack, private-names-port, sessions-script and
 text-checks are jobs ci-ok condenses; main's ruleset requires none of their names. Fail-open:
@@ -562,13 +567,13 @@ script it tests, handed down as an input of the same name
 own filter names every one of those lists, since a job's `if:` tests one output and a step
 gate decides nothing in a job that was not selected.
 
-## Why the daemon's Go suite is a job of its own
+## The go-daemon job
 
 The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, with the
 Postgres, the tools and the cache they need. It left the test job in dispatch://INFRA-1413,
 where one filter had to cover both: a change to a shell script, to packages/claude-envoy or
 to bun.lock ran 1,083 s (median) of Go tests that could not see it. Fail-open with typecheck
-and test, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives.
+and test, for the reason #the-fail-open-jobs gives.
 
 The daemon's Go suite runs in three legs of go-daemon: at two, one leg's -run would be about
 136 KB of test names, past the 131,072 bytes Linux takes in one argument
@@ -576,15 +581,16 @@ The daemon's Go suite runs in three legs of go-daemon: at two, one leg's -run wo
 check-run name. Its Postgres service runs ghcr.io/cybermonklabs/legion/ci, the copy of
 pgvector/pgvector (.github/ci-images.yaml).
 
-## The jobs that carry a split job's old check-run name
+## The carriers
 
 A job split into legs keeps its old check-run name on a job of its own, which needs the legs'
 job, runs under their gate and passes only when each of its own legs' newest record passed
 (.github/scripts/leg-verdict.sh): a failure in another suite's leg leaves it passing. daemon-go
-carries go-daemon's legs' name; envoy-go, envoy-go-race-api, envoy-go-race-docs and
-dispatch-memory carry the old check-run names of go-envoy-held's split suites the same way.
+carries go-daemon's legs' name; envoy-go-checks carries go-envoy's two envoy-go-checks legs';
+envoy-go, envoy-go-race-api, envoy-go-race-docs and dispatch-memory carry the old check-run
+names of go-envoy-held's split suites the same way.
 
-## Why the three plugin pack tests are a job of their own
+## The plugin-pack job
 
 The three tests of the daemon's Go suite that this job's -run names: the one that packs the two
 plugin releases and loads them, and the
@@ -595,7 +601,7 @@ to either ran the daemon's whole Go suite. Here they run on their own inputs, an
 daemon-go race step skips them by name (check-ci-layout.sh's rule 22 holds the -skip to the
 -run).
 
-## Why the daemon's whole-daemon live tests are a job of their own
+## The daemon-live job
 
 The ten whole-daemon live tests of the daemon's Go suite that
 this job's -run names: each boots the whole daemon over
@@ -641,6 +647,17 @@ worker-image.yaml's step after its build does: a merge group has no worker-image
 where it tests the leak guard of the image its kind legs run. The docker load that step needs
 costs the kind chain its time.
 
+The archive is zstd's, whole: its layers left uncompressed by the build, then one zstd frame at
+level 3 with a 1 GiB window (`-T0 -3 --long=30`), which the probe and each kind leg's
+internal/kindtest decompress as `docker load` reads them (`zstd -dc --long=31`), zstd being the
+runner image's own. Until then the artifact was the build's archive of gzip layers, 2,343.7 MB,
+which zstd cannot shrink; each kind leg's download of it took 0.3 to 5.0 minutes in CI runs
+45122591447, 45150132444 and 45165092344, and one of 45165092344's ran into its 10-minute bound.
+On the uncompressed layers of main's worker image, 6,173 MB, zstd 1.5.5 wrote 1,957 MB at that
+setting in 69 s of CPU, 16.5 % less than the gzip layers: level 3 without the long window wrote
+2,170 MB, level 6 with it 1,877 MB for twice the CPU, level 9 without it 1,983 MB in 223 s
+(measured on a devbox, not a runner).
+
 ## The kind job and its legs
 
 The kind rig: legs that each bring up a kind cluster on the runner with Agent Sandbox's controller
@@ -681,7 +698,7 @@ this head runs them, to the frozen shell script's verdicts case for case
 dispatch://INFRA-1413: the harness builds ./cmd/legion, so that job's filter had to name the
 whole closure of that build, and a change to any package of the daemon ran thirty-odd shell
 harnesses and the Bun suites of scripts/ that could not see it. Fail-open with typecheck,
-test, daemon-go and plugin-pack, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives, and as this step
+test, daemon-go and plugin-pack, for the reason #the-fail-open-jobs gives, and as this step
 ran while it was one of the test job's.
 
 ## The docs job
@@ -699,7 +716,7 @@ among them.
 No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
 docs-site.yaml's own job carries the limit.
 
-## Why the docs job declares the scopes the called workflow needs
+## The docs job's scopes
 
 A calling job that declares no `permissions:` hands the called workflow the default
 GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow reference,
@@ -795,7 +812,7 @@ carrying `full-ci`, and every other event, gets the full lane. That is what lets
 recheck a slow-suite failure on a pull request: the label picks the lane, while the
 `dispatch_browser` output of `changes` runs the suite either way.
 
-## envoy-go's fast half: the Go format check, the two generated-code checks, the
+## The go-envoy job and its legs
 
 envoy-go's fast half: the Go format check, the two generated-code checks, the shell-script
 tests, the vet of the module as darwin compiles it, and the build and pack of
@@ -816,6 +833,16 @@ spec.
 
 go-envoy holds envoy's suites a pull request runs whenever its filter selects them, a leg each
 named with its old job's check-run name; .github/actions/go-envoy/<leg> holds the leg's steps.
+
+envoy-go-checks is two legs, as its one job took 23.4 to 25.5 minutes in CI runs 45122591447,
+45150132444 and 45165092344, against R9's mean of 25 at most. Its shell scripts' isolation tests
+took 15 to 18 of them, and need neither Go nor bun: envoy-go-checks (2/2)
+(.github/actions/go-envoy/envoy-go-checks-scripts) runs them, 9.2 to 12.0 minutes by those runs'
+step times. envoy-go-checks (1/2) runs the rest, the load-test cluster's test among them, which
+runs helm through `go run`: 13.7 to 14.5 minutes. Both run on ubuntu-24.04, as the old job did,
+and the envoy-go-checks job carries the old name over both. The Go steps of (1/2) take the merge
+group's retry, whose three test steps took under a minute together, so its 25 minutes hold the
+rule's sum; (2/2) runs no Go test and keeps 20.
 
 ## What the envoy-go job runs
 
@@ -1170,7 +1197,7 @@ step) and its `attest` job's id-token and attestations: write. A pull request ru
 `attest` (its `if:` requires `github.event_name != 'pull_request'`), and, passing no
 `attest_digest`, leaves it empty, so the build job runs.
 
-## Why the browser image's build runs on a merge group too
+## The browser-image job
 
 The browser image's build: browser-image.yaml builds .github/docker/browser.Dockerfile and
 pushes it when the package does not already hold an image built from it. Unlike the worker-image
@@ -1188,7 +1215,7 @@ event, a pull request's run included, because the two-push order .github/ci-imag
 header describes has a pull request's run push the image the rows then pin
 (browser-image.yaml's `attest` job says why).
 
-## The pr-title job: what it checks, and why it posts nothing
+## The pr-title job
 
 pr-title, the other check main's ruleset requires of this router, and with `ci-ok` one of the
 two jobs of this file named for a required check. A pull request's title, body and commit
@@ -1216,7 +1243,7 @@ two events this job runs on rather than excluding the draft alone. Skipped there
 posts a check run, and a skipped one is a pass. GitHub does not evaluate the name of a job it
 skips, so on every run that skips this one, a dispatch of any branch and a draft's run, the
 check run carries its `name:` expression's own text and not `pr-title`
-(.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
+(.github/ci-notes/ci.md#a-dispatched-runs-check-names).
 
 The job reads nothing of the tree but find-pr-payload.sh, check-pr-text.sh and the
 check-private-names.sh that one runs, so the .github cone is the whole checkout it needs.
@@ -1240,10 +1267,11 @@ the verdict, and refuses such an attempt in a step instead. `ci-ok` carries that
 for the same reason, and the two share the rule because they are the two jobs named for a
 check main's ruleset requires: an `if:` can only take the job away, a skipped job's check
 run is a passing required check, and a dead group must get a real failure rather than the
-check concluded by nothing. It comes before the checkout because no step after it runs
-once it has failed.
+check concluded by nothing. It comes right after the sparse checkout, which brings
+.github/scripts/refuse-run.sh, the script that prints the refusal (as ci-ok's two refusals
+do), and before the check step, since no step after it runs once it has failed.
 
-## What the pr-title check step maps, and how it runs its scripts
+## The pr-title check step
 
 PRIVATE_NAME_TERMS is the deployment's own list, which check-private-names.sh's fifth rule
 reads and requires on a merge group (that script's header). Both scripts run by the
@@ -1303,7 +1331,7 @@ the run it runs in.
 The job reads nothing of the tree but .github/scripts/cancel-started-act.sh and the
 merge-group-cancels.sh it runs, so the .github cone is the whole checkout it needs.
 
-## The verdict, and one of the two checks main's ruleset requires of
+## The ci-ok job
 
 The verdict, and one of the two checks main's ruleset requires of this router. It needs every
 job of this file but itself, `cancel-started` and `pr-title`
@@ -1365,7 +1393,7 @@ passed only on its retry and each package that failed with no test failing. A ru
 all skipped uploads none, and the step after the download says so; the report decides nothing of
 the verdict.
 
-## The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and
+## What ci-ok checks out
 
 The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and the
 gh-read.sh and runner-shutdown.sh they source, and ci-ok-retries.sh and the go-test.jq it
@@ -1376,7 +1404,7 @@ includes, so the .github cone is the whole checkout it needs.
 A draft pull request has asked for no test: every other job of this file is skipped
 there, by the draft term `changes` carries or one of its own, so what this job would
 judge is a run of nothing but skips. The refusal is a step and not a term of this job's
-`if:`, as .github/ci-notes/ci.md#the-verdict-and-one-of-the-two-checks-mains-ruleset-requires-of
+`if:`, as .github/ci-notes/ci.md#the-ci-ok-job
 says: the `if:` would skip the job, and a skipped
 job's check run is a passing required check, so the draft would carry a green ci-ok
 nothing judged.
@@ -1401,7 +1429,7 @@ and what a dead group must get is a verdict, so the job runs and a step of it fa
 It comes after the checkout because the reconciliation step, "Set every other ci-ok on this head to this job's conclusion", runs under `always()`
 and reads ci-ok-reconcile.sh out of the tree.
 
-## NEEDS is `toJSON(needs)`: `changes`' result and outputs with every other job's result
+## What NEEDS holds
 
 NEEDS is `toJSON(needs)`: `changes`' result and outputs with every other job's result,
 which is the shape ci-ok.sh takes. A failure here fails the job, and the job's check run
@@ -1412,7 +1440,7 @@ runner's shutdown annotation tells a job the platform killed from one the change
 `checks: read` it needs; the reconcile step, "Set every other ci-ok on this head to this job's conclusion", reads the same route with the same
 token. GITHUB_REPOSITORY and GITHUB_RUN_ID, the rest of what it reads, are Actions' own.
 
-## Why every other ci-ok on this head is set to this job's conclusion
+## The reconcile step
 
 A ci-ok the ci-ok-report step posted stays on the head as it was: no re-run updates a
 check run a job created with POST, and it can sit in another workflow's check suite, so a
@@ -1424,7 +1452,7 @@ after the verdict, the "Judge every job of this run" step, failed. On a dispatch
 exactly refs/heads/main the step is skipped: that run's verdict is not the head's ci-ok, so it
 sets no ci-ok of the head either (the next section says why).
 
-## Why a dispatched run off main reports under names of its own
+## A dispatched run's check names
 
 A workflow_dispatch run of a ref other than main tests that ref's own tree, while a pull
 request's run tests the merge of the branch with its base. Both put their check runs on the

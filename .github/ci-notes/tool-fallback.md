@@ -14,7 +14,7 @@ The steps of ci.yaml's `tool-fallback` job, in a file of its own.
 ci.yaml's job of the same id calls this file, and that caller keeps `needs: [changes, ci-images]`
 and the whole `if:` that decides whether these steps run, so this file carries no `if:` of its
 own. The notes on that job,
-.github/ci-notes/ci.md#the-tool-fallback-proof-what-it-drives-what-it-only-reasons-about-and-how-to-read-it-when-it-is-red,
+.github/ci-notes/ci.md#the-tool-fallback-job,
 say what the proof is and why it is permanent.
 
 The split is for the filters. The tool_fallback filter names this file beside ci.yaml, so a

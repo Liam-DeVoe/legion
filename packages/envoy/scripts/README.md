@@ -181,8 +181,8 @@ work directories under `TMPDIR`, two brokers with the whole airlock block on one
 database, one front over each pair of ports, the options reaching the brokers, the
 enrolment written beside the session key, the session's renewer, the usage error,
 and the cleanup stopping everything it started — with no real Postgres, no network
-and no Go build; CI runs it in the `envoy-go-checks` job
-(`.github/actions/go-envoy/envoy-go-checks`).
+and no Go build; CI runs it in the `envoy-go-checks` job's second leg
+(`.github/actions/go-envoy/envoy-go-checks-scripts`).
 
 `dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
 the stack with one broker and `BROKER_LEASE_SECONDS=91`, the shortest lease the

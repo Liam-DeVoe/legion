@@ -6,7 +6,7 @@ description: >-
   .github/ci-tools.yaml the package does not hold. The job holds `packages: write` for the
   pushes; this action logs in with the job's token. It runs on ubuntu-24.04-arm, after the job's
   checkout.
-# why: .github/ci-notes/ci.md#what-the-ci-images-job-copies-and-why-the-order-is-the-point
+# why: .github/ci-notes/ci.md#the-ci-images-job
 runs:
   using: composite
   steps:

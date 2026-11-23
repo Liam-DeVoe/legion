@@ -54,11 +54,12 @@ import (
 
 // The variables the kind job hands the rig. The worker image under test comes by one of the first
 // two: ImageEnv names it by digest in a registry this host can pull from (the image a
-// pull request's worker-image job pushed), and ImageArchiveEnv names a `docker save` archive of it
-// (the image the kind job built itself). LogDirEnv names the directory a failed test's cluster
-// state goes to, which the job uploads. NPMTarballsEnv names a directory of npm tarballs, which a
-// test serves from the rig's npm stand-in (TLSSites.ServeNPMLock): the job's setup fetches them by
-// a lock's resolved URLs, since a test's pods reach no registry outside the runner.
+// pull request's worker-image job pushed), and ImageArchiveEnv names a docker archive of it (the
+// image the kind job built itself), compressed with zstd when its name ends in .zst. LogDirEnv
+// names the directory a failed test's cluster state goes to, which the job uploads.
+// NPMTarballsEnv names a directory of npm tarballs, which a test serves from the rig's npm
+// stand-in (TLSSites.ServeNPMLock): the job's setup fetches them by a lock's resolved URLs, since
+// a test's pods reach no registry outside the runner.
 const (
 	ImageEnv        = "LEGION_TEST_KIND_IMAGE"
 	ImageArchiveEnv = "LEGION_TEST_KIND_IMAGE_ARCHIVE"
@@ -640,7 +641,12 @@ func (r *Rig) loadWorkerImage(t *testing.T) string {
 		return image
 	}
 	archive := os.Getenv(ImageArchiveEnv)
-	out := r.docker(t, "load", "--input", archive)
+	var out string
+	if strings.HasSuffix(archive, ".zst") {
+		out = loadZstdArchive(t, archive)
+	} else {
+		out = r.docker(t, "load", "--input", archive)
+	}
 	loaded := regexp.MustCompile(`(?m)^Loaded image(?: ID)?: (\S+)$`).FindStringSubmatch(out)
 	if loaded == nil {
 		t.Fatalf("docker load of %s named no image: %s", archive, out)
@@ -649,6 +655,45 @@ func (r *Rig) loadWorkerImage(t *testing.T) string {
 	// The archive stays: each kind test of the job brings up a rig of its own, and each loads the
 	// image from it again.
 	return loaded[1]
+}
+
+// loadZstdArchive runs `zstd --decompress --stdout --long=31 archive | docker load` and returns
+// what docker load printed: zstd decompresses the archive as docker reads it, so no uncompressed
+// copy of the multi-gigabyte image lands on the disk. --long=31 admits the long window the
+// kind-image job compresses with (.github/actions/kind/image). Each end of the pipe is closed in
+// this process once its command holds it, so a docker load that stops early ends zstd's writes
+// rather than leaving zstd blocked on a full pipe.
+func loadZstdArchive(t *testing.T, archive string) string {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("a pipe from zstd to docker load: %v", err)
+	}
+	var zstdErr, loadOut bytes.Buffer
+	unzstd := exec.Command("zstd", "--decompress", "--stdout", "--long=31", archive)
+	unzstd.Stdout, unzstd.Stderr = write, &zstdErr
+	load := exec.Command("docker", "load")
+	load.Stdin, load.Stdout, load.Stderr = read, &loadOut, &loadOut
+	if err := unzstd.Start(); err != nil {
+		read.Close()
+		write.Close()
+		t.Fatalf("zstd --decompress %s: %v", archive, err)
+	}
+	write.Close()
+	loadStarted := load.Start()
+	read.Close()
+	if loadStarted != nil {
+		_ = unzstd.Process.Kill()
+		_ = unzstd.Wait()
+		t.Fatalf("docker load: %v", loadStarted)
+	}
+	loadErr := load.Wait()
+	unzstdErr := unzstd.Wait()
+	if loadErr != nil || unzstdErr != nil {
+		t.Fatalf("zstd --decompress --stdout --long=31 %s | docker load: zstd: %v %s; docker load: %v %s",
+			archive, unzstdErr, strings.TrimSpace(zstdErr.String()), loadErr, strings.TrimSpace(loadOut.String()))
+	}
+	return loadOut.String()
 }
 
 // buildStandInImage builds, FROM worker, the image every pod of a kind test starts, under the user

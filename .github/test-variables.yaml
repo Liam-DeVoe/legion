@@ -130,7 +130,7 @@ variables:
   LEGION_TEST_KIND_IMAGE_ARCHIVE:
     class: set
     jobs: [kind]
-    why: The archive of the worker image the kind-image job builds, which the kind rig loads into its node.
+    why: The zstd-compressed archive of the worker image the kind-image job builds, which the kind rig decompresses as docker loads it, and then loads into its node.
   LEGION_TEST_KIND_NPM_TARBALLS:
     class: set
     jobs: [kind]

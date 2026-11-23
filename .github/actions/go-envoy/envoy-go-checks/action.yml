@@ -1,11 +1,14 @@
 name: envoy-go-checks
 description: >-
-  The envoy-go-checks leg of ci.yaml's go-envoy job, which carries that old check-run name: envoy's
+  The envoy-go-checks (1/2) leg of ci.yaml's go-envoy job, one of the two legs that run the old
+  envoy-go-checks job's steps (the envoy-go-checks carrier passes only when both passed): envoy's
   checks that need no database - Go formatting, the architecture-note and spec-file actions and
   their packages' tests, the listener's wire package and its clients, the generated contracts and
   OpenAPI document, the pmdoc fixtures, the proof editor's parity fuzz, the web app's
-  display-tree fixture, the isolation tests of envoy's shell scripts, the edited-migrations check,
-  the darwin vet and the release's listener archives. Its leg runs on ubuntu-24.04, the runner
+  display-tree fixture, the load-test cluster's test, which runs helm through `go run`, the
+  edited-migrations check, the darwin vet and the release's listener archives. The other shell
+  scripts' isolation tests, which need neither Go nor bun, are the envoy-go-checks (2/2) leg's
+  (.github/actions/go-envoy/envoy-go-checks-scripts). Its leg runs on ubuntu-24.04, the runner
   release-envoy-listener.yaml builds the release's listener archives on: the pack step builds those
   archives as the release does, with no CGO_ENABLED, and Go turns cgo on for a native build where
   gcc is present and off for a cross build, so on this runner that gives the release's own pair, an
@@ -170,70 +173,10 @@ runs:
       uses: ./.github/actions/go-test-upload
       with:
         name: go-envoy-envoy-go-checks-web-fixture
-    - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash scripts/dev-broker.test.sh
-    - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash scripts/dev-airlock.test.sh
-    - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash scripts/dev-stack.test.sh
-    - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash scripts/project-secrets-check.test.sh
-    - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash scripts/callout-check.test.sh
-    - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash scripts/dev-postgres.test.sh
-    - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash scripts/daemon-release-gate.test.sh
-    - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash scripts/legacy-subjects-gate.test.sh
-    - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash loadtest/run-step.test.sh
-    - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash loadtest/common.test.sh
     - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
       shell: bash
       working-directory: packages/envoy
       run: bash loadtest/cluster/cluster.test.sh
-    - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash loadtest/vm/vm.test.sh
-    - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash loadtest/vm/sample.test.sh
-    # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
-    # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale.
-    - name: Rollback and credential test for deploy/scripts/autodeploy.sh (fakes docker/jj/curl and a libpq client; the runner's docker compose resolves the compose file; no Postgres)
-      shell: bash
-      working-directory: packages/envoy
-      run: |
-        sudo locale-gen en_US.UTF-8
-        bash deploy/scripts/autodeploy_test.sh
-    - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker but for the runner's docker compose, which resolves the compose file)
-      shell: bash
-      working-directory: packages/envoy
-      run: bash deploy/scripts/up-dispatch_test.sh
     - name: Build envoy services
       shell: bash
       working-directory: packages/envoy
