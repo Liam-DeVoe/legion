@@ -800,7 +800,7 @@ token is bound to are `409 KEY_BINDS_READ_TOKEN`, beside the `409 KEY_HOLDS_LIVE
 key another live credential holds, and a Google machine's or a person's trade is
 `400 invalid_grant`.
 
-The broker keeps a token narrowed to reading in a table of its own, which migration 0041 adds
+The broker keeps a token narrowed to reading in a table of its own, which migration 0042 adds
 (`oauth_narrowed_access_tokens`), and decides at each introspection whether it is still live: its
 own row, the launcher credential it names and, for a machine login's trade, that login's access
 token must all be live. A broker of an older build reads nothing of that table, so while the

@@ -16,7 +16,7 @@ body: |-
   a live read token is bound to. A read trade whose proof key holds a launcher credential, such as
   a person's sign-in, sends a second proof in the `DPoP-Holder` header. A key made for the token's
   holder signs that proof, and the broker binds the token to that key. The broker keeps a narrowed
-  token in a table of its own (migration 0041), so an older broker answers it inactive.
+  token in a table of its own (migration 0042), so an older broker answers it inactive.
 
   A person can make a personal token that only reads: Settings → Agent tokens offers "Read only".
   Such a token holds `read` alone or beside `person`, and never beside `approve`. No existing token
