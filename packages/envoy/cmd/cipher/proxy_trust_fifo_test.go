@@ -2,13 +2,16 @@
 
 // packages/envoy/cmd/cipher/proxy_trust_fifo_test.go
 //
-// A named pipe that the command's settings name: opening one for reading waits for a writer that
-// never comes, so a read of it would hang agent-secrets before the command runs.
+// A named pipe or a device that the command's settings name: opening a named pipe for reading
+// waits for a writer that may never come, so agent-secrets opens one without waiting, and reads
+// what a writer sends.
 package main
 
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -36,11 +39,35 @@ func TestProxyRootsTrustedSkipsANamedPipeInACertificateDirectory(t *testing.T) {
 	}
 }
 
-// TestPrepareAirlockSkipsANamedPipeATrustVariableOrWgetrcNames: a trust variable or WGETRC naming
-// a named pipe, for a command that otherwise needs no bundle. Neither the decision nor the bundle
-// writer opens the pipe: prepareAirlock answers, and writes the bundle, since a file it cannot
-// read cannot show that it holds the root.
-func TestPrepareAirlockSkipsANamedPipeATrustVariableOrWgetrcNames(t *testing.T) {
+// runPrepareAirlock runs prepareAirlock for environ and a release carrying caPEM, bounded by the
+// test's deadline so that a read that waits forever fails the test rather than hanging it, and
+// answers the files it wrote.
+func runPrepareAirlock(t *testing.T, what string, environ []string, caPEM string) airlockFiles {
+	t.Helper()
+	type answer struct {
+		files airlockFiles
+		err   error
+	}
+	release := testRelease("AIRLOCK_ME", []string{"api.example.com"}, nil)
+	release.CACertificate = caPEM
+	answered := make(chan answer, 1)
+	go func() {
+		files, err := prepareAirlock(environ, release, "grant-one", nil)
+		answered <- answer{files, err}
+	}()
+	got := testwait.Receive(t, "prepareAirlock with "+what, answered)
+	if got.err != nil {
+		t.Fatalf("prepareAirlock with %s: %v", what, got.err)
+	}
+	return got.files
+}
+
+// TestPrepareAirlockDoesNotWaitOnANamedPipeWithNoWriter: a trust variable or WGETRC naming a named
+// pipe that no process writes, for a command that otherwise needs no bundle. The decision does not
+// open the pipe, and the bundle writer opens it without waiting for a writer and reads it as
+// empty: prepareAirlock answers, and writes the bundle, since a file the decision will not read
+// cannot show that it holds the root.
+func TestPrepareAirlockDoesNotWaitOnANamedPipeWithNoWriter(t *testing.T) {
 	root := proxyTestRoot(t, "test proxy root")
 	system := writeLoginFile(t, "ca-certificates.crt", root)
 	useSystemTrustFiles(t, system)
@@ -48,27 +75,80 @@ func TestPrepareAirlockSkipsANamedPipeATrustVariableOrWgetrcNames(t *testing.T) 
 	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
 		t.Fatalf("make the named pipe: %v", err)
 	}
-	type answer struct {
-		files airlockFiles
-		err   error
-	}
 	for _, key := range []string{"SSL_CERT_FILE", "CURL_CA_BUNDLE", "WGETRC"} {
 		t.Run(key, func(t *testing.T) {
 			environ := withSettings(proxyStoreSettings(t, system), "XDG_RUNTIME_DIR="+t.TempDir(), key+"="+pipe)
-			release := testRelease("AIRLOCK_ME", []string{"api.example.com"}, nil)
-			release.CACertificate = root
-			answered := make(chan answer, 1)
-			go func() {
-				files, err := prepareAirlock(environ, release, "grant-one", nil)
-				answered <- answer{files, err}
-			}()
-			got := testwait.Receive(t, "prepareAirlock with "+key+" naming a named pipe", answered)
-			if got.err != nil {
-				t.Fatalf("prepareAirlock: %v", got.err)
-			}
-			if got.files.bundle == "" {
+			if files := runPrepareAirlock(t, key+" naming a named pipe with no writer", environ, root); files.bundle == "" {
 				t.Errorf("%s naming a named pipe: prepareAirlock wrote no bundle, want one", key)
 			}
 		})
 	}
+}
+
+// pipeSending answers a path that opens the read end of a pipe whose writer sends body and then
+// closes, as bash gives a process substitution: CURL_CA_BUNDLE=<(cat corp.pem) names /dev/fd/63.
+// The writer writes from a goroutine, so a body larger than the pipe's buffer waits for a reader;
+// the test's own read end keeps the pipe whole until the test ends.
+func pipeSending(t *testing.T, body string) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("make the pipe: %v", err)
+	}
+	t.Cleanup(func() { r.Close() })
+	go func() {
+		_, _ = w.WriteString(body)
+		w.Close()
+	}()
+	return "/dev/fd/" + strconv.Itoa(int(r.Fd()))
+}
+
+// TestPrepareAirlockReadsAPipeOrDeviceATrustSettingNames: on the bundle path, what a trust
+// variable or WGETRC names is read as the command's own client reads it, whatever kind of file it
+// is. A pipe whose writer sends trust keeps that trust in the bundle, and its lines in the
+// wgetrc; SSL_CERT_FILE=/dev/null adds nothing, and so does not stand for the system roots; and a
+// pipe that sends more than proxyCertFileMaxBytes is read no further and adds nothing.
+func TestPrepareAirlockReadsAPipeOrDeviceATrustSettingNames(t *testing.T) {
+	proxy := proxyTestRoot(t, "test proxy root")
+	systemRoot := proxyTestRoot(t, "test system root")
+	corp := proxyTestRoot(t, "test corporate authority")
+	useSystemTrustFiles(t, writeLoginFile(t, "ca-certificates.crt", systemRoot))
+	read := func(t *testing.T, path string) string {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		return string(data)
+	}
+	// No row carries the eight settings, so each takes the bundle path.
+	environ := func(t *testing.T, setting string) []string {
+		return []string{"XDG_RUNTIME_DIR=" + t.TempDir(), setting}
+	}
+
+	t.Run("CURL_CA_BUNDLE names a pipe whose writer sends a root", func(t *testing.T) {
+		files := runPrepareAirlock(t, "CURL_CA_BUNDLE naming a pipe", environ(t, "CURL_CA_BUNDLE="+pipeSending(t, corp)), proxy)
+		if bundle := read(t, files.bundle); !strings.Contains(bundle, corp) || !strings.Contains(bundle, proxy) {
+			t.Errorf("the bundle lacks the root the pipe sent or the proxy's:\n%s", bundle)
+		}
+	})
+	t.Run("WGETRC names a pipe whose writer sends wgetrc lines", func(t *testing.T) {
+		files := runPrepareAirlock(t, "WGETRC naming a pipe", environ(t, "WGETRC="+pipeSending(t, "tries = 7\n")), proxy)
+		if wgetrc := read(t, files.wgetrc); !strings.Contains(wgetrc, "tries = 7\n") || !strings.Contains(wgetrc, "ca_certificate = "+files.bundle) {
+			t.Errorf("the wgetrc lacks the lines the pipe sent or the bundle:\n%s", wgetrc)
+		}
+	})
+	t.Run("SSL_CERT_FILE names /dev/null", func(t *testing.T) {
+		files := runPrepareAirlock(t, "SSL_CERT_FILE=/dev/null", environ(t, "SSL_CERT_FILE=/dev/null"), proxy)
+		if bundle := read(t, files.bundle); strings.Contains(bundle, systemRoot) || !strings.Contains(bundle, proxy) {
+			t.Errorf("SSL_CERT_FILE=/dev/null: the bundle holds the system roots or lacks the proxy's, want the proxy's alone:\n%s", bundle)
+		}
+	})
+	t.Run("CURL_CA_BUNDLE names a pipe that sends more than the bound", func(t *testing.T) {
+		long := strings.Repeat("#\n", proxyCertFileMaxBytes/2+1) + corp
+		files := runPrepareAirlock(t, "CURL_CA_BUNDLE naming a long pipe", environ(t, "CURL_CA_BUNDLE="+pipeSending(t, long)), proxy)
+		if bundle := read(t, files.bundle); strings.Contains(bundle, corp) {
+			t.Errorf("the bundle holds the root at the end of a pipe longer than %d bytes, want it read no further", proxyCertFileMaxBytes)
+		}
+	})
 }

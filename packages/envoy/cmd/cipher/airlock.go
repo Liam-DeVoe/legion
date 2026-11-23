@@ -462,8 +462,10 @@ func trustBundle(environ []string, caPEM string) []byte {
 // verification, exactly as it does on a machine with no system bundle. It is skipped rather than
 // refused because such a variable names no trust the command would have had either — the file is
 // as unreadable to the command as it is here — and refusing would take away a run that works
-// today. A variable naming something other than a regular file, such as a named pipe, is skipped
-// the same way, unopened (readRegularFile), so agent-secrets does not wait on it.
+// today. A variable naming a named pipe or a device is read as the command's own client reads it
+// (readTrustSource): a pipe gives what its writer sends, and one with no writer is empty at once,
+// as /dev/null is, rather than waited on. Such a file that reads empty still counts as read, so
+// SSL_CERT_FILE=/dev/null adds nothing, not the system bundle.
 func readTrustFile(environ []string, key string) ([]byte, bool) {
 	var candidates []string
 	if named := envValue(environ, key); named != "" {
@@ -473,21 +475,21 @@ func readTrustFile(environ []string, key string) ([]byte, bool) {
 		candidates = append(candidates, systemTrustFiles...)
 	}
 	for _, path := range candidates {
-		if data, err := readRegularFile(path); err == nil {
+		if data, err := readTrustSource(path); err == nil {
 			return data, true
 		}
 	}
 	return nil, false
 }
 
-// wgetrcFor is the wgetrc the child gets: the lines of an inherited WGETRC, when it names a regular
-// file that can be read (readRegularFile, so a named pipe there is not opened), and then the
-// bundle. wget reads none of the bundle variables, so this file is the only way the proxy's
-// certificate reaches it.
+// wgetrcFor is the wgetrc the child gets: the lines of an inherited WGETRC, when it names a file
+// that can be read (readTrustSource, so a named pipe is read as its writer sends it and never
+// waited on), and then the bundle. wget reads none of the bundle variables, so this file is the
+// only way the proxy's certificate reaches it.
 func wgetrcFor(environ []string, bundle string) []byte {
 	var out []byte
 	if named := envValue(environ, "WGETRC"); named != "" {
-		if data, err := readRegularFile(named); err == nil {
+		if data, err := readTrustSource(named); err == nil {
 			out = data
 			if len(out) > 0 && !bytes.HasSuffix(out, []byte("\n")) {
 				out = append(out, '\n')
@@ -688,7 +690,8 @@ var wgetrcCommand = strings.NewReplacer("_", "", "-", "")
 // proxyCertFileMaxBytes and proxyCertDirMaxFiles bound what is read of wget's startup files and
 // of the ca_directory they name: a certificate is a few kilobytes and Debian's whole bundle is
 // under 250 KB, and Debian's /etc/ssl/certs holds about 300 entries, each root under two names
-// and the bundle. The trust files the bundle variables name are read whole (readRegularFile).
+// and the bundle. The bundle writer reads a named pipe or a device that a bundle variable or
+// WGETRC names up to proxyCertFileMaxBytes too, and a regular one whole (readTrustSource).
 const (
 	proxyCertFileMaxBytes = 1 << 20
 	proxyCertDirMaxFiles  = 4096
@@ -748,11 +751,12 @@ func readBoundedFile(path string) ([]byte, bool) {
 var errNotRegular = errors.New("not a regular file")
 
 // readRegularFile is the regular file at path, read whole however large (a symbolic link is
-// followed to what it names), for the trust files the command's own settings name. It looks
-// before it opens, so it opens no named pipe, device or socket: opening a named pipe for reading
-// waits for a writer that may never come, and agent-secrets would hang before the command runs.
-// Its error is the look's where that fails, so a path that is not there answers os.ErrNotExist,
-// and errNotRegular where the path names something else.
+// followed to what it names), for the system bundle and the files the skip decision reads, where
+// a file it will not read only means the bundle is written. It looks before it opens, so it opens
+// no named pipe, device or socket: opening a named pipe for reading waits for a writer that may
+// never come. The bundle writer reads those kinds too (readTrustSource). Its error is the look's
+// where that fails, so a path that is not there answers os.ErrNotExist, and errNotRegular where
+// the path names something else.
 func readRegularFile(path string) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
