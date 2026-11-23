@@ -732,7 +732,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	var attribute attribution
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
-			attribute, err = readAttribution(ctx, r.store, issueKeys, nil)
+			attribute, err = readAttribution(ctx, r.store.database.Pool, issueKeys, nil)
 			return err
 		},
 		func(ctx context.Context) error {

@@ -21,12 +21,13 @@ import (
 // The reads an answer makes from the evals' day rows (api's evals items) take q, the pool or a
 // read-only transaction whose one snapshot the answer reads (evals.Store.BeginSnapshot). A read of
 // several statements runs them side by side on the pool and one after the other in a transaction
-// (readAll).
+// (ReadAll).
 
-// readAll runs reads, the reads of one answer in q: on the pool side by side, each on a connection
+// ReadAll runs reads, the reads of one answer in q: on the pool side by side, each on a connection
 // of its own (store.ReadSideBySide), and in a transaction one after the other, since its one
-// connection runs one statement at a time and every read then reads its one snapshot.
-func readAll(ctx context.Context, q Querier, reads ...func(ctx context.Context) error) error {
+// connection runs one statement at a time and every read then reads its one snapshot. The eval
+// registry's reads of a day's rows take it too (evals' readAttribution, ComputeAtRead).
+func ReadAll(ctx context.Context, q Querier, reads ...func(ctx context.Context) error) error {
 	if _, pooled := q.(*store.Pool); pooled {
 		return store.ReadSideBySide(ctx, reads...)
 	}
@@ -58,7 +59,7 @@ type MergedRows struct {
 }
 
 // ReadMergedRows reads MergedRows for [from, to) in q: the pull requests, and every apply run
-// followed by their production jobs, side by side on the pool (readAll).
+// followed by their production jobs, side by side on the pool (ReadAll).
 func ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time) (MergedRows, error) {
 	return readMergedRows(ctx, q, settings, from, to, nil)
 }
@@ -67,7 +68,7 @@ func ReadMergedRows(ctx context.Context, q Querier, settings DeliverySettings, f
 // before it.
 func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, from, to time.Time, createdBefore *time.Time) (MergedRows, error) {
 	var rows MergedRows
-	err := readAll(ctx, q,
+	err := ReadAll(ctx, q,
 		func(ctx context.Context) (err error) {
 			rows.PullRequests, err = ListPullRequestsInWindow(ctx, q, from, to)
 			return err
@@ -346,10 +347,10 @@ type CIRows struct {
 }
 
 // ReadCIRows reads CIRows for [from, to) of the deploy repository in q, the two reads side by side
-// on the pool (readAll); deployJobNames is every job name the deploy cards follow.
+// on the pool (ReadAll); deployJobNames is every job name the deploy cards follow.
 func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time.Time, deployJobNames []string) (CIRows, error) {
 	var rows CIRows
-	err := readAll(ctx, q,
+	err := ReadAll(ctx, q,
 		func(ctx context.Context) (err error) {
 			rows.Checks, err = listRunsWithEveryJobStartedIn(ctx, q, deployRepo, DeliveryRunKindPRChecks, "", "pull_request", from, to)
 			return err

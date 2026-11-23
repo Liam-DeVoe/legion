@@ -339,11 +339,21 @@ func (s *Store) readDeliveryDay(ctx context.Context, repos []keptRepo, day time.
 	for _, one := range reads {
 		checks = append(checks, one.ci.Checks.Runs...)
 	}
-	attribute, err := readAttribution(ctx, s, issueKeys, checks)
+	attribute, err := readAttribution(ctx, pool, issueKeys, checks)
 	if err != nil {
 		return deliveryRead{}, err
 	}
+	return deliveryReadOf(day, repos, prs, reads, attribute), nil
+}
 
+// deliveryReadOf is the day's rows from what a read of the day holds: prs, the pull requests merged
+// that day, alone (days[0]), and the day as read with each of repos as the deploy repository under
+// its own rule, from what reads holds of it, in repos' order (days[1:], dayAs, postedDayAs of an
+// events repository); each row attributed to its projects by attribute, and each pull request's
+// lead times kept in the rows of the first deploy to ship it (firstShipped). The refresher's read of
+// a day (readDeliveryDay) and the read-time path of the delivery and CI evals (ComputeAtRead) both
+// build their days through it.
+func deliveryReadOf(day time.Time, repos []keptRepo, prs []delivery.DeliveryPullRequest, reads []repoReads, attribute attribution) deliveryRead {
 	read := deliveryRead{Day: day, rules: keptRules(repos), days: make([]DeliveryDay, 0, len(repos)+1)}
 	alone := DeliveryDay{Day: day}
 	for _, pr := range prs {
@@ -362,7 +372,7 @@ func (s *Store) readDeliveryDay(ctx context.Context, repos []keptRepo, day time.
 		read.days = append(read.days, attribute.dayAs(day, prs, one))
 	}
 	firstShipped(read.days[1:])
-	return read, nil
+	return read
 }
 
 // dayAs is the day's rows as read with one.settings.DeployRepo as the deploy repository, under its
@@ -390,9 +400,11 @@ func (a attribution) dayAs(day time.Time, prs []delivery.DeliveryPullRequest, on
 			read.prs = append(read.prs, a.pullRequest(pr, delivery.ContainingRun(pr, settings.DeployRepo, applies), applyRuns))
 		}
 	}
-	shipped := one.deploys.ShippedBy(delivery.MergedRows{PullRequests: prs, ApplyRuns: one.applies.Runs, ApplyJobs: one.applies.Jobs}, settings)
-	for _, run := range one.deploys.Started.Runs {
-		read.deploys = append(read.deploys, a.deploy(run, reached[run.RunID], shipped[run.RunID], settings.Project))
+	if len(one.deploys.Started.Runs) > 0 {
+		shipped := one.deploys.ShippedBy(delivery.MergedRows{PullRequests: prs, ApplyRuns: one.applies.Runs, ApplyJobs: one.applies.Jobs}, settings)
+		for _, run := range one.deploys.Started.Runs {
+			read.deploys = append(read.deploys, a.deploy(run, reached[run.RunID], shipped[run.RunID], settings.Project))
+		}
 	}
 	read.checks, read.checkJobs = a.checkRuns(one.ci.Checks.Runs), one.ci.Checks.Jobs
 	read.pushes, read.pushJobs = a.pushRuns(one.ci.Deploys.Runs, read.deploys), one.ci.Deploys.Jobs
@@ -722,7 +734,7 @@ func (s *Store) ReadAttribution(ctx context.Context, keys []string) (Attribution
 	var projects []delivery.ProjectSettings
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
-			read.rule, err = readAttribution(ctx, s, keys, nil)
+			read.rule, err = readAttribution(ctx, s.database.Pool, keys, nil)
 			return err
 		},
 		func(ctx context.Context) (err error) {
@@ -796,13 +808,14 @@ func (a attribution) pushRuns(runs []delivery.DeliveryRun, deploys []dayDeploy) 
 	return attributed
 }
 
-// readAttribution reads what attributes a day's rows (attribution): the project of each of keys,
-// the issues the day's pull requests name, that an issue holds, and for each of checks, PR-checks
-// runs, that names a pull request, the issue that pull request's row names and that issue's
-// project, where the population holds a row of the pull request naming an issue the issues table
-// holds. The two reads depend on none of each other, and are read side by side; neither is made
-// where it has nothing to read.
-func readAttribution(ctx context.Context, s *Store, keys []string, checks []delivery.DeliveryRun) (attribution, error) {
+// readAttribution reads in q what attributes a day's rows (attribution): the project of each of
+// keys, the issues the day's pull requests name, that an issue holds, and for each of checks,
+// PR-checks runs, that names a pull request, the issue that pull request's row names and that
+// issue's project, where the population holds a row of the pull request naming an issue the issues
+// table holds. The two reads depend on none of each other, and are read side by side on the pool
+// (delivery.ReadAll), one after the other in a transaction; neither is made where it has nothing to
+// read.
+func readAttribution(ctx context.Context, q delivery.Querier, keys []string, checks []delivery.DeliveryRun) (attribution, error) {
 	attribute := attribution{issues: make(map[string]string, len(keys)), pulls: map[string]string{}}
 	members, repos, numbers := []string{}, []string{}, []int32{}
 	named := map[string]bool{}
@@ -821,7 +834,7 @@ func readAttribution(ctx context.Context, s *Store, keys []string, checks []deli
 	var reads []func(context.Context) error
 	if len(keys) > 0 {
 		reads = append(reads, func(ctx context.Context) error {
-			rows, err := s.database.Pool.Query(ctx, `select key, project_key from issues where key = any($1)`, keys)
+			rows, err := q.Query(ctx, `select key, project_key from issues where key = any($1)`, keys)
 			if err != nil {
 				return fmt.Errorf("read the projects of the pull requests' issues: %w", err)
 			}
@@ -837,7 +850,7 @@ func readAttribution(ctx context.Context, s *Store, keys []string, checks []deli
 	}
 	if len(members) > 0 {
 		reads = append(reads, func(ctx context.Context) error {
-			rows, err := s.database.Pool.Query(ctx, `
+			rows, err := q.Query(ctx, `
 				select given.member, request.issue_key, issue.project_key
 				from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
 				join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
@@ -856,7 +869,7 @@ func readAttribution(ctx context.Context, s *Store, keys []string, checks []deli
 			return nil
 		})
 	}
-	if err := store.ReadSideBySide(ctx, reads...); err != nil {
+	if err := delivery.ReadAll(ctx, q, reads...); err != nil {
 		return attribution{}, err
 	}
 	maps.Copy(attribute.issues, pullProjects)

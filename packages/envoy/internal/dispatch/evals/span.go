@@ -1101,7 +1101,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			prsByDay[day] = append(prsByDay[day], i)
 		}
 	}
-	attribute, err := readAttribution(ctx, r.store, issueKeys, nil)
+	attribute, err := readAttribution(ctx, pool, issueKeys, nil)
 	if err != nil {
 		return spanInput{}, err
 	}
@@ -1166,7 +1166,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 					if err != nil {
 						return nil, fmt.Errorf("read the CI runs of %s on %s: %w", name, day.Format(time.DateOnly), err)
 					}
-					checkAttribute, err := readAttribution(ctx, r.store, nil, ciRows.Checks.Runs)
+					checkAttribute, err := readAttribution(ctx, pool, nil, ciRows.Checks.Runs)
 					if err != nil {
 						return nil, err
 					}
