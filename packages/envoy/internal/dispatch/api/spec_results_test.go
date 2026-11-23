@@ -663,7 +663,11 @@ func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 // repository takes the result of no run, and the refusal says the run's repository is not the
 // project's default. The run's repository being another project's default makes it no repository
 // of the token's project: OTHER's default is the run's repository, ACME's is another, and the
-// token names ACME.
+// token names ACME. A run named by the name the project's default was renamed away from is a run
+// of a repository made under that name since, as GitHub names a renamed repository's runs by the
+// new name: with the pair old-repo → new-repo and the default new-repo, a run of old-repo, in any
+// case, is refused (the rename row of TestARepositorySpelledWithCapitalsIsTheProjectsRepository,
+// a default stored under the old name and a run of the new, is its control).
 func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 	t.Run("another repository", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
@@ -693,6 +697,26 @@ func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 		refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
 		if want := "is not the default repository of project " + specResultsProject; !strings.Contains(refusal.Error, want) {
 			t.Fatalf("the refusal reads %q, want it to say %q", refusal.Error, want)
+		}
+	})
+	t.Run("the name the project's default repository was renamed away from", func(t *testing.T) {
+		for _, repository := range []string{"example-org/old-repo", "Example-Org/OLD-REPO"} {
+			t.Run(repository, func(t *testing.T) {
+				database, renames := renamedRepositoryStore(t, "RENM", "example-org/old-repo", "example-org/new-repo")
+				rig := newSpecResultsRigOn(t, testServerOptions{store: database, renames: renames})
+				if written := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+specResultsProject+"/default-repository", map[string]any{"repo": "example-org/new-repo"}); written.Code != http.StatusOK {
+					t.Fatalf("set %s's default repository to example-org/new-repo: status=%d body=%s", specResultsProject, written.Code, written.Body.String())
+				}
+				token := rig.token(func(answer *ciphertoken.Introspection) {
+					answer.Session = "ci-results:" + repository + "/.github/workflows/ci-results.yaml"
+					answer.CI.Repository = repository
+					answer.CI.WorkflowRef = repository + "/.github/workflows/ci-results.yaml@refs/heads/topic"
+				})
+				refusal := rig.refusedWith(t, rig.post(t, specResultsProject, token, passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
+				if want := repository + ", the repository of this token's run, is not the default repository of project " + specResultsProject; !strings.Contains(refusal.Error, want) {
+					t.Fatalf("the refusal reads %q, want it to say %q", refusal.Error, want)
+				}
+			})
 		}
 	})
 }
