@@ -1908,6 +1908,609 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 	})
 }
 
+// The image's curl at a vendored chain, the plan's fixtures F1 and F2. curlPastTheVendoredChain is
+// curl 8.18.0 on OpenSSL 3.5.5, which verifies a chain only after the handshake, so it fails the
+// server's signature first whatever root it holds (theorem-labs/agent-infra job 137340412198, log
+// lines 7414 and 7415); curl 8.14.1 gives the same at a vendored chain with its CA-published root.
+// curlRefusingAnUnknownIssuer is curl 8.14.1 on OpenSSL 3.5.7, which verifies a chain during the
+// handshake, refusing a chain its root does not issue, captured on 2026-11-22 in the INFRA-5350
+// pod's worker image.
+const (
+	curlPastTheVendoredChain    = "curl: (35) TLS connect error: error:030000EA:digital envelope routines::provider signature failure"
+	curlRefusingAnUnknownIssuer = "curl: (60) SSL certificate problem: unable to get local issuer certificate More details here: https://curl.se/docs/sslcerts.html  curl failed to verify the legitimacy of the server and therefore could not establish a secure connection to it. To learn more about this situation and how to fix it, please visit the webpage mentioned above."
+)
+
+// curlBranch is a branch of a fake curl's case "$*": a run whose arguments match pattern prints
+// output to stderr and exits status.
+func curlBranch(pattern, output, status string) string {
+	return pattern + ") echo '" + output + "' >&2; exit " + status + " ;;\n"
+}
+
+// curlRunsAt is the case pattern of a fake curl's run at any of hosts whose arguments hold text
+// before the host, as the positive controls' curl takes its root before the site's URL; with no
+// text, of every run at those hosts.
+func curlRunsAt(text string, hosts ...string) string {
+	patterns := make([]string, len(hosts))
+	for index, host := range hosts {
+		patterns[index] = "*" + host + "*"
+		if text != "" {
+			patterns[index] = "*" + text + patterns[index]
+		}
+	}
+	return strings.Join(patterns, "|")
+}
+
+// loggingCurl is a fake curl that appends each run's arguments, as one line, to dir/runs, where
+// tlsRunsLogged reads them, then answers by the first of branches its arguments match, and exits 0
+// with no output where none does.
+func loggingCurl(dir, branches string) string {
+	return "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'" + filepath.Join(dir, "runs") + "'\ncase \"$*\" in\n" + branches + "esac\n"
+}
+
+// curlCACert is the file a curl run loggingCurl logged took as --cacert, or "" where it took none.
+func curlCACert(run string) string {
+	fields := strings.Fields(run)
+	if index := slices.Index(fields, "--cacert"); index >= 0 && index+1 < len(fields) {
+		return fields[index+1]
+	}
+	return ""
+}
+
+// loggedTLSClient is a stand-in client that appends "client <name> <site>" to dir/runs before each
+// run, the file loggingCurl logs curl's runs to, so a test reads the clients' runs and curl's in
+// the order they ran.
+type loggedTLSClient struct {
+	tlsClient
+	t   *testing.T
+	dir string
+}
+
+func (c loggedTLSClient) probe(ctx context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
+	file, err := os.OpenFile(filepath.Join(c.dir, "runs"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err == nil {
+		_, err = fmt.Fprintf(file, "client %s %s\n", c.name(), site.name)
+		err = errors.Join(err, file.Close())
+	}
+	if err != nil {
+		c.t.Errorf("log %s's run at %s: %v", c.name(), site.name, err)
+	}
+	return c.tlsClient.probe(ctx, site, terms)
+}
+
+// checkTLSClientsSites checks the sites stdout shows each client of the inventory held to, under
+// stand-ins that ask no public site (unaskedPublicTLSSites) and whose clients refuse every vendored
+// chain (passingImageTLSClients): each client public names has an UNKNOWN line against both public
+// hosts and no line at a vendored chain, and every other client refuses both vendored chains.
+func checkTLSClientsSites(t *testing.T, stdout string, public []string) {
+	t.Helper()
+	var wrong []string
+	for _, client := range workerTLSClientNames() {
+		if !slices.Contains(public, client) {
+			for _, site := range []string{"vendored emSign", "vendored AAA"} {
+				if line := "probe-image: TLS client " + client + " " + site + ": refused"; !strings.Contains(stdout, line) {
+					wrong = append(wrong, "no line beginning "+line)
+				}
+			}
+			continue
+		}
+		for _, host := range []string{tlsEmSignHost, tlsAAAHost} {
+			if line := "probe-image: UNKNOWN: " + client + " against " + host + ": not asked: the test asks no public site"; !strings.Contains(stdout, line+"\n") {
+				wrong = append(wrong, "no line "+line)
+			}
+		}
+		if line := "probe-image: TLS client " + client + " vendored "; strings.Contains(stdout, line) {
+			wrong = append(wrong, "a line beginning "+line)
+		}
+	}
+	if len(wrong) > 0 {
+		t.Errorf("stdout = %q, want %q held to the public sites and every other client to the vendored chains; it has %s", stdout, public, strings.Join(wrong, "; "))
+	}
+}
+
+// tlsChainsValidity is the latest start of a certificate's validity in chains, and the certificate
+// whose validity ends first, the earlier one in chains, leaf first, where two end together: a time
+// after the one and before the other's end is inside every certificate's validity.
+func tlsChainsValidity(chains ...[]*x509.Certificate) (latestStart time.Time, firstEnding *x509.Certificate) {
+	for _, chain := range chains {
+		for _, cert := range chain {
+			if cert.NotBefore.After(latestStart) {
+				latestStart = cert.NotBefore
+			}
+			if firstEnding == nil || cert.NotAfter.Before(firstEnding.NotAfter) {
+				firstEnding = cert
+			}
+		}
+	}
+	return latestStart, firstEnding
+}
+
+// R1, R2 and R3 where the image's curl verifies a chain during the handshake. curl's timing run at
+// each vendored chain, the positive controls' curl with the control's root as its only trust,
+// refuses the chain at the probe's server, so the probe says so on its own line with curl's output,
+// holds curl to the vendored chains with every client that verifies during the handshake, while
+// node, CodeGraph's node, wget and git stay at the public sites, and keeps today's control of each
+// chain: curl given the chain's CA-published root fails the server's signature there, and its
+// isolation refuses the control, so each chain prints "chain verified". The two timing runs are
+// curl's first runs at a vendored chain, before any run with a CA-published root and before any
+// client's run there, and no run asks curl its version: the probe reads what curl does.
+func TestTLSProbeHoldsACurlThatVerifiesDuringTheHandshakeToTheVendoredChains(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	runs := t.TempDir()
+	// The image's curl as curl 8.14.1 runs it: it refuses a chain its root does not issue, each
+	// vendored chain at its timing run and the control at today's isolation, and gets past each
+	// vendored chain to the server's signature with the chain's CA-published root.
+	published := curlRunsAt(publicEmSignTLSSite.root, tlsEmSignHost, tlsAAAHost) + "|" + curlRunsAt(publicAAATLSSite.root, tlsEmSignHost, tlsAAAHost)
+	isolation := curlRunsAt(publicEmSignTLSSite.root, tlsControlHost) + "|" + curlRunsAt(publicAAATLSSite.root, tlsControlHost)
+	img.install(t, "curl", loggingCurl(runs,
+		curlBranch(curlRunsAt("fixture-control-root", tlsEmSignHost, tlsAAAHost), curlRefusingAnUnknownIssuer, "60")+
+			curlBranch(published, curlPastTheVendoredChain, "35")+
+			curlBranch(isolation, curlRefusingAnUnknownIssuer, "60")))
+	// The vendored chains' step as the probe runs it, with its curl counted as having reached the
+	// probe's server, which the fake curl never does.
+	var stateDir string
+	var timing tlsCurlTiming
+	vendored := func(ctx context.Context, env []string, dir string, sites []tlsSite) ([]tlsSite, tlsCurlTiming, error) {
+		stateDir = dir
+		asked, measured, err := vendoredTLSSitesWith(ctx, reachingTLSClient{tlsPositiveControlSpec.build("", env, dir)}, sites)
+		timing = measured
+		return asked, measured, err
+	}
+	clients := func(invocation string, env []string, dir string) []tlsClient {
+		passing := passingImageTLSClients(invocation, env, dir)
+		for index, client := range passing {
+			passing[index] = loggedTLSClient{tlsClient: client, t: t, dir: runs}
+		}
+		return passing
+	}
+
+	code, stdout, stderr := probeImageWithSites(clients, passingTLSPositiveControls, vendored, unaskedPublicTLSSites, img.flags()...)
+
+	if code != 0 || !strings.Contains(stdout, bootprobe.OKPrefix) {
+		t.Fatalf("probe-image exited %d, want 0 and the OK line: stderr %q, stdout %q", code, stderr, stdout)
+	}
+	if want := "probe-image: TLS curl verifies a chain during the handshake: vendored emSign: exit status 60: curl: (60) SSL certificate problem: unable to get local issuer certificate"; !strings.Contains(stdout, want) {
+		t.Errorf("stdout = %q, want the line beginning %q; stderr %q", stdout, want, stderr)
+	}
+	for _, name := range []string{"emSign", "AAA"} {
+		if line := "probe-image: TLS vendored " + name + ": chain verified"; !strings.Contains(stdout, line+"\n") {
+			t.Errorf("stdout = %q, want the line %q from today's control; stderr %q", stdout, line, stderr)
+		}
+	}
+	if strings.Contains(stdout, "chain checked in the probe's own code") {
+		t.Errorf("stdout = %q, want no chain checked in the probe's own code, since curl verifies a chain during the handshake", stdout)
+	}
+	afterHandshake := []string{"node", "codegraph-node", "wget", "git"}
+	if got := slices.Sorted(slices.Values(tlsAfterHandshakeClients(timing))); !slices.Equal(got, slices.Sorted(slices.Values(afterHandshake))) {
+		t.Errorf("tlsAfterHandshakeClients() at curl's timing %+v = %q, want %q", timing, got, afterHandshake)
+	}
+	checkTLSClientsSites(t, stdout, afterHandshake)
+
+	logged := tlsRunsLogged(t, runs)
+	controlRoot := filepath.Join(stateDir, "fixture-control-root.pem")
+	var atVendored []int
+	firstPublished, firstClient := len(logged), len(logged)
+	for index, run := range logged {
+		if strings.HasPrefix(run, "client ") {
+			if strings.Contains(run, " vendored ") {
+				firstClient = min(firstClient, index)
+			}
+			continue
+		}
+		if fields := strings.Fields(run); slices.Contains(fields, "--version") || slices.Contains(fields, "-V") {
+			t.Errorf("curl ran as %q, want no run that asks its version", run)
+		}
+		if root := filepath.Base(curlCACert(run)); root == publicEmSignTLSSite.root || root == publicAAATLSSite.root {
+			firstPublished = min(firstPublished, index)
+		}
+		if strings.Contains(run, publicEmSignTLSSite.url) || strings.Contains(run, publicAAATLSSite.url) {
+			atVendored = append(atVendored, index)
+		}
+	}
+	if len(atVendored) < 2 {
+		t.Fatalf("the runs logged = %q, want curl's two timing runs at the vendored chains", logged)
+	}
+	for _, index := range atVendored[:2] {
+		if got := curlCACert(logged[index]); got != controlRoot {
+			t.Errorf("curl's run %q at a vendored chain took %q as --cacert, want a timing run with the control's root %q; runs %q", logged[index], got, controlRoot, logged)
+		}
+		if index > firstPublished || index > firstClient {
+			t.Errorf("curl's run %q at a vendored chain came after a run with a CA-published root or a client's run at a vendored chain; runs %q", logged[index], logged)
+		}
+	}
+}
+
+// timingRunTLSClient stands in for the positive controls' curl at curl's timing runs: it gives
+// each site the outcome outcomes names for it, counts a handshake at the site first where reaches
+// says the run began one at the probe's server, and records each site it ran at, whose root and
+// trust are the run's.
+type timingRunTLSClient struct {
+	outcomes map[string]tlsOutcome
+	reaches  bool
+	runs     *[]tlsSite
+}
+
+func (c timingRunTLSClient) name() string { return tlsPositiveControlSpec.name }
+
+func (c timingRunTLSClient) probe(_ context.Context, site tlsSite, _ tlsRunTerms) tlsOutcome {
+	*c.runs = append(*c.runs, site)
+	if c.reaches && site.seen != nil {
+		site.seen.Add(1)
+	}
+	return c.outcomes[site.name]
+}
+
+// R1's reading of curl's two timing runs, one at each vendored chain, each run with the control's
+// root as its only trust. A refusal where the probe's server began a handshake for the chain means
+// curl verifies a chain during the handshake, an expired leaf's refusal too; a failed server
+// signature means after the handshake, whatever ended the run; and reached names each chain whose
+// run began a handshake, a site with no handshake counter counting as begun. A run the probe's
+// deadline ended has no verdict, which makes the whole reading no verdict and names the run. Every
+// other outcome fails the probe, beside a run with no verdict too: a refusal where no handshake
+// began, an acceptance, a curl that cannot read its root, a run its own limit ended with no failed
+// signature, two runs that disagree, and sites with no control to take the root from.
+func TestTLSCurlTimingReadsWhatCurlDoesAtTheVendoredChains(t *testing.T) {
+	stateDir := t.TempDir()
+	controlRoot := testTLSSite(stateDir, "control").trust
+	// served are testTLSSites with a handshake counter of its own at each site the probe's server
+	// serves.
+	served := func() []tlsSite {
+		sites := testTLSSites(stateDir)
+		for index, site := range sites {
+			if site.kind != tlsPublicSite {
+				sites[index].seen = new(atomic.Int64)
+			}
+		}
+		return sites
+	}
+	at := func(emSign, aaa tlsOutcome) map[string]tlsOutcome {
+		return map[string]tlsOutcome{"vendored emSign": emSign, "vendored AAA": aaa}
+	}
+	refused := tlsOutcome{status: tlsCertificateRefused, detail: "exit status 60: " + curlRefusingAnUnknownIssuer}
+	expired := tlsOutcome{status: tlsCertificateRefused, leafExpired: true, detail: "exit status 60: curl: (60) SSL certificate problem: certificate has expired"}
+	pastTheChain := tlsOutcome{status: tlsNetworkUnavailable, signatureFailed: true, detail: "exit status 35: " + curlPastTheVendoredChain}
+	limitPastTheChain := tlsOutcome{status: tlsNetworkUnavailable, signatureFailed: true, ending: tlsLimitEnded, detail: "its 20s limit ended it after 20.0s: signal: terminated: " + curlPastTheVendoredChain}
+	limitEnded := tlsOutcome{status: tlsNetworkUnavailable, ending: tlsLimitEnded, detail: "its 20s limit ended it after 20.0s: signal: terminated"}
+	accepted := tlsOutcome{status: tlsConnectionAccepted, detail: "the command returned no output"}
+	cannotReadItsRoot := tlsOutcome{status: tlsNetworkUnavailable, detail: "exit status 77: curl: (77) error setting certificate file: " + controlRoot}
+	cut := tlsOutcome{status: tlsNoVerdict, ending: tlsDeadlineEnded, detail: "the probe's deadline ended it after 0.3s: signal: terminated"}
+	emSignRun, aaaRun := "vendored emSign curl timing run at "+publicEmSignTLSSite.url, "vendored AAA curl timing run at "+publicAAATLSSite.url
+	const must = ", where it must refuse the chain or fail the server's signature: "
+	both := []string{"vendored emSign", "vendored AAA"}
+	for _, row := range []struct {
+		name string
+		// sites are what the timing runs run at: served() where nil.
+		sites    []tlsSite
+		outcomes map[string]tlsOutcome
+		reaches  bool
+		// verdict is the reading where failure is empty; reached is what timing.reached names, none
+		// where it is empty and not nil, and detail timing.detail, each where set; and noVerdict
+		// begins the one run with no verdict, where set, and there is none where it is empty.
+		verdict   tlsCurlVerdict
+		reached   []string
+		detail    string
+		noVerdict string
+		// failure is what the error holds after "worker TLS probe cannot verify test chains: ".
+		failure string
+	}{
+		{name: "both refused at the probe's server", outcomes: at(refused, refused), reaches: true, verdict: tlsCurlDuringHandshake, reached: both,
+			detail: "vendored emSign: " + refused.detail + "; vendored AAA: " + refused.detail},
+		{name: "both past the chain to the server's signature, with no handshake counted", outcomes: at(pastTheChain, pastTheChain), verdict: tlsCurlAfterHandshake, reached: []string{}},
+		{name: "both past the chain to the server's signature at the probe's server", outcomes: at(pastTheChain, pastTheChain), reaches: true, verdict: tlsCurlAfterHandshake, reached: both},
+		{name: "a refusal with no handshake begun", outcomes: at(refused, refused), failure: emSignRun + " was unavailable" + must + "never reached the probe's server"},
+		{name: "an acceptance", outcomes: at(accepted, accepted), reaches: true, failure: emSignRun + " was accepted" + must + accepted.detail},
+		{name: "a curl that cannot read its root", outcomes: at(cannotReadItsRoot, cannotReadItsRoot), failure: emSignRun + " was unavailable" + must + "exit status 77: curl: (77) error setting certificate file: "},
+		{name: "runs that disagree", outcomes: at(refused, pastTheChain), reaches: true,
+			failure: "curl's timing runs disagree: during the handshake at vendored emSign, after the handshake at vendored AAA"},
+		{name: "a run the probe's deadline ended beside one past the chain", outcomes: at(cut, pastTheChain), reaches: true, verdict: tlsCurlNoVerdict,
+			noVerdict: emSignRun + ": the probe's deadline ended it after "},
+		{name: "a run the probe's deadline ended beside an acceptance", outcomes: at(cut, accepted), reaches: true, failure: aaaRun + " was accepted" + must},
+		{name: "both refused as expired at the probe's server", outcomes: at(expired, expired), reaches: true, verdict: tlsCurlDuringHandshake},
+		{name: "both past the chain in a run its own limit ended", outcomes: at(limitPastTheChain, limitPastTheChain), reaches: true, verdict: tlsCurlAfterHandshake},
+		{name: "a run its own limit ended with no failed signature", outcomes: at(limitEnded, limitEnded), reaches: true, failure: emSignRun + " was unavailable" + must + limitEnded.detail},
+		{name: "both refused at sites with no handshake counter", sites: testTLSSites(stateDir), outcomes: at(refused, refused), verdict: tlsCurlDuringHandshake, reached: both},
+		{name: "no control site", sites: slices.DeleteFunc(served(), func(site tlsSite) bool { return site.kind == tlsControlSite }), outcomes: at(refused, refused), reaches: true,
+			failure: "curl's timing runs have no control site to take their root from"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			sites := row.sites
+			if sites == nil {
+				sites = served()
+			}
+			var runs []tlsSite
+			timing, noVerdict, err := measureTLSCurlTiming(context.Background(), timingRunTLSClient{outcomes: row.outcomes, reaches: row.reaches, runs: &runs}, sites)
+			for _, run := range runs {
+				if run.root != controlRoot || run.trust != "" {
+					t.Errorf("the timing run at %s had root %q and trust %q, want the control's root %q as its only trust", run.name, run.root, run.trust, controlRoot)
+				}
+			}
+			if row.failure != "" {
+				if want := "worker TLS probe cannot verify test chains: " + row.failure; err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("measureTLSCurlTiming() = %+v, %q, %v; want the failure %q", timing, noVerdict, err, want)
+				}
+				return
+			}
+			if err != nil || timing.verdict != row.verdict {
+				t.Errorf("measureTLSCurlTiming() = %+v, %q, %v; want the verdict %d and no failure", timing, noVerdict, err, row.verdict)
+			}
+			if row.reached != nil && !slices.Equal(timing.reached, row.reached) {
+				t.Errorf("measureTLSCurlTiming() reached %q, want %q", timing.reached, row.reached)
+			}
+			if row.detail != "" && timing.detail != row.detail {
+				t.Errorf("measureTLSCurlTiming() detail = %q, want %q", timing.detail, row.detail)
+			}
+			if row.noVerdict == "" && len(noVerdict) > 0 || row.noVerdict != "" && (len(noVerdict) != 1 || !strings.HasPrefix(noVerdict[0], row.noVerdict)) {
+				t.Errorf("measureTLSCurlTiming()'s runs with no verdict = %q, want %q alone where it is set, else none", noVerdict, row.noVerdict)
+			}
+		})
+	}
+}
+
+// R1's run with no verdict at the probe's level: a timing run the probe's deadline ends shows
+// nothing of when curl verifies a chain, so it joins the probe's runs with no verdict, which take
+// the no-verdict exit (bootprobe.NoVerdictExit) with no OK line, and curl counts as verifying after
+// the handshake: the probe says so on its own line, with the run's detail, and holds curl to the
+// public sites in place of the vendored chains.
+func TestProbeImageTakesTheNoVerdictExitWhenTheDeadlineCutsCurlsTimingRun(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	// The image's curl stalls at each timing run, the controls' curl with the control's root at a
+	// vendored chain, and answers every other run as curl 8.18.0 on OpenSSL does
+	// (TestProbeImageHoldsACurlThatVerifiesAfterTheHandshakeToThePublicSites).
+	img.install(t, "curl", loggingCurl(t.TempDir(),
+		curlRunsAt("fixture-control-root", tlsEmSignHost, tlsAAAHost)+") exec sleep 30 ;;\n"+
+			curlBranch(curlRunsAt("'--capath /nonexistent'", tlsControlHost), curlRefusingAnUnknownIssuer, "60")+
+			curlBranch("*'--capath /nonexistent'*", curlPastTheVendoredChain, "35")))
+
+	code, stdout, stderr := probeImageWithSites(passingImageTLSClients, passingTLSPositiveControls, probeVendoredTLSSites, unaskedPublicTLSSites, img.flags("--probe-budget", shortProbeBudget)...)
+
+	detail, ok := bootprobe.NoVerdict(stderr)
+	if want := "vendored emSign curl timing run at " + publicEmSignTLSSite.url + ": the probe's deadline ended it after "; code != bootprobe.NoVerdictExit || !ok || !strings.Contains(detail, want) {
+		t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit %d and the no-verdict line naming %q", code, stdout, stderr, bootprobe.NoVerdictExit, want)
+	}
+	if strings.Contains(stdout, bootprobe.OKPrefix) {
+		t.Errorf("stdout = %q, want no OK line beside a run with no verdict; stderr %q", stdout, stderr)
+	}
+	if want := "probe-image: TLS curl gave no verdict on when it verifies a chain, so the probe holds it to the public sites: vendored emSign: the probe's deadline ended it after "; !strings.Contains(stdout, want) {
+		t.Errorf("stdout = %q, want the line beginning %q; stderr %q", stdout, want, stderr)
+	}
+	if strings.Contains(stdout, "probe-image: TLS client curl vendored") {
+		t.Errorf("stdout = %q, want curl held to no vendored chain; stderr %q", stdout, stderr)
+	}
+	for _, host := range []string{tlsEmSignHost, tlsAAAHost} {
+		if line := "probe-image: UNKNOWN: curl against " + host + ": not asked: the test asks no public site"; !strings.Contains(stdout, line+"\n") {
+			t.Errorf("stdout = %q, want curl held to the public site, the line %q; stderr %q", stdout, line, stderr)
+		}
+	}
+}
+
+// R3's own check of a vendored chain as the probe's server serves it, with Go's x509 primitives
+// and not x509.Certificate.Verify, which refuses both chains whatever the roots. Each chain, with
+// its CA-published root, passes at a time inside every certificate's validity; at a time before its
+// leaf's start, or past the first end of a certificate's validity, it is outside, naming that
+// certificate, and is unasked; and it fails against the fixture root of its root's name, which has
+// another key, for a host its leaf does not name, and without the certificate between its leaf and
+// its root. A failure wins over a time outside the validity. The site's check fails where it
+// cannot read the CA-published root its site names.
+func TestTLSVendoredChainCheckInTheProbesOwnCode(t *testing.T) {
+	var emSignInside time.Time
+	for _, public := range publicTLSSites {
+		name, host := "vendored "+strings.TrimPrefix(public.name, "public "), tlsSiteURL(public).Hostname()
+		chain, err := vendoredTLSChain(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		published, err := tlsPublishedRoots.ReadFile("tls-fixtures/" + public.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := tlsPEMCertificates(t, published)[0]
+		// The fixture root of the chain's root's name: its subject and key identifier, and a key of
+		// the same type that is not its key (newTLSFixture).
+		fixture, err := newTLSFixture(chain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixtureRoot := tlsPEMCertificates(t, fixture.root)[0]
+		latestStart, firstEnding := tlsChainsValidity(chain)
+		inside, past := latestStart.Add(time.Hour), firstEnding.NotAfter.Add(time.Second)
+		if host == tlsEmSignHost {
+			emSignInside = inside
+		}
+		type checkRow struct {
+			name  string
+			chain []*x509.Certificate
+			root  *x509.Certificate
+			host  string
+			now   time.Time
+			// outside is what the reason the chain is outside its validity holds, and err what its
+			// failure holds; where both are empty, the chain passes.
+			outside []string
+			err     string
+		}
+		rows := []checkRow{
+			{name: "inside every certificate's validity", chain: chain, root: root, host: host, now: inside},
+			{name: "a second before its leaf's start", chain: chain, root: root, host: host, now: chain[0].NotBefore.Add(-time.Second), outside: []string{chain[0].Subject.String()}},
+			{name: "a second past the first end of a certificate's validity", chain: chain, root: root, host: host, now: past,
+				outside: []string{firstEnding.Subject.String(), firstEnding.NotAfter.UTC().Format(time.RFC3339)}},
+			{name: "the fixture root of its root's name", chain: chain, root: fixtureRoot, host: host, now: inside, err: "is not signed by its CA-published root"},
+			{name: "a host its leaf does not name", chain: chain, root: root, host: "example.com", now: inside, err: "does not name example.com"},
+			{name: "the fixture root past the first end of a certificate's validity", chain: chain, root: fixtureRoot, host: host, now: past, err: "is not signed by its CA-published root"},
+		}
+		if host == tlsEmSignHost {
+			if len(chain) != 3 {
+				t.Fatalf("the vendored emSign chain holds %d certificates, want its leaf, EM DV TLS CA - G3B and emSign Root TLS CA - G3", len(chain))
+			}
+			rows = append(rows, checkRow{name: "without its middle certificate", chain: []*x509.Certificate{chain[0], chain[2]}, root: root, host: host, now: inside, err: "is not signed by"})
+		}
+		for _, row := range rows {
+			t.Run(name+": "+row.name, func(t *testing.T) {
+				outside, err := checkVendoredTLSChain(row.chain, row.root, row.host, row.now)
+				switch {
+				case row.err != "":
+					if err == nil || !strings.Contains(err.Error(), row.err) || outside != "" {
+						t.Errorf("checkVendoredTLSChain() at %s = %q, %v; want the failure %q and no time outside the validity", row.now, outside, err, row.err)
+					}
+				case len(row.outside) > 0:
+					if err != nil || outside == "" {
+						t.Errorf("checkVendoredTLSChain() at %s = %q, %v; want the chain outside its validity and no failure", row.now, outside, err)
+					}
+					for _, want := range row.outside {
+						if !strings.Contains(outside, want) {
+							t.Errorf("checkVendoredTLSChain() at %s found the chain outside its validity as %q, want it to name %q", row.now, outside, want)
+						}
+					}
+				default:
+					if err != nil || outside != "" {
+						t.Errorf("checkVendoredTLSChain() at %s = %q, %v; want the chain to pass", row.now, outside, err)
+					}
+				}
+			})
+		}
+	}
+	t.Run("vendored emSign: a CA-published root that names no file", func(t *testing.T) {
+		site := testTLSSite("", "vendored emSign")
+		site.root = filepath.Join(t.TempDir(), publicEmSignTLSSite.root)
+		const want = "cannot read its CA-published root"
+		if unasked, err := checkVendoredTLSSite(site, emSignInside); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("checkVendoredTLSSite() with no file at %s = %q, %v; want the failure %q", site.root, unasked, err, want)
+		}
+	})
+}
+
+// R3 where the image's curl verifies a chain after the handshake, at the probe's level: curl's
+// timing runs fail the server's signature, so the probe checks each vendored chain in its own code
+// in place of today's curl control, and no curl run at a vendored chain holds that chain's
+// CA-published root. At a clock inside every certificate's validity, each chain is asked, and its
+// line says it was checked in the probe's own code, never "chain verified"; curl is held to the
+// public sites with node, CodeGraph's node, wget and git, and every other client refuses both
+// chains. At a clock past the first end of a certificate's validity, each chain is unasked, naming
+// its leaf, every client is held to the public sites in its place, and the probe warns of both
+// served leaves. The clock is the probe's (tlsProbeNow), never the day the test runs.
+func TestTLSProbeChecksTheVendoredChainsInItsOwnCodeWhereCurlVerifiesAfterTheHandshake(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	runs := t.TempDir()
+	// The image's curl as curl 8.18.0 on OpenSSL runs it: past each vendored chain to the server's
+	// signature, whatever root it holds, and refused at the control.
+	img.install(t, "curl", loggingCurl(runs,
+		curlBranch(curlRunsAt("", tlsEmSignHost, tlsAAAHost), curlPastTheVendoredChain, "35")+
+			curlBranch(curlRunsAt("", tlsControlHost), curlRefusingAnUnknownIssuer, "60")))
+	var chains [][]*x509.Certificate
+	for _, host := range []string{tlsEmSignHost, tlsAAAHost} {
+		chain, err := vendoredTLSChain(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chains = append(chains, chain)
+	}
+	latestStart, firstEnding := tlsChainsValidity(chains...)
+	previousNow := tlsProbeNow
+	t.Cleanup(func() { tlsProbeNow = previousNow })
+
+	tlsProbeNow = func() time.Time { return latestStart.Add(time.Hour) }
+	code, stdout, stderr := probeImageWithSites(passingImageTLSClients, passingTLSPositiveControls, probeVendoredTLSSites, unaskedPublicTLSSites, img.flags()...)
+	if code != 0 || !strings.Contains(stdout, bootprobe.OKPrefix) {
+		t.Fatalf("probe-image inside the chains' validity exited %d, want 0 and the OK line: stderr %q, stdout %q", code, stderr, stdout)
+	}
+	for _, name := range []string{"emSign", "AAA"} {
+		if line := "probe-image: TLS vendored " + name + ": chain checked in the probe's own code, since curl verifies a chain after the handshake"; !strings.Contains(stdout, line+"\n") {
+			t.Errorf("stdout = %q, want the line %q; stderr %q", stdout, line, stderr)
+		}
+		if line := "probe-image: TLS vendored " + name + ": chain verified"; strings.Contains(stdout, line) {
+			t.Errorf("stdout = %q, want no line %q: a curl that verifies after the handshake verified no chain", stdout, line)
+		}
+	}
+	if line := "probe-image: TLS curl verifies a chain after the handshake, so the probe holds it to the public sites: vendored emSign: exit status 35: " +
+		curlPastTheVendoredChain + "; vendored AAA: exit status 35: " + curlPastTheVendoredChain; !strings.Contains(stdout, line+"\n") {
+		t.Errorf("stdout = %q, want the line %q; stderr %q", stdout, line, stderr)
+	}
+	logged := tlsRunsLogged(t, runs)
+	atVendored := 0
+	for _, run := range logged {
+		if !strings.Contains(run, publicEmSignTLSSite.url) && !strings.Contains(run, publicAAATLSSite.url) {
+			continue
+		}
+		atVendored++
+		if root := filepath.Base(curlCACert(run)); root == publicEmSignTLSSite.root || root == publicAAATLSSite.root {
+			t.Errorf("curl ran at a vendored chain as %q, with a CA-published root, where it verifies a chain after the handshake", run)
+		}
+	}
+	if atVendored == 0 {
+		t.Errorf("the runs logged = %q, want curl's timing runs at the vendored chains", logged)
+	}
+	afterHandshake := []string{"node", "codegraph-node", "wget", "git", "curl"}
+	if got := slices.Sorted(slices.Values(tlsAfterHandshakeClients(tlsCurlTiming{verdict: tlsCurlAfterHandshake}))); !slices.Equal(got, slices.Sorted(slices.Values(afterHandshake))) {
+		t.Errorf("tlsAfterHandshakeClients() after the handshake = %q, want %q", got, afterHandshake)
+	}
+	checkTLSClientsSites(t, stdout, afterHandshake)
+
+	tlsProbeNow = func() time.Time { return firstEnding.NotAfter.Add(24 * time.Hour) }
+	code, stdout, stderr = probeImageWithSites(passingImageTLSClients, passingTLSPositiveControls, probeVendoredTLSSites, unaskedPublicTLSSites, img.flags()...)
+	if code != 0 {
+		t.Fatalf("probe-image past the first end of a certificate's validity exited %d, want 0: stderr %q, stdout %q", code, stderr, stdout)
+	}
+	for _, site := range []struct{ name, host string }{{"emSign", tlsEmSignHost}, {"AAA", tlsAAAHost}} {
+		if line := "probe-image: UNKNOWN: the vendored " + site.name + " chain at " + site.host + ": the probe's own check found CN=" + site.host + " outside its validity, "; !strings.Contains(stdout, line) {
+			t.Errorf("stdout = %q, want the line beginning %q; stderr %q", stdout, line, stderr)
+		}
+		if line := "probe-image: WARNING: the served vendored " + site.name + " chain's leaf, CN=" + site.host + ", "; !strings.Contains(stdout, line) {
+			t.Errorf("stdout = %q, want the line beginning %q", stdout, line)
+		}
+	}
+	checkTLSClientsSites(t, stdout, workerTLSClientNames())
+}
+
+// limitEndedTLSClient is a client whose own limit ends each of its runs at a vendored chain with
+// nothing in its output, which has no verdict at a site an earlier run reached
+// (tlsRunTerms.reached) and is unavailable at any other, as tlsCommandRun.outcome reads such a run.
+// It refuses the fixture chains and accepts the control.
+type limitEndedTLSClient struct{ clientName string }
+
+func (c limitEndedTLSClient) name() string { return c.clientName }
+
+func (c limitEndedTLSClient) probe(_ context.Context, site tlsSite, terms tlsRunTerms) tlsOutcome {
+	const limitEnded = "its 20s limit ended it after 20.0s"
+	switch {
+	case site.kind == tlsControlSite:
+		return tlsOutcome{status: tlsConnectionAccepted, detail: "HTTP 200"}
+	case site.kind == tlsVendoredSite && terms.reached:
+		return tlsOutcome{status: tlsNoVerdict, ending: tlsLimitEnded, detail: limitEnded}
+	case site.kind == tlsVendoredSite:
+		return tlsOutcome{status: tlsNetworkUnavailable, ending: tlsLimitEnded, detail: limitEnded}
+	default:
+		return tlsOutcome{status: tlsCertificateRefused, detail: "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"}
+	}
+}
+
+// R3's reached rule: where curl verifies a chain after the handshake, a vendored chain the probe's
+// own check passed counts as reached only where curl's timing run at it began a handshake at the
+// probe's server (tlsCurlTiming.reached), since no control run reached it. So a client whose own
+// limit ends its run at a vendored chain has no verdict at the chain the timing run reached, and
+// cannot verify refusal of the chain it did not, which fails the probe.
+func TestTLSProbeCountsAVendoredChainReachedOnlyWhereCurlsTimingRunReachedIt(t *testing.T) {
+	previousClients, previousControls, previousVendored, previousPublic := newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites
+	t.Cleanup(func() {
+		newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites = previousClients, previousControls, previousVendored, previousPublic
+	})
+	newTLSPositiveControls, newPublicTLSSites = passingTLSPositiveControls, unaskedPublicTLSSites
+	newVendoredTLSSites = func(_ context.Context, _ []string, _ string, sites []tlsSite) ([]tlsSite, tlsCurlTiming, error) {
+		vendored := slices.DeleteFunc(slices.Clone(sites), func(site tlsSite) bool { return site.kind != tlsVendoredSite })
+		return vendored, tlsCurlTiming{verdict: tlsCurlAfterHandshake, detail: "the test's stand-in", reached: []string{"vendored emSign"}}, nil
+	}
+	newImageTLSClients = theseTLSClients(limitEndedTLSClient{clientName: "bun"})
+
+	var stdout bytes.Buffer
+	noVerdict, err := runTLSProbe(context.Background(), "omp", nil, &stdout)
+
+	if want := "bun cannot verify refusal of the vendored AAA chain"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("runTLSProbe() = %v, want the failure %q: curl's timing run did not reach the vendored AAA chain; stdout:\n%s", err, want, stdout.String())
+	}
+	if !slices.ContainsFunc(noVerdict, func(run string) bool { return strings.HasPrefix(run, "bun vendored emSign: ") }) {
+		t.Errorf("runTLSProbe()'s runs with no verdict = %q, want bun's at the vendored emSign chain, which curl's timing run reached; stdout:\n%s", noVerdict, stdout.String())
+	}
+}
+
 // The probe warns of a served leaf whose end is within 30 days, or past, so the chains are vendored
 // again before every client moves to the public sites: a leaf planted 29 days from its end, or past
 // it, draws the WARNING line and the GitHub warning command, each naming the site, the leaf, its
