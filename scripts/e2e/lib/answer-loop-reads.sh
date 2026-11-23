@@ -415,6 +415,18 @@ inbox_replies() {
     printf '0\n'
   fi
 }
+# replies_to EVENT...: the replies the asker received to the sends whose answers named EVENT...,
+# each event's replies counted once. The listener answers a sender's own repeat under one key with
+# its first copy's event (cmd/listener's answerHandedOff), so every send of one envelope can name
+# one event, and a sum over the sends would count that event's one reply once a send (proof run
+# 45136574601, A8: one reply read as 3).
+replies_to() {
+  local event total=0
+  for event in $(printf '%s\n' "$@" | sort -u); do
+    total=$((total + $(inbox_replies "$event")))
+  done
+  printf '%s\n' "$total"
+}
 # first_reply_of EVENT EVENT: the text of whichever of the two answers reached the asker first, so
 # a check reads the order they were answered in (A9).
 first_reply_of() {
@@ -448,6 +460,14 @@ listener_handoffs() {
 listener_handoffs_to() {
   jq -R -s --arg s "$1" \
     '[split("\n")[] | fromjson? | select(.msg == "listener handed a message to its legion daemon" and .session_id == $s)] | length' \
+    "$evidence/logs/listener.log"
+}
+# listener_stored_handoffs_to SESSION: how many of those hand-offs the stream stored as a new copy.
+# A hand-off under a key the stream already holds is logged too, with `duplicate: true`, and is
+# answered with the copy stored first; a line that names no `duplicate` counts as stored.
+listener_stored_handoffs_to() {
+  jq -R -s --arg s "$1" \
+    '[split("\n")[] | fromjson? | select(.msg == "listener handed a message to its legion daemon" and .session_id == $s and (.duplicate // false) == false)] | length' \
     "$evidence/logs/listener.log"
 }
 

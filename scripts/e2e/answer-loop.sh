@@ -2268,13 +2268,17 @@ check_a7() {
 
 check_a8() {
   criterion A8 "one question delivered twice, across a restart and across a kill just after its answer posted, gets one answer; the loop's own answer is delivered into its asker's conversation unanswered, and an edit is not answered" || return 0
-  local planner=${agent[$store:planner.session]} key=a8-$run_tag key3=a8-kill-$run_tag sent resend resent event event3 qid again taken codes handoffs replies posted_before own_before edit_before ok_twice=0 ok_kill=0 ok_own=0 ok_edit=0
+  local planner=${agent[$store:planner.session]} key=a8-$run_tag key3=a8-kill-$run_tag sent resend resent event event3 qid again taken codes answered stored_before stored replies posted_before own_before edit_before ok_twice=0 ok_kill=0 ok_own=0 ok_edit=0
   local tester_old delivered_msg handed_before appended_before appended_after calls_before refused_before own_qid own_marker
   # One envelope sent three times under one idempotency key, the third after a restart. The
   # listener hands each send off, and every hand-off carries the envelope's dedupe key as its
-  # MsgId, so the stream stores one copy: the daemon is handed the question once and answers it
-  # once, and the restarted daemon is handed nothing — no second hand-off for it to log as handed
-  # off again, and no second answer.
+  # MsgId, so the stream stores one copy and answers each repeat with it: the second and third
+  # sends are answered the first send's event (the sender's own repeat gets its first copy whole,
+  # cmd/listener's answerHandedOff). The daemon is handed the question once and answers it once,
+  # and the restarted daemon is handed nothing — no second hand-off for it to log as handed off
+  # again, and no second answer. The replies are counted over the distinct events the sends were
+  # answered, since all three name one (replies_to).
+  stored_before=$(listener_stored_handoffs_to "$planner")
   sent=$(envoy_ask session "$planner" unanswerable "$key")
   event=${sent#* }
   resend=$(envoy_ask session "$planner" unanswerable "$key")
@@ -2287,10 +2291,11 @@ check_a8() {
   again=$(answers_lines "answers: question handed off again; not answered again" "$planner")
   taken=$(question_lines "$qid")
   codes="${sent%% *} ${resend%% *} ${resent%% *}"
-  handoffs="$(listener_handoffs "$event") $(listener_handoffs "${resend#* }") $(listener_handoffs "${resent#* }")"
-  replies=$(($(inbox_replies "$event") + $(inbox_replies "${resend#* }") + $(inbox_replies "${resent#* }")))
-  note "one envelope three times (listener $codes), the third across a restart: hand-offs published for the three sends $handoffs; replies on the asker's topic $replies; the restarted daemon's lines naming the question $qid: $taken, of them handed off again $again"
-  [ "$codes" = "200 200 200" ] && [ "$handoffs" = "1 1 1" ] && [ "$replies" = 1 ] && [ -n "$qid" ] && [ "$taken" = 0 ] && [ "$again" = 0 ] && ok_twice=1
+  answered="$event ${resend#* } ${resent#* }"
+  stored=$(($(listener_stored_handoffs_to "$planner") - stored_before))
+  replies=$(replies_to "$event" "${resend#* }" "${resent#* }")
+  note "one envelope three times (listener $codes, answered events $answered), the third across a restart: hand-offs the stream stored for the three sends $stored; replies on the asker's topic $replies; the restarted daemon's lines naming the question $qid: $taken, of them handed off again $again"
+  [ "$codes" = "200 200 200" ] && [ -n "$event" ] && [ "$answered" = "$event $event $event" ] && [ "$stored" = 1 ] && [ "$replies" = 1 ] && [ -n "$qid" ] && [ "$taken" = 0 ] && [ "$again" = 0 ] && ok_twice=1
   # A kill just after the answer posted: the asker's inbox is polled every tenth of a second and the
   # daemon killed the moment the reply lands, then the same envelope is delivered again.
   sent=$(envoy_ask session "$planner" unanswerable "$key3")

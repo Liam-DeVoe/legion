@@ -1628,8 +1628,9 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   — because this architect was answered before (A1 appended an exchange to the same conversation), so the count must not move, not be zero.
 
 - A8: one envelope sent three times under one idempotency key, the third after a restart:
-  the listener publishes a hand-off for each send, every hand-off carries the envelope's dedupe key as its MsgId (`legion.handoff.<dedupe key>:<subject>`, `cmd/listener/legion_handoff.go`), so the stream stores one copy.
-  One reply on the asker's topic across the three, and the restarted daemon logs no `answers:` line naming that question at all
+  the listener publishes a hand-off for each send, every hand-off carries the envelope's dedupe key as its MsgId (`legion.handoff.<dedupe key>:<subject>`, `cmd/listener/legion_handoff.go`), so the stream stores one copy: one of the three hand-off lines is `duplicate: false` (`listener_stored_handoffs_to`).
+  The second and third sends are answered with the first send's event, the copy the stream stored (`answerHandedOff`).
+  One reply on the asker's topic across the three, counted once for that one event (`replies_to`), and the restarted daemon logs no `answers:` line naming that question at all
   — neither an answer nor a `handed off again`, the question having never been handed to it a second time.
   A kill -9 the moment the reply lands, a restart and a redelivery still one reply.
   A question to the planner sent as the replaced tester's session gets the planner's answer, which the listener hands to the daemon because that tester is stopped too (a `listener handed a message to its legion
