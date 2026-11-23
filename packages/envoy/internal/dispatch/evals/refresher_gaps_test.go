@@ -108,22 +108,22 @@ func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testin
 }
 
 // TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt: a pull request of the deploy
-// repository that names an issue of the main project, merged a day earlier, ships with another
-// deploy run, and the run that shipped it before counts it in its own day's rows until that day is
-// written again. The test fails the first write of that run's day: the pass fails after the write
-// that moved the pull request's member to the new run, and no stored pull request names the old run
-// any more. The pass after it, reading the same change again, still rewrites the old run's day,
-// which the moving write recorded owed; it leaves no day owed.
+// repository, merged a day earlier, ships with another deploy run, and the run that shipped it
+// before counts it in its own day's rows until that day is written again. The pull request names an
+// issue of the main project, which it counts for through that issue (one that names none counts for
+// no project): where the history's names none, it is given one before the history settles. The test
+// fails the first write of that run's day: the pass fails after the write that moved the pull
+// request's member to the new run, and no stored pull request names the old run any more. The pass
+// after it, reading the same change again, still rewrites the old run's day, which the moving write
+// recorded owed; it leaves no day owed.
 func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
-	r.settle(t)
-	r.pass(t)
 	main := deliveries.Project
 	var picked delivery.DeliveryPullRequest
 	var oldDay, merged time.Time
 	for _, pr := range deliveries.PullRequests {
-		if pr.Repo != deliveries.DeployRepo || pr.MergedAt == nil || !namesIssueOf(deliveries, pr) || picked.Number != 0 {
+		if pr.Repo != deliveries.DeployRepo || pr.MergedAt == nil || picked.Number != 0 {
 			continue
 		}
 		old := delivery.FirstShippingApply(*pr.MergedAt, deliveries.Applies)
@@ -141,6 +141,13 @@ func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T)
 	if picked.Number == 0 {
 		t.Fatal("the history holds no pull request of the deploy repository that a day's earlier merge moves to another run starting on another day")
 	}
+	if !namesIssueOf(deliveries, picked) {
+		r.exec(t, "name an issue of "+main+" on "+PullRequestMember(picked.Repo, picked.Number), `
+			update delivery_pull_requests set issue_key = $3 where repo = $1 and number = $2
+		`, picked.Repo, picked.Number, deliveries.Issues[main][0])
+	}
+	r.settle(t)
+	r.pass(t)
 	r.failOnce(t, "new.project_key = '"+main+"' and new.day = '"+oldDay.Format(time.DateOnly)+"'::date")
 	r.exec(t, "merge the pull request a day earlier", `
 		update delivery_pull_requests set merged_at = $3, created_at = least(created_at, $3::timestamptz - interval '1 hour') where repo = $1 and number = $2
