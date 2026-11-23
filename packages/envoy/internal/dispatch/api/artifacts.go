@@ -612,9 +612,10 @@ func (s *server) queueNewArtifact(
 		if kind != "doc" {
 			facts = graphstore.ArtifactBytes(facts, artifact.RefKey, input.contentType, int64(len(input.content)), sha, actor, at)
 		}
-		node := graphstore.Created(graphstore.ArtifactNode(artifact.RefKey, deref(project), deref(session), actor, at))
+		row := graphstore.ArtifactRow{ID: artifact.ID, CreatedAt: artifact.CreatedAt}
+		node := graphstore.Created(graphstore.WithArtifactRow(graphstore.ArtifactNode(artifact.RefKey, deref(project), deref(session), actor, at), row))
 		if query != "" {
-			node = graphstore.Created(graphstore.QueryNode(artifact.RefKey, deref(project), query, actor, at))
+			node = graphstore.Created(graphstore.WithArtifactRow(graphstore.QueryNode(artifact.RefKey, deref(project), query, actor, at), row))
 			facts = graphstore.AttributeFacts(facts, node)
 		}
 		held, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindArtifact, artifact.RefKey)
@@ -3168,29 +3169,29 @@ const issueTreeName = "tree"
 // transaction with it. Each document_rooms row naming the tree - the spec's, a document's joining
 // the room later - is written under that same owner lock, held to the writing transaction's
 // commit, and announced in it (docs.AnnounceDocumentRooms says why a room's settlement depends on
-// that).
-func (s *server) createIssueTree(b *store.WriteBatch, written graphstore.Uncaused, id, slug, key, project string, actor model.Actor) error {
+// that). The tree's row is created at at, the time its node holds of it (graphstore.ArtifactRow).
+func (s *server) createIssueTree(b *store.WriteBatch, written graphstore.Uncaused, id, slug, key, project string, actor model.Actor, at time.Time) error {
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
 		return err
 	}
 	graphstore.QueueNodes(b, written)
 	b.Queue("create the issue tree", `
-		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
-		values ($1, $2, $3, $4, $5, 'tree', false, $6, $7, $8)
-	`, id, key, project, slug, issueTreeName, actorJSON, graphstore.KindArtifact, graphstore.ArtifactRefKey(key, project, "", slug))
+		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, created_at, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, 'tree', false, $6, $7, $8, $9)
+	`, id, key, project, slug, issueTreeName, actorJSON, at, graphstore.KindArtifact, graphstore.ArtifactRefKey(key, project, "", slug))
 	b.Queue("record the issue's tree", `insert into issue_trees (issue_key, artifact_id) values ($1, $2)`, key, id)
 	docs.QueueBornConverted(b, key)
 	return nil
 }
 
-// issueTreeWrite is the node write of the tree artifact of the issue key in project under slug,
+// issueTreeWrite is the node write of the tree artifact id of the issue key in project under slug,
 // planned (graphstore.PlanUncaused) for createIssueTree to queue: the tree's node
-// (graphstore.ArtifactNode), made by actor at at and marked changed, with its part_of the issue
-// (graphstore.ArtifactPartOf).
-func issueTreeWrite(slug, key, project string, actor model.Actor, at time.Time) graphstore.Uncaused {
+// (graphstore.ArtifactNode) naming its row, which createIssueTree dates at at, made by actor at at
+// and marked changed, with its part_of the issue (graphstore.ArtifactPartOf).
+func issueTreeWrite(id, slug, key, project string, actor model.Actor, at time.Time) graphstore.Uncaused {
 	refKey := graphstore.ArtifactRefKey(key, project, "", slug)
-	node := graphstore.ArtifactNode(refKey, project, "", actor, at)
+	node := graphstore.WithArtifactRow(graphstore.ArtifactNode(refKey, project, "", actor, at), graphstore.ArtifactRow{ID: id, CreatedAt: at})
 	node.Changed = true
 	return graphstore.PlanUncaused([]graphstore.Node{node}, []graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)})
 }

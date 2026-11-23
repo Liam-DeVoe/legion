@@ -41,9 +41,10 @@ func TestAnIssuesTreeArtifactTakesItsSlugItsNodeAndItsIssueTreesRow(t *testing.T
 		if err != nil {
 			t.Fatalf("take the tree's slug: %v", err)
 		}
-		written := issueTreeWrite(slug, key, "TREE", alice, time.Now().UTC())
+		at := time.Now().UTC()
+		written := issueTreeWrite(id, slug, key, "TREE", alice, at)
 		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			return s.createIssueTree(b, written, id, slug, key, "TREE", alice)
+			return s.createIssueTree(b, written, id, slug, key, "TREE", alice, at)
 		}); err != nil {
 			return "", err
 		}

@@ -51,7 +51,53 @@ var refProjections = []projection{{
 		where r.from_kind = '` + graphstore.KindArtifact + `'
 		  and not exists (select 1 from artifacts a where a.id::text = r.from_id and a.node_kind is not null)`,
 	emptyAgrees: true,
+}, {
+	name:     referenceDateProjectionKind,
+	nodeKind: graphstore.KindArtifact,
+	table:    "refs",
+	note: "a document's references dated: the row side is every refs row of a document whose row names its node and that is" +
+		" not retired, whose current mentions tuple asserts its far end, with its created_at and source_seq, against each such" +
+		" tuple of a present document node with its time and legacy_source_seq; every other difference is artifact_reference's",
+	rows: `
+		select 'artifact ' || r.from_id, a.node_kind, a.node_address, '` + graphstore.TupleMentions + `', r.to_kind,
+		       r.to_id || ' at ' || ` + referenceDate("r.created_at", "r.source_seq") + `
+		from refs r` + markedReferenceSource + `
+		  and octet_length(r.to_id) <= ` + addressBound + `
+		  and exists (select 1 from (` + heldReference + `) held where held.asserted)`,
+	tuples: `
+		select a.node_kind, a.node_address, '` + graphstore.TupleMentions + `', held.to_kind,
+		       held.to_id || ' at ' || ` + referenceDate("held.at", "held.legacy_source_seq") + `
+		from artifacts a
+		join graph_nodes node on node.kind = a.node_kind and node.id = a.node_address and node.state <> '` + graphstore.StateGone + `'
+		cross join lateral (` + heldDatedMentions + `) held
+		where a.node_kind is not null and not ` + retiredDocument("a") + ` and held.asserted
+		  and exists (
+		    select 1 from refs r
+		    where r.from_kind = '` + graphstore.KindArtifact + `' and r.from_id = a.id::text
+		      and r.to_kind = held.to_kind and r.to_id = held.to_id)`,
+	emptyAgrees: true,
 }}
+
+// referenceDateProjectionKind is the census's name of the date a document's mention carries, held
+// to the refs row of the pair (refProjections' second kind): graph_edges answers a document's
+// mention at its tuple's time and legacy_source_seq once the boot step has deleted the tuple arm's
+// read of the row (store.GraphEdgesIssueTreeRetired), so each current mentions tuple whose row
+// stands is held to that row's created_at and source_seq, a tuple and a row dated otherwise each a
+// difference. A row with no tuple and a tuple with no row are artifact_reference's differences,
+// and neither side here holds them, so one defect is counted once.
+const referenceDateProjectionKind = "artifact_reference_date"
+
+// referenceDate writes the date of a mention, its time at and its sequence seq, as text both sides
+// of the date kind compare: the time in UTC to the microsecond, and the sequence or none.
+func referenceDate(at, seq string) string {
+	return `to_char(` + at + ` at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || ' seq ' || coalesce(` + seq + `::text, 'none')`
+}
+
+// heldDatedMentions is every mentions tuple the node of the artifacts row aliased a states, the
+// newest of each far end with whether it asserts, its time and its legacy_source_seq
+// (graphstore.CurrentTupleRead), read through graph_tuples_current.
+var heldDatedMentions = graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted, t.at, t.legacy_source_seq`,
+	`t.from_kind = a.node_kind and t.from_id = a.node_address and t.kind = '`+graphstore.TupleMentions+`'`)
 
 // markedReferenceSource joins, to the refs row aliased r, the artifacts row a of the document whose
 // reference it is, while that row names the document's node and the document is not retired
@@ -62,19 +108,30 @@ var markedReferenceSource = `
 		where r.from_kind = '` + graphstore.KindArtifact + `'`
 
 // heldReference is the newest mentions tuple out of the node of the artifacts row aliased a to the
-// far end of the refs row aliased r, with whether it asserts (graphstore.CurrentTupleRead), read
-// through graph_tuples_current.
-var heldReference = graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`, `t.asserted`,
+// far end of the refs row aliased r, with whether it asserts, its time and its legacy_source_seq
+// (graphstore.CurrentTupleRead), read through graph_tuples_current.
+var heldReference = graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id`, `t.asserted, t.at, t.legacy_source_seq`,
 	`t.from_kind = a.node_kind and t.from_id = a.node_address and t.kind = '`+graphstore.TupleMentions+`'
 		  and t.to_kind = r.to_kind and t.to_id = r.to_id`)
 
+// referenceDated is the test that the current mentions tuple aliased held asserts the far end of
+// the refs row aliased r at that row's own date: its time is the row's created_at and its
+// legacy_source_seq the row's source_seq. graph_edges answers a document's mention at its tuple's
+// date once the boot step has deleted the tuple arm's read of the row
+// (store.GraphEdgesIssueTreeRetired), so a tuple dated otherwise is owed a statement at the row's
+// date (owedReferences), and the census counts it as a difference (refDateProjections).
+const referenceDated = `held.asserted and held.at = r.created_at and held.legacy_source_seq is not distinct from r.source_seq`
+
 // owedReferences is the statement shape of the refs rows of a document whose row names its node
-// that no current mentions tuple out of that node states: the rows of the kind in the store's bound
-// with no tuple asserting their triple (heldReference).
+// that no current mentions tuple out of that node states at the row's date: the rows of the kind
+// in the store's bound with no tuple asserting their triple, and those whose tuple asserts it at
+// another time or with another legacy_source_seq (referenceDated) - a row rebuild-refs inserted,
+// which a later version's event stamped after its tuple was appended. Each is owed its mentions
+// tuple at its own date.
 var owedReferences = `
 		from refs r` + markedReferenceSource + `
 		  and octet_length(r.to_id) <= ` + addressBound + `
-		  and not exists (select 1 from (` + heldReference + `) held where held.asserted)`
+		  and not exists (select 1 from (` + heldReference + `) held where ` + referenceDated + `)`
 
 // heldMentions is every mentions tuple the node of the artifacts row aliased a states, the newest
 // of each far end with whether it asserts (graphstore.CurrentTupleRead), read through

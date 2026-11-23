@@ -577,8 +577,8 @@ func (r *seedRun) writeSessionMention(ctx context.Context, tx pgx.Tx, from, to i
 }
 
 // mentionRows collects the `refs` rows one batch of items writes. The targets are read out of
-// each body by text.ExtractAt and refs.TargetOf, the same reading the server's own indexer makes,
-// so the rows are the rows a write of that body would leave.
+// each body by text.ExtractAt and refs.ReferenceTarget, the same reading the server's own indexer
+// makes, so the rows are the rows a write of that body would leave.
 type mentionRows struct {
 	kind                string
 	ids, kinds, targets []string
@@ -595,7 +595,7 @@ func newMentionRows(kind string) *mentionRows {
 // the body is scanned once.
 func (m *mentionRows) add(id string, mentioned []text.Ref, at time.Time) {
 	for _, ref := range mentioned {
-		target, ok := refs.TargetOf(ref)
+		target, ok := refs.ReferenceTarget(ref)
 		if !ok {
 			continue
 		}

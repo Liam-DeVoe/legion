@@ -141,11 +141,13 @@ func TestEveryObjectWriterRestatesItsNode(t *testing.T) {
 }
 
 // TestARestatingWriteKeepsTheStoredAttributes holds a write that restates a node (Node.Restates)
-// to keeping the attributes its row stores, as it keeps the row's visibility (writtenAttributes):
-// a restating writer owns the facts it writes the node again for, not the node's attributes,
-// which another write gave it. A node a plain write made with attributes keeps them when a
-// restating write states other attributes, and when one states none, as every restating writer
-// of this tree writes a node; a plain write still moves them.
+// to keeping the attributes its row stores but those it names itself, as it keeps the row's
+// visibility (writtenAttributes): a restating writer owns the facts it writes the node again for,
+// not the node's other attributes, which another write gave it. A node a plain write made with
+// attributes keeps each one a restating write does not name - a document's node names only the
+// row it projects (ArtifactRow) - and takes the value of each it names; it keeps them all when a
+// restating write states none, as every other restating writer of this tree writes a node; a plain
+// write still moves them whole.
 func TestARestatingWriteKeepsTheStoredAttributes(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -155,7 +157,7 @@ func TestARestatingWriteKeepsTheStoredAttributes(t *testing.T) {
 	stored := Node{
 		Kind: KindSession, ID: "restated-attributes", Supertag: KindSession,
 		Visibility: VisibilityProject, State: StateLive,
-		Attributes: map[string]any{"title": "the stored title"},
+		Attributes: map[string]any{"title": "the stored title", "kept": "the stored value"},
 		MadeAt:     at, MadeBy: who, SourceEvent: NoEvent,
 	}
 	writeNode(t, ctx, database, stored)
@@ -165,12 +167,13 @@ func TestARestatingWriteKeepsTheStoredAttributes(t *testing.T) {
 	restated.Restates, restated.MadeAt = true, at.Add(time.Minute)
 	restated.Attributes = map[string]any{"title": "the restated title"}
 	writeNode(t, ctx, database, restated)
-	requireNodeAttributes(t, ctx, database, stored, stored.Attributes, "a restating write stating other attributes")
+	overlaid := map[string]any{"title": "the restated title", "kept": "the stored value"}
+	requireNodeAttributes(t, ctx, database, stored, overlaid, "a restating write naming one attribute")
 
 	bare := restated
 	bare.Attributes, bare.MadeAt = nil, at.Add(2*time.Minute)
 	writeNode(t, ctx, database, bare)
-	requireNodeAttributes(t, ctx, database, stored, stored.Attributes, "a restating write stating none")
+	requireNodeAttributes(t, ctx, database, stored, overlaid, "a restating write stating none")
 
 	plain := restated
 	plain.Restates, plain.MadeAt = false, at.Add(3*time.Minute)

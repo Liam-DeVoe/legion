@@ -820,9 +820,6 @@ var graphViewArms = []graphViewArm{
 	{table: "issues", fromKind: "issue", kind: "child_of", toKind: "issue"},
 	{table: "issue_links", fromKind: "issue", kind: "blocked_by", toKind: "issue"},
 	{table: "artifacts", fromKind: "artifact", kind: "attached_to", toKind: "issue"},
-	// The arm over the artifacts that carry their node, answering each one's attached_to from its
-	// part_of tuple (migration 20261117140000).
-	{table: "artifacts", fromKind: "artifact", kind: "attached_to", toKind: "issue"},
 	{table: "asks", fromKind: "ask", kind: "anchored_to", toKind: "artifact"},
 	{table: "comments", fromKind: "comment", kind: "anchored_to", toKind: "artifact"},
 	{table: "asks", fromKind: "ask", kind: "owned_by", toKind: "artifact"},
@@ -838,12 +835,12 @@ var graphViewArms = []graphViewArm{
 	{table: "block_refs", fromKind: "block"},
 	// The store's own arm, which answers each kind it carries once that kind's cutover row
 	// reads true: every select item of it is a column, so it is a mention arm to this test, and
-	// mentionBacklinkArms reads graph_tuples for exactly that reason.
+	// mentionBacklinkArms reads graph_tuples for exactly that reason. Since migration
+	// 20261123120000 it also reads a document's attached_to, which the count's attached_to arm
+	// over the artifacts that carry their node counts (attachedArtifactStands), and the relations
+	// out of a finding of a lens, written lens_block, which the arms of the store alone that name a
+	// lens_block count (storedFrom); the view holds no arm of its own for either any more.
 	{table: "graph_tuples"},
-	// The store's arm over the relations out of a finding of a lens, which writes its from_kind,
-	// lens_block, as a literal and every other item as a column (migration 20261117020856): its
-	// edges are counted by the arms of the store alone (storedFrom) that name a lens_block.
-	{table: "graph_tuples", fromKind: "lens_block"},
 	{table: "document_blocks", fromKind: "block", kind: "part_of", toKind: "artifact"},
 	{table: "comment_blocks", fromKind: "comment_block", kind: "part_of", toKind: "comment"},
 	{table: "message_blocks", fromKind: "message_block", kind: "part_of", toKind: "message"},
@@ -887,7 +884,7 @@ func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 	var declared, viewed []string
 	for kind, arms := range backlinkArms {
 		for _, arm := range arms {
-			if len(arm.storedFrom) > 0 {
+			if len(arm.storedFrom) > 0 || arm.ofTheTupleArm {
 				continue
 			}
 			declared = append(declared, kind+"/"+arm.kind)

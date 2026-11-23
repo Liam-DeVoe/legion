@@ -287,6 +287,36 @@ func TestTheArmOverRefsTakesTheStoresAddressBound(t *testing.T) {
 	}
 }
 
+// TestTheViewReadsTheRowADocumentsNodeNames holds graph_edges' read of a document's node, once the
+// boot step has deleted dispatch://INFRA-1253's arms (store.ArtifactNodeUUID,
+// store.ArtifactNodeCreatedAt), to the names this package writes the row's values under
+// (ArtifactRow), which package store writes out as text because this package imports it, and holds
+// what WithArtifactRow lays on a node to the row: its id, and its created_at at the microsecond
+// Postgres keeps, so a time read back from the value is the row's own.
+func TestTheViewReadsTheRowADocumentsNodeNames(t *testing.T) {
+	if want := "attributes->>'" + AttributeArtifactID + "'"; !strings.Contains(store.ArtifactNodeUUID, want) {
+		t.Errorf("graph_edges reads a document's uuid as %s, not off %s", store.ArtifactNodeUUID, want)
+	}
+	if want := "attributes->>'" + AttributeCreatedAt + "'"; !strings.Contains(store.ArtifactNodeCreatedAt, want) {
+		t.Errorf("graph_edges reads a document's created_at as %s, not off %s", store.ArtifactNodeCreatedAt, want)
+	}
+	at := time.Date(2026, time.November, 23, 4, 5, 6, 123456789, time.FixedZone("east", 3600))
+	node := WithArtifactRow(ArtifactNode("CORE-1/spec", "CORE", "", model.Actor{Kind: "user", ID: "alice"}, at),
+		ArtifactRow{ID: "00000000-0000-4000-8000-000000000001", CreatedAt: at})
+	if got := node.Attributes[AttributeArtifactID]; got != "00000000-0000-4000-8000-000000000001" {
+		t.Errorf("the node names the row %v", got)
+	}
+	if got, want := node.Attributes[AttributeCreatedAt], "2026-11-23T03:05:06.123456Z"; got != want {
+		t.Errorf("the node dates the row %v, want %s", got, want)
+	}
+	if facts := AttributeFacts(nil, node); len(facts) != 0 {
+		t.Errorf("the row's values state %d tuples, want none: they ride on the node's attributes alone", len(facts))
+	}
+	if bare := WithArtifactRow(ArtifactNode("CORE-1/spec", "CORE", "", model.Actor{Kind: "user", ID: "alice"}, at), ArtifactRow{}); bare.Attributes != nil {
+		t.Errorf("a node that names no row carries %v", bare.Attributes)
+	}
+}
+
 // TestArtifactRefKeyIsTheTriggers holds ArtifactRefKey to the address the artifacts_ref_key trigger
 // (0071_agent_artifacts.up.sql) gives a row, for each of the three owners an artifact has: a
 // document's node is written before its row, so the writer computes the address the row will

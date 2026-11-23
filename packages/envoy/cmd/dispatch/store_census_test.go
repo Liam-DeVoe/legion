@@ -68,13 +68,16 @@ const censusSigningKey = "store-census-signing-key"
 // documents and versions it makes nodes of (graphcensus' versionProjections), which the older
 // build's issues, specs and project documents populate and the backfill gives their nodes, and
 // the references a document's citations make (artifact_reference, graphcensus' refProjections),
-// which the seeded spec's citations populate. Each must carry a population in this run: a census
+// which the seeded spec's citations populate, with the date each such mention carries
+// (artifact_reference_date), and the row each document's node names (artifact_row), which every
+// document with its node populates. Each must carry a population in this run: a census
 // that checked no row of a kind proves nothing about it, so a kind that checks zero rows fails
 // this test with that kind reported. The list is the test's own, so a kind the census stops
 // checking is read by a person before this test agrees with it.
 var censusKinds = []string{
 	"comment", "block", "block_ref", "block_rank", "block_text", "block_size", "room_block", "block_author",
-	"person", "session", "role", "page", "artifact", "version", "artifact_reference",
+	"person", "session", "role", "page", "artifact", "version", "artifact_row", "artifact_reference",
+	"artifact_reference_date",
 }
 
 // censusUnseededKinds are the census's kinds this run writes no row of, which a store may hold

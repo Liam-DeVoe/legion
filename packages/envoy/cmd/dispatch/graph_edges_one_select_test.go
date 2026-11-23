@@ -52,11 +52,6 @@ const (
 	infra1152Part = "dispatch://INFRA-1152's part, built once INFRA-1152 and INFRA-1253 are on one line"
 	infra1149Part = "one of the four arms dispatch://INFRA-1149 moved, which dispatch://INFRA-1253 deletes: INFRA-1253's head still holds it"
 	unlistedArm   = "on none of the lists of c-view-one-select, so no child's deletion takes it"
-	// secondPart is the part of the root's deletion the architect gave the four objects on none of
-	// the children's lists: dispatch://INFRA-1253's arm over the artifacts that carry their node,
-	// the arm over a lens's findings, the tuple arm's join of a document's mentions to its artifacts
-	// row and its refs row, and the arm over refs' branch for a far end past the store's bound.
-	secondPart = "T7b's second part, which the architect gave the four objects on none of the children's lists"
 )
 
 // At the root's head graph_edges is one select over the current tuples, with the tuple arm's class
@@ -79,6 +74,9 @@ const (
 //   - deleted rows: a build of the release before deleted a marked issue link with its tuple
 //     standing: INFRA-1253's arms and joins stay, the server starts and serves, and its log names
 //     the tuple;
+//   - past bound: a build of the release before wrote a document's reference to a far end past the
+//     store's bound, which no writer of this release writes: INFRA-1253's arms stay, with the arm
+//     over refs' branch that answers that row, and the log names the row's source and its length;
 //   - release before: the release before this tree left rows and its announcement: the arms stay
 //     through the root's first boot, a second process of it and a restart of it, so a rollback to
 //     that release loses no edge it writes, and go at the first boot of a later build once the
@@ -87,6 +85,11 @@ const (
 //     before the root's build boots once more: the arms stay, which a rule read from times would
 //     delete;
 //   - from empty: the boot created the database, so the arms go at once.
+//
+// Over the released and the empty database the view the step leaves reads a document's uuid, its
+// row's created_at and its mentions' dates off the store alone (store.GraphEdgesViewRetired), so
+// the tuple arm keeps no read of the artifacts row or the refs row, and the arm over refs answers
+// no document's row.
 //
 // The negative controls, run one at a time in a scratch copy: a step that skips its proof deletes
 // the arms of the deleted rows' database, where the deleted link comes back in graph_edges from its
@@ -102,6 +105,7 @@ func TestGraphEdgesEndsAsOneSelectOverTheTuples(t *testing.T) {
 	t.Run("released", func(t *testing.T) { requireTheReleasedDatabaseLosesTheArms(t, rootBuild) })
 	t.Run("roll window", func(t *testing.T) { requireTheRollWindowIsBroughtIn(t, rootBuild) })
 	t.Run("deleted rows", func(t *testing.T) { requireDeletedRowsKeepTheArms(t, rootBuild) })
+	t.Run("past bound", func(t *testing.T) { requireAReferencePastTheBoundKeepsTheArms(t, rootBuild) })
 	t.Run("release before", func(t *testing.T) { requireTheReleaseBeforeKeepsTheArms(t, rootBuild, laterBuild) })
 	t.Run("rolled back", func(t *testing.T) { requireARollbackKeepsTheArms(t, rootBuild) })
 	t.Run("from empty", func(t *testing.T) { requireAnEmptyDatabaseLosesTheArmsAtOnce(t, rootBuild) })
@@ -165,20 +169,16 @@ const (
 	ownerItems     = "dispatch://INFRA-1152's"
 	ownerMoved     = "dispatch://INFRA-1149's, which dispatch://INFRA-1253 deletes"
 	ownerRefs      = "the arm over refs: its rows from a comment, a message or an ask dispatch://INFRA-1152's, its rows from an artifact dispatch://INFRA-1253's"
-	ownerSecond    = "T7b's second part's"
 	ownerNone      = ""
 )
 
-// armOwner is the child whose deletion takes arm.
+// armOwner is the child whose deletion takes arm. Every arm over graph_tuples is the tuple arm:
+// migration 20261123120000 folded into it the arm over a lens's findings and the arm over the
+// artifacts that carry their node, which T7b's second part was given.
 func armOwner(arm viewArm) string {
 	switch arm.table {
 	case "graph_tuples":
-		if arm.fromKind == "" {
-			return ownerTuples
-		}
-		if arm.fromKind == "lens_block" {
-			return ownerSecond
-		}
+		return ownerTuples
 	case "refs":
 		return ownerRefs
 	case "asks", "ask_followers":
@@ -188,9 +188,6 @@ func armOwner(arm viewArm) string {
 	case "artifacts":
 		if strings.Contains(arm.text, "node_kind IS NULL") {
 			return ownerIssueTree
-		}
-		if strings.Contains(arm.text, "JOIN graph_nodes") {
-			return ownerSecond
 		}
 	case "block_refs", "document_blocks":
 		return ownerMoved
@@ -528,13 +525,17 @@ func childObjects(arms []viewArm, owner string, probes []string) []string {
 	return held
 }
 
-// The probes of the tuple arm each child deletes with its arms, and dispatch://INFRA-1253's test of
-// a document's marker, in the arm over refs and in the tuple arm's join of a document's mentions.
+// The probes of the tuple arm each child deletes with its arms; dispatch://INFRA-1253's test of a
+// document's marker, in the arm over refs and in the tuple arm's reads of a document's rows; that
+// child's reads of the artifacts row and the refs row behind a document's mentions and its
+// attached_to (migration 20261123120000); and the arm over refs' branch for a far end past the
+// store's bound, which goes with that child's half of the arm.
 var (
 	asksProbes      = []string{"FROM asks projected", "FROM ask_followers projected"}
 	issueTreeProbes = []string{
 		"FROM issues projected", "FROM issue_links projected", "FROM components projected",
 		"FROM component_depends projected", "FROM issue_component_members projected", "mentioning.node_kind IS NOT NULL",
+		"JOIN artifacts mentioning", "FROM refs stated", "JOIN artifacts attached", "octet_length(r.to_id) > 1024",
 	}
 )
 
@@ -587,8 +588,9 @@ func requireOneSelect(t *testing.T, d *decisionsDatabase) {
 				{"FROM components projected", ownerIssueTree + " join, which the deletion takes"},
 				{"FROM component_depends projected", ownerIssueTree + " join, which the deletion takes"},
 				{"FROM issue_component_members projected", ownerIssueTree + " join, which the deletion takes"},
-				{"JOIN artifacts mentioning", "dispatch://INFRA-1253's join of a document's mentions to its artifacts row, which names the document by its uuid: " + secondPart},
-				{"FROM refs stated", "dispatch://INFRA-1253's join of a document's mentions to its refs row, which dates each mention: " + secondPart},
+				{"JOIN artifacts mentioning", ownerIssueTree + " read of a document's mentions through its artifacts row, which the deletion takes"},
+				{"FROM refs stated", ownerIssueTree + " read of a document's mentions' dates off its refs rows, which the deletion takes"},
+				{"JOIN artifacts attached", ownerIssueTree + " read of a document's attached_to through its artifacts row, which the deletion takes"},
 			} {
 				if strings.Contains(arm.text, join.text) {
 					t.Errorf("the tuple arm keeps its join %q: %s", join.text, join.owner)
@@ -599,9 +601,10 @@ func requireOneSelect(t *testing.T, d *decisionsDatabase) {
 		case ownerMoved:
 			t.Errorf("graph_edges keeps %s: %s", arm, infra1149Part)
 		case ownerRefs:
-			t.Errorf("graph_edges keeps %s: its item half is %s; its branch for a far end past the store's bound is %s", arm, infra1152Part, secondPart)
-		case ownerSecond:
-			t.Errorf("graph_edges keeps %s: %s", arm, secondPart)
+			t.Errorf("graph_edges keeps %s: its item half is %s", arm, infra1152Part)
+			if strings.Contains(arm.text, "octet_length") || strings.Contains(arm.text, "mentioning") {
+				t.Errorf("the arm over refs keeps a test of a document's rows: %s join, which the deletion takes:\n%s", ownerIssueTree, arm.text)
+			}
 		case ownerNone:
 			t.Errorf("graph_edges keeps %s, %s", arm, unlistedArm)
 		default:
@@ -794,6 +797,33 @@ func requireDeletedRowsKeepTheArms(t *testing.T, rootBuild string) {
 	requireLogged(t, output, `unprojected_tuple="issue:ARMS-3 -needs-> issue:ARMS-1"`, deletedLine(startup.AsksArmsRetirement))
 	if strings.Contains(output, deletedLine(startup.IssueTreeArmsRetirement)) {
 		t.Errorf("the step deleted INFRA-1253's arms over a wait deleted with its tuple standing:\n%s", output)
+	}
+	requireChildrenArms(t, d, false, true)
+	requireReadsEqual(t, before, readView(t, database, before.targets))
+	requireServes(t, d.process)
+}
+
+// pastBoundAddress is a document's address of graphstore.MaxAddressBytes and one byte more, as a
+// build of the release before could cite it: the far end no writer of this release writes.
+var pastBoundAddress = "ARMS-1/" + strings.Repeat("p", 1025-len("ARMS-1/"))
+
+func requireAReferencePastTheBoundKeepsTheArms(t *testing.T, rootBuild string) {
+	d, seed := releasedDatabase(t)
+	warmUp(t, d, rootBuild, seed)
+	// A build of the release before writes the notes' reference to an address past the bound.
+	if err := d.exec(t, `insert into refs (from_kind, from_id, to_kind, to_id, created_at) values ('artifact', $1, 'artifact', $2, now())`,
+		seed.notes, pastBoundAddress); err != nil {
+		t.Fatalf("write the reference past the bound: %v", err)
+	}
+	announceBuild(t, d, oneSelectChildrenRelease, refs.TupleKinds())
+	database := openStore(t, d)
+	before := readView(t, database, nil)
+	requireGraphEdgeAnswered(t, database, "artifact "+seed.notes+" -mentions-> artifact "+pastBoundAddress)
+	d.process = startBuild(t, d, rootBuild, 30*time.Second)
+	output := d.process.Output.String()
+	requireLogged(t, output, "past_bound_reference=artifact:"+seed.notes, "length=1025", deletedLine(startup.AsksArmsRetirement))
+	if strings.Contains(output, deletedLine(startup.IssueTreeArmsRetirement)) {
+		t.Errorf("the step deleted INFRA-1253's arms, the arm over refs' branch past the bound among them, over a reference past the bound:\n%s", output)
 	}
 	requireChildrenArms(t, d, false, true)
 	requireReadsEqual(t, before, readView(t, database, before.targets))

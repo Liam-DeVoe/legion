@@ -1,9 +1,11 @@
 package graphstore
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The relations between issues, each a tuple out of the issue's node (dispatch://INFRA-1253 R9,
@@ -61,4 +63,46 @@ func ArtifactMentions(refKey, toKind, toID string, asserted bool, who model.Acto
 		ToKind: toKind, ToID: toID,
 		At: at, Who: who, SourceEvent: NoEvent, Asserted: asserted,
 	}
+}
+
+// QueueMentionsDated queues on b the statement that dates each mention the document documentID's
+// node states now as the refs row of the pair dates it: every current mentions tuple out of the
+// node whose time or legacy_source_seq is not the row's created_at and source_seq is stated
+// again, asserting the same far end, at the row's created_at and carrying its source_seq, signed
+// by who signed the tuple and caused by the event eventID names, or by the event the write phase
+// appended last where it is nil (store.LatestEventID). graph_edges answers a document's mention
+// at its tuple's own time and sequence once the boot step has deleted the tuple arm's read of the
+// refs row (store.GraphEdgesIssueTreeRetired), so a tuple holds the row's.
+//
+// It runs right after the update that stamps the document's refs rows with that event (refs'
+// queueStamp, docs' stampVersionEvent), in the transaction that holds the document's owner: the
+// stamp dates a row rebuild-refs inserted with no source_seq, whose tuple was appended with none
+// (Replacement.ArtifactMentions), and this states it again with the stamp's. A row the same write
+// inserts has no current tuple yet, or one its writer appended under the same event, which agrees,
+// so neither is stated here. A document whose row names no node states nothing (its mentions are
+// the view's arm over refs to answer until the backfill states them).
+func QueueMentionsDated(b *store.WriteBatch, documentID string, eventID *int64) {
+	event, args := store.LatestEventID, []any{documentID}
+	if eventID != nil {
+		event, args = "$2", append(args, *eventID)
+	}
+	b.Queue("date the mentions of document "+documentID+" as their refs rows", `
+		insert into graph_tuples (`+tupleWriteColumns+`)
+		select '`+KindArtifact+`', document.ref_key, '`+TupleMentions+`', stated.to_kind, stated.to_id, stated.created_at,
+		       held.who, `+event+`, stated.source_seq, true
+		from artifacts document
+		join refs stated on stated.from_kind = '`+KindArtifact+`' and stated.from_id = document.id::text
+		cross join lateral (
+			select t.at, t.who, t.legacy_source_seq, t.asserted from graph_tuples t
+			where t.from_kind = '`+KindArtifact+`' and t.from_id = document.ref_key and t.kind = '`+TupleMentions+`'
+			  and t.to_kind = stated.to_kind and t.to_id = stated.to_id and t.to_kind <> '`+KindValue+`'
+			order by t.seq desc limit 1
+		) held
+		where document.id = $1::uuid and document.node_kind is not null
+		  and octet_length(stated.to_id) <= `+strconv.Itoa(MaxAddressBytes)+`
+		  and held.asserted
+		  and (held.at <> stated.created_at or held.legacy_source_seq is distinct from stated.source_seq)
+		order by stated.to_kind, stated.to_id
+		on conflict do nothing
+	`, args...)
 }

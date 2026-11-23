@@ -55,10 +55,53 @@ func IssueNode(key, project string, who model.Actor, at time.Time) Node {
 // writes it. A document of an issue or a project is in that project; an agent conversation's
 // document is in none, and is between the parties of that conversation, its session (SessionScope).
 // Every write of it states beside it the facts its row projects: the part_of to its issue where an
-// issue owns it (ArtifactPartOf), and the bytes of an image or a file (ArtifactBytes).
+// issue owns it (ArtifactPartOf), and the bytes of an image or a file (ArtifactBytes). Every write
+// that knows the row it projects names that row on the node (WithArtifactRow); a write that only
+// states the node gone names none, and the node keeps what it holds of the last row.
 func ArtifactNode(refKey, project, session string, who model.Actor, at time.Time) Node {
 	project, parties := SessionScope(project, session)
 	return objectNode(KindArtifact, refKey, SupertagDocument, project, parties, who, at)
+}
+
+// ArtifactRow is what a document's node holds of the artifacts row that projects it: the row's id
+// and its created_at, each a value of the node in its attributes, under the names a lens records a
+// row by (AttributeArtifactID) and a version its time by (AttributeCreatedAt). graph_edges names a
+// document by that uuid, where the store addresses its node by its ref_key, and dates its
+// attached_to by that created_at, so once the boot step has deleted dispatch://INFRA-1253's arms
+// the view reads both off the node rather than off the row (store.GraphEdgesViewRetired). A
+// document removed and made again under its name is a new row at the same address, so every write
+// that names a row states both again, a write that restates the node included (Node.Restates,
+// writtenAttributes), and the node holds the newest row's; a removal states the node gone and
+// keeps them. The zero ArtifactRow names no row.
+type ArtifactRow struct {
+	ID        string
+	CreatedAt time.Time
+}
+
+// WithArtifactRow is node, a document's (ArtifactNode, QueryNode), naming row, the artifacts row
+// that projects it: the row's id and created_at laid over the node's attributes. Every writer of
+// a document's node that knows its row writes it so - the upload, the issue's create of its spec,
+// its tree and its decisions query, the seed, a removal of a document whose node was never
+// written, and the backfill's object pass and its pass over the nodes that name no row
+// (graphcensus' artifact_row kind holds each node to its row).
+func WithArtifactRow(node Node, row ArtifactRow) Node {
+	if row.ID == "" {
+		return node
+	}
+	attributes := maps.Clone(node.Attributes)
+	if attributes == nil {
+		attributes = map[string]any{}
+	}
+	attributes[AttributeArtifactID] = row.ID
+	attributes[AttributeCreatedAt] = ArtifactCreatedAtValue(row.CreatedAt)
+	node.Attributes = attributes
+	return node
+}
+
+// ArtifactCreatedAtValue is the text a document's node holds its row's created_at as: the time in
+// UTC at the microsecond Postgres keeps, which `::timestamptz` reads back as the row's own value.
+func ArtifactCreatedAtValue(at time.Time) string {
+	return at.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
 }
 
 // ArtifactPartOf is the fact that hangs a document under the issue that owns it: the part_of tuple
@@ -171,14 +214,17 @@ func QueryTakes(query string) []string { return slices.Clone(queryTakes[query]) 
 // (QueryDefinitionVersion). The issue is read off refKey, `<issue key>/<slug>`, since a query node
 // is always an issue's and no issue key holds a `/`. The values ride on the node's Attributes,
 // which its row projects, and AttributeFacts states them as the tuples they are, so a writer writes
-// the node with AttributeFacts(nil, node). No column of its artifacts row holds a role (R8).
+// the node with AttributeFacts(nil, node). No column of its artifacts row holds a role (R8). Its
+// write replaces the node's attributes whole, so a writer that knows the row the node projects
+// names it on the node too (WithArtifactRow), as a document's writer does.
 //
 // A document's node becomes a query node through Write, whose node move rewrites a stored node's
 // supertag and attributes, never through WriteArms, whose node arm moves nothing on a node already
 // there. The query's writer owns the values it states, so the node does not restate the document
-// (Node.Restates false): a restating write keeps the attributes its row stores (writtenAttributes),
-// which would leave the row of a document made a query without the query's values, and a version
-// written after it would read no definition_version off that row (VersionOwnerColumns).
+// (Node.Restates false): a restating write keeps the attributes its row stores but those it names
+// (writtenAttributes), which would leave the row of a document made a query without the query's
+// values, and a version written after it would read no definition_version off that row
+// (VersionOwnerColumns).
 func QueryNode(refKey, project, query string, who model.Actor, at time.Time) Node {
 	issue, _, _ := strings.Cut(refKey, "/")
 	node := objectNode(KindArtifact, refKey, SupertagQuery, project, nil, who, at)
@@ -283,8 +329,16 @@ func VersionFacts(tuples []Tuple, owner VersionOwner, number int, who model.Acto
 // column is the projection of these tuples, so a writer that gives a node attributes states them
 // with it. Each carries the node's own time, writer and cause. A value that has no JSON states no
 // tuple here, and the write of the node carrying it refuses it (nodeParams), so neither lands.
+//
+// The one exception is what a document's node holds of the row that projects it (ArtifactRow): its
+// id and created_at are that row's own columns copied onto the node, which the census holds to the
+// row (graphcensus' artifact_row kind) and which no read takes out of the log, so they ride on the
+// node's attributes alone and state no tuple.
 func AttributeFacts(tuples []Tuple, node Node) []Tuple {
 	for _, name := range slices.Sorted(maps.Keys(node.Attributes)) {
+		if node.Kind == KindArtifact && (name == AttributeArtifactID || name == AttributeCreatedAt) {
+			continue
+		}
 		value, isText := node.Attributes[name].(string)
 		if !isText {
 			encoded, err := json.Marshal(node.Attributes[name])

@@ -537,10 +537,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueNode := graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt))
-	specNode := graphstore.Created(graphstore.ArtifactNode(specRef, input.Project, "", actor, createdAt))
+	specRow := graphstore.ArtifactRow{ID: artifactID, CreatedAt: createdAt}
+	specNode := graphstore.Created(graphstore.WithArtifactRow(graphstore.ArtifactNode(specRef, input.Project, "", actor, createdAt), specRow))
 	specFacts := []graphstore.Tuple{graphstore.ArtifactPartOf(specRef, key, actor, createdAt)}
 	if bornConverted {
-		specNode = graphstore.Created(graphstore.QueryNode(specRef, input.Project, graphstore.QuerySpec, actor, createdAt))
+		specNode = graphstore.Created(graphstore.WithArtifactRow(graphstore.QueryNode(specRef, input.Project, graphstore.QuerySpec, actor, createdAt), specRow))
 		specFacts = graphstore.AttributeFacts(specFacts, specNode)
 	}
 	issueNodes := graphstore.PlanUncaused([]graphstore.Node{issueNode, specNode}, specFacts)
@@ -1027,14 +1028,14 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 // issue's owner lock, which every writer of a document_rooms row holds first. It answers what the
 // node writes and the read phase's document work state, which the caller causes under its event.
 func (s *server) createConvertedIssueRoom(ledger *docs.Ledger, key, project, specID string, room convertedIssueRoom, actor model.Actor, at time.Time) (graphstore.Uncaused, error) {
-	tree := issueTreeWrite(room.treeSlug, key, project, actor, at)
-	decisions := decisionsQueryWrite(room.decisionsSlug, key, project, actor, at)
+	tree := issueTreeWrite(room.tree, room.treeSlug, key, project, actor, at)
+	decisions := decisionsQueryWrite(room.decisions, room.decisionsSlug, key, project, actor, at)
 	if err := ledger.QueueFirst(func(b *store.WriteBatch) error {
-		if err := s.createIssueTree(b, tree, room.tree, room.treeSlug, key, project, actor); err != nil {
+		if err := s.createIssueTree(b, tree, room.tree, room.treeSlug, key, project, actor, at); err != nil {
 			return err
 		}
 		b.Queue("join the spec to its issue's room", `insert into document_rooms (artifact_id, room) values ($1, $2)`, specID, room.tree)
-		return s.createDecisionsQuery(b, decisions, room.decisions, room.decisionsSlug, key, project, actor)
+		return s.createDecisionsQuery(b, decisions, room.decisions, room.decisionsSlug, key, project, actor, at)
 	}); err != nil {
 		return graphstore.Uncaused{}, err
 	}
@@ -1080,32 +1081,33 @@ func documentJoinsIssueRoom(slug string) bool {
 	return false
 }
 
-// decisionsQueryWrite is the node write of the decisions query of the issue key in project under
-// slug, planned (graphstore.PlanUncaused) for createDecisionsQuery to queue: a query node of query
-// `decisions` (graphstore.QueryNode), made by actor at at, with its part_of the issue.
-func decisionsQueryWrite(slug, key, project string, actor model.Actor, at time.Time) graphstore.Uncaused {
+// decisionsQueryWrite is the node write of the decisions query id of the issue key in project
+// under slug, planned (graphstore.PlanUncaused) for createDecisionsQuery to queue: a query node of
+// query `decisions` (graphstore.QueryNode) naming its row, which createDecisionsQuery dates at at,
+// made by actor at at, with its part_of the issue.
+func decisionsQueryWrite(id, slug, key, project string, actor model.Actor, at time.Time) graphstore.Uncaused {
 	refKey := graphstore.ArtifactRefKey(key, project, "", slug)
-	node := graphstore.Created(graphstore.QueryNode(refKey, project, graphstore.QueryDecisions, actor, at))
+	node := graphstore.Created(graphstore.WithArtifactRow(graphstore.QueryNode(refKey, project, graphstore.QueryDecisions, actor, at), graphstore.ArtifactRow{ID: id, CreatedAt: at}))
 	return graphstore.PlanUncaused([]graphstore.Node{node},
 		graphstore.AttributeFacts([]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)}, node))
 }
 
 // createDecisionsQuery queues on b the decisions query node id of the issue key in project, under
 // slug: a doc row with no fragment and no document_rooms row (D6 of this branch's plan), whose
-// node is written, as written plans it (decisionsQueryWrite), before the row that names it. Its
-// version 1, empty, with its version node and its index, is the read phase's
-// (planConvertedIssueRoom). The row carries no role: the read projects `decisions` from the node's
-// query value. What the node write states waits for the caller's event, which the caller causes it
-// under.
-func (s *server) createDecisionsQuery(b *store.WriteBatch, written graphstore.Uncaused, id, slug, key, project string, actor model.Actor) error {
+// node is written, as written plans it (decisionsQueryWrite), before the row that names it. The row
+// is created at at, the time its node holds of it (graphstore.ArtifactRow). Its version 1, empty,
+// with its version node and its index, is the read phase's (planConvertedIssueRoom). The row
+// carries no role: the read projects `decisions` from the node's query value. What the node write
+// states waits for the caller's event, which the caller causes it under.
+func (s *server) createDecisionsQuery(b *store.WriteBatch, written graphstore.Uncaused, id, slug, key, project string, actor model.Actor, at time.Time) error {
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
 		return err
 	}
 	graphstore.QueueNodes(b, written)
 	b.Queue("create the decisions query", `
-		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
-		values ($1, $2, $3, $4, $5, 'doc', false, $6, $7, $8)
-	`, id, key, project, slug, issueDecisionsName, actorJSON, graphstore.KindArtifact, graphstore.ArtifactRefKey(key, project, "", slug))
+		insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by, created_at, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, 'doc', false, $6, $7, $8, $9)
+	`, id, key, project, slug, issueDecisionsName, actorJSON, at, graphstore.KindArtifact, graphstore.ArtifactRefKey(key, project, "", slug))
 	return nil
 }

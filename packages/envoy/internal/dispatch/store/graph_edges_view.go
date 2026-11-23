@@ -48,7 +48,23 @@ const (
 	// 20261121034242_graph_edges_asks_and_tuple_arm_filter, which restates the view from the arms of
 	// 20261116094101 alone, so a database that ran either holds every arm of this branch again.
 	GraphEdgesTupleArmFilter
+	// GraphEdgesOneTupleArm is the set 20261123120000_graph_edges_one_tuple_arm states:
+	// GraphEdgesTupleArmFilter with the two arms that read the store beside the tuple arm folded
+	// into it, so every arm left over the store is the one select over the tuples. A finding of a
+	// lens's relations, which the arm over graph_tuples after the tuple arm answered as a
+	// lens_block, are a part of the tuple arm's sub-select of their own, named lens_block there,
+	// under a class that consults no projection row (lensClass). A document's attached_to its
+	// issue, which the arm over the artifacts that carry their node answered from the node's
+	// part_of, is a part of its own too, read through the artifacts row that names the node and the
+	// issue, as the arm read it, and answered at that row's created_at with no sequence
+	// (attachedClass). Neither changes a row the view answers: each part keeps the tuples its arm
+	// kept, and the `distinct on` reads the same groups, since no two parts share a source.
+	GraphEdgesOneTupleArm
 )
+
+// graphEdgesNewestSet is the newest set a migration states, which the boot step restates the view
+// from less each child's arms it has deleted (GraphEdgesViewRetired).
+const graphEdgesNewestSet = GraphEdgesOneTupleArm
 
 // GraphEdgesView is the statement that states graph_edges with the arms of set arms. A set no
 // migration states is the caller's mistake, and it panics naming it rather than stating a view
@@ -97,9 +113,22 @@ const (
 // both columns the test reads, the tuple's from_kind and kind, are columns of the `distinct on`
 // key, so it keeps or drops a whole group and never changes which tuple of a kept group is the
 // newest, and a read keyed on one end of an edge sorts only that node's tuples of those kinds.
+//
+// From GraphEdgesOneTupleArm on, the statement also forgets every child whose arms the boot step
+// deleted (graph_edges_retirements, migration 20261122200000): a migration stating the view with
+// every arm puts back every arm the step deleted, so the count must consult every child's markers
+// again (GraphEdgesArmsRetired) and the step must delete them again at its next boot.
 func GraphEdgesView(arms GraphEdgesArms) string {
+	if arms >= GraphEdgesOneTupleArm {
+		return graphEdgesView(arms, 0) + graphEdgesRetirementsForgotten
+	}
 	return graphEdgesView(arms, 0)
 }
+
+// graphEdgesRetirementsForgotten is the statement a migration that states the view with every arm
+// ends with (GraphEdgesView).
+const graphEdgesRetirementsForgotten = `delete from graph_edges_retirements;
+`
 
 // GraphEdgesRetired names the children whose old arms of graph_edges the boot step has deleted
 // (startup's retirements of the arms), one bit each: no migration states the view without them,
@@ -118,10 +147,12 @@ const (
 	// components (part_of), component_depends (depends_on) and issue_component_members (affects),
 	// the tuple arm's probes of those five tables, whose classes then consult no projection row
 	// (`store`), and the artifact half of the arm over refs: the rows of a document whose row
-	// names no node, with the tuple arm's test that a document's row names its node
-	// (ReferenceOfNoDocument). The arm over the artifacts that carry their node stays, and so does
-	// the tuple arm's join of a document's mentions to its artifacts row and its refs row, which
-	// names the document by its uuid and dates each mention.
+	// names no node and the rows of a far end past the store's bound, which no writer of refs
+	// writes any more (ReferenceOfNoDocument). With them go the tuple arm's reads of the artifacts
+	// row and the refs row behind a document's mentions and its attached_to: the arm reads the
+	// document's uuid and its row's created_at off the document's node (artifactStoreTuples,
+	// graphstore's ArtifactRow), and a mention's date off its tuple, which every writer of it
+	// dates as its refs row (graphstore.QueueMentionsDated).
 	GraphEdgesIssueTreeRetired
 )
 
@@ -159,14 +190,14 @@ func GraphEdgesArmsRetired(child GraphEdgesRetired) string {
 }
 
 // GraphEdgesViewRetired is the statement that states graph_edges with the arms of the newest set
-// (GraphEdgesTupleArmFilter) less every arm, and every probe of the tuple arm, of each child
-// retired names. Every arm and probe of a child retired does not name is stated as that set
-// states it. A child's arms answer only the rows its marker does not mark, and its probes keep a
-// tuple only while the row that names it carries its node, so over a database where every row
-// those arms read is marked and every current tuple of their kinds is named by such a row, the
-// view this states answers what the newest set's answers, row for row.
+// (graphEdgesNewestSet) less every arm, and every probe of the tuple arm, of each child retired
+// names. Every arm and probe of a child retired does not name is stated as that set states it. A
+// child's arms answer only the rows its marker does not mark, and its probes keep a tuple only
+// while the row that names it carries its node, so over a database where every row those arms
+// read is marked and every current tuple of their kinds is named by such a row, the view this
+// states answers what the newest set's answers, row for row.
 func GraphEdgesViewRetired(retired GraphEdgesRetired) string {
-	return graphEdgesView(GraphEdgesTupleArmFilter, retired)
+	return graphEdgesView(graphEdgesNewestSet, retired)
 }
 
 // graphEdgesView is the statement that states graph_edges with the arms of set arms, less those of
@@ -195,23 +226,35 @@ func graphEdgesView(arms GraphEdgesArms, retired GraphEdgesRetired) string {
 			classes, probes = storeClassed(componentClasses), ""
 		}
 	}
-	if arms >= GraphEdgesArtifactRefs {
+	attached, lens, tail := attachedArtifactArm, "", graphEdgesTail
+	switch {
+	case arms >= GraphEdgesOneTupleArm:
+		references, nodeColumn, tuples, nodes = artifactRefsArm, oneTupleArmNodeColumns, oneTupleArmTuples(artifactRowTuples), oneTupleArmNodes
+		attached, lens, tail = "", lensClass, graphEdgesEnd
+		if issueTree {
+			references, tuples = refsOfItemsArm, oneTupleArmTuples(artifactStoreTuples)
+			classes += storeClassed(artifactRefClass + attachedClass)
+		} else {
+			classes += artifactRefClass + attachedClass
+			probes += artifactRefProbe + attachedProbe
+		}
+	case arms >= GraphEdgesArtifactRefs:
 		references, nodeColumn, tuples, nodes = artifactRefsArm, artifactRefNodeColumn, artifactRefTuples(artifactRefMarked), artifactRefNodes
 		if issueTree {
-			references, tuples = refsOfNoDocumentArm, artifactRefTuples("")
+			references, tuples = refsOfItemsArm, artifactRefTuples("")
 		}
 		classes += artifactRefClass
 		probes += artifactRefProbe
 	}
-	projects := graphEdgesStoreClasses + issueClassed + classes + graphEdgesOwnClasses + askClassed + graphEdgesShapedClass
+	projects := lens + graphEdgesStoreClasses + issueClassed + classes + graphEdgesOwnClasses + askClassed + graphEdgesShapedClass
 	newest, tested := graphEdgesNewest, graphEdgesProbesNotNull
 	if arms >= GraphEdgesTupleArmFilter {
 		newest, tested = graphEdgesNotValue+tupleArmFilter(projects)+graphEdgesNewestOrder, graphEdgesProbesHead
 	}
-	return graphEdgesCreate + references + issueArms + attachedArtifactArm + askAnchored + commentAnchoredArm + askOwned +
+	return graphEdgesCreate + references + issueArms + attached + askAnchored + commentAnchoredArm + askOwned +
 		commentOwnedArm + pointerArms + askFollowers + components + graphEdgesBlocks + nodeColumn + graphEdgesTupleKinds +
 		projects + graphEdgesProjectsEnd + tuples + newest + nodes + tested + graphEdgesProbes + issueProbing + probes +
-		blockRefProbes + askProbing + graphEdgesTail
+		blockRefProbes + askProbing + tail
 }
 
 // storeClassed is classes, `when` arms of the tuple arm's `projects` case each on one line, with
@@ -324,6 +367,7 @@ var componentArms = map[GraphEdgesArms]string{
 	GraphEdgesComponents:     unmarkedComponentArms,
 	GraphEdgesArtifactRefs:   unmarkedComponentArms,
 	GraphEdgesTupleArmFilter: unmarkedComponentArms,
+	GraphEdgesOneTupleArm:    unmarkedComponentArms,
 }
 
 // unmarkedComponentArms are the arms over a component's three relations over the rows no writer
@@ -404,11 +448,14 @@ const ReferenceNotStated = `(r.from_kind <> 'artifact' or octet_length(r.to_id) 
 
 // ReferenceOfNoDocument is the test ReferenceNotStated makes once the boot step has deleted
 // dispatch://INFRA-1253's half of the arm over refs (GraphEdgesIssueTreeRetired): the refs row
-// aliased r is one the store states no tuple of because its source is not a document, or because
-// its far end is past the store's bound. A document whose row names no node is no longer one of
+// aliased r is one the store states no tuple of because its source is not a document, which is
+// dispatch://INFRA-1152's half of the arm. A document whose row names no node is no longer one of
 // them: the step deletes that half only where every document's row that a refs row names carries
-// its node, and refs.BacklinkCounts counts the rows the same way.
-const ReferenceOfNoDocument = `(r.from_kind <> 'artifact' or octet_length(r.to_id) > ` + referenceAddressBound + `)`
+// its node. Nor is a far end past the store's bound: no writer of refs writes one any more
+// (refs.ReferenceTarget), and the step deletes that branch only where no refs row holds one, so
+// live production, which no test reads, loses no edge to it in silence. refs.BacklinkCounts counts
+// the rows the same way.
+const ReferenceOfNoDocument = `(r.from_kind <> 'artifact')`
 
 // referenceAddressBound is graphstore.MaxAddressBytes, the store's bound on one address, written
 // out as text: graphstore imports this package, so it imports no part of the store
@@ -422,9 +469,9 @@ const artifactRefsArm = `  select r.from_kind, r.from_id, r.kind, r.to_kind, r.t
   where ` + ReferenceNotStated + `
 `
 
-// refsOfNoDocumentArm is the arm over refs once dispatch://INFRA-1253's half of it is deleted
-// (ReferenceOfNoDocument).
-const refsOfNoDocumentArm = `  select r.from_kind, r.from_id, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
+// refsOfItemsArm is the arm over refs once dispatch://INFRA-1253's half of it is deleted: the rows
+// of a comment, a message and an ask (ReferenceOfNoDocument).
+const refsOfItemsArm = `  select r.from_kind, r.from_id, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
   from refs r
   where ` + ReferenceOfNoDocument + `
 `
@@ -454,7 +501,8 @@ const issueRelationArms = `  union all
 // attachedArtifactArm is the arm over the artifacts that carry their node, which answers each
 // one's attached_to its issue from its node's part_of tuple, naming the artifact by its uuid, as
 // every reader of the view resolves it, where the store addresses its node by its ref_key. Every
-// set from GraphEdgesIssueRelations states it, and the boot step keeps it.
+// set from GraphEdgesIssueRelations to GraphEdgesTupleArmFilter states it; GraphEdgesOneTupleArm
+// reads the same part_of in the tuple arm (oneTupleArmTuples).
 const attachedArtifactArm = `  union all
   select 'artifact', a.id::text, 'attached_to', 'issue', a.issue_key, a.created_at, null
   from artifacts a
@@ -585,6 +633,14 @@ const graphEdgesBlocks = `  union all
 const artifactRefNodeColumn = `           tuple.node_id,
 `
 
+// oneTupleArmNodeColumns are the columns of GraphEdgesOneTupleArm's tuple arm that name the node
+// a tuple comes from, which the arm joins graph_nodes on (oneTupleArmNodes): its id, as
+// artifactRefNodeColumn names it, and its kind, since a finding of a lens is a block node the arm
+// names a lens_block (oneTupleArmTuples).
+const oneTupleArmNodeColumns = `           tuple.node_id,
+           tuple.node_kind,
+`
+
 // graphEdgesTupleKinds is the tuple arm from the kind it renders to the head of its `projects`
 // case, whose classes every set states from graphEdgesStoreClasses on.
 const graphEdgesTupleKinds = `           case
@@ -626,6 +682,25 @@ const artifactRefClass = `             when tuple.from_kind = 'artifact' and tup
 // document's mentions from has made already: it reads each mention only beside the refs row of
 // the pair (artifactRefTuples), so every one that reaches the test stands.
 const artifactRefProbe = `          when 'artifact_ref' then true
+`
+
+// attachedClass is GraphEdgesOneTupleArm's class of a document's attached_to its issue, the part_of
+// its node states, whose projection row is the document's artifacts row, the relation the arm reads
+// it through (oneTupleArmTuples, attachedProbe).
+const attachedClass = `             when tuple.from_kind = 'artifact' and tuple.kind = 'attached_to' then 'artifact_attached'
+`
+
+// attachedProbe is the class's test of its projection row, which the relation the arm reads a
+// document's attached_to from has made already: it reads each part_of only beside the artifacts row
+// that names the node and its issue (artifactRowTuples), so every one that reaches the test stands.
+const attachedProbe = `          when 'artifact_attached' then true
+`
+
+// lensClass is GraphEdgesOneTupleArm's class of the relations out of a finding of a lens, which
+// the arm reads as a lens_block (oneTupleArmTuples): the kinds the arm over them read until that
+// set, which consult no projection row. It is the first class, as the arm read them apart from
+// every other class.
+const lensClass = `             when tuple.from_kind = 'lens_block' and tuple.kind in ('part_of', 'authored_by', 'changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by') then 'store'
 `
 
 // graphEdgesOwnClasses are the tuple arm's classes of a block's link and of a comment's anchored_to
@@ -697,6 +772,92 @@ func artifactRefTuples(marked string) string {
 // through names its node, dispatch://INFRA-1253's marker of a document.
 const artifactRefMarked = ` and mentioning.node_kind is not null`
 
+// oneTupleArmTuples is the relation GraphEdgesOneTupleArm's tuple arm reads its tuples from: the
+// log in parts, each naming its source and the node it comes from (node_id, node_kind). The first
+// is every tuple but a document's mentions and its part_of and a finding of a lens's, each of its
+// own node; then artifact, the parts of a document's mentions and its attached_to, the part_of its
+// node states, renamed as the view has always answered it; and last a finding of a lens's
+// relations, named lens_block, out of the finding's block node, as the arm over them named them
+// until this set (lensClass). Each part names its from_kind as a constant where it has one, so a
+// read that names the kinds of the nodes it reads out of (graphcensus' graphEdgesOut) cuts a
+// part from its plan where its kind is none of them, and a read of one source or one far end is
+// pushed into each part and binds an index there.
+func oneTupleArmTuples(artifact string) string {
+	return `    from (
+      select tuple.from_kind, tuple.from_id, tuple.from_id as node_id, tuple.from_kind as node_kind, tuple.kind, tuple.to_kind,
+             tuple.to_id, tuple.at, tuple.legacy_source_seq, tuple.asserted, tuple.seq
+      from graph_tuples tuple
+      where (tuple.from_kind <> 'artifact' or tuple.kind not in ('mentions', 'part_of'))
+        and not (tuple.from_kind = 'block' and tuple.from_id like 'lens/%')` + artifact + `
+      union all
+      select 'lens_block', tuple.from_id, tuple.from_id, 'block', tuple.kind, tuple.to_kind, tuple.to_id,
+             tuple.at, tuple.legacy_source_seq, tuple.asserted, tuple.seq
+      from graph_tuples tuple
+      where tuple.from_kind = 'block' and tuple.from_id like 'lens/%'
+    ) tuple
+`
+}
+
+// artifactRowTuples are oneTupleArmTuples' parts of a document's mentions and its attached_to while
+// dispatch://INFRA-1253's arms stand, each read through the artifacts row whose node it comes
+// from, while that row names its node, as artifactRefTuples reads a mention: a mention beside the
+// refs row of the pair, dated and sequenced by that row, and an attached_to only while the row
+// names the issue the part_of reaches, dated at the row's created_at with no sequence, as the arm
+// over the artifacts that carry their node answered it (attachedArtifactArm). Each names the
+// document by the row's uuid, so a read of a document's edges binds artifacts_id_text.
+const artifactRowTuples = `
+      union all
+      select 'artifact', mentioning.id::text, tuple.from_id, 'artifact', tuple.kind, tuple.to_kind, tuple.to_id,
+             projected.created_at, projected.source_seq, tuple.asserted, tuple.seq
+      from graph_tuples tuple
+      join artifacts mentioning on mentioning.ref_key = tuple.from_id and mentioning.node_kind is not null
+      cross join lateral (
+        select stated.created_at, stated.source_seq from refs stated
+        where stated.from_kind = tuple.from_kind and stated.from_id = mentioning.id::text
+          and stated.to_kind = tuple.to_kind and stated.to_id = tuple.to_id
+        offset 0) projected
+      where tuple.from_kind = 'artifact' and tuple.kind = 'mentions'
+      union all
+      select 'artifact', attached.id::text, tuple.from_id, 'artifact', 'attached_to', tuple.to_kind, tuple.to_id,
+             attached.created_at, null, tuple.asserted, tuple.seq
+      from graph_tuples tuple
+      join artifacts attached on attached.ref_key = tuple.from_id and attached.node_kind is not null
+                              and attached.issue_key = tuple.to_id
+      where tuple.from_kind = 'artifact' and tuple.kind = 'part_of' and tuple.to_kind = 'issue'`
+
+// artifactStoreTuples are oneTupleArmTuples' parts of a document's mentions and its attached_to
+// once the boot step has deleted dispatch://INFRA-1253's arms: read off the document's node
+// alone, which names the document by its row's uuid and holds that row's created_at
+// (graphstore.ArtifactRow), a mention dated by its own tuple, whose writers date it as the refs row
+// of the pair (graphstore.QueueMentionsDated), and an attached_to at the row's created_at with no
+// sequence, as the arm over the artifacts row answered it. A read of a document's edges by its
+// uuid binds graph_nodes_artifact_id (migration 20261123110000), then graph_tuples_current.
+const artifactStoreTuples = `
+      union all
+      select 'artifact', ` + ArtifactNodeUUID + `, tuple.from_id, 'artifact', tuple.kind, tuple.to_kind, tuple.to_id,
+             tuple.at, tuple.legacy_source_seq, tuple.asserted, tuple.seq
+      from graph_nodes holder
+      join graph_tuples tuple on tuple.from_kind = holder.kind and tuple.from_id = holder.id and tuple.kind = 'mentions'
+      where holder.kind = 'artifact' and ` + ArtifactNodeUUID + ` is not null
+      union all
+      select 'artifact', ` + ArtifactNodeUUID + `, tuple.from_id, 'artifact', 'attached_to', tuple.to_kind, tuple.to_id,
+             ` + ArtifactNodeCreatedAt + `, null, tuple.asserted, tuple.seq
+      from graph_nodes holder
+      join graph_tuples tuple on tuple.from_kind = holder.kind and tuple.from_id = holder.id and tuple.kind = 'part_of'
+                             and tuple.to_kind = 'issue'
+      where holder.kind = 'artifact' and ` + ArtifactNodeUUID + ` is not null`
+
+// ArtifactNodeUUID is the SQL expression artifactStoreTuples names a document by, over the
+// document's node aliased holder: the row's uuid its node holds (graphstore.ArtifactRow), held to
+// graphstore.AttributeArtifactID by graphstore's TestTheViewReadsTheRowADocumentsNodeNames, since
+// graphstore imports this package. Migration 20261123110000 indexes the same expression.
+const ArtifactNodeUUID = `holder.attributes->>'artifact_id'`
+
+// ArtifactNodeCreatedAt is the SQL expression artifactStoreTuples dates a document's attached_to
+// by, over the document's node aliased holder: the row's created_at its node holds, held to
+// graphstore.AttributeCreatedAt as ArtifactNodeUUID is.
+const ArtifactNodeCreatedAt = `(holder.attributes->>'created_at')::timestamptz`
+
 // graphEdgesNewest is the tuple arm's pick of the newest tuple of each relation in every set
 // before GraphEdgesTupleArmFilter: its test that the far end is no value
 // (graphEdgesNotValue), then its order (graphEdgesNewestOrder).
@@ -721,6 +882,11 @@ const graphEdgesNodes = `  join graph_nodes node on node.kind = edge.from_kind a
 // artifactRefNodes is GraphEdgesArtifactRefs' join to the node each tuple comes from, by the
 // node's own id (artifactRefNodeColumn).
 const artifactRefNodes = `  join graph_nodes node on node.kind = edge.from_kind and node.id = edge.node_id
+`
+
+// oneTupleArmNodes is GraphEdgesOneTupleArm's join to the node each tuple comes from, by the
+// node's own kind and id (oneTupleArmNodeColumns).
+const oneTupleArmNodes = `  join graph_nodes node on node.kind = edge.node_kind and node.id = edge.node_id
 `
 
 // graphEdgesProbesNotNull is the head of the tuple arm's tests of an edge in every set before
@@ -790,8 +956,9 @@ const askProbes = `          when 'ask' then exists (
             offset 0)
 `
 
-// graphEdgesTail is the view after the tuple arm's probes: the end of its case, and the arm over
-// the relations out of a finding of a lens.
+// graphEdgesTail is the view after the tuple arm's probes in every set before
+// GraphEdgesOneTupleArm: the end of its case, and the arm over the relations out of a finding of a
+// lens.
 const graphEdgesTail = `        end
   union all
   select 'lens_block', finding.from_id, finding.kind, finding.to_kind, finding.to_id, finding.created_at, finding.source_seq
@@ -813,4 +980,9 @@ const graphEdgesTail = `        end
   ) finding
   join graph_nodes node on node.kind = finding.from_kind and node.id = finding.from_id
   where finding.asserted and node.state <> 'gone';
+`
+
+// graphEdgesEnd is the view after the tuple arm's probes from GraphEdgesOneTupleArm on, which
+// reads a finding of a lens's relations in the tuple arm (oneTupleArmTuples): the end of its case.
+const graphEdgesEnd = `        end;
 `

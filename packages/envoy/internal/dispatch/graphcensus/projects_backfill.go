@@ -566,7 +566,8 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 		case graphstore.KindIssue:
 			node = graphstore.IssueNode(id, derefText(project), author, createdAt)
 		case graphstore.KindArtifact:
-			node = graphstore.ArtifactNode(id, derefText(project), derefText(session), author, createdAt)
+			node = graphstore.WithArtifactRow(graphstore.ArtifactNode(id, derefText(project), derefText(session), author, createdAt),
+				graphstore.ArtifactRow{ID: identity, CreatedAt: createdAt})
 		case graphstore.KindAsk:
 			node = graphstore.AskNode(id, derefText(project), parties, author, createdAt)
 		case graphstore.KindMessage:

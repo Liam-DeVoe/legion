@@ -61,7 +61,6 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "issues", fate: "child_of over the rows that name no node; the store answers the rest, and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "issue_links", fate: "blocked_by over the rows that name no node; the store answers the rest as needs, and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "artifacts", fate: "attached_to over the rows that name no node; " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "artifacts", fate: "attached_to of the artifacts that carry their node, from each one's part_of tuple; it stays"},
 	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node, and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", projects: "comment", renders: "anchored_to", fate: "a comment's anchored_to; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node, and " + askArmsDeletedBy + " deletes this arm"},
@@ -85,8 +84,7 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "comments", fate: "a reply's replies_to a comment's block; the child that moves the inbox, the messages and the read state writes it"},
 	{relation: "comments", fate: "a reply's replies_to an ask's part; the child that moves the inbox, the messages and the read state writes it"},
 	{relation: "messages", fate: "a message's replies_to a message's block; the child that moves the inbox, the messages and the read state writes it"},
-	{relation: "graph_tuples", fate: "the store itself, which answers an edge of a moved kind while the row that names it carries its node, and the store's own relations, which no row projects; it stays"},
-	{relation: "graph_tuples", fate: "the store's own relations out of a finding of a lens, answered as a lens_block; it stays"},
+	{relation: "graph_tuples", fate: "the store itself, which answers an edge of a moved kind while the row that names it carries its node, a document's attached_to while its artifacts row names its node and that issue, the store's own relations, which no row projects, and those out of a finding of a lens, answered as a lens_block; it stays"},
 }
 
 // graphEdgeRow is one row of graph_edges, every column of it, as both readings compare them: the
@@ -249,13 +247,14 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 		}
 	}
 	// followed_by is an ask's, which TestTheAsksArmsAnswerEachRowOnce writes; from_ask and
-	// decided_by are a decision block's, which the typed-node pass writes; an issue's child_of,
+	// decided_by are a decision block's, which the typed-node pass writes; and an issue's child_of,
 	// duplicate_of and filed_from are its create's and its PATCH's, and a component's depends_on and
 	// an issue's affects are an import's and an issue's components', which api's
-	// TestGraphEdgesKeepsEveryRelationAcrossARollback writes; and attached_to is answered by the arm
-	// over the artifacts that carry their node, not by the tuple arm.
+	// TestGraphEdgesKeepsEveryRelationAcrossARollback writes. A document's attached_to is the
+	// tuple arm's since migration 20261123120000, from the part_of the backfill states of each
+	// document of CORE-1.
 	requireTheTupleArmRendersTheList(t, after.tuple, graphstore.TupleFollowedBy, "from_ask", graphstore.TupleDecidedBy,
-		graphstore.TupleChildOf, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom, refs.TupleAttachedTo,
+		graphstore.TupleChildOf, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom,
 		graphstore.TupleDependsOn, graphstore.TupleAffects)
 
 	// Pods of the previous release write beside this one, during a roll or after a rollback.
@@ -433,8 +432,9 @@ func (r graphEdgesReading) answering(edge graphEdge) (view int, arms []int, tupl
 // readEachArm takes one reading and fails unless every row was answered by the arm its own
 // projection row decides: the whole view equals the previous release's over the same rows, each of
 // the four arms answers exactly the rows of its kind whose row carries no node, and the tuple arm
-// exactly the rows of the moved kinds whose row carries it and the mentions of each document whose
-// row names its node (referenceStoredInTheStore). The rows of the tuple arm's class `store`
+// exactly the rows of the moved kinds whose row carries it, the mentions of each document whose
+// row names its node (referenceStoredInTheStore) and the attached_to of each such document
+// (attachedInTheStore). The rows of the tuple arm's class `store`
 // (storeClass), which the previous release has no arm for, are set apart from both readings first
 // and held, in the whole view and in the tuple arm alike, to exactly the rows the fixture stated
 // of them (stored). It fails as well unless this build's backlink counts are the previous
@@ -458,6 +458,12 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 	for _, row := range reading.previous {
 		if row.fromKind == graphstore.KindArtifact && row.kind == graphstore.TupleMentions {
 			if referenceStoredInTheStore(t, database, row) {
+				marked = append(marked, row)
+			}
+			continue
+		}
+		if row.fromKind == graphstore.KindArtifact && row.kind == refs.TupleAttachedTo {
+			if attachedInTheStore(t, database, row) {
 				marked = append(marked, row)
 			}
 			continue
@@ -499,11 +505,26 @@ func referenceStoredInTheStore(t *testing.T, database *store.Store, row graphEdg
 	return stored
 }
 
+// attachedInTheStore reads whether the artifacts row behind row, a document's attached_to its
+// issue, is one the tuple arm answers (migration 20261123120000): it names its node, whose part_of
+// to that issue the arm reads. Any other such row is the arm over the artifacts that name no
+// node's.
+func attachedInTheStore(t *testing.T, database *store.Store, row graphEdgeRow) bool {
+	t.Helper()
+	var stored bool
+	if err := database.Pool.QueryRow(context.Background(), `
+		select a.node_kind is not null from artifacts a where a.id::text = $1
+	`, row.fromID).Scan(&stored); err != nil {
+		t.Fatalf("read the artifacts row behind %s: %v", row, err)
+	}
+	return stored
+}
+
 // storeClass is whether row is one the tuple arms answer as the class `store` (migration
 // 20261117020856): a relation the store holds with no projection row behind it, of a kind
 // changed_by_run, has_kind, triggered_by, constrained_by or prevented_by out of any node, or
-// part_of or authored_by out of an interaction, a lens, a finding of a lens (the lens_block the
-// arm after the tuple arm writes it as), a risk or a constraint. It is the migration's own rule,
+// part_of or authored_by out of an interaction, a lens, a finding of a lens (which the tuple arm
+// writes as a lens_block since migration 20261123120000), a risk or a constraint. It is the migration's own rule,
 // read over a row: a row it leaves out - a comment's authored_by, a block's part_of its parent -
 // that the view answers is held to the previous release's reading, which answers none of them.
 func storeClass(row graphEdgeRow) bool {

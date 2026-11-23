@@ -1395,14 +1395,16 @@ func versionEventID(ctx context.Context, tx pgx.Tx, owner artifactOwner, artifac
 // settlement queues each document's stamp right after that document's version event
 // (commitRoomVersions). b is the step that appends the pass's facts under the event
 // (indexOwedDocument), or a write step of the caller's beside them (indexOwedRoom,
-// commitRoomVersions).
+// commitRoomVersions). The mentions tuples of artifactID are dated again as its stamped refs rows
+// date them (graphstore.QueueMentionsDated), as every stamp of a document's references does.
 func stampVersionEvent(b *store.WriteBatch, artifactID, document string, version int, versionAt time.Time, eventID int64) {
 	if eventID == graphstore.NoEvent {
 		return
 	}
 	source := strconv.FormatInt(eventID, 10)
+	cause := &eventID
 	if eventID == graphstore.LatestEvent {
-		source = store.LatestEventID
+		source, cause = store.LatestEventID, nil
 	}
 	b.Queue(fmt.Sprintf("stamp the block mentions of version %d of %s", version, document), `
 		update block_refs r set source_seq = `+source+`
@@ -1413,6 +1415,7 @@ func stampVersionEvent(b *store.WriteBatch, artifactID, document string, version
 		update refs set source_seq = `+source+`
 		where from_kind = 'artifact' and from_id = $1 and source_seq is null and created_at = $2
 	`, artifactID, versionAt)
+	graphstore.QueueMentionsDated(b, artifactID, cause)
 }
 
 // indexOwed indexes one owed document (indexOwedDocument), or the issue room it is an artifact

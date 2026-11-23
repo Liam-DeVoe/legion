@@ -19,6 +19,7 @@ var graphEdgesViewMigrations = map[string]GraphEdgesArms{
 	"20261118023219_issue_tree_components.up.sql":                         GraphEdgesComponents,
 	"20261119100000_issue_tree_artifact_refs.up.sql":                      GraphEdgesArtifactRefs,
 	"20261121090000_issue_tree_graph_edges_after_tuple_arm_filter.up.sql": GraphEdgesTupleArmFilter,
+	"20261123120000_graph_edges_one_tuple_arm.up.sql":                     GraphEdgesOneTupleArm,
 }
 
 // graphEdgesSiblingRestatements are the migrations of the sibling branch this branch merges that

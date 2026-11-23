@@ -270,6 +270,8 @@ func writeRetiredNode(ctx context.Context, tx pgx.Tx, refKey, project string, se
 		if session != nil {
 			conversation = *session
 		}
+		// The node is written gone at once, so it names no row (graphstore.ArtifactRow): a gone
+		// node is answered nowhere, and the census of a node's row leaves a retired document aside.
 		node = graphstore.ArtifactNode(refKey, project, conversation, creator, createdAt)
 	}
 	node.State = graphstore.StateGone

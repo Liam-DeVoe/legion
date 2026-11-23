@@ -86,7 +86,8 @@ const (
 // takes again, and a row's id is never reused, so a lens whose recorded row no longer stands at
 // its document's address stands on a document that is no more (refs.StaleSQL). The store's write
 // of a lens's part_of states it (queueLensArtifactIDs), whichever writer places the lens, the
-// invoke and a move alike, and retracts it where a write moves the lens off a document.
+// invoke and a move alike, and retracts it where a write moves the lens off a document. A
+// document's own node holds the same value of the row that projects it (ArtifactRow).
 const AttributeArtifactID = "artifact_id"
 
 // blockKind is the kind the store addresses a block by, which refs.BlockNodeKind spells for the

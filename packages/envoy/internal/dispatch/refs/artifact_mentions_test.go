@@ -246,7 +246,8 @@ func markedDocument(t *testing.T, database *store.Store, slug string, created ti
 // graph_edges answers a document's mention from that tuple while the row stands. A version that
 // cites two issues and a document whose address is past the store's bound states the two issues'
 // tuples, each dated at its row's created_at and carrying the row's source_seq, the version's
-// event, and no tuple of the document past the bound, which the arm over refs answers. A second
+// event, and neither a refs row nor a tuple of the document past the bound, which is no reference
+// (TestAnAddressPastTheStoresBoundIsNoReference). A second
 // version that keeps one issue, drops the other and cites a third retracts the dropped one, dated
 // at its time, asserts the third with its own time and event, and states nothing of the one it
 // kept. A comment's reference writes no tuple. A reference of a document whose row names no node,
@@ -256,8 +257,9 @@ func markedDocument(t *testing.T, database *store.Store, slug string, created ti
 // no tuple states, which the census names and the backfill writes again; a row of it the release
 // before deletes, retracting nothing, leaves a tuple no row projects, which no arm answers, the
 // census names and the backfill retracts. Last, a row rebuild-refs inserts carries no source_seq,
-// and once a later version's event stamps the row, graph_edges answers the edge with the row's
-// source_seq, as the arm over refs does.
+// and once a later version's event stamps the row, its tuple is stated again carrying that
+// source_seq (graphstore.QueueMentionsDated), so graph_edges answers the edge with it whether it
+// reads the row or the tuple, and the census of a mention's date reads no difference.
 func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -282,7 +284,7 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 		}
 		requireMentionsEdge(t, "after version 1", database, spec, "issue", target, first, &firstEvent)
 	}
-	requireMentionsEdge(t, "the document past the bound after version 1", database, spec, "artifact", long, first, &firstEvent)
+	requireNoReferenceRow(t, "after version 1", database, spec, "artifact", long)
 
 	second, secondEvent := writeMentionsVersion(t, database, spec, 2,
 		"Keeps "+pages+"ACME-3, cites "+pages+"ACME-4 and still "+longPage+" .\n")
@@ -304,7 +306,7 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 	}
 	requireMentionsEdge(t, "the mention version 2 kept", database, spec, "issue", "ACME-3", first, &firstEvent)
 	requireMentionsEdge(t, "the mention version 2 added", database, spec, "issue", "ACME-4", second, &secondEvent)
-	requireMentionsEdge(t, "the document past the bound after version 2", database, spec, "artifact", long, first, &firstEvent)
+	requireNoReferenceRow(t, "after version 2", database, spec, "artifact", long)
 
 	// A comment's reference is a refs row and no tuple.
 	var comment string
@@ -372,8 +374,8 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 		t.Fatalf("write the document the release before wrote: %v", err)
 	}
 	requireMentionsEdge(t, "the release before's reference before the backfill", database, notes, "issue", "ACME-5", cited, &firstEvent)
-	if kind := referencesKind(t, database); kind.RowDifferences != 0 || kind.NodeDifferences != 0 || kind.Unmarked != 1 || kind.PastBound != 1 || kind.Rows != 2 {
-		t.Errorf("before the backfill the census reads %d row(s), %d unmarked, %d past the bound, and %d and %d differences (%+v %+v), want version 2's two, the release before's reference unmarked, the long one past the bound and none",
+	if kind := referencesKind(t, database); kind.RowDifferences != 0 || kind.NodeDifferences != 0 || kind.Unmarked != 1 || kind.PastBound != 0 || kind.Rows != 2 {
+		t.Errorf("before the backfill the census reads %d row(s), %d unmarked, %d past the bound, and %d and %d differences (%+v %+v), want version 2's two, the release before's reference unmarked, none past the bound and none",
 			kind.Rows, kind.Unmarked, kind.PastBound, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
 	}
 	// The backfill's object pass names the document's node on its row and states, in the same
@@ -479,9 +481,120 @@ func TestTheReferencesAnArtifactMakesAreTuples(t *testing.T) {
 	requireMentionsEdge(t, "the rebuild's row", database, plan, "issue", "ACME-5", rebuilt, nil)
 	_, stamp := writeMentionsVersion(t, database, plan, 2, "Still cites "+pages+"ACME-5 .\n")
 	requireMentionsEdge(t, "the rebuild's row once a version stamps it", database, plan, "issue", "ACME-5", rebuilt, &stamp)
+	if stated := mentionsOf(t, database, planRef); len(stated) != 2 || !stated[1].asserted || stated[1].legacy == nil ||
+		*stated[1].legacy != stamp || !stated[1].at.Equal(rebuilt) || stated[1].cause != stamp {
+		t.Errorf("the stamp states the plan's mentions %+v, want ACME-5 asserted again at its row's created_at %s carrying the stamp %d, caused by it",
+			stated, rebuilt, stamp)
+	}
 	if kind := referencesKind(t, database); kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
 		t.Errorf("after the rebuild and the stamp the census reads %d and %d differences (%+v %+v), want none",
 			kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
+	}
+	if kind := censusKind(t, database, "artifact_reference_date"); kind.RowDifferences != 0 || kind.NodeDifferences != 0 || kind.Rows == 0 {
+		t.Errorf("after the rebuild and the stamp the census of a mention's date reads %d row(s) and %d and %d differences (%+v %+v), want rows and none",
+			kind.Rows, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
+	}
+}
+
+// requireNoReferenceRow fails unless neither refs nor graph_edges holds the document's reference
+// to toKind toID, and the store states no tuple of it.
+func requireNoReferenceRow(t *testing.T, what string, database *store.Store, document, toKind, toID string) {
+	t.Helper()
+	var rows, tuples int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (select count(*) from refs where from_kind = 'artifact' and from_id = $1 and to_kind = $2 and to_id = $3),
+		       (select count(*) from graph_tuples t join artifacts a on a.ref_key = t.from_id
+		        where a.id::text = $1 and t.from_kind = 'artifact' and t.kind = 'mentions' and t.to_kind = $2 and t.to_id = $3)
+	`, document, toKind, toID).Scan(&rows, &tuples); err != nil {
+		t.Fatalf("%s: read the reference of %s past the bound: %v", what, document, err)
+	}
+	if edges, _, _ := mentionsEdge(t, database, document, toKind, toID); rows != 0 || tuples != 0 || edges != 0 {
+		t.Errorf("%s: the reference of a far end of %d bytes, past the store's %d, holds %d refs rows, %d tuples and %d graph_edges rows, want none: it is no reference",
+			what, len(toID), graphstore.MaxAddressBytes, rows, tuples, edges)
+	}
+}
+
+// censusKind is the census's line for kind.
+func censusKind(t *testing.T, database *store.Store, kind string) graphcensus.KindReport {
+	t.Helper()
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
+	if err != nil {
+		t.Fatalf("take the store census: %v", err)
+	}
+	for _, read := range report.Kinds {
+		if read.Kind == kind {
+			return read
+		}
+	}
+	t.Fatalf("the census reports no kind %s: %#v", kind, report.Kinds)
+	return graphcensus.KindReport{}
+}
+
+// A dispatch:// address past the store's bound (graphstore.MaxAddressBytes) is no reference, as
+// the store makes it no node (refs.ReferenceTarget): a document whose version cites one by a
+// far end of 1,025 bytes holds no refs row and no tuple of it, and neither does a comment whose
+// body cites it, while the reference inside the bound beside it in each is written. A refs row of
+// such a far end an older build wrote is deleted by the document's next version, which still cites
+// the address, and no tuple retracts it, since none was stated.
+func TestAnAddressPastTheStoresBoundIsNoReference(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	created := time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Microsecond)
+	spec, specRef := seedMentionsDocument(t, database, created)
+	slug := strings.Repeat("p", graphstore.MaxAddressBytes+1-len("ACME-1/"))
+	past := "ACME-1/" + slug
+	if len(past) != graphstore.MaxAddressBytes+1 {
+		t.Fatalf("the far end is %d bytes, want %d", len(past), graphstore.MaxAddressBytes+1)
+	}
+	pages := mentionsServer + "/issues/"
+	cites := "Cites " + pages + "ACME-2 and " + pages + "ACME-1/artifacts/" + slug + " .\n"
+	writeMentionsVersion(t, database, spec, 1, cites)
+	requireNoReferenceRow(t, "the document's version", database, spec, "artifact", past)
+	if stated := mentionsOf(t, database, specRef); len(stated) != 1 || stated[0].toID != "ACME-2" {
+		t.Errorf("the document states %+v, want ACME-2's mention alone", stated)
+	}
+
+	var comment string
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `
+			insert into comments (issue_key, author, body) values ('ACME-1', '{"kind":"user","id":"alice"}', $1)
+			returning id::text
+		`, cites).Scan(&comment); err != nil {
+			return err
+		}
+		reader := refs.NewReader(ctx, tx, mentionsAuthor, graphstore.KindComment, comment, mentionsServer)
+		replacement, err := refs.PlanReplace(ctx, tx, graphstore.KindComment, comment, text.Refs(reader.Mentions(cites)), nil)
+		if err != nil {
+			return err
+		}
+		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			replacement.Queue(b)
+			return nil
+		})
+	}); err != nil {
+		t.Fatalf("write the comment's references: %v", err)
+	}
+	var commented, commentedPast int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) filter (where to_id = 'ACME-2'), count(*) filter (where octet_length(to_id) > $2)
+		from refs where from_kind = 'comment' and from_id = $1
+	`, comment, graphstore.MaxAddressBytes).Scan(&commented, &commentedPast); err != nil {
+		t.Fatalf("read the comment's references: %v", err)
+	}
+	if commented != 1 || commentedPast != 0 {
+		t.Errorf("the comment holds %d refs rows to ACME-2 and %d past the bound, want one and none", commented, commentedPast)
+	}
+
+	if _, err := database.Pool.Exec(ctx, `
+		insert into refs (from_kind, from_id, to_kind, to_id, created_at) values ('artifact', $1, 'artifact', $2, now())
+	`, spec, past); err != nil {
+		t.Fatalf("write the row an older build wrote past the bound: %v", err)
+	}
+	before := len(mentionsOf(t, database, specRef))
+	writeMentionsVersion(t, database, spec, 2, cites)
+	requireNoReferenceRow(t, "the document's next version", database, spec, "artifact", past)
+	if after := len(mentionsOf(t, database, specRef)); after != before {
+		t.Errorf("the next version states %d mentions, want none: the row it deleted past the bound held no tuple", after-before)
 	}
 }
 

@@ -510,6 +510,11 @@ type backlinkArm struct {
 	// them (its tuple arm's store class, migration 20261117020856). Such an arm reads no table
 	// of its own, so it names no from, where, toID, fromKind or fromID (storedSQL).
 	storedFrom []string
+	// ofTheTupleArm says the arm counts what graph_edges' tuple arm answers, not an arm of the
+	// view's own: a document's attached_to its issue, which the tuple arm reads from the part_of the
+	// document's node states (migration 20261123120000), and which the count reads keyed on the
+	// artifacts row's issue_key, the index the count binds (attachedArtifactStands).
+	ofTheTupleArm bool
 }
 
 // sql is the arm as the count reads it for target, keyed on the addresses bound as $1 and
@@ -678,10 +683,11 @@ var backlinkArms = map[string][]backlinkArm{
 		{kind: TupleAttachedTo, from: `artifacts a`, where: `a.issue_key is not null and not ` + issueOwnArtifact("a"), toID: `a.issue_key`,
 			fromKind: "artifact", fromID: `a.ref_key`, projected: `a.node_kind`, retiredBy: store.GraphEdgesIssueTreeRetired},
 		// The same index, over the rows that carry their node while its part_of to that issue
-		// stands: the view's arm of its own for them, which names the artifact by its uuid. It
-		// leaves out the issue's own tree and decisions query too.
+		// stands: what the view's tuple arm answers of them since migration 20261123120000, which
+		// names the artifact by its uuid. It leaves out the issue's own tree and decisions query
+		// too.
 		{kind: TupleAttachedTo, from: `artifacts a`, where: `a.issue_key is not null and not ` + issueOwnArtifact("a") + ` and ` + attachedArtifactStands, toID: `a.issue_key`,
-			fromKind: "artifact", fromID: `a.ref_key`},
+			fromKind: "artifact", fromID: `a.ref_key`, ofTheTupleArm: true},
 		// graph_tuples_as_of_in: a lens invoked on the issue, and a constraint written under it,
 		// each placed there by its part_of tuple (lensStandsOn).
 		{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindConstraint, graphstore.KindLens}},
@@ -882,9 +888,8 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// (store.ReferenceNotStated): every source's but a document's whose row names its node,
 		// and a far end past the store's bound; and once the boot step has deleted
 		// dispatch://INFRA-1253's half of the view's arm over refs, every source's but a
-		// document's, and a far end past that bound (store.ReferenceOfNoDocument), as the view's
-		// arm then reads, by the record of that deletion (store.GraphEdgesArmsRetired). heldByABlock
-		// belongs on this arm and the store's
+		// document's (store.ReferenceOfNoDocument), as the view's arm then reads, by the record of
+		// that deletion (store.GraphEdgesArmsRetired). heldByABlock belongs on this arm and the store's
 		// reading of the same mentions below alone: it is gated on kind = 'mentions' and
 		// from_kind in artifact, comment, message, ask, and those two are the only arms of the
 		// view that can emit that pair, every other arm fixing from_kind as a literal that is none
@@ -897,19 +902,20 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 			VisibleEnd(refsSources, `r.from_kind`, `r.from_id`, false, backlinkSeen)),
 		// The mentions of a document whose row names its node, in the store, read through
 		// graph_tuples_inbound: each current mentions tuple out of the document's node, joined to
-		// the artifacts row naming that node by its ref_key - only while that row names its node
-		// until the boot step deletes that test with dispatch://INFRA-1253's half of the arm over
-		// refs - counted only while the refs row of the
-		// pair stands, the document named by its uuid, as the view's tuple arm reads it
-		// (store.GraphEdgesArtifactRefs). A block of the document holding a link to the same target
+		// the artifacts row naming that node by its ref_key - only while that row names its node,
+		// and counted only while the refs row of the pair stands, until the boot step deletes both
+		// tests with dispatch://INFRA-1253's half of the arm over refs and the tuple arm's reads of
+		// those rows, having proven that every such tuple's document row names its node and its
+		// mention's refs row stands - the document named by its uuid, as the view's tuple arm reads
+		// it (store.GraphEdgesArtifactRefs). A block of the document holding a link to the same target
 		// is counted in the mention's place, as the refs arm's heldByABlock says, of the document the
 		// row names; its own test of the document is the view's state rule and this registry's
 		// predicate made out of one read of the document's node row (liveVisibleNode).
 		arm(`graph_tuples r join artifacts mentioning on mentioning.ref_key = r.from_id and (`+issueTreeRetired+` or mentioning.node_kind is not null)`,
 			` and r.from_kind = '`+graphstore.KindArtifact+`' and r.kind = '`+graphstore.TupleMentions+`' and `+currentTuple("r")+`
-			and exists (select 1 from refs projected
+			and (`+issueTreeRetired+` or exists (select 1 from refs projected
 				where projected.from_kind = r.from_kind and projected.from_id = mentioning.id::text
-					and projected.to_kind = r.to_kind and projected.to_id = r.to_id)
+					and projected.to_kind = r.to_kind and projected.to_id = r.to_id))
 			and not `+documentBlockHolds("r", "mentioning.id::text"),
 			liveVisibleNode(graphstore.KindArtifact, `r.from_id`)),
 		// block_refs_to_source (to_kind, to_id, (artifact_id::text)), by its first two columns,

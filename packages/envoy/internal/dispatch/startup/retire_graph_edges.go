@@ -68,23 +68,65 @@ var AsksArmsRetirement = Retirement{
 // issues (child_of), issue_links (blocked_by), the artifacts that name no node (attached_to),
 // components (part_of), component_depends (depends_on) and issue_component_members (affects), the
 // tuple arm's probes of those five tables, whose classes then consult no projection row, and the
-// artifact half of the arm over refs, a document's references while its row names no node, with
-// the tuple arm's test that the document's row names its node (store.GraphEdgesIssueTreeRetired).
-// Its kinds are that release's (IssueTreeKinds).
+// artifact half of the arm over refs, a document's references while its row names no node and a
+// far end past the store's bound, with the tuple arm's reads of the artifacts row and the refs row
+// behind a document's mentions and its attached_to (store.GraphEdgesIssueTreeRetired). Its kinds
+// are that release's (IssueTreeKinds).
 //
-// The arm over the artifacts that carry their node stays, and so does the tuple arm's join of a
-// document's mentions to its artifacts row and its refs row: the first names the artifact by its
-// uuid, which the store does not address it by, and the second dates each mention by its refs row.
-// So does the arm over refs for a far end past the store's bound, which no tuple holds, and for
-// every source but a document, which is dispatch://INFRA-1152's half of that arm.
+// Once it has run, the tuple arm reads a document's uuid and its row's created_at off the
+// document's node (graphstore.ArtifactRow) and a mention's date off its tuple, so beside the rows
+// the arms read it holds the arms for each current mentions or part_of tuple out of a document
+// whose node does not hold its row's id and created_at, whose row is gone or names no node, whose
+// mention's refs row is gone or dates it otherwise, or whose part_of reaches an issue its row does
+// not name; the backfill it runs first states each that a backfill can (backfillArtifactRows,
+// backfillReferences). And no writer of refs writes a far end past the store's bound any more
+// (refs.ReferenceTarget), but a build of the release before may have, and live production is no
+// database a test reads: each refs row whose far end is past the bound holds the arms, named by
+// its source and its length, so no edge is lost to the deleted branch in silence. The arm over
+// refs for every source but a document stays, which is dispatch://INFRA-1152's half of that arm.
 var IssueTreeArmsRetirement = Retirement{
 	Name:     "the issue tree's old arms of graph_edges",
 	Kinds:    IssueTreeKinds,
 	Stands:   graphEdgesChildStands(store.GraphEdgesIssueTreeRetired),
 	Backfill: graphStoreBackfill,
-	Holds:    graphEdgesHolders(issueTreeArmsHolders),
+	Holds:    issueTreeHolds,
 	Delete:   graphEdgesChildDelete(store.GraphEdgesIssueTreeRetired),
 }
+
+// issueTreeHolds is IssueTreeArmsRetirement's Holds: what its arms and reads still answer
+// (issueTreeArmsHolders), and each refs row whose far end is past the store's bound
+// (pastBoundReferences).
+func issueTreeHolds(ctx context.Context, q queryer) ([]Holder, error) {
+	holders, err := graphEdgesHolders(issueTreeArmsHolders)(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, pastBoundReferences)
+	if err != nil {
+		return nil, fmt.Errorf("count the references past the store's bound: %w", err)
+	}
+	past, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Holder, error) {
+		var source, toKind string
+		var length int64
+		if err := row.Scan(&source, &toKind, &length); err != nil {
+			return nil, err
+		}
+		return Holder{slog.String("past_bound_reference", source), slog.String("to_kind", toKind), slog.Int64("length", length)}, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("count the references past the store's bound: %w", err)
+	}
+	return append(holders, past...), nil
+}
+
+// pastBoundReferences is every refs row whose far end graphstore.AddressFits refuses, as its
+// source, the kind of its far end and the far end's length in bytes: the far end itself, over a
+// kilobyte, is not logged.
+var pastBoundReferences = `
+	select r.from_kind || ':' || r.from_id, r.to_kind, octet_length(r.to_id)::bigint
+	from refs r
+	where octet_length(r.to_id) > ` + strconv.Itoa(graphstore.MaxAddressBytes) + `
+	order by r.from_kind, r.from_id, r.to_kind, r.to_id`
 
 // graphEdgesRetired reads which children's arms graph_edges no longer holds: the children
 // graph_edges_retirements names (store.GraphEdgesChildren).
@@ -182,14 +224,14 @@ func graphEdgesHolders(statement string) func(context.Context, queryer) ([]Holde
 
 // currentTuplesWithoutRow is the current tuples, out of a node that is not gone, that the tuple
 // arm reads under classes, a test over a graph_tuples row aliased t, and that probe, a test over
-// the tuple aliased edge, does not find a row for: the tuples the arm's probe keeps out. Each is
-// named as its relation and its sequence, which graphEdgesHolders reads.
+// the tuple aliased edge and its node aliased node, does not find a row for: the tuples the arm's
+// probe keeps out. Each is named as its relation and its sequence, which graphEdgesHolders reads.
 func currentTuplesWithoutRow(classes, probe string) string {
 	return `
 	select edge.from_kind || ':' || edge.from_id || ' -' || edge.kind || '-> ' || edge.to_kind || ':' || edge.to_id, edge.seq
 	from (
 		select distinct on (t.to_kind, t.to_id, t.kind, t.from_kind, t.from_id)
-		       t.seq, t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted
+		       t.seq, t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.at, t.legacy_source_seq, t.asserted
 		from graph_tuples t
 		where t.to_kind <> 'value' and (` + classes + `)
 		order by t.to_kind, t.to_id, t.kind, t.from_kind, t.from_id, t.seq desc
@@ -230,9 +272,13 @@ var asksArmsHolders = `
 // whose parent was moved in place (store.ComponentParentMoved), a dependency, an issue's
 // component, and a document's reference to a far end inside the store's bound whose document's row
 // names no node or is gone - and each current tuple of an issue's child_of and needs, a component's
-// part_of and depends_on, and an issue's affects whose row of the pair does not carry its node,
-// and each current mentions tuple out of a document whose artifacts row names no node while the
-// refs row of the pair stands, which the tuple arm would read once that row's test is gone.
+// part_of and depends_on, and an issue's affects whose row of the pair does not carry its node.
+// Beside them, each current mentions and part_of tuple out of a document that the tuple arm's
+// read of the store alone would answer otherwise than its read through the artifacts row and the
+// refs row (store.GraphEdgesIssueTreeRetired) - the document's row gone, naming no node, or naming
+// another id or created_at than its node holds (graphstore.ArtifactRow); a mention whose refs row is
+// gone or dates it at another created_at or source_seq; a part_of to an issue the row does not
+// name - which the backfill brings level where it can (backfillArtifactRows, backfillReferences).
 var issueTreeArmsHolders = `
 	select 'issues ' || i.key, null::bigint
 	from issues i
@@ -268,33 +314,40 @@ var issueTreeArmsHolders = `
 	`(t.from_kind = 'issue' and t.kind in ('child_of', 'needs') and t.to_kind = 'issue')
 	 or (t.from_kind = 'component' and t.kind in ('part_of', 'depends_on') and t.to_kind = 'component')
 	 or (t.from_kind = 'issue' and t.kind = 'affects' and t.to_kind = 'component')
-	 or (t.from_kind = 'artifact' and t.kind = 'mentions')`,
+	 or (t.from_kind = 'artifact' and t.kind = 'mentions')
+	 or (t.from_kind = 'artifact' and t.kind = 'part_of' and t.to_kind = 'issue')`,
 	`case
-	  when edge.kind = 'child_of' then exists (
+	  when edge.from_kind = 'issue' and edge.kind = 'child_of' then exists (
 	    select 1 from issues projected
 	    where projected.key = edge.from_id and projected.node_kind = edge.from_kind
 	      and projected.node_address = edge.from_id and projected.parent_key = edge.to_id)
-	  when edge.kind = 'needs' then exists (
+	  when edge.from_kind = 'issue' and edge.kind = 'needs' then exists (
 	    select 1 from issue_links projected
 	    where projected.issue_key = edge.from_id and projected.kind = 'blocked_by'
 	      and projected.target_key = edge.to_id and projected.node_kind = edge.from_kind
 	      and projected.node_address = edge.from_id)
-	  when edge.kind = 'part_of' then exists (
+	  when edge.from_kind = 'component' and edge.kind = 'part_of' then exists (
 	    select 1 from components projected
 	    where projected.project_key || '/' || projected.id = edge.from_id and projected.node_kind = edge.from_kind
 	      and projected.node_address = edge.from_id and projected.project_key || '/' || projected.parent = edge.to_id)
-	  when edge.kind = 'depends_on' then exists (
+	  when edge.from_kind = 'component' and edge.kind = 'depends_on' then exists (
 	    select 1 from component_depends projected
 	    where projected.project_key || '/' || projected.from_id = edge.from_id
 	      and projected.project_key || '/' || projected.to_id = edge.to_id and projected.node_kind = edge.from_kind
 	      and projected.node_address = edge.from_id)
-	  when edge.kind = 'affects' then exists (
+	  when edge.from_kind = 'issue' and edge.kind = 'affects' then exists (
 	    select 1 from issue_component_members projected
 	    where projected.issue_key = edge.from_id and projected.project_key || '/' || projected.component_id = edge.to_id
 	      and projected.node_kind = edge.from_kind and projected.node_address = edge.from_id)
-	  else not exists (
-	    select 1 from artifacts mentioning
-	    join refs stated on stated.from_kind = edge.from_kind and stated.from_id = mentioning.id::text
-	      and stated.to_kind = edge.to_kind and stated.to_id = edge.to_id
-	    where mentioning.ref_key = edge.from_id and mentioning.node_kind is null)
+	  else exists (
+	    select 1 from artifacts named
+	    where named.ref_key = edge.from_id and named.node_kind is not null
+	      and named.id::text = node.attributes->>'`+graphstore.AttributeArtifactID+`'
+	      and named.created_at = (node.attributes->>'`+graphstore.AttributeCreatedAt+`')::timestamptz
+	      and case when edge.kind = 'mentions' then exists (
+	            select 1 from refs stated
+	            where stated.from_kind = edge.from_kind and stated.from_id = named.id::text
+	              and stated.to_kind = edge.to_kind and stated.to_id = edge.to_id
+	              and stated.created_at = edge.at and stated.source_seq is not distinct from edge.legacy_source_seq)
+	          else named.issue_key = edge.to_id end)
 	end`)

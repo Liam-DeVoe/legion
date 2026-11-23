@@ -88,7 +88,54 @@ var versionProjections = []projection{{
 	pastBound: `
 		select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
 		where octet_length(` + versionAddress + `) > ` + addressBound,
+}, {
+	name:     artifactRowProjectionKind,
+	nodeKind: graphstore.KindArtifact,
+	table:    "artifacts",
+	note: "the row a document's node names: every artifacts row that names a present node and is not retired, documents past" +
+		" the address bound aside, its id and created_at, against the artifact_id and created_at values that node holds",
+	rows: `
+		select 'artifact ' || a.ref_key, a.node_kind, a.node_address, a.id::text || '|' || ` + artifactRowTime("a.created_at") + `
+		from artifacts a` + namedArtifactRows,
+	nodes: `
+		select n.id, coalesce(n.attributes->>'` + graphstore.AttributeArtifactID + `', '(none)') || '|'
+		             || coalesce(` + artifactRowTime(`(n.attributes->>'`+graphstore.AttributeCreatedAt+`')::timestamptz`) + `, '(none)')
+		from graph_nodes n
+		where n.kind = '` + graphstore.KindArtifact + `'
+		  and exists (select 1 from artifacts a where a.node_kind = n.kind and a.node_address = n.id and not ` + retiredDocument("a") + `)`,
+	emptyAgrees: true,
 }}
+
+// artifactRowProjectionKind is the census's and the backfill's name of what a document's node holds
+// of the artifacts row that projects it (graphstore.ArtifactRow): its id and created_at, which
+// graph_edges names the document by and dates its attached_to at once the boot step has deleted
+// dispatch://INFRA-1253's arms (store.GraphEdgesIssueTreeRetired). Each row that names a present
+// node is held to the values that node holds, so a node missing them, or holding another row's, is
+// a difference at the row and at the node; a row with no node and a node with no row are the
+// artifact kind's differences, and neither side here holds them, so one defect is counted once.
+const artifactRowProjectionKind = "artifact_row"
+
+// namedArtifactRows keeps, of the artifacts rows aliased a, each that names its node inside the
+// store's bound, the node present, and that is not retired (retiredDocument): the rows whose node
+// holds their id and created_at (artifactRowProjectionKind, backfillArtifactRows).
+var namedArtifactRows = `
+		join graph_nodes held on held.kind = a.node_kind and held.id = a.node_address and held.state <> '` + graphstore.StateGone + `'
+		where a.node_kind is not null and not ` + retiredDocument("a") + ` and octet_length(a.ref_key) <= ` + addressBound
+
+// artifactRowTime writes a time both sides of the artifact_row kind compare: in UTC to the
+// microsecond.
+func artifactRowTime(at string) string {
+	return `to_char(` + at + ` at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`
+}
+
+// owedArtifactRowsSQL is the statement shape of the artifacts rows whose present node holds
+// another id or another created_at than the row's, or none (namedArtifactRows): a node a build
+// before graphstore.ArtifactRow wrote, or one a document made again under a removed one's name
+// left holding the removed row's. The pass and its count read the same predicate.
+var owedArtifactRowsSQL = `
+		from artifacts a` + namedArtifactRows + `
+		  and (held.attributes->>'` + graphstore.AttributeArtifactID + `' is distinct from a.id::text
+		       or (held.attributes->>'` + graphstore.AttributeCreatedAt + `')::timestamptz is distinct from a.created_at)`
 
 // versionAddress is the address of the version node an artifact_versions row v of the document a
 // projects (graphstore.VersionID), as a statement spells it.
@@ -104,10 +151,111 @@ func currentValue(attribute string) string {
 		order by t.seq desc limit 1)`
 }
 
-// versionBackfills are the backfill's passes over the versions of a document and of a query
-// (backfillPasses): the version node of every stored version whose node is missing. It runs after
+// versionBackfills are the backfill's passes over the versions of a document and of a query and
+// over the documents themselves (backfillPasses): the version node of every stored version whose
+// node is missing, then the row each document's node names (backfillArtifactRows). They run after
 // the project passes, so the document every version hangs under holds its node by then.
-var versionBackfills = []backfillPass{oneKind(backfillVersions)}
+var versionBackfills = []backfillPass{oneKind(backfillVersions), oneKind(backfillArtifactRows)}
+
+// backfillArtifactRows names on each document's node the artifacts row that projects it
+// (graphstore.ArtifactRow), for every row whose present node holds another id or created_at, or
+// none (owedArtifactRowsSQL), walking the rows batch by batch in ref_key order, so a second run
+// reads no row a first one wrote. Each batch is one transaction in the store's lock order: the
+// owner locks the batch's documents stand under first (lockObjectOwners), then the batch read again
+// under them, then each node as the store holds it written again with the row's values laid over
+// its attributes (graphstore.WithArtifactRow), restating the node and keeping its cause
+// (graphstore.Node.Restates, KeepsCause), so nothing else of it moves and no tuple is stated. A
+// row a removal deleted meanwhile is not read again, and its node keeps what it holds.
+func backfillArtifactRows(ctx context.Context, database *store.Store) (KindBackfill, error) {
+	done := KindBackfill{Kind: artifactRowProjectionKind}
+	after := ""
+	for {
+		rows, err := database.Pool.Query(ctx, `
+			select a.ref_key `+owedArtifactRowsSQL+` and a.ref_key > $1
+			order by a.ref_key
+			limit $2
+		`, after, backfillBatch)
+		if err != nil {
+			return done, fmt.Errorf("read the documents whose node names no row: %w", err)
+		}
+		batch, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return done, fmt.Errorf("read the documents whose node names no row: %w", err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		after = batch[len(batch)-1]
+		written, err := writeArtifactRowBatch(ctx, database, batch)
+		if err != nil {
+			return done, err
+		}
+		done.Rows += written
+		done.Nodes += written
+		if len(batch) < backfillBatch {
+			break
+		}
+	}
+	if err := database.Pool.QueryRow(ctx, `select count(*) `+owedArtifactRowsSQL).Scan(&done.Remaining); err != nil {
+		return done, fmt.Errorf("count the documents whose node names no row: %w", err)
+	}
+	done.Complete = done.Remaining == 0
+	return done, nil
+}
+
+// writeArtifactRowBatch writes one batch of backfillArtifactRows, the documents at refKeys, in one
+// transaction, and answers how many nodes it wrote.
+func writeArtifactRowBatch(ctx context.Context, database *store.Store, refKeys []string) (int64, error) {
+	var written int64
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		if err := lockObjectOwners(ctx, tx, documentObjectKind, refKeys); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `
+			select a.node_address, a.id::text, a.created_at `+owedArtifactRowsSQL+` and a.ref_key = any($1::text[])
+			order by a.node_address
+		`, refKeys)
+		if err != nil {
+			return fmt.Errorf("read a batch of documents again under their owners: %w", err)
+		}
+		type owed struct {
+			node string
+			row  graphstore.ArtifactRow
+		}
+		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (owed, error) {
+			var each owed
+			err := row.Scan(&each.node, &each.row.ID, &each.row.CreatedAt)
+			return each, err
+		})
+		if err != nil {
+			return fmt.Errorf("read a batch of documents again under their owners: %w", err)
+		}
+		nodes := make([]graphstore.Node, 0, len(batch))
+		for _, each := range batch {
+			node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindArtifact, each.node)
+			if err != nil {
+				return err
+			}
+			if !held {
+				continue
+			}
+			node = graphstore.WithArtifactRow(node, each.row)
+			node.Restates, node.KeepsCause = true, true
+			nodes = append(nodes, node)
+		}
+		if len(nodes) == 0 {
+			return nil
+		}
+		if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+			return err
+		}
+		written = int64(len(nodes))
+		return nil
+	}); err != nil {
+		return 0, fmt.Errorf("write a batch of the rows documents' nodes name: %w", err)
+	}
+	return written, nil
+}
 
 // presentVersionNode is the predicate that a version node the store holds present, at any state but
 // gone, stands at the address of the artifact_versions row v of the document a. A node held gone

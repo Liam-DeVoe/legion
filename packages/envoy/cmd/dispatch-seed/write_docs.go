@@ -61,9 +61,14 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// The document's node goes in before its row, in its project and part_of its issue where an
 	// issue owns it, and the row names it, as the server's upload writes them (api's
 	// storeArtifact); the seed records no event of a document, so what the node write states
-	// carries the sentinel.
+	// carries the sentinel. On this release's database the node holds the row's id and
+	// created_at (graphstore.ArtifactRow), as the upload's does; the release before's names none.
 	refKey := graphstore.ArtifactRefKey(owner, projectKey, "", document.Slug)
-	node := graphstore.ArtifactNode(refKey, projectKey, "", seedAuthor, created)
+	var row graphstore.ArtifactRow
+	if marked {
+		row = graphstore.ArtifactRow{ID: document.ID, CreatedAt: created}
+	}
+	node := graphstore.WithArtifactRow(graphstore.ArtifactNode(refKey, projectKey, "", seedAuthor, created), row)
 	var facts []graphstore.Tuple
 	if marked && issueKey != nil {
 		facts = append(facts, graphstore.ArtifactPartOf(refKey, *issueKey, seedAuthor, created))

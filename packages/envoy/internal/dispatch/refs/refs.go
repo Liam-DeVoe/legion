@@ -355,12 +355,27 @@ func TargetOf(ref text.Ref) (Target, bool) {
 	return Target{Kind: kind, ID: text.TargetID(ref)}, true
 }
 
-// refTargets is the deduplicated (to_kind, to_id) set found names, as parallel arrays.
+// ReferenceTarget is the target a parsed reference names as a refs row stores it (TargetOf), and
+// false for one no refs row holds: an external URL, and a far end past the store's bound on an
+// address (graphstore.AddressFits). Such an address is no reference, as the store makes it no node
+// and no tuple, so every writer of refs - a document's version index, rebuild-refs and the
+// re-index of a comment, a message or an ask (refTargets), and the seed - writes no row for it,
+// and a reconcile of a source that holds one from an earlier build deletes it.
+func ReferenceTarget(ref text.Ref) (Target, bool) {
+	target, ok := TargetOf(ref)
+	if !ok || !graphstore.AddressFits(target.ID) {
+		return Target{}, false
+	}
+	return target, true
+}
+
+// refTargets is the deduplicated (to_kind, to_id) set found names, as parallel arrays: each
+// target a refs row holds (ReferenceTarget).
 func refTargets(found []text.Ref) ([]string, []string) {
 	kinds, ids := []string{}, []string{}
 	seen := make(map[Target]struct{})
 	for _, ref := range found {
-		target, ok := TargetOf(ref)
+		target, ok := ReferenceTarget(ref)
 		if !ok {
 			continue
 		}
@@ -394,6 +409,9 @@ func QueueStamp(b *store.WriteBatch, fromKind, fromID string) {
 }
 
 // queueStamp queues Stamp's statements with eventID, or with store.LatestEventID when it is nil.
+// A document's mentions tuples are dated again as the stamped rows date them, right after the
+// stamp (graphstore.QueueMentionsDated): a row rebuild-refs inserted takes a later version's event,
+// which its tuple, appended before, did not carry.
 func queueStamp(b *store.WriteBatch, fromKind, fromID string, eventID *int64) {
 	refsID, refsArgs := store.LatestEventID, []any{fromKind, fromID}
 	blocksID, blocksArgs := store.LatestEventID, []any{fromID}
@@ -405,6 +423,9 @@ func queueStamp(b *store.WriteBatch, fromKind, fromID string, eventID *int64) {
 		update refs set source_seq = `+refsID+`
 		where from_kind = $1 and from_id = $2 and source_seq is null
 	`, refsArgs...)
+	if fromKind == graphstore.KindArtifact && uuid.Validate(fromID) == nil {
+		graphstore.QueueMentionsDated(b, fromID, eventID)
+	}
 	var blockRefs string
 	switch fromKind {
 	case "artifact":

@@ -262,6 +262,8 @@ func removedDocumentNodes(ctx context.Context, tx pgx.Tx, artifact model.Artifac
 	if !held && !removedAt.After(artifact.CreatedAt) {
 		removedAt = artifact.CreatedAt.Add(time.Microsecond)
 	}
+	// The node stated gone names no row, so it keeps the row's id and created_at it holds
+	// (graphstore.ArtifactRow): the store is append-only, and a gone node is answered nowhere.
 	gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, removedAt)
 	gone.State = graphstore.StateGone
 	marks, err := graphstore.CurrentOut(ctx, tx, graphstore.KindArtifact, artifact.RefKey, []string{graphstore.TupleChangedByRun})
@@ -302,7 +304,8 @@ func removedDocumentNodes(ctx context.Context, tx pgx.Tx, artifact model.Artifac
 	}
 	lensed := slices.ContainsFunc(placed, func(tuple graphstore.Tuple) bool { return tuple.FromKind == graphstore.KindLens })
 	if !held {
-		made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
+		made := graphstore.WithArtifactRow(graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt),
+			graphstore.ArtifactRow{ID: artifact.ID, CreatedAt: artifact.CreatedAt})
 		var partOf []graphstore.Tuple
 		if artifact.IssueKey != nil {
 			partOf = []graphstore.Tuple{graphstore.ArtifactPartOf(artifact.RefKey, *artifact.IssueKey, artifact.CreatedBy, artifact.CreatedAt)}

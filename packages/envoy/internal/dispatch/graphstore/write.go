@@ -1025,17 +1025,19 @@ const (
 // row's or the node's is gone. A state that moves therefore moves to the node's own, the value the
 // append states of it. A restating writer owns only the facts it writes the node again for - a
 // block's text and place, a comment's anchor - and none of the node's attributes, which another
-// write gives the node as it may give it a state: no writer that restates a node states any, so
-// the empty object such a node carries would otherwise erase what that other write stored. The
-// visibility and the state are each spelled once and read three times, by the update's set, by its
-// mark and by its condition, and the attributes twice, by the set and the condition, since no base
-// attribute states them: a row a restating write keeps as it is takes no update.
+// write gives the node as it may give it a state, but for the ones it names itself: a document's
+// node names the id and created_at of the row it projects (ArtifactRow), which every write naming
+// that row owns. So a restating write keeps the row's attributes with the ones it names laid over
+// them, and the empty object every other restating writer carries erases nothing another write
+// stored. The visibility and the state are each spelled once and read three times, by the update's
+// set, by its mark and by its condition, and the attributes twice, by the set and the condition,
+// since no base attribute states them: a row a restating write keeps as it is takes no update.
 const (
 	writtenVisibility = `case when incoming.restates then graph_nodes.visibility else incoming.visibility end`
 	writtenState      = `case when incoming.restates and incoming.state <> '` + StateGone + `'
 				and graph_nodes.state <> '` + StateGone + `'
 			then graph_nodes.state else incoming.state end`
-	writtenAttributes = `case when incoming.restates then graph_nodes.attributes else incoming.attributes end`
+	writtenAttributes = `case when incoming.restates then graph_nodes.attributes || incoming.attributes else incoming.attributes end`
 )
 
 // appending is one append of a write's tuples (queueAppend): the caller's own, the base

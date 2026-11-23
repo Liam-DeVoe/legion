@@ -136,6 +136,8 @@ func StateOrphanedGone(ctx context.Context, database *store.Store, ref string) e
 		if err != nil {
 			return err
 		}
+		// No row stands at the address, so the node stated gone names none and keeps the values it
+		// holds of the last one (graphstore.ArtifactRow).
 		gone := graphstore.ArtifactNode(ref, node.Project, sessionParty(node.Parties), SweepActor, removedAt)
 		gone.State = graphstore.StateGone
 		uncaused := graphstore.PlanUncaused([]graphstore.Node{gone}, nil)
