@@ -1367,7 +1367,7 @@ produce_agents() {
   claims_cmd resume --claim "$tester" >/dev/null
   until_true 600 "the tester to register a new session" claim_is "$tester" \
     "(.state | IN(\"ready\", \"idle\")) and .session != \"\" and .session != \"$old\""
-  claims_cmd deliver --claim "$tester" --task "$replacement" >/dev/null
+  deliver_task "$tester" "$replacement"
   await_turn tester
   claims_cmd suspend --claim "$tester" >/dev/null
   until_true 120 "the replacing tester to be suspended" claim_is "$tester" '.state == "suspended"'
@@ -2151,6 +2151,67 @@ resume_agent() {
   soft_wait 300 "$1 to run again" claim_is "$token" '.state | IN("ready", "idle")' &&
     soft_wait 120 "$1's session to be live in the listener" session_live "${agent[$store:$1.session]}"
 }
+# deliver_task TOKEN TASK delivers TASK to TOKEN's claim (`legion claims deliver`) once the claim
+# holds no task. A resume of a claim whose suspension cut a running turn has the daemon queue a
+# delivery of its own a moment after the claim is ready again, the sentence that tells the agent
+# what the relaunch ended (supervise's queueRelaunch), and a delivery made while that one is pending
+# is refused `a delivery is already pending`: proof run 45082273709 met it in A9 under the postgres
+# store, 220 ms after the daemon queued its own. So it waits, up to 600 s each time, until the
+# claim's `pending` is gone, which it is once the turn its task started ends, then delivers, and on
+# that refusal waits and delivers again, three times at most. Any other refusal fails it at once,
+# and the notes name it.
+deliver_task() {
+  local token=$1 task=$2 out attempt
+  for attempt in 1 2 3; do
+    soft_wait 600 "$token to hold no pending task" claim_is "$token" '.pending == null' || true
+    if out=$(claims_cmd deliver --claim "$token" --task "$task" 2>&1); then
+      return 0
+    fi
+    case "$out" in
+      *"a delivery is already pending"*) note "delivery $attempt to $token met a pending delivery: $(tr '\n' ' ' <<<"$out")" ;;
+      *)
+        note "the delivery to $token was refused: $(tr '\n' ' ' <<<"$out")"
+        return 1
+        ;;
+    esac
+  done
+  return 1
+}
+# compact_claim TOKEN asks the daemon to compact TOKEN's session (`legion claims compact`) once the
+# claim is ready or idle and holds no task, and keeps the daemon's answer in compact_answer. After
+# a resume the daemon's own relaunch delivery can start a turn a moment after the claim is ready
+# (deliver_task), and the daemon refuses a compaction of a claim in a turn (CLAIM_IN_A_TURN) or
+# between states (CLAIM_UNSETTLED); such a refusal is waited out and asked again, three times at
+# most.
+compact_answer=
+compact_claim() {
+  local token=$1 attempt
+  for attempt in 1 2 3; do
+    soft_wait 600 "$token to be ready or idle with no pending task" claim_is "$token" '(.state | IN("ready", "idle")) and .pending == null' || true
+    if compact_answer=$(claims_cmd compact --claim "$token" 2>&1); then
+      return 0
+    fi
+    case "$compact_answer" in
+      *CLAIM_IN_A_TURN* | *CLAIM_UNSETTLED*) note "compaction $attempt of $token met a turn: $(tr '\n' ' ' <<<"$compact_answer")" ;;
+      *) return 1 ;;
+    esac
+  done
+  return 1
+}
+# settled_pr_comments NUMBER MARKER prints pr_comments NUMBER MARKER once GitHub's listing of the
+# pull request's comments holds one that carries MARKER, read every 5 s for up to 60 s, or the last
+# listing read when none does: the comment an answer's gh call just posted can be missing from the
+# listing a moment longer than from the call's own answer. A check that must show a write was
+# never made reads pr_comment_listing, never this.
+settled_pr_comments() {
+  local comments started=$SECONDS
+  while :; do
+    comments=$(pr_comments "$1" "$2")
+    [ "$(jq length <<<"$comments")" = 0 ] && ((SECONDS - started < 60)) || break
+    sleep 5
+  done
+  printf '%s\n' "$comments"
+}
 
 check_a7() {
   criterion A7 "a question to a running agent reaches it alone; a resume during generation appends nothing and forwards the question" || return 0
@@ -2316,7 +2377,7 @@ check_a9() {
   note "answers: 1: $(head -c 200 <<<"$(inbox_message "$e1")" | tr '\n' ' ') | 2: $(head -c 200 <<<"$(inbox_message "$e2")" | tr '\n' ' ')"
   m=$(proxy_count agents)
   resume_agent architect || true
-  claims_cmd deliver --claim "$token" --task "$(question_text after-resume)" >/dev/null
+  deliver_task "$token" "$(question_text after-resume)"
   soft_wait 300 "the resumed architect's first model call" more_than "$m" proxy_count agents || true
   soft_wait 600 "the resumed architect's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after agents "$m")
@@ -2478,7 +2539,7 @@ a10_gpt() {
   [ "$(cache_read_tokens "${lines[1]}")" -gt 0 ] && [ "$cached2" -gt 0 ] && ok_cache=1
   m=$(proxy_count agents-gpt)
   resume_agent gpt || true
-  claims_cmd deliver --claim "$token" --task "While you were stopped you were asked $n questions about go.mod. What did you answer each time?" >/dev/null || true
+  deliver_task "$token" "While you were stopped you were asked $n questions about go.mod. What did you answer each time?" || true
   soft_wait 300 "the resumed GPT-6.1 merger's first model call" more_than "$m" proxy_count agents-gpt || true
   soft_wait 600 "the resumed merger's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after agents-gpt "$m")
@@ -2607,7 +2668,7 @@ check_a10() {
   fi
   m=$(proxy_count "claude-$store")
   resume_agent pre_change || true
-  claims_cmd deliver --claim "$token" --task "While you were stopped you were asked what blocked the release. How many times were you asked, and what did you answer?" >/dev/null
+  deliver_task "$token" "While you were stopped you were asked what blocked the release. How many times were you asked, and what did you answer?"
   soft_wait 300 "the resumed Claude Code reviewer's first model call" more_than "$m" proxy_count "claude-$store" || true
   soft_wait 600 "the resumed reviewer's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after "claude-$store" "$m")
@@ -2627,7 +2688,7 @@ check_a10() {
   # after it is passed on, not answered (compactionSummary, conversation/omp/context.go). So the
   # leg waits for a compaction whose summary is text (text_compactions) and counts no other kind.
   resume_agent architect || true
-  compaction=$(claims_cmd compact --claim "${agent[$store:architect.token]}" 2>&1) || compaction="refused: $compaction"
+  if compact_claim "${agent[$store:architect.token]}"; then compaction=$compact_answer; else compaction="refused: $compact_answer"; fi
   note "legion claims compact: $(tr '\n' ' ' <<<"$compaction")"
   compacted() { [ "$(text_compactions architect)" -gt 0 ]; }
   soft_wait 300 "the architect's conversation to hold a compaction written as text" compacted || true
@@ -2640,7 +2701,7 @@ check_a10() {
   note "from the compacted conversation: $(head -c 300 <<<"$(inbox_reply "$e3" 2>/dev/null)" | tr '\n' ' ')"
   m=$(proxy_count agents)
   resume_agent architect || true
-  claims_cmd deliver --claim "${agent[$store:architect.token]}" --task "Reply with one word: ready." >/dev/null
+  deliver_task "${agent[$store:architect.token]}" "Reply with one word: ready."
   soft_wait 300 "the resumed architect's first model call" more_than "$m" proxy_count agents || true
   request=$(first_request_after agents "$m")
   after=$(question_occurrences "$request" in-order-2 "$run_tag" "A10 after compaction")
@@ -2862,7 +2923,7 @@ check_a17() {
   impl_reply() { message_reply_by "$impl_session" "$impl_body"; }
   if person_message "$impl_issue" "$impl_session" "$impl_body" &&
     soft_wait 300 "the implementer's reply to the proof person's message" impl_reply; then
-    comments=$(pr_comments "${agent[$store:implementer.pr]}" "$marker")
+    comments=$(settled_pr_comments "${agent[$store:implementer.pr]}" "$marker")
     for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
     reply=$(impl_reply)
     lines=$(question_gh_lines "$(answer_question_id "$reply")") || lines='[]'
@@ -2963,7 +3024,7 @@ check_a18() {
     start_daemon "$daemon_bin" "$daemon_config" "$daemon_log" "$daemon_home" "$daemon_profile" "$daemon_plugin_dir"
     release "$label"
     soft_wait 300 "the answer after the restart" inbox_reply "$event" || true
-    comments=$(pr_comments "${agent[$store:implementer.pr]}" "$marker-restart")
+    comments=$(settled_pr_comments "${agent[$store:implementer.pr]}" "$marker-restart")
     for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
     note "after the restart: comments $(jq length <<<"$comments"), replies $(inbox_replies "$event"), gh lookups $(boot_log | jq -s -c '[.[] | select(.msg == "answers: gh lookup")] | length')"
     [ "$(jq length <<<"$comments")" = 1 ] && [ "$(inbox_replies "$event")" = 1 ] && ok_restart=1
@@ -2981,7 +3042,7 @@ check_a18() {
     forwarded_count() { question_forwarded implementer; }
     soft_wait 300 "the question to be forwarded with its gh call" forwarded_count || true
     soft_wait 600 "the running implementer's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
-    comments=$(pr_comments "${agent[$store:implementer.pr]}" "$marker-resume")
+    comments=$(settled_pr_comments "${agent[$store:implementer.pr]}" "$marker-resume")
     for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
     note "after the resume: comments $(jq length <<<"$comments"); the running implementer's conversation names the gh call: $(conversation_text implementer | grep -c "$marker-resume" || true)"
     [ "$(jq length <<<"$comments")" = 1 ] && forwarded_count && [ "$(inbox_replies "$event")" = 0 ] && ok_resume=1
@@ -3083,6 +3144,9 @@ check_a19() {
   session=${agent[$store:reviewer.session]}
   suspend_agent reviewer || true
   claims_cmd suspend --claim "${agent[$store:a19_architect.token]}" >/dev/null || true
+  # The daemon stops next, and a suspension it had not finished would leave the claim mid-way for
+  # the next boot to take up.
+  soft_wait 120 "the round's architect to be suspended" claim_is "${agent[$store:a19_architect.token]}" '.state == "suspended"' || true
   stop_daemon
   record_tree_issue "$issue" "$issue" "" reviewing "Answer loop proof: the review round ($store)"
   open_tree_lifecycle "$issue"

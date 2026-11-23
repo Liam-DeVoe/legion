@@ -1644,6 +1644,9 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   The exchange is counted there and not by the answer's own words in the request, because an architect that answered the same thing itself before it stopped holds those words in its own earlier turns.
   Its turn after the resume quotes both answers:
   every reply it gave after the task was delivered is read (`assistant_texts_after`), not its last, since a resumed architect may also answer a person's earlier reply in the same turn, and its last words then answer that.
+  The task goes in once the claim holds none (`deliver_task`), as every task the run delivers after a resume does, and so does A10's compaction (`compact_claim`):
+  a suspension that cut a running turn, as A7's does, has the daemon queue a delivery of its own a moment after the resume, the sentence telling the agent what the relaunch ended (`supervise`'s `queueRelaunch`), and a task delivered while that one is pending is refused `a delivery is already pending`, so the run waits for that turn to end and delivers again.
+  The resumed architect's first request may then be the one that delivery started; it carries the conversation, which holds each question's exchange once.
 
 - A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime, and asked again while no two of its answers came from one Anthropic organization:
   the first request's effort equals the transcript's last `effort`, every thinking signature in the transcript appears byte for byte in it, the cost line of the first answer that an earlier answer's organization also served reads `cacheReadTokens > 0`, and the resumed reviewer's first model call holds the first two questions' exchanges once each
