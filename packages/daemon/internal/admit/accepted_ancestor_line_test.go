@@ -13,10 +13,10 @@ import (
 )
 
 // A6's hold, read over the records and the copy the line is actually read over. An issue beneath
-// an ancestor the daemon has accepted waits at admitted until that ancestor closes: starting it
-// would let the ancestor merge a head that does not carry its work, which is the whole of the rule
-// release_children and rerun_child refuse under (CHILD_UNDER_ACCEPTED_PARENT) and the child-status
-// notice promises a person.
+// an ancestor the daemon has accepted waits at admitted while that ancestor stands in retro or
+// merging: starting it would let the ancestor merge a head that does not carry its work, which is
+// the whole of the rule release_children and rerun_child refuse under
+// (CHILD_UNDER_ACCEPTED_PARENT) and the child-status notice tells the architect.
 //
 // The chain between the issue and that ancestor holds a child that is already done, which the
 // project's live records leave out (record.Store.LiveIssues). The chain is the copy's

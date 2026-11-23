@@ -150,10 +150,18 @@ const mintedToken = new RegExp(`^${tokenHeader}\\.[A-Za-z0-9_-]+\\.fixtureSignat
  * that holds `modelKey` unless `keyFile` is false, which names a file that does not exist; the
  * audience in APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE when `audience` names one; with `leak`,
  * a stand-in driver that writes the key it was given into the daemon's log in the evidence
- * directory; and, with `xtrace`, the script run under `bash -x`, which traces each command of the
- * script's own shell, its subshells' among them, into the run's output.
+ * directory; with `dropKey`, a stand-in driver that removes the key file once it has read it, so
+ * the key-leak check after part two finds none; and, with `xtrace`, the script run under
+ * `bash -x`, which traces each command of the script's own shell, its subshells' among them,
+ * into the run's output.
  */
-type KeyRun = { keyFile?: boolean; audience?: string; leak?: boolean; xtrace?: boolean };
+type KeyRun = {
+  keyFile?: boolean;
+  audience?: string;
+  leak?: boolean;
+  dropKey?: boolean;
+  xtrace?: boolean;
+};
 
 /**
  * Runs the script, both parts, with the variables PICK sets, over lib/live-daemon-proof-fixture.ts's
@@ -261,6 +269,7 @@ case " $* " in
       cp "$key" "$seen/later"
     fi
     [ -z "\${STAND_IN_LEAK:-}" ] || cat "$key" >>"$LEGION_E2E_DAEMON_LOG"
+    [ -z "\${STAND_IN_DROP_KEY:-}" ] || rm -f -- "$key"
     cat "$LIVE_DAEMON_STAND_IN_DIR/part-two-output"
     [ ${ended} = PASS ]
     ;;
@@ -297,6 +306,7 @@ printf '%s' "$token"
   // A run that mints the token waits in part two's test for the refresher's next one.
   if (key.keyFile === false && key.audience !== undefined) env.STAND_IN_AWAIT_REFRESH = "1";
   if (key.leak) env.STAND_IN_LEAK = "1";
+  if (key.dropKey) env.STAND_IN_DROP_KEY = "1";
   const xtrace = key.xtrace ? ["-x"] : [];
   const result = Bun.spawnSync(
     ["bash", ...xtrace, join(checkout, "scripts", "e2e", "approved-version-news.sh")],
@@ -496,10 +506,11 @@ describe.skipIf(withoutGit)("the script's run of both parts", () => {
 // pod's identity token from the stand-in `curl` as from the metadata server, into a key file of
 // its own scratch, mode 600, which the driver is pointed at, which the refresher writes a later
 // token into while part two runs, and which the run removes; no token is printed, and the
-// key-leak check reads each token's header. A run under `bash -x` traces no part of the key file's
-// key or of a token the run minted, since each function that holds one turns xtrace off for
-// itself, and no part of LEGION_TEST_PG_DSN, which the run reads by its name. With neither, the
-// run is refused before anything is built.
+// key-leak check reads each token's header. A key file the key-leak check can no longer read fails
+// the run there. A run under `bash -x` traces no part of the key file's key or of a token the run
+// minted, since each function that holds one turns xtrace off for itself, and no part of
+// LEGION_TEST_PG_DSN, which the run reads by its name. With neither, the run is refused before
+// anything is built.
 describe.skipIf(withoutGit)("part two's model key", () => {
   const fullRun = [
     ...runsOf(a4, "head", passed, passed, passed),
@@ -579,15 +590,20 @@ describe.skipIf(withoutGit)("part two's model key", () => {
   // and a builtin's arguments among them. mint_gateway_token and jwt_exp hold the token in their
   // variables and arguments, and turn the trace off for themselves, so no part of any token the run
   // minted, at the gateway-token check or in the refresher's subshell, is in the run's output or
-  // its stderr: not its header, not its payload and not its signature.
+  // its stderr: not its header, not its payload and not its signature. The trace is off for those
+  // functions alone: the script's own next command after the first mint is traced again.
   test("traces no part of a token the run minted under bash -x", () => {
     const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {
       keyFile: false,
       audience: "model-gateway-gce",
       xtrace: true,
     });
-    // The run is traced, and its driver read a minted token and a later one.
+    // The run is traced, the trace comes back on after the mint, and the driver read a minted
+    // token and a later one. The assignment of the refresher's pid after the mint
+    // (`gateway_refresher=$!`) traces with digits, while the empty one at the script's top traces
+    // as `+ gateway_refresher=` long before the mint.
     expect(run.out).toMatch(/^\+ mint_gateway_token$/m);
+    expect(run.out).toMatch(/^\+ gateway_refresher=\d+$/m);
     expect(seen(run.dir, "first")).toMatch(mintedToken);
     expect(seen(run.dir, "later")).toMatch(mintedToken);
     const tokens = readFileSync(join(run.dir, "tokens"), "utf8").trimEnd().split("\n");
@@ -604,29 +620,35 @@ describe.skipIf(withoutGit)("part two's model key", () => {
     expect(run.out).toMatch(/^approved version news e2e: PASS in \d+s \(/m);
   }, 60_000);
 
-  // The key-leak check reads the key file's key into a variable of key_leaks alone, which turns
-  // the trace off for itself, so a run under `bash -x` on a key file's key traces no part of it.
-  test("traces no part of the key file's key under bash -x", () => {
+  // On a key file's key, a run under `bash -x` traces neither the key nor LEGION_TEST_PG_DSN. The
+  // key-leak check reads the key into a variable of key_leaks alone, which turns the trace off for
+  // itself. The arguments check and the lib's prerequisites read the DSN by its name
+  // (lib/loopback-dsn.sh's require_loopback_env) and test it for a value without expanding it.
+  test("traces no part of the key file's key and no LEGION_TEST_PG_DSN under bash -x", () => {
     const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", { xtrace: true });
-    // The run is traced through its key-leak check.
+    // The run is traced from its arguments check through its key-leak check.
+    expect(run.out).toMatch(/^\+ begin arguments$/m);
+    expect(run.out).toMatch(/^\+ require_loopback_env db_host LEGION_TEST_PG_DSN /m);
     expect(run.out).toMatch(/^\+ begin key-leak$/m);
     expect(run.out).not.toContain(modelKey.slice(0, 8));
+    expect(run.dsn).not.toBe("");
+    expect(run.out).not.toContain(run.dsn);
     expect(run.out).toContain("   the key's first 8 characters occur 0 times in ");
     expect(run.code).toBe(0);
     expect(run.out).toMatch(/^approved version news e2e: PASS in \d+s \(/m);
   }, 60_000);
 
-  // The arguments check and the lib's prerequisites read LEGION_TEST_PG_DSN by its name
-  // (lib/loopback-dsn.sh's require_loopback_env) and test it for a value without expanding it, so
-  // a run under `bash -x` traces no part of the DSN either.
-  test("traces no LEGION_TEST_PG_DSN under bash -x", () => {
-    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", { xtrace: true });
-    expect(run.dsn).not.toBe("");
-    expect(run.out).toMatch(/^\+ begin arguments$/m);
-    expect(run.out).not.toContain(run.dsn);
-    expect(run.out).toMatch(/^\+ require_loopback_env db_host LEGION_TEST_PG_DSN /m);
-    expect(run.code).toBe(0);
-    expect(run.out).toMatch(/^approved version news e2e: PASS in \d+s \(/m);
+  // The key-leak check counts the key file's key in the evidence directory, so a key file it
+  // cannot read leaves it nothing to count: the run fails there, naming the file, rather than
+  // counting an empty key's characters and passing.
+  test("fails at key-leak where the model key file can no longer be read", () => {
+    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", { dropKey: true });
+    expect(run.code).toBe(1);
+    expect(run.out).toContain(
+      `FAIL key-leak: the key-leak check could not read the model key file ${join(run.dir, "model-key")}\n`
+    );
+    expect(run.out).not.toContain("the key's first 8 characters occur");
+    expect(run.last).toMatch(/^approved version news e2e: FAIL at key-leak after \d+s \(/);
   }, 60_000);
 
   test("refuses with exit 2, before anything is built, a run with no key in the key file and no audience", () => {

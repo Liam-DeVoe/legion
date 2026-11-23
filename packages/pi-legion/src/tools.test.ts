@@ -231,7 +231,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
   "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing. That move " +
-  "counts a review round. " +
+  "counts no review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
@@ -2781,7 +2781,7 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 });
 
 // A spec step open on an ancestor's approval holds in `designGate.approvedVersion` the version its
-// root registered, which no person approved (contract 214): the summary names it as its entry in
+// root registered, which no person approved (contract 232): the summary names it as its entry in
 // `gatedSteps` does, by its status word and the ancestor's version, and so the step that waits on
 // the ancestor's request; a step on no basis keeps its approved line.
 test("read_state's summary names a step on an ancestor's basis by its gatedSteps entry, not as approved", async () => {
@@ -2865,6 +2865,41 @@ test("read_state's summary names a step on an ancestor's basis by its gatedSteps
   expect(summary).toContain("\nLEGION-218 planning in_progress\n  gate 3 approved 3");
   expect(summary).not.toContain("approved 4");
   expect(summary).not.toContain("approved 1");
+});
+
+// The controller reads the live trees and the held issues off the summary: one `trees` line
+// naming the root of every live tree, `(none)` when no tree runs and no line for a body the daemon
+// stripped of `trees`, and one `held` line per held issue with its reason and the issues that hold
+// it. The first state is the daemon's golden, read through the client.
+test("read_state's summary names the live trees and each held issue with its reason", async () => {
+  const admissionLines = (lines: readonly string[]) =>
+    lines.filter((line) => /^(active|waiting|trees|blocked|held) /.test(line));
+
+  const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  expect(admissionLines(golden)).toEqual([
+    "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219",
+    "waiting LEGION-212 LEGION-211",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-218 LEGION-219",
+    "blocked LEGION-209 on LEGION-210 LEGION-213",
+    "blocked LEGION-211 on LEGION-210",
+    "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",
+    "held LEGION-214 label_off",
+  ]);
+
+  const idle = legionState({
+    admission: { cap: 8, active: [], waiting: [], trees: [], blocked: [], held: [], free: 8 },
+  });
+  expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: idle }).daemon))).toEqual([
+    "active (none)",
+    "waiting (none)",
+    "trees (none)",
+  ]);
+
+  const stripped = legionState();
+  expect(stripped.admission?.trees).toBeUndefined();
+  expect(admissionLines(await summaryLinesOf(recordingDaemon({ state: stripped }).daemon))).toEqual(
+    ["active (none)", "waiting (none)"]
+  );
 });
 
 // What the controller reads of the pause in `read_state` with no field (dispatch://INFRA-3759,

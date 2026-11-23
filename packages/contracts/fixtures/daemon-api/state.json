@@ -8,8 +8,8 @@
     "convertedAt": "2026-09-18T14:04:11Z"
   },
   "contract": {
-    "daemon": 215,
-    "caller": 215
+    "daemon": 233,
+    "caller": 233
   },
   "admission": {
     "cap": 5,
@@ -1036,6 +1036,13 @@
             "floor_percent": 15,
             "wait_seconds": 8,
             "interval_milliseconds": 250
+          },
+          "controller_pod": {
+            "enabled": true,
+            "act_percent": 85,
+            "floor_percent": 10,
+            "wait_seconds": 1,
+            "interval_milliseconds": 100
           }
         },
         "volume_trim": {

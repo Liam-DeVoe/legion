@@ -485,12 +485,16 @@ refresh_gateway_token() {
 # evidence directory (the key-leak check), and prints nothing of the key: grep reads those
 # characters from a pipe, and only the count of matches leaves it. The key stands in a variable of
 # this function alone, which turns the shell's xtrace off for itself (`local -`) before it reads
-# the file, so a run under `bash -x` writes no part of the key into its transcript.
+# the file, so a run under `bash -x` writes no part of the key into its transcript. It fails, and
+# prints no count, where the key file cannot be read or holds nothing: its caller runs it in a
+# command substitution, where bash clears -e, so a read that failed would otherwise count the
+# empty key's no characters and pass the check.
 key_leaks() {
   local -
   set +x
   local key
-  key=$(<"$key_file")
+  key=$(<"$key_file") || return 1
+  [ -n "$key" ] || return 1
   { grep -rFoa -f <(printf '%s\n' "${key:0:8}") "$version_news_evidence" || true; } | wc -l
 }
 
@@ -970,7 +974,7 @@ if [ -n "$gateway_audience" ]; then
   note "the headers of the identity tokens the run minted occur $leaks times in $version_news_evidence"
   [ "$leaks" -eq 0 ] || fail "the header of an identity token the run minted is in the evidence directory $leaks times"
 else
-  leaks=$(key_leaks)
+  leaks=$(key_leaks) || fail "the key-leak check could not read the model key file $key_file"
   note "the key's first 8 characters occur $leaks times in $version_news_evidence"
   [ "$leaks" -eq 0 ] || fail "the model key's first 8 characters are in the evidence directory $leaks times"
 fi

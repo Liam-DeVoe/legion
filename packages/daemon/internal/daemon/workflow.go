@@ -1448,10 +1448,24 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 	// The first boot on this release fills the copy, finishes its conversion and only then makes
 	// its first admission pass, each in a transaction of its own (convertListed); every later boot
 	// does all three of the listing's writes in one.
+	var refused []string
 	if w.converting {
-		return w.convertListed(ctx, issues)
+		refused, err = w.convertListed(ctx, issues)
+	} else {
+		refused, err = w.reconcileListing(ctx, issues, nil, true)
 	}
-	return w.reconcileListing(ctx, issues, nil, true)
+	if err != nil {
+		return err
+	}
+	// The boot's listing is read before the catch-up, the API and the consumers apply any fact, so
+	// no applied fact should be newer than it and it should refuse no summary (reconcileListing).
+	// A summary it did refuse leaves its issue unrecorded until that issue's next event or the next
+	// boot, so each one is said at Info, naming the issue.
+	if len(refused) != 0 {
+		w.log.Info("workflow: the boot's listing was older than an issue fact the daemon had applied for these issues, so it recorded nothing of them; each waits for its next event or the next boot",
+			"issues", refused)
+	}
+	return nil
 }
 
 // preparedListing is a Dispatch listing of the project as reconcileListing applies it: the
@@ -1467,25 +1481,31 @@ type preparedListing struct {
 // out of admission's decision and refills the project's rows of the copy of Dispatch's issues
 // where its mark asks for it), or a recovery's (recoverRepositories), scoped to the summaries
 // keep keeps, judged against every record. The copy's fill and admission's pass are one
-// transaction (fillCopy, then admitListed).
-func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) error {
+// transaction (fillCopy, then admitListed). Once it commits it answers the keys admission found
+// older than an issue fact of theirs the daemon applied and so recorded nothing from (admit's
+// Reconcile), for a recovery to keep in the scope of its next pass. The boot's listing finds none:
+// it is read after every fact the daemon applied before it starts, and before the consumers apply
+// any.
+func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) ([]string, error) {
 	prepared, err := w.prepareListing(ctx, issues, keep, boot)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	target, position, err := w.dispatchPositions(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var refused []string
 	if err := w.listingTx(ctx, func(scoped context.Context, tx pgx.Tx) error {
 		if err := w.fillCopy(scoped, tx, prepared.scope, boot); err != nil {
 			return err
 		}
-		return w.admitListed(scoped, tx, prepared, target, position, boot)
+		refused, err = w.admitListed(scoped, tx, prepared, target, position, boot)
+		return err
 	}); err != nil {
-		return fmt.Errorf("reconcile admission: %w", err)
+		return nil, fmt.Errorf("reconcile admission: %w", err)
 	}
-	return nil
+	return refused, nil
 }
 
 // prepareListing reads, before any transaction, what admission's pass needs of each summary of
@@ -1628,13 +1648,13 @@ func (w *workflowRuntime) fillCopy(scoped context.Context, tx pgx.Tx, scope []di
 // boot, every root the boot's catch-up will read is held out of the decision whether it waits on
 // a person before admission's pass here, until its catch-up has applied what Dispatch recorded
 // while the daemon was down (catchUpAwaiting).
-func (w *workflowRuntime) admitListed(scoped context.Context, tx pgx.Tx, prepared preparedListing, target int64, position intake.DispatchConsumerPosition, boot bool) error {
+func (w *workflowRuntime) admitListed(scoped context.Context, tx pgx.Tx, prepared preparedListing, target int64, position intake.DispatchConsumerPosition, boot bool) ([]string, error) {
 	if boot {
 		if err := w.holdForCatchUp(scoped, tx); err != nil {
-			return err
+			return nil, err
 		}
 		if err := w.releaseParkedClaims(scoped, tx, prepared.scope); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	return w.admission.Reconcile(scoped, tx, prepared.listed, target, position)
@@ -1642,17 +1662,20 @@ func (w *workflowRuntime) admitListed(scoped context.Context, tx pgx.Tx, prepare
 
 // admitListing is admission's pass over prepared in a transaction of its own (admitListed), at
 // the positions read now: the first boot's pass, which follows its conversion (convertListed).
-func (w *workflowRuntime) admitListing(ctx context.Context, prepared preparedListing, boot bool) error {
+// Once it commits it answers the keys admission refused, as reconcileListing does.
+func (w *workflowRuntime) admitListing(ctx context.Context, prepared preparedListing, boot bool) ([]string, error) {
 	target, position, err := w.dispatchPositions(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var refused []string
 	if err := w.listingTx(ctx, func(scoped context.Context, tx pgx.Tx) error {
-		return w.admitListed(scoped, tx, prepared, target, position, boot)
+		refused, err = w.admitListed(scoped, tx, prepared, target, position, boot)
+		return err
 	}); err != nil {
-		return fmt.Errorf("reconcile admission: %w", err)
+		return nil, fmt.Errorf("reconcile admission: %w", err)
 	}
-	return nil
+	return refused, nil
 }
 
 // identity is the bot a role's commits are authored by: its App's, from the lease the token

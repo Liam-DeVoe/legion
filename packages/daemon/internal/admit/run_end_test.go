@@ -433,7 +433,8 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
 		intake.ControllerTick{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
-		intake.CloseRoot{}, intake.PendingBasisRead{}, intake.BasisChangesRead{}, intake.ReparentRead{},
+		intake.CloseRoot{}, intake.ControllerMemoryGuardKill{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
+		intake.ReparentRead{},
 	} {
 		if name := factName(fact); name == kind {
 			return fact

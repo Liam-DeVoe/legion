@@ -70,7 +70,7 @@ func TestGatedStepsAnswerAStepOnAnAncestorsBasisInItsOwnWords(t *testing.T) {
 // status words and each root's `treeRuns`, and this daemon's own contract is never below it: a
 // caller at this contract is served them.
 func TestTheGateBasisContractIsTheContractThatAddedTheBasis(t *testing.T) {
-	const addedGateBasis = 214
+	const addedGateBasis = 232
 	if gateBasisContract != addedGateBasis {
 		t.Fatalf("gateBasisContract = %d, want %d, the contract whose entry in version.go added the gated steps' basis and the roots' treeRuns",
 			gateBasisContract, addedGateBasis)
@@ -88,13 +88,13 @@ func TestTheGateBasisContractIsTheContractThatAddedTheBasis(t *testing.T) {
 // such a step — while every other issue keeps its gated steps and every key beside them, its
 // `designGate` among them. That holds for each way a caller below it reaches the daemon: one that
 // states a number between shapedAnswersContract and this contract, which is served the shape of
-// the nearest recorded contract at or below it (recordedContractAtOrBelow: 193, 199, 202, 205 or
-// 213, none of which carries `treeRuns` or a step on a basis), one that states
-// shapedAnswersContract itself, and one that states nothing from a pod whose claims record a
-// contract below shapedAnswersContract, the newest a pod reading places (podContracts). A caller
-// at the contract is served both: every root's `treeRuns`, and the two steps with their basis,
-// whether it states the contract or asks from a pod whose claims record it, which no pod reading
-// counts.
+// the nearest recorded contract at or below it (recordedContractAtOrBelow: one of the entries of
+// SupportedContracts below this contract, none of which carries `treeRuns` or a step on a basis),
+// one that states shapedAnswersContract itself, and one that states nothing from a pod whose claims
+// record a contract below shapedAnswersContract, the newest a pod reading places (podContracts). A
+// caller at the contract is served both: every root's `treeRuns`, and the two steps with their
+// basis, whether it states the contract or asks from a pod whose claims record it, which no pod
+// reading counts.
 func TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis(t *testing.T) {
 	state := populatedState(t)
 	onBasis := map[string]GatedStepStatus{"LEGION-207": GatedStepOpenOnBasis, "LEGION-214": GatedStepPendingOnBasis}

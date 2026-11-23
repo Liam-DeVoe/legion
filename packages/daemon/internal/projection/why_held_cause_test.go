@@ -197,7 +197,7 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldAwaitingTodo}, todoSentence},
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
 			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
-			"The daemon has accepted the reviewed head of LEGION-101, which stands above it, and nothing of its own work starts before that issue closes."},
+			"The daemon has accepted the reviewed head of LEGION-101, which stands above it, and nothing of its own work starts while that issue stands in retro or merging."},
 		{record.HeldAwaitingChildren, api.WhyBlocked}: {awaitingChildren,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAwaitingChildren, HeldBy: []string{"LEGION-102"}},
 			"It waits on its open children: the daemon runs no phase of its own work, and holds the start it had, while a child of it is open."},

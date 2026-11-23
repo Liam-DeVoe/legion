@@ -314,11 +314,12 @@ func AcceptedAncestor(chains *Chains, key string) string {
 
 // HeldUnderAccepted says whether the daemon is itself holding issue where it stands because an
 // issue above it has already been accepted (AcceptedAncestor): it stands at phase.Admitted, so
-// nothing of it has started, and the line will offer it no slot until that ancestor closes
-// (Waiting). It is one rule with two readers that must agree exactly: OpenBeneath leaves such an
-// issue out too, so the ancestor's own acceptance and close are not deadlocked by the issue its
-// hold stopped. The hold never outlives the ancestor that caused it: once that ancestor closes it
-// is out of Legion's work, the line reads this rule again and finds no hold, and the issue starts.
+// nothing of it has started, and the line will offer it no slot while that issue stands in retro
+// or merging (Waiting). It is one rule with two readers that must agree exactly: OpenBeneath
+// leaves such an issue out too, so the ancestor's own acceptance and close are not deadlocked by
+// the issue its hold stopped. The hold never outlives the ancestor that caused it: once that
+// ancestor closes it is out of Legion's work, the line reads this rule again and finds no hold,
+// and the issue starts.
 func HeldUnderAccepted(chains *Chains, issue Issue) bool {
 	return acceptedAncestorHolding(chains, issue) != ""
 }
@@ -777,24 +778,6 @@ func GateOpen(gate DesignGate) bool {
 	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
 }
 
-// RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
-// it is given, in their order, or the single step spec when it is given none. It is the one
-// statement of the rule; internal/classify reads this package, so the rule lives here, where
-// every reader can reach it. It takes no rows, and its one caller, TreeGate.Required, gives it
-// the steps the tree is gated on (TreeSteps) rather than the deployment's list.
-//
-// The empty list keeps its own hold. A deployment that gates no step asks no person to approve
-// anything, and its registration opens the gate at once; but the registration itself is still
-// what says the architect has written the spec, and a rule reading "every gated step is open"
-// would be true of a tree whose architect had registered nothing and would start it. So the
-// empty list requires the spec step's record, which the registration writes and opens in one act.
-func RequiredSteps(configured []DesignStep) []DesignStep {
-	if len(configured) == 0 {
-		return []DesignStep{DesignStepSpec}
-	}
-	return configured
-}
-
 // TreeSteps is the steps one tree is gated on: the steps the deployment gates, in the order it
 // names them, and criteria after them when the tree's root holds a criteria row and the
 // deployment gates spec but not criteria (JoinsByRegistration). gates are the root's rows by
@@ -840,7 +823,7 @@ func TakesStep(deployment []DesignStep, step DesignStep) bool {
 }
 
 // TreeGate is one tree's design gate as every rule over it reads it: the steps the deployment
-// gates (Steps, the empty list standing for the single step spec, RequiredSteps) and the row the
+// gates (Steps, the empty list standing for the single step spec, Required) and the row the
 // tree's root holds for each step its architect has registered (Rows, nil for a root that has
 // registered none). The gate is a list of steps and the work waits on all of them, so a rule
 // that used to read one row reads this instead and no reader can answer from one step where the
@@ -855,14 +838,22 @@ type TreeGate struct {
 	Rows  map[DesignStep]DesignGate
 }
 
-// Required is the steps the tree's work waits on: RequiredSteps over the steps the tree is gated
-// on (TreeSteps), so a criteria row its architect registered beside a deployment's spec holds the
-// tree in every rule of the gate alike. It is RequiredSteps' one caller, so every reader of those
-// steps reads them here: Open, EverOpened and OpenedAt; classify's FirstClosedStep and
-// StandingGate; workflow's basisStepsOf, gateAtSend, gateInQuestion, treeCatchUp and
-// gateStanding; and projection's basisGateReason.
+// Required is the steps the tree's work waits on: the steps the tree is gated on (TreeSteps), so a
+// criteria row its architect registered beside a deployment's spec holds the tree in every rule of
+// the gate alike, or the single step spec where that list is empty. It is the one statement of the
+// rule, and every reader of the steps a tree's work waits on reads them here.
+//
+// The empty list keeps its own hold. A deployment that gates no step asks no person to approve
+// anything, and its registration opens the gate at once; but the registration itself is still
+// what says the architect has written the spec, and a rule reading "every gated step is open"
+// would be true of a tree whose architect had registered nothing and would start it. So the
+// empty list requires the spec step's record, which the registration writes and opens in one act.
 func (g TreeGate) Required() []DesignStep {
-	return RequiredSteps(TreeSteps(g.Steps, g.Rows))
+	steps := TreeSteps(g.Steps, g.Rows)
+	if len(steps) == 0 {
+		return []DesignStep{DesignStepSpec}
+	}
+	return steps
 }
 
 // Open is whether the gate lets the tree's work run: an approval stands on the current document

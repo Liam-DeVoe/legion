@@ -95,7 +95,8 @@ type DispatchIssue struct {
 	// Observed is a fact made from Dispatch's view of an issue, not from one event, so no actor is
 	// known to have written its state (ObservedIssue). It reaches a handler as a plain observation
 	// only while the workflow does not record the issue when it applies, and only while no later
-	// event of the issue has applied (the mirror's sequence, record.DispatchIssueSeq): ApplyFact,
+	// issue fact of the issue has applied (the copy's applied sequence,
+	// record.Store.DispatchIssueApplied): ApplyFact,
 	// under the fact lock, applies Delivered in its place once the issue is recorded
 	// (release_children, or another delivery, recording it meanwhile), or, when Delivered is nil,
 	// the view itself with Observed still set, which the copy of Dispatch's issues takes as a
@@ -1399,6 +1400,30 @@ type MemoryGuardKill struct {
 
 func (f MemoryGuardKill) namedIssue() (string, bool) { return f.Issue, true }
 
+// ControllerMemoryGuardKill is one process the memory guard of a gVisor controller pod ended with
+// SIGKILL because the pod was near its memory limit, or one that a microVM controller pod's own
+// kernel stopped because the pod ran out of memory (the report's Cause,
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
+// runs the controller's session), as that pod's launcher reported it on the controller's
+// connection (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's
+// frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per report under
+// the id MemoryGuardKill's are applied under, `memory-guard-kill:<guard>:<sequence>`, which names
+// the kill once, so a report the launcher sent twice is applied once. For the kernel's kill,
+// <guard> is the id of the launcher's guest watch (memoryguard.Guest).
+//
+// Token and PodUID are the launcher session's own (the claim the connection authenticated for and
+// its pod), never anything the report says. The controller's pod is of no issue, so the fact names
+// none. The workflow tells the project's controller, in a controller notice of its own for each
+// kill, which of its programs was ended and why, in the note the report's Cause chooses
+// (workflow's controllerMemoryGuardKill).
+type ControllerMemoryGuardKill struct {
+	Token  claim.Token
+	PodUID string
+	Report shimwire.LauncherMemoryKill
+}
+
+func (ControllerMemoryGuardKill) namedIssue() (string, bool) { return "", false }
+
 // VolumeNearFull is one sweep of an issue pod's volume as its launcher reported it: the cache
 // trimmer in that pod's launcher process swept the cache roots and the volume was still above
 // its low mark when it stopped, or the trimmer has switched itself off after three faults. It is
@@ -1974,10 +1999,13 @@ func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (
 // admission decide nothing, since no actor is known to have written its state. Every other fact
 // applies as it is.
 //
-// A view older than an event of the issue the daemon has already applied (the mirror, which every
-// applied issue event writes first, holds a later sequence) applies nothing while the issue is
-// unrecorded: Dispatch has said something since, which the view does not show — a person's
-// withdrawal after the release's write, say — and that later event, applied, recorded no issue.
+// A view older than an issue fact of the issue the daemon has already applied (the copy's applied
+// sequence, record.Store.DispatchIssueApplied, which blockers.Mirror raises for every applied issue
+// fact) applies nothing while the issue is unrecorded: Dispatch has said something since, which the
+// view does not show — a person's withdrawal after the release's write, say — and that later fact,
+// applied, recorded no issue. A reading that decides nothing does not count: the periodic turn's
+// re-read and a listing take Dispatch's last sequence of the issue, which a comment, a document
+// edit, an ask or a claim raises too, and none of those reaches the handlers as an issue fact.
 func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, error) {
 	issue, ok := fact.(DispatchIssue)
 	if !ok || !issue.Observed {
@@ -1990,11 +2018,11 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 	}
 	switch {
 	case recorded == nil:
-		mirrored, found, err := store.DispatchIssueSeq(ctx, tx, issue.Key)
+		applied, err := store.DispatchIssueApplied(ctx, tx, issue.Key)
 		if err != nil {
 			return nil, false, err
 		}
-		if found && mirrored > issue.Seq {
+		if applied > issue.Seq {
 			return nil, false, nil
 		}
 		issue.Observed, issue.Delivered = false, nil

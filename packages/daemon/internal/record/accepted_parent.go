@@ -14,13 +14,13 @@ import "slices"
 // because an issue above it has already been accepted (HeldUnderAccepted). Without that exclusion
 // the three rules deadlock. An issue held at admitted under an issue in merging is in Legion's
 // work, so it keeps that issue open through this set for ever, while the held issue itself is
-// pinned at admitted until the issue above it closes; an issue held under an ancestor above an
-// issue in accepting deadlocks that issue's sign-off the same way. Excluding exactly the issues
-// the daemon's own hold has stopped costs nothing else: every other issue beneath still refuses
-// the sign-off and still holds the merged issue open, and the held issue still holds every
-// ancestor that has not been accepted, because the hold is what the exclusion is read from. This
-// is the one recorded departure from the spec of dispatch://INFRA-980, decided by that tree's
-// architect (dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104).
+// pinned at admitted while the issue above it stands in retro or merging; an issue held under an
+// ancestor above an issue in accepting deadlocks that issue's sign-off the same way. Excluding
+// exactly the issues the daemon's own hold has stopped costs nothing else: every other issue
+// beneath still refuses the sign-off and still holds the merged issue open, and the held issue
+// still holds every ancestor that has not been accepted, because the hold is what the exclusion
+// is read from. This is the one recorded departure from the spec of dispatch://INFRA-980, decided
+// by that tree's architect (dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104).
 func OpenBeneath(chains *Chains, key string) []string {
 	open := []string{}
 	for _, under := range chains.Under(key) {

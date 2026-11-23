@@ -1206,18 +1206,24 @@ func continueLine(issue record.Issue) string {
 // viewSentence is the one sentence each task of a phase worker of issue carries when its spec is
 // a view on an ancestor's requirements (record.Issue.ViewOf, dispatch://INFRA-3320, R4), and ""
 // for any other issue: the issue's requirements are the parts of the ancestor's requirements that
-// the Delivers: line of the issue's spec names, so the Coverage line Dispatch prints for the
-// issue, which counts only the requirement blocks of the issue's own spec, shows no gap in its work.
-// The task is built from the record alone, inside the transition, so the view fact the last
-// registration of the spec step recorded is what it reads, whether a basis or a person's approval
-// opened that step, and no document is read.
+// the Delivers: line of the issue's spec names. It says what Dispatch's Coverage line for the issue
+// reads, and why that is no gap. A view holds no requirement block (api's viewOf refuses one,
+// VIEW_HOLDS_REQUIREMENT), and Dispatch's coverage of a spec that marks none is the single gap
+// line "the spec marks no requirements" (envoy's dispatch/api/coverage.go, noRequirementsGap).
+// Every check of a view serves a requirement block of the ancestor's primary document
+// (VIEW_SERVES_OUTSIDE_BASIS, VIEW_CHECK_SERVES_NOTHING), the ancestor stands on the issue's
+// child_of chain, and the ancestor's coverage counts the check blocks of every issue under it
+// that serve its requirements (coverage.go, refs.IssueDescendants and servingBlockCounts), so the
+// view's checks count there. The task is built from the record alone, inside the transition, so
+// the view fact the last registration of the spec step recorded is what it reads, whether a basis
+// or a person's approval opened that step, and no document is read.
 func viewSentence(issue record.Issue) string {
 	if issue.ViewOf == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names,"+
-		" so Dispatch's Coverage line, which counts only %s's own blocks, shows no gap.",
-		issue.Key, issue.ViewOf, issue.Key, issue.ViewOf, issue.Key, issue.Key)
+	return fmt.Sprintf("%[1]s is a view on %[2]s: the requirements of %[1]s are the parts of the requirements of %[2]s that the Delivers: line in the spec of %[1]s names,"+
+		" so Dispatch's Coverage line for %[1]s reads \"the spec marks no requirements\", which is no gap in its work: %[1]s's checks count in %[2]s's Coverage.",
+		issue.Key, issue.ViewOf)
 }
 
 // handoffWord is the word of the Dispatch handoff record role writes (phase.Handoff's writer), ""

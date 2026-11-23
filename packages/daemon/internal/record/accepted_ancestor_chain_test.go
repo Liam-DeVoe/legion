@@ -71,7 +71,7 @@ func TestTheLineHoldsAnIssueUnderAnAcceptedAncestorAboveADoneParent(t *testing.T
 	inTx(t, st, func(tx pgx.Tx) {
 		line, rows, facts := held(tx)
 		if inLine(line, heldAtAdmit) {
-			t.Fatalf("%s stands in the waiting line, though %s above it is merging: the daemon holds it until that ancestor closes", heldAtAdmit, merging)
+			t.Fatalf("%s stands in the waiting line, though %s above it is merging: the daemon holds it while that ancestor is merging", heldAtAdmit, merging)
 		}
 		if row := heldRow(rows, heldAtAdmit); row.Reason != HeldAcceptedAncestor || !slices.Equal(row.HeldBy, []string{merging}) {
 			t.Fatalf("the held row of %s = %+v, want accepted_ancestor held by %s", heldAtAdmit, row, merging)

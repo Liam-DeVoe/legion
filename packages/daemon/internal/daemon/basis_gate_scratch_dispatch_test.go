@@ -37,7 +37,7 @@ import (
 // Dispatch itself gave, and the criteria step, on the API tests' fake client
 // (internal/api/gate_basis_test.go); a root waiting on a person, the phase tasks after planning,
 // the production check's task and the merger's start, in internal/workflow and internal/record;
-// and a caller at a contract below 214, whose narrowing needs a caller that states such a contract
+// and a caller at a contract below 232, whose narrowing needs a caller that states such a contract
 // or one in a pod, which the rig runs neither of (callerPodOf), in
 // internal/api/gate_basis_wire_test.go.
 
@@ -386,8 +386,8 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 		t.Fatalf("the view fact recorded at %s's registration = %q, want %s", root.Key, viewOf, parent.Key)
 	}
 	viewSentence := fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names,"+
-		" so Dispatch's Coverage line, which counts only %s's own blocks, shows no gap.",
-		root.Key, parent.Key, root.Key, parent.Key, root.Key, root.Key)
+		" so Dispatch's Coverage line for %s reads \"the spec marks no requirements\", which is no gap in its work: %s's checks count in %s's Coverage.",
+		root.Key, parent.Key, root.Key, parent.Key, root.Key, root.Key, root.Key, parent.Key)
 	if task := r.entryTask(root.Key, claim.RolePlanner); !strings.Contains(task, viewSentence) {
 		t.Fatalf("the planner's task of %s = %q, want the view sentence %q", root.Key, task, viewSentence)
 	}
@@ -761,7 +761,7 @@ func insertAtEnd(markdown string) map[string]string {
 // TestTheProductionCheckTaskOfAViewNamesTheAncestorsRequirements (internal/workflow), and
 // TestABasisOpeningTakesTheRegistrationsMomentInTheLine (internal/record: GateOpen, the tree's gate
 // and its first opening, which the merger's start reads, and TreeGate.OpenedAt). A caller below
-// contract 214 is TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis
+// contract 232 is TestACallerBelowTheGateBasisContractIsServedNoTreeRunsAndNoStepOnABasis
 // (internal/api): the rig runs no pod and no caller of it states a contract below this daemon's
 // own, so no caller here is narrowed.
 //

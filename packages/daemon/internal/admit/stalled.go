@@ -497,9 +497,10 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // whose label is off waits for a person to hand it over (label_off), and a run that starts as a
 // root's does waits for a person's todo, the other half of that handover (awaiting_todo); an issue
 // under a parent out of work waits for the architect above it to release that parent (ancestry),
-// an issue under an accepted issue waits for that issue to close (accepted_ancestor), and an issue
-// past its review is at work on no slot, whose stillness is the stall itself (at_work). None of
-// them is the daemon holding work it means to start, which is what a wait by design is.
+// an issue under an accepted issue waits while that issue stands in retro or merging
+// (accepted_ancestor), and an issue past its review is at work on no slot, whose stillness is the
+// stall itself (at_work). None of them is the daemon holding work it means to start, which is
+// what a wait by design is.
 //
 // A word with no row here fails admit's TestTheMeasureAnswersEveryHeldReason, which reads the
 // words from the record package's own source: a word added to the vocabulary and left out of
@@ -896,6 +897,6 @@ func stalledTreeReason(root string, measure record.TreeQuiet, members []record.I
 		}
 	}
 	reason.WriteString("\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-		" You can move an issue back a phase. You can park the tree.")
+		" You can park the tree.")
 	return reason.String()
 }

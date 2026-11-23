@@ -262,7 +262,9 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap; active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
+  "admission cap; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
+  "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
+  "neither active nor waiting; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
@@ -303,8 +305,18 @@ function stateSummary(state: LegionState): string {
       `active ${admission.active?.join(" ") || "(none)"}`,
       `waiting ${admission.waiting?.join(" ") || "(none)"}`
     );
+    // The daemon leaves `trees` out of a body it strips for a caller below the contract that
+    // added it, and an absent list says nothing of which trees run, where `trees (none)` would
+    // say that none does.
+    if (admission.trees !== undefined) {
+      lines.push(`trees ${admission.trees.join(" ") || "(none)"}`);
+    }
     for (const blocked of admission.blocked ?? []) {
       lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy?.join(" ") ?? "(none)"}`);
+    }
+    for (const held of admission.held ?? []) {
+      const by = held.heldBy === undefined ? "" : ` by ${held.heldBy.join(" ")}`;
+      lines.push(`held ${held.issue ?? "-"} ${held.reason ?? "-"}${by}`);
     }
   }
   const wakesWaiting = wakesWaitingSummary(state);
@@ -331,7 +343,7 @@ function stateSummary(state: LegionState): string {
     if (issue.designGate !== undefined) {
       const gate = issue.designGate;
       // A spec step open on an ancestor's approval holds in `approvedVersion` the version its root
-      // registered, which no person approved (contract 214), so a step on a basis reads its entry
+      // registered, which no person approved (contract 232), so a step on a basis reads its entry
       // in `gatedSteps`: the status word, and the ancestor and version it opened on or waits on.
       // The loop binds each entry of `gatedSteps`, so the read census sees every field read off
       // one, under the list's name (`LEGION_ANSWER_READS`).

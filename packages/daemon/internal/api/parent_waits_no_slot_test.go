@@ -58,7 +58,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		phase  phase.Phase
 		held   record.HeldReason
 	}{
-		{name: "a caller stating the previous contract", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: gateBasisContract - 1,
+		{name: "a caller stating the contract just below", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: gateBasisContract - 1,
 			phase: phase.Admitted, held: record.HeldChildrenFirst},
 		{name: "a pod at the newest contract a pod reading places", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1),
 			phase: phase.Admitted, held: record.HeldChildrenFirst},

@@ -775,7 +775,7 @@ func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admissi
 		if err := blockers.Reconcile(scoped, tx, record.NewStore(), project, mirrored); err != nil {
 			return err
 		}
-		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+		if _, err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
 			return err
 		}
 		return settle(scoped, tx)

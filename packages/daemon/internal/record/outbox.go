@@ -898,12 +898,12 @@ type CatchUp struct {
 // ended carries neither, and reads as registered on the root's own document.
 //
 // A catch-up carries one entry for each step the root must hold open before its tree works
-// (TreeGate.Required, RequiredSteps over the steps the tree is gated on), so a deployment that
-// gates nothing carries the one spec entry with Gated false: that registration opens the step at
-// once and asks no person, which is what the policy word `off` said. The list replaced that
-// word, because one word cannot name a list and each entry now says its own step's part of it. A
-// criteria row the architect registered beside a deployment that gates spec alone of the two is
-// an entry with Gated true, since that row holds the tree as the spec's does.
+// (TreeGate.Required: the steps the tree is gated on, or spec alone where none), so a deployment
+// that gates nothing carries the one spec entry with Gated false: that registration opens the
+// step at once and asks no person, which is what the policy word `off` said. The list replaced
+// that word, because one word cannot name a list and each entry now says its own step's part of
+// it. A criteria row the architect registered beside a deployment that gates spec alone of the two
+// is an entry with Gated true, since that row holds the tree as the spec's does.
 type CatchUpGate struct {
 	Step         DesignStep    `json:"step"`
 	Gated        bool          `json:"gated"`
@@ -1030,6 +1030,15 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
 //
+// A memory-guard-kill notice names one of the controller's own programs that the memory guard of
+// the controller's pod ended with SIGKILL because the pod was near its memory limit. Its issue is
+// the project key, as a tick's is, its Role is the controller, and its Reason names the process,
+// its pid, its size, the pod's reading and the limit, with none of the process's arguments, and
+// says what to run instead (workflow's controllerMemoryGuardKill). Each kill is a row of its own,
+// written by the workflow in the kill's own fact and never through admit.Admission.wakeController,
+// whose rule keeps one unsent notice per kind: two kills are two programs ended, and the second
+// must not be dropped behind the first.
+//
 // A project-paused notice tells the controller that the operator paused its project, and a
 // project-resumed notice that the operator resumed it (decision 24 of dispatch://INFRA-3759). Its
 // issue is the project key, and its Pause names who acted, when, and why: the pause's reason, or
@@ -1055,6 +1064,7 @@ const (
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
+	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
 	ProjectPausedNotice    NoticeKind = "project-paused"
 	ProjectResumedNotice   NoticeKind = "project-resumed"
 	StatusScopeNotice      NoticeKind = "status-scope"
@@ -1148,8 +1158,10 @@ type ArchitectStall struct {
 // as the first tree's waited in the outbox, and no pass could tell the controller of it until
 // that first notice was published.
 //
-// Every other kind says something about the project — a free slot, a todo issue, the day's tick
-// — which one wake carries however many facts find it pending.
+// Every other kind that wakeController queues says something about the project — a free slot, a
+// todo issue, the day's tick — which one wake carries however many facts find it pending. A
+// memory-guard-kill notice never passes through that rule: the workflow writes one row for each
+// kill.
 func NoticePerClaim(kind NoticeKind) bool {
 	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
 }
@@ -1849,8 +1861,9 @@ type PhaseEnded struct {
 // it was to merge forward onto that head, and Role the role it was asked of (MergeForward.Asked):
 // the implementer, or the merger for an ask made in merging. Its one writer, workflow's
 // awaitChildren, sets Role on every value, and no release before this one wrote a row that carries
-// the type, since such a release refuses a row with `mergeForward` (PhaseEnded), so no reader
-// meets an empty role.
+// the type, since such a release refuses a row with `mergeForward` (PhaseEnded). The row's
+// validation refuses a dropped merge forward whose role is neither of the two, so no reader meets
+// an empty role.
 type DroppedMergeForward struct {
 	Head string     `json:"head"`
 	Base string     `json:"base"`
@@ -2164,7 +2177,8 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 
 // MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
 // one list the workflow addresses the hold and the landed by (workflow's mergeForward and
-// mergeForwardLanded) and a row is validated against (validateOutboxPayload).
+// mergeForwardLanded) and a row is validated against (validateOutboxPayload), a merge-forward
+// message by its step and the dropped merge forward a phase-ended message names by the ask.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 	return slices.Contains(mergeForwardRoles[step], role)
 }
@@ -2227,12 +2241,12 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // The ask names the pull request, the head, the base and the phase the issue stays in, gives why
 // the daemon acted, and tells the role asked (the implementer, or in merging the merger) to merge
 // the base forward in the issue workspace, the one workspace every role of the issue shares, as
-// the worker skill's conflicts reference says, after the working-copy check of its foreign-path
-// reference, and to push the issue branch, with no handoff and no completion for the merge. In
-// implementing it also says that the implementer's own assignment and its completion stand: the
-// act starts no phase entry there. To the merger it also says that the merge is its own to
-// resolve and that the reviewer is asked to approve the head it pushes (cybermonklabs/legion#4979);
-// the landed, which comes when that matters, is what holds its merge to that approval.
+// the worker skill's conflicts reference says, and to push the issue branch, with no handoff and
+// no completion for the merge. In implementing it also says that the implementer's own
+// assignment and its completion stand: the act starts no phase entry there. To the merger it also
+// says that the merge is its own to resolve and that the reviewer is asked to approve the head it
+// pushes (cybermonklabs/legion#4979); the landed, which comes when that matters, is what holds its
+// merge to that approval.
 //
 // The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
 // the head forward in the workspace they share and that the issue stays in its phase, to stop
@@ -2269,8 +2283,7 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it."+
 			" The issue stays in %s. %s"+
 			" Merge %s forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace."+
-			" First do the working-copy check of skill://legion-worker/references/foreign-path.md."+
-			" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch."+
+			" Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch."+
 			" Write no handoff and make no completion for this forward merge.%s",
 			issue, pull, p.Head, p.Base, p.Phase, mergeForwardReason(p.Why, p.Base), p.Base, own)
 	case MergeForwardHold:
@@ -2910,6 +2923,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if dropped := value.MergeForward; dropped != nil && (dropped.Head == "" || dropped.Base == "") {
 			return fmt.Errorf("a phase-ended message that names a dropped merge forward names its head and its base; it names head %q and base %q", dropped.Head, dropped.Base)
 		}
+		// The role is one a merge forward's ask goes to (MergeForwardReaches on MergeForwardAsk),
+		// the role MergeForwardAsker names, which awaitChildren writes on every dropped merge
+		// forward (DroppedMergeForward.Role): a row with another role, or none, would address its
+		// message to no role that was asked.
+		if dropped := value.MergeForward; dropped != nil && !MergeForwardReaches(MergeForwardAsk, dropped.Role) {
+			return fmt.Errorf("a phase-ended message that names a dropped merge forward names the role it was asked of, the implementer or the merger; it names %q", dropped.Role)
+		}
 	case HookPrompt:
 		if value.Hook == "" {
 			return fmt.Errorf("a hook prompt carries the name of the hook that fired it")
@@ -3171,8 +3191,8 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, ProjectPausedNotice, ProjectResumedNotice,
-		StatusScopeNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, MemoryGuardKillNotice,
+		ProjectPausedNotice, ProjectResumedNotice, StatusScopeNotice:
 		return true
 	default:
 		return false

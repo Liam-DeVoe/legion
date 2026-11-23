@@ -166,27 +166,28 @@ func (w *workflowRuntime) convertStore(ctx context.Context) error {
 // Dispatch's issues is filled from issues, the boot's listing, in a transaction of its own; the
 // steps that read the listing or the copy and the record run (7 to 10) where the record does not
 // hold them yet; and then the first admission pass, in a transaction of its own. A retry of the
-// reconcile reads the record again, so it runs no step twice.
-func (w *workflowRuntime) convertListed(ctx context.Context, issues []dispatch.IssueSummary) error {
+// reconcile reads the record again, so it runs no step twice. It answers the keys that pass
+// refused (admitListing).
+func (w *workflowRuntime) convertListed(ctx context.Context, issues []dispatch.IssueSummary) ([]string, error) {
 	listed, err := w.prepareListing(ctx, issues, nil, true)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := w.listingTx(ctx, func(scoped context.Context, tx pgx.Tx) error {
 		return w.fillCopy(scoped, tx, listed.scope, true)
 	}); err != nil {
-		return fmt.Errorf("fill the copy of Dispatch's issues: %w", err)
+		return nil, fmt.Errorf("fill the copy of Dispatch's issues: %w", err)
 	}
 	conversion, err := w.readConversion(ctx)
 	if err != nil {
-		return fmt.Errorf("read the conversion of %s: %w", w.dispatchProject, err)
+		return nil, fmt.Errorf("read the conversion of %s: %w", w.dispatchProject, err)
 	}
 	byKey := make(map[string]dispatch.IssueSummary, len(issues))
 	for _, summary := range issues {
 		byKey[summary.Key] = summary
 	}
 	if err := w.runConversionSteps(ctx, conversion.Step, w.listedConversionSteps(byKey)); err != nil {
-		return err
+		return nil, err
 	}
 	w.converting = false
 	w.log.Info("the first boot's conversion of what the release before stored is finished", "project", w.dispatchProject)

@@ -97,7 +97,8 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.HandoffComplete{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
 		intake.GateRegistered{}, intake.CloseRoot{}, intake.CloseRefused{}, intake.StatusRefused{}, intake.ClaimFailed{},
 		intake.SessionLost{}, intake.SessionStoreFault{},
-		intake.MemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{}, intake.GateRequestFound{},
+		intake.MemoryGuardKill{}, intake.ControllerMemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{},
+		intake.GateRequestFound{},
 		intake.CatchUpApplied{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
 		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
 		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
@@ -153,9 +154,11 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 // holds it, at the sequence of the reading that wrote it. Each row first takes one reading at 10
 // of all five values (a), then one reading of its kind at 20 (b), and reads each value back with
 // its sequence. An issue event, an Observed fact (the daemon's own status write, release_children's
-// read of a child, admission's read before it applies an event), the turn's re-read of one issue
-// and a listing (the boot's, the repository recovery's, the turn's above its single-read bound)
-// each carry all five.
+// read of a child, admission's read before it applies an event), the turn's re-read of one issue,
+// a status call's read and a listing (the boot's, the repository recovery's, the turn's above its
+// single-read bound) each carry all five. The two issue facts alone, the event and the Observed
+// fact, are facts the daemon applies, so they alone raise the row's applied sequence to 20; the
+// turn's re-read, a status call's read and a listing leave it at 0.
 func TestAReadingLeavesTheValuesItDoesNotCarry(t *testing.T) {
 	pool := migratedPool(t)
 	records := record.NewStore()
@@ -165,7 +168,9 @@ func TestAReadingLeavesTheValuesItDoesNotCarry(t *testing.T) {
 	a := copyRow{Status: "backlog", StatusSeq: 10, Parent: "LEGION-800", ParentSeq: 10, Blockers: []string{"LEGION-901"}, BlockersSeq: 10,
 		Labels: []string{"design"}, LabelsSeq: 10, Rank: "a0", RankSeq: 10, Seq: 10}
 	b := copyRow{Status: "todo", StatusSeq: 20, Parent: parent, ParentSeq: 20, Blockers: blockedBy, BlockersSeq: 20,
-		Labels: labels, LabelsSeq: 20, Rank: "UUU", RankSeq: 20, Seq: 20}
+		Labels: labels, LabelsSeq: 20, Rank: "UUU", RankSeq: 20, Seq: 20, AppliedSeq: 20}
+	read := b
+	read.AppliedSeq = 0
 	apply := func(fact intake.Fact) func(pgx.Tx) error {
 		return func(tx pgx.Tx) error {
 			result, err := mirror.Apply(context.Background(), tx, fact)
@@ -184,11 +189,13 @@ func TestAReadingLeavesTheValuesItDoesNotCarry(t *testing.T) {
 		{name: "an Observed fact", key: "LEGION-911", read: apply(intake.ObservedIssue(dispatch.Issue{Key: "LEGION-911", Project: testProject,
 			Status: "todo", Parent: &parent, Rank: "UUU", Labels: labels, BlockedBy: blockedBy, LastSeq: 20})), want: b},
 		{name: "the turn's re-read", key: "LEGION-912", read: apply(intake.ControllerTick{Observed: []intake.IssueStatus{{Key: "LEGION-912",
-			Project: testProject, Status: "todo", Blockers: blockedBy, Seq: 20, Parent: parent, Labels: labels, Rank: "UUU"}}}), want: b},
+			Project: testProject, Status: "todo", Blockers: blockedBy, Seq: 20, Parent: parent, Labels: labels, Rank: "UUU"}}}), want: read},
+		{name: "a status call's read", key: "LEGION-914", read: apply(intake.StatusCall{Op: intake.SetStatusCall, Readings: []intake.IssueStatus{{Key: "LEGION-914",
+			Project: testProject, Status: "todo", Blockers: blockedBy, Seq: 20, Parent: parent, Labels: labels, Rank: "UUU"}}}), want: read},
 		{name: "a listing", key: "LEGION-913", read: func(tx pgx.Tx) error {
 			return Reconcile(context.Background(), tx, records, testProject, []dispatch.IssueSummary{{Key: "LEGION-913", Status: "todo",
 				Parent: &parent, Rank: "UUU", Labels: labels, LastSeq: 20, BlockedBy: blockedBy}})
-		}, want: b},
+		}, want: read},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inTx(t, pool, func(tx pgx.Tx) {
@@ -340,6 +347,7 @@ type copyRow struct {
 	Rank        string
 	RankSeq     int64
 	Seq         int64
+	AppliedSeq  int64
 }
 
 // copiedRow is key's row of the copy, read by SQL.
@@ -347,8 +355,9 @@ func copiedRow(t *testing.T, pool *pgxpool.Pool, key string) copyRow {
 	t.Helper()
 	var row copyRow
 	if err := pool.QueryRow(context.Background(), `select status, status_seq, coalesce(parent, ''), parent_seq, blockers, blockers_seq,
-		labels, labels_seq, rank, rank_seq, dispatch_seq from dispatch_issues where key = $1`, key).Scan(&row.Status, &row.StatusSeq,
-		&row.Parent, &row.ParentSeq, &row.Blockers, &row.BlockersSeq, &row.Labels, &row.LabelsSeq, &row.Rank, &row.RankSeq, &row.Seq); err != nil {
+		labels, labels_seq, rank, rank_seq, dispatch_seq, applied_seq from dispatch_issues where key = $1`, key).Scan(&row.Status, &row.StatusSeq,
+		&row.Parent, &row.ParentSeq, &row.Blockers, &row.BlockersSeq, &row.Labels, &row.LabelsSeq, &row.Rank, &row.RankSeq, &row.Seq,
+		&row.AppliedSeq); err != nil {
 		t.Fatalf("read the row of %s: %v", key, err)
 	}
 	return row

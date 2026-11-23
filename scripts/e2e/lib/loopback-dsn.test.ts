@@ -404,13 +404,15 @@ printf '%s\\n' "\${answer-}"
 `;
 const scratch = temporaryDirectories("loopback-dsn-test");
 
-/** Runs call under `set -x` (tracedRig), where python3 prints 127.0.0.1 and psql succeeds, with
- *  dsn in `variable`: its exit status, the trace (its stderr) and what it assigned `answer`. */
+/** Runs call under `set -x` (tracedRig), where python3 prints 127.0.0.1 and psql prints the
+ *  connection string it was given and succeeds, with dsn in `variable`: its exit status, the trace
+ *  (its stderr) and its stdout, which is what psql printed where the call leaves psql's stdout
+ *  alone, then what the call assigned `answer`. */
 function traced(call: string, dsn: string): { code: number; trace: string; answer: string } {
   const bin = scratch();
   const standIns: [string, string][] = [
     ["python3", "echo 127.0.0.1"],
-    ["psql", "exit 0"],
+    ["psql", `printf '%s\\n' "$1"`],
   ];
   for (const [name, body] of standIns) {
     writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
@@ -430,16 +432,33 @@ function traced(call: string, dsn: string): { code: number; trace: string; answe
 
 // Each helper turns the shell's xtrace off for itself, so under `bash -x` the DSN's password is
 // on no line of its own trace. A caller's own line that passes the DSN still carries it, which
-// require_loopback_env avoids by taking the variable's name: its call holds no DSN at all.
+// require_loopback_env, run_database_url_env and psql_env avoid by taking the variable's name:
+// their calls hold no DSN at all.
 describe("lib/loopback-dsn.sh's helpers trace no DSN of their own", () => {
   const dsn = `postgres://legion_test:${password}@127.0.0.1:5433/postgres?sslmode=disable`;
 
-  test("require_loopback_env reads the DSN by its variable's name, and the trace holds none of it", () => {
-    const run = traced(`require_loopback_env answer ${variable} "${what}"`, dsn);
-    expect(run.trace).toContain(`+ require_loopback_env answer ${variable} `);
+  const byName: [string, string][] = [
+    ["require_loopback_env", `require_loopback_env answer ${variable} "${what}"`],
+    ["run_database_url_env", `run_database_url_env answer ${variable} ppd_1 "${what}"`],
+  ];
+  for (const [name, call] of byName) {
+    test(`${name} reads the DSN by its variable's name, and the trace holds none of it`, () => {
+      const run = traced(call, dsn);
+      expect(run.trace).toContain(`+ ${name} answer ${variable} `);
+      expect(run.trace).not.toContain(password);
+      expect(run.code).toBe(0);
+      // The stand-in python3 answers 127.0.0.1 for the host and the rebuilt string alike.
+      expect(run.answer).toBe("127.0.0.1");
+    });
+  }
+
+  test("psql_env reads the DSN by its variable's name, and the trace holds none of it", () => {
+    const run = traced(`psql_env ${variable} -X -q -c "select 1"`, dsn);
+    expect(run.trace).toContain(`+ psql_env ${variable} -X -q -c 'select 1'`);
     expect(run.trace).not.toContain(password);
     expect(run.code).toBe(0);
-    expect(run.answer).toBe("127.0.0.1");
+    // The stand-in psql printed the connection string it was given, which is the DSN itself.
+    expect(run.answer).toBe(dsn);
   });
 
   const callers: [string, string][] = [

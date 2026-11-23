@@ -356,7 +356,7 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 			reason += "\n" + line
 		}
 		return stalledNotice{issue: root, reason: reason + "\nRead the tree and decide what it needs." +
-			" You can ask a role what it waits on. You can move an issue back a phase. You can park the tree."}
+			" You can ask a role what it waits on. You can park the tree."}
 	}
 	want := []stalledNotice{
 		toldOf(stalledRootA, 7,
@@ -500,7 +500,7 @@ func TestTheStalledTreeMeasureGroupsByGateRoot(t *testing.T) {
 			"\n" + root + " is in awaiting_children. No role works this phase. The record holds no pull request." +
 			"\n" + child + " is in implementing. The implementer has the turn. The record holds no pull request."
 		return stalledNotice{issue: root, reason: reason + "\nRead the tree and decide what it needs." +
-			" You can ask a role what it waits on. You can move an issue back a phase. You can park the tree."}
+			" You can ask a role what it waits on. You can park the tree."}
 	}
 
 	// LEGION-502 works under LEGION-501 an hour before the measure, so LEGION-501's tree has
@@ -976,7 +976,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 
 		const stillness = "The tree has been quiet for 7.0 hours. No agent of the tree is at work."
 		const decide = "\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-			" You can move an issue back a phase. You can park the tree."
+			" You can park the tree."
 		wantDeadlocked := []stalledNotice{
 			{issue: deadAwaiting, reason: deadAwaiting + " has stopped. " + stillness + "\n" + deadAwaiting +
 				" is in awaiting_person. No role works this phase. The record holds no pull request." + decide},

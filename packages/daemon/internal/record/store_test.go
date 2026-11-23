@@ -2404,7 +2404,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened", "basis_issue", "basis_artifact_id", "basis_version", "basis_approved_seq", "basis_approved_at", "basis_approver", "basis_serves", "basis_reason", "basis_session", "basis_registered_at", "basis_pending_ask", "kept_person_version", "kept_person_seq", "kept_person_at", "rests_on", "basis_moves"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
 		"dispatch_issues": {"key", "project", "status", "blockers", "dispatch_seq", "parent", "labels", "rank",
-			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq"},
+			"status_seq", "parent_seq", "blockers_seq", "labels_seq", "rank_seq", "applied_seq"},
 		"dispatch_issue_refills": {"project", "marked_at", "refilled_at"},
 		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
 		"slots":                  {"issue", "index", "admitted_at"},

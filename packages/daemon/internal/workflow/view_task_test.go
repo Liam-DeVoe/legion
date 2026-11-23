@@ -16,9 +16,11 @@ import (
 
 // viewTaskSentence is the one sentence every task of a phase worker of LEGION-208 carries while its
 // spec is a view on LEGION-100's requirements (dispatch://INFRA-3320, R4). It tells the worker too
-// that Dispatch's Coverage line for LEGION-208, which counts only its own blocks, shows no gap.
+// that Dispatch's Coverage line for LEGION-208 reads "the spec marks no requirements", which is no
+// gap, since LEGION-208's checks count in LEGION-100's Coverage.
 const viewTaskSentence = "LEGION-208 is a view on LEGION-100: the requirements of LEGION-208 are the parts of the requirements of LEGION-100 " +
-	"that the Delivers: line in the spec of LEGION-208 names, so Dispatch's Coverage line, which counts only LEGION-208's own blocks, shows no gap."
+	"that the Delivers: line in the spec of LEGION-208 names, so Dispatch's Coverage line for LEGION-208 reads \"the spec marks no requirements\", " +
+	"which is no gap in its work: LEGION-208's checks count in LEGION-100's Coverage."
 
 // assertViewSentence fails the test unless task carries viewTaskSentence exactly once where view
 // says the issue is a view, and not at all where it is not.
@@ -54,12 +56,13 @@ func phaseStartTask(t *testing.T, pool *pgxpool.Pool, role claim.Role, at phase.
 }
 
 // The task the daemon gives each phase worker of a view says in one sentence that the issue's
-// requirements are the parts of the ancestor's requirements its Delivers: line names, so Dispatch's
-// Coverage line for the issue shows no gap, whether an ancestor's approval or a person's approval
-// of the view's own spec opened its step: the planner's, the implementer's, the tester's and the
-// reviewer's, each as its phase starts, and the resume of a phase under way. The task is built
-// from the record's view fact alone, so an issue whose registration recorded none carries no such
-// sentence.
+// requirements are the parts of the ancestor's requirements its Delivers: line names, and that
+// Dispatch's Coverage line for the issue, "the spec marks no requirements", is no gap, since the
+// issue's checks count in the ancestor's Coverage. It says so whether an ancestor's approval or a
+// person's approval of the view's own spec opened its step: the planner's, the implementer's, the
+// tester's and the reviewer's, each as its phase starts, and the resume of a phase under way. The
+// task is built from the record's view fact alone, so an issue whose registration recorded none
+// carries no such sentence.
 func TestEveryPhaseTaskOfAViewNamesTheAncestorsRequirements(t *testing.T) {
 	alice := dispatch.Actor{Kind: "user", ID: "alice"}
 	for _, tc := range []struct {
