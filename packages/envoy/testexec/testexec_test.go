@@ -27,7 +27,7 @@ import (
 func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
 	forker, err := exec.LookPath("true")
 	if err != nil {
-		t.Skipf("no true command to fork: %v", err)
+		t.Fatalf("no true command on PATH to fork, so the test cannot make the forks it measures: %v", err)
 	}
 	dir := t.TempDir()
 	var stop atomic.Bool

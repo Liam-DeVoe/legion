@@ -16,7 +16,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   `Remaining` is what is left of the binary's deadline less 30 s, for a hang guard that is not the test's subject, such as the acknowledgement window of a consumer whose window also bounds each store read a handling makes, and a wait for those acknowledgements (`packages/daemon/internal/intake`): a fixed bound there, a minute say, lets the machine decide whether a store read of 61 s is cut.
   `Receive`, in both modules, waits for one receive from a channel, such as the answer of a call the test started, and sets no span of its own: it gives up 30 s before the binary's deadline, writes why to stderr at once and then fails the test, so a call that waits for ever fails by name, even without `-v`, and a call that is merely slow passes.
   A row whose verdict is what a call answers, a refusal or a replaced file, waits for it with `Receive`.
-  `StandInDeadline` is the daemon module's one context for a test clock that stands in for a production limit, budget or deadline (a `context.WithTimeout` or `WithTimeoutCause`) and passes at a fact of the run under test, such as a stand-in's first act, rather than at a time a loaded machine can reach before that run has started.
+  `StandInDeadline` is the daemon module's one context for a test clock that stands in for a production limit, budget or deadline (a `context.WithTimeout` or `WithTimeoutCause`) and passes at a fact of the run under test, such as the end of the process group a probe attempt started, rather than at a time a loaded machine can reach before that run has started.
   Every such clock uses it, because it ends as the real one does: once its `pass` runs, its `Err` is `context.DeadlineExceeded` and `context.Cause` reads the cause it was given, for it and for each context derived from it; its cancel and its parent's end end it as they end a real one, and it reads its parent's end at once.
   Its `Deadline` is its parent's until it passes and the moment it passed from then on, so code that reads the time against `Deadline` sees it past, as against a real deadline; this is the one place it differs from a real deadline on purpose, whose `Deadline` never changes.
   A clock built on `context.WithCancelCause` keeps the cause and gives `Err` `context.Canceled`, which no real limit gives, so code that tells one end from another by `Err` passes a test it should fail.
@@ -624,9 +624,9 @@ nothing until it sleeps again.
 What was measured: a probe sampled one waiting backend's wait event and its `pg_locks` request
 together, beside the whole of `internal/daemon` under `-race`, with `deadlock_timeout` at its
 default of 1 s. In 2 of 10 waits it read no wait event at 1.007, 1.009 and 1.011 s into the wait,
-with the request still queued. `TestReadyzIsFalseUntilTheDaemonServes` read the wait event once,
-about 1 s into its wait, and counted 0 of the daemon's backends waiting while its one connection
-waited (CI run 45206462019).
+with the request still queued. `TestReadyzIsFalseUntilTheDaemonServes` read the wait event once
+and counted 0 of the daemon's backends waiting while its one connection waited (CI run
+45206462019); how far into its wait that read fell was not measured.
 
 Envoy's `internal/textcheck` (`lock_wait_reads_test.go`) holds the three Go modules to this: Envoy,
 Envoy's infra and the daemon, each walked alone. It reads every Go string literal and fails on one
