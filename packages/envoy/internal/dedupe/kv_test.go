@@ -21,7 +21,14 @@ const (
 // openTestBucket opens the listener state bucket on the test's NATS as the listener does.
 func openTestBucket(t *testing.T) bus.KeyValue {
 	t.Helper()
-	conn := testnats.Connect(t, testnats.URL(t))
+	return openTestBucketOn(t, testnats.URL(t), 1)
+}
+
+// openTestBucketOn opens the listener state bucket as the listener does, with replicas copies, on a
+// connection to url.
+func openTestBucketOn(t *testing.T, url string, replicas int) bus.KeyValue {
+	t.Helper()
+	conn := testnats.Connect(t, url)
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream()
 	if err != nil {
@@ -32,7 +39,7 @@ func openTestBucket(t *testing.T) bus.KeyValue {
 		History:  1,
 		TTL:      10 * time.Minute,
 		Storage:  nats.FileStorage,
-		Replicas: 1,
+		Replicas: replicas,
 	})
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
@@ -192,6 +199,34 @@ func TestKV_AnAttemptWhoseClearFailedIsTakenOverByTheNextAttempt(t *testing.T) {
 		t.Fatalf("the retry's revision %d does not replace the uncleared attempt's %d", retry.revision, first.revision)
 	}
 	mustAttempt(t, ledger, "publish.abc", "ses_target", InFlight)
+}
+
+// A clear that loses to a write of its record still being replicated, on a bucket of three copies,
+// is the refused delete Clear's doc describes, as one that loses to a write already stored is: the
+// bucket answers it 10164, which nats.ErrKeyExists does not match. Clear reports no error, the
+// record stays, and this process's next Attempt for the pair takes the record over. Before, Clear
+// answered the loss as a failure of the bucket.
+func TestKV_AClearThatLosesToAReplicatingWriteLeavesTheRecordForTheNextAttempt(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	kv := openTestBucketOn(t, cluster.Servers[0].URL(), 3)
+	cluster.MoveStreamLeader(t, "KV_"+bus.ListenerStateBucket, 0)
+	ledger := newTestKV(kv, "boot-a", newTestClock())
+
+	attempt := mustAttempt(t, ledger, "publish.abc", "ses_target", Proceed)
+	race := cluster.RaceKeyValue(t, kv.Legacy(), 1)
+	ledger.kv = bus.NewKeyValue(race, kv.WatchHandle(), kv.Streams())
+
+	if err := ledger.Clear(attempt); err != nil {
+		t.Fatalf("Clear that lost to a replicating write: %v, want no error", err)
+	}
+	if race.Lost() != 1 {
+		t.Fatalf("%d deletes lost the race, want 1", race.Lost())
+	}
+	cluster.AwaitReplicated(t, "KV_"+bus.ListenerStateBucket)
+	if record := readRecord(t, kv, ledger.Key("publish.abc", "ses_target")); record.State != stateAttempted || record.Boot != "boot-a" {
+		t.Fatalf("record after the lost clear = %+v, want boot-a's attempted record kept", record)
+	}
+	mustAttempt(t, ledger, "publish.abc", "ses_target", Proceed)
 }
 
 // A delivery whose outcome never came back is kept: the pair is InFlight until the attempt is

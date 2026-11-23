@@ -210,7 +210,9 @@ type RoleClaimSweep struct {
 // bus.BoundedOn's contract is that a call ctx abandoned runs on to its own end, so the delete may
 // land after this pass has answered, and the revision is what makes that safe: it can take
 // nothing but the record the scan read, and a claim an earlier build without the key check wrote
-// there in the meantime is kept, which the server reports as nats.ErrKeyExists and the pass logs.
+// there in the meantime is kept. The server answers that delete as a lost compare-and-swap
+// (bus.IsCASConflict): 10071, or 10164 from a replicated bucket whose winning write is still being
+// replicated. The pass logs the kept claim.
 // The other kind of refused key, one outside nats.go's key alphabet, is refused locally before
 // anything is sent, so its delete leaves nothing in flight to land at all.
 //
@@ -279,7 +281,7 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 			case err == nil:
 				r.logger().Warn("role reaper deleted a claim it cannot read", slog.Int("key_bytes", len(role)))
 				sweep.Reaped++
-			case errors.Is(err, nats.ErrKeyExists):
+			case bus.IsCASConflict(err):
 				r.logger().Warn("role reaper kept a claim it cannot read, rewritten since its scan", slog.Int("key_bytes", len(role)))
 			case errors.Is(err, bus.ErrRefused):
 				r.logger().Warn("role reaper skipped a claim it cannot delete", slog.Int("key_bytes", len(role)), slog.String("error", err.Error()))

@@ -320,7 +320,7 @@ func (l *KV) Clear(attempt Attempt) error {
 	}
 	l.forget(attempt)
 	err := l.kv.Delete(attempt.key, nats.LastRevision(attempt.revision))
-	if err == nil || errors.Is(err, nats.ErrKeyExists) {
+	if err == nil || bus.IsCASConflict(err) {
 		return nil
 	}
 	return fmt.Errorf("clear delivery attempt %s: %w", attempt.key, err)
