@@ -456,6 +456,9 @@ func (w *worker) step() stepOutcome {
 	estimate := w.level.estimate(going.PromptChars(request.System, request.Input, request.Tools))
 	request.Model = w.agent.pacer.Paced(request.Model, func() int { return estimate }, w.charge)
 	request.OnStep = func(step agentloop.Step) error {
+		if w.agent.config.Hooks {
+			hookOnStep(step)
+		}
 		if step.Finish == finishContentFilter {
 			return errReplyFiltered
 		}
@@ -465,9 +468,6 @@ func (w *worker) step() stepOutcome {
 	}
 	request.OnText = func(delta string) error {
 		w.inFlight.Load().add(delta)
-		if w.agent.config.Hooks {
-			return hookOnText(delta)
-		}
 		return nil
 	}
 	result, kept, err := w.runModel(request)

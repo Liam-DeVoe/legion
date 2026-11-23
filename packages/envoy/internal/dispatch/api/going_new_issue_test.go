@@ -125,15 +125,18 @@ func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 	})
 
 	t.Run("a run whose create is refused files nothing and says why", func(t *testing.T) {
-		elsewhere := createInteractionIssue(t, rig.mux, "ELSE", "An issue of another project", "Context\n").Key
-		const words = "file a bug under the other project's issue: the export button is grey"
+		// The parent names no issue: nothing reads a parent the change writes until its create
+		// runs, and the create's route refuses it then.
+		const missing = "DEMO-9999"
+		const words = "file a bug under DEMO-9999: the export button is grey"
 		rig.loop.script.set(words, func(int) agenttest.Reply {
-			return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The export button is grey", "parent": elsewhere}))
+			return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The export button is grey", "parent": missing}))
 		})
+		page := rig.issue(t, "Export buttons")
 		before := issues(t)
-		run := start(t, words, elsewhere)
+		run := start(t, words, page)
 		record := rig.ended(t, run.ID, time.Minute)
-		if record.state != "failed" || !strings.HasPrefix(record.reason, goingNewIssueNotFiled) || !strings.Contains(record.reason, "parent must be in the same project") {
+		if record.state != "failed" || !strings.HasPrefix(record.reason, goingNewIssueNotFiled) || !strings.Contains(record.reason, "parent issue "+missing+" not found") {
 			t.Fatalf("the run ended %s with %q, want failed with %s naming the create's refusal", record.state, record.reason, goingNewIssueNotFiled)
 		}
 		if frame := rig.endFrame(t, run.ID); frame.State != "failed" || frame.Reason != record.reason || frame.Issue != "" || slices.Contains(frame.Offers, agentwire.OfferUndo) {

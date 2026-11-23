@@ -31,8 +31,8 @@ const (
 	// hookSoftLimit is a tool that works the agent at its soft limit until the run's context ends
 	// (workAtSoftLimit): the load of check c29, which the agent's CPUs and priority bound.
 	hookSoftLimit = "test_soft_limit"
-	// hookHangText is prose that, streamed by the model, makes the run's OnText ignore its
-	// context and never return: a model stream that ignores its context.
+	// hookHangText is prose that, in a model call's reply, makes the run's OnStep ignore its
+	// context and never return (hookOnStep): a model stream that ignores its context.
 	hookHangText = "[[test_hang]]"
 )
 
@@ -58,13 +58,19 @@ func (w *worker) hookTools(base int) []agentloop.Tool {
 	}
 }
 
-// hookOnText is the run's OnText under the test hooks: it never returns once the reply's prose
-// holds hookHangText.
-func hookOnText(delta string) error {
-	if strings.Contains(delta, hookHangText) {
-		select {}
+// hookOnStep is the start of the run's OnStep under the test hooks: it never returns once the
+// step's prose holds hookHangText. The SDK calls OnStep on its stream's own goroutine, which closes
+// the stream only once OnStep returned, so agentloop.Run, which reads the stream to its end, never
+// returns either: the step hangs as a stream that ignores its context does. A hang in OnText did
+// not always hold the step: agentloop can give the step to OnStep before its stream's reader passed
+// the step's prose on to OnText, and passes nothing on once OnStep ended the call (errStepTaken),
+// which OnStep does at once for a reply in prose that it leaves to the guard (endProse).
+func hookOnStep(step agentloop.Step) {
+	for _, block := range step.Blocks {
+		if block.Kind == agentloop.TextBlock && strings.Contains(block.Text, hookHangText) {
+			select {}
+		}
 	}
-	return nil
 }
 
 // softLimitNode is one object of the soft-limit hook's heap, 64 bytes: a pointer, which each
