@@ -135,7 +135,7 @@ func TestTheComposedPromptsNameAMissingProductionCheckAsAGap(t *testing.T) {
 // carries its own answer, since a stale plan is its own work wherever its step stands. The merger carries
 // the opening a news task can bring in place of the opened message, and the WAITING line that
 // lets a task reach it between turns. Every architect carries the answers in `accepting` (a
-// sign-off, or a move back to planning, implementing or testing), the root architect's summary
+// sign-off, or a move back to the phase of an earlier step of its task), the root architect's summary
 // duty for a member whose pull request merged, and R4's message: the architect's own Envoy message
 // for a new version the daemon tells nobody of. Each rule is counted once in each part that holds
 // it, then read in the composed prompt of each role, and the architect parts no longer say the

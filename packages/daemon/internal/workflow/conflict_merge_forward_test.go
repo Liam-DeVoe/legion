@@ -422,7 +422,7 @@ func TestAConflictPastTheReviewIsTheMergersToMergeForward(t *testing.T) {
 // so reads as the implementer's (record.MergeForward.Asked) - stays the implementer's: a later
 // confirmed read asks nobody, and its rows, the implementer's ask and the merger's hold, are still
 // delivered. An ask of the implementer made before the review that has not landed when the issue
-// moves into merging stays the implementer's too: the move holds the merger (holdMerger) rather
+// moves into merging stays the implementer's too: the move holds the merger (holdWorker) rather
 // than asking it, and once the implementer's merge lands the merger is told the new head and the
 // reviewer is asked to read it.
 func TestAnAskOfTheImplementerThatHasNotLandedKeepsItsMergeIntoMerging(t *testing.T) {

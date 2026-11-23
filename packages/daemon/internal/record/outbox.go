@@ -1839,7 +1839,8 @@ const (
 	// merging and the merger in merging, to merge the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
 	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
-	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
+	// planner, the tester, the reviewer or the merger, to stop writing the workspace while the
+	// merge runs.
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
@@ -1854,21 +1855,32 @@ const (
 // asked, whom the ask tells, nor the architect, whom the checks-red notice tells; the landed to the
 // worker of that phase, the merger included, which in merging made the merge and learns from it
 // to merge only once the reviewer approved the new head, where its task has a reviewer step; and
-// the review to the reviewer. The hold still lists the merger, which a daemon before
-// cybermonklabs/legion#4979 held in merging while it asked the implementer, so a row that daemon
-// queued is still read after the upgrade.
+// the review to the reviewer. The hold and the landed go to each role that works the head in the
+// workspace every role of the issue shares: the planner, whose step may follow the implementer's,
+// the tester, the reviewer, and the merger, which is held in merging while another role's merge
+// forward of the head stands (workflow's holdWorker).
 var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 	MergeForwardAsk:    {claim.RoleImplementer, claim.RoleMerger},
-	MergeForwardHold:   {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
-	MergeForwardLanded: {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
+	MergeForwardHold:   {claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
+	MergeForwardLanded: {claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
 	MergeForwardReview: {claim.RoleReviewer},
 }
 
-// MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
-// one list the workflow addresses the hold and the landed by (workflow's mergeForward and
-// mergeForwardLanded) and a row is validated against (validateOutboxPayload).
+// MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles), which
+// MergeForwardWorker reads for the hold and the landed and a row is validated against
+// (validateOutboxPayload).
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 	return slices.Contains(mergeForwardRoles[step], role)
+}
+
+// MergeForwardWorker is the worker of the phase at, the role phase.RoleFor gives it, and whether
+// step of a merge forward, a hold or a landed, goes to it (MergeForwardReaches). It is the one rule
+// the workflow addresses the hold and the landed by (workflow's mergeForward, holdWorker and
+// mergeForwardLanded) and a row of either is validated against (validateOutboxPayload): each goes
+// to the worker of the phase it names, and to no other role.
+func MergeForwardWorker(step MergeForwardStep, at phase.Phase) (claim.Role, bool) {
+	worker := phase.RoleFor(at)
+	return worker, MergeForwardReaches(step, worker)
 }
 
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
@@ -1958,8 +1970,8 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
 // its review's Legion footer naming that head, or to request changes, with no handoff and no
 // completion, and then to tell what it decided, on their role topics, to the architect and to the
-// worker of the phase the issue stands in (the tester in testing, the implementer in retro, the
-// merger in merging; the architect alone in accepting).
+// worker of the phase the issue stands in (phase.RoleFor: the planner in planning, the tester in
+// testing, the implementer in retro, the merger in merging; the architect alone in accepting).
 func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 	pull := fmt.Sprintf("pull request %s#%d", pr.Repo, p.PullRequest)
 	switch p.Step {
@@ -2000,13 +2012,8 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 			issue, p.Base, pull, p.Head, p.Landed, p.Phase, p.readMerge(), merge)
 	default: // MergeForwardReview, the one step left: validateOutboxPayload admits no other.
 		tell := "the architect what you decided, on its role topic"
-		switch p.Phase {
-		case phase.Testing:
-			tell = "the architect and the tester what you decided, each on its own role topic"
-		case phase.Retro:
-			tell = "the architect and the implementer what you decided, each on its own role topic"
-		case phase.Merging:
-			tell = "the architect and the merger what you decided, each on its own role topic"
+		if worker := phase.RoleFor(p.Phase); worker != "" && worker != claim.RoleArchitect && worker != p.Role {
+			tell = fmt.Sprintf("the architect and the %s what you decided, each on its own role topic", worker)
 		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
 			" Read what the merge changed since the old head: %s"+
@@ -2566,10 +2573,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
-			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the planner, the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		if value.Head == "" || value.Base == "" || value.Phase == "" || value.PullRequest < 1 {
 			return fmt.Errorf("a merge-forward message names the head, the base branch, the phase the issue stays in and the pull request; it names %q, %q, %q and #%d", value.Head, value.Base, value.Phase, value.PullRequest)
+		}
+		if value.Step == MergeForwardHold || value.Step == MergeForwardLanded {
+			if worker, _ := MergeForwardWorker(value.Step, value.Phase); worker != value.Role {
+				return fmt.Errorf("a merge-forward hold or landed goes to the worker of the phase it names; a %s naming %q goes to %q, not %q", value.Step, value.Phase, worker, value.Role)
+			}
 		}
 		// The merger is asked only where MergeForwardAsker names it, in merging. The implementer's ask
 		// is valid in every phase, so a row a daemon before cybermonklabs/legion#4979 queued past the

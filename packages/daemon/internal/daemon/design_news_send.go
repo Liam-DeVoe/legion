@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -342,6 +343,13 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	for _, heard := range listened {
 		news := workflow.News{Audience: heard.listener.audience, Tree: heard.issue.Tree, Issue: heard.issue.Key,
 			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, OpeningOwed: heard.opening != nil}
+		// The answer of an issue held in accepting names the phases a move back reaches, read from
+		// the issue's task (workflow.LineOf).
+		if heard.listener.audience == record.AudienceHolder && heard.issue.Phase == phase.Accepting {
+			if news.Line, err = workflow.LineOf(ctx, records, tx, heard.issue); err != nil {
+				return newsAtSend{}, err
+			}
+		}
 		for _, i := range heard.items {
 			change, kept, ok := recorded.carriedChange(items[i])
 			if !ok {
@@ -522,13 +530,16 @@ func (n newsRecorded) carriedChange(item record.DeliveryNewsItem) (workflow.News
 
 // memberDraft is one member of a tree as the root architect's summary reads it before the change
 // sets are read: its record, how it is told (memberTelling: its state, and the issue whose
-// architect holds it in accepting where that is not the tree root's), and, for a member owed news,
-// the items its holder is owed now (record.OwedNews) and whether its holder row owes the opening.
+// architect holds it in accepting where that is not the tree root's), for a member owed news, the
+// items its holder is owed now (record.OwedNews) and whether its holder row owes the opening, and,
+// for a member in accepting, the line its task walks (workflow.LineOf), whose answer names the
+// phases a move back reaches.
 type memberDraft struct {
 	memberTelling
 	issue       record.Issue
 	owed        []record.NewsItem
 	openingOwed bool
+	line        []phase.Phase
 }
 
 // told is the member as the summary names it, given what is recorded: its owed items with their
@@ -540,7 +551,7 @@ type memberDraft struct {
 // with its items and how its holder is told. An owed item the record cannot tell yet
 // (newsRecorded.change) is named by none.
 func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
-	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state, Architect: m.architect}
+	member := workflow.NewsMember{Issue: m.issue.Key, Phase: m.issue.Phase, State: m.state, Architect: m.architect, Line: m.line}
 	if len(m.owed) > 0 && settlementOf(m.owed, recorded, m.openingOwed) == settleRaise {
 		member.State = workflow.NewsWorkUnchanged
 		return member
@@ -602,6 +613,11 @@ func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps
 			draft.owed, draft.memberTelling = news.Items, told[member.Key]
 		} else {
 			draft.state = untoldReason(owed.Untold[member.Key])
+		}
+		if member.Phase == phase.Accepting {
+			if draft.line, err = workflow.LineOf(ctx, records, tx, member); err != nil {
+				return nil, err
+			}
 		}
 		drafts = append(drafts, draft)
 	}
