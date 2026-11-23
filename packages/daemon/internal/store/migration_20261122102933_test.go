@@ -38,8 +38,13 @@ func TestTheReleaseSuspendsClaimsMigrationNamesAMarksClaimsByTheirTokens(t *test
 		{"legion-legion-legion-208-tester", claim.RoleImplementer},
 		{"legion-legion-legion-208-architect", claim.RoleArchitect},
 	} {
-		if err := store.PutClaim(ctx, supervise.Claim{Token: c.token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
-			Role: c.role, TreeEpoch: 1, Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+		// The claim is written as a row of the schema this migration finds, column by column, and
+		// not through PutClaim, which writes every column of this tree's claims, some of which a
+		// migration above this one adds.
+		if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
+			session, session_file, state, failure, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
+			values ($1, 'legion', 'LEGION-208', 'LEGION-208', $2, 1, 1, '', '', $3, '', 0, 0, 0, 0, $4)`,
+			string(c.token), string(c.role), string(supervise.StateSuspended), string(supervise.SuspendedByReleased)); err != nil {
 			t.Fatalf("seed the claim %s: %v", c.token, err)
 		}
 	}
