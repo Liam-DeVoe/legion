@@ -1075,8 +1075,9 @@ func timedOut(err error) bool {
 }
 
 // giveUpDial is the dial of each connect a wait of t makes (Connect, awaitAuth, awaitSeed,
-// AwaitConnectSeed): a dial with nats.go's default timeout, as nats.go's own dialer makes it
-// (nats.go v1.55.0 nats.go:2017-2020), whose connection carries the shared wait's give-up
+// AwaitConnectSeed, and the test files' connectWithoutJetStream and socketDialer): a dial with
+// nats.go's default timeout, as nats.go's own dialer makes it (nats.go v1.55.0 nats.go:2017-2020),
+// whose connection carries the shared wait's give-up
 // (testwait.GiveUpAt) as its deadline. nats.go runs a wss:// URL's TLS handshake on the dialled
 // connection (createConn, wsInitHandshake and makeTLSConn: nats.go:2549-2550, ws.go:598-603,
 // nats.go:2600-2601) before it sets its connect's own deadline (processConnectInit, nats.go:2944),
