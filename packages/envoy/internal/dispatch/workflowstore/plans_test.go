@@ -798,6 +798,44 @@ func TestIssuesPlansAnswersEachIssuesPlansOldestFirst(t *testing.T) {
 	}
 }
 
+// One run keeps one plan node, whose made_at is its first write's, and a later version replaces the
+// node's tasks whole, with a value tuple of the new tasks at the moment of its write. So the read
+// answers each version of the run's plan at the moment its own write made it, oldest first: the
+// metrics' fallback timeline then reads each mark by the version in force at its time, not the
+// whole run by the newest.
+func TestIssuesPlansAnswersEachVersionOfARunsPlanAtItsOwnTime(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	id, document := uuid.NewString(), uuid.NewString()
+	version := func(n int, steps ...string) PlanWrite {
+		return PlanWrite{ID: id, Issue: "LEG-1", Generation: new(int64(1)), Source: new(PlanSourceOwner),
+			Document: PlanDocument{ArtifactID: document, Version: n}, Tasks: []PlanTask{{ID: "a", Steps: steps}}}
+	}
+	putPlan(t, pool, version(1, "implementer", "tester", "reviewer"), minute(10))
+	putPlan(t, pool, version(2, "implementer", "reviewer", "tester"), minute(30))
+	got, err := IssuesPlans(context.Background(), pool, []string{"LEG-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plans := got["LEG-1"]
+	if len(plans) != 2 {
+		t.Fatalf("the read answered %d plans of LEG-1 (%v), want both versions of its one run", len(plans), plans)
+	}
+	for i, want := range []struct {
+		made    time.Time
+		version int
+		steps   []string
+	}{
+		{minute(10), 1, []string{"implementer", "tester", "reviewer"}},
+		{minute(30), 2, []string{"implementer", "reviewer", "tester"}},
+	} {
+		plan := plans[i]
+		if plan.Plan.ID != id || !plan.Made.Equal(want.made) || plan.Plan.Document == nil || plan.Plan.Document.Version != want.version ||
+			len(plan.Plan.Tasks) != 1 || !slices.Equal(plan.Plan.Tasks[0].Steps, want.steps) {
+			t.Fatalf("plan %d of LEG-1 is %s made %s, want version %d with steps %v made %s", i, planText(plan.Plan), plan.Made, want.version, want.steps, want.made)
+		}
+	}
+}
+
 // since and until bound the close: an issue closed at since is listed and one closed at until is
 // not.
 func TestProjectPlansFiltersOnClosedAt(t *testing.T) {
