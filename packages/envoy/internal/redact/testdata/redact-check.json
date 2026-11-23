@@ -492,6 +492,13 @@
         "why": "Answer.Decode's walk of the value a caller decodes an answer into, before it decodes: it finds what encoding/json would fill that no record of the answer reaches, reading each struct field encoding/json decodes, a box's none among them, so it descends into no box and reads no box's storage"
       },
       {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "function": "github.com/sjawhar/envoy/internal/redact.plainMember",
+        "operands": [],
+        "records_boxes": true,
+        "why": "Answer.Decode's walk of the value a caller decodes an answer into, before it decodes: it finds a member encoding/json would fill with the answer's text as it came, reading each struct field encoding/json fills, and goes into no type that decodes its JSON itself, the box among them, so it descends into no box and reads no box's storage"
+      },
+      {
         "file": "packages/daemon/internal/store/storetext/strings.go",
         "function": "github.com/sjawhar/legion/daemon/internal/store/storetext.holdsChange",
         "operands": [],
