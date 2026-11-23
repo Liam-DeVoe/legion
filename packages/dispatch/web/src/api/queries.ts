@@ -698,9 +698,9 @@ export function growProjectTimelineView(
 }
 
 /** One eval's detail read at its `version` (`GET /api/v1/projects/{key}/evals/{slug}`, the newest
- *  version alone): its method (`doc_text`). Keyed by the version the evals view answers, so a
- *  register write that writes a new version, which the view's delta carries, reads it again
- *  (plan D11a). */
+ *  version alone): its method (`doc_text`), its declared charts and its answer. Keyed by the
+ *  version the evals view answers, so a register write that writes a new version, which the
+ *  view's delta carries, reads it again (plan D11a). */
 export const evalDetailQuery = (project: string, slug: string, version: number) =>
   queryOptions({
     queryKey: ["evals", "detail", project, slug, version],
