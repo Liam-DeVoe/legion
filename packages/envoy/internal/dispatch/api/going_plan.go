@@ -645,6 +645,69 @@ func goingNewIssueRefusal(entry GoingAction, index int, arguments map[string]any
 	}
 }
 
+// goingReopenAlongside is the arguments of dispatch_issue_update that the issue route takes beside
+// a status that reopens a closed issue (issue_patch.go): the issue, the status, the rank's
+// neighbours and the components, and external_links where it adds no link the issue lacks
+// (goingReopenRefusal). The route refuses every other field of a closed issue, 409 ISSUE_CLOSED:
+// that field waits for a reopen.
+var goingReopenAlongside = map[string]bool{"issue": true, "status": true, "before": true, "after": true, "components": true, "external_links": true}
+
+// goingReopenRefusal says why a dispatch_issue_update change with arguments that reopens a closed
+// issue beside other fields is refused, "" where it is not: a status other than done, on an issue
+// whose read, made through read as the person, holds a closed_at, beside a field the issue route
+// refuses on a closed issue (goingReopenAlongside), which its row would be refused 409
+// ISSUE_CLOSED for when it ran. A person on the issue page reopens the issue first and then
+// changes its fields, so the words tell the model to propose the same: the reopen alone, then the
+// other fields as a second change whose needs name the first. A reopen of its status alone, and a
+// change of an open issue, pass.
+func goingReopenRefusal(ctx context.Context, read goingReader, arguments map[string]any) (string, error) {
+	status, reopens := arguments["status"].(string)
+	if !reopens || strings.TrimSpace(status) == "done" {
+		return "", nil
+	}
+	var others []string
+	for _, argument := range slices.Sorted(maps.Keys(arguments)) {
+		if !goingReopenAlongside[argument] {
+			others = append(others, argument)
+		}
+	}
+	links, _ := arguments["external_links"].([]any)
+	if len(others) == 0 && len(links) == 0 {
+		return "", nil
+	}
+	key := goingText(arguments, "issue")
+	var issue struct {
+		Key           string               `json:"key"`
+		ClosedAt      *string              `json:"closed_at"`
+		ExternalLinks []model.ExternalLink `json:"external_links"`
+	}
+	if err := read.get(ctx, goingIssuePath(key), &issue); err != nil {
+		return "", err
+	}
+	if issue.ClosedAt == nil {
+		return "", nil
+	}
+	for _, link := range links {
+		address, _ := link.(string)
+		if !slices.ContainsFunc(issue.ExternalLinks, func(held model.ExternalLink) bool { return held.URL == address }) {
+			others = append(others, "external_links")
+			break
+		}
+	}
+	if len(others) == 0 {
+		return "", nil
+	}
+	if issue.Key != "" {
+		key = issue.Key
+	}
+	reopen, err := json.Marshal(map[string]string{"issue": key, "status": status})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s is closed, and Dispatch reopens an issue only by a change of its status alone: propose the reopen, dispatch_issue_update with %s, "+
+		"as one change, then the change of %s as a second change whose needs name the first", key, reopen, strings.Join(others, ", ")), nil
+}
+
 // goingNewIssueApprovalRefusal says why the first value of arguments, the values row runs with
 // once the person's edits are put in, that names a new issue of its plan where the row may not
 // name one (goingMisplacedNewIssueOf) refuses the person's approval, "" for none, in the words the
@@ -714,9 +777,11 @@ func goingNewIssueShown(create goingPlanRowStored, edited map[string]any) string
 
 // planCall is a plan call (agentwire.KindPlan): the run's model proposes its plan, which the
 // server keeps with its rows waiting. Each change must name a write tool, need only changes before
-// it, name a new issue of the plan ("$N") only where it may (goingNewIssueRefusal), and hold
-// arguments its tool's schema and translation take, over an item the person may read; the first
-// that does not refuses the plan CALL_REFUSED, naming the change and why, which the model is told.
+// it, name a new issue of the plan ("$N") only where it may (goingNewIssueRefusal), hold
+// arguments its tool's schema and translation take, over an item the person may read, and, for an
+// update of an issue, not reopen a closed issue beside a field its route refuses there
+// (goingReopenRefusal); the first that does not refuses the plan CALL_REFUSED, naming the change
+// and why, which the model is told.
 // A send to an agent session is kept naming the session by its id and showing the issue it is
 // posted on (goingPlaceSend). A run whose latest plan still waits for its person, or has rows to
 // run, is refused another. A new-issue run's plan is one create of an issue, with the deployment's
@@ -793,6 +858,17 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 			refusal := goingCallRefusal(change.Tool, err)
 			refusal.Message = fmt.Sprintf("change %d: %s", index, refusal.Message)
 			return agentwire.CallAnswer{}, refusal
+		}
+		if change.Tool == "dispatch_issue_update" {
+			why, err := goingReopenRefusal(ctx, goingReader{doer: doer}, arguments)
+			if err != nil {
+				refusal := goingCallRefusal(change.Tool, err)
+				refusal.Message = fmt.Sprintf("change %d: %s", index, refusal.Message)
+				return agentwire.CallAnswer{}, refusal
+			}
+			if why != "" {
+				return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %s", index, change.Tool, why)
+			}
 		}
 		encoded, err := json.Marshal(arguments)
 		if err != nil {

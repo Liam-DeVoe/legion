@@ -104,7 +104,9 @@ type toolFrame struct {
 // bar shows while the call runs, and, on a reply that ends the run's turn, how many tool results
 // the run withheld from the model (withhold), which the bar says under the answer, and whether its
 // answer is a question the run needs the person to answer before it can go on (ask_person), false
-// on every other reply. It says where the model call's time went too (modelCall): the
+// on every other reply. A reply in prose that the guard held back (saveNoPlan) carries no prose and
+// NoPlan: the bar adds a reply of no prose to no answer (web features/going/run-frames.ts), so the
+// person never reads it. It says where the model call's time went too (modelCall): the
 // milliseconds from its request to its last token and to its first token of prose, left out for a
 // reply of tool calls alone, how long the agent's pacer held it, the tokens of its prompt, those of
 // the provider's cache included, of its reply, its reasoning among them, and of that reasoning,
@@ -117,6 +119,7 @@ type replyFrame struct {
 	Labels         []string `json:"labels"`
 	Withheld       int      `json:"withheld,omitempty"`
 	WaitsForPerson bool     `json:"waits_for_person"`
+	NoPlan         bool     `json:"no_plan,omitempty"`
 	// ModelMS is the milliseconds from the call's request to its last token, the pacer's hold of
 	// it (PaceMS) included.
 	ModelMS int64 `json:"model_ms"`
@@ -150,8 +153,12 @@ var errStepTaken = errors.New("the step's model call finished and was saved")
 // chat model's content filter stopped, which is not saved: the step is made again (withhold).
 var errReplyFiltered = errors.New("the chat model's content filter stopped the step's reply")
 
-// finishContentFilter is agentloop.Step.Finish of a reply the content filter stopped.
-const finishContentFilter = "content-filter"
+// finishContentFilter is agentloop.Step.Finish of a reply the content filter stopped, and
+// finishLength that of a reply cut at its output tokens.
+const (
+	finishContentFilter = "content-filter"
+	finishLength        = "length"
+)
 
 // worker is one claimed run of the agent's: the run, its level, what it has spent, its history,
 // the time it took the run's turn, or the agent's own time now where a test sets one
@@ -375,7 +382,9 @@ func (w *worker) readPage() {
 }
 
 // settled reports whether the run's saved steps already end its turn: a last step that answered
-// with no tool call, or that proposed a plan, which waits for its person.
+// with no tool call, or that proposed a plan, which waits for its person. A reply in prose that
+// the guard held back (saveNoPlan) ends no turn: a worker that starts from it makes the next step,
+// whose model is told that nothing changed.
 func (w *worker) settled() (bool, string, string) {
 	if len(w.history) == 0 {
 		return false, "", ""
@@ -387,7 +396,7 @@ func (w *worker) settled() (bool, string, string) {
 	switch last.Kind {
 	case agentwire.StepModel:
 		var body modelBody
-		if json.Unmarshal(last.Body, &body) == nil && len(body.Calls) == 0 {
+		if json.Unmarshal(last.Body, &body) == nil && len(body.Calls) == 0 && !body.NoPlan {
 			return true, agentwire.StateDone, ""
 		}
 	case agentwire.StepTool:
@@ -413,11 +422,12 @@ type stepOutcome struct {
 // the model call streamed so far (OnText) on the first, and is saved as it ends (toolRun); the
 // model call is saved once its tools ran (OnStep), with the times runModel keeps of it
 // (modelCall). The call asks for no structured reply: a reply that calls no tool is the answer in
-// prose, and one that calls ask_person ends the turn with its question (saveReply). The watchdog
-// gives up the run when the step runs past its model call's time and watchdogGrace. A call the
-// chat model's content filter refused, or whose reply it stopped, saves nothing, and the step is
-// made again (withhold). The run's last model call, which is offered no tool, is told so
-// (lastCallNote).
+// prose, and one that calls ask_person ends the turn with its question (saveReply). A reply in
+// prose in a turn that holds no plan is saved once the step's call returned, as the guard decides
+// (endProse): it ends the turn, or it is held back and the turn goes on. The watchdog gives up the
+// run when the step runs past its model call's time and watchdogGrace. A call the chat model's
+// content filter refused, or whose reply it stopped, saves nothing, and the step is made again
+// (withhold). The run's last model call, which is offered no tool, is told so (lastCallNote).
 func (w *worker) step() stepOutcome {
 	messages, err := conversation(w.run, lastWhole(w.history), w.withheld, w.now)
 	if err != nil {
@@ -426,6 +436,7 @@ func (w *worker) step() stepOutcome {
 	base := w.next
 	var finish string
 	var ends bool
+	var prose *proseReply
 	w.proposed.Store(false)
 	request := w.level.request(w.agent.config.Model, w.used)
 	if request.Bounds.Calls == 1 {
@@ -439,7 +450,7 @@ func (w *worker) step() stepOutcome {
 			return errReplyFiltered
 		}
 		finish = step.Finish
-		ends = w.saveReply(base, step, w.inFlight.Load())
+		ends, prose = w.saveReply(base, step, w.inFlight.Load())
 		return errStepTaken
 	}
 	request.OnText = func(delta string) error {
@@ -456,10 +467,12 @@ func (w *worker) step() stepOutcome {
 	case errors.Is(err, errStepTaken):
 		w.filterRefused = false
 		switch {
-		case finish == "length":
+		case finish == finishLength:
 			return stepOutcome{state: agentwire.StateStopped, reason: w.level.cut(w.name), offers: []string{agentwire.OfferContinue}}
 		case w.proposed.Load():
 			return stepOutcome{state: agentwire.StateWaiting}
+		case prose != nil:
+			return w.endProse(prose)
 		case ends:
 			return stepOutcome{state: agentwire.StateDone}
 		}
@@ -516,8 +529,9 @@ func (w *worker) withhold(detail string) stepOutcome {
 
 // lastCallNote is what the run's last model call is told, which agentloop offers no tool: a model
 // that is not told so writes that it will read more, and ends the turn without an answer, or
-// repeats that until its output tokens are spent.
-const lastCallNote = "This is the last model call this run's level allows, and it is offered no tool: answer the person now, from what the results above hold, and say what you did not read. Write no promise to read more."
+// repeats that until its output tokens are spent. A change the words ask for can no longer be
+// proposed in that call, so the answer says nothing changed and why, rather than that it is made.
+const lastCallNote = "This is the last model call this run's level allows, and it is offered no tool: answer the person now, from what the results above hold, and say what you did not read. Write no promise to read more. Where the words ask for a change that no plan of this run proposed, say that nothing changed and what stopped it."
 
 // withLastCallNote is messages with lastCallNote said as the person's last words after them, in
 // a message of their own or added to the person's last message.
@@ -633,22 +647,22 @@ func faultDetail(detail string) string {
 
 // saveReply saves step, the model call of the step numbered base, and answers the tools it
 // called, and reports whether the reply ends the run's turn: it calls no tool, or it asks the
-// person something (ask_person). A call of a tool the run does not have is saved marked unknown
-// (toolCall.Unknown): the model made the name up, and a later step reads it as such rather than
-// as a tool of a later build. An ask_person call is saved as no call, and its question as the
-// reply's text, which the model reads in its later history as the answer of its turn; a question
-// with no words leaves the reply's prose as its text. The frame of a reply that asks carries the
-// question as the answer, names no call, so the bar draws no line of the ask, and waits for the
-// person; the calls beside it ran, and their own frames drew their lines. A reply that proposed a
-// plan waits for the plan, not for a question. A reply that ends the run's turn where the run
-// withheld tool results from the model saves the notice of them (withheldTold) after its text,
-// which the model reads in its later history; its frame carries the text alone and how many
-// results were withheld, which the bar says in its own words. Its frame says where call, the
-// model call in flight, spent its time, the pacer's hold of it among that, the tokens of step's
-// prompt, reply and reasoning, the tokens the pacer reserved for it, and the tokens the pacer
-// charged it in the end: what it drew for the call, or what the call spent where that is more,
-// as runModel charges it (going.Pacer.Owe).
-func (w *worker) saveReply(base int, step agentloop.Step, call *modelCall) bool {
+// person something (ask_person). A reply in prose - no call, no ask - that the provider did not
+// cut, in a turn that holds no plan (turnSoFar), is not saved here: saveReply answers it, and the
+// guard saves it once the step's call returned (endProse), since a reply that says a change is
+// made, where no plan was proposed, must not reach the person as the answer. A call of a tool the
+// run does not have is saved marked unknown (toolCall.Unknown): the model made the name up, and a
+// later step reads it as such rather than as a tool of a later build. An ask_person call is saved
+// as no call, and its question as the reply's text, which the model reads in its later history as
+// the answer of its turn; a question with no words leaves the reply's prose as its text. The frame
+// of a reply that asks carries the question as the answer, names no call, so the bar draws no line
+// of the ask, and waits for the person; the calls beside it ran, and their own frames drew their
+// lines. A reply that proposed a plan waits for the plan, not for a question. Its frame says where
+// call, the model call in flight, spent its time, the pacer's hold of it among that, the tokens of
+// step's prompt, reply and reasoning, the tokens the pacer reserved for it, and the tokens the
+// pacer charged it in the end: what it drew for the call, or what the call spent where that is
+// more, as runModel charges it (going.Pacer.Owe).
+func (w *worker) saveReply(base int, step agentloop.Step, call *modelCall) (bool, *proseReply) {
 	took, first := call.ended(time.Now())
 	held, reserved, drawn := call.pacing()
 	var body modelBody
@@ -686,28 +700,42 @@ func (w *worker) saveReply(base int, step agentloop.Step, call *modelCall) bool 
 	if len(questions) > 0 {
 		body.Text = strings.Join(questions, "\n\n")
 	}
-	ends := asked || len(tools) == 0
-	waits := asked && !w.proposed.Load()
-	prose, withheld := body.Text, 0
-	if len(w.withheld) > 0 && (ends || slices.Contains(tools, toolProposePlan)) {
-		body.Text = strings.TrimSpace(body.Text + withheldTold(w.withheld))
-		withheld = len(w.withheld)
-	}
 	body.Output = step.Usage.Output
-	line := note(body.Text)
-	if len(tools) > 0 {
-		line = note(fmt.Sprintf("%s [calls %s]", body.Text, strings.Join(tools, ", ")))
-	}
-	reply := replyFrame{Step: base, Text: prose, Tools: tools, Labels: labels, Withheld: withheld, WaitsForPerson: waits,
+	waits := asked && !w.proposed.Load()
+	reply := replyFrame{Step: base, Tools: tools, Labels: labels, WaitsForPerson: waits,
 		ModelMS: took.Milliseconds(), PaceMS: held.Milliseconds(), FirstTokenMS: first.Milliseconds(),
 		InputTokens: step.Usage.Input + step.Usage.CacheRead + step.Usage.CacheWrite, OutputTokens: step.Usage.Output,
 		ReasoningTokens: step.Usage.Reasoning, ReservedTokens: reserved, ChargedTokens: max(drawn, going.SpentTokens(step.Usage))}
 	if waits {
 		reply.Tools, reply.Labels = []string{}, []string{}
 	}
+	if !asked && len(tools) == 0 && step.Finish != finishLength {
+		if planned, _ := w.turnSoFar(); !planned {
+			return true, &proseReply{body: body, frame: reply}
+		}
+	}
+	ends := asked || len(tools) == 0
+	w.saveModel(body, reply, tools, ends || slices.Contains(tools, toolProposePlan))
+	return ends, nil
+}
+
+// saveModel saves body, a model step, with reply, its frame, which carries body's text. A reply
+// that ends the run's turn or proposes a plan (told), where the run withheld tool results from the
+// model, saves the notice of them (withheldTold) after its text, which the model reads in its
+// later history; its frame carries the text alone and how many results were withheld, which the
+// bar says in its own words. The step's note is its text, with the tools it called.
+func (w *worker) saveModel(body modelBody, reply replyFrame, tools []string, told bool) {
+	reply.Text = body.Text
+	if len(w.withheld) > 0 && told {
+		body.Text = strings.TrimSpace(body.Text + withheldTold(w.withheld))
+		reply.Withheld = len(w.withheld)
+	}
+	line := note(body.Text)
+	if len(tools) > 0 {
+		line = note(fmt.Sprintf("%s [calls %s]", body.Text, strings.Join(tools, ", ")))
+	}
 	frame, _ := json.Marshal(reply)
-	w.save(agentwire.StepRequest{Step: base, Kind: agentwire.StepModel, Note: line, Frames: []agentwire.Frame{{Name: frameReply, Data: frame}}}, body)
-	return ends
+	w.save(agentwire.StepRequest{Step: reply.Step, Kind: agentwire.StepModel, Note: line, Frames: []agentwire.Frame{{Name: frameReply, Data: frame}}}, body)
 }
 
 // withheldTold is what a reply that ends the run's turn - an answer, or a plan proposed - adds for

@@ -1,0 +1,358 @@
+package agent
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/going/agent/agenttest"
+	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/logtest"
+)
+
+// verdict is the check's answer, as the chat model writes the structured reply it asks for.
+func verdict(answer string) agenttest.Reply {
+	return agenttest.Reply{Text: `{"verdict":"` + answer + `"}`}
+}
+
+// checkRequests is the guard's checks of a reply in prose among fake's requests, in order.
+func checkRequests(fake *agenttest.Model) []*agenttest.Request {
+	var checks []*agenttest.Request
+	for _, request := range fake.Requests() {
+		if isCheck(request) {
+			checks = append(checks, request)
+		}
+	}
+	return checks
+}
+
+// reopenPlan is a propose_plan call of one change, the reopen of ACME-7.
+var reopenPlan = agenttest.Call{Name: toolProposePlan, Arguments: map[string]any{
+	"summary": "Reopen ACME-7.",
+	"changes": []any{map[string]any{"tool": dispatchIssueUpdate, "arguments": map[string]any{"issue": "ACME-7", "status": "todo"}}},
+}}
+
+// keptPlan answers every call of the run as the server keeps a plan: plan 1, its rows waiting.
+func keptPlan(agentwire.CallRequest) agentwire.CallAnswer {
+	return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"plan":1,"rows":[]}`)}
+}
+
+// workClaimed works one turn of run on model, at the server client calls.
+func workClaimed(t *testing.T, model agentloop.Model, client agentwire.Client, run *agentwire.ClaimedRun) {
+	t.Helper()
+	a := &agent{client: client, config: Config{Model: model}, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+	newWorker(t.Context(), a, run, func() {}).work()
+}
+
+// replyFrames is the reply frame of each saved step of the run, in order.
+func (s *fakeServer) replyFrames(t *testing.T) []replyFrame {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var replies []replyFrame
+	for _, step := range s.steps {
+		for _, frame := range step.Frames {
+			if frame.Name != frameReply {
+				continue
+			}
+			var reply replyFrame
+			if err := json.Unmarshal(frame.Data, &reply); err != nil {
+				t.Fatalf("step %d's reply frame does not read: %v", step.Step, err)
+			}
+			replies = append(replies, reply)
+		}
+	}
+	return replies
+}
+
+// messageText is the text of one message of a request, its content a string or a list of parts.
+func messageText(message map[string]any) string {
+	switch content := message["content"].(type) {
+	case string:
+		return content
+	case []any:
+		var parts []string
+		for _, part := range content {
+			if part, ok := part.(map[string]any); ok {
+				if text, ok := part["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
+}
+
+// toldAfter reports whether request gives the model prose as its own reply, and the person's
+// message right after it holds note.
+func toldAfter(request *agenttest.Request, prose, note string) bool {
+	messages := request.Messages()
+	for at, message := range messages {
+		if message["role"] == "assistant" && messageText(message) == prose {
+			return at+1 < len(messages) && messages[at+1]["role"] == "user" && strings.Contains(messageText(messages[at+1]), note)
+		}
+	}
+	return false
+}
+
+// TestAChangeAnsweredInProseIsHeldBackAndThenProposed: change-16 of the eval, asked to reopen
+// OPS-7 as todo and set it to P0, answered on its first model call "Reopening OPS-7 as todo and
+// setting it to P0." and proposed no plan, and the run ended done with nothing changed. Such a
+// reply is checked before it ends the turn: one call of the agent's chat model, at low effort,
+// offered no tool and asked for a structured answer, is given the person's words and the reply,
+// written as no step writes the words. The reply it flags is held back: saved, so the model reads
+// what it wrote, with the note that nothing changed after it, and its frame carries no prose, so
+// the person never reads it. The next step proposes the plan, and the run waits.
+func TestAChangeAnsweredInProseIsHeldBackAndThenProposed(t *testing.T) {
+	const words = "reopen ACME-7 as todo and set it to P0"
+	const prose = "Reopening ACME-7 as todo and setting it to P0."
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		switch {
+		case isCheck(request):
+			return verdict(noPlanFlagged)
+		case strings.Contains(request.Text(), noPlanNote):
+			return agenttest.Reply{Calls: []agenttest.Call{reopenPlan}}
+		}
+		return agenttest.Reply{Text: prose}
+	})
+	server, client := newFakeServer(t, keptPlan)
+	workRun(t, fake.Model(), client, words)
+	end, bodies := server.end(t)
+	if end.State != agentwire.StateWaiting {
+		t.Fatalf("the run ended %s with %q, want waiting for the plan it proposed once its prose was held back", end.State, end.Reason)
+	}
+	steps, checks := stepRequests(fake), checkRequests(fake)
+	if len(steps) != 2 || len(checks) != 1 {
+		t.Fatalf("the run made %d steps' calls and %d checks, want the prose, its one check and the plan", len(steps), len(checks))
+	}
+	check := checks[0]
+	if text := check.Text(); !strings.Contains(text, words) || !strings.Contains(text, prose) || strings.Contains(text, agenttest.Asked) {
+		t.Errorf("the check is given %q, want the words and the reply, and not as a step gives the words", text)
+	}
+	if effort, tools := check.Field("reasoning_effort"), check.Field("tools"); effort != noPlanEffort || tools != nil {
+		t.Errorf("the check asks for effort %v with the tools %v, want %s and none", effort, tools, noPlanEffort)
+	}
+	if tokens := check.Field("max_tokens"); tokens != float64(noPlanOutputTokens) {
+		t.Errorf("the check asks for max_tokens %v, want %d", tokens, noPlanOutputTokens)
+	}
+	if !toldAfter(steps[1], prose, noPlanNote) {
+		t.Errorf("the step after the held reply is given %v, want the reply as the model's own and the note that nothing changed after it", steps[1].Messages())
+	}
+	if len(bodies) != 2 || !bodies[0].NoPlan || bodies[0].Text != prose || bodies[1].NoPlan {
+		t.Errorf("the run saved the model steps %+v, want the prose marked held back and then the plan's", bodies)
+	}
+	replies := server.replyFrames(t)
+	if len(replies) != 2 || !replies[0].NoPlan || replies[0].Text != "" {
+		t.Fatalf("the reply frames are %+v, want the held reply's first, marked and with no prose", replies)
+	}
+	for _, reply := range replies {
+		if strings.Contains(reply.Text, prose) {
+			t.Errorf("the reply frame %+v carries the held prose, which the person would read", reply)
+		}
+	}
+}
+
+// TestAReplyFlaggedTwiceEndsSayingNothingChanged: the guard holds back one reply of a turn. A
+// reply flagged again ends the turn done, with the sentence that nothing changed before its text,
+// in the saved reply and in the frame the person reads, so the answer never says a change was
+// made.
+func TestAReplyFlaggedTwiceEndsSayingNothingChanged(t *testing.T) {
+	const prose = "ACME-17 and ACME-18 each wait on nothing now. This sets both to wait on ACME-14."
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		if isCheck(request) {
+			return verdict(noPlanFlagged)
+		}
+		return agenttest.Reply{Text: prose}
+	})
+	server, client := newFakeServer(t, keptPlan)
+	workRun(t, fake.Model(), client, "make ACME-17 and ACME-18 wait on ACME-14")
+	end, bodies := server.end(t)
+	want := noPlanSaid + "\n\n" + prose
+	if end.State != agentwire.StateDone || len(bodies) != 2 || !bodies[0].NoPlan || bodies[1].NoPlan || bodies[1].Text != want {
+		t.Fatalf("the run ended %s with %q, saving %+v; want done, the first reply held back and the second saved as %q", end.State, end.Reason, bodies, want)
+	}
+	if frame := server.lastReply(t); frame.Text != want || frame.NoPlan {
+		t.Errorf("the answer's frame carries %q (held back %t), want %q", frame.Text, frame.NoPlan, want)
+	}
+	if steps, checks := len(stepRequests(fake)), len(checkRequests(fake)); steps != 2 || checks != 2 {
+		t.Errorf("the run made %d steps' calls and %d checks, want 2 of each", steps, checks)
+	}
+}
+
+// TestAReplyFlaggedOnTheLastCallEndsSayingNothingChanged: the run's last model call is offered no
+// tool, so no call is left to mend a reply flagged there: it ends the turn done with the sentence
+// that nothing changed before it. The check is no model call of the level: the turn spent one.
+func TestAReplyFlaggedOnTheLastCallEndsSayingNothingChanged(t *testing.T) {
+	const prose = "The planner's ask is answered: column order is saved for each person."
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		if isCheck(request) {
+			return verdict(noPlanFlagged)
+		}
+		return agenttest.Reply{Text: prose}
+	})
+	server, client := newFakeServer(t, keptPlan)
+	workClaimed(t, fake.Model(), client, &agentwire.ClaimedRun{ID: "run-1", Words: "answer the planner's ask on ACME-3", Level: "fast", Mode: "ask",
+		LeaseToken: "lease-1", BudgetUsed: agentwire.Budget{Calls: Levels["fast"].Calls - 1}})
+	end, bodies := server.end(t)
+	want := noPlanSaid + "\n\n" + prose
+	if end.State != agentwire.StateDone || len(bodies) != 1 || bodies[0].Text != want || bodies[0].NoPlan {
+		t.Fatalf("the run ended %s with %q, saving %+v; want done with the one reply %q", end.State, end.Reason, bodies, want)
+	}
+	if frame := server.lastReply(t); frame.Text != want {
+		t.Errorf("the answer's frame carries %q, want %q", frame.Text, want)
+	}
+	steps, checks := stepRequests(fake), checkRequests(fake)
+	if len(steps) != 1 || steps[0].Field("tool_choice") != "none" || len(checks) != 1 {
+		t.Errorf("the run made %d steps' calls, the last with tool_choice %v, and %d checks; want the last call, offered no tool, and its check",
+			len(steps), steps[0].Field("tool_choice"), len(checks))
+	}
+	if end.Used.Calls != 1 {
+		t.Errorf("the turn spent %d calls, want 1: the check is no call of the level", end.Used.Calls)
+	}
+}
+
+// TestAnAnswerTheCheckPassesEndsTheTurnAsItIs: a plain answer to a question is checked, passes,
+// and ends the turn done as the model wrote it, with no step after it.
+func TestAnAnswerTheCheckPassesEndsTheTurnAsItIs(t *testing.T) {
+	const prose = "[ACME-7](dispatch://ACME-7) is assigned to kim@example.com."
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		if isCheck(request) {
+			return verdict(noPlanPasses)
+		}
+		return agenttest.Reply{Text: prose}
+	})
+	server, client := newFakeServer(t, keptPlan)
+	workRun(t, fake.Model(), client, "who is ACME-7 assigned to")
+	end, bodies := server.end(t)
+	if end.State != agentwire.StateDone || len(bodies) != 1 || bodies[0].Text != prose || bodies[0].NoPlan {
+		t.Fatalf("the run ended %s with %q, saving %+v; want done with the answer as written", end.State, end.Reason, bodies)
+	}
+	if frame := server.lastReply(t); frame.Text != prose || frame.NoPlan {
+		t.Errorf("the answer's frame carries %q (held back %t), want %q", frame.Text, frame.NoPlan, prose)
+	}
+	steps, checks := stepRequests(fake), checkRequests(fake)
+	if len(steps) != 1 || len(checks) != 1 || !strings.Contains(checks[0].Text(), prose) {
+		t.Errorf("the run made %d steps' calls and %d checks, want the answer and its one check", len(steps), len(checks))
+	}
+}
+
+// TestARunRestartedAfterAHeldReplyGoesOn: a worker that starts from saved steps whose last is a
+// reply the guard held back does not read it as the end of the turn: it makes the next step,
+// whose model is given the reply and the note that nothing changed. The turn already held a reply
+// back, so a reply flagged after the restart ends the turn saying nothing changed.
+func TestARunRestartedAfterAHeldReplyGoesOn(t *testing.T) {
+	const prose = "Reopening ACME-7 as todo and setting it to P0."
+	held, err := json.Marshal(modelBody{Text: prose, Calls: []toolCall{}, NoPlan: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := func() *agentwire.ClaimedRun {
+		return &agentwire.ClaimedRun{ID: "run-1", Words: "reopen ACME-7 as todo and set it to P0", Level: "fast", Mode: "ask", LeaseToken: "lease-1",
+			BudgetUsed: agentwire.Budget{Calls: 1},
+			History:    []agentwire.SavedStep{{Step: 1, Kind: agentwire.StepModel, Body: held, Note: note(noPlanSaid + " " + prose)}}}
+	}
+
+	t.Run("the next step proposes the plan", func(t *testing.T) {
+		fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return agenttest.Reply{Calls: []agenttest.Call{reopenPlan}} })
+		server, client := newFakeServer(t, keptPlan)
+		workClaimed(t, fake.Model(), client, restarted())
+		if end, _ := server.end(t); end.State != agentwire.StateWaiting {
+			t.Fatalf("the restarted run ended %s with %q, want waiting for the plan its next step proposed", end.State, end.Reason)
+		}
+		if steps := stepRequests(fake); len(steps) != 1 || !toldAfter(steps[0], prose, noPlanNote) {
+			t.Errorf("the restarted run made %d steps' calls, want one given the held reply and the note after it", len(steps))
+		}
+	})
+
+	t.Run("a reply flagged again ends saying nothing changed", func(t *testing.T) {
+		fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+			if isCheck(request) {
+				return verdict(noPlanFlagged)
+			}
+			return agenttest.Reply{Text: prose}
+		})
+		server, client := newFakeServer(t, keptPlan)
+		workClaimed(t, fake.Model(), client, restarted())
+		end, bodies := server.end(t)
+		if want := noPlanSaid + "\n\n" + prose; end.State != agentwire.StateDone || len(bodies) != 1 || bodies[0].Text != want {
+			t.Fatalf("the restarted run ended %s with %q, saving %+v; want done with %q: its turn held a reply back before", end.State, end.Reason, bodies, want)
+		}
+	})
+}
+
+// TestANewIssueRunsProseIsHeldBackWithNoCheck: new_issue-06 of the eval answered "OPS-21 already
+// tracks the noisy CPU alert at night, so I will not create a second issue." and filed nothing. A
+// new-issue run's words always ask to file, so its prose is held back with no check, and its model
+// is told to file the issue now; its next step proposes the issue.
+func TestANewIssueRunsProseIsHeldBackWithNoCheck(t *testing.T) {
+	const prose = "ACME-21 already tracks the noisy CPU alert at night, so I will not create a second issue."
+	file := agenttest.Call{Name: toolProposePlan, Arguments: map[string]any{
+		"summary": "File the noisy CPU alert.",
+		"changes": []any{map[string]any{"tool": "dispatch_issue", "arguments": map[string]any{"project": "ACME", "title": "The CPU alert is noisy at night"}}},
+	}}
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		if strings.Contains(request.Text(), newIssueNoPlanNote) {
+			return agenttest.Reply{Calls: []agenttest.Call{file}}
+		}
+		return agenttest.Reply{Text: prose}
+	})
+	server, client := newFakeServer(t, keptPlan)
+	workClaimed(t, fake.Model(), client, &agentwire.ClaimedRun{ID: "run-1", Words: "the CPU alert is noisy at night", Kind: agentwire.RunNewIssue,
+		Level: "fast", Mode: "ask", LeaseToken: "lease-1"})
+	end, bodies := server.end(t)
+	if end.State != agentwire.StateWaiting || len(bodies) != 2 || !bodies[0].NoPlan {
+		t.Fatalf("the run ended %s with %q, saving %+v; want the prose held back and then the issue proposed", end.State, end.Reason, bodies)
+	}
+	if checks := checkRequests(fake); len(checks) != 0 {
+		t.Errorf("the new-issue run made %d checks, want none", len(checks))
+	}
+	if steps := stepRequests(fake); len(steps) != 2 || !toldAfter(steps[1], prose, newIssueNoPlanNote) {
+		t.Errorf("the run made %d steps' calls, want the second given the prose and the note to file the issue now", len(steps))
+	}
+}
+
+// TestACheckThatFailsEndsTheTurnAsBefore: a check that draws no answer - the chat model refuses
+// it, or answers what does not read - does not stand between the person and the answer: the reply
+// ends the turn done as the model wrote it, and a warning names the run and the cause.
+func TestACheckThatFailsEndsTheTurnAsBefore(t *testing.T) {
+	const prose = "[ACME-7](dispatch://ACME-7) is closed."
+	for _, c := range []struct {
+		name  string
+		reply agenttest.Reply
+		cause string
+	}{
+		{name: "a check the model refuses", reply: agenttest.Reply{Status: http.StatusBadRequest}, cause: string(agentloop.FaultProviderError)},
+		{name: "a check whose answer does not read", reply: agenttest.Reply{Text: "It passes."}, cause: string(agentloop.FaultMalformed)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var log logtest.Buffer
+			logtest.SetDefault(t, slog.NewTextHandler(&log, nil))
+			fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+				if isCheck(request) {
+					return c.reply
+				}
+				return agenttest.Reply{Text: prose}
+			})
+			server, client := newFakeServer(t, keptPlan)
+			workRun(t, fake.Model(), client, "close ACME-7")
+			end, bodies := server.end(t)
+			if end.State != agentwire.StateDone || len(bodies) != 1 || bodies[0].Text != prose || bodies[0].NoPlan {
+				t.Fatalf("the run ended %s with %q, saving %+v; want done with the reply as written", end.State, end.Reason, bodies)
+			}
+			if frame := server.lastReply(t); frame.Text != prose {
+				t.Errorf("the answer's frame carries %q, want %q", frame.Text, prose)
+			}
+			if steps, checks := len(stepRequests(fake)), len(checkRequests(fake)); steps != 1 || checks == 0 {
+				t.Errorf("the run made %d steps' calls and %d checks, want the reply and its check", steps, checks)
+			}
+			warned := log.Lines("the check of a reply in prose failed")
+			if !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, c.cause) {
+				t.Errorf("the log holds %q, want a warning naming run-1 and the cause %s", warned, c.cause)
+			}
+		})
+	}
+}

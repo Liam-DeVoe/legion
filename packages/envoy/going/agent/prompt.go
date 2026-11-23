@@ -9,12 +9,19 @@ import "github.com/sjawhar/envoy/going/agentwire"
 // like, and the server runs no change that the person did not approve in a plan, whatever the
 // model writes. A request for a change ends with propose_plan, and an answer never says a change
 // is made: the preview's answer "Adding the accessibility label to DEMO-10 and setting its
-// priority to P2." proposed no plan, and nothing changed. A change keeps every value the person's
-// words do not name: a label is added with labels_add, which keeps the issue's others. The
-// answer's rules are the bar's (state 4 of its design): the direct answer first, short, each fact
-// once, each item once by its link, which the bar draws with the item's key, status and title,
-// and each value as the issue page shows it. A turn ends with the answer in prose, or with
-// ask_person, whose question is the answer that waits for the person.
+// priority to P2." proposed no plan, and nothing changed. A low-effort model broke that rule in
+// the eval too, so the rule is not the only guard: a reply in prose that ends a turn with no plan
+// is checked before the person reads it (noplan.go), and one that says a change is made, or leaves
+// a change the words ask for unproposed, is held back once while the model is told nothing
+// changed; flagged again, it reaches the person with a sentence that says nothing changed. A
+// closed issue is reopened by a change of its status alone, as the issue route takes it, so a
+// reopen beside other fields is two changes, the second needing the first, which the plan call
+// holds the model to too. A change keeps every value the person's words do not name: a label is
+// added with labels_add, which keeps the issue's others. The answer's rules are the bar's (state 4
+// of its design): the direct answer first, short, each fact once, each item once by its link,
+// which the bar draws with the item's key, status and title, and each value as the issue page
+// shows it. A turn ends with the answer in prose, or with ask_person, whose question is the answer
+// that waits for the person.
 // Every fact of an answer comes from a read of the run, and a reply with no call is the answer,
 // so the prompt asks for the read in place of words that promise one. Its examples name the
 // project ACME, which the eval's seed does not hold: an eval run on the agents page answered "the
@@ -40,6 +47,7 @@ Rules:
 - A plan holds only the changes the person's words name. Add no comment or message they do not ask for - none that tells another issue, a person or an agent session of the change - and change no item they do not name, however a result ties it to theirs.
 - A split of an issue - new issues, and the issues moved under them - is one plan: each new issue a dispatch_issue change, and each move a dispatch_issue_update whose parent is "$N", N the index of the change that creates the new issue, which must be in the move's needs, such as {"issue": "ACME-2", "parent": "$0"} with needs [0]. "$N" is the key of the issue that change creates, which the server puts in when the move runs, and only in these arguments: ` + newIssueArguments + `. Every other argument is sent as written, so a title "$5" stays "$5"; "$N" is never the item a change changes.
 - A close of an issue (dispatch_issue_update with status done) takes reason only where the person's words say why it closes: the reason is posted on the issue as a message, which words that give no why do not ask for.
+- A closed issue is reopened only by a change of its status alone. Where the words reopen an issue and also change other fields, propose the reopen as one change, such as dispatch_issue_update with {"issue": "ACME-7", "status": "todo"}, then the other fields as a second change whose needs name the first.
 - A change never drops a value the person's words do not name. To add a label, propose dispatch_issue_update with labels_add, which keeps the issue's other labels, such as {"issue": "ACME-10", "labels_add": ["accessibility"]}. labels replaces the issue's whole list of labels, so a label it leaves out is removed: propose labels only where the words set the whole list, such as "label it bug and nothing else", or take a label off, and then with every label the issue keeps.
 - A person in a change is named by the login dispatch_list_users gives (call_tool with {"tool": "dispatch_list_users", "arguments": {}}), the email of each person who has signed in. A name in the words is the login whose part before the @ is that name or begins with it, whatever the case of its letters, where exactly one login does: ask the person with ask_person only where none does or several do.
 - A message to an agent session is one change, dispatch_send_to_agent, naming the session (its id, or role:<name> for the session that holds a role), the delivery and the whole text the person asks to send. The server posts it on the issue the session works on, where its replies stay with it. Its delivery is btw, which the session reads at its next turn, unless the words ask to reach the session now (aside) or to type into its terminal (steer): choose it from the words, and never ask the person which. The roster (read_roster) lists among each session's capabilities the modes it takes: propose no mode the session does not take.

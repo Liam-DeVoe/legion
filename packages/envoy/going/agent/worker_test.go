@@ -178,6 +178,24 @@ func workPacedRun(t *testing.T, model agentloop.Model, pacer *going.Pacer, clien
 	newWorker(t.Context(), a, run, func() {}).work()
 }
 
+// isCheck reports whether request is the guard's check of a reply in prose (checkProse): the one
+// call of a run that asks for a structured answer, which no step's call does.
+func isCheck(request *agenttest.Request) bool {
+	return request.Field("response_format") != nil
+}
+
+// stepRequests is fake's requests that are the run's steps' model calls, in order: each but the
+// guard's checks of a reply in prose, which are no model call of the run's level.
+func stepRequests(fake *agenttest.Model) []*agenttest.Request {
+	var steps []*agenttest.Request
+	for _, request := range fake.Requests() {
+		if !isCheck(request) {
+			steps = append(steps, request)
+		}
+	}
+	return steps
+}
+
 // filterRefusal is the 400 an Azure deployment answers a prompt its content filter blocked with:
 // one stream chunk that stops for content_filter (chat-calls.log of the eval's handoff-02).
 const filterRefusal = `data: {"created":1,"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"content_filter","index":0,` +
@@ -230,7 +248,7 @@ func TestAContentFilterRefusalIsMadeAgainWithTheResultsWithheld(t *testing.T) {
 		if end.State != agentwire.StateDone {
 			t.Fatalf("the run ended %s with %q, want done", end.State, end.Reason)
 		}
-		requests := fake.Requests()
+		requests := stepRequests(fake)
 		if len(requests) != 3 {
 			t.Fatalf("the run made %d model calls, want 3: the search, the refused call and the same call again", len(requests))
 		}
@@ -250,7 +268,7 @@ func TestAContentFilterRefusalIsMadeAgainWithTheResultsWithheld(t *testing.T) {
 		if end.State != agentwire.StateDone {
 			t.Fatalf("the run ended %s with %q, want done", end.State, end.Reason)
 		}
-		requests := fake.Requests()
+		requests := stepRequests(fake)
 		if len(requests) != 4 {
 			t.Fatalf("the run made %d model calls, want 4: the search, the refused call, the same call refused again and its retry", len(requests))
 		}
@@ -304,7 +322,7 @@ func TestTheLastModelCallIsToldToAnswer(t *testing.T) {
 		BudgetUsed: agentwire.Budget{Calls: fast.Calls - 2}}
 	newWorker(t.Context(), a, run, func() {}).work()
 	end, _ := server.end(t)
-	requests := fake.Requests()
+	requests := stepRequests(fake)
 	if end.State != agentwire.StateDone || len(requests) != 2 {
 		t.Fatalf("the run ended %s with %q after %d model calls, want done after 2", end.State, end.Reason, len(requests))
 	}
@@ -506,8 +524,8 @@ func TestARunLeavesNoGoroutineBehind(t *testing.T) {
 	})
 	running := goleak.IgnoreCurrent()
 	workRun(t, fake.Model(), client, "ask the architect to review it")
-	if end, _ := server.end(t); end.State != agentwire.StateDone || fake.Count() != 4 {
-		t.Fatalf("the run ended %s with %q after %d model calls, want done after 4", end.State, end.Reason, fake.Count())
+	if end, _ := server.end(t); end.State != agentwire.StateDone || len(stepRequests(fake)) != 4 {
+		t.Fatalf("the run ended %s with %q after %d model calls, want done after 4", end.State, end.Reason, len(stepRequests(fake)))
 	}
 	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 	goleak.VerifyNone(t, running)
@@ -535,8 +553,8 @@ func TestAFilterRefusalSpendsNoCallOfTheBudget(t *testing.T) {
 		BudgetUsed: agentwire.Budget{Calls: Levels["fast"].Calls - 1}}
 	newWorker(t.Context(), a, run, func() {}).work()
 	end, replies := server.end(t)
-	if end.State != agentwire.StateDone || len(replies) != 1 || fake.Count() != 2 {
-		t.Fatalf("the run ended %s with %q after %d model calls and %d replies, want done after the refused call and its answer", end.State, end.Reason, fake.Count(), len(replies))
+	if end.State != agentwire.StateDone || len(replies) != 1 || len(stepRequests(fake)) != 2 {
+		t.Fatalf("the run ended %s with %q after %d model calls and %d replies, want done after the refused call and its answer", end.State, end.Reason, len(stepRequests(fake)), len(replies))
 	}
 	if end.Used.Calls != 1 {
 		t.Errorf("the turn spent %d calls, want 1: the refused call spends none", end.Used.Calls)
@@ -827,11 +845,18 @@ func spentPacer(wait time.Duration) *going.Pacer {
 // TestACallThatSpendsPastItsDrawIsChargedTheRest: a model call whose prompt the model counts at
 // more tokens than the pacer drew for it is charged the rest as it ends: its reply frame says the
 // pacer charged it all it spent, and the pacer's share holds what it held less what each call was
-// charged in the end, to the token. A call that spent less than its draw is charged its draw.
+// charged in the end, to the token, the guard's check of the answer in prose among them
+// (noplan.go). A call that spent less than its draw is charged its draw.
 func TestACallThatSpendsPastItsDrawIsChargedTheRest(t *testing.T) {
-	const prompt, share = 50_000, 1_000_000
+	const prompt, checkPrompt, share = 50_000, 20_000, 1_000_000
 	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
-		if len(request.ToolResults()) > 0 {
+		switch {
+		case isCheck(request):
+			// The check spends past its draw too, so it is charged all it spent.
+			reply := verdict(noPlanPasses)
+			reply.Prompt, reply.Output = checkPrompt, 2
+			return reply
+		case len(request.ToolResults()) > 0:
 			return agenttest.Reply{Text: "DEMO-15 has no comments.", Output: 7}
 		}
 		return agenttest.Reply{Calls: []agenttest.Call{{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-15"}}}, Prompt: prompt, Output: 3}
@@ -879,9 +904,14 @@ func TestACallThatSpendsPastItsDrawIsChargedTheRest(t *testing.T) {
 		_, err := model.Endpoint.Token(ctx)
 		return err
 	}
-	left := share - called.ChargedTokens - answer.ChargedTokens
+	if checks := checkRequests(fake); len(checks) != 1 {
+		t.Fatalf("the run made %d checks of its answer, want 1", len(checks))
+	}
+	checked := checkPrompt + 2
+	left := share - called.ChargedTokens - answer.ChargedTokens - checked
 	if err := draw(left); err != nil {
-		t.Fatalf("a draw of the %d tokens the share holds less the %d and %d the calls were charged answered %v, want it made: the share holds less", left, called.ChargedTokens, answer.ChargedTokens, err)
+		t.Fatalf("a draw of the %d tokens the share holds less the %d and %d the calls were charged and the %d of the check answered %v, want it made: the share holds less",
+			left, called.ChargedTokens, answer.ChargedTokens, checked, err)
 	}
 	if err := draw(1); !errors.Is(err, going.ErrQuotaPastDeadline) {
 		t.Errorf("a draw of a token more answered %v, want %v: the share held more than it less what the calls were charged", err, going.ErrQuotaPastDeadline)
@@ -897,7 +927,7 @@ func TestTheReservationCountsTheToolsACallSends(t *testing.T) {
 	fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return agenttest.Reply{Text: "DEMO-15 is open."} })
 	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer { return agentwire.CallAnswer{Status: http.StatusOK} })
 	workRun(t, fake.Model(), client, "what is DEMO-15")
-	requests := fake.Requests()
+	requests := stepRequests(fake)
 	if len(requests) != 1 {
 		t.Fatalf("the run made %d model calls, want 1", len(requests))
 	}
@@ -993,7 +1023,7 @@ func TestThePagesIssueIsReadBeforeTheFirstModelCall(t *testing.T) {
 			t.Errorf("the run's first call is %+v, want step 1, call 1: dispatch_read of DEMO-1", first)
 		}
 		read := storedDataNote + "\nstep 1, call 1: status 200\n" + issue
-		for at, request := range fake.Requests() {
+		for at, request := range stepRequests(fake) {
 			if !strings.Contains(request.Text(), read) || strings.Contains(strings.Join(request.ToolResults(), "\n"), "Board redesign") {
 				t.Errorf("model call %d is not given the page's issue in the person's message, marked as data: %q", at+1, request.Text())
 			}
@@ -1030,14 +1060,15 @@ func TestThePagesIssueIsReadBeforeTheFirstModelCall(t *testing.T) {
 
 // TestAQuestionToThePersonEndsTheTurn: the preview's model, offered on every model call beside its
 // tools a structured reply that ends the turn, ended two of six requests for a change with an
-// answer that said the change was made, and proposed no plan. No model call of a run carries a
+// answer that said the change was made, and proposed no plan. No step's model call carries a
 // final schema now (agentloop.Request.Final nil, which sends no response_format), and the model
 // asks the person with a tool: a reply that calls ask_person ends the turn done, and its reply
 // frame carries the question as its text, names no call, so the bar draws no line of the ask, and
 // waits for the person. No tool step is saved for the ask, and no frame of a call names it; the
 // question is the saved reply's text and its note, which the run's later history and a later
 // turn of the conversation give the model as the answer of that turn. A read beside the ask ran,
-// and keeps its own step. An answer in prose waits for nobody.
+// and keeps its own step. An answer in prose waits for nobody, once the guard's check of it
+// (noplan.go), the one call of a run that asks for a structured answer, passes it.
 func TestAQuestionToThePersonEndsTheTurn(t *testing.T) {
 	const question = "Which of [DEMO-7](dispatch://DEMO-7) and [DEMO-8](dispatch://DEMO-8) should move to done?"
 	const prose = "[DEMO-7](dispatch://DEMO-7) is done."
@@ -1056,7 +1087,12 @@ func TestAQuestionToThePersonEndsTheTurn(t *testing.T) {
 		{name: "an answer in prose", reply: agenttest.Reply{Text: prose}, text: prose},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return c.reply })
+			fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+				if isCheck(request) {
+					return verdict(noPlanPasses)
+				}
+				return c.reply
+			})
 			server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
 				return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"key":"DEMO-1","status":"in_progress"}`)}
 			})
@@ -1069,14 +1105,16 @@ func TestAQuestionToThePersonEndsTheTurn(t *testing.T) {
 				t.Errorf("the reply frame carries %q waiting for the person %t, with the calls %q labelled %q; want %q and %t, with no call",
 					frame.Text, frame.WaitsForPerson, frame.Tools, frame.Labels, c.text, c.waits)
 			}
-			requests := fake.Requests()
-			if len(requests) != 1 {
+			if requests := stepRequests(fake); len(requests) != 1 {
 				t.Fatalf("the run made %d model calls, want 1", len(requests))
 			}
-			if format := requests[0].Field("response_format"); format != nil {
-				t.Errorf("the model call carries the response format %v, want none: no call of a run carries a final schema", format)
+			// The run's first request is its step's call; the guard's check, where one is made,
+			// comes after it.
+			step := fake.Requests()[0]
+			if format := step.Field("response_format"); format != nil {
+				t.Errorf("the model call carries the response format %v, want none: no step's call carries a final schema", format)
 			}
-			offered, _ := json.Marshal(requests[0].Field("tools"))
+			offered, _ := json.Marshal(step.Field("tools"))
 			if !strings.Contains(string(offered), `"name":"`+toolAskPerson+`"`) {
 				t.Errorf("the model call is offered the tools %s, want %s among them", offered, toolAskPerson)
 			}
@@ -1274,10 +1312,10 @@ func TestARequestForAChangeEndsWithAPlan(t *testing.T) {
 
 // TestThePromptsExamplesNameNoItemOfTheEvalsSeed: the eval's run that answered with no read said
 // the planner is on DEMO-7, the key the prompt's examples named, which the eval's seed holds. Every
-// issue key the system prompt and the new-issue prompt name is of the project ACME, and neither the
-// prompts nor the text of a tool the agent is offered or find_tools answers - its description and
-// its arguments' schema - names a project, session or person of the eval's seed
-// (going/eval/seed.json).
+// issue key the system prompt, the new-issue prompt, and the prompt and notes of the guard's check
+// of a reply in prose (noplan.go) name is of the project ACME, and neither the prompts nor the text
+// of a tool the agent is offered or find_tools answers - its description and its arguments' schema
+// - names a project, session or person of the eval's seed (going/eval/seed.json).
 func TestThePromptsExamplesNameNoItemOfTheEvalsSeed(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "eval", "seed.json"))
 	if err != nil {
@@ -1294,7 +1332,7 @@ func TestThePromptsExamplesNameNoItemOfTheEvalsSeed(t *testing.T) {
 	if len(seed.Projects) == 0 || len(seed.Sessions) == 0 || len(seed.People) == 0 {
 		t.Fatalf("the seed read as %d projects, %d sessions and %d people, want some of each", len(seed.Projects), len(seed.Sessions), len(seed.People))
 	}
-	prompt := systemPrompt + newIssuePrompt
+	prompt := systemPrompt + newIssuePrompt + noPlanPrompt + noPlanNote + newIssueNoPlanNote + lastCallNote
 	keys := regexp.MustCompile(`\b[A-Z][A-Z0-9]*-\d+\b`).FindAllString(prompt, -1)
 	if len(keys) == 0 {
 		t.Fatal("the prompts name no issue key, so no example is checked")

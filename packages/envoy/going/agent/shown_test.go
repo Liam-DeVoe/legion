@@ -190,7 +190,7 @@ func TestTheModelReadsEachPriorityAndTimeAsThePageShowsIt(t *testing.T) {
 	if end, _ := server.end(t); end.State != agentwire.StateDone {
 		t.Fatalf("the run ended %s with %q, want done", end.State, end.Reason)
 	}
-	requests := fake.Requests()
+	requests := stepRequests(fake)
 	if len(requests) != 2 {
 		t.Fatalf("the run made %d model calls, want 2: the search and the answer", len(requests))
 	}

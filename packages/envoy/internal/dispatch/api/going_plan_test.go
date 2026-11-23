@@ -7,6 +7,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"slices"
@@ -1633,4 +1635,92 @@ func TestTheInboxNamesTheVersionOfEachWaitingPlan(t *testing.T) {
 	if record := rig.ended(t, run, time.Minute); record.state != "done" || rig.title(t, issue) != "Ours" {
 		t.Fatalf("after the approval naming the Inbox's version the run is %s and the title %q, want done with Ours", record.state, rig.title(t, issue))
 	}
+}
+
+// TestAReopenBesideOtherFieldsIsProposedAsTwoChanges: change-16 of the eval proposed one row that
+// reopened the done OPS-7 and set its priority, and the row failed 409 ISSUE_CLOSED when it ran:
+// the issue route takes a closed issue's status alone, with its rank, its components and links it
+// already holds, and refuses every other field beside it. A person on the issue page reopens the
+// issue first, then changes its fields. So the plan call refuses such a row before any of the plan
+// is kept, telling the model to propose the reopen alone and the other fields as a second change
+// that needs it; a reopen of its status alone, and the same row on an open issue, are kept. The
+// two changes, approved, both land: the issue is open again with its new priority.
+func TestAReopenBesideOtherFieldsIsProposedAsTwoChanges(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	// propose makes a plan call of a working run of alice's with one change, the update of issue
+	// with arguments, and answers the server's refusal, nil where it kept the plan. The run is
+	// stopped once its call is answered, so alice's runs that work stay under the 3 one person
+	// may have, and the last row's run is claimed.
+	propose := func(t *testing.T, arguments map[string]any) *agentwire.Error {
+		t.Helper()
+		run, token := rig.working(t, "alice", "reopen it and set it to P0")
+		defer rig.exec(t, `update going_runs set state = 'stopped', lease_token = null, lease_owner = null, lease_ends_at = null where id = $1::uuid`, run)
+		encoded, err := json.Marshal(arguments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = rig.call(agentwire.CallRequest{Run: run, LeaseToken: token, Step: 2, Call: 1, Kind: agentwire.KindPlan,
+			Proposal: &agentwire.PlanProposal{Summary: "Reopen it.", Changes: []agentwire.PlanChange{{Tool: "dispatch_issue_update", Arguments: encoded}}}})
+		var refused *agentwire.Error
+		if errors.As(err, &refused) {
+			return refused
+		}
+		if err != nil {
+			t.Fatalf("the plan call: %v", err)
+		}
+		return nil
+	}
+	closed := rig.issue(t, "Closed before its reopen")
+	rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+closed, map[string]any{"status": "done"})
+
+	t.Run("a reopen beside a priority on a closed issue is refused, saying to propose two changes", func(t *testing.T) {
+		refused := propose(t, map[string]any{"issue": closed, "status": "todo", "priority": 0})
+		want := fmt.Sprintf(`change 0 (dispatch_issue_update): %s is closed, and Dispatch reopens an issue only by a change of its status alone: `+
+			`propose the reopen, dispatch_issue_update with {"issue":%q,"status":"todo"}, as one change, then the change of priority as a second change whose needs name the first`,
+			closed, closed)
+		if refused == nil || refused.Code != agentwire.CodeCallRefused || refused.Message != want {
+			t.Fatalf("the plan call answered %+v, want %s: %s", refused, agentwire.CodeCallRefused, want)
+		}
+	})
+
+	t.Run("a reopen of its status alone is kept", func(t *testing.T) {
+		if refused := propose(t, map[string]any{"issue": closed, "status": "todo"}); refused != nil {
+			t.Fatalf("the plan call answered %+v, want the plan kept", refused)
+		}
+	})
+
+	t.Run("the same change on an open issue is kept", func(t *testing.T) {
+		open := rig.issue(t, "Open all along")
+		if refused := propose(t, map[string]any{"issue": open, "status": "todo", "priority": 0}); refused != nil {
+			t.Fatalf("the plan call answered %+v, want the plan kept", refused)
+		}
+	})
+
+	t.Run("the reopen, then the priority that needs it, both land", func(t *testing.T) {
+		issue := rig.issue(t, "Reopened in two changes")
+		rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "done"})
+		words := "reopen " + issue + " as todo and set it to P0"
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return proposing(goingChange("dispatch_issue_update", map[string]any{"issue": issue, "status": "todo"}),
+					goingChange("dispatch_issue_update", map[string]any{"issue": issue, "priority": 0}, 0))
+			}
+			return answered("Reopened and set to P0.")
+		})
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		if states := rowStates(rig.waiting(t, run)); !slices.Equal(states, []string{"waiting", "waiting"}) {
+			t.Fatalf("the plan's rows are %v, want the reopen and the priority waiting", states)
+		}
+		rig.answer(t, run, "approve", map[string]any{"plan": 1})
+		if record := rig.ended(t, run, time.Minute); record.state != "done" {
+			t.Fatalf("after its approval the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+		}
+		if states := rowStates(rig.plan(t, run)); !slices.Equal(states, []string{"done", "done"}) {
+			t.Errorf("after the run the plan's rows are %v, want both done", states)
+		}
+		if read := rig.issueRead(t, issue); read.Status != "todo" || read.ClosedAt != nil || read.Priority == nil || *read.Priority != 0 {
+			t.Errorf("%s is %s (closed at %v) with priority %v, want todo, open, at P0", issue, read.Status, read.ClosedAt, read.Priority)
+		}
+	})
 }
