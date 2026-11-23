@@ -211,10 +211,17 @@ func (e *Engine) scopeOfAgent(ctx context.Context, tx pgx.Tx, issue record.Issue
 		s, ok := scopeOn(issue, stored, step.Task)
 		return s, ok, nil
 	}
-	token = factClaim(issue, role, token)
-	if token == "" {
+	if token = factClaim(issue, role, token); token == "" {
 		return TaskScope{}, false, nil
 	}
+	return e.heldOrStoppedOf(issue, stored, role, token)
+}
+
+// heldOrStoppedOf is the scope of the held or stopped task of stored, the plan of issue's run, whose
+// step at its place has the claim token for role (rowClaim), first in task id order: a stopped
+// task's step is no running step, so a fact of its claim reaches it here (scopeOfAgent,
+// completionScope). ok is false where no such task stands.
+func (e *Engine) heldOrStoppedOf(issue record.Issue, stored *record.StoredPlan, role claim.Role, token claim.Token) (TaskScope, bool, error) {
 	for _, s := range scopesOn(issue, stored) {
 		if s.walk.State != record.TaskHeld && s.walk.State != record.TaskStopped {
 			continue
@@ -319,10 +326,13 @@ func (e *Engine) openStepsOfPullRequest(ctx context.Context, tx pgx.Tx, issue re
 // completionScope is the scope a completion (fact, intake.HandoffComplete) is read on: the task the
 // route named (fact.Task); for a fact that names none, the task of the step the claim's agent runs
 // now (record.Issue.StepOfAgent), else the task of the latest phases row that names the claim (a
-// completion of a step the task has left), the claim and its agent read as factClaim and factAgent
-// read them. ok is false where none of them is a task of the plan: the completion is of no step,
-// and the plan's merging task is none of its own, so an agent that runs no step moves no task. A
-// run with no plan rows is its issue.
+// completion of a step the task has left), else the held or stopped task whose step has that claim
+// (heldOrStoppedOf: the report of the run a stop ended), the claim and its agent read as factClaim
+// and factAgent read them. A completion of the role's own claim (claim.NewToken) that none of them
+// reaches is of the plan's merging task: the claim of a row raised before the plan, or of a step a
+// later version took off the task's line. A keyed agent's claim that none of them reaches runs no
+// step of the plan, and ok is false: the completion is of no step, and moves no task. A run with no
+// plan rows is its issue.
 func (e *Engine) completionScope(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete) (TaskScope, bool, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
@@ -334,16 +344,28 @@ func (e *Engine) completionScope(ctx context.Context, tx pgx.Tx, issue record.Is
 			task = step.Task
 		}
 	}
-	if token := factClaim(issue, fact.Role, fact.Claim); task == "" && token != "" {
+	token := factClaim(issue, fact.Role, fact.Claim)
+	if task == "" && token != "" {
 		rows, err := e.store.Phases(ctx, tx, issue.Key)
 		if err != nil {
 			return TaskScope{}, false, err
 		}
+		// A row names the claim its completion carried (handoff writes it) or the claim its entry
+		// wrote (enter), so either reading of the fact's claim finds its row.
 		var latest int64
 		for _, row := range rows {
-			if row.Claim == token && row.StepTask != "" && row.Entry > latest {
+			named := row.Claim == token || fact.Claim != "" && row.Claim == fact.Claim
+			if named && row.StepTask != "" && row.Entry > latest {
 				task, latest = row.StepTask, row.Entry
 			}
+		}
+	}
+	if task == "" && token != "" {
+		if s, ok, err := e.heldOrStoppedOf(issue, stored, fact.Role, token); err != nil || ok {
+			return s, ok, err
+		}
+		if own, err := stepClaim(issue, issue.Key, fact.Role); err == nil && token == own {
+			task, _ = stored.MergingTask()
 		}
 	}
 	s, ok := scopeOn(issue, stored, task)
