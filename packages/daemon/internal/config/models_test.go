@@ -84,9 +84,6 @@ func TestTheDeploymentListsItsModelsAndHarnesses(t *testing.T) {
 	if got, want := deployment.Roles["reviewer"], (plan.RoleDef{Name: "reviewer", Type: plan.TypeReview, Backend: "omp"}); got != want {
 		t.Errorf("Deployment().Roles[reviewer] = %+v, want %+v", got, want)
 	}
-	if got, want := deployment.Owner, (plan.RoleDef{Name: "architect", Backend: "omp"}); got != want {
-		t.Errorf("Deployment().Owner = %+v, want %+v", got, want)
-	}
 
 	cfg, err = Load(rolesFile(t, "models: [m-two]\n"+checker, "checker.md"), noEnv)
 	if err != nil {

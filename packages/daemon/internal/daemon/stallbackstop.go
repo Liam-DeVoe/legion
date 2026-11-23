@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -81,25 +82,26 @@ func (s *supervision) backstopStalledTurns(ctx context.Context, claims []supervi
 }
 
 // stallBackstopOf is the backstop bound of c's role (config.Config.StallBackstopFor). A role the
-// plan in force of c's issue defines takes none of the settings the deployment keys by its name,
-// so where `worker_stall_backstop_hours` names a bound for a deployment role of that name, such a
-// claim runs under the bound of a role the file names none for
-// (config.Config.UnnamedStallBackstopFor). The plan is read for such a name alone: a role of
-// Legion's, a role the file names no bound for and a claim of no issue read none, and neither does
-// a supervision with no reader of the plan (planRole nil). A read that fails is the error.
+// plan in force of c's issue defines takes none of the settings the deployment keys by its name
+// (stepplan.SourceOf, the rule every reader of a role asks), so where `worker_stall_backstop_hours`
+// names a bound for a deployment role of that name, such a claim runs under the bound of a role the
+// file names none for (config.Config.UnnamedStallBackstopFor). The plan is read for such a name
+// alone: a role of Legion's, a role the file names no bound for and a claim of no issue read none,
+// and neither does a supervision with no reader of the plan (planRole nil). A read that fails is
+// the error.
 func (s *supervision) stallBackstopOf(ctx context.Context, c supervise.Claim) (time.Duration, error) {
 	bound, named := s.cfg.WorkerStallBackstops[c.Role]
 	if !named {
 		return s.cfg.StallBackstopFor(c.Role), nil
 	}
-	if claim.IsBuiltin(c.Role) || c.Issue == "" || s.planRole == nil {
+	if stepplan.IsLegionName(string(c.Role)) || c.Issue == "" || s.planRole == nil {
 		return bound, nil
 	}
 	_, planned, err := s.planRole(ctx, c.Issue, c.Role)
 	if err != nil {
 		return 0, err
 	}
-	if planned {
+	if stepplan.SourceOf(string(c.Role), planned, true) == stepplan.SourcePlan {
 		return s.cfg.UnnamedStallBackstopFor(c.Role), nil
 	}
 	return bound, nil

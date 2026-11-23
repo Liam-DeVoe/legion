@@ -8,8 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -79,9 +79,10 @@ func hookCount(hook Hook, counts map[string]int) int {
 // naming what fired and whom it reached, or that it reached none.
 //
 // A hook names roles of the deployment. A role the plan in force of the issue defines is the
-// plan's role, even where the deployment defines a role of that name, and it takes none of the
-// settings the deployment keys by that name, a hook's prompt among them, so the firing passes it
-// over on that issue (record.Store.PlanRoleOf). Legion's roles are no plan's and read no plan.
+// plan's role, even where the deployment defines a role of that name (plan.SourceOf, the rule
+// every reader of a role asks), and it takes none of the settings the deployment keys by that
+// name, a hook's prompt among them, so the firing passes it over on that issue
+// (record.Store.PlanRoleOf). Legion's names are no plan's and read no plan.
 //
 // Each prompt names the claim of the agent that works its role's step in the round the move
 // opened (workerClaim), read once the move's start has written that agent, and the outbox
@@ -108,12 +109,12 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 		if slices.Contains(prompted, string(role)) {
 			continue
 		}
-		if !claim.IsBuiltin(role) {
+		if !plan.IsLegionName(string(role)) {
 			_, planned, err := e.store.PlanRoleOf(ctx, tx, issue.Key, string(role))
 			if err != nil {
 				return err
 			}
-			if planned {
+			if plan.SourceOf(string(role), planned, true) == plan.SourcePlan {
 				continue
 			}
 		}

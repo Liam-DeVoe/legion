@@ -76,7 +76,7 @@ func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 		role.Backend = "omp"
 		onOmp[name] = role
 	}
-	want := plan.Deployment{Roles: onOmp, Owner: plan.RoleDef{Name: "architect", Backend: "omp"}}
+	want := plan.Deployment{Roles: onOmp}
 	if got := cfg.Deployment(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Deployment() of a file with no roles = %+v, want Legion's own roles %+v", got, want)
 	}

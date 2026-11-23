@@ -4,9 +4,9 @@
 // out yet. It reads the blocks of one version of the plan document (FromBlocks) and
 // compares two versions (ChangedTasks); it holds no store and calls nothing.
 //
-// It imports internal/phase alone, so both the configuration loader, which reads a project's
-// default steps with this grammar and these checks, and the workflow, which walks the line they
-// make (Line), can import it.
+// It imports internal/phase and internal/claim alone, so both the configuration loader, which
+// reads a project's default steps with this grammar and these checks, and the workflow, which walks
+// the line they make (Line), can import it.
 package plan
 
 import (
@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -150,41 +151,94 @@ type Plan struct {
 }
 
 // Deployment is what the deployment gives a plan: the roles a step can name, by name, which are
-// Legion's own (BuiltinRoles) and each role the deployment's settings define, the models a role
-// may name, and the owner's own role.
+// Legion's own (BuiltinRoles) and each role the deployment's settings define, and the models a
+// role may name. The owner of a task runs on the default model, as every role of Legion's does, so
+// a step of the key owner is held to that model (agentReasons).
 type Deployment struct {
 	Roles map[string]RoleDef
 	// Models are the models the deployment lists.
 	Models []string
-	// Owner is the role of the owner of the plan's tasks: its name, its model and its harness.
-	Owner RoleDef
 }
 
-// RolesOf is the roles the steps of p can name, each as a RoleDef of its name, type, model and
-// harness: Legion's own roles of d (BuiltinRoles) first, then each role p defines, of its type and
-// its model on Oh My Pi, then each other role of d. A role p defines is read before a role of d of
-// its name, as the daemon reads a role the plan in force of an issue defines before the
-// deployment's role of that name for a claim of that issue (its specs.rolePromptPaths and
-// roleBackends, appauth.AppRoleFor). Validate refuses a plan that defines a role of d's name or
-// of Legion's (V2), so the order decides nothing for a version that is judged. It holds for a
-// version taken after the deployment took the name of one of its roles. RolesOf answers for a
-// version as it is judged or taken, and the daemon's readers answer for one claim. The answer is
-// a fresh map, so a caller that changes it leaves d's roles whole.
+// Source is whose definition a role's name takes for one issue (RoleOf).
+type Source int
+
+const (
+	// SourceNone: nobody defines the name.
+	SourceNone Source = iota
+	// SourceLegion: the name is one of Legion's own (IsLegionName), which no plan and no
+	// deployment redefines.
+	SourceLegion
+	// SourcePlan: the issue's plan in force defines the role.
+	SourcePlan
+	// SourceDeployment: the deployment's settings define the role, and the issue's plan does not.
+	SourceDeployment
+)
+
+// SourceOf is the one rule of whose definition a role's name takes for one issue, which every
+// reader of a role asks, through RoleOf or directly where it holds no definition but the fact
+// (appauth.AppRoleFor): a name of Legion's own (IsLegionName) is Legion's, whatever a plan or the
+// deployment says; else the issue's plan in force, where it defines the role (planned); else the
+// deployment, where its settings define the role (deployed); else nobody's. A plan's role is read
+// before the deployment's role of its name, so an issue keeps its plan's role when the deployment
+// later takes the name, until a version of its plan changes it. Validate refuses a version that
+// defines a name the deployment holds already, so the order decides nothing for a version that is
+// judged.
+func SourceOf(name string, planned, deployed bool) Source {
+	switch {
+	case IsLegionName(name):
+		return SourceLegion
+	case planned:
+		return SourcePlan
+	case deployed:
+		return SourceDeployment
+	}
+	return SourceNone
+}
+
+// RoleOf is the definition a role's name takes for one issue, by SourceOf: the role the issue's
+// plan in force defines (planned, nil where it defines none), of its type and its model on Oh My
+// Pi, and none of the settings the deployment keys by its name; else d's role of that name. For a
+// name of Legion's it answers d's definition where d holds one (the five roles of a step), else a
+// RoleDef of the name alone (the architect, the merger, the controller).
+func RoleOf(name string, planned *PlanRole, d Deployment) (RoleDef, Source) {
+	def, deployed := d.Roles[name]
+	source := SourceOf(name, planned != nil, deployed)
+	switch source {
+	case SourceLegion:
+		if !deployed {
+			def = RoleDef{Name: name}
+		}
+	case SourcePlan:
+		def = RoleDef{Name: name, Type: planned.Type, Model: planned.Model, Backend: planRoleBackend}
+	case SourceNone:
+		def = RoleDef{}
+	}
+	return def, source
+}
+
+// RolesOf is the roles the steps of p can name, each as RoleOf answers its name with p's role of
+// that name: each role of d and each role p defines, by name. It answers for a version as it is
+// judged or taken, as the daemon's resolution of a claim's role answers for one claim with the
+// role the stored plan of its issue defines. The answer is a fresh map, so a caller that changes
+// it leaves d's roles whole.
 func RolesOf(p Plan, d Deployment) map[string]RoleDef {
 	roles := make(map[string]RoleDef, len(d.Roles)+len(p.Roles))
-	for name, role := range d.Roles {
-		roles[name] = role
+	for name := range d.Roles {
+		roles[name], _ = RoleOf(name, p.role(name), d)
 	}
-	legion := BuiltinRoles()
 	for _, role := range p.Roles {
-		if _, deployed := roles[role.Name]; deployed {
-			if _, own := legion[role.Name]; own {
-				continue
-			}
-		}
-		roles[role.Name] = RoleDef{Name: role.Name, Type: role.Type, Model: role.Model, Backend: planRoleBackend}
+		roles[role.Name], _ = RoleOf(role.Name, p.role(role.Name), d)
 	}
 	return roles
+}
+
+// role is the role p defines named name, nil where it defines none.
+func (p Plan) role(name string) *PlanRole {
+	if at := slices.IndexFunc(p.Roles, func(role PlanRole) bool { return role.Name == name }); at >= 0 {
+		return &p.Roles[at]
+	}
+	return nil
 }
 
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
@@ -216,17 +270,34 @@ var builtinRoles = []RoleDef{
 	{Name: "acceptance", Type: TypeReview, Backend: planRoleBackend},
 }
 
-// LegionNames is the one list of the names that no role of a plan takes, since Legion holds each
-// already: the architect and the merger are roles of a claim (claim.Roles), the controller is the
-// controller's role, and the five others are Legion's roles of a step (BuiltinRoles). `owner` is
-// in no list: it is the key of a task's owner, and a step's role and its key are two words, so a
-// role named owner collides with nothing. The answer is a fresh slice, so a caller that changes it
-// leaves the next caller's answer whole.
-func LegionNames() []string {
-	return slices.Clone(legionNames)
+// IsLegionName is whether name is a name Legion holds already, which no role of a plan and no role
+// of the deployment takes: a role of a claim (claim.Roles: the architect, the merger and the four
+// roles of a step that are claims), the controller's role (claim.RoleController), and Legion's
+// roles of a step (BuiltinRoles, acceptance among them). It reads those lists and keeps none of its
+// own, so a role Legion adds to either is a name of Legion's from that release on. `owner` is none:
+// it is the key of a task's owner, and a step's role and its key are two words, so a role named
+// owner collides with nothing.
+func IsLegionName(name string) bool {
+	if role := claim.Role(name); claim.IsBuiltin(role) || role == claim.RoleController {
+		return true
+	}
+	return slices.ContainsFunc(builtinRoles, func(def RoleDef) bool { return def.Name == name })
 }
 
-var legionNames = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger", "controller", "acceptance"}
+// LegionNames is every name IsLegionName holds, in this order: claim.Roles, the controller, then
+// each role of BuiltinRoles that is no role of a claim. The answer is a fresh slice.
+func LegionNames() []string {
+	var names []string
+	for _, role := range append(slices.Clone(claim.Roles), claim.RoleController) {
+		names = append(names, string(role))
+	}
+	for _, def := range builtinRoles {
+		if !slices.Contains(names, def.Name) {
+			names = append(names, def.Name)
+		}
+	}
+	return names
+}
 
 // RunsAs is the phase a step of role runs as: each of Legion's five roles of a step its own phase,
 // and every other role, one the deployment or the plan defines, the phase step, where the role that

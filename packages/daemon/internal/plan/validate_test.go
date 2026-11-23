@@ -2,8 +2,11 @@ package plan
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // yet ends each refusal of something a later release carries out.
@@ -225,14 +228,29 @@ func TestValidateRefusesARoleThePlanCannotRun(t *testing.T) {
 		})
 	}
 
-	want := []string{"architect", "planner", "implementer", "tester", "reviewer", "merger", "controller", "acceptance"}
-	names := LegionNames()
-	if !reflect.DeepEqual(names, want) {
-		t.Fatalf("LegionNames = %v, want %v", names, want)
+	// Legion's names are read off claim's lists and BuiltinRoles, so a role either adds is one: each
+	// is refused as a name of a plan's role, and `owner` and a role of the plan's own are not.
+	var legion []string
+	for _, role := range append(slices.Clone(claim.Roles), claim.RoleController) {
+		legion = append(legion, string(role))
 	}
-	names[0] = "agent"
-	if LegionNames()[0] != "architect" {
-		t.Fatal("a caller that changed one answer of LegionNames changed the next")
+	for name := range BuiltinRoles() {
+		legion = append(legion, name)
+	}
+	for _, name := range legion {
+		if !IsLegionName(name) || !slices.Contains(LegionNames(), name) {
+			t.Errorf("IsLegionName(%s) = %t, LegionNames = %v; want %s among Legion's names", name, IsLegionName(name), LegionNames(), name)
+		}
+		refused := Validate(withRoles("implementer", PlanRole{Name: name, Type: TypeTesting}), listing)
+		want := "the plan defines the role " + name + ", which the deployment or Legion defines already; a role of a plan takes a name of its own."
+		if !slices.ContainsFunc(refused, func(r Refusal) bool { return r.Reason == want }) {
+			t.Errorf("Validate of a plan role named %s = %+v, want the refusal %q", name, refused, want)
+		}
+	}
+	for _, name := range []string{"owner", "prober"} {
+		if IsLegionName(name) {
+			t.Errorf("IsLegionName(%s) = true, want false", name)
+		}
 	}
 }
 
@@ -251,7 +269,7 @@ func TestValidateRefusesOneAgentOnRolesOfTwoModels(t *testing.T) {
 		implementer := roles["implementer"]
 		implementer.Backend = implementerBackend
 		roles["implementer"] = implementer
-		return Deployment{Roles: roles, Models: []string{"m-one", "m-two"}, Owner: RoleDef{Name: "architect", Backend: "omp"}}
+		return Deployment{Roles: roles, Models: []string{"m-one", "m-two"}}
 	}
 	withRoles := func(steps string, roles ...PlanRole) Plan {
 		p := oneTask("a", steps)

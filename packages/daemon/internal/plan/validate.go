@@ -26,7 +26,7 @@ const recordForm = "is not of the form [a-z][a-z0-9-]* with at most 32 character
 
 // Validate is what Legion cannot carry out in any release: a plan with no task; each role the plan
 // defines whose name or type Dispatch's step record cannot hold, or whose name the deployment or
-// Legion holds already (LegionNames); each role whose model the deployment does not list, at the
+// Legion holds already (IsLegionName); each role whose model the deployment does not list, at the
 // first step of each task that names it, or for the whole plan where no step names it; each agent
 // (AgentOf) whose steps name roles of two models or two harnesses, once, and each role the key
 // owner does at a step of a task whose model is not the owner's, at its first such step; and each
@@ -56,7 +56,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 }
 
 // roleReasons is Validate's causes in the roles p defines, in the document's order and, for each
-// role, in this order: a name outside recordWord, a name of a role of d or of LegionNames, and a
+// role, in this order: a name outside recordWord, a name of a role of d or of Legion's (IsLegionName), and a
 // type that is set and outside recordWord.
 func roleReasons(p Plan, d Deployment) []Refusal {
 	var refusals []Refusal
@@ -64,7 +64,7 @@ func roleReasons(p Plan, d Deployment) []Refusal {
 		if !recordWord.MatchString(role.Name) {
 			refusals = append(refusals, Refusal{Reason: fmt.Sprintf("the plan defines the role %s, whose name %s", role.Name, recordForm)})
 		}
-		if _, ok := d.Roles[role.Name]; ok || slices.Contains(legionNames, role.Name) {
+		if _, ok := d.Roles[role.Name]; ok || IsLegionName(role.Name) {
 			refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
 				"the plan defines the role %s, which the deployment or Legion defines already; a role of a plan takes a name of its own.", role.Name)})
 		}
@@ -113,9 +113,10 @@ func modelReasons(p Plan, d Deployment, roles map[string]RoleDef) []Refusal {
 // answers it, in task and step order: for each agent of a key but owner, the first step whose role
 // runs on another model or another harness than the role of the agent's first step, once for each
 // agent; and for the key owner, in each task, the first step of each role whose model is not the
-// owner's (d.Owner). Two roles of no model run on one model, the deployment's default. The owner
-// does its step in its own session, so its harness is not compared. A step whose role nobody
-// defines is passed over: Validate refuses it on its own.
+// owner's, the default model (""), since the owner runs on the model every role of Legion's runs on.
+// Two roles of no model run on one model, the deployment's default. The owner does its step in its
+// own session, so its harness is not compared. A step whose role nobody defines is passed over:
+// Validate refuses it on its own.
 func agentReasons(p Plan, d Deployment, roles map[string]RoleDef) []Refusal {
 	type firstStep struct {
 		task, role string
@@ -134,11 +135,11 @@ func agentReasons(p Plan, d Deployment, roles map[string]RoleDef) []Refusal {
 			}
 			agent := AgentOf(task.ID, i+1, step)
 			if agent.Owner() {
-				if role.Model != d.Owner.Model && !ownersRefused[step.Role] {
+				if role.Model != "" && !ownersRefused[step.Role] {
 					ownersRefused[step.Role] = true
 					refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf(
 						"step %d of task %s names %s, whose model %s is not the owner's (%s); the owner runs on its own model.",
-						i+1, task.ID, step, modelName(role.Model), modelName(d.Owner.Model))})
+						i+1, task.ID, step, role.Model, modelName(""))})
 				}
 				continue
 			}
