@@ -3,14 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useEffect, useState } from "react";
-import {
-  createPath,
-  MemoryRouter,
-  type NavigateFunction,
-  Router,
-  type Navigator as RouterNavigator,
-  useNavigate,
-} from "react-router-dom";
+import { MemoryRouter, type NavigateFunction, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { nextFrame } from "../../__tests__/frames";
@@ -58,6 +51,7 @@ import {
   sentenceCase,
 } from "./page-words";
 import { failRefreshOverHeld } from "./refresh-over-held-fixture";
+import { renderAtBrowserEntry } from "./slots/stage-fixtures";
 
 const KEY = "CORE-1";
 
@@ -1308,10 +1302,12 @@ function claim(seq: number): DispatchEvent {
   } as DispatchEvent;
 }
 
-/** What opens and shuts Details around the history, and moves the reader's read mark: the
- *  test's hold on `HistoryInDrawer`. `isOpen` is whether Details is open, as it was last drawn. */
+/** What opens and shuts Details around the history, moves the reader's read mark, and takes the
+ *  page to another address: the test's hold on `HistoryInDrawer`. `isOpen` is whether Details is
+ *  open, as it was last drawn. */
 interface DrawerHold {
   isOpen?: boolean;
+  navigate?: NavigateFunction;
   open?: (open: boolean) => void;
   read?: (state: UserState) => void;
 }
@@ -1324,6 +1320,7 @@ function HistoryInDrawer({ hold, of = issue }: { hold: DrawerHold; of?: IssueDet
   const [state, setState] = useState(() => readTo(2));
   hold.isOpen = open;
   hold.open = setOpen;
+  hold.navigate = useNavigate();
   hold.read = setState;
   const drawer: MarginDrawer = { open, setOpen, setPage: () => undefined };
   return (
@@ -1467,37 +1464,15 @@ test("an agents' turn's address opens Details at it once every read the outline 
     await act(async () => coverage.resolve({ requirements: [] } as never));
     await waitFor(() =>
       expect(
-        document.querySelector(`[data-history-item="${id}"]`)?.getAttribute("aria-current"),
+        turnMarked(id),
         "the agents' turn's address did not open Details with the turn marked"
-      ).toBe("true")
+      ).toBe(true)
     );
   } finally {
     view.unmount();
     for (const spy of [getIssueCoverage, getIssueEvents, names]) spy.mockRestore();
   }
 });
-
-/** A navigator that goes nowhere, for a router whose location the case sets itself. */
-const NO_NAVIGATION: RouterNavigator = {
-  createHref: (to) => (typeof to === "string" ? to : createPath(to)),
-  go: () => {},
-  push: () => {},
-  replace: () => {},
-};
-
-/** Draws `children` at `address` under the location the browser makes for it, as a load does or
- *  a fragment typed in the address bar: its key is "default", the one key the router gives every
- *  entry it did not make itself. `follow` draws them at another address under that same key, as
- *  the browser changes the fragment alone, with no load. */
-function renderAtBrowserEntry(address: string, children: ReactNode) {
-  const draw = (at: string): ReactNode => (
-    <Router location={at} navigator={NO_NAVIGATION}>
-      {children}
-    </Router>
-  );
-  const view = render(draw(address));
-  return { ...view, follow: (to: string) => view.rerender(draw(to)) };
-}
 
 /** Whether the history marks the turn `id`, as the address of that turn has it. */
 function turnMarked(id: string): boolean {
@@ -1512,6 +1487,31 @@ function readAgainFromNothing(client: QueryClient, queryKey: readonly unknown[])
   act(() => {
     void client.resetQueries({ queryKey });
   });
+}
+
+/** Reads the outline's messages again from nothing (`readAgainFromNothing`), which takes the
+ *  agents' turn back and the history with it while Details is shut; then answers that read with
+ *  the agents' thread through `answer`, and waits for the history to mark the turn again and two
+ *  frames past it, where an open of Details the answer asked for has run. */
+async function readMessagesAgainFromNothing(
+  client: QueryClient,
+  answer: (messages: MessageRead[]) => void
+): Promise<void> {
+  readAgainFromNothing(client, ["issue-messages", KEY]);
+  await waitFor(() =>
+    expect(
+      screen.queryByTestId("issue-history"),
+      "the outline's messages read out again with nothing held left the agents' turn told"
+    ).toBeNull()
+  );
+  await act(async () => answer([AGENTS_THREAD]));
+  await waitFor(() =>
+    expect(
+      turnMarked(AGENTS_THREAD.message.id),
+      "the messages read answered again, and the history marked no turn"
+    ).toBe(true)
+  );
+  await nextFrames(2);
 }
 
 // Every entry the browser makes has the key "default", a load and a fragment typed in the address
@@ -1577,21 +1577,7 @@ test("a closed Details stays closed when the outline's reads answer again for th
     });
     act(() => hold.open?.(false));
 
-    readAgainFromNothing(client, ["issue-messages", KEY]);
-    await waitFor(() =>
-      expect(
-        screen.queryByTestId("issue-history"),
-        "the outline's messages read out again with nothing held left the agents' turn told"
-      ).toBeNull()
-    );
-    await act(async () => messages.resolve([AGENTS_THREAD]));
-    await waitFor(() =>
-      expect(
-        turnMarked(id),
-        "the messages read answered again, and the history marked no turn"
-      ).toBe(true)
-    );
-    await nextFrames(2);
+    await readMessagesAgainFromNothing(client, messages.resolve);
     expect(
       hold.isOpen,
       "the outline's reads answered again for the same following of the agents' turn's address, and Details opened again after the reader closed it"
@@ -1663,21 +1649,7 @@ test("after a fragment typed at an agents' turn's address while a read the outli
       "Details opened again at the turn the fragment's following told, after the reader closed it"
     ).toBe(false);
 
-    readAgainFromNothing(client, ["issue-messages", KEY]);
-    await waitFor(() =>
-      expect(
-        screen.queryByTestId("issue-history"),
-        "the outline's messages read out again with nothing held left the agents' turn told"
-      ).toBeNull()
-    );
-    await act(async () => messages.resolve([AGENTS_THREAD]));
-    await waitFor(() =>
-      expect(
-        turnMarked(id),
-        "the messages read answered again, and the history marked no turn"
-      ).toBe(true)
-    );
-    await nextFrames(2);
+    await readMessagesAgainFromNothing(client, messages.resolve);
     expect(
       hold.isOpen,
       "a later answer of the outline's reads in the fragment's following opened Details again after the reader closed it"
@@ -1696,15 +1668,9 @@ test("after a fragment typed at an agents' turn's address while a read the outli
 test("Back to the history's address from the issue's own address opens Details again, though the reader closed it", async () => {
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
   const hold: DrawerHold = {};
-  let navigate: NavigateFunction | undefined;
-  function Navigator(): ReactNode {
-    navigate = useNavigate();
-    return null;
-  }
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: KEY, kind: "activity" })]}>
       <QueryClientProvider client={readsHeld()}>
-        <Navigator />
         <HistoryInDrawer hold={hold} />
       </QueryClientProvider>
     </MemoryRouter>
@@ -1714,11 +1680,11 @@ test("Back to the history's address from the issue's own address opens Details a
       expect(hold.isOpen, "a load of the history's address left Details shut").toBe(true)
     );
     act(() => hold.open?.(false));
-    act(() => navigate?.(`/issues/${KEY}`));
+    act(() => hold.navigate?.(`/issues/${KEY}`));
     await nextFrames(2);
     expect(hold.isOpen, "the issue's own address opened Details").toBe(false);
 
-    act(() => navigate?.(-1));
+    act(() => hold.navigate?.(-1));
     await waitFor(() =>
       expect(
         hold.isOpen,
@@ -1735,8 +1701,8 @@ test("Back to the history's address from the issue's own address opens Details a
 // that row. Back from it to an earlier entry of `/issues/<key>/activity` is that entry's following
 // again, and Details opens again there, though the reader closed it at the comment. An address
 // that names an item keeps the arrival Details last opened for only where that arrival is its own
-// following: kept at every address naming an item, the arrival of the history's address stood at
-// the comment's, and Back to it opened nothing.
+// following, so the history's address's arrival is forgotten at the comment's, and Back to it
+// opens Details again.
 test("Back to the history's address from a comment's address with a row of the outline opens Details again, though the reader closed it there", async () => {
   const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
     requirements: [],
@@ -1744,15 +1710,9 @@ test("Back to the history's address from a comment's address with a row of the o
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
   const { client, names } = agentsThreadClient();
   const hold: DrawerHold = {};
-  let navigate: NavigateFunction | undefined;
-  function Navigator(): ReactNode {
-    navigate = useNavigate();
-    return null;
-  }
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: KEY, kind: "activity" })]}>
       <QueryClientProvider client={client}>
-        <Navigator />
         <HistoryInDrawer hold={hold} of={{ ...issueDetails(), artifacts: [] }} />
       </QueryClientProvider>
     </MemoryRouter>
@@ -1763,14 +1723,14 @@ test("Back to the history's address from a comment's address with a row of the o
     );
     // The reader follows a link to their own comment, which heads a thread a person wrote and so
     // is a row of the outline (`OWN_COMMENT`).
-    act(() => navigate?.(buildIssuePath({ id: OWN_COMMENT.id, key: KEY, kind: "comment" })));
+    act(() => hold.navigate?.(buildIssuePath({ id: OWN_COMMENT.id, key: KEY, kind: "comment" })));
     act(() => hold.open?.(false));
     await nextFrames(2);
     expect(hold.isOpen, "the address of a comment with a row of the outline opened Details").toBe(
       false
     );
 
-    act(() => navigate?.(-1));
+    act(() => hold.navigate?.(-1));
     await waitFor(() =>
       expect(
         hold.isOpen,

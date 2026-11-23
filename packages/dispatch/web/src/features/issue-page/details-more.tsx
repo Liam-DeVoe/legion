@@ -286,38 +286,36 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   // entry is the turn `AgentsOnlyTurn` told for this arrival at the address, which is one
   // following of it (`useFollowing`); until it tells, the one it told for the following before -
   // at another address, maybe a row's, or at this one under another fragment - is no answer here.
-  const itemArrival = namesItem ? following : undefined;
   const [turn, setTurn] = useState<AgentsTurn | undefined>(undefined);
-  const item = turn !== undefined && turn.arrival === itemArrival ? turn.id : undefined;
+  const item = namesItem && turn?.arrival === following ? turn.id : undefined;
   const opensHistory = route?.kind === "activity" || item !== undefined;
   const opensCollaborators = route?.kind === "collaborators";
+  const opensPanel = opensCollaborators || opensHistory;
   const drawer = useMarginDrawer();
   const openDetails = drawer?.setOpen;
   const openDetailsAt = useOpenDetailsAt();
   const holdLandedPlace = useLandedPlaceHold(drawer?.open);
-  const panelAddress = opensCollaborators || opensHistory ? `${pathname}${search}` : undefined;
-  // Details opens once per arrival at such an address, which is one following of it
-  // (`useFollowing`): a link the reader follows to the address they are on, and a fragment the
-  // browser changes under the one key it gives every entry it makes, are each an arrival of
-  // their own and open it again.
-  const arrival = panelAddress === undefined ? undefined : following;
-  // Details opens for an arrival only where it differs from the last one it opened for, so the
-  // reader's Close stands for the rest of that arrival. While the reader has no arrival, that
-  // last one is kept only where it is the following they are at: an address naming an item,
-  // whose agents' turn opened Details and was then taken back until the outline's reads answer
-  // again, so the turn told again for the same following opens nothing the reader closed. At any
-  // other following with no arrival - an address that opens no Details, a row's address, a turn
-  // not told yet - it is forgotten, so Back to an earlier entry of `/activity` or
-  // `/collaborators`, the same following again, opens Details again. Where Details has no drawer
-  // to open, each arrival is noted as opened all the same.
+  // Details opens once per arrival at an address that opens it (`opensPanel`), which is one
+  // following of that address (`useFollowing`): a link the reader follows to the address they are
+  // on, and a fragment the browser changes under the one key it gives every entry it makes, are
+  // each an arrival of their own and open it again. Details opens for an arrival only where it
+  // differs from the last one it opened for, so the reader's Close stands for the rest of that
+  // arrival. While the reader has no arrival, that last one is kept only where it is the
+  // following they are at: an address naming an item, whose agents' turn opened Details and was
+  // then taken back until the outline's reads answer again, so the turn told again for the same
+  // following opens nothing the reader closed. At any other following with no arrival - an
+  // address that opens no Details, a row's address, a turn not told yet - it is forgotten, so
+  // Back to an earlier entry of `/activity` or `/collaborators`, the same following again, opens
+  // Details again. Where Details has no drawer to open, each arrival is noted as opened all the
+  // same.
   const openedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (arrival === undefined) {
+    if (!opensPanel) {
       if (openedFor.current !== following) openedFor.current = undefined;
       return;
     }
-    if (openedFor.current === arrival) return;
-    openedFor.current = arrival;
+    if (openedFor.current === following) return;
+    openedFor.current = following;
     if (openDetails === undefined) return;
     openDetails(true);
     // At the collaborators' row, its control focused, with the People section that holds it
@@ -334,7 +332,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
         })
       );
     }
-  }, [arrival, following, holdLandedPlace, openDetails, openDetailsAt, opensCollaborators]);
+  }, [following, holdLandedPlace, openDetails, openDetailsAt, opensCollaborators, opensPanel]);
   const drawsHistory = drawer?.open === true || opensHistory;
   // The reader's read mark for this visit, where the history draws the line that says what is
   // new: where it stood when the history first drew for this issue, and lower once it has
@@ -372,10 +370,10 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   ]);
   return (
     <>
-      {namesItem && itemArrival !== undefined ? (
+      {namesItem ? (
         <AgentsOnlyTurn
           address={addressed}
-          arrival={itemArrival}
+          arrival={following}
           issue={issue}
           onTurn={setTurn}
           route={route}
@@ -385,7 +383,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       {drawsHistory ? (
         <>
           <IssueHistory
-            activityAddress={route?.kind === "activity" ? panelAddress : undefined}
+            activityAddress={route?.kind === "activity" ? `${pathname}${search}` : undefined}
             issue={issue}
             item={item}
             state={state}

@@ -10,17 +10,21 @@ export interface PinReads {
   readonly messages: Mock<typeof api.listIssueMessages>;
 }
 
-/** The spies `emptyDetailsReads` sets, and the one call that puts every one of them back. */
+/** Pinned's reads (`pinReads`), the reader's state read (`getMyState`), which answers the issue
+ *  unread and unpinned until a case answers it otherwise, and the one call that puts every read
+ *  `emptyDetailsReads` set back. */
 export interface DetailsReads {
+  readonly getMyState: Mock<typeof api.getMyState>;
   readonly pinReads: PinReads;
   readonly restore: () => void;
 }
 
 /**
- * For unit tests only: answers every read open Details makes of the fixture's issue CORE-1 with
- * the API's empty shape, all but the issue's own read and the reader's state, which each caller
- * answers with what its cases hold. A read that reached the network would fail the case
- * (`__tests__/network.ts`). The caller puts every read back with `restore`.
+ * For unit tests only: answers every read open Details makes of the fixture's issue CORE-1, all
+ * but the issue's own read, which each caller answers with what its cases hold. The reader's
+ * state holds the issue unread and unpinned, and every other read answers the API's empty shape.
+ * A read that reached the network would fail the case (`__tests__/network.ts`). The caller puts
+ * every read back with `restore`.
  */
 export function emptyDetailsReads(): DetailsReads {
   const reads = [
@@ -41,10 +45,15 @@ export function emptyDetailsReads(): DetailsReads {
     comments: spyOn(api, "listComments").mockResolvedValue([]),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([]),
   };
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
+    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
+  });
   return {
+    getMyState,
     pinReads,
     restore: () => {
       for (const spy of reads) spy.mockRestore();
+      getMyState.mockRestore();
       for (const spy of Object.values(pinReads)) spy.mockRestore();
     },
   };

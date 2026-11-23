@@ -267,15 +267,12 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
   );
 }
 
-/** The reads Details makes of the fixture's issue: the issue's own, answered with `issue`, the
- *  reader's state, which holds the issue unread and unpinned, and every other read, answering the
- *  API's empty shape (`emptyDetailsReads`); and the issue's PATCH answered as the server does,
- *  with the narrow `Issue`. */
+/** The reads Details makes of the fixture's issue: the issue's own, answered with `issue`, and
+ *  every other read as `emptyDetailsReads` answers it, the reader's state holding the issue
+ *  unread and unpinned; and the issue's PATCH answered as the server does, with the narrow
+ *  `Issue`. */
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
-    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-  });
   const reads = emptyDetailsReads();
   const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
     patchAnswer(issue, input)
@@ -283,12 +280,11 @@ function stubIssueApi() {
 
   return {
     getIssue,
-    getMyState,
+    getMyState: reads.getMyState,
     patchIssue,
     pinReads: reads.pinReads,
     restore: () => {
       getIssue.mockRestore();
-      getMyState.mockRestore();
       reads.restore();
       patchIssue.mockRestore();
     },

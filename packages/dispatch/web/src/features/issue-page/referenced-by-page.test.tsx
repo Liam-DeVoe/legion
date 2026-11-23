@@ -279,17 +279,13 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
 }
 
 /** The reads open Details makes of the fixture's issue beside the references: the issue's own,
- *  answered with `details`, the reader's state, which holds the issue unread and unpinned, and
- *  every other read, answering the API's empty shape (`emptyDetailsReads`). */
+ *  answered with `details`, and every other read as `emptyDetailsReads` answers it, the reader's
+ *  state holding the issue unread and unpinned. */
 function stubDetailsReads(details: IssueDetails): () => void {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(details);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
-    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-  });
   const reads = emptyDetailsReads();
   return () => {
     getIssue.mockRestore();
-    getMyState.mockRestore();
     reads.restore();
   };
 }
