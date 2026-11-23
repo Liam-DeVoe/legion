@@ -101,15 +101,18 @@ In each text it looks for the six wordings of the old rule as fixed strings, ove
 bold marks taken out and each run of whitespace folded to one space, so a wording broken across
 lines is still found. Over the sentences that hold none of them it runs the two patterns of the
 measurements: the old rule in other words, and the rule that a role records a check from a CI run.
-A pattern hit is not listed only where its rule is on one of that document's own checks alone:
-the sentence names exactly one of them, and holds no general subject once that check's own noun
-(`check c13`, `c13 check`) is taken out. A general subject is a check noun (`check`, `checks`),
-with or without an article or a quantifier; a bare `each`, `every`, `all`, `any` or `other`; or a
-marker that makes the named check an example (`including`, `such as`, `for example`, `e.g.`,
-`like`, `among them`). So "The tester does not run c13 again" is the owner's narrower rule, and
-"The tester does not run a before_merge check again, including c13" is a rule on every check and
-is listed, as is a sentence that names two of the document's checks. Each row names the issue,
-the document, its version and token, the match and its paragraph.
+A pattern hit is not listed only where the run can show that its rule is on one of that
+document's own checks alone: the sentence names exactly one of the document's checks; that check
+is what the rule's verb acts on ("does not run c13 again", "c13 is not run again", "c13 runs once
+at the head"), in backticks, after `the` or with its own noun (`check c13`, `the c13 check`) as
+may be; that clause ends the sentence or one of its clauses (a colon, a dash, a reason such as
+`because`, or `by` and who runs it); and the rest of the sentence holds no other hit of the two
+patterns and no word that can carry the rule past that check (a check noun, a quantifier, a plural
+or indefinite pronoun, an example or an additive marker such as `including` or `too`). Every other
+hit is listed for a reader. So "The tester does not run c13 again" is the owner's narrower rule,
+and "The tester does not run anything again, c13 included", "The tester does not run c13 again,
+or the lint" and a sentence that names two of the document's checks are listed. Each row names
+the issue, the document, its version and token, the match and its paragraph.
 
 `--limit <n>` reads one page of `n` issues for each status, which is how the control that a short
 list reports UNKNOWN is run. `--break-patterns` makes the two patterns match nothing, which is the

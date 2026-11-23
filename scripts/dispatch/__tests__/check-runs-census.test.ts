@@ -505,6 +505,30 @@ describe("the owner's narrower rule", () => {
       expect(rulesOf(sentence)).toEqual([]);
     });
   }
+
+  // A rule is exempt only where the named check is what its verb acts on, and nothing after that
+  // clause can add to what it covers.
+  for (const sentence of [
+    "The tester does not run anything again, c13 included.",
+    "The tester does not run anything again.",
+    "The tester does not run c13 again, nor anything else.",
+    "The tester does not run c13 again, or the lint of the page.",
+    "The tester does not run c13 again, and it repeats no other run.",
+  ]) {
+    test(`a rule whose verb acts on more than the one own check is listed: ${sentence}`, () => {
+      expect(rulesOf(sentence)).toEqual(["old-rule"]);
+    });
+  }
+
+  for (const sentence of [
+    "The tester does not run c13 again.",
+    "`c13` runs once at the head, by the implementer.",
+    "The tester does not run c13 again: it spends production's chat model.",
+  ]) {
+    test(`a rule whose verb acts on the one own check alone stays quiet: ${sentence}`, () => {
+      expect(rulesOf(sentence)).toEqual([]);
+    });
+  }
 });
 
 /** The planted round, as `round.json` holds it, with the changes each control makes. */

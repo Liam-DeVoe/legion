@@ -161,27 +161,63 @@ export const DEFAULT_PATTERNS = {
     /record\w*[^.]{0,60}?from (?:the |a |CI's |its )?(?:CI|GitHub)(?:'s)? (?:run|job|check run)|record\w*[^.]{0,40}?(?:result|check)[^.]{0,40}?from (?:the |a )?CI run/i,
 } as const;
 
-/** Words that give a sentence's rule a general subject: a check noun (`check`, `checks`), with or
- *  without an article or a quantifier, a bare `each`, `every`, `all`, `any` or `other`, or a
- *  marker that makes a named check an example of a class (`including`, `such as`, `for example`,
- *  `e.g.`, `like`, `among them`). */
-const GENERAL_SUBJECT =
-  /\bchecks?\b|\b(?:each|every|all|any|others?)\b|\bincluding\b|\bsuch as\b|\bfor example\b|\be\.g\.|\blike\b|\bamong them\b/i;
+/** The clauses that give a rule to one named check, `id`: the object of a verb of the old rule
+ *  ("does not run c13 again"), the subject of that verb's passive ("c13 is not run again"), or the
+ *  subject of a one-run rule ("c13 runs once at the head"). The id may stand in backticks, after
+ *  `the`, and with its own noun (`check c13`, `the c13 check`). */
+function oneCheckClauses(id: string): RegExp[] {
+  const ref = `(?<![\\w-])(?:the\\s+)?(?:check\\s+)?\`?${escaped(id)}\`?(?![\\w-])(?:\\s+check\\b)?`;
+  return [
+    new RegExp(
+      `\\b(?:does not|doesn't|do not|don't|never|need not|will not|won't|must not)\\s+(?:run|re-?run|repeat)\\s+${ref}\\s+again\\b`,
+      "i"
+    ),
+    new RegExp(`${ref}\\s+is\\s+(?:not|never)\\s+(?:run|re-?run|repeated)\\s+again\\b`, "i"),
+    new RegExp(
+      `${ref}\\s+(?:runs|is\\s+run)\\s+(?:only\\s+)?once(?:,?\\s+at\\s+(?:the|that|each)\\s+head)?\\b`,
+      "i"
+    ),
+  ];
+}
 
-/** Whether a sentence's rule is on one of the document's own checks alone: it names exactly one
- *  of them, and holds no general subject once that check's own noun (`check c13`, `c13 check`) is
- *  taken out. A sentence that names a check only as an example of a rule on checks in general is
- *  a rule for all checks; where the census cannot tell, the sentence is listed for a reader. */
-function ruleOnOneOwnCheck(sentence: string, ownChecks: ReadonlySet<string>): boolean {
+/** What may follow such a clause in its sentence: nothing, a new clause after a colon or a dash,
+ *  a reason (`because`, `since`, `as`, `so`), or who runs the check (`by the implementer`).
+ *  Anything else, a comma and a list or an `or` among them, may add to what the rule covers. */
+const CLAUSE_END = /^(?:[.!?]?$|\s*[:—–]|\s+-\s|,?\s+(?:because|since|as|so|by)\b)/i;
+
+/** Words in the rest of such a sentence that can carry its rule past the one named check: a check
+ *  noun, a quantifier, a plural or indefinite pronoun, an example or an additive marker. */
+const BEYOND_ONE_CHECK =
+  /\bchecks?\b|\b(?:any|anything|each|every|everything|all|other|others|rest|same|both|either|neither|nor|none|too|also|them|they|those|these)\b|\binclud\w*|\bsuch as\b|\bfor example\b|\be\.g\.|\blike\b|\bamong\b|\bas well\b/i;
+
+/**
+ * Whether a sentence's rule is on one of the document's own checks alone, as the census can show
+ * it rather than infer it: the sentence names exactly one of the document's checks, that check is
+ * what the rule's verb acts on in one of `oneCheckClauses`, the clause ends its sentence or a
+ * clause of it (`CLAUSE_END`), and the rest of the sentence holds no other rule of the two
+ * patterns and no word that can carry the rule past that check (`BEYOND_ONE_CHECK`). Every other
+ * sentence is listed for a reader.
+ */
+function ruleOnOneOwnCheck(
+  sentence: string,
+  ownChecks: ReadonlySet<string>,
+  patterns: { readonly old: RegExp; readonly cirec: RegExp }
+): boolean {
   const named = [...ownChecks].filter((id) => namesCheck(sentence, new Set([id])));
   const [id] = named;
   if (named.length !== 1 || id === undefined) return false;
-  const own = escaped(id);
-  const bound = new RegExp(
-    `\\bcheck\\s+\`?${own}\`?(?![\\w-])|(?<![\\w-])\`?${own}\`?\\s+check\\b`,
-    "gi"
-  );
-  return !GENERAL_SUBJECT.test(sentence.replace(bound, " "));
+  for (const clause of oneCheckClauses(id)) {
+    const found = clause.exec(sentence);
+    if (found === null) continue;
+    const after = sentence.slice(found.index + found[0].length);
+    if (!CLAUSE_END.test(after)) continue;
+    const rest = `${sentence.slice(0, found.index)} ${after}`;
+    if (BEYOND_ONE_CHECK.test(rest) || patterns.old.test(rest) || patterns.cirec.test(rest)) {
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 /** A plan line that gives a check one run at a head, as the measurements' `ONCE` reads it. */
@@ -249,8 +285,8 @@ export interface TextMatch {
  * Each sentence of a text that holds the old rule: first the fixed strings p1 to p6, then the two
  * patterns over the sentences that hold none of them. A pattern hit whose rule is on one of the
  * document's own checks alone (`ruleOnOneOwnCheck`) is the owner's narrower rule for that check,
- * and is not listed; a hit that names an own check beside a general subject, or more than one
- * own check, is listed.
+ * and is not listed; every other hit is listed, among them one that names an own check as an
+ * example of a wider rule, or more than one own check.
  */
 export function matchesIn(
   markdown: string,
@@ -276,7 +312,7 @@ export function matchesIn(
       const old = patterns.old.exec(sentence);
       const cirec = patterns.cirec.exec(sentence);
       if (old === null && cirec === null) continue;
-      if (ruleOnOneOwnCheck(sentence, ownChecks)) continue;
+      if (ruleOnOneOwnCheck(sentence, ownChecks, patterns)) continue;
       found.push({
         rules: [...(old === null ? [] : ["old-rule"]), ...(cirec === null ? [] : ["ci-recording"])],
         match: (old ?? cirec)?.[0] ?? sentence,
