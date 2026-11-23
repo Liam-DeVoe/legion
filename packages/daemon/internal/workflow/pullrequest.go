@@ -739,14 +739,18 @@ func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.
 }
 
 // MergingAt reads in tx what the merging rule judges issue key by: the issue, whether its tree
-// lingers (record.TreeLingers) and the pull request of its work's merge, the one of the task that
-// merges (record.Store.MergePullRequest), which no other task's pull request is. It returns the
-// issue and that pull request, with why the workflow no longer works the issue's merging phase at
-// head of pull request number (leftMergingAt), "" while it does. An issue the record does not hold
-// is a nil issue, no pull request and no reason. The facts that write the read and the merger's
-// message (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull request
-// and deliver the message read the issue through this one read, so all four judge it from the
-// same records. It is exported for those outbox rows (the daemon's mergingAt).
+// lingers (record.TreeLingers) and the pull request whose merge is judged. For an issue with plan
+// rows that is the issue's pull request number (record.Store.TaskPullRequests), the pull request of
+// a task, judged by the place of that task (record.PullRequest.Task, record.StoredPlan.TaskOf): with
+// several tasks the issue's phase is its least finished task's, so a task stands at its merge while
+// the issue stands in another phase. For an issue with no plan rows it is the pull request of its
+// work's merge (record.Store.MergePullRequest), judged by the issue's phase. It returns the issue
+// and that pull request, with why the workflow no longer works that merge at head of pull request
+// number (leftMergingAt), "" while it does. An issue the record does not hold is a nil issue, no
+// pull request and no reason. The facts that write the read and the merger's message (dequeued,
+// mergeQueueReadDone) and the daemon's outbox rows that read the pull request and deliver the
+// message read the issue through this one read, so all four judge it from the same records. It is
+// exported for those outbox rows (the daemon's mergingAt).
 func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, number int, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -756,27 +760,68 @@ func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, n
 	if err != nil {
 		return nil, nil, "", err
 	}
-	pr, err := store.MergePullRequest(ctx, tx, key)
+	stored, err := store.Plan(ctx, tx, key, issue.Generation)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return issue, pr, leftMergingAt(*issue, lingers, pr, number, head), nil
+	if stored == nil {
+		pr, err := store.MergePullRequest(ctx, tx, key)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		stands := ""
+		if issue.Phase != phase.Merging {
+			stands = fmt.Sprintf("the issue stands in %s, not merging", issue.Phase)
+		}
+		return issue, pr, leftMergingAt(*issue, stands, lingers, pr, number, head), nil
+	}
+	prs, err := store.TaskPullRequests(ctx, tx, key)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	var pr *record.PullRequest
+	if at := slices.IndexFunc(prs, func(row record.PullRequest) bool { return row.Number == number }); at >= 0 {
+		pr = &prs[at]
+	}
+	return issue, pr, leftMergingAt(*issue, taskMergingAt(stored, pr), lingers, pr, number, head), nil
 }
 
-// leftMergingAt says why the workflow no longer works issue's merging phase at head of pull
-// request number, or "" while it does: the issue stands in merging itself, not held from it; it
-// is in the workflow; its tree does not linger (lingers, record.TreeLingers); and the pull request
-// the record holds for it (pr, nil for none) is number, open, at head. In each other state no
-// merger is told of a removal from the merge queue at head: the workflow no longer works that
-// phase at that head, and the merger of a lingering tree is suspended by its close and would
-// never hold its role to hear it. The facts that write the read and the merger's message
-// (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull request and
-// deliver the message all judge by this one rule, through MergingAt, so no two of them disagree
-// about an issue that left merging.
-func leftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, number int, head string) string {
+// taskMergingAt says why the task of pr, a pull request of an issue whose plan is stored, stands
+// at no merge the merger works, "" where it runs at its merge (record.PlaceMerge): a pull request
+// on a branch no task holds is no task's, a task elsewhere on its line stands at that place, and a
+// task at its merge that does not run there (held, done or stopped) is in that state. A pull
+// request the record does not hold is leftMergingAt's to name.
+func taskMergingAt(stored *record.StoredPlan, pr *record.PullRequest) string {
+	if pr == nil {
+		return ""
+	}
+	task, ok := stored.TaskOf(pr.Task)
 	switch {
-	case issue.Phase != phase.Merging:
-		return fmt.Sprintf("the issue stands in %s, not merging", issue.Phase)
+	case !ok:
+		return fmt.Sprintf("pull request #%d is no task's", pr.Number)
+	case task.Place.Kind != record.PlaceMerge:
+		return fmt.Sprintf("task %s stands at %s, not at its merge", task.Task, taskPlaceWords(stored, task))
+	case task.State != record.TaskRunning:
+		return fmt.Sprintf("task %s is %s at its merge", task.Task, task.State)
+	}
+	return ""
+}
+
+// leftMergingAt says why the workflow no longer works the merge of pull request number at head,
+// or "" while it does: the work stands at that merge itself, not held from it (stands, the issue's
+// phase for an issue with no plan rows and the place of the pull request's task for an issue with
+// plan rows, MergingAt, "" where it stands there); the issue is in the workflow; its tree does not
+// linger (lingers, record.TreeLingers); and the pull request the record holds for it (pr, nil for
+// none) is number, open, at head. In each other state no merger is told of a removal from the
+// merge queue at head: the workflow no longer works that merge at that head, and the merger of a
+// lingering tree is suspended by its close and would never hold its role to hear it. The facts
+// that write the read and the merger's message (dequeued, mergeQueueReadDone) and the daemon's
+// outbox rows that read the pull request and deliver the message all judge by this one rule,
+// through MergingAt, so no two of them disagree about a merge that ended.
+func leftMergingAt(issue record.Issue, stands string, lingers bool, pr *record.PullRequest, number int, head string) string {
+	switch {
+	case stands != "":
+		return stands
 	case record.OutOfWorkflow(issue.Status):
 		return fmt.Sprintf("the issue is out of the workflow at status %s", issue.Status)
 	case lingers:

@@ -162,7 +162,7 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			case record.TaskRunning:
 				refused = append(refused, intake.RunningTaskChanged(id))
 			case record.TaskHeld:
-				refused = append(refused, intake.HeldTaskChanged(id, heldAt(given.stored, task)))
+				refused = append(refused, intake.HeldTaskChanged(id, taskPlaceWords(given.stored, task)))
 			}
 		}
 		next := nextPlan(given.stored, given.version, given.tasks, given.steps)
@@ -445,14 +445,17 @@ func laterVersionRefusal(issue string, held record.PlanVersion, next plan.Plan) 
 	return nil
 }
 
-// heldAt is where task, a held task of stored, stands, as the refusal of a change of it names it
-// (intake.HeldTaskChanged): `step <i> (<role>)`, or its retro or its merge.
-func heldAt(stored *record.StoredPlan, task record.PlanTask) string {
+// taskPlaceWords is where task of stored stands, as a refusal names it (intake.HeldTaskChanged,
+// taskMergingAt): `step <i> (<role>)`, its retro, its merge, or no act for a task that has not
+// started.
+func taskPlaceWords(stored *record.StoredPlan, task record.PlanTask) string {
 	switch task.Place.Kind {
 	case record.PlaceRetro:
 		return "its retro"
 	case record.PlaceMerge:
 		return "its merge"
+	case "":
+		return "no act"
 	}
 	role := ""
 	if steps := stored.Steps[task.Task]; task.Place.Position >= 1 && task.Place.Position <= len(steps) {
