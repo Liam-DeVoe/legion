@@ -1087,7 +1087,12 @@ type ConflictRead struct {
 // MergeForward is the daemon's ask that the agent of the task's implementation step merge Base
 // forward onto Head (PullRequest.MergeForward). Phase is the phase the issue stood in when the
 // daemon asked, and stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374
-// R0, ConflictWhy).
+// R0, ConflictWhy). Own is whether the ask was made while the task stood at that step itself
+// (workflow's mergeForward): implementing on today's steps, or a step of the type implementation
+// under another role's name, where the work the conflict needs already is. Such an ask sends no
+// hold and no notice, tells its agent that its own assignment and its completion stand
+// (MergeForwardMessage.Message), and covers that step alone: once the task stands elsewhere at the
+// same head, the ask is made again, with the hold and the notice.
 // AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
 // until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
 // it does when the issue stands past review and its task has a reviewer step (workflow's
@@ -1097,11 +1102,13 @@ type ConflictRead struct {
 // merged forward again, Earlier is what still names the head the first merge replaced
 // (PullRequest.MergeForward says how long the stretch lasts). It is stored as the jsonb of
 // pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier
-// with no migration of its own, and leaves it out while it is empty.
+// and Own with no migration of their own, and leaves each out while it is empty. Migration
+// 20261123060645 marks Own on each ask the release before recorded in implementing.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
 	Phase       phase.Phase          `json:"phase"`
+	Own         bool                 `json:"own,omitempty"`
 	Why         ConflictWhy          `json:"why"`
 	AskedAt     time.Time            `json:"askedAt"`
 	Landed      string               `json:"landed,omitempty"`

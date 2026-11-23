@@ -1903,17 +1903,19 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // Message is what the runner publishes for issue to Role, where pr is the pull request as the
 // record holds it when the row is delivered: the repository it is held under (PullRequest.Repo),
 // and its merge forward (PullRequest.MergeForward), whose ReviewAsked says whether the landing
-// asked the reviewer to read the merge. It starts with the issue key, as every message of this
-// lane does, and names the pull request as `owner/name#n`. The sentences are short and plain, one
-// instruction to a sentence, because an agent reads them (ASD-STE100).
+// asked the reviewer to read the merge and whose Own whether the ask was made at the step of the
+// agent it asks. It starts with the issue key, as every message of this lane does, and names the
+// pull request as `owner/name#n`. The sentences are short and plain, one instruction to a
+// sentence, because an agent reads them (ASD-STE100).
 //
 // The ask names the pull request, the head, the base and the phase the issue stays in, gives why
 // the daemon acted, and tells the agent of the task's implementation step to merge the base
 // forward in the issue workspace, the one workspace every role of the issue shares, as the worker
 // skill's conflicts reference says, after the working-copy check of its foreign-path reference,
-// and to push the issue branch, with no handoff and no completion for the merge. In implementing
-// it also says that the implementer's own assignment and its completion stand: the act starts no
-// phase entry there.
+// and to push the issue branch, with no handoff and no completion for the merge. Where the record
+// holds that ask as made at that agent's own step, in the phase the row names (implementing on
+// today's steps), it also says that the agent's own assignment there and its completion stand:
+// the act starts no phase entry there.
 //
 // The hold gives why the daemon acted, and tells the worker that the agent of the task's
 // implementation step is asked to merge the head forward in the workspace they share and that the
@@ -1941,8 +1943,8 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 	switch p.Step {
 	case MergeForwardAsk:
 		own := ""
-		if p.Phase == phase.Implementing {
-			own = " Your own assignment in implementing stands, and so does its completion."
+		if asked := pr.MergeForward; asked != nil && asked.Own && asked.Phase == p.Phase {
+			own = fmt.Sprintf(" Your own assignment in %s stands, and so does its completion.", p.Phase)
 		}
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it."+
 			" The issue stays in %s. %s"+

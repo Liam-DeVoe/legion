@@ -18,8 +18,17 @@ body: |-
   the next boot, each task whose remaining steps name a role of the issue's plan on that model,
   with a `task-stopped` notice whose reason names the model.
 
-  One migration adds the table of the roles a plan defines. A rollback runs its way back, and
-  removes `models` from `legion.yaml` first, since an earlier daemon refuses the key.
+  A merge forward asks the agent of the task's step of the type implementation, whatever its role
+  is called. While the task stands at that step itself, a step of a role of the plan that runs as
+  `step` included, the merge forward is told as it is in implementing: that agent is asked alone,
+  its ask says its own assignment and its completion stand, the architect gets no `checks-red`
+  notice, the move on out of that step asks again with the hold and the notice, and a move back
+  into it drops the ask. The merge that agent pushes sends it no message that it landed.
+
+  One migration adds the table of the roles a plan defines, and another marks each ask to merge
+  forward that an earlier release recorded in implementing as made at that step. A rollback runs
+  the way back of each, and removes `models` from `legion.yaml` first, since an earlier daemon
+  refuses the key.
 time: 2026-11-23T04:19:36Z
 custom:
     Issue: pr5160

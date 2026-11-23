@@ -132,6 +132,10 @@ import (
 // and touches no outbox_kind_check: it writes the primary key of phases over step_task and
 // step_place, which the plan of an issue (20261117034837) added, and every row it finds keeps its
 // step (migration_20261122062637_test.go).
+// The mark of an ask made at the task's implementation step (20261123060645) is applied after all
+// of these and touches no outbox_kind_check: it adds the key own to each merge_forward ask recorded
+// in implementing, on the column 20261119003157 added, which a database main migrated holds null on
+// every row (migration_20261123060645_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -142,7 +146,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117201743, 20261117213545, 20261117223524, 20261119003157, 20261120042902, 20261120055717,
-	20261121183336, 20261122062637,
+	20261121183336, 20261122062637, 20261123060645,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -160,8 +164,9 @@ var thisBranchsMigrations = []int{
 // issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, the name of each step's agent's 20261117213545, dispatch://INFRA-4374's
 // 20261119003157, dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717,
-// the claim of each resume's 20261121183336 and the key of a phases row by its step's
-// 20261122062637. That is why the loop below holds the list rather
+// the claim of each resume's 20261121183336, the key of a phases row by its step's 20261122062637
+// and the mark of an ask made at the implementation step's 20261123060645. That is why the loop
+// below holds the list rather
 // than counting it, so that a version added above any of them is named here rather than read as
 // main's.
 const mainsNewestMigration = 20261111212544

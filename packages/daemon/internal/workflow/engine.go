@@ -2523,6 +2523,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if len(beneath) > 0 {
 		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, row.ToPlace, handoff, pr, reason, beneath)
 	}
+	// Whether the move leaves the task's implementation step is read on the walk before the move,
+	// for the merge forward an ask made there leaves the next step to make (mergeForwardOnEntry).
+	leftImplementation := w.atImplementation(issue.Phase)
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, row.To, row.ToPlace, PhaseStatus(row.To), nil, handoff, pr, reason)
 	if err != nil {
 		return err
@@ -2597,11 +2600,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
-	// it, and a move at a head held in a confirmed conflict asks for it where the phase entered
-	// needs a head that merges. It comes after the start, so the worker of the phase entered is
-	// started before the hold that tells it to wait for the merge.
-	if err := e.mergeForwardOnEntry(ctx, tx, issue, from); err != nil {
+	// The merge forward follows the move (mergeForwardOnEntry): a move into the task's
+	// implementation step drops it, and a move at a head held in a confirmed conflict asks for it
+	// where the step entered needs a head that merges. It comes after the start, so the worker of
+	// the step entered is started before the hold that tells it to wait for the merge.
+	if err := e.mergeForwardOnEntry(ctx, tx, issue, w, leftImplementation, movedBack); err != nil {
 		return err
 	}
 	if mergedAlready {

@@ -167,6 +167,19 @@ func (w Walk) implementationPlace(place record.TaskPlace) (record.TaskPlace, boo
 	return record.TaskPlace{Kind: record.PlaceStep, Position: last}, true
 }
 
+// atImplementation says whether w's task, while its issue stands in at, stands at the step whose
+// agent does its implementation work there (implementationPlace from placeIn, as
+// Engine.implementationAgent reads it): implementing on today's steps, or a step of the type
+// implementation under another role's name, which runs as step. There the work a merge forward
+// needs is already where the issue stands (mergeForward), and a move in drops the merge forward
+// the record holds (mergeForwardOnEntry). The retro, which that agent also runs (AgentAt), is not
+// that step: the retro is an assignment of its own.
+func (w Walk) atImplementation(at phase.Phase) bool {
+	place, _ := w.placeIn(at)
+	step, ok := w.implementationPlace(place)
+	return ok && step == place
+}
+
 // placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where
 // the phase it derives for a running task (issuePhaseOf) is p, and no place otherwise; for a walk
 // with no plan rows, and for a stored task at no act whose issue already stands in a step (plan
