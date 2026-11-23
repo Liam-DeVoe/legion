@@ -12,7 +12,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 1. Read the issue, then its `open-items.md` where one exists (`dispatch doc-read --issue <issue> --artifact open-items-md`):
    the architect records decisions there that it does not message.
-   Then read each handoff your task's `Step <j> (<role>) reported:` lines name, as those lines say.
+   Then read each handoff a `(<role>) reported:` line of your task names, as it says.
    A record beats your memory.
 
 2. Before the turn's first `jj new`, list `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only` and `jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only`.

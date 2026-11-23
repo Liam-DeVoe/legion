@@ -959,7 +959,7 @@ test("the skills say what Dispatch and the tool do with no pull request and at t
       /A `no_head` check can never pass: it is a defect, held as \*When retro stops\* says\./,
     ]),
     ...lacks("legion-worker/SKILL.md", [
-      /Then read each handoff your task's `Step <j> \(<role>\) reported:` lines name/,
+      /Then read each handoff a `\(<role>\) reported:` line of your task names, as it says\./,
       /Commit nothing in the copy\./,
     ]),
     ...lacks("legion-architect/references/plan.md", [
