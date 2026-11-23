@@ -838,8 +838,10 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 
 // decodedBase is the states of the base fsys, of the name name, as the reader's process p writes them
 // in its reply, decoded by the domain test itself: the reply's member "states" as encoding/json/v2
-// reads it, apart from the decoder that the judgment reads each reply with (readerReply.states). It fails
-// the test t, by the base's name, where that decoder reads the same reply otherwise. So the places of the
+// reads it, apart from the decoder that the judgment reads each reply with (readerReply.states, through
+// readerReply.answer, the one reading of the reader's lines). It is the domain test's oracle of a reply,
+// a reading of its own on purpose, as the definition (definedAnswer) is of the judgment. It fails the
+// test t, by the base's name, where that decoder reads the same reply otherwise. So the places of the
 // answers that the domain test writes (eachAnswer) are the places that the reader wrote, and a fault of
 // the judgment's decoder that drops or changes places of a reply fails here by the base's name, and by
 // the answers that move those places, rather than taking the places out of the test's domain and the

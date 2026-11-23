@@ -200,12 +200,25 @@ type readerReply struct {
 	text string
 }
 
-// states is the states of the scenario that the reply r gives, in a map of its own at each call; or an
-// error where r is the reader's refusal, or no line of the reader's form.
-func (r readerReply) states() (map[string]string, error) {
+// answer is the reader's answer that the reply r gives, decoded from its text at each call, so each call
+// has a map of states of its own; or an error, which names the text, where r is no line of
+// readerAnswer's form or holds a member of another name (json.RejectUnknownMembers). It is the one
+// reading of the reader's lines: ask reads each line that the process writes by it, and states each
+// reply that the judgment reads.
+func (r readerReply) answer() (readerAnswer, error) {
 	var a readerAnswer
 	if err := json.Unmarshal([]byte(r.text), &a, json.RejectUnknownMembers(true)); err != nil {
-		return nil, fmt.Errorf("the reply %q is no line of the reader's form: %w", r.text, err)
+		return readerAnswer{}, fmt.Errorf("the reply %q is no line of the reader's form: %w", r.text, err)
+	}
+	return a, nil
+}
+
+// states is the states of the scenario that the reply r gives (answer), in a map of its own at each
+// call; or an error where r is the reader's refusal, or no line of the reader's form.
+func (r readerReply) states() (map[string]string, error) {
+	a, err := r.answer()
+	if err != nil {
+		return nil, err
 	}
 	if a.Refused {
 		return nil, fmt.Errorf("the reply is the reader's refusal: %s", a.Refusal)
@@ -225,10 +238,10 @@ func replyOf(t *testing.T, states map[string]string) readerReply {
 	return readerReply{text: string(append(data, '\n'))}
 }
 
-// ask writes line, a line of readerLine, to the process and reads its answer: the reply as the
+// ask writes line, a line of readerLine, to the process and reads its answer (answer): the reply as the
 // process wrote it, with the key of line, or the refusal of the reader or the derivation as the error.
-// A process that ends, or that answers with no line of its form, fails the test with what it wrote to
-// its standard error.
+// A process that ends, or that answers with no line of its form, fails the test, with what it wrote to
+// its standard error where it gave no line.
 func (p *readerProcess) ask(t *testing.T, line []byte) (readerReply, error) {
 	t.Helper()
 	if _, err := p.in.Write(line); err != nil {
@@ -238,14 +251,15 @@ func (p *readerProcess) ask(t *testing.T, line []byte) (readerReply, error) {
 	if err != nil {
 		t.Fatalf("the reader's process gave no answer (%v): %s", err, p.stderr.String())
 	}
-	var a readerAnswer
-	if err := json.Unmarshal(data, &a, json.RejectUnknownMembers(true)); err != nil {
-		t.Fatalf("the reader's process answered %q: %v", data, err)
+	reply := readerReply{line: sha256.Sum256(line), text: string(data)}
+	a, err := reply.answer()
+	if err != nil {
+		t.Fatalf("the reader's process answered: %v", err)
 	}
 	if a.Refused {
 		return readerReply{}, errors.New(a.Refusal)
 	}
-	return readerReply{line: sha256.Sum256(line), text: string(data)}, nil
+	return reply, nil
 }
 
 // states is what the process reads of the scenario fsys (readerLine, ask, readerReply.states).
