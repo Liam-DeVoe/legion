@@ -58,9 +58,8 @@ which its 116 minutes (6,960 s) hold.
 daemon-go-race: 240 s + 490 s + 1,444 s + 1,207 s + 1,275 s = 4,656 s, which its 78 minutes
 (4,680 s) hold.
 
-The 60 and 70 minutes the two jobs had end before those sums: they held the waits as they stood
-before install-jj and install-uv were counted, before forced-order.sh's download was bounded and
-before the runner's pull was counted at 240 s, 2,302 s and 3,152 s.
+The 60 and 70 minutes main gives the two jobs (3,600 s and 4,200 s) end before those sums, so a
+stalled install there would end in GitHub's cancellation, which names nothing.
 
 The Postgres image `scripts/e2e/stage1-skeleton.sh` pulls (425 s) is left out: the pull stands in
 that script's `if [ -z "${LEGION_E2E_PG_DSN:-}" ]` branch, the devbox's path, and daemon-go's env

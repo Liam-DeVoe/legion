@@ -736,6 +736,13 @@ network_install_test: &network_install_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/network-install.test.sh'
   - '.github/scripts/network-install.sh'
+fetch_test: &fetch_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/fetch.test.sh'
+  - '.github/scripts/fetch.sh'
 check_gitleaks_version_test: &check_gitleaks_version_test
   - *ci_router
   - *ci_filters_data
@@ -1108,6 +1115,7 @@ test:
   - *check_zod_version_test
   - *check_gh_version_test
   - *network_install_test
+  - *fetch_test
   - *check_gitleaks_version_test
   - *workflow_paths_test
   - *check_image_trigger_paths_test
@@ -2608,10 +2616,12 @@ worker_image:
   - 'scripts/third-party-notices.ts'
   - 'scripts/go-third-party-notices.sh'
   - 'scripts/assemble-third-party-notices.sh'
-  # Bind-mounted into each RUN of worker.Dockerfile that installs, so their bytes are in those RUNs'
-  # cache keys: a change to either builds the image again.
+  # network-install.sh and go-fetch.sh are bind-mounted into worker.Dockerfile's go-licenses RUN, and
+  # fetch.sh into each of its RUNs that downloads with curl, so their bytes are in those RUNs' cache
+  # keys: a change to any of them builds the image again.
   - '.github/scripts/network-install.sh'
   - '.github/scripts/go-fetch.sh'
+  - '.github/scripts/fetch.sh'
   - '!**/node_modules/**'
   - '!**/dist/**'
   - '!**/build/**'
@@ -2633,6 +2643,7 @@ browser_image:
   - '.github/docker/**'
   - '.github/scripts/ci_images.py'
   - '.github/scripts/network-install.sh'
+  - '.github/scripts/fetch.sh'
 ci_filters:
   # why: .github/ci-notes/ci.md#ci_filters-the-directory-rather-than-the-workflows-the-check-names-one-by-one
   - '.github/workflows/**'

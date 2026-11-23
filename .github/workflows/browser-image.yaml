@@ -286,10 +286,10 @@ jobs:
           DOCKER_BUILD_SUMMARY: "false"
         with:
           # The Dockerfile copies nothing out of the build context, and its install RUN bind-mounts
-          # one file from it, .github/scripts/network-install.sh, so the context is .github and
-          # .github/docker/browser.Dockerfile.dockerignore cuts it to .github/docker and that one
-          # script: a whole-repository context would be packed up and sent to the builder for
-          # nothing.
+          # two files from it, .github/scripts/network-install.sh and .github/scripts/fetch.sh, so
+          # the context is .github and .github/docker/browser.Dockerfile.dockerignore cuts it to
+          # .github/docker and those two scripts: a whole-repository context would be packed up and
+          # sent to the builder for nothing.
           context: .github
           file: .github/docker/browser.Dockerfile
           # Every runner that pulls this image is linux/amd64, and so is its base.

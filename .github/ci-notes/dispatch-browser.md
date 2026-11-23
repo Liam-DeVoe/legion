@@ -336,10 +336,19 @@ it is built again. So the download now carries a budget of its own and a second 
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-downloads-in-place-of-a-go-build),
 and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
-seconds" in that log) answers a failed read, not a slow one. The job's budget is the
+seconds" in that log) answers a failed read, not a slow one. The job's budget was the
 browser step's 1,080 s, the two download attempts' 120 s each, and the steps without a
-budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to the 32 minutes
-of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
+budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to 32 minutes.
+
+THE FROZEN INSTALL, AT ITS WORST. The frozen install then moved under
+.github/scripts/network-install.sh, which bounds a wait bun's own client does not end on a
+registry that answers and then trickles, and can take 425 s before it fails the install by name:
+three attempts of bun's 120 s, each killed 15 s after its SIGTERM, with two 10 s pauses. So the
+install counts at that 425 s in place of the census's 52 s, as a budget of its own, and the
+steps without one at 565 - 52 = 513 s: 1,080 + 120 + 120 + 513 + 425 = 2,258 s, 37 min 38 s,
+rounded up to the 38 minutes of the shard job's `timeout-minutes`. At 32 a stalled install's
+third attempt would end the leg in GitHub's cancellation, which names nothing. The browser
+step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -725,12 +734,19 @@ The shard job's note "THE TWO NETWORK READS, AT A BUSY HOUR" holds here too, and
 two legs is this job's: in run 44213916667 alone (chromium-alone) spent 355 s pulling the
 image, and the 6-minute budget cancelled it 3 s into its checkout. The download carries the
 same budget and second attempt as there, and the pull is counted at that 355 s. The job's
-budget is the browser step's 180 s, the two download attempts' 120 s each, and the steps
-without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to the 15
-minutes of the alone job's `timeout-minutes`, whose 38 s left over hold the new step that places the binaries
+budget was the browser step's 180 s, the two download attempts' 120 s each, and the steps
+without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to 15 minutes,
+whose 38 s left over held the step that places the binaries
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
-The browser step's own budget is unchanged, and it still
-fires first.
+
+The frozen install then moved under .github/scripts/network-install.sh, for the reason the shard
+job's note "THE FROZEN INSTALL, AT ITS WORST" gives, and counts at its 425 s in place of the 9 s
+above, as a budget of its own; the step that places the binaries counts at the shard job's
+measured 1 s. So the job's budget is 180 + 120 + 120 + (442 - 9) + 425 + 1 = 1,279 s, 21 min 19 s,
+rounded up to the 22 minutes of the alone job's `timeout-minutes`. At 15 the job could end in
+GitHub's cancellation, which names nothing, before a stalled install was named: the image's pull
+at 355 s, the two download attempts and the install's 425 s alone are 1,020 s. The browser step's
+own budget is unchanged, and it still fires first.
 
 ## What the alone job downloads in place of a Go build
 
@@ -1186,9 +1202,10 @@ The copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml), named by t
 digest packages/dispatch/e2e/visual-run.sh runs, pulled here so the run of the "Browser-test dispatch dashboard against its baselines" step does not
 pay for it inside the browser step's own budget. A failed pull is a fault of this
 repository's own package, so it fails here and says so. The pull runs under
-.github/scripts/network-install.sh's bound for docker, which tries again only an attempt that
-bound cut: docker ends a wait for a registry's headers by itself, but not a wait for a body that
-trickles.
+.github/scripts/network-install.sh's bound for docker, which tries an attempt again in two
+cases, when that bound cut it and when its output names a network fault (a refused or reset
+connection, a 429 or a 5xx), and fails any other at once: docker ends a wait for a registry's
+headers by itself, but not a wait for a body that trickles.
 
 ## The stack's Postgres image, pulled here for the same reason
 

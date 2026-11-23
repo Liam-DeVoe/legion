@@ -24,7 +24,6 @@ sets none), the runner's pulls and the step's own installs. For this job that su
 - 425 s: the frozen `bun install`, three attempts of bun's 120 s, each killed 15 s after its
   SIGTERM, with two 10 s pauses.
 
-The 15 minutes the job had before this change end before that sum, so a stalled install there
-would end in GitHub's cancellation, which names nothing; so do the 39 minutes it had while the
-runner's pull counted at 180 s. The job's comment holds its other bound: its steps' own sum at
-their longest, 755 s.
+The 15 minutes main gives the job end before that sum, so a stalled install there would end in
+GitHub's cancellation, which names nothing. The job's comment holds its other bound: its steps'
+own sum at their longest, 755 s.

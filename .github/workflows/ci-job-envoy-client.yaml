@@ -47,7 +47,8 @@ jobs:
         # reads a Go `const` line, and this image is a TypeScript constant
         # (packages/envoy-client/test/nats-server.ts, NATS_IMAGE). The registry is this
         # repository's own, so a failed pull is a fault of this repository and is shown:
-        # network-install.sh tries again only an attempt that its bound for docker cut, and fails
+        # network-install.sh tries an attempt again when its bound for docker cut it or when its
+        # output names a network fault (a refused or reset connection, a 429 or a 5xx), and fails
         # any other at once, with docker's own error above its own.
         run: .github/scripts/network-install.sh docker -- docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
       # TMPDIR is a directory of this step's own, read by the step below: a test file that leaves

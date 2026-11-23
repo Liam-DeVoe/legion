@@ -85,8 +85,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:9af49f0cf552d5a3717732a5281b40791cf98f5e24d4f479f67ff94209aa21fe
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 1,080 + 120 + 120 + 565 = 1,885 s, 31 min 25 s, rounded up to the 32 minutes below.
-    timeout-minutes: 32
+    # 1,080 + 120 + 120 + 565 - 52 + 425 = 2,258 s, 37 min 38 s, rounded up to the 38 minutes below.
+    timeout-minutes: 38
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
@@ -201,8 +201,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:9af49f0cf552d5a3717732a5281b40791cf98f5e24d4f479f67ff94209aa21fe
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-alone-jobs-measured-steps-and-its-budget
-    # 180 + 120 + 120 + 442 = 862 s, 14 min 22 s, rounded up to the 15 minutes below.
-    timeout-minutes: 15
+    # 180 + 120 + 120 + 442 - 9 + 425 + 1 = 1,279 s, 21 min 19 s, rounded up to the 22 minutes below.
+    timeout-minutes: 22
     strategy:
       fail-fast: false
       matrix:

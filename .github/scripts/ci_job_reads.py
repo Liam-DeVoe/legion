@@ -2488,7 +2488,10 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-gh-version.sh", "the script under test"),
     ]),
     harness("network_install_test", "Test the bound on network installs", f"{SCRIPTS}/network-install.test.sh", [
-        (f"{SCRIPTS}/network-install.sh", "the script under test, which network-install.test.sh:17 runs"),
+        (f"{SCRIPTS}/network-install.sh", "the script under test, which network-install.test.sh:39 runs"),
+    ]),
+    harness("fetch_test", "Test the bounded download", f"{SCRIPTS}/fetch.test.sh", [
+        (f"{SCRIPTS}/fetch.sh", "the script under test, which fetch.test.sh:31 runs"),
     ]),
     harness("check_gitleaks_version_test", "Test the gitleaks version check",
             f"{SCRIPTS}/check-gitleaks-version.test.sh", [

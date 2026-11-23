@@ -11,6 +11,10 @@ bounds were measured on (44633135919 to 44668680855) took 217 s, job 13601833948
 three installs through that script: Claude Code's `bun add` in `.github/actions/install-claude-code`,
 the frozen install, and the pull of the NATS image the reply-grant row starts (docker's bound is
 120 s too). Each can take 425 s on a stalled registry before the script fails it by name: three
-attempts of 120 s, each killed 15 s after its SIGTERM, with two 10 s pauses. So the limit is
-217 s + 1,275 s = 1,492 s, rounded up to 25 minutes. The ten minutes the job had would end a
-stalled install in GitHub's cancellation, which names nothing, before the script failed it by name.
+attempts of 120 s, each killed 15 s after its SIGTERM, with two 10 s pauses. And
+`.github/actions/install-zsh` fetches each of its two pinned files the Actions cache lacks through
+`ci_tools_curl`, which `.github/ci-notes/ci.md` ("The worst case of the tool installs that read
+.github/scripts/ci-tools.sh") counts at 124 s a fetch against a host that hangs. So the limit is
+217 s + 3 × 425 s + 2 × 124 s = 1,740 s, rounded up to 29 minutes. The ten minutes main gives the
+job would end a stalled install in GitHub's cancellation, which names nothing, before the script
+failed it by name.

@@ -90,6 +90,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.network_install_test: network-install.test.sh and what it tests."
         type: string
         required: true
+      fetch_test:
+        description: "ci.yaml's needs.changes.outputs.fetch_test: fetch.test.sh and what it tests."
+        type: string
+        required: true
       check_gitleaks_version_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_gitleaks_version_test:
@@ -393,6 +397,10 @@ jobs:
       - name: Test the bound on network installs
         if: inputs.changes-result != 'success' || inputs.network_install_test == 'true'
         run: .github/scripts/network-install.test.sh
+
+      - name: Test the bounded download
+        if: inputs.changes-result != 'success' || inputs.fetch_test == 'true'
+        run: .github/scripts/fetch.test.sh
 
       - name: Test the gitleaks version check
         if: inputs.changes-result != 'success' || inputs.check_gitleaks_version_test == 'true'

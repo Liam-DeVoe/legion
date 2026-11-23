@@ -3,11 +3,15 @@
 # network-install.sh --bounds
 #
 # Runs one install that waits on the network, bounded, retried and failed by name. The required
-# jobs of .github/workflows/ci.yaml run their installs through this script, in their steps and in
-# the Dockerfiles they build. `--bounds` prints the table below, one line per kind (`<kind> <bound
-# s> <attempts> <s before SIGKILL> <pause s>`), from which a job's limit is held to the worst case
-# of the installs it runs (.github/ci-notes/ci.md, "The runner's own pulls of a job's service and
-# container images").
+# jobs of .github/workflows/ci.yaml run their steps' installs through this script, and so do some
+# RUNs of the Dockerfiles they build, which bind-mount it: every install of
+# packages/envoy/docker/Dockerfile, the browser image's apt reads (.github/docker/browser.Dockerfile)
+# and the go-licenses fetch of packages/daemon/docker/worker.Dockerfile (by go-fetch.sh). The worker
+# image's other installs (apt-get, bun install, go install, go mod download, npm ci and uv) run
+# outside it, and the curl downloads of both images go through .github/scripts/fetch.sh. `--bounds`
+# prints the table below, one line per kind (`<kind> <bound s> <attempts> <s before SIGKILL> <pause
+# s>`), from which a job's limit is held to the worst case of the installs it runs
+# (.github/ci-notes/ci.md, "The runner's own pulls of a job's service and container images").
 #
 # WHY. On 20 November 2026 the daemon-go job of run 44665181416 waited in its "Install tmux" step,
 # `sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux`, from 03:05:59Z
@@ -86,8 +90,7 @@ NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefus
 # merge-group runs of ci.yaml (44633135919 to 44668680855, 2026-11-19 22:55Z to 2026-11-20 03:34Z);
 # an install in a Dockerfile's RUN from that RUN's BuildKit time (`#<n> DONE <s>s`) in the 20
 # newest green builds of each image (envoy-smoke's, worker-image's on pull requests and on
-# release.yaml, to 2026-11-20 11:15Z), where a RUN's whole time bounds each install in it. A kind
-# named `<installer>-<what>` guards installs of that installer measured apart.
+# release.yaml, to 2026-11-20 11:15Z), where a RUN's whole time bounds each install in it.
 #   apt         apt-get update, and apt-get install --download-only: an install's download alone.
 #               The install from what it downloaded (--no-download) reads no network and runs
 #               outside this script, since a bound that ended it while dpkg wrote would leave every
@@ -101,15 +104,13 @@ NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefus
 #               of 40 green builds that ran it, and bounds nothing now: its unpacking is no network wait.
 #   bun         bun install and bun add from the npm registry. Slowest of 499 green steps (median
 #               6 s): 55 s, proof-sdk-offline's cold install behind its fault proxy in job
-#               135990304816 of the same run; of the Dockerfiles' bun RUNs but the one below: 12.1 s,
-#               envoy's web stage in job 136203160053. 2 × 55 s is 110 s, so 120 s an attempt. Bun's
+#               135990304816 of the same run; of the Dockerfiles' bun RUNs but the worker image's
+#               plugin stage, whose install runs outside this script: 12.1 s, envoy's web stage in
+#               job 136203160053. 2 × 55 s is 110 s, so 120 s an attempt. Bun's
 #               own registry client does end a request that gets no answer, but only after minutes
 #               and with retries of its own: an install pointed at a registry that accepts and never
-#               answers had not ended after 20 minutes, longer than every job that installs with it
+#               answered had not ended after 20 minutes, longer than every job that installs with it
 #               may run.
-#   bun-image   bun install of the whole root workspace in a Dockerfile's RUN, from an empty cache:
-#               the worker image's plugin stage. Slowest of 40 green builds: 134.1 s, job
-#               136248354728. 2 × 134.1 s is 268.2 s, so 300 s an attempt.
 #   docker      docker pull of an image from ghcr.io. Slowest of 127 green steps: 41 s, the visual
 #               job's "Pull the pinned Playwright copy" in job 136044109917. 2 × 41 s is 82 s, so
 #               120 s an attempt. docker gives up after 40 s on a registry that sends no headers,
@@ -133,18 +134,9 @@ NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefus
 #               27 s for the whole step, job 135268429397 (the download 10.9 s, its unpack 12.0 s).
 #               2 × 27 s is 54 s, so 60 s an attempt. Against a server that answers and then sends
 #               one byte every 5 s, either read had not ended after 1,260 s.
-#   apk         apk add of Alpine packages. Slowest of 40 green builds of the worker image's go
-#               stage: 1.0 s, job 136243259140. 2 × 1.0 s, so 60 s an attempt.
-#   npm         npm ci of a project's lockfile. The worker image's toolchain RUN, which holds its
-#               one npm ci beside seven downloads: 43.2 s at its slowest of 40 green builds, job
-#               136004778019. 2 × 43.2 s is 86.4 s, so 120 s an attempt.
 #   uv          uv making a virtual environment of a managed Python and installing into it. The
 #               worker image's azure-cli RUN, which holds both: 33.5 s at its slowest of 40 green
 #               builds, job 136046630907. 2 × 33.5 s is 67 s, so 120 s an attempt.
-#   gcloud      the Google Cloud SDK's install.sh, which reads the channel's component list from
-#               dl.google.com. The worker image's SDK RUN, which holds its download, install.sh and
-#               the bytecode compile: 30.2 s at its slowest of 40 green builds, job 136124064333.
-#               2 × 30.2 s is 60.4 s, so 120 s an attempt.
 #   crane       crane's reads and copies of an image in a registry: the `crane digest`, `crane
 #               config` and `crane copy` of .github/scripts/mirror-ci-images.sh, and the `crane
 #               config`, `crane tag` and `crane manifest` of .github/workflows/browser-image.yaml.
@@ -162,8 +154,10 @@ NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefus
 #   (http_retries); a `mise install` of the jj spec behind a proxy that accepted and never
 #   answered gave up after 336 s. .github/actions/install-jj, the one action of the required jobs
 #   that runs it, sets the download's to 60 s, and the comment on that setting says why.
-#   yarn has no kind: no required job installs with Yarn, so no run measures a bound for it, and
-#   npm's would be borrowed; a job that adds one measures that install's runs and adds the kind here.
+#   yarn has no kind: no required job installs with Yarn, so no run measures a bound for it; a job
+#   that adds one measures that install's runs and adds the kind here.
+#   A kind no install calls is no line of the table: a pull request that gives a new kind its first
+#   caller adds it, with its measured bound.
 #
 # TEST SEAM. NETWORK_INSTALL_BOUND_SECONDS, NETWORK_INSTALL_KILL_AFTER_SECONDS and
 # NETWORK_INSTALL_PAUSE_SECONDS replace the kind's bound, the 15 s before SIGKILL and the pause,
@@ -177,22 +171,18 @@ set -eu
 ATTEMPTS=3
 DEFAULT_PAUSE=10
 DEFAULT_KILL_AFTER=15
-KINDS="apt bun bun-image docker playwright go elan apk npm uv gcloud crane"
+KINDS="apt bun docker playwright go elan uv crane"
 
 # bound_of <kind>: the kind's bound per attempt in seconds, from THE KINDS above, or nothing.
 bound_of() {
   case "$1" in
     apt) echo 60 ;;
     bun) echo 120 ;;
-    bun-image) echo 300 ;;
     docker) echo 120 ;;
     playwright) echo 60 ;;
     go) echo 120 ;;
     elan) echo 60 ;;
-    apk) echo 60 ;;
-    npm) echo 120 ;;
     uv) echo 120 ;;
-    gcloud) echo 120 ;;
     crane) echo 60 ;;
   esac
 }

@@ -135,10 +135,16 @@ def recipe_sha256(dockerfile: str, workflow: str) -> str:
     every file it reads today stays as it was.
 
     The build's context is that directory's parent, .github, which the Dockerfile's own
-    .dockerignore cuts to that directory and one script, .github/scripts/network-install.sh: the
-    install RUN bind-mounts it for that RUN alone, so it leaves nothing in the image. It decides
-    how long an install may wait on the network and never which bytes the image holds, so it is
-    no part of the recipe, and an edit of it builds no new image.
+    .dockerignore cuts to that directory and two scripts, .github/scripts/network-install.sh and
+    .github/scripts/fetch.sh: the install RUN bind-mounts them for that RUN alone, so they leave
+    nothing in the image. They decide how long a read of the network may wait and how often it is
+    tried, and never which bytes the image holds, so they are no part of the recipe, and an edit of
+    them alone builds no new image: ci.yaml's browser_image filter runs the browser-image job for it,
+    and the decide step finds the recipe's hash on the published image and builds nothing. So an
+    edit of either that breaks the install RUN is not caught by this image's build until the next
+    change of the recipe, in whatever pull request makes it, and fails there, naming the RUN.
+    Their own tests (network-install.test.sh and fetch.test.sh, in ci.yaml's test job) run on every
+    such edit; they run the scripts as the RUN calls them, not the RUN.
 
     The Dockerfile's path is folded in ahead of them because what is hashed is the directory and
     not the file: two rows naming two Dockerfiles of one directory read the same files, so

@@ -8,9 +8,11 @@
 # and refuses that archive, naming it, before helm reads it when its sha256 is not b209c627…58cc1,
 # the digest the chart index at https://nats-io.github.io/k8s/helm/charts/ and the GitHub release
 # both publish (the value INFRA-549 records). It renders it with `helm template --skip-tests` (helm
-# v3.20.2, which go install fetches and builds under .github/scripts/network-install.sh's bound for
-# go) and nats-values.yaml, with each image pinned to the digest a registry manifest read gives its
-# tag, and refuses a render that holds a kind the load-test Role cannot write or an image not
+# v3.20.2, whose modules .github/scripts/go-fetch.sh fetches under
+# .github/scripts/network-install.sh's bound for go, and which go install then builds from the
+# module cache with the network off, outside that bound) and nats-values.yaml, with each image
+# pinned to the digest a registry manifest read gives its tag, and refuses a render that holds a
+# kind the load-test Role cannot write or an image not
 # pinned by digest. The output keeps the placeholders __NAMESPACE__, __STORAGE_CLASS__ and
 # __RUN_ID__, which cluster.sh fills.
 #

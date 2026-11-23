@@ -98,15 +98,15 @@ ENV GOPROXY=https://proxy.golang.org|direct
 
 # The image's third-party notices: go-licenses (pinned in go-third-party-notices.sh) is built in a
 # layer of its own, before the module files, so neither a source change nor a dependency bump
-# rebuilds it. It is fetched by go-fetch.sh under network-install.sh's bound for go, and built from
-# the module cache with the network off (GOPROXY a file:// proxy of the cache), held by the build
-# step's own limit: a bound around the compile would time the compile as a wait on the network, as
-# gopls's 74 s of compile under the 120 s bound did (go-fetch.sh's header says why).
+# rebuilds it. go-third-party-notices.sh fetches it with go-fetch.sh, which this RUN bind-mounts
+# beside network-install.sh, under network-install.sh's bound for go, and builds it from the module
+# cache with the network off (GOPROXY a file:// proxy of the cache), held by the build step's own
+# limit: a bound around the compile would time the compile as a wait on the network, as gopls's
+# 74 s of compile under the 120 s bound did (go-fetch.sh's header says why).
 COPY scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh /usr/local/bin/
 RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
     --mount=type=bind,source=.github/scripts/go-fetch.sh,target=/usr/local/bin/go-fetch.sh \
-    go-fetch.sh "$(go-third-party-notices.sh --tool)" \
-    && GO_LICENSES_FETCHED=1 GOPROXY="file://$(go env GOMODCACHE)/cache/download" go-third-party-notices.sh --install
+    go-third-party-notices.sh --install
 COPY packages/envoy/go.mod packages/envoy/go.sum ./
 RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
     network-install.sh go -- go mod download
@@ -127,7 +127,7 @@ COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listen
 # module's or a package's license cannot be determined.
 COPY --from=web /repo/packages/dispatch/web/dist/THIRD_PARTY_NOTICES.txt /tmp/dispatch-web-notices
 RUN mkdir -p /out \
-    && GO_LICENSES_FETCHED=1 CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
+    && CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
       ./cmd/listener ./cmd/dispatch ./cmd/cipherd ./cmd/cipher \
     && assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion Envoy image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs carry their terms in /usr/share/doc/<package>/copyright." \

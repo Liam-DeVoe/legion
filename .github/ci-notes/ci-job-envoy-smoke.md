@@ -24,7 +24,8 @@ installs (the section below). So the limit is 844 s + 4 × 425 s + 1,765 s = 4,3
 
 The listener image's build step took 259 s at its slowest of 1,294 green runs from 2026-11-03 to
 2026-11-20, job 127958676432. Its RUN instructions install through network-install.sh: one bun
-install (425 s), two go fetches (`go-third-party-notices.sh --install` and `go mod download`, 425 s
+install (425 s), two go fetches (go-fetch.sh's fetch of go-licenses, which `go-third-party-notices.sh
+--install` runs before it builds the tool from the module cache, and `go mod download`, 425 s
 each) and two apt commands (245 s each), 1,765 s in all. Its FROM images are on the runner already,
 pulled by the step before, so the builder pulls none of them. So the step's limit is 259 s +
 1,765 s = 2,024 s, rounded up to 34 minutes. The held-port image's build needs no limit of its own

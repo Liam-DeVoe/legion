@@ -28,9 +28,9 @@ sets none), the runner's pulls and the step's own installs. For this job that su
 - 425 s: the frozen `bun install`, three attempts of bun's 120 s, each killed 15 s after its
   SIGTERM, with two 10 s pauses.
 
-The 28 minutes the job had end before that sum, so a stalled install there would end in GitHub's
-cancellation, which names nothing. The job's comment holds its other bound: its steps' own sum at
-their longest, 804 s.
+The 28 minutes main gives the job end before that sum, so a stalled install there would end in
+GitHub's cancellation, which names nothing. The job's comment holds its other bound: its steps'
+own sum at their longest, 396 s.
 
 Neither `./.github/actions/setup-bun` nor `actions/setup-go` and the go-daemon cache restore is in
 the sum, as in every other job's: neither runs an install through network-install.sh or a bound of

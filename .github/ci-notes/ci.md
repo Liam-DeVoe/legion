@@ -786,10 +786,11 @@ here matches nothing.
 Every file the browser image's build reads, for the browser-image job
 (.github/workflows/browser-image.yaml, which the build reads too): that build's
 context is .github, which .github/docker/browser.Dockerfile.dockerignore cuts to
-.github/docker and .github/scripts/network-install.sh, the script the install RUN
-bind-mounts to bound its reads of the network, so every file of .github/docker reaches
-the build, and that script with them. The script leaves nothing in the image, so the
-recipe hash below leaves it out, and an edit of it alone builds no image.
+.github/docker and two scripts, .github/scripts/network-install.sh and
+.github/scripts/fetch.sh, which the install RUN bind-mounts to bound its reads of the
+network, so every file of .github/docker reaches the build, and those scripts with them.
+The scripts leave nothing in the image, so the recipe hash below leaves them out, and an
+edit of them alone builds no image (ci_images.py's recipe_sha256 says what that delays).
 .github/ci-images.yaml is deliberately not named. The build does read that file:
 its `row` step reads the registry and the digest of the row built from that
 Dockerfile out of it at run time, and its publish decision is that digest and the
@@ -2501,8 +2502,9 @@ of every step before it (its own limit, or its installs where it sets none) and 
 installs at their worst case, three attempts of the kind's bound, each killed 15 s after its
 SIGTERM, with two 10 s pauses (`network-install.sh --bounds` prints each kind's numbers). Each job
 whose limit this rests on derives it in its own note (`ci-job-daemon-go.md`, `ci-job-pi-envoy.md`,
-`ci-job-pi-legion.md`, `ci-job-claude-envoy.md`, `ci-job-envoy-client.md`, `ci-job-envoy-smoke.md`,
-`ci-job-envoy-go-race.md`, `ci-job-ci-images.md`, `dispatch-browser.md`, `browser-image.md`).
+`ci-job-pi-legion.md`, `ci-job-claude-envoy.md`, `ci-job-dispatch-ui.md`, `ci-job-envoy-client.md`,
+`ci-job-envoy-smoke.md`, `ci-job-envoy-go-race.md`, `ci-job-ci-images.md`, `dispatch-browser.md`,
+`browser-image.md`, `worker-image.md`).
 
 ## The worst case of the tool installs that read .github/scripts/ci-tools.sh
 

@@ -305,7 +305,7 @@ check "says it exited 127" "$(contains "$out" "attempt 1 exited 127")"
 echo "case: a kind the script does not bound, and a call without --"
 run_install "unknown kind" pip3 -- true
 check "exits 1 for the kind" "$(is "$status" 1)"
-check "names the kind" "$(contains "$out" "'pip3' is no kind this script bounds; the kinds are: apt bun bun-image docker playwright go elan apk npm uv gcloud crane")"
+check "names the kind" "$(contains "$out" "'pip3' is no kind this script bounds; the kinds are: apt bun docker playwright go elan uv crane")"
 run_install "no --" apt true
 check "exits 1 without --" "$(is "$status" 1)"
 check "says the usage" "$(contains "$out" "usage: network-install.sh <kind> -- <command>")"
@@ -332,7 +332,7 @@ while read -r kind bound; do
     "$(is "$(bounds_of "$work/timeout.args")" "kill-after 15, bound $bound: $standin $work/real-$kind.count ok")"
 done <<<"$expected"
 check "--bounds prints the table, with three attempts, the 15 s and the 10 s pause" \
-  "$(is "$(seam_off && "$script" --bounds)" "$(printf '%s 3 15 10\n' 'apt 60' 'bun 120' 'bun-image 300' 'docker 120' 'playwright 60' 'go 120' 'elan 60' 'apk 60' 'npm 120' 'uv 120' 'gcloud 120' 'crane 60')")"
+  "$(is "$(seam_off && "$script" --bounds)" "$(printf '%s 3 15 10\n' 'apt 60' 'bun 120' 'docker 120' 'playwright 60' 'go 120' 'elan 60' 'uv 120' 'crane 60')")"
 
 echo "case: the real pause between attempts and the real wait before SIGKILL, with the seam unset but for the bound"
 : > "$work/sleep.args"

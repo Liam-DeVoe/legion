@@ -14,11 +14,12 @@ time: jobs 128730667606, 128991520632 and 129036051255 (runs 42480325123, 425656
 42579935203, 2026-11-08 and 2026-11-09, the last of which built the image the row pins,
 sha256:69c3a316).
 
-- The PostgreSQL signing key, `curl` from www.postgresql.org: 0.54 s, 0.71 s and 0.44 s. curl's
-  `--max-time` bounds an attempt's whole transfer, its body included, so the tool's own deadline is
-  the bound, at the rule network-install.sh's kinds follow: twice the slowest, 1.42 s, rounded up
-  to the minute, 60 s. `--retry 2 --retry-all-errors` makes three attempts, with curl's own pauses
-  of 1 s and 2 s: 183 s before curl fails the RUN with its own error.
+- The PostgreSQL signing key, read by `.github/scripts/fetch.sh` from www.postgresql.org: 0.54 s,
+  0.71 s and 0.44 s. fetch.sh's curl `--max-time` bounds an attempt's whole transfer, its body
+  included, so the tool's own deadline is the bound, at the rule network-install.sh's kinds
+  follow: twice the slowest, 1.42 s, rounded up to the minute, 60 s. It makes up to three
+  attempts, with curl's own pauses of 1 s and 2 s, and starts none after 120 s: 183 s at most
+  before it fails the RUN by name (fetch.sh's header says the form).
 - `apt-get update --error-on=any`: 2.2 s, 2.2 s and 1.3 s (35.2 MB of lists). It runs through
   network-install.sh, under its bound for apt, 60 s an attempt, which that kind's measurement sets
   and these fit inside: 245 s before it fails by name.
