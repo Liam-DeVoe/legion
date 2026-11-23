@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  `envoy-infra buckets recreate` and `check` can pass their writer proof on GKE Autopilot. The Kubernetes proof read every namespace's pods, blocking on any container named `listener`, an Actions runner's included, and each node's kubelet runtime list through `nodes/proxy`, which Autopilot refuses, so it never passed there. It now takes `--namespace`, repeatable and required with `--kube-context`, and reads only those namespaces through the API: the namespace itself first, so one the API does not hold blocks rather than listing no pods, then its pods. A container blocks only when it has not terminated and writes a bucket the run names, read from its configuration: a listener (it sets `ENVOY_MACHINE_ID`, or is named or runs as `listener` or `envoy-listener`) writes `envoy_interests`, `envoy_roles`, `envoy_sessions` and `envoy_known_sessions`, and `envoy_ci_state` when its `ENVOY_WEBHOOKS` names `github` or comes from a Secret or a ConfigMap; `envoy-dispatch` writes `envoy_ci_state`. No node's runtime list is read, so a pod deleted with `--force` whose containers still run is a fifth way past the best-effort proof, which the warning now names; `--connz` still sees its open connection.
+time: 2026-11-23T09:24:48Z
+custom:
+    Issue: pr5211
