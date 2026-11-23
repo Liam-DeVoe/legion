@@ -1,7 +1,8 @@
-import { type ReactNode, useId } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import {
   borderDefault,
+  dangerText,
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
@@ -39,8 +40,15 @@ const writeOpen = (open: boolean) => (open ? "open" : "closed");
  * for 14 rem of it, and under it otherwise, and a value wraps inside its own cell.
  *
  * Whether Details is open is the reader's: closed until they open it, and then kept open for them
- * in this browser (`issue.details`), on every issue, until they close it. `onClose` runs when the
- * reader closes it, before its panel goes: what a row holds open, an edit not saved, goes with it.
+ * in this browser (`issue.details`), on every issue, until they close it. Closed, the panel stays
+ * mounted and hidden, so each row keeps what it holds - a write in flight, a refusal - and shows
+ * it again when the reader opens Details. `onClose` runs when the reader closes it: the route and
+ * parent editors give up an edit not saved, as their Cancel does; the repository box has saved
+ * what was typed as it lost focus to the press.
+ *
+ * While Details is closed, a refusal a row holds is said under the header's last line, named by
+ * its row (`Repository: …`), as the route's and the parent's are: a write refused out of sight
+ * would otherwise roll back with no word anywhere.
  */
 export function HeaderDetails({
   after,
@@ -57,6 +65,30 @@ export function HeaderDetails({
 }): ReactNode {
   const [open, setOpen] = useUserPreference("issue.details", readOpen, writeOpen);
   const panelId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [hiddenRefusals, setHiddenRefusals] = useState<readonly string[]>([]);
+  // The rows' own alerts, read from the hidden panel while Details is closed: each control keeps
+  // its refusal in its own state, so the panel is where it is told.
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (open || panel === null) {
+      setHiddenRefusals([]);
+      return;
+    }
+    const read = () => {
+      const found = [...panel.querySelectorAll('[role="alert"]')].flatMap((alert) => {
+        const text = alert.textContent?.trim() ?? "";
+        const row = alert.closest('[data-testid^="issue-details-"]');
+        const name = row?.querySelector("dt")?.textContent?.trim();
+        return text === "" ? [] : [name === undefined ? text : `${name}: ${text}`];
+      });
+      setHiddenRefusals((current) => (current.join("\n") === found.join("\n") ? current : found));
+    };
+    read();
+    const observer = new MutationObserver(read);
+    observer.observe(panel, { characterData: true, childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [open]);
   return (
     <>
       <div className="flex min-w-0 flex-wrap items-end justify-between gap-x-4 gap-y-2">
@@ -77,31 +109,44 @@ export function HeaderDetails({
           </button>
         </div>
       </div>
-      {open ? (
-        <div
-          className={`@container mt-3 min-w-0 border-t pt-3 ${borderDefault}`}
-          data-testid="issue-details"
-          id={panelId}
-        >
-          <dl className="grid min-w-0 grid-cols-1 gap-x-6 gap-y-2 @min-[56rem]:grid-cols-2">
-            {rows.map((row) => (
-              <div
-                className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1"
-                data-testid={`issue-details-${row.id}`}
-                key={row.id}
-              >
-                <dt className={`w-32 shrink-0 text-sm font-medium ${textMutedOnSurface}`}>
-                  {row.label}
-                </dt>
-                <dd className="min-w-0 flex-[1_1_14rem] text-sm [overflow-wrap:anywhere]">
-                  {row.value}
-                </dd>
-              </div>
-            ))}
-          </dl>
-          {after}
+      {hiddenRefusals.length === 0 ? null : (
+        <div className="mt-2 min-w-0 space-y-1" data-testid="issue-details-refusals">
+          {hiddenRefusals.map((refusal) => (
+            <p
+              className={`text-sm [overflow-wrap:anywhere] ${dangerText}`}
+              key={refusal}
+              role="alert"
+            >
+              {refusal}
+            </p>
+          ))}
         </div>
-      ) : null}
+      )}
+      <div
+        className={`@container mt-3 min-w-0 border-t pt-3 ${borderDefault}`}
+        data-testid="issue-details"
+        hidden={!open}
+        id={panelId}
+        ref={panelRef}
+      >
+        <dl className="grid min-w-0 grid-cols-1 gap-x-6 gap-y-2 @min-[56rem]:grid-cols-2">
+          {rows.map((row) => (
+            <div
+              className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1"
+              data-testid={`issue-details-${row.id}`}
+              key={row.id}
+            >
+              <dt className={`w-32 shrink-0 text-sm font-medium ${textMutedOnSurface}`}>
+                {row.label}
+              </dt>
+              <dd className="min-w-0 flex-[1_1_14rem] text-sm [overflow-wrap:anywhere]">
+                {row.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        {after}
+      </div>
     </>
   );
 }

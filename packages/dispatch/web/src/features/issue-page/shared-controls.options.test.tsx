@@ -1449,6 +1449,8 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
   const given = "rounded-[5px] border px-1.5 leading-5";
   const mainChip =
     "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
+  // The rail's line wraps on both pages (INFRA-5200): the new page draws it in its Details.
+  const mainRail = "relative flex min-w-0 flex-wrap items-center gap-1";
   const labels = (chipClassName: string | undefined) => (
     <IssueLabels
       chipClassName={chipClassName}
@@ -1483,6 +1485,7 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
   const plain = draw(labels(undefined), "outside");
   try {
     const rail = within(plain.container).getByTestId("issue-labels");
+    expect(rail.getAttribute("class")).toBe(mainRail);
     for (const label of ["api", "frontend"]) {
       expect(within(rail).getByText(label).getAttribute("class")).toBe(mainChip);
     }
@@ -2046,9 +2049,11 @@ test("the default shapes keep main's class strings", async () => {
     // `main`'s features/issue/IssueComponentsLine.tsx: a none attachment with its reason, and a
     // refused save's line.
     "IssueComponentsLine none": "text-slate-500 dark:text-slate-400",
-    "IssueComponentsLine refusal": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
+    "IssueComponentsLine refusal":
+      "max-w-full [overflow-wrap:anywhere] text-xs text-rose-700 dark:text-rose-400",
 
     "IssueLabels line": "relative mt-2 flex flex-wrap items-center gap-2",
+    "IssueLabels rail line": "relative flex min-w-0 flex-wrap items-center gap-1",
     "IssueLabels chip":
       "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
     "IssueLabels trigger":
@@ -2348,6 +2353,16 @@ test("the default shapes keep main's class strings", async () => {
           saving={false}
         />
       </div>
+      <div data-case="rail labels">
+        <IssueLabels
+          disabled={false}
+          labels={["api"]}
+          onSave={async () => undefined}
+          project="CORE"
+          saving={false}
+          variant="rail"
+        />
+      </div>
       <div data-case="priorities">
         <IssuePriorityLine
           disabled={false}
@@ -2549,6 +2564,10 @@ test("the default shapes keep main's class strings", async () => {
     classAt("IssueLabels line", labels.getByTestId("issue-labels"));
     classAt("IssueLabels chip", labels.getByText("api"));
     classAt("IssueLabels trigger", labels.getByRole("button", { name: "Edit labels" }));
+    classAt(
+      "IssueLabels rail line",
+      within(caseOf(view, "rail labels")).getByTestId("issue-labels")
+    );
 
     const advances = within(caseOf(view, "priorities"));
     const priorityLink = advances.getByRole("link", { name: /Rocq and Lean/ });

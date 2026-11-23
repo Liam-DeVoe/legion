@@ -522,6 +522,43 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
   }
 });
 
+// A refusal a Details row holds stays with the row when Details closes, and the header says it,
+// named by its row, until Details opens again: a write refused out of sight is never lost.
+test("IssuePage says a refused Details write under the header while Details is closed, and keeps it in its row", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue(issue);
+  const view = renderIssuePage();
+  try {
+    const details = await openIssueDetails(user);
+    const box = within(details).getByLabelText(`Repository of ${issue.key}`);
+    await user.clear(box);
+    await user.type(box, "not a repository{Enter}");
+    const row = within(details).getByTestId("issue-details-repository");
+    expect(within(row).getByRole("alert")).toHaveTextContent("Write the repository as owner/name.");
+    expect(screen.queryByTestId("issue-details-refusals")).not.toBeInTheDocument();
+
+    const toggle = within(screen.getByTestId("issue-header")).getByRole("button", {
+      name: "Details",
+    });
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(details).not.toBeVisible();
+    expect(await screen.findByTestId("issue-details-refusals")).toHaveTextContent(
+      "Repository: Write the repository as owner/name."
+    );
+
+    await user.click(toggle);
+    expect(within(row).getByRole("alert")).toHaveTextContent("Write the repository as owner/name.");
+    expect(screen.queryByTestId("issue-details-refusals")).not.toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
 // The route editor lives in Details. Closing Details over an edit not saved gives the edit up,
 // as Cancel does: the header shows the saved route's warning again, and nothing is written.
 test("IssuePage's Details, closed over a route edit not saved, gives the edit up and shows the route's warning again", async () => {

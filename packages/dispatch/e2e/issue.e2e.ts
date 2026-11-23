@@ -744,7 +744,7 @@ test("issue header keeps each group whole, its properties in Details, and the wh
     await expect(indicator).toHaveText("Waiting on you (1)");
     // Details is closed until the reader opens it: its rows are not on the page.
     await expect(detailsButton).toHaveAttribute("aria-expanded", "false");
-    await expect(page.getByTestId("issue-details")).toHaveCount(0);
+    await expect(page.getByTestId("issue-details")).toBeHidden();
 
     // The State group keeps the status and the priority on one line; Close and Details end the
     // header's last line together, after the labels.
@@ -1326,7 +1326,7 @@ test("Details stays as the reader left it, open or closed, from one issue to the
     await page.goto(`/issues/${first.key}`);
     await expect(heading("First issue")).toBeVisible();
     await expect(issueDetailsButton(page)).toHaveAttribute("aria-expanded", "false");
-    await expect(page.getByTestId("issue-details")).toHaveCount(0);
+    await expect(page.getByTestId("issue-details")).toBeHidden();
 
     await openIssueDetails(page);
     await page.goto(`/issues/${second.key}`);
@@ -1348,11 +1348,11 @@ test("Details stays as the reader left it, open or closed, from one issue to the
     await expect(pullRequests.getByRole("link", { name: notes })).toHaveCount(0);
 
     await issueDetailsButton(page).click();
-    await expect(page.getByTestId("issue-details")).toHaveCount(0);
+    await expect(page.getByTestId("issue-details")).toBeHidden();
     await page.goto(`/issues/${third.key}`);
     await expect(heading("Third issue")).toBeVisible();
     await expect(issueDetailsButton(page)).toHaveAttribute("aria-expanded", "false");
-    await expect(page.getByTestId("issue-details")).toHaveCount(0);
+    await expect(page.getByTestId("issue-details")).toBeHidden();
   } finally {
     await context.close();
   }
