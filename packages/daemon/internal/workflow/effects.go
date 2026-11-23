@@ -752,9 +752,10 @@ type startMarks struct {
 // agent is the claim the start is queued for (record.SuperviseRequest.Claim), which each caller
 // holds: the claim of the step's agent its entry writes on the role's phases row (startClaim), or
 // the claim a rule weighed against that row. The outbox acts on that claim and fences the start
-// on it (record.StartLeft), so a start the task has left since finishes, or reaches the claim it
-// was queued for, and never the claim the role's row names by then. agent is empty only for an
-// issue whose key names no claims (recordsSteps), whose start the outbox gives its role's worker.
+// on its entry (record.StartLeft), so a start the task has left since finishes, or reaches the
+// claim it was queued for, and never the claim the role's row names by then. agent is empty only
+// for an issue whose key names no claims (recordsSteps), whose start the outbox gives its role's
+// worker.
 func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, agent claim.Token, task string, entry int64,
 	marks startMarks) error {
 	move := newsOfTheIssue
