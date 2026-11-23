@@ -91,7 +91,7 @@ Both Apps are public GitHub Apps, so any GitHub account can install them.
 What such an install gives depends on where the daemon gets its tokens.
 A daemon that gets its tokens from the secrets broker through `token_command`, as this runbook configures it, is bounded by the broker: the broker releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing.
 A daemon that mints with its own App key counts every installation and keeps no list of owners.
-There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
+There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every role that works as that App (each implementer and merger, a role a plan or the deployment gives that App, and the architect while it does a step of its own as that App), and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
 The daemon reads the installations at every bundle it builds, so a running pane holds the new directory within a minute, and loses it within a minute of an uninstall.
 The one exception is the account that holds the pane's own issue repository: that directory cannot be left out, and its token is that owner's cached lease, which stays in use until its expiry is no more than `refreshWindow` (20 minutes, `internal/appauth`) away.
 Until then every bundle built for the pane succeeds and the refresh keeps writing all of its directories, that one holding a token GitHub would no longer mint.
@@ -130,7 +130,12 @@ empty so nothing outranks the files, and rewrites each directory's `hosts.yml` i
 minute from its cached leases (the log lines `tmux runtime: github credential written` and `github
 credential refreshed`, with the claim, role, App, `expiresAt` and the directories written); a pane
 it adopted after a restart is refreshed for the repository its claim's issue works, read from the
-daemon's own state, never one read from the pane's directory. Each of those tokens reaches every
+daemon's own state, never one read from the pane's directory. While the architect does a step of
+its own plan (one whose key is `owner`), its pane's directories hold the App of that step's role
+instead: the daemon writes them before it tells the architect the step (the log line `tmux
+runtime: github credential written for a step`, with the claim, role, App, `expiresAt` and the
+directories written), each refresh writes the App the pane acts as then, and the end of the step
+writes the architect's own App back. Each of those tokens reaches every
 repository its own installation holds, which the account chose when it installed the App, and the
 daemon asks GitHub to narrow none of them to a repository. The bundle's root also holds one file
 of its own, `renames.txt`, the configured renames the project's pairs resolve to, which both
