@@ -169,12 +169,13 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
-| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the implementer, or to the tester where the plan has one. Issues still running beneath it hold the acceptance: the daemon refuses it (`SIGNOFF_CHILD_IN_WORKFLOW`) until they have left the workflow. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect | Where the issue's plan has the step `acceptance:owner`: reads each check of the issue's Verification document with its latest result, the handoff of each tester step and the reviewer's approval of the head where the plan has those steps, and accepts the issue (on to retro) or sends it back to the implementer, or to the tester where the plan has one. Issues still running beneath it hold the acceptance: the daemon refuses it (`SIGNOFF_CHILD_IN_WORKFLOW`) until they have left the workflow. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | implementer | Writes down what the work taught, as one comment on the issue, and brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | implement App |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
 A failed test or a review that requests changes sends the issue back to `implementing` from
-testing or review, and the change goes through the issue's steps after the implementer again: in
+testing or review, at the nearest implementer step before it, and the change goes through the
+issue's steps after that step again: in
 the default steps, the tester before the reviewer sees it. A head that starts conflicting with its
 base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own, and the
@@ -484,8 +485,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
   that phase gave it: the first completion of the run the move ended is recorded and moves nothing,
   and any later one is refused `HANDOFF_NOT_CURRENT_PHASE`;
   `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
-  while the issue stands in that phase. A completion of another entry than the role's phases row
-  names, from a role whose phase the issue is no longer in, is answered
+  while the issue stands in that phase. A completion of an entry that no phases row of the role
+  stands on now (a run of its step that a later run raised past), from a role whose phase the
+  issue is no longer in, is answered
   `HANDOFF_NOT_CURRENT_PHASE` as well, before anything is recorded: the task of that entry was
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim none.
   One completion behind its entry goes on all the same: a verdict on the head the record holds,
