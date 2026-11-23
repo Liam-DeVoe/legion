@@ -59,7 +59,7 @@ func newCopyRig(t *testing.T, issue record.Issue, tasks ...string) *copyRig {
 			steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: issue.Generation, Task: task, Position: 1, Role: "implementer",
 				Type: stepplan.BuiltinRoles()["implementer"].Type})
 		}
-		if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 			if err := rig.records.PutPlan(ctx, tx, v, rows, steps); err != nil {
 				return err
 			}
@@ -103,7 +103,7 @@ func (rig *copyRig) copyOf(t *testing.T, name string) workspace.Workspace {
 func (rig *copyRig) enqueue(t *testing.T, issue string, payload record.OutboxPayload) record.OutboxRow {
 	t.Helper()
 	row := mustOutboxRow(t, issue, payload, time.Now())
-	if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) (err error) {
+	if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) (err error) {
 		row.ID, err = rig.records.EnqueueID(context.Background(), tx, row)
 		return err
 	}); err != nil {
@@ -300,7 +300,7 @@ func TestTheRestoreOfASavedBundlePutsBackTheWorkingCopiesOfThePlansTasksAlone(t 
 	records := record.NewStore()
 	issue := copyIssue
 	v := record.PlanVersion{Issue: issue.Key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenAt: time.Now()}
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}

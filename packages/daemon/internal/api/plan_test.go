@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -374,6 +375,32 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 	}
 }
 
+// register_plan checks the plan on the request's own context, before the fact lock: once the
+// request has ended, the check stops, the route answers 503 and records nothing. Here the request
+// ends as Dispatch answers the read of the plan, a cycle of two tasks. The fault is a check that
+// runs on after its request has gone; the control is the route calling Validate on the daemon's
+// own context (s.stopping), under which the plan is refused 409 PLAN_REFUSED.
+func TestRegisterPlanStopsItsCheckWhenTheRequestEnds(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 1, needing(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-b"),
+		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
+	ctx, end := context.WithCancel(t.Context())
+	statuses.onPlanRead = end
+	body, err := json.Marshal(map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208", "artifactId": planDoc, "version": 1})
+	if err != nil {
+		t.Fatalf("encode the request body: %v", err)
+	}
+	answer := httptest.NewRecorder()
+	h.handler.ServeHTTP(answer, httptest.NewRequestWithContext(ctx, http.MethodPost, "/legion/v1/plans/register", strings.NewReader(string(body))))
+	if answer.Code != http.StatusServiceUnavailable || !strings.Contains(answer.Body.String(), "because its request ended; nothing was recorded") {
+		t.Fatalf("register_plan whose request ended = %d %s, want 503 saying its request ended", answer.Code, answer.Body)
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("a registration whose request ended recorded %#v, want nothing", got)
+	}
+}
+
 // The rules of a later version are the workflow's, which answers each refusal of them as
 // a committed refusal of the fact: the route writes it as it came, a refused plan with its
 // reasons beside the code.
@@ -496,7 +523,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 func seedMember(t *testing.T, h *harness, key, tree string) {
 	t.Helper()
 	parent := tree
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: tree, Project: testProject, Title: key,
 			Parent: &parent, Phase: phase.Admitted, Generation: 1, Status: "in_progress",

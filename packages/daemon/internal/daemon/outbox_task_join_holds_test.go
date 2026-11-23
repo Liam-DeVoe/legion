@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // attemptAt claims row id as a lane claims a due row at at, runs it, and settles what it answered
@@ -25,7 +26,7 @@ func (rig *taskBranchRig) attemptAt(t *testing.T, id int64, at time.Time) error 
 	ctx := context.Background()
 	var leased record.OutboxRow
 	var claimed bool
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		leased, claimed, err = rig.records.ClaimRow(ctx, tx, id, at, time.Minute)
 		return err
@@ -83,7 +84,7 @@ func TestAJoinHoldsOnlyItsOwnTask(t *testing.T) {
 	issue := taskBranchIssue
 	queued := time.Now().UTC()
 	var id int64
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		since := queued
 		if err := rig.records.SetStepWait(ctx, tx, issue.Key, issue.Generation, "d", record.StepWaitJoin, &since); err != nil {
 			return err
@@ -110,7 +111,7 @@ func TestAJoinHoldsOnlyItsOwnTask(t *testing.T) {
 		t.Fatal("d's task_branch row answered 500 ran, want a failure")
 	}
 	var due []record.OutboxRow
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		due, err = rig.records.DueRows(ctx, tx, "LEGION", issue.Key, nil, time.Now().UTC())
 		return err

@@ -47,7 +47,7 @@ func TestAStepStopSuspendsTheAgentThatRanTheStoppedStep(t *testing.T) {
 			firstAgent := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 			put := func(rows ...record.PhaseRow) {
 				t.Helper()
-				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 					for _, row := range rows {
 						if err := records.PutPhase(ctx, tx, row); err != nil {
 							return err
@@ -58,7 +58,7 @@ func TestAStepStopSuspendsTheAgentThatRanTheStoppedStep(t *testing.T) {
 					t.Fatalf("write the phases rows: %v", err)
 				}
 			}
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				v := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 					GivenBy: architect, GivenAt: time.Now()}
 				task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: "t", PlanVersion: 2, BlockText: "Build the widget.",

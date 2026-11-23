@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -64,7 +65,7 @@ func newWindowRig(t *testing.T, during func(rig *taskBranchRig), tasks ...planne
 func asAFact(t *testing.T, rig *taskBranchRig, what string, write func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return err
 		}
@@ -114,7 +115,7 @@ func readmitted(carried bool) func(ctx context.Context, rig *taskBranchRig, tx p
 func (rig *taskBranchRig) taskAt(t *testing.T, generation uint64, id string) record.PlanTask {
 	t.Helper()
 	var stored *record.StoredPlan
-	if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = rig.records.Plan(context.Background(), tx, taskBranchIssue.Key, generation)
 		return err
@@ -276,7 +277,7 @@ func TestTheJoinsConflictsAreJudgedUnderTheFactLock(t *testing.T) {
 	held := make(chan pgx.Tx, 1)
 	rig := newWindowRig(t, func(rig *taskBranchRig) {
 		ctx := context.Background()
-		tx, err := rig.pool.Begin(ctx)
+		tx, err := rig.pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			t.Errorf("begin the later version's fact: %v", err)
 			return

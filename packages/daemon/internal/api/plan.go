@@ -154,8 +154,16 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
 	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
 	// yet, then what no release can. Each judges the plan against the deployment the daemon's
-	// settings define (Options.Deployment), so a role of `roles` is a role a step names.
-	refusals := append(plan.Supported(given, s.deployment), plan.Validate(given, s.deployment)...)
+	// settings define (Options.Deployment), so a role of `roles` is a role a step names. Validate
+	// checks a plan its owner wrote, before the fact lock, so it runs on the request's context and
+	// stops when the request ends, recording nothing.
+	invalid, err := plan.Validate(r.Context(), given, s.deployment)
+	if err != nil {
+		s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", req.Issue, "artifact", artifactID, "version", req.Version)
+		s.refuse(w, r, http.StatusServiceUnavailable, "register_plan stopped before it finished checking the plan, because its request ended; nothing was recorded")
+		return
+	}
+	refusals := append(plan.Supported(given, s.deployment), invalid...)
 	if len(refusals) > 0 {
 		s.writeRefusal(w, r, intake.PlanRefused(refusals))
 		return

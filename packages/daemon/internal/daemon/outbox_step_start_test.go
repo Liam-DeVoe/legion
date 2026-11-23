@@ -28,7 +28,7 @@ const stepStartLinter claim.Role = "linter"
 func seedStepStartPlan(t *testing.T, pool *store.Pool, records record.Store, at int) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		v := record.PlanVersion{Issue: stepStartKey, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: mustClaimToken(t, stepStartKey, claim.RoleArchitect), GivenAt: time.Now().UTC()}
 		task := record.PlanTask{Issue: stepStartKey, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
@@ -164,7 +164,7 @@ func TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess(t *testing.T) {
 				// spawn: the move of the task lands here.
 				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 					if tc.moves {
-						if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+						if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 							return records.MoveTask(ctx, tx, stepStartKey, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning)
 						}); err != nil {
 							t.Errorf("move the task back to step 2: %v", err)

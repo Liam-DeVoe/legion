@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // seedTwoTasks gives key, at generation 1, an owner's plan of two tasks, each with the steps
@@ -38,7 +39,7 @@ func seedTwoTasks(t *testing.T, h *harness, key string) {
 			record.PlanStep{Issue: key, Generation: 1, Task: task.id, Position: 1, Role: "implementer", Type: "implementation", Agent: task.implementer},
 			record.PlanStep{Issue: key, Generation: 1, Task: task.id, Position: 2, Role: "tester", Type: "testing", Agent: task.test})
 	}
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutPlan(ctx, tx, v, tasks, steps); err != nil {
 			return err
 		}
@@ -147,7 +148,7 @@ func TestACompletionOfAPlanOfOneTaskNamesItsTask(t *testing.T) {
 		seedIssueAt(t, h, key, phase.Testing)
 	}
 	seedTaskPlan(t, h, delivered, taskStanding{task: "a", state: record.TaskRunning, place: 2})
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().SetStepWait(context.Background(), tx, delivered, 1, "a", record.StepWaitNone, nil)
 	}); err != nil {
 		t.Fatalf("deliver the start of task a of %s: %v", delivered, err)
@@ -194,7 +195,7 @@ func TestALateCompletionIsOfTheTaskItsPhasesRowNames(t *testing.T) {
 	seedIssueAt(t, h, several, phase.Implementing)
 	seedTwoTasks(t, h, several)
 	// Task a's tester's step ended: a moved back to its implementer's step, which runs.
-	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.MoveTask(ctx, tx, several, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning); err != nil {
 			return err
 		}
@@ -209,7 +210,7 @@ func TestALateCompletionIsOfTheTaskItsPhasesRowNames(t *testing.T) {
 	} {
 		tester := newLiveClaim(t, h, tc.key, claim.RoleTester)
 		// The row the start of a's tester's step raised, which names its claim and its step.
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return records.PutPhase(ctx, tx, record.PhaseRow{Issue: tc.key, Role: claim.RoleTester, Claim: tester.token, StepTask: "a", StepPlace: 2})
 		}); err != nil {
 			t.Fatalf("seed the tester's row of %s: %v", tc.key, err)
@@ -242,7 +243,7 @@ func TestAWorkersMoveBackOfAPlanOfOneTaskNamesItsTask(t *testing.T) {
 	const one, none = "LEGION-216", "LEGION-217"
 	seedIssueAt(t, h, one, phase.Testing)
 	seedTaskPlan(t, h, one, taskStanding{task: "a", state: record.TaskRunning, place: 2})
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().SetStepWait(context.Background(), tx, one, 1, "a", record.StepWaitNone, nil)
 	}); err != nil {
 		t.Fatalf("deliver the start of task a of %s: %v", one, err)

@@ -78,7 +78,7 @@ func newTaskBranchRig(t *testing.T, tasks ...plannedTask) *taskBranchRig {
 			steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: issue.Generation, Task: task.id, Position: i + 1, Role: role, Type: roles[role].Type})
 		}
 	}
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := rig.records.PutPlan(ctx, tx, v, rows, steps); err != nil {
 			return err
 		}
@@ -101,7 +101,7 @@ func newTaskBranchRig(t *testing.T, tasks ...plannedTask) *taskBranchRig {
 func (rig *taskBranchRig) task(t *testing.T, id string) record.PlanTask {
 	t.Helper()
 	var stored *record.StoredPlan
-	if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = rig.records.Plan(context.Background(), tx, taskBranchIssue.Key, taskBranchIssue.Generation)
 		return err

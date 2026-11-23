@@ -200,7 +200,8 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({
 // Every name a test in this file sets or deletes. They are captured here, above the lines that
 // set ENVOY_CONFIG_FILE and delete OMP_PROFILE and PI_CODING_AGENT_DIR, so what the caller's own
 // process holds — a worker pane's live LEGION_* and DISPATCH_* among them — goes back after each
-// test and once more when this file ends: `bun test` runs every file of a package in one process,
+// test and once more when this file ends: a plain `bun test` runs every file of a package in one
+// process (the package's `test` script passes `--parallel`, which gives each file a fresh one),
 // and the next file reads the environment this one leaves.
 const environmentKeys = [
   "ENVOY_NATS_URL",
@@ -253,9 +254,9 @@ restoreEnvironment([...environmentKeys, ...entryEnvironmentKeys]);
 // them. It is read rather than `process.env` because the two are the same thing only until the
 // first test runs, and a list of names that forgot one would compare that name with itself.
 //
-// `bun test` runs a package's files in one process and `afterAll` hooks run in the order they
-// were registered, so the hook below is registered under this file's cleanup hook: it still runs
-// after the restore above and sees what the next file would read, and Bun stops at the first
+// A plain `bun test` runs a package's files in one process and `afterAll` hooks run in the order
+// they were registered, so the hook below is registered under this file's cleanup hook: it still
+// runs after the restore above and sees what the next file would read, and Bun stops at the first
 // `afterAll` that throws, so a hook registered above the cleanup would leak this file's
 // temporary directories on the one run the probe exists to report. The probe is in this file,
 // and not in a file of its own, because Bun runs a directory's test files in the order the
@@ -755,7 +756,7 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:484-504 at the
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:495-515 at the
  * pinned tag): the child's transcript sits inside a directory named after the parent's
  * transcript file, minus its `.jsonl` extension, so
  * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */

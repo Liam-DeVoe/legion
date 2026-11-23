@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -75,7 +76,7 @@ func seedJoin(t *testing.T, dir func(record.Issue, string) string, more ...recor
 		steps = append(steps, record.PlanStep{Issue: issue.Key, Generation: issue.Generation, Task: row.Task, Position: 1, Role: "implementer",
 			Type: "implementation", AgentKey: row.Task})
 	}
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := rig.records.PutPlan(ctx, tx, v, rows, steps); err != nil {
 			return err
 		}
@@ -91,21 +92,19 @@ func seedJoin(t *testing.T, dir func(record.Issue, string) string, more ...recor
 	rig.github.Commit(t, rig.branch(t, "a"), map[string]string{"x.txt": "from a\n", "a.txt": "a\n"}, "a")
 	rig.github.Commit(t, rig.branch(t, "c"), map[string]string{"x.txt": "from c\n", "c.txt": "c\n"}, "c")
 
-	factCtx, committed := intake.WithCommitHooks(ctx)
-	factCtx = engine.OpenFact(factCtx)
-	if err := pgx.BeginFunc(factCtx, rig.pool, func(tx pgx.Tx) error {
-		stored, err := rig.records.Issue(factCtx, tx, issue.Key)
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx = engine.OpenFact(ctx)
+		stored, err := rig.records.Issue(ctx, tx, issue.Key)
 		if err != nil {
 			return err
 		}
-		if err := engine.StartFirstPhase(factCtx, tx, *stored, nil); err != nil {
+		if err := engine.StartFirstPhase(ctx, tx, *stored, nil); err != nil {
 			return err
 		}
-		return engine.SettleFact(factCtx, tx)
+		return engine.SettleFact(ctx, tx)
 	}); err != nil {
 		t.Fatalf("open the gate of %s: %v", issue.Key, err)
 	}
-	committed()
 	return rig, issue
 }
 

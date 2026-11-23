@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -36,7 +37,7 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	putOutboxIssue(t, pool, records, issue)
 	keyed := mustClaimToken(t, issue.Key, claim.RoleImplementer)
 	own := mustClaimToken(t, issue.Key, claim.RoleTester)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, row := range []record.PhaseRow{
 			{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1},
 			{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2},
@@ -135,7 +136,7 @@ func TestAReRolesStartWaitsForTheTurnsEnd(t *testing.T) {
 		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"}
 	putOutboxIssue(t, pool, records, issue)
 	keyed := mustClaimToken(t, issue.Key, claim.RoleImplementer)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, row := range []record.PhaseRow{
 			{Issue: issue.Key, Role: claim.RoleImplementer, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1},
 			{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2},

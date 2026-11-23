@@ -17,7 +17,7 @@ import (
 // putPhaseRow writes row to the phases record of pool.
 func putPhaseRow(t *testing.T, pool *store.Pool, records record.Store, row record.PhaseRow) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPhase(context.Background(), tx, row)
 	}); err != nil {
 		t.Fatalf("write the %s's phases row: %v", row.Role, err)

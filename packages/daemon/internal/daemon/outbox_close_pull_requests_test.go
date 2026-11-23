@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // closingGitHub answers, beside the fake repository, the calls that close a pull request the fake
@@ -104,7 +105,7 @@ func TestTheMergeClosesEachOtherPullRequestOfTheIssue(t *testing.T) {
 	}{{1, "a"}, {2, "b"}, {3, "c"}, {4, "d"}} {
 		pr := record.PullRequest{Issue: taskBranchIssue.Key, Repo: "acme/widgets", Number: seed.number, Branch: rig.branch(t, seed.task), Base: "main",
 			HeadSHA: "head-" + seed.task, Failing: []string{}, State: record.PullRequestOpen, MergeState: record.MergeStateClean}
-		if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error { return rig.records.PutPullRequest(ctx, tx, pr) }); err != nil {
+		if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error { return rig.records.PutPullRequest(ctx, tx, pr) }); err != nil {
 			t.Fatalf("record pull request #%d: %v", seed.number, err)
 		}
 	}

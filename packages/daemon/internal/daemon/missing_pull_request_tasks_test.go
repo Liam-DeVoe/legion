@@ -36,7 +36,7 @@ func seedTwoTasks(t *testing.T, pool *store.Pool) {
 		{Issue: "CAPTURE-1", Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review", Agent: "reviewer"},
 		{Issue: "CAPTURE-1", Generation: 1, Task: "b", Position: 1, Role: "implementer", Type: "implementation", Agent: "implementer-2"},
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: "CAPTURE-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "CAPTURE-1",
 			Project: "CAPTURE", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}); err != nil {
 			return err
@@ -105,7 +105,7 @@ func TestAMissingPullRequestIsOfTheCompletingTask(t *testing.T) {
 	}
 
 	b := record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets", Number: 87, Branch: "legion/CAPTURE-1.b", HeadSHA: "handoff-b", Failing: []string{}}
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error { return record.NewStore().PutPullRequest(context.Background(), tx, b) }); err != nil {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().PutPullRequest(ctx, tx, b) }); err != nil {
 		t.Fatalf("record b's pull request: %v", err)
 	}
 	for _, want := range []struct {
@@ -165,7 +165,7 @@ func TestTheStartReadReadsTheOpenPullRequestOfEachTask(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedTwoTasks(t, pool)
 	b := record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets", Number: 87, Branch: "legion/CAPTURE-1.b", HeadSHA: "pushed", Failing: []string{}}
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error { return record.NewStore().PutPullRequest(context.Background(), tx, b) }); err != nil {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error { return record.NewStore().PutPullRequest(ctx, tx, b) }); err != nil {
 		t.Fatalf("record b's pull request: %v", err)
 	}
 	github := newIssueReadStandIn(t, time.Date(2026, 11, 23, 1, 0, 0, 0, time.UTC))
@@ -190,7 +190,7 @@ func TestTheStartReadReadsTheOpenPullRequestOfEachTask(t *testing.T) {
 func TestAHeldTaskIsNotToldItsPullRequestIsMissing(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedTwoTasks(t, pool)
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().HoldTask(context.Background(), tx, "CAPTURE-1", 1, "b", record.HoldEscalated)
 	}); err != nil {
 		t.Fatalf("hold task b: %v", err)

@@ -127,7 +127,7 @@ func TestALingersCloseRetiresAnEarlierVersionsClaimAndTheTreeIsCleanedUp(t *test
 			t.Fatalf("no claim %s after its start", token)
 		}
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: root.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2, Entry: 1})
 	}); err != nil {
 		t.Fatalf("write the tester's phases row: %v", err)
