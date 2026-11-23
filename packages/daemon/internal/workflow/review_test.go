@@ -30,15 +30,16 @@ import (
 // whose fail counts none (TestAnOwnersReviewStepEndsByItsReport).
 
 // The review event decides the round of a reviewer step the owner does not do, and the reviewer's
-// handoff records its findings (dispatch://INFRA-714/spec R1): a request for changes on the
-// current head returns the issue to implementing the moment GitHub reports it, counting the
-// round, and an approval of a head GitHub reports clean moves it to accepting. The reviewer is
-// still mid-turn when either happens, so the completion that follows is recorded on its own row
-// with the issue where the review left it - the findings the next implementer reads - rather than
-// refused as a phase it no longer runs. A completion that arrives first records the same row and
-// moves nothing, the review deciding when it lands. In either order the review records the head
-// its footer names as the commit the reviewer read (record.PhaseRow.ReviewedHead), over the one an
-// earlier review recorded, and a request for changes tells the reviewer's next round that head.
+// handoff records its findings
+// (dispatch://INFRA-714/spec R1): a request for changes on the current head returns the issue to
+// implementing the moment GitHub reports it, counting the round, and an approval of a head GitHub
+// reports clean moves it to accepting. The reviewer is still mid-turn when either happens, so the
+// completion that follows is recorded on its own row with the issue where the review left it -
+// the findings the next implementer reads - rather than refused as a phase it no longer runs. A
+// completion that arrives first records the same row and moves nothing, the review deciding when
+// it lands. In either order the review records the head its footer names as the commit the
+// reviewer read (record.PhaseRow.ReviewedHead), over the one an earlier review recorded, and a
+// request for changes tells the reviewer's next round that head.
 func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
