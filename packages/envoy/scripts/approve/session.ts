@@ -237,16 +237,27 @@ async function approveThenRevoked(): Promise<void> {
   });
 }
 
-/** Every file under `path`, depth first; a file larger than 16 MiB is skipped, and named. */
+/**
+ * Every file under `path`, depth first, into `into`; a file larger than 16 MiB, and a path or a
+ * directory that cannot be read, into `skipped`, named, never dropped.
+ */
 function files(path: string, into: string[], skipped: string[]): void {
   let stat: Stats;
   try {
     stat = statSync(path);
   } catch {
+    skipped.push(path);
     return;
   }
   if (stat.isDirectory()) {
-    for (const entry of readdirSync(path)) files(join(path, entry), into, skipped);
+    let entries: string[];
+    try {
+      entries = readdirSync(path);
+    } catch {
+      skipped.push(path);
+      return;
+    }
+    for (const entry of entries) files(join(path, entry), into, skipped);
   } else if (stat.isFile()) {
     if (stat.size > 16 * 1024 * 1024) skipped.push(path);
     else into.push(path);
@@ -307,10 +318,19 @@ async function scan(): Promise<void> {
   if (logPath === undefined || paths.length === 0)
     fail("scan needs the broker log and at least one path");
   const pids = (env["APPROVE_CHECK_SESSION_PIDS"] ?? "").split(/\s+/).filter(Boolean);
+  // Each reason the scan compared nothing somewhere it was asked to look: with any, its result is
+  // UNKNOWN and it exits 3, a pass of nothing.
+  const unknown: string[] = [];
   // What the broker logged: each minted token's SHA-256 and the thumbprint of the key it is bound to.
   const logged = new Map<string, { grant: unknown; expires_at: unknown }>();
   const bindings = new Set<string>();
-  for (const line of readFileSync(logPath, "utf8").split("\n")) {
+  let logText = "";
+  try {
+    logText = readFileSync(logPath, "utf8");
+  } catch (error) {
+    unknown.push(`the broker log ${logPath} could not be read (${String(error)})`);
+  }
+  for (const line of logText.split("\n")) {
     let record: Record<string, unknown>;
     try {
       record = JSON.parse(line) as Record<string, unknown>;
@@ -328,11 +348,37 @@ async function scan(): Promise<void> {
       if (typeof record["jkt"] === "string") bindings.add(record["jkt"]);
     }
   }
+  if (logged.size === 0) {
+    unknown.push(
+      "the broker log names no minted token's SHA-256 (no `broker: minted a grant's token` line), so no candidate's hash is compared with anything"
+    );
+  }
+  if (bindings.size === 0) {
+    unknown.push(
+      "the broker log names no key binding (no `jkt` on a minted token's line), so no key's thumbprint is compared with anything"
+    );
+  }
   const read: string[] = [];
   const skipped: string[] = [];
-  for (const path of paths) files(path, read, skipped);
-  const texts: string[] = read.map((path) => readFileSync(path).toString("latin1"));
-  // The environment of each process of the session: this one's, and every pid named.
+  const texts: string[] = [];
+  for (const path of paths) {
+    const under: string[] = [];
+    files(path, under, skipped);
+    let readHere = 0;
+    for (const file of under) {
+      try {
+        texts.push(readFileSync(file).toString("latin1"));
+        read.push(file);
+        readHere += 1;
+      } catch {
+        skipped.push(file);
+      }
+    }
+    if (readHere === 0) unknown.push(`no file under ${path} could be read`);
+  }
+  if (read.length === 0) unknown.push("the scan read no file");
+  // The environment of each process of the session: this one's, and every pid named. Each
+  // variable reads `NAME=value`, as a shell or an env file writes it.
   texts.push(
     Object.entries(env)
       .map(([name, value]) => `${name}=${value}`)
@@ -350,16 +396,11 @@ async function scan(): Promise<void> {
   if (LOCAL === "" && environs === 0) {
     // On a box the session's processes are not this one, so a scan that read none of theirs read
     // no environment of the session, and would call clean what it never saw.
-    say({
-      step: "scan",
-      result: "UNKNOWN",
-      reason:
-        pids.length === 0
-          ? "APPROVE_CHECK_SESSION_PIDS names no process of the session, and outside the local stack (APPROVE_CHECK_DISPATCH_LOCAL unset) the session's processes are not this one"
-          : `no environment of the ${pids.length} processes APPROVE_CHECK_SESSION_PIDS names could be read`,
-      files_skipped: skipped,
-    });
-    process.exit(3);
+    unknown.push(
+      pids.length === 0
+        ? "APPROVE_CHECK_SESSION_PIDS names no process of the session, and outside the local stack (APPROVE_CHECK_DISPATCH_LOCAL unset) the session's processes are not this one"
+        : `no environment of the ${pids.length} processes APPROVE_CHECK_SESSION_PIDS names could be read`
+    );
   }
   const base64url = new Set<string>();
   const token68 = new Set<string>();
@@ -376,7 +417,10 @@ async function scan(): Promise<void> {
     seen.add(text);
     queue.push(unescaped(text));
     for (const match of text.matchAll(/[A-Za-z0-9_-]{20,}/g)) base64url.add(match[0]);
-    for (const match of text.matchAll(/[A-Za-z0-9._~+/=-]{20,}/g)) token68.add(match[0]);
+    // RFC 7235's token68: `=` only as trailing padding. A broker token holds a `.` (authelia's
+    // HMAC strategy writes `%s.%s`), so the base64url pattern finds only its halves, and an `=`
+    // inside the class would take the `NAME=` before a token as part of it.
+    for (const match of text.matchAll(/[A-Za-z0-9._~+/-]{20,}=*/g)) token68.add(match[0]);
     for (const block of text.matchAll(
       /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g
     )) {
@@ -415,7 +459,7 @@ async function scan(): Promise<void> {
   }
   // The diagnostic, which decides nothing: each candidate a matched hash or a DPoP answer names,
   // and at most 100 others, presented to Dispatch as a broker token under the DPoP scheme with a
-  // proof of a throwaway key.
+  // proof of a throwaway key. It says how many it presented, and whether that was all of them.
   const diagnostic: Record<string, number> = {};
   const presented = new Set<string>([
     ...answers,
@@ -441,8 +485,12 @@ async function scan(): Promise<void> {
     diagnostic[said] = (diagnostic[said] ?? 0) + 1;
     if (logged.has(sha256(candidate))) perMatch[sha256(candidate)] = said;
   }
+  const result =
+    unknown.length > 0 ? "UNKNOWN" : matched.length + keyMatches.size > 0 ? "found" : "clean";
   say({
     step: "scan",
+    result,
+    ...(unknown.length > 0 ? { unknown } : {}),
     files_read: read.length,
     files_skipped: skipped,
     candidates: candidates.size,
@@ -455,8 +503,16 @@ async function scan(): Promise<void> {
     hash_matches: matched,
     key_matches: [...keyMatches],
     diagnostic,
+    diagnostic_presented: presented.size,
+    diagnostic_capped:
+      presented.size < candidates.size
+        ? `presented ${presented.size} of ${candidates.size} candidates: every DPoP answer and every match, and 100 others`
+        : false,
     diagnostic_of_matches: perMatch,
   });
+  // UNKNOWN exits 3 whatever else it found: a match beside it is still in hash_matches or
+  // key_matches, for approve-check to call the step a failure.
+  if (result === "UNKNOWN") process.exit(3);
 }
 
 async function main(): Promise<void> {

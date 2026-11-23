@@ -21,23 +21,27 @@
 #      box's token posts a comment, so it is live; (a) with the sign-in's credential revoked, the
 #      same review on the same placeholder is refused 407. (e) the scan of every file the session
 #      and the sign-in wrote, and of the session's environment, finds no candidate whose SHA-256 is
-#      a minted token's the broker logged, and no private key whose thumbprint is a logged binding.
+#      a minted token's the broker logged, and no private key whose thumbprint is a logged binding;
+#      a scan that read no file, no file under a path it was named, or a broker log that names no
+#      minted token or no binding is UNKNOWN.
 #   2. --approve --approve-allow-all: the allow list off. (i) the comment and the token mint reach
 #      Dispatch, which refuses them APPROVE_ONLY_TOKEN and records no comment; (ii) the review is
 #      recorded with the person as its author.
 #   3. as 2, with Dispatch built with the approve-only refusal removed
 #      (approve/dispatch-without-approve-only-refusal.patch): the comment of (i) is recorded.
-#   4. --approve with a broker built to write each approve token it mints, the token endpoint's
-#      answer naming it, and its pod key into files the session reads
+#   4. --approve with a broker built to write each approve token it mints into files the session
+#      reads, one form a file - on a line of its own, in a token endpoint's answer naming it, and as
+#      DISPATCH_APPROVE_TOKEN=<token> - and its pod key as PEM
 #      (approve/broker-plants-approve-tokens.patch), and a token lifetime of 60 seconds: of three
-#      approve tokens, one expired and one revoked at the broker before the scan, the scan finds
-#      all three by hash, and the pod key by its thumbprint; the DPoP diagnostic's answers are
-#      printed and decide nothing.
+#      approve tokens, one expired and one revoked at the broker before the scans, the scan of each
+#      form finds all three by hash, and the scan of the first the pod key by its thumbprint; the
+#      DPoP diagnostic's answers are printed and decide nothing.
 #
 # It prints one line per step, "approve-check: <step>: PASS|FAIL|UNKNOWN <what it read>", and
-# exits 0 when every step passed, 1 when one failed, 2 on a usage error and 3 when a stack did not
-# start. The Postgres server is LEGION_TEST_PG_DSN, else DATABASE_URL, as dev-stack.sh reads them.
-# It needs what dev-stack.sh needs, and bun, openssl and patch.
+# exits 0 when every step passed, 1 when one failed, 2 on a usage error, and 3 when none failed and
+# one is UNKNOWN: a stack that did not start, a sign-in or a setup that did not complete, or a scan
+# that compared nothing. The Postgres server is LEGION_TEST_PG_DSN, else DATABASE_URL, as
+# dev-stack.sh reads them. It needs what dev-stack.sh needs, and bun, openssl and patch.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -215,11 +219,31 @@ session() {
 
 broker_sql() { psql "$BROKER_DB_URL" -v ON_ERROR_STOP=1 -Atqc "$1"; }
 
+# run_scan <paths...>: the session's scan of the paths against the broker's log. It sets scan to
+# the scan's one JSON line, or {} where it printed none, and scan_exit to its exit status, which
+# set -e must not end the run on: 3 is the scan's UNKNOWN, a step result like any other.
+run_scan() {
+  scan_exit=0
+  scan="$(session scan "$BROKER_LOG" "$@")" || scan_exit=$?
+  jq -e . >/dev/null 2>&1 <<<"$scan" || scan="{}"
+}
+
+# setup_issue: the person's project, issue and spec on this stack (the session's setup), or the
+# run ends UNKNOWN naming why, since no step after it could read anything.
+setup_issue() {
+  local status=0 setup
+  setup="$(session setup)" || status=$?
+  if [ "$status" != 0 ]; then
+    result "setup" UNKNOWN "the session's setup exited $status: $(tail -n 3 "$STACK_DIR/session.err" | tr '\n' ' ')"
+    exit 3
+  fi
+  echo "approve-check: $setup" >&2
+}
+
 # --- Stack 1: the approve route as it ships. ---
 start_stack approve --approve
 sign_in_box
-setup="$(session setup)"
-echo "approve-check: $setup" >&2
+setup_issue
 approved="$(session approve)"
 reviews="$(session reviews)"
 author="$(jq -r '[.body | if type == "array" then .[] else (.reviews // [])[] end | (.actor.person // .actor.email // .actor // empty)] | map(tostring) | join(",")' <<<"$reviews")"
@@ -278,21 +302,22 @@ else
   result "1a control: the grant revoked" FAIL "$(jq -c 'del(.second.body)' <<<"$revoked")"
 fi
 REVOKE_COMMAND=""
-scan="$(session scan "$BROKER_LOG" "$BOX")"
-read -r candidates logged bindings hashes keys < <(jq -r '[.candidates, .logged_hashes, .logged_bindings, (.hash_matches | length), (.key_matches | length)] | @tsv' <<<"$scan")
-if [ "$candidates" = 0 ] || [ "$logged" = 0 ] || [ "$bindings" = 0 ]; then
-  result "1e scan" UNKNOWN "it read $candidates candidates, $logged logged token hashes and $bindings logged bindings: an empty side compares nothing"
-elif [ "$hashes" = 0 ] && [ "$keys" = 0 ]; then
-  result "1e scan" PASS "$(jq -c '{files_read, candidates, base64url, token68, dpop_answers, private_keys, logged_hashes, logged_bindings, hash_matches, key_matches, diagnostic}' <<<"$scan")"
-else
+run_scan "$BOX"
+if [ "$(jq '(.hash_matches // []) + (.key_matches // []) | length' <<<"$scan")" != 0 ]; then
   result "1e scan" FAIL "$(jq -c . <<<"$scan")"
+elif [ "$scan_exit" = 0 ] && [ "$(jq -r .result <<<"$scan")" = clean ]; then
+  result "1e scan" PASS "$(jq -c '{result, files_read, files_skipped, candidates, base64url, token68, dpop_answers, private_keys, logged_hashes, logged_bindings, hash_matches, key_matches, diagnostic, diagnostic_presented, diagnostic_capped}' <<<"$scan")"
+elif [ "$scan_exit" = 3 ]; then
+  result "1e scan" UNKNOWN "$(jq -c '{unknown, files_read, files_skipped, logged_hashes, logged_bindings}' <<<"$scan")"
+else
+  result "1e scan" FAIL "the scan exited $scan_exit with $(jq -c . <<<"$scan"): $(tail -n 3 "$STACK_DIR/session.err" | tr '\n' ' ')"
 fi
 stop_stack
 
 # --- Stack 2: the allow list off. ---
 start_stack allow-all --approve --approve-allow-all
 sign_in_box
-session setup >/dev/null
+setup_issue
 issue="$(jq -r .issue <"$STACK_DIR/state.json")"
 comment="$(session proxy POST "/api/v1/issues/$issue/comments" '{"body":"A comment the approve-only token must not write."}')"
 mint="$(session proxy POST /api/v1/me/agent-tokens '{"name":"from-the-proxy","scopes":["person","approve"]}')"
@@ -318,7 +343,7 @@ stop_stack
 # --- Stack 3: Dispatch without its approve-only refusal. ---
 start_stack no-refusal --approve --approve-allow-all --dispatch-bin "$WORK/control/dispatch"
 sign_in_box
-session setup >/dev/null
+setup_issue
 issue="$(jq -r .issue <"$STACK_DIR/state.json")"
 comment="$(session proxy POST "/api/v1/issues/$issue/comments" '{"body":"Recorded only without the approve-only refusal."}')"
 comments="$(session comments | jq '[.body | if type == "array" then .[] else (.comments // [])[] end] | length')"
@@ -332,20 +357,22 @@ stop_stack
 # --- Stack 4: a broker that plants what the scan looks for. ---
 BROKER_ACCESS_TOKEN_SECONDS=60 start_stack planted --approve --broker-bin "$WORK/control/broker"
 sign_in_box
-session setup >/dev/null
+setup_issue
 session approve >/dev/null
+# The control build writes each token it mints into three files, one form a file.
 planted="$DEV_STACK_DIR/planted-approve-tokens"
+answers="$DEV_STACK_DIR/planted-approve-answers"
+variables="$DEV_STACK_DIR/planted-approve-env"
 expired="$(sed -n 1p "$planted" 2>/dev/null || true)"
 echo "approve-check: waiting 65 s for the first approve token to expire..." >&2
 sleep 65
 session approve >/dev/null
 session approve >/dev/null
-live="$(sed -n 3p "$planted" 2>/dev/null || true)"
-revoked_token="$(sed -n 5p "$planted" 2>/dev/null || true)"
+live="$(sed -n 2p "$planted" 2>/dev/null || true)"
+revoked_token="$(sed -n 3p "$planted" 2>/dev/null || true)"
 revoke_status="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$AGENT_SECRETS_URL/v1/oauth/revoke" \
   -H @<(printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")") \
   --data-urlencode "token@"<(printf '%s' "$revoked_token") --data-urlencode client_id=dispatch-token-exchange)"
-scan="$(session scan "$BROKER_LOG" "$BOX" "$planted" "$DEV_STACK_DIR/planted-binding-key.pem")"
 # The broker's own answer for each planted token, at its introspection route as the caller
 # "dispatch": Dispatch caches a live answer it read, so its diagnostic of a token it saw live a
 # moment ago can still read live; the broker's is the one that says whether the token is.
@@ -359,16 +386,31 @@ want=()
 for token in "$expired" "$live" "$revoked_token"; do
   [ -z "$token" ] || want+=("$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)")
 done
-found=0
-for hash in "${want[@]}"; do
-  jq -e --arg h "$hash" 'any(.hash_matches[]; .sha256 == $h)' <<<"$scan" >/dev/null && found=$((found + 1))
-done
-if [ "${#want[@]}" = 3 ] && [ "$found" = 3 ] && [ "$(jq '.key_matches | length' <<<"$scan")" -ge 1 ] && [ "$revoke_status" = 200 ] &&
-  [ "$active" = "expired false, revoked false, live true" ]; then
-  result "1e control: planted credentials and key" PASS "the scan found 3 of 3 planted approve tokens by hash (one expired, one revoked at the broker: $revoke_status, one live; the broker introspects them as $active) and $(jq '.key_matches | length' <<<"$scan") planted binding key by thumbprint; Dispatch's diagnostic of the matches, which decides nothing: $(jq -c .diagnostic_of_matches <<<"$scan"); of all candidates: $(jq -c .diagnostic <<<"$scan")"
-else
-  result "1e control: planted credentials and key" FAIL "planted ${#want[@]} tokens, found $found, revoke $revoke_status, broker introspection $active; $(jq -c '{candidates, logged_hashes, hash_matches, key_matches, diagnostic_of_matches}' <<<"$scan")"
+tokens_ok=false
+if [ "${#want[@]}" = 3 ] && [ "$revoke_status" = 200 ] && [ "$active" = "expired false, revoked false, live true" ]; then
+  tokens_ok=true
 fi
+# planted_control <step> <what the form is> <keys wanted> <paths...>: the scan of the paths must
+# end found, exit 0, with every planted token's hash, and with at least <keys wanted> planted keys.
+planted_control() {
+  local step="$1" form="$2" keys_wanted="$3" found=0 hash
+  shift 3
+  run_scan "$@"
+  for hash in "${want[@]}"; do
+    jq -e --arg h "$hash" 'any((.hash_matches // [])[]; .sha256 == $h)' <<<"$scan" >/dev/null && found=$((found + 1))
+  done
+  local keys
+  keys="$(jq '(.key_matches // []) | length' <<<"$scan")"
+  if [ "$tokens_ok" = true ] && [ "$scan_exit" = 0 ] && [ "$found" = 3 ] && [ "$keys" -ge "$keys_wanted" ]; then
+    result "$step" PASS "the scan of $form found 3 of 3 planted approve tokens by hash (one expired, one revoked at the broker: $revoke_status, one live; the broker introspects them as $active) and $keys planted binding key(s) by thumbprint; Dispatch's diagnostic of the matches, which decides nothing: $(jq -c .diagnostic_of_matches <<<"$scan"), $(jq -c '{diagnostic_presented, diagnostic_capped}' <<<"$scan")"
+  else
+    result "$step" FAIL "the scan of $form exited $scan_exit and found $found of ${#want[@]} planted tokens and $keys key(s); revoke $revoke_status, broker introspection $active; $(jq -c '{result, unknown, files_read, logged_hashes, hash_matches, key_matches}' <<<"$scan")"
+  fi
+}
+planted_control "1e control: planted tokens on lines of their own, and the binding key" "each token on a line of its own" 1 \
+  "$BOX" "$planted" "$DEV_STACK_DIR/planted-binding-key.pem"
+planted_control "1e control: planted tokens in token endpoint answers" "token endpoint answers naming each token" 0 "$answers"
+planted_control "1e control: planted tokens as NAME=value" "DISPATCH_APPROVE_TOKEN=<token> lines" 0 "$variables"
 stop_stack
 
 if [ "$FAILED" = 1 ]; then exit 1; fi
