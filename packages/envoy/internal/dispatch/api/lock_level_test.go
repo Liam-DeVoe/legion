@@ -8,10 +8,11 @@
 // others share - moduleSource, moduleSources, stringConstants, sqlStatements, literalText,
 // sqlWhitespace - is declared in module_source_test.go, which carries no tag because tests of
 // this package use declarations of it untagged and so must have them under -race too
-// (ask_asked_of_test.go:480, which normalises a migration's SQL with sqlWhitespace, and the
-// item-writer census, which walks the module). Declarations alone compile wherever nothing calls
-// them, so keeping them there costs the race build one file's compile and, of the walk, only what
-// the census asks of it (module_source_test.go's header says why it is the one caller left in).
+// (ask_asked_of_test.go's TestAskAskedOf, which normalises a migration's SQL with sqlWhitespace,
+// and the item-writer census, which walks the module). Declarations alone compile wherever
+// nothing calls them, so keeping them there costs the race build one file's compile and, of the
+// walk, only what the census asks of it (module_source_test.go's header says why it is the one
+// caller left in).
 // The work stays behind the tag: the constant fixpoint and the statement walk this guard runs
 // over the whole module, and
 // TestNoForUpdateOnOwnerTables, which would otherwise run twice, once under the detector and

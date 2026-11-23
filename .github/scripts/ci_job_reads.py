@@ -531,13 +531,16 @@ PMDOC_GEN = [f"{ENVOY}/internal/dispatch/pmdoc/gen/**", "packages/proof-editor/*
 # route that names one more package's error or type is declared with no edit here.
 REFGEN_API = envoy_import_closure(f"{ENVOY}/internal/cipher/api", f"{ENVOY}/internal/cipher/approval")
 REFGEN_REFUSALS = tuple(f"{ENVOY}/internal/cipher/{d}" for d in ("api", "approval", "proxy"))
-MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:76 walks packages/envoy (infra, testdata "
-                             "and all) and :83 parses every .go file it finds but the test files (:80), for "
-                             "the tests that ask it for the module's sources: lock_level_test.go:89, "
-                             "event_insert_guard_test.go:44, review_order_guard_test.go:49, "
+MODULE_SOURCES = [Read(path, "internal/dispatch/api/module_source_test.go:75 walks packages/envoy, infra included, "
+                             "through sqlscan.GoFiles (internal/sqlscan/sqlscan.go:50), which enters no testdata, "
+                             "vendor, node_modules, dist, build, .git or .jj directory (:55) and passes over the "
+                             "test files (:36), and module_source_test.go:82 parses every .go file it finds, for "
+                             "the tests that ask it for the module's sources: lock_level_test.go:123, "
+                             "event_insert_guard_test.go:49, review_order_guard_test.go:49, "
                              "review_write_guard_test.go:51, one_expression_guard_test.go:66, "
-                             "issue_route_writer_guard_test.go:105; issue_route_writer_guard_test.go:124 "
-                             "also walks packages/envoy and reads every non-test file of it as text")
+                             "issue_route_writer_guard_test.go:107; issue_route_writer_guard_test.go:139 "
+                             "also reads every non-test file of packages/envoy as text, testdata's among them, "
+                             "which is why these reads keep the .go files under testdata")
                   for path in files_but_tests(ENVOY, tree=True)]
 
 

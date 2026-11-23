@@ -2990,6 +2990,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/routing/*'
   - 'packages/envoy/internal/serverwait/*'
   - 'packages/envoy/internal/session/*'
+  - 'packages/envoy/internal/sqlscan/*'
   - 'packages/envoy/internal/store/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/internal/testport/*'
