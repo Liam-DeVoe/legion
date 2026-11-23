@@ -11,8 +11,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
 1. Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`).
    Your architect's decisions for you come in your task and your messages: read no other document for them.
-   Read no list of open items of the issue, even one with an item for your role.
-   What your architect wants of you comes in your task or a message.
+   Read no list of open items, even one naming your role.
    A record beats your memory.
 
 2. Commit only your phase's paths: `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`.
