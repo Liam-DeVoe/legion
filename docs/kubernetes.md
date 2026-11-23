@@ -4594,7 +4594,7 @@ the guest watch runs whatever that block says, `enabled: false` included, and a 
 
 **In the controller's pod.**
 Where `type` is `microvm`, the controller's launcher runs the guest watch by the rules of this section over the controller pod's classifier (`controllerClassifier`, "What it spares, and what it may end" in [The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
-The processes that classifier protects are the ones that section's guard spares, and the session processes it marks are the shim and every direct child of the shim.
+The processes that classifier protects are the ones that section's guard spares, and the session processes it marks are the shim and each of the shim's own children, never an orphan the shim adopted.
 Every process of the container is the controller's, so each process the watch names is reported to the controller, and its `ended` line names `role=controller`.
 That pod has no `role-init`: once the shim has exited, the launcher, PID 1, drains the exited generation itself, sending SIGTERM over the container's processes, waiting up to its stop grace for them to go, and sending SIGKILL to each one left (`cleanExitedGeneration`, `packages/daemon/internal/launcher/process.go`).
 That drain's SIGKILL takes the place of `role-init`'s in "The kills" and "What the sign does not show" below, so the watch's `SessionDrain` there is the stop grace and a second more, where an issue pod's is 3 s (`controllerSessionDrain`, `packages/daemon/internal/launcher/memoryguard.go`).
@@ -7104,12 +7104,16 @@ The guard spares:
 - the shim, the generation the launcher started, while that process is the launcher's own executable run as `worker-shim`:
   once the launcher has reaped the shim, the kernel may give its pid to another process;
 
-- every direct child of the shim: Oh My Pi, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer and its keygen;
+- the shim's own children: Oh My Pi, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer and its keygen.
+  The shim reaps the orphans its tree leaves (`--reap-orphans`, [Daemon-launched controller](#daemon-launched-controller)), so an orphan of a command Oh My Pi ran becomes a direct child of the shim as well.
+  The launcher tells the shim's own children apart (`shimOwnChildren`): Oh My Pi is the oldest direct child that does not run the shim's `--agent-secrets-bin`, since every orphan descends from Oh My Pi's commands and is younger than it, and the renewer and keygen run that executable as `renew` and `keygen`.
+  Any other direct child of the shim is an adopted orphan, which the guard may end as it may end one that PID 1 adopted.
+  An orphan that runs that executable as `renew` or `keygen` is spared: that is the rule's cost;
 
 - Oh My Pi's helpers, each reached from Oh My Pi through a chain of helpers, by the rule of an issue pod:
   a process that runs Oh My Pi's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of the JavaScript eval tool.
 
-Every other process may be ended: a command the controller ran and what that command started, the JavaScript eval kernel wherever it runs and what it starts, a Python kernel, what a helper runs that is no helper, a helper's name under a command, a `worker-shim` that is not the launcher's generation, an orphan that PID 1 adopted, and a shell that `kubectl exec` started with what it runs.
+Every other process may be ended: a command the controller ran and what that command started, the JavaScript eval kernel wherever it runs and what it starts, a Python kernel, what a helper runs that is no helper, a helper's name under a command, a `worker-shim` that is not the launcher's generation, an orphan that PID 1 or the shim adopted, and a shell that `kubectl exec` started with what it runs.
 
 **Whom it tells.**
 Every process of the container is the controller's, spared or not.
@@ -9773,6 +9777,7 @@ the two session-placing variables, [Settings order](#operator-configuration), an
 The launcher adds `--reap-orphans` to that shim's command (`reapingShim`, `internal/launcher/launcher.go`), and to no shim under role-init.
 With it the shim makes itself the child subreaper of everything it starts and reaps the orphans its process group leaves, rather than the launcher, the container's PID 1, reaping them from a group of its own, which under the cluster's gVisor could make the shim's group read as orphaned and hang it up ([Each role in namespaces of its own](#anatomy-of-a-sandbox-pod) says how).
 Every child the shim waits for itself (Oh My Pi, the secrets keygen and renewer) starts through one guard that this reaper passes over (`internal/subreaper`), so no such child's exit is taken from its own wait.
+The memory guard of this pod tells the shim's own children from the orphans the shim adopts, and may end an adopted orphan as it may end one that PID 1 adopted ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
 In a microVM its launcher is also given `--microvm` and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, the metadata endpoint's two flags, and then serves that endpoint from the projected token it mounts at `/var/run/legion/workload-identity` ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 Its role Secret, `legion-<project>-controller-controller-boot`, holds the launcher's token and its gh bundle (each owner's `github-hosts-<owner>` and `github-config-<owner>`, the review App's read-only `hosts.yml` and `config.yml` for every owner that App is installed on and for an owner a configured rename moved a repository away from, each token reaching every repository that owner's installation holds, `github-renames`, the bundle's configured renames, and `github-default`, the first owner), refreshed every minute as every role's are, and is the only Secret its launch writes:
 there is no provisioning `-boot` Secret.
