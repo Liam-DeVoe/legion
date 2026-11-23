@@ -97,7 +97,7 @@ func TestATypoInModelsRefusesTheLoadAndStopsNoTask(t *testing.T) {
 		applyRefusingNothing(t, pool, booted, intake.DaemonBooted{Boot: 1})
 	}
 
-	const refusal = "models[0] is m-a m-b, which holds white space: a model's name is one word"
+	const refusal = `models[0] is "m-a m-b", which holds white space: a model's name is one word`
 	if err == nil || !strings.Contains(err.Error(), refusal) {
 		t.Errorf("Load of models: [m-a m-b] = %v (listed %v, warnings %q), want a refusal naming %q", err, cfg.ListedModels(), cfg.Warnings, refusal)
 	}

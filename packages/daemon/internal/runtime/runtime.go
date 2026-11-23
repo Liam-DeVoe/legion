@@ -518,9 +518,9 @@ type SpawnSpec struct {
 	PlanRole          bool
 	// RoleDefinition is the fingerprint of the definition of a role the plan in force of Issue
 	// defines that this launch runs (its type, its model and its prompt), and "" for every other
-	// role. No runtime reads it: the supervisor keeps it for the process this launch starts
-	// (supervise.Machine.LaunchedDefinition), so a start of a later step can tell a process that
-	// runs an earlier definition of its role from one that runs the plan in force.
+	// role. No runtime reads it: the claim keeps it with the process this launch starts, over a
+	// restart too (supervise.Claim.LaunchedDefinition), so a start of a later step can tell a
+	// process that runs an earlier definition of its role from one that runs the plan in force.
 	RoleDefinition string
 }
 

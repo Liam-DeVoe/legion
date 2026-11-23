@@ -556,10 +556,10 @@ func (r *idleWakeRig) restart() {
 }
 
 // newRuntime is the runtime factory the daemon boots with: the real Sandbox runtime
-// (sandbox.New) over the rig's Kubernetes API, with the worker stream, store and connection
-// directory the boot hands it, and the rig's own tools — a `legion` that is the role process
-// stand-in, and an agent command it never has to run.
-func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
+// (sandbox.New) over the rig's Kubernetes API, with the worker stream, the boot's reader of a
+// claim's App, the store and connection directory the boot hands it, and the rig's own tools — a
+// `legion` that is the role process stand-in, and an agent command it never has to run.
+func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source, roleApps appauth.RoleApps,
 	_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository,
 ) (legionruntime.Runtime, error) {
 	r.built.mu.Lock()
@@ -571,7 +571,9 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		return nil, fmt.Errorf("sandboxOptions: %w", err)
 	}
 	tools := r.toolsDir()
-	opts.Conns, opts.StreamURL, opts.Store = listener, address, st
+	// The boot's one reader of a role's App, as the daemon's own factory hands it to the runtime
+	// it builds (sandboxRuntime): the issue roles of each pod and the gh files below read it.
+	opts.Conns, opts.StreamURL, opts.Store, opts.RoleApps = listener, address, st, roleApps
 	// The two halves of a release's saved work, as the daemon's own factory hands them to the
 	// runtime it builds (sandboxRuntime): what the launcher of the pod that replaces a released
 	// one is sent before any role of that pod starts, and what the launcher's confirmation

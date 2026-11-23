@@ -131,8 +131,9 @@ func (r claimRole) fingerprint() string {
 // roleApps is the one value every reader of a claim's App holds (appauth.RoleApps): deployed, the
 // App of each role the deployment defines (deploymentApps), and read, the daemon's one reader of a
 // role of a plan, read for the role's type, so a role of an issue's plan acts as the App of its
-// type. The boot builds it once (newDaemon) and hands it to each runtime, the workflow and the
-// supervision.
+// type. The boot builds it once, over the store it opened (run), and hands it to the workflow
+// (openWorkflow), whose identities read it, and to the runtime it builds (runtimeFactory), whose
+// gh credential and each walk's memo of bundles read it.
 func roleApps(deployed appauth.DeploymentApps, read planRoleReader) appauth.RoleApps {
 	return appauth.RoleApps{Deployed: deployed, Plan: func(ctx context.Context, issue string, role claim.Role) (appauth.Planned, error) {
 		defined, found, err := read(ctx, issue, role)

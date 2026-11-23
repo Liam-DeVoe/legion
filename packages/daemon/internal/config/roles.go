@@ -271,9 +271,10 @@ func checkDefaultSteps(cfg *Config) error {
 // plan.KeyMismatches finds, a step whose key names one agent with an earlier step whose role runs
 // on another model or another harness, as d gives each role; a step with no key runs as an agent
 // of its own. It answers one warning for each such step, naming the entry and giving plan.Validate's
-// reason, and saying the next release refuses it. Legion took a key of `default_steps` on two
-// models or two harnesses before it judged one, so such a file is taken here, and runs. steps is
-// not changed: the answer is a copy where any key is left out.
+// reason in the words of a list of steps that is no task's (plan.KeyMismatch.StepsReason), and
+// saying the next release refuses it. Legion took a key of `default_steps` on two models or two
+// harnesses before it judged one, so such a file is taken here, and runs. steps is not changed:
+// the answer is a copy where any key is left out.
 func oneAgentOneModel(project string, steps []plan.Step, d plan.Deployment) ([]plan.Step, []string) {
 	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
 	mismatches := plan.KeyMismatches(task, plan.RolesOf(task, d))
@@ -286,7 +287,7 @@ func oneAgentOneModel(project string, steps []plan.Step, d plan.Deployment) ([]p
 		at := mismatch.Step.Place - 1
 		kept[at].Key = ""
 		warnings[i] = fmt.Sprintf("projects.%s.default_steps[%d] is %s: %s This release runs step %d as an agent of its own, and the next release refuses it; give that step another key, or none, in legion.yaml",
-			project, at, steps[at], mismatch.Reason(), mismatch.Step.Place)
+			project, at, steps[at], mismatch.StepsReason(), mismatch.Step.Place)
 	}
 	return kept, warnings
 }

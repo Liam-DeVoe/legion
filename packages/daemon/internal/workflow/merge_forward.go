@@ -52,12 +52,21 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if pr.State != record.PullRequestOpen || !record.StandsIn(issue, record.MergeForwardPhases...) {
 		return nil
 	}
+	// An ask the record holds of this head, made away from the implementation step, covers the head
+	// wherever the task stands: nothing is asked again, and no walk is read to decide so. The walk
+	// decides only for an ask made at that step (record.MergeForward.Own), which covers that step
+	// alone.
+	made := pr.MergeForward
+	askedOfHead := made != nil && made.Head == pr.HeadSHA
+	if askedOfHead && !made.Own {
+		return nil
+	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
 	own := w.atImplementation(at)
-	if asked := pr.MergeForward; asked != nil && asked.Head == pr.HeadSHA && (!asked.Own || own) {
+	if askedOfHead && own {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {

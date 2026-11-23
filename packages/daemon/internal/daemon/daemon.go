@@ -451,7 +451,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now)
+	//
+	// The one reader of a claim's App (roleApps) is built here, over the store just opened, and
+	// handed to the workflow and, through supervision, to the runtime: each reads this one value.
+	claimApps := roleApps(deploymentApps(cfg.Roles), planRoleOf(st))
+	workflow, err := openWorkflow(ctx, cfg, st, claimApps, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -553,7 +557,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps, pauses = workflow.apps, workflow.pauses
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate, pauses)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, claimApps, reserveWake, refreshGate, pauses)
 	if err != nil {
 		listener.Close()
 		workflow.stop()
@@ -1071,14 +1075,15 @@ func (p plan) appOwners(runtimeName string, deployed appauth.DeploymentApps) fun
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
 // listener the stream listener, address the one every agent's shim dials (shimAddress), tokens the
 // workflow's App tokens and repository the workflow's repository of an issue (issueRepository;
-// both nil without a workflow), st the store the runtime reads, and cached the repositories the
-// Sandbox runtime keeps a repository cache of: the repositories of the project's live issue
-// records and of the launches since their last read (workflowRuntime.cacheRepositories; none
-// without a workflow). The rename rule every role's gh bundle resolves a configured pair by, one
-// repository at a time (appauth.GitHubCredential, repositories.servesRepository), is the repository
-// state's own and is given to the factory where it is built. openSupervision hands it the plan the
-// workflow completed, so no factory reads a field the workflow sets after prepare.
-type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
+// both nil without a workflow), roleApps the boot's one reader of a claim's App (roleApps), which
+// the runtime's gh credential and its walks read, st the store the runtime reads, and cached the
+// repositories the Sandbox runtime keeps a repository cache of: the repositories of the project's
+// live issue records and of the launches since their last read (workflowRuntime.cacheRepositories;
+// none without a workflow). The rename rule every role's gh bundle resolves a configured pair by,
+// one repository at a time (appauth.GitHubCredential, repositories.servesRepository), is the
+// repository state's own and is given to the factory where it is built. openSupervision hands it
+// the plan the workflow completed, so no factory reads a field the workflow sets after prepare.
+type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source, roleApps appauth.RoleApps,
 	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error)
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
@@ -1324,10 +1329,11 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // directory, and the listener's address is the `--connect` every pane's shim is started with;
 // providerEnvDir, when set, is the `--provider-env-dir` beside it. The workflow's App tokens, when
 // the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential, minted as the
-// App the pane's role acts as on its issue: a role the plan in force of the issue defines as the
-// App of its type, and any other role the deployment defines as the App its github_app names,
-// deploymentApps) and the controller pane's own (appauth.ControllerCredential), which its
-// refresh asks by the default owner its launch recorded, both built over the owner accounts each
+// App the pane's role acts as on its issue, as the boot's one reader of a claim's App answers it
+// (roleApps): a role the plan in force of the issue defines as the App of its type, and any other
+// role the deployment defines as the App its github_app names, deploymentApps) and the controller
+// pane's own (appauth.ControllerCredential), which its refresh asks by the default owner its
+// launch recorded, both built over the owner accounts each
 // App is installed on, which the bundle reads at every build (appauth.Manager.InstalledOwners:
 // from GitHub each time under the App's JWT; in token mode the App's token_command's release of
 // every installation, which may be that of a run that finished up to appauth's finishedRunKeep
@@ -1339,13 +1345,13 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // hold no gh files. The private server's environment is scrubbed before anything is launched on
 // it.
 func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile, gh string, served func(ghrepo.Repository) bool, installed *appauth.Installed, left *appauth.LeftOut, log *slog.Logger) runtimeFactory {
-	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Source,
+	return func(ctx context.Context, listener *stream.Listener, streamAddress string, tokens appauth.Source, roleApps appauth.RoleApps,
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts := tmuxOptions(cfg, project, launchers, providerEnvDir, dispatchTokenFile, log)
 		opts.StreamAddress, opts.Conns = streamAddress, listener
-		// The one reader of a role's App, which the credential and each walk's memo of bundles
-		// read alike: the deployment's roles, and a role of an issue's plan from the store.
-		opts.RoleApps = roleApps(opts.RoleApps.Deployed, planRoleOf(st))
+		// The boot's one reader of a role's App, which the credential and each walk's memo of
+		// bundles read alike: the deployment's roles, and a role of an issue's plan from the store.
+		opts.RoleApps = roleApps
 		if tokens != nil {
 			// The two records the credentials write, shared by both as the Kubernetes runtime's
 			// three share them (appauth.Installed and appauth.LeftOut, kubernetes.go's
@@ -1398,11 +1404,11 @@ func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 }
 
 // tmuxOptions translates the configuration into the tmux runtime's Options, all but the worker
-// stream and the GitHub credential function, which boot hands the factory: the `runtime.tmux`
-// block's pane variables, Oh My Pi overlays and take_over among them, each role's own overlays
-// (role_config_files), the App each role of the deployment acts as (deploymentApps), which the
-// credential reads too, every declared experiment's arms (experiment.DeclaredVariants), and the
-// checker of the deployment's shared leak check (leak_check), which every pane is told.
+// stream, the reader of a role's App and the GitHub credential function, which boot hands the
+// factory: the `runtime.tmux` block's pane variables, Oh My Pi overlays and take_over among them,
+// each role's own overlays (role_config_files), every declared experiment's arms
+// (experiment.DeclaredVariants), and the checker of the deployment's shared leak check
+// (leak_check), which every pane is told.
 func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile string, log *slog.Logger) tmux.Options {
 	opts := tmux.Options{
 		Project:                 project,
@@ -1418,7 +1424,6 @@ func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backen
 		AdoptTimeout:            cfg.SlowCommandTimeout,
 		ProviderEnvDir:          providerEnvDir,
 		RoleConfigFiles:         cfg.RoleConfigFiles,
-		RoleApps:                appauth.RoleApps{Deployed: deploymentApps(cfg.Roles)},
 		LeakCheckManifestSHA256: cfg.LeakCheck.ManifestSHA256,
 		Log:                     log,
 	}
@@ -1490,8 +1495,12 @@ type supervision struct {
 	stream     *stream.Listener
 	runtime    runtime.Runtime
 	supervisor *supervisor
-	tokens     *api.BootTokens
-	claims     []supervise.Claim
+	// roleDefinition is the definition of a plan's role a launch of a claim would run now, from
+	// the supervisor's one spec builder (specs.roleDefinition), which the outbox's start of a step
+	// compares with the definition the claim's process was launched with (outbox.roleDefinition).
+	roleDefinition func(ctx context.Context, c supervise.Claim) (string, error)
+	tokens         *api.BootTokens
+	claims         []supervise.Claim
 	// refreshGate is the daemon's one stale-plugin refresh gate, the same object every machine of
 	// this supervision holds on its Deps (supervise.RefreshGate, built in run and handed to
 	// openSupervision beside the wake limiter). Supervision keeps the reference because the
@@ -1694,9 +1703,10 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 }
 
 // openSupervision reads the claims the store holds and their sessions' capability reports, takes
-// the worker stream, and builds the runtime over it, for supervision's lifetime and with the
-// workflow's App tokens (nil without a workflow): every step of supervision that can refuse, so a
-// daemon that cannot supervise refuses before its boot is recorded.
+// the worker stream, and builds the runtime over it, for supervision's lifetime, with the
+// workflow's App tokens (nil without a workflow) and the boot's one reader of a claim's App
+// (roleApps, which run builds once and hands the workflow too): every step of supervision that can
+// refuse, so a daemon that cannot supervise refuses before its boot is recorded.
 //
 // reserve is the daemon's one wake limiter as the machines reach it (run builds it, before the
 // workflow, which reserves from the same one): the moment each launch may run, and nil while the
@@ -1714,7 +1724,7 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // (Deps.Paused, the service's one atomic load), write a pause's stop through its stop transaction
 // (Deps.PauseStopped) and stamp each paced launch's let-out moment through it (Deps.WakeLetOut);
 // it reads the machines this supervisor holds for its catch-up and its resume.
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, roleApps appauth.RoleApps, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, pauses *projectPause) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1748,7 +1758,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		// A daemon with no workflow has no records to read, so it keeps no repository cache.
 		cached = func() []ghrepo.Repository { return nil }
 	}
-	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, cached)
+	rt, err := p.newRuntime(supervising, listener, dial, apps, roleApps, p.repository, st, cached)
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1761,21 +1771,22 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// role (resolveClaimRole), the stall backstop and a role's harness (roleBackends) read alike.
 	planRole := planRoleOf(st)
 	backends := roleBackends(cfg.BackendFor, planRole)
+	launches := specs{
+		stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
+		roles: cfg.Roles, models: cfg.ListedModels(), planRole: planRole,
+		identity: p.identityAs, repository: p.launchRepository, owner: p.owner,
+		appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
+		designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
+		runtimeName: cfg.Runtime.Name, plugins: p.plugins,
+		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
+		backendFor: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
+		variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
+	}
 	sup.deps = supervise.Deps{
-		Runtime: rt,
-		Conns:   listener,
-		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
-		Specs: specs{
-			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			roles: cfg.Roles, models: cfg.ListedModels(), planRole: planRole,
-			identity: p.identityAs, repository: p.launchRepository, owner: p.owner,
-			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
-			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
-			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
-			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
-			backendFor: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
-		},
+		Runtime:                 rt,
+		Conns:                   listener,
+		Store:                   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
+		Specs:                   launches,
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
 		Secrets:                 p.secretsEnroller,
@@ -1827,7 +1838,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
-		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
+		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, roleDefinition: launches.roleDefinition, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses, backends: backends, planRole: planRole,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,

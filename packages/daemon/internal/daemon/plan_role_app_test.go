@@ -13,21 +13,37 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The tmux runtime holds the App each role of the deployment acts as (tmux.Options.RoleApps), the
-// reader its gh bundle function reads, so one walk of its panes builds a role of the deployment's
-// bundle once per repository, over every issue whose plan does not define its name
-// (appauth.NewBundles), and builds a role of a plan once for each App it acts as.
-func TestTheTmuxRuntimeHoldsTheAppOfEachRoleOfTheDeployment(t *testing.T) {
-	cfg := config.Config{Runtime: config.Runtime{Name: "tmux"}, Roles: []config.Role{
+// The boot builds the one reader of a claim's App once its store is open (roleApps) and hands it
+// to the runtime it builds (runtimeFactory), whose gh bundle function and walks read it
+// (tmux.Options.RoleApps, sandbox.Options.RoleApps): the App each role of the deployment acts as,
+// and a role of an issue's plan read from the daemon's store, so one walk builds a role of the
+// deployment's bundle once per repository, over every issue whose plan does not define its name
+// (appauth.NewBundles), and builds a role of a plan once for each App it acts as. The issue read
+// here has no plan, so its plan defines no role.
+func TestTheBootHandsTheRuntimeTheAppOfEachRoleOfTheDeployment(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Roles = []config.Role{
 		{Name: "checker", Type: "testing", GitHubApp: config.RoleAppImplement},
 		{Name: "critic", Type: "review", GitHubApp: config.RoleAppReview},
-	}}
+	}
+	record := &built{}
+	startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), record))
+	record.mu.Lock()
+	apps := record.roleApps
+	record.mu.Unlock()
 	want := appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
-	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).RoleApps.Deployed; !maps.Equal(got, want) {
-		t.Errorf("tmux RoleApps.Deployed = %v, want %v", got, want)
+	if !maps.Equal(apps.Deployed, want) {
+		t.Errorf("the runtime's RoleApps.Deployed = %v, want %v", apps.Deployed, want)
+	}
+	if apps.Plan == nil {
+		t.Fatal("the runtime was handed no reader of a role of a plan")
+	}
+	if planned, err := apps.Plan(context.Background(), cfg.Project+"-1", "coder"); err != nil || planned.Defines {
+		t.Errorf("the runtime's reader of coder on %s-1, which has no plan = %+v, %v; want no role read from the store", cfg.Project, planned, err)
 	}
 }
 

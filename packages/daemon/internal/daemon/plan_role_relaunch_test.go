@@ -107,11 +107,12 @@ func TestAStartAfterAChangedRoleBlockRelaunchesTheRolesLiveClaim(t *testing.T) {
 				t.Fatal(err)
 			}
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-			sup.deps.Specs = specs{stateDir: t.TempDir(), project: "legion", prompts: composer, planRole: poolPlanRole(pool, records)}
+			prober := specs{stateDir: t.TempDir(), project: "legion", prompts: composer, planRole: poolPlanRole(pool, records)}
+			sup.deps.Specs = prober
 			token := mustClaimToken(t, stepStartKey, relaunchProber)
 			conn := fake.NewConn()
 			sup.deps.Conns.(*fake.Conns).Register(token, conn)
-			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
+			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, roleDefinition: prober.roleDefinition,
 				tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: time.Now,
 				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
 					return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
@@ -206,28 +207,37 @@ func modelOf(launches []fake.Call) []string {
 	return models
 }
 
-// A daemon that starts while a prober's agent runs has built no launch of that claim, so it does
-// not know which definition of the role the process runs (supervise.Machine.LaunchedDefinition).
-// The earlier daemon launched the prober under version 1 of the plan (type testing, model m-a,
-// prompt P1), and its agent came up an hour ago (supervise.Claim.LastReady, which the store keeps
-// over the restart). The start of the prober's next step after the restart relaunches the process
-// once, on its own session and with the definition of the plan in force, where that plan was
-// given after the agent came up: version 2, given half an hour ago, changes the role block (type
-// implementation, model m-b, prompt P2), and the process may run version 1. The line of the
-// suspension says why, in words of its own. The control is the same restart where the plan in
-// force, version 1, was given before the agent came up and the task enters the prober's step
-// again: nothing is known to have changed since the process started, so the start hands the
-// running process its task and relaunches nothing.
-func TestARestartedDaemonRelaunchesAPlanRolesAgentOnlyForAPlanGivenAfterItCameUp(t *testing.T) {
+// A daemon that starts while a prober's agent runs restores the prober's claim over that process,
+// and the start of the prober's next step compares the definition of the role the process was
+// launched with, which the claim keeps over the restart (supervise.Claim.LaunchedDefinition), with
+// the definition of the plan in force. The earlier daemon launched the prober under version 1 of
+// the plan (type testing, model m-a, prompt P1). Where version 2 changed the role block (type
+// implementation, model m-b, prompt P2), whenever it was given — after the agent came up, or while
+// it came up, after its launch was built and before it said it was ready — the start relaunches
+// the process once, on its own session, with the definition of the plan in force, and its line
+// says the definition changed. Where the block is unchanged, the start hands the running process
+// its task and relaunches nothing, whether or not the claim records a ready time.
+//
+// Before the claim kept the definition, the restarted daemon compared the time the plan in force
+// was given with the agent's last ready: a version given while the agent came up relaunched
+// nothing, so a process of P1 on m-a ran the step while its mints acted as the implement App, and
+// a claim that recorded no ready time was relaunched though nothing had changed.
+func TestARestartedDaemonRelaunchesAPlanRolesAgentWhoseLaunchRanAnotherDefinition(t *testing.T) {
 	const p1, p2 = "# Prober\n\nProbe the change, first wording.", "# Prober\n\nProbe the change, second wording."
-	const why = "this daemon started after the process of its role prober on LEGION-208 launched, and the plan in force was given after that process came up"
+	const changed = "the definition of its role prober on LEGION-208 changed since its process launched"
 	for _, tc := range []struct {
-		name       string
-		later      bool
+		name string
+		// v2 is when version 2 changes the block: "after" the agent came up, while it was
+		// "booting", or "" for no version 2, the task entering the prober's step again.
+		v2 string
+		// ready is how long before the restart the agent last said it was ready, 0 for none.
+		ready      time.Duration
 		relaunched bool
 	}{
-		{"version 2 was given after the agent came up", true, true},
-		{"the control: the plan in force was given before the agent came up", false, false},
+		{"version 2 was given after the agent came up", "after", time.Hour, true},
+		{"version 2 was given while the agent came up", "booting", time.Hour, true},
+		{"the control: the block is unchanged", "", time.Hour, false},
+		{"the block is unchanged and the claim records no ready time", "", 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -266,6 +276,10 @@ func TestARestartedDaemonRelaunchesAPlanRolesAgentOnlyForAPlanGivenAfterItCameUp
 				t.Fatal("the earlier daemon's start of the prober created no claim")
 			}
 			machine.Wait()
+			if tc.v2 == "booting" {
+				// Its launch is built under version 1 and its agent is not up yet.
+				seedProberVersionAt(t, pool, records, 2, "implementation", "m-b", p2, base.Add(-90*time.Minute))
+			}
 			generation := machine.Claim().Generation
 			for _, ev := range []supervise.Event{
 				supervise.StreamHello{Claim: token, Generation: generation},
@@ -296,22 +310,29 @@ func TestARestartedDaemonRelaunchesAPlanRolesAgentOnlyForAPlanGivenAfterItCameUp
 			}
 			earlier.stop()
 
-			// The store keeps the claim over the restart, the agent having come up an hour ago.
+			// The store keeps the claim over the restart, with the agent's last ready as the case
+			// gives it.
 			claims := earlier.deps.Store.(*outboxClaimStore)
 			claims.mu.Lock()
 			stored := claims.claims[token]
 			claims.mu.Unlock()
-			stored.LastReady = base.Add(-time.Hour)
+			stored.LastReady = time.Time{}
+			if tc.ready != 0 {
+				stored.LastReady = base.Add(-tc.ready)
+			}
 			if err := claims.PutClaim(ctx, stored); err != nil {
 				t.Fatal(err)
 			}
-			if tc.later {
+			switch tc.v2 {
+			case "after":
 				seedProberVersionAt(t, pool, records, 2, "implementation", "m-b", p2, base.Add(-30*time.Minute))
-			} else if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-				return records.PutPhase(ctx, tx, record.PhaseRow{Issue: stepStartKey, Role: relaunchProber, Entry: 2,
-					EntryTask: "Probe it again. Issue: LEGION-208. Phase: step.", EntryRaisedAt: time.Now()})
-			}); err != nil {
-				t.Fatalf("enter the prober's step again under version 1: %v", err)
+			case "":
+				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+					return records.PutPhase(ctx, tx, record.PhaseRow{Issue: stepStartKey, Role: relaunchProber, Entry: 2,
+						EntryTask: "Probe it again. Issue: LEGION-208. Phase: step.", EntryRaisedAt: time.Now()})
+				}); err != nil {
+					t.Fatalf("enter the prober's step again under version 1: %v", err)
+				}
 			}
 
 			// This daemon: its supervisor restores the claim over the process the earlier one
@@ -324,16 +345,14 @@ func TestARestartedDaemonRelaunchesAPlanRolesAgentOnlyForAPlanGivenAfterItCameUp
 				t.Fatalf("restore the prober's claim: %v", err)
 			}
 			machine, found = restarted.Machine(token)
-			if !found {
-				t.Fatal("the restore made no machine of the prober's claim")
-			}
-			if _, known := machine.LaunchedDefinition(); known || machine.Claim().RunsNothing() {
-				t.Fatalf("the restored prober knows its launch's definition %t and runs nothing %t, want neither: the case's premise", known, machine.Claim().RunsNothing())
+			if !found || machine.Claim().RunsNothing() || machine.Claim().LaunchedDefinition == "" {
+				t.Fatalf("the restore made a machine of the prober's claim %t, running a process, with its launch's definition %q; want one, running, with the definition of version 1: the case's premise",
+					found, machine.Claim().LaunchedDefinition)
 			}
 			second := mustOutboxRow(t, stepStartKey, record.SuperviseRequest{Op: "start", Tree: stepStartKey, Role: relaunchProber, Generation: 2,
 				Phase: phase.Step, Task: "Probe it again. Issue: LEGION-208. Phase: step.", Entry: 2}, time.Now())
 			second.ID = 96
-			if err := (&outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: restarted,
+			if err := (&outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: restarted, roleDefinition: prober.roleDefinition,
 				tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: time.Now, provision: provision}).execute(ctx, second); err != nil {
 				t.Fatalf("the restarted daemon's start of the prober's next step: %v", err)
 			}
@@ -341,23 +360,23 @@ func TestARestartedDaemonRelaunchesAPlanRolesAgentOnlyForAPlanGivenAfterItCameUp
 			relaunches := append(rt.CallsOf("Spawn"), rt.CallsOf("Resume")...)[1:]
 			if !tc.relaunched {
 				if len(relaunches) != 0 {
-					t.Fatalf("a restart under a plan given before the agent came up relaunched the prober %d times (on %q), want none", len(relaunches), modelOf(relaunches))
+					t.Fatalf("a restart over an unchanged block relaunched the prober %d times (on %q), want none", len(relaunches), modelOf(relaunches))
 				}
-				if strings.Contains(logs.String(), why) {
-					t.Fatalf("the restarted daemon logged %q for a plan given before the agent came up", why)
+				if lines := logs.String(); strings.Contains(lines, "since its process launched") || strings.Contains(lines, "may run an earlier definition") {
+					t.Fatalf("the restarted daemon logged a relaunch's reason over an unchanged block:\n%s", lines)
 				}
 				return
 			}
 			if len(relaunches) != 1 {
-				t.Fatalf("the restarted daemon's start relaunched the prober %d times, want once: version 2 was given after its agent came up", len(relaunches))
+				t.Fatalf("the restarted daemon's start relaunched the prober %d times, want once: its process was launched under version 1, which version 2 changed", len(relaunches))
 			}
 			spec := relaunches[0].Spec
 			if spec.Model != "m-b" || !composedHolds(t, spec, p2) || composedHolds(t, spec, p1) || spec.ResumeSessionFile != "/tmp/prober.jsonl" {
 				t.Fatalf("the prober was relaunched on %q, its prompt holding P2 %t and P1 %t, on the session %q; want m-b with P2 alone, on its own session /tmp/prober.jsonl",
 					spec.Model, composedHolds(t, spec, p2), composedHolds(t, spec, p1), spec.ResumeSessionFile)
 			}
-			if !strings.Contains(logs.String(), why) {
-				t.Fatalf("the restarted daemon's lines do not say %q:\n%s", why, logs.String())
+			if !strings.Contains(logs.String(), changed) {
+				t.Fatalf("the restarted daemon's lines do not say %q:\n%s", changed, logs.String())
 			}
 		})
 	}
