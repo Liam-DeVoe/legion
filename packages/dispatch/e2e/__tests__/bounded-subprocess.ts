@@ -95,10 +95,17 @@
  *   s, and under the `short` bound rows of these runs were killed at 60 s in four whole-file runs.
  *   Three times 175.0 s, rounded up to the minute, is 540 s. A run that stops before any probe, at
  *   an input it refuses, stays under `short`.
+ * - `runnerSweep`, against 48 s: a runner of `e2e/acceptance/restricted-sweep.sh` in
+ *   `restricted-sweep-split.test.ts` that reads the member's live feed, whose window is the fixed
+ *   45 s a runner takes at least (the script's `runner_live_floor`). Each of the six such rows'
+ *   runners took about 48 s in the build cluster's whole-file run of that file at 9ce18a69c9 (Job
+ *   legion-judging-c5xpq, 2026-11-23), against the `short` bound's 60 s. Three times 48 s,
+ *   rounded up, is 150 s.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a whole-index sweep after 5 minutes, a listing
- * after 6 minutes, the generation after 6.5 minutes, a run of the edge check after 9 minutes, and
+ * laptop as in CI: a `short` child after 60 s, a sweep runner that reads the live feed after
+ * 2.5 minutes, a whole-index sweep after 5 minutes, a listing after 6 minutes, the generation after
+ * 6.5 minutes, a run of the edge check after 9 minutes, and
  * the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads from the bounds of
  * what the row waits for, plus 30 s for its own work, so the child's bound fires before the row's
  * limit and the failure names the child. The lane runs in the `dispatch-ui` job of
@@ -140,6 +147,9 @@ export const bounds = Object.freeze({
   wholeIndexSweep: 300_000,
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
+  /** One runner of `e2e/acceptance/restricted-sweep.sh` against the fake Dispatch of
+   *  `restricted-sweep-split.test.ts` that reads the member's feed over the 45 s live window. */
+  runnerSweep: 150_000,
 });
 
 /** The name of a bound, which is what a row and a run name rather than a number. */

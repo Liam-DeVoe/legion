@@ -95,7 +95,8 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
    *  given), its document socket served, and its live feed served unless `live` is false: a run
    *  that a leak decides, or that stops before its feed, need not wait out a live window.
    *  `createdAt` is when its fake's OWN was created; `env` changes its inputs, and `feed` its
-   *  fake's sockets. */
+   *  fake's sockets. A runner whose feed is served reads it for the 45 s live window, so it is
+   *  stopped at the `runnerSweep` bound; one that is not stays under `short`. */
   function runner(
     file: string,
     leaks: readonly Leak[] = [],
@@ -123,6 +124,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
         ...env,
       },
       ...(createdAt === undefined ? {} : { createdAt }),
+      bound: live ? "runnerSweep" : "short",
       feed: { doc: true, live, ...feed },
       rows,
     });
@@ -246,7 +248,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       );
       expect(code, stdout).toBe(0);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // The control of the row above: the same runner, with a leak planted, fails.
@@ -350,7 +352,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       );
       expect(run.code).toBe(2);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // A build from #5079 on reads the proxy with the full member's token: with no cookie at all,
@@ -373,7 +375,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       );
       expect(run.code, run.stdout).toBe(0);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // With the cookie, a proxy read the full member's half could not make fail still leaves no
@@ -416,7 +418,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       );
       expect(code).toBe(2);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // A row the fills hold no line of was never asked of the full member: neither whether it can
@@ -479,7 +481,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       expect(memberPaths).toEqual([]);
       expect(code).toBe(2);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // Fills made at another deployment fill every row with objects that name nothing here, each of
@@ -554,7 +556,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       expect(memberPaths).toEqual([]);
       expect(code).toBe(2);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   test(
@@ -603,7 +605,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       );
       expect(code, stdout).toBe(0);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // The control of the row above: the same runner, its member's own writes cut from their feed.
@@ -622,7 +624,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
       expect(code).toBe(2);
     },
-    rowLimit("short", "short")
+    rowLimit("short", "runnerSweep")
   );
 
   // Each write is a comment on the write issue and a direct message to the fills' session of the
