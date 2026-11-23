@@ -56,7 +56,7 @@ func show(value *float64) string {
 	return fmt.Sprint(*value)
 }
 
-// TestTheFailuresModeLoadsTwiceIntoTheSameRows: -failures (dispatch://INFRA-978, T15) loaded twice
+// TestTheFailuresModeLoadsTwiceIntoTheSameRows: -failures (dispatch://INFRA-978) loaded twice
 // with one -now and one controller session writes the same rows of every table it writes and
 // answers the same result, so a check can load it again. What it prints is what the rows hold:
 // one failure row of each of the five signals, counted on arrival and naming the deploy it blames,

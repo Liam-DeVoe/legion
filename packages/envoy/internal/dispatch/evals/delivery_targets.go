@@ -170,7 +170,7 @@ var deliveryJudges = func() map[string][]string {
 // deployRepo, by slug, in one snapshot. The deployment-wide answers count every project's rows, so
 // no row names their project; the one a repository names is its owner, the delivery-on project
 // whose deploy source reads it (delivery.DeployRules, compared without case; dispatch://INFRA-978,
-// D1 and T8), where a source that names no repository reads its project's published default
+// D1), where a source that names no repository reads its project's published default
 // repository (eval_project_repos, the record the refresher's page commit moves in the commit that
 // makes the figures folded under it visible; owners.go), so the delivery routes and the Evals tab
 // judge by one state (INFRA-2916, the architect's ruling of 14:07Z) and a person's write of a

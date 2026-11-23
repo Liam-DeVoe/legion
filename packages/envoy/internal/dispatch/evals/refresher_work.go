@@ -3,7 +3,6 @@ package evals
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -11,6 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -186,8 +188,11 @@ type refresh struct {
 	rebuilding *rebuildState
 	staging    *stageBatch
 	// walkApplies is the deploy runs of each kept repository the delivery walk's batch read once
-	// from walkAppliesFrom on (deliveryWalkDay), for the pass's walk alone.
+	// from walkAppliesFrom on (deliveryWalkDay), for the pass's walk alone, and walkPosted the
+	// posted deploys of each kept events repository the batch read with them, that finished from
+	// walkAppliesFrom on.
 	walkApplies     map[string]*delivery.ApplyRows
+	walkPosted      map[string]postedRecord
 	walkAppliesFrom time.Time
 	// walkHeld is each project's day of each walk's batch that holds rows of the walk's family,
 	// which the walk writes whether or not it builds a row of it (heldDays).
@@ -277,9 +282,7 @@ func (r *refresh) loadSettings(ctx context.Context) error {
 	}
 	r.failures = map[string]failureProject{}
 	for _, project := range projects {
-		if project.Delivery && slices.ContainsFunc(project.Sources, func(source delivery.DeploySource) bool {
-			return source.Kind == delivery.SourceKindEvents
-		}) {
+		if project.Delivery && holdsEventsSource(project) {
 			rule := eventsRule(project.Project)
 			r.rules[ruleKey(rule.DeployRepo)] = rule
 		}
@@ -306,13 +309,13 @@ func (r *refresh) ruleOf(repo string) (delivery.DeliverySettings, bool) {
 
 // pageWork is what one page of the feeds names: the pull requests and runs whose rows changed, by
 // row key; the merge times its changes moved a pull request from and the earliest start they name
-// of a deploy run, by repository; the posted deploys whose rows changed, by project; the Legion
-// days the facts and filing changes name, by project; the issues whose repository or parent moved;
-// the projects whose count of unowned P0 issues may have moved; the logged evals whose readings
-// changed, by project; the walks to begin again; the rebuild to begin; whether a change of the
-// delivery settings is among its changes; whether the page records the rules the delivery and CI
-// rows stand built under with its cursors; and the repositories they stand built for, with those
-// they stood built for before.
+// of a deploy run, by repository; the rows of each project's record of deploys and failures whose
+// changes it names, by project; the Legion days the facts and filing changes name, by project; the
+// issues whose repository or parent moved; the projects whose count of unowned P0 issues may have
+// moved; the logged evals whose readings changed, by project; the walks to begin again; the
+// rebuild to begin; whether a change of the delivery settings is among its changes; whether the
+// page records the rules the delivery and CI rows stand built under with its cursors; and the
+// repositories they stand built for, with those they stood built for before.
 type pageWork struct {
 	prs  map[string]pullRequestRef
 	runs map[string]runRef
@@ -324,11 +327,12 @@ type pageWork struct {
 	// (shippedNeighbours).
 	left map[string][]time.Time
 	ran  map[string]time.Time
-	// posted is, for each project, the ids of the rows of its record (production_events) the
-	// page's changes name, each with the UTC midnights of the time it counts on before and after
-	// the change (a deploy's finished_at, a failure's deploy's, a restore's time): a posted
-	// deploy's days (applyPosted), and the failure measures' days (applyFailures).
-	posted     map[string]map[string][]time.Time
+	// prodEvents is, for each project, the ids of the rows of its record (production_events) the
+	// page's changes name, posted deploys, GitHub deploys and failures alike, each with the UTC
+	// midnights of the time it counts on before and after the change (a deploy's finished_at, a
+	// failure's deploy's, a restore's time): a posted deploy's days (applyPosted), and the failure
+	// measures' days (applyFailures).
+	prodEvents map[string]map[string][]time.Time
 	legion     map[string]map[time.Time]bool
 	reparented map[string]bool
 	unowned    map[string]bool
@@ -375,7 +379,7 @@ type runRef struct {
 func newPageWork() *pageWork {
 	return &pageWork{
 		prs: map[string]pullRequestRef{}, runs: map[string]runRef{}, left: map[string][]time.Time{}, ran: map[string]time.Time{},
-		posted: map[string]map[string][]time.Time{}, legion: map[string]map[time.Time]bool{}, reparented: map[string]bool{},
+		prodEvents: map[string]map[string][]time.Time{}, legion: map[string]map[time.Time]bool{}, reparented: map[string]bool{},
 		unowned: map[string]bool{}, logged: map[string]map[string]bool{}, restart: map[string]bool{}, settingsOf: map[string]bool{},
 	}
 }
@@ -422,16 +426,16 @@ func (w *pageWork) addChange(change delivery.Change) {
 		// counts on before and after: a posted deploy's days are rewritten in its project
 		// (applyPosted), and those days of every project whose failure measures are on
 		// (applyFailures).
-		if w.posted[change.Repo] == nil {
-			w.posted[change.Repo] = map[string][]time.Time{}
+		if w.prodEvents[change.Repo] == nil {
+			w.prodEvents[change.Repo] = map[string][]time.Time{}
 		}
-		days := w.posted[change.Repo][change.Ref]
+		days := w.prodEvents[change.Repo][change.Ref]
 		for _, at := range []*time.Time{change.TOld, change.TNew} {
 			if at != nil {
 				days = append(days, measures.Midnight(*at))
 			}
 		}
-		w.posted[change.Repo][change.Ref] = days
+		w.prodEvents[change.Repo][change.Ref] = days
 	case delivery.ChangeKindIssueFacts, delivery.ChangeKindIssueFilings:
 		// Each names its Legion days itself, in its project: a facts change the issue's close day
 		// before and after it, a filing change the filing's day before and after it, nil where
@@ -710,7 +714,7 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 	}
 	days := newPageDays(deliveryFamily)
 	days.name = func(ctx context.Context, project string, day time.Time) error {
-		read, err := r.readDelivery(ctx, day, nil)
+		read, err := r.readDelivery(ctx, day, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -749,7 +753,7 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 			return nil, err
 		}
 	}
-	if err := r.applyPosted(ctx, days, w.posted); err != nil {
+	if err := r.applyPosted(ctx, days, w.prodEvents); err != nil {
 		return nil, err
 	}
 	for _, day := range owed {
@@ -769,36 +773,38 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 	return r.writeNamed(ctx, days, kept)
 }
 
-// applyPosted names, in days, the delivery days of each posted deploy posted names (by project,
+// applyPosted names, in days, the delivery days of each posted deploy changed names (by project,
 // each row id with the days its change counts on before and after) in its project, where the
 // project's events repository is read (refresh.rules): the day it finished before and after the
 // change, the days the pull requests it names merged on (the merge-to-production rows it times),
 // and the days eval_day_members holds it, and the pull requests it shipped, under when they were
 // last counted. A row the record still holds that is no posted deploy (a GitHub deploy, whose run
 // a source repository's rows count, or a failure) names no day: it moves no row of these evals.
-func (r *refresh) applyPosted(ctx context.Context, days *pageDays, posted map[string]map[string][]time.Time) error {
-	for _, project := range slices.Sorted(maps.Keys(posted)) {
+// Each project's rows are read in one statement (readRecordRows).
+func (r *refresh) applyPosted(ctx context.Context, days *pageDays, changed map[string]map[string][]time.Time) error {
+	for _, project := range slices.Sorted(maps.Keys(changed)) {
 		repo := EventsRepo(project)
 		if _, read := r.rules[ruleKey(repo)]; !read || !r.known[project] {
 			continue
 		}
+		ids := slices.Sorted(maps.Keys(changed[project]))
+		stored, err := readRecordRows(ctx, r.store.database.Pool, project, ids)
+		if err != nil {
+			return err
+		}
 		named := map[time.Time]bool{}
 		var members []string
 		prs := map[string]pullRequestRef{}
-		for _, id := range slices.Sorted(maps.Keys(posted[project])) {
-			event, err := prodevents.Get(ctx, r.store.database.Pool, project, id)
-			switch {
-			case errors.Is(err, prodevents.ErrNotFound):
-			case err != nil:
-				return fmt.Errorf("read production event %s of %s: %w", id, project, err)
-			case event.Kind != prodevents.KindDeploy || event.Source != prodevents.SourceAPI:
+		for _, id := range ids {
+			row, found := stored[id]
+			if found && !row.posted {
 				continue
 			}
-			for _, day := range posted[project][id] {
+			for _, day := range changed[project][id] {
 				named[day] = true
 			}
 			members = append(members, PostedMember(id))
-			for _, ref := range event.PullRequests {
+			for _, ref := range row.pullRequests {
 				if name, number, ok := parsePullRequestRef(ref); ok {
 					prs[PullRequestMember(name, number)] = pullRequestRef{repo: name, number: number}
 				}
@@ -836,6 +842,54 @@ func (r *refresh) applyPosted(ctx context.Context, days *pageDays, posted map[st
 		}
 	}
 	return nil
+}
+
+// recordRow is what applyPosted reads of a row of a project's record: whether it is a posted deploy
+// (kind deploy, source api), and the pull requests it names.
+type recordRow struct {
+	posted       bool
+	pullRequests []string
+}
+
+// readRecordRows reads, in q, the rows of project's record (production_events) ids names, by each
+// id as given: one statement, a probe of the table's key for each. An id the record does not hold,
+// or one that is no uuid, is absent.
+func readRecordRows(ctx context.Context, q delivery.Querier, project string, ids []string) (map[string]recordRow, error) {
+	canonical := make(map[string]string, len(ids))
+	keys := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if parsed, err := uuid.Parse(id); err == nil {
+			canonical[id] = parsed.String()
+			keys = append(keys, parsed.String())
+		}
+	}
+	held := map[string]recordRow{}
+	if len(keys) == 0 {
+		return held, nil
+	}
+	rows, err := q.Query(ctx, `
+		select id::text, kind = '`+prodevents.KindDeploy+`' and source = '`+prodevents.SourceAPI+`', pull_requests
+		from production_events
+		where project_key = $1 and id = any($2::uuid[])
+	`, project, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the %d production events of %s the page names: %w", len(keys), project, err)
+	}
+	found := map[string]recordRow{}
+	var id string
+	var row recordRow
+	if _, err := pgx.ForEachRow(rows, []any{&id, &row.posted, &row.pullRequests}, func() error {
+		found[id] = recordRow{posted: row.posted, pullRequests: slices.Clone(row.pullRequests)}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the %d production events of %s the page names: %w", len(keys), project, err)
+	}
+	for given, key := range canonical {
+		if row, ok := found[key]; ok {
+			held[given] = row
+		}
+	}
+	return held, nil
 }
 
 // shippedNeighbours is the deploy runs, each with its start day, whose shipped pull requests the
@@ -1090,7 +1144,7 @@ func (r *refresh) nameDeliveryItems(ctx context.Context, days *pageDays, items [
 	}
 	var linked []deliveryItem
 	for _, day := range slices.SortedFunc(maps.Keys(jobs), time.Time.Compare) {
-		read, err := r.readDelivery(ctx, day, nil)
+		read, err := r.readDelivery(ctx, day, nil, nil)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1131,7 +1185,7 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 	repos := []keptRepo{}
 	var events []delivery.DeliverySettings
 	for _, repo := range held {
-		if _, posted := eventsProject(repo.name); posted {
+		if IsEventsRepo(repo.name) {
 			continue
 		}
 		if rule, read := r.ruleOf(repo.name); read {
@@ -1140,7 +1194,7 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 		}
 	}
 	for _, key := range slices.Sorted(maps.Keys(r.rules)) {
-		if _, posted := eventsProject(r.rules[key].DeployRepo); posted {
+		if IsEventsRepo(r.rules[key].DeployRepo) {
 			events = append(events, r.rules[key])
 		}
 	}
@@ -1156,8 +1210,10 @@ func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 
 // readDelivery is the delivery rows of day (readDeliveryDay) with each kept repository as the
 // deploy repository (keptRepos), read once a page (refresh.reads), each repository's deploy runs
-// taken from applies where it holds them.
-func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies map[string]*delivery.ApplyRows) (deliveryRead, error) {
+// taken from applies, and each events repository's posted deploys from posted, where they hold
+// them.
+func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies map[string]*delivery.ApplyRows,
+	posted map[string]postedRecord) (deliveryRead, error) {
 	if read, ok := r.reads[day]; ok {
 		return read, nil
 	}
@@ -1165,7 +1221,7 @@ func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies map[s
 	if err != nil {
 		return deliveryRead{}, err
 	}
-	read, err := r.store.readDeliveryDay(ctx, kept, day, applies)
+	read, err := r.store.readDeliveryDay(ctx, kept, day, applies, posted)
 	if err != nil {
 		return deliveryRead{}, err
 	}
@@ -1727,9 +1783,10 @@ func earliestOf(earliest *time.Time, first map[evalKey]time.Time) *time.Time {
 
 // deliveryWalkDay writes one day of the delivery walk: every project's delivery and CI rows of it,
 // of every kept repository. The deploy runs of each kept repository every day of a batch reads
-// from its own start on are read once, at the batch's first day (delivery.ReadApplyRows), each
-// repository's read side by side, and each day takes its part of them: a batch's days run in
-// order, so the first day's read holds every later day's runs.
+// from its own start on, and the posted deploys of each kept events repository that finished from
+// the batch's first day on, are read once, at the batch's first day (delivery.ReadApplyRows,
+// postedDeploys), each repository's read side by side, and each day takes its part of them: a
+// batch's days run in order, so the first day's read holds every later day's runs and posts.
 func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 	if r.walkApplies == nil || day.Before(r.walkAppliesFrom) {
 		kept, err := r.keptRepos(ctx)
@@ -1737,10 +1794,16 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 			return err
 		}
 		applies := make([]delivery.ApplyRows, len(kept))
+		posted := make([]postedRecord, len(kept))
 		var reads []func(context.Context) error
 		r.walkApplies = make(map[string]*delivery.ApplyRows, len(kept))
 		for i, repo := range kept {
-			if _, posted := eventsProject(repo.name); posted {
+			if IsEventsRepo(repo.name) {
+				project := repo.rule.Project
+				reads = append(reads, func(ctx context.Context) (err error) {
+					posted[i], err = postedDeploys(ctx, r.store.database.Pool, project, day)
+					return err
+				})
 				continue
 			}
 			settings := repo.rule
@@ -1753,12 +1816,18 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 			r.walkApplies[repo.name] = &applies[i]
 		}
 		if err := store.ReadSideBySide(ctx, reads...); err != nil {
-			r.walkApplies = nil
+			r.walkApplies, r.walkPosted = nil, nil
 			return err
+		}
+		r.walkPosted = make(map[string]postedRecord)
+		for i, repo := range kept {
+			if IsEventsRepo(repo.name) {
+				r.walkPosted[repo.name] = posted[i]
+			}
 		}
 		r.walkAppliesFrom = day
 	}
-	read, err := r.readDelivery(ctx, day, r.walkApplies)
+	read, err := r.readDelivery(ctx, day, r.walkApplies, r.walkPosted)
 	if err != nil {
 		return err
 	}

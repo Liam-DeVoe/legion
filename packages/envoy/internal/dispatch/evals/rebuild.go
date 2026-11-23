@@ -1384,7 +1384,7 @@ func (r *refresh) verifyQueued(ctx context.Context, rb *rebuildState) (bool, err
 				// No project has delivery on, no delivery row: the day holds none.
 				named = append(named, &namedDay{project: one.project, day: one.day, raw: ProjectDay{Project: one.project, Day: one.day}})
 			case family.walk == walkDelivery:
-				read, err := r.readDelivery(ctx, one.day, nil)
+				read, err := r.readDelivery(ctx, one.day, nil, nil)
 				if err != nil {
 					return false, err
 				}

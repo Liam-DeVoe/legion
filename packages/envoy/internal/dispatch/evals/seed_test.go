@@ -355,11 +355,10 @@ func TestAReleaseThatChangesAnEvalCarriesForwardWhatOthersSet(t *testing.T) {
 }
 
 // TestAReleaseThatDropsASeriesUnlistsIt: a series an earlier release stated and a later one no
-// longer states (as change-fail-rate's two shares beside per_deploy went with the pending state,
-// dispatch://INFRA-978) is not left current and listed, where every read would fold it and state
-// "no data": the later release's seed writes its next version unlisted and not primary, every
-// other field as it was, beside the eval's next version, and leaves the series it still states
-// as they are. A second seed writes nothing.
+// longer states is not left current and listed, where every read would fold it and state "no
+// data": the later release's seed writes its next version unlisted and not primary, every other
+// field as it was, beside the eval's next version, and leaves the series it still states as they
+// are. A second seed writes nothing.
 func TestAReleaseThatDropsASeriesUnlistsIt(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
@@ -880,7 +879,7 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 	written := map[string]map[string]bool{}
 	days, rows := 0, 0
 	for day := fixture.From; day.Before(fixture.To); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(ctx, []keptRepo{{name: settings.DeployRepo, deploys: true, rule: settings}}, day, nil)
+		read, err := r.registry.readDeliveryDay(ctx, []keptRepo{{name: settings.DeployRepo, deploys: true, rule: settings}}, day, nil, nil)
 		if err != nil {
 			t.Fatalf("read the delivery day %s: %v", day.Format(time.DateOnly), err)
 		}

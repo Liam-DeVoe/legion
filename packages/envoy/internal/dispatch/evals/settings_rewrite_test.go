@@ -60,9 +60,9 @@ func newSettingsHistory(t *testing.T, batch int) (*refresherRig, deliverytest.Fi
 // putSettings saves settings as actor, as PUT /api/v1/settings/delivery does, and as the rule of
 // every GitHub source of the project that holds delivery settings (putSources), each keeping the
 // repository it names: the one that names none reads the project's default repository, and names
-// settings.DeployRepo where that is another repository. So a test written when one rule held for
-// every repository moves each source repository's rule alike. The singleton stays for the release
-// before this one; the pass reads the project's sources.
+// settings.DeployRepo where that is another repository, so each source repository's rule moves
+// alike. The singleton is saved too, for the release before this one; the pass reads the
+// project's sources.
 func (r *refresherRig) putSettings(t *testing.T, settings delivery.DeliverySettings, actor model.Actor) {
 	t.Helper()
 	if _, err := delivery.PutSettings(t.Context(), r.database.Pool, settings, actor); err != nil {
@@ -113,8 +113,8 @@ func sameSource(stored delivery.DeploySource, input delivery.SourceInput) bool {
 }
 
 // readAlso saves fixture's project's settings with one GitHub source more for each of repos, each
-// naming it under the fixture's rule, so the pass keeps each as a source repository: the premise of
-// a test written when every repository that held a delivery run was kept.
+// naming it under the fixture's rule, so the pass keeps each as a source repository and builds its
+// rows.
 func readAlso(t *testing.T, r *refresherRig, fixture deliverytest.Fixture, repos ...string) {
 	t.Helper()
 	sources := []delivery.SourceInput{sourceOf(fixture.Settings, nil)}
@@ -306,7 +306,7 @@ func (r *refresherRig) expectSameAsWalk(t *testing.T, what string, walk *refresh
 // eval_days change of the pass, and no other eval one, so an evals view hears of the change
 // once. Then the project's source is moved to a repository with pull requests and no run, and
 // back: the pass begins no walk, the rows of the repository no source reads any more go (only
-// source repositories are kept, dispatch://INFRA-978 T8), the read of the evals keyed by the
+// source repositories are kept, dispatch://INFRA-978 D1), the read of the evals keyed by the
 // deploy repository answers none of their rows and then the old repository's again, and the first
 // still holds what the second's whole walk under the new settings holds.
 func TestASettingsChangeRewritesInOnePassWhatAWholeWalkWrites(t *testing.T) {
@@ -813,7 +813,7 @@ func TestAProductionRuleChangeRewritesEachRepositoryThatHoldsDeploys(t *testing.
 	var deliveries deliverytest.Fixture
 	for i := range rigs {
 		rigs[i], deliveries = newSettingsRig(t, walkBatch)
-		// Only source repositories are kept (dispatch://INFRA-978, T8): the project's sources read
+		// Only source repositories are kept (dispatch://INFRA-978, D1): the project's sources read
 		// the two repositories the runs are copied to, under the history's rule.
 		readAlso(t, rigs[i], deliveries, deliveries.Repos[1], deliveries.Repos[2])
 		rigs[i].copyRuns(t, deliveries.DeployRepo, deliveries.Repos[1], delivery.DeliveryRunKindDeploy)

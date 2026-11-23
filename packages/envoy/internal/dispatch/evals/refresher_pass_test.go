@@ -500,7 +500,7 @@ func TestAPassOverDeliveryInputWithNoProjectSucceeds(t *testing.T) {
 // sourcesDay is the UTC day the three-source history happens on, the day before refresherToday.
 var sourcesDay = refresherToday.AddDate(0, 0, -1)
 
-// The three-source history's repositories (dispatch://INFRA-978, T8): ALPHA's default repository
+// The three-source history's repositories (dispatch://INFRA-978, D1): ALPHA's default repository
 // acme/alpha-app, which ALPHA's first source names none of and so reads; acme/alpha-ops, no
 // project's default, which ALPHA's second source names; OMEGA's default repository acme/omega-app,
 // which its one GitHub source reads; and acme/alpha-next, which ALPHA's default repository moves

@@ -16,12 +16,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // settings_rewrite.go is the refresher's answer to a change of a deploy repository's rule
-// (dispatch://INFRA-2916, R14; dispatch://INFRA-978, T8): one pass rewrites, in one transaction,
+// (dispatch://INFRA-2916, R14; dispatch://INFRA-978, D1): one pass rewrites, in one transaction,
 // the days of the delivery and CI evals whose rows of that repository the change moves, and of no
 // other repository, and begins no walk. The rule each repository's stored delivery and CI rows
 // stand built under, and the project whose source reads it, are recorded beside them
@@ -75,21 +74,13 @@ import (
 func settingsMoves(prev, next delivery.DeliverySettings) (slugs, families []string) {
 	moved, family := map[string]bool{}, map[string]bool{}
 	before, after := cardParts(prev), cardParts(next)
-	if partOf(prev.ProductionJobNames, prev.ProductionApplyStepName) != partOf(next.ProductionJobNames, next.ProductionApplyStepName) {
-		for _, slug := range slices.Concat(leadTimeSlugs, []string{SlugDeployFrequency, SlugDeployRunSuccess}) {
+	production := partOf(prev.ProductionJobNames, prev.ProductionApplyStepName) != partOf(next.ProductionJobNames, next.ProductionApplyStepName)
+	if production {
+		for _, slug := range leadTimeSlugs {
 			moved[slug] = true
 		}
-		for card, slug := range cardSlugs {
-			_, was := before[card]
-			_, is := after[card]
-			if was || is {
-				moved[slug] = true
-				family[KindCI] = true
-			}
-		}
-		family[KindDelivery] = true
 	}
-	if prev.Project != next.Project {
+	if production || prev.Project != next.Project {
 		moved[SlugDeployFrequency], moved[SlugDeployRunSuccess], family[KindDelivery] = true, true, true
 		for card, slug := range cardSlugs {
 			_, was := before[card]
@@ -186,7 +177,7 @@ func (s *Store) readBuiltUnder(ctx context.Context) (map[string]builtRule, error
 func builtUnderIn(ctx context.Context, q delivery.Querier) (map[string]builtRule, error) {
 	rows, err := q.Query(ctx, `
 		select repo, project_key, production_job_names, production_apply_step_name, staging_e2e_job_name,
-			staging_apply_job_name, kept_since::timestamptz
+			staging_apply_job_name, kept_since
 		from eval_days_rules
 	`)
 	if err != nil {
@@ -199,10 +190,6 @@ func builtUnderIn(ctx context.Context, q delivery.Querier) (map[string]builtRule
 			&one.rule.StagingE2EJobName, &one.rule.StagingApplyJobName, &one.since); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the rules the day rows stand built under: %w", err)
-		}
-		if one.since != nil {
-			day := measures.Midnight(*one.since)
-			one.since = &day
 		}
 		built[ruleKey(one.rule.DeployRepo)] = one
 	}
@@ -608,11 +595,11 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// before the repository's own deploy does (firstShipped).
 	var events []keptRepo
 	for _, one := range kept {
-		if _, posted := eventsProject(one.name); posted {
+		if IsEventsRepo(one.name) {
 			events = append(events, one)
 		}
 	}
-	posted := make([][]prodevents.Event, len(events))
+	posted := make([]postedRecord, len(events))
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
 			history, err = delivery.ReadHistoryRows(ctx, pool, names, judged, end)
@@ -638,7 +625,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		},
 		func(ctx context.Context) (err error) {
 			for i, one := range events {
-				if posted[i], err = postedDeploys(ctx, pool, one.rule.Project, time.Time{}, postedEnd); err != nil {
+				if posted[i], err = postedDeploys(ctx, pool, one.rule.Project, time.Time{}); err != nil {
 					return err
 				}
 			}
@@ -743,7 +730,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 					if err := groupCtx.Err(); err != nil {
 						return err
 					}
-					histories[k] = historyOf(repo, history.Deploys[repo.name], prs, production)
+					histories[k] = historyOf(repo, history.Deploys[repo.name], prs)
 					return nil
 				})
 				if movedOnly && !sameRule {
@@ -761,7 +748,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	); err != nil {
 		return err
 	}
-	for _, owner := range historyOwners(histories, prs, attribute, next.Project) {
+	for _, owner := range historyOwners(histories, prs, attribute) {
 		if slices.Contains(owners, owner) {
 			continue
 		}
@@ -1190,11 +1177,12 @@ func containmentOf(repo string, deploys delivery.RunsWithJobs, prs []delivery.De
 
 // repoHistory is containment over one repository's whole history as the deploy repository
 // (historyOf): the production rule's verdict on its runs and its pull requests (containment), the
-// start of its history, its deploy runs by id, the pull requests each apply ships first, and its
-// deploy runs and push runs on main by the day they started, with their jobs.
+// project of its rule, the start of its history, its deploy runs by id, the pull requests each
+// apply ships first, and its deploy runs and push runs on main by the day they started, with their
+// jobs.
 type repoHistory struct {
 	containment
-	repo                      string
+	repo, project             string
 	since                     time.Time
 	runByID                   map[int64]delivery.DeliveryRun
 	shipped                   map[int64][]*delivery.DeliveryPullRequest
@@ -1203,13 +1191,13 @@ type repoHistory struct {
 }
 
 // historyOf is containmentOf over repo's deploy runs and their jobs, deploys, as the deploy
-// repository, of prs, every population pull request, under production, with what a day's rows
-// read of the history beside it: its deploy runs by id, the pull requests each apply ships first,
-// and its deploy runs and push runs on main by the day they started, with their jobs.
-func historyOf(repo keptRepo, deploys delivery.RunsWithJobs, prs []delivery.DeliveryPullRequest, production delivery.Production) repoHistory {
+// repository, of prs, every population pull request, under its rule's production rule, with what a
+// day's rows read of the history beside it: its deploy runs by id, the pull requests each apply
+// ships first, and its deploy runs and push runs on main by the day they started, with their jobs.
+func historyOf(repo keptRepo, deploys delivery.RunsWithJobs, prs []delivery.DeliveryPullRequest) repoHistory {
 	h := repoHistory{
-		containment: containmentOf(repo.name, deploys, prs, production),
-		repo:        repo.name, since: repo.since, runByID: make(map[int64]delivery.DeliveryRun, len(deploys.Runs)),
+		containment: containmentOf(repo.name, deploys, prs, repo.rule.Production()),
+		repo:        repo.name, project: repo.rule.Project, since: repo.since, runByID: make(map[int64]delivery.DeliveryRun, len(deploys.Runs)),
 		shipped:      map[int64][]*delivery.DeliveryPullRequest{},
 		deploysByDay: map[time.Time][]delivery.DeliveryRun{}, pushesByDay: map[time.Time][]delivery.DeliveryRun{}, jobs: deploys.Jobs,
 	}
@@ -1231,11 +1219,11 @@ func historyOf(repo keptRepo, deploys delivery.RunsWithJobs, prs []delivery.Deli
 
 // historyOwners is every owner key (OwnerKey) the rewritten history counts a row for under the
 // settings histories were built by, in key order: each pull request no issue attributes
-// (attribution.of), each deploy run's (attribution.deploy, under project, the rule's project a
-// deploy that ships no pull request counts for) and the push runs on main of a repository that are
-// no deploy run of their day (attribution.pushRuns). A day the rewrite builds builds their rows as
-// it builds a project's.
-func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, attribute attribution, project string) []string {
+// (attribution.of), each deploy run's (attribution.deploy, under the project of its repository's
+// rule, which a deploy that ships no pull request counts for) and the push runs on main of a
+// repository that are no deploy run of their day (attribution.pushRuns). A day the rewrite builds
+// builds their rows as it builds a project's.
+func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, attribute attribution) []string {
 	owners := map[string]bool{}
 	for _, pr := range prs {
 		if counts := attribute.of(pr); isOwner(counts.project) {
@@ -1246,7 +1234,7 @@ func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, 
 		for _, runs := range h.deploysByDay {
 			for _, run := range runs {
 				_, reached := h.applied[run.RunID]
-				for _, counts := range attribute.deploy(run, reached, h.shipped[run.RunID], project).projects {
+				for _, counts := range attribute.deploy(run, reached, h.shipped[run.RunID], h.project).projects {
 					if isOwner(counts.project) {
 						owners[counts.project] = true
 					}

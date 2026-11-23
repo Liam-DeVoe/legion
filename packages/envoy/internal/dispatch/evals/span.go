@@ -13,7 +13,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -1041,15 +1040,15 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	}
 	// A pull request counts its lead times at the first deploy to ship it, a GitHub one or a posted
 	// one (firstShipped), so where both kinds of repository are kept every one is read to compare.
-	compare := slices.ContainsFunc(kept, func(repo keptRepo) bool { _, posted := eventsProject(repo.name); return posted }) &&
-		slices.ContainsFunc(kept, func(repo keptRepo) bool { _, posted := eventsProject(repo.name); return !posted })
+	compare := slices.ContainsFunc(kept, func(repo keptRepo) bool { return IsEventsRepo(repo.name) }) &&
+		slices.ContainsFunc(kept, func(repo keptRepo) bool { return !IsEventsRepo(repo.name) })
 	var repos, events []keptRepo
 	var judged []string
 	for _, repo := range kept {
 		if !needed[repo.name] && !compare {
 			continue
 		}
-		if _, posted := eventsProject(repo.name); posted {
+		if IsEventsRepo(repo.name) {
 			events = append(events, repo)
 			continue
 		}
@@ -1061,7 +1060,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	judged = slices.Compact(slices.Sorted(slices.Values(judged)))
 	var history delivery.HistoryRows
 	checkDays := map[string]map[time.Time]bool{}
-	posted := make([][]prodevents.Event, len(events))
+	posted := make([]postedRecord, len(events))
 	reads := []func(context.Context) error{
 		func(ctx context.Context) (err error) {
 			history, err = delivery.ReadHistoryRows(ctx, pool, names, judged, reach.AddDate(0, 0, 1))
@@ -1079,7 +1078,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		},
 		func(ctx context.Context) (err error) {
 			for i, repo := range events {
-				if posted[i], err = postedDeploys(ctx, pool, repo.rule.Project, start, postedEnd); err != nil {
+				if posted[i], err = postedDeploys(ctx, pool, repo.rule.Project, start); err != nil {
 					return err
 				}
 			}
@@ -1107,7 +1106,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	}
 	histories := make(map[string]repoHistory, len(repos))
 	for _, repo := range repos {
-		histories[repo.name] = historyOf(repo, history.Deploys[repo.name], prs, repo.rule.Production())
+		histories[repo.name] = historyOf(repo, history.Deploys[repo.name], prs)
 	}
 	checks := map[string]map[time.Time]checkDay{}
 	raw := func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, error) {

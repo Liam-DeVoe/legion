@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -241,14 +240,14 @@ type deliveryRead struct {
 // repoReads is what a day reads of one repository as the deploy repository, under settings, its
 // own rule, whose DeployRepo is that repository, whose history starts at since: its deploys, its
 // apply runs and its CI runs; or, of an events repository (posted), the project's posted deploys
-// that finished from the day on.
+// that finished from the day on, or from an earlier day on.
 type repoReads struct {
 	settings delivery.DeliverySettings
 	since    time.Time
 	deploys  delivery.Deploys
 	applies  delivery.ApplyRows
 	ci       delivery.CIRows
-	posted   []prodevents.Event
+	posted   postedRecord
 }
 
 // readDeliveryDay reads the delivery and CI rows of the UTC day day is on, with each of repos as
@@ -266,11 +265,15 @@ type repoReads struct {
 // repository. Each deploy's shipped pull requests are delivery.Deploys.ShippedBy's, the rule the
 // routes count with_prs by; the pull requests merged before the day are read for them alone. A
 // repository's deploy runs created from the day's start on are taken from applyRows where it holds
-// them (delivery.ApplyRows.Since): rows a walk read once from the first of its days, which every
-// later day of the walk takes its part of rather than reading every run created from its own start
-// to now again. The reads of the rows depend on none of each other, and are read side by side, and
-// then the two reads of what attributes them, side by side too.
-func (s *Store) readDeliveryDay(ctx context.Context, repos []keptRepo, day time.Time, applyRows map[string]*delivery.ApplyRows) (deliveryRead, error) {
+// them (delivery.ApplyRows.Since), and an events repository's posted deploys from postedRows where
+// it holds them: rows a walk read once from the first of its days, which every later day of the
+// walk takes its part of rather than reading every run or post from its own start to now again (a
+// posted deploy that finished before the day finished before each pull request merged on it, so
+// postedDayAs counts it on no day and ships no pull request of the day by it). The reads of the
+// rows depend on none of each other, and are read side by side, and then the two reads of what
+// attributes them, side by side too.
+func (s *Store) readDeliveryDay(ctx context.Context, repos []keptRepo, day time.Time, applyRows map[string]*delivery.ApplyRows,
+	postedRows map[string]postedRecord) (deliveryRead, error) {
 	pool := s.database.Pool
 	day = measures.Midnight(day)
 	end := day.AddDate(0, 0, 1)
@@ -287,9 +290,13 @@ func (s *Store) readDeliveryDay(ctx context.Context, repos []keptRepo, day time.
 		repo, one := kept.name, &reads[i]
 		one.settings, one.since = kept.rule, kept.since
 		one.settings.DeployRepo = repo
-		if _, posted := eventsProject(repo); posted {
+		if IsEventsRepo(repo) {
+			if held, read := postedRows[repo]; read {
+				one.posted = held
+				continue
+			}
 			parts = append(parts, func(ctx context.Context) (err error) {
-				one.posted, err = postedDeploys(ctx, pool, one.settings.Project, day, postedEnd)
+				one.posted, err = postedDeploys(ctx, pool, one.settings.Project, day)
 				return err
 			})
 			continue
@@ -355,7 +362,7 @@ func (s *Store) readDeliveryDay(ctx context.Context, repos []keptRepo, day time.
 	}
 	read.days = append(read.days, alone)
 	for i, one := range reads {
-		if _, posted := eventsProject(one.settings.DeployRepo); posted {
+		if IsEventsRepo(one.settings.DeployRepo) {
 			read.days = append(read.days, postedDayAs(day, prs, one.posted, repos[i]))
 			continue
 		}
@@ -400,68 +407,40 @@ func (a attribution) dayAs(day time.Time, prs []delivery.DeliveryPullRequest, on
 }
 
 // postedDayAs is the day's rows of repo, a project's events repository (EventsRepo), from posted,
-// the project's posted deploys that finished from the day on (postedDeploys), and prs, the pull
-// requests merged that day (dispatch://INFRA-978, R1 and R12): each posted deploy that finished on
-// the day, a deploy that reached production, counted on its finished day for the project alone
-// (deploy-frequency, with_prs where it names a pull request), and each pull request merged that day
-// that a posted deploy names, shipped by the first to finish at or after its merge (ties by id),
-// counted for the project alone, whose lead time is from its merge to that deploy's finish
-// (merge-to-production). A posted deploy and a pull request reach the project through its route,
-// not a repository: via_repository counts neither.
-func postedDayAs(day time.Time, prs []delivery.DeliveryPullRequest, posted []prodevents.Event, repo keptRepo) DeliveryDay {
-	end := day.AddDate(0, 0, 1)
+// the project's posted deploys that finished from the day on or from an earlier day on
+// (postedDeploys), and prs, the pull requests merged that day (dispatch://INFRA-978, R1 and R12):
+// each posted deploy that finished on the day, a deploy that reached production, counted on its
+// finished day for the project alone (deploy-frequency, with_prs where it names a pull request),
+// and each pull request merged that day that a posted deploy names, shipped by the first to finish
+// at or after its merge (ties by id), counted for the project alone, whose lead time is from its
+// merge to that deploy's finish (merge-to-production). A posted deploy and a pull request reach the
+// project through its route, not a repository: via_repository counts neither.
+func postedDayAs(day time.Time, prs []delivery.DeliveryPullRequest, posted postedRecord, repo keptRepo) DeliveryDay {
 	owner := counted{project: repo.rule.Project}
 	read := DeliveryDay{Day: day, deployRepo: repo.name, since: repo.since, posted: true}
 	succeeded := delivery.DeliveryRunConclusionSuccess
-	for _, event := range posted {
-		if event.FinishedAt.Before(day) || !event.FinishedAt.Before(end) {
-			continue
-		}
-		named := 0
-		for _, ref := range event.PullRequests {
-			if _, _, ok := parsePullRequestRef(ref); ok {
-				named++
-			}
-		}
+	for _, deploy := range posted.finishedOn[measures.Midnight(day)] {
 		read.deploys = append(read.deploys, dayDeploy{
-			run:  measures.Run{StartedAt: *event.FinishedAt, Conclusion: &succeeded, ReachedProduction: true, ShippedPRs: named},
-			repo: event.Repo, member: PostedMember(event.ID), projects: []counted{owner},
+			run:  measures.Run{StartedAt: deploy.finishedAt, Conclusion: &succeeded, ReachedProduction: true, ShippedPRs: len(deploy.shipped)},
+			repo: deploy.repo, member: PostedMember(deploy.id), projects: []counted{owner},
 		})
 	}
 	for _, pr := range prs {
 		if pr.CreatedAt == nil || pr.MergedAt == nil {
 			continue
 		}
-		var first *prodevents.Event
-		for i := range posted {
-			event := &posted[i]
-			if event.FinishedAt.Before(*pr.MergedAt) || !namesPullRequest(*event, pr) {
-				continue
-			}
-			if first == nil || event.FinishedAt.Before(*first.FinishedAt) || event.FinishedAt.Equal(*first.FinishedAt) && event.ID < first.ID {
-				first = event
-			}
-		}
+		first := posted.shipping(pr, *pr.MergedAt)
 		if first == nil {
 			continue
 		}
-		apply := delivery.Apply{CompletedAt: *first.FinishedAt, CreatedAt: *first.FinishedAt}
+		apply := delivery.Apply{CompletedAt: first.finishedAt, CreatedAt: first.finishedAt}
 		read.prs = append(read.prs, dayPR{
 			pr: measures.PROf(pr, &apply), repo: pr.Repo, member: PullRequestMember(pr.Repo, pr.Number),
-			deploy:  &dayItem{member: PostedMember(first.ID), day: measures.Midnight(*first.FinishedAt)},
+			deploy:  &dayItem{member: PostedMember(first.id), day: measures.Midnight(first.finishedAt)},
 			counted: owner,
 		})
 	}
 	return read
-}
-
-// namesPullRequest reports whether event, a posted deploy, names pr among the pull requests it
-// ships (`owner/repo#n`, the repository's name compared without case).
-func namesPullRequest(event prodevents.Event, pr delivery.DeliveryPullRequest) bool {
-	return slices.ContainsFunc(event.PullRequests, func(ref string) bool {
-		repo, number, ok := parsePullRequestRef(ref)
-		return ok && strings.EqualFold(repo, pr.Repo) && number == pr.Number
-	})
 }
 
 // firstShipped keeps each pull request's lead times to production in one deploy repository's
@@ -733,18 +712,11 @@ func (a attribution) pushRuns(runs []delivery.DeliveryRun, deploys []dayDeploy) 
 // where it has nothing to read.
 func readAttribution(ctx context.Context, s *Store, keys []string, checks []delivery.DeliveryRun) (attribution, error) {
 	attribute := attribution{issues: make(map[string]string, len(keys)), pulls: map[string]string{}}
-	members, repos, numbers := []string{}, []string{}, []int32{}
-	named := map[string]bool{}
+	var prs pullRequestSet
 	for _, run := range checks {
-		if run.PRNumber == nil {
-			continue
+		if run.PRNumber != nil {
+			prs.add(run.Repo, *run.PRNumber)
 		}
-		member := PullRequestMember(run.Repo, *run.PRNumber)
-		if named[member] {
-			continue
-		}
-		named[member] = true
-		members, repos, numbers = append(members, member), append(repos, run.Repo), append(numbers, int32(*run.PRNumber))
 	}
 	pullProjects := map[string]string{}
 	var reads []func(context.Context) error
@@ -764,25 +736,10 @@ func readAttribution(ctx context.Context, s *Store, keys []string, checks []deli
 			return nil
 		})
 	}
-	if len(members) > 0 {
-		reads = append(reads, func(ctx context.Context) error {
-			rows, err := s.database.Pool.Query(ctx, `
-				select given.member, request.issue_key, issue.project_key
-				from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
-				join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
-				join issues issue on issue.key = request.issue_key
-			`, members, repos, numbers)
-			if err != nil {
-				return fmt.Errorf("read the issues of the %d pull requests the PR-checks runs are of: %w", len(members), err)
-			}
-			var member, issue, project string
-			if _, err := pgx.ForEachRow(rows, []any{&member, &issue, &project}, func() error {
-				attribute.pulls[member], pullProjects[issue] = issue, project
-				return nil
-			}); err != nil {
-				return fmt.Errorf("read the issues of the %d pull requests the PR-checks runs are of: %w", len(members), err)
-			}
-			return nil
+	if len(prs.members) > 0 {
+		reads = append(reads, func(ctx context.Context) (err error) {
+			attribute.pulls, pullProjects, err = readPullRequestIssues(ctx, s.database.Pool, prs, "the PR-checks runs are of")
+			return err
 		})
 	}
 	if err := store.ReadSideBySide(ctx, reads...); err != nil {
@@ -790,6 +747,53 @@ func readAttribution(ctx context.Context, s *Store, keys []string, checks []deli
 	}
 	maps.Copy(attribute.issues, pullProjects)
 	return attribute, nil
+}
+
+// pullRequestSet is pull requests, each once, by their row key (PullRequestMember), in the order
+// they were added: what readPullRequestIssues reads the issues of.
+type pullRequestSet struct {
+	members, repos []string
+	numbers        []int32
+	named          map[string]bool
+}
+
+// add adds pull request number of repo, where the set does not hold it yet.
+func (s *pullRequestSet) add(repo string, number int) {
+	member := PullRequestMember(repo, number)
+	if s.named[member] {
+		return
+	}
+	if s.named == nil {
+		s.named = map[string]bool{}
+	}
+	s.named[member] = true
+	s.members, s.repos, s.numbers = append(s.members, member), append(s.repos, repo), append(s.numbers, int32(number))
+}
+
+// readPullRequestIssues reads, in q, the issue the stored row of each pull request of prs names, by
+// its row key (pulls), and that issue's project, by issue key (projects), where the population
+// holds a row of the pull request naming an issue the issues table holds: one statement, a probe
+// of delivery_pull_requests' key for each pull request. whose says whose pull requests they are, in
+// an error.
+func readPullRequestIssues(ctx context.Context, q delivery.Querier, prs pullRequestSet, whose string) (pulls, projects map[string]string, err error) {
+	rows, err := q.Query(ctx, `
+		select given.member, request.issue_key, issue.project_key
+		from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
+		join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
+		join issues issue on issue.key = request.issue_key
+	`, prs.members, prs.repos, prs.numbers)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the issues of the %d pull requests %s: %w", len(prs.members), whose, err)
+	}
+	pulls, projects = map[string]string{}, map[string]string{}
+	var member, issue, project string
+	if _, err := pgx.ForEachRow(rows, []any{&member, &issue, &project}, func() error {
+		pulls[member], projects[issue] = issue, project
+		return nil
+	}); err != nil {
+		return nil, nil, fmt.Errorf("read the issues of the %d pull requests %s: %w", len(prs.members), whose, err)
+	}
+	return pulls, projects, nil
 }
 
 // countedFor is every project the day counts the item member for (a pull request, a deploy run or
@@ -948,7 +952,7 @@ func ZeroDeliveryDay(project string, day time.Time, rules []delivery.DeliverySet
 	zero := ProjectDay{Project: project, Day: measures.Midnight(day)}
 	zero.Rows = DeliveryDay{Day: zero.Day}.buildFamilies(project, "", familyRows{}, true)
 	for _, rule := range rules {
-		_, posted := eventsProject(rule.DeployRepo)
+		posted := IsEventsRepo(rule.DeployRepo)
 		d := DeliveryDay{Day: zero.Day, deployRepo: rule.DeployRepo, posted: posted, cards: measures.DeployCards(rule)}
 		zero.Rows = append(zero.Rows, d.buildFamilies(project, "", familyRows{}, true)...)
 	}

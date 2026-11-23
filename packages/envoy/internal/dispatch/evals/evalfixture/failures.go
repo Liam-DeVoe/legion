@@ -25,7 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The Failures mode (dispatch://INFRA-978, T15): the record of deploys and failed changes the
+// The Failures mode (dispatch://INFRA-978): the record of deploys and failed changes the
 // checks of INFRA-978 read (k2, k7 to k9, k11 and k12, and k13's project), written through the
 // writers production uses: the project settings through delivery.PutProjectSettings, the pull
 // requests, runs, jobs and the revert through the delivery store's writes, the check results and
@@ -652,7 +652,7 @@ func expectsOf(result FailuresResult, oracle failureOracle, first string) Failur
 	return expects
 }
 
-// failureOracle is D7's rule (spec version 19, R9 and R11), the oracle the Failures mode states
+// failureOracle is D7's rule (R9 and R11), the oracle the Failures mode states
 // each project's measures by, written from its words and not from the evals' builder: "P's deploys
 // on day D are the deploy rows finished on D that the attribution counts for P, and the failures
 // counted for P are the unrejected failure rows on those deploys whose signal maps to a source P

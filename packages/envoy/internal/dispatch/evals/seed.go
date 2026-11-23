@@ -492,11 +492,12 @@ func holdsRegistrationSentence(markdown string, blocks []model.ArtifactBlock, id
 // catalogue's, as its eval's target does (the seed's rules above). A series the release did not
 // change is left as it is, whatever a person set on it since.
 //
-// A series the eval holds listed that the catalogue no longer states (a release dropped it, or a
-// logged eval the seed takes over registered it) gets its next version unlisted and not primary,
-// every other field carried forward: the series are the computation's (computationField), a
-// listed series is one every read folds and states, and a series no day builder writes would
-// read "no data" in every window. It stays a row of the registry, as every version does.
+// A series the eval holds listed or primary that the catalogue no longer states (a release dropped
+// it, or a logged eval the seed takes over registered it) gets its next version unlisted and not
+// primary, every other field carried forward: the series are the computation's
+// (computationField), a listed series is one every read folds and states, and a series no day
+// builder writes would read "no data" in every window. It stays a row of the registry, as every
+// version does.
 func seriesToWrite(id string, catalogue []Series, current, seeded map[string]Series) []Series {
 	var writes []Series
 	stated := make(map[string]bool, len(catalogue))

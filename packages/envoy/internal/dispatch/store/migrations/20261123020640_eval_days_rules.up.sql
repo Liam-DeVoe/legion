@@ -1,7 +1,7 @@
 -- 20261123020640_eval_days_rules.up.sql
 --
 -- The rule each deploy repository's delivery and CI day rows stand built under (dispatch://INFRA-978,
--- T8), where eval_days_settings (20261117100021) records one rule for every repository. A project
+-- D1), where eval_days_settings (20261117100021) records one rule for every repository. A project
 -- holds deploy sources (20261123010254), each repository the source of one delivery-on project at
 -- most, so each repository's rows of the evals that read the deploy repository
 -- (eval_days.deploy_repo) are built under its own source's rule, and a project's read folds the rows

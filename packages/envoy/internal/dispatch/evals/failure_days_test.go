@@ -403,3 +403,41 @@ func TestASettingsChangeOfTheFailureSourcesRebuildsTheRows(t *testing.T) {
 		}
 	}
 }
+
+// TestTheStoredDaysReadAsTheirDayInASessionEastOfUTC: a date the evals read, a repository's
+// kept_since in eval_days_rules (builtUnderIn) and a project's failures_measured_since
+// (failuresSinceIn, for its project and for every project), reads as its own UTC midnight in a
+// session whose time zone is east of UTC (Pacific/Kiritimati, UTC+14), where a cast to timestamptz
+// would read the day before.
+func TestTheStoredDaysReadAsTheirDayInASessionEastOfUTC(t *testing.T) {
+	r := newRefresherRig(t)
+	ctx := t.Context()
+	r.seedFailureProjects(t)
+	r.putFailures(t, "ALPHA", alphaJob, []string{delivery.FailureSourceCheckResults}, failureDay)
+	r.exec(t, "a repository's rule with its start", `insert into eval_days_rules (repo, project_key, production_job_names, kept_since)
+		values ($1, 'ALPHA', '{}', $2::date)`, alphaApp, failureDay)
+	tx, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `set local timezone = 'Pacific/Kiritimati'`); err != nil {
+		t.Fatalf("set the session's time zone: %v", err)
+	}
+	built, err := builtUnderIn(ctx, tx)
+	if err != nil {
+		t.Fatalf("read the rules the rows stand built under: %v", err)
+	}
+	if since := built[ruleKey(alphaApp)].since; since == nil || !since.Equal(failureDay) {
+		t.Errorf("%s's kept_since %s reads as %v, want that day", alphaApp, failureDay.Format(time.DateOnly), since)
+	}
+	for _, projects := range [][]string{{"ALPHA"}, nil} {
+		since, err := failuresSinceIn(ctx, tx, projects)
+		if err != nil {
+			t.Fatalf("read the failure measures' first days of %v: %v", projects, err)
+		}
+		if day := since["ALPHA"]; day == nil || !day.Equal(failureDay) {
+			t.Errorf("ALPHA's failures_measured_since %s reads as %v (projects %v), want that day", failureDay.Format(time.DateOnly), day, projects)
+		}
+	}
+}

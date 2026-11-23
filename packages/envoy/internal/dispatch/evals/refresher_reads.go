@@ -427,7 +427,7 @@ func (s *Store) deliveryInputStart(ctx context.Context, repos []keptRepo) (*time
 	var earliest *time.Time
 	names := []string{}
 	for _, repo := range repos {
-		if _, posted := eventsProject(repo.name); !posted {
+		if !IsEventsRepo(repo.name) {
 			names = append(names, repo.name)
 		}
 	}
@@ -442,7 +442,7 @@ func (s *Store) deliveryInputStart(ctx context.Context, repos []keptRepo) (*time
 		return nil, fmt.Errorf("read the first delivery input: %w", err)
 	}
 	for _, repo := range repos {
-		if _, posted := eventsProject(repo.name); posted && (earliest == nil || repo.since.Before(*earliest)) {
+		if IsEventsRepo(repo.name) && (earliest == nil || repo.since.Before(*earliest)) {
 			since := repo.since
 			earliest = &since
 		}

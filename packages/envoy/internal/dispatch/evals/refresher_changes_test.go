@@ -34,7 +34,7 @@ func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	}
 	var days []DeliveryDay
 	for day := refresherToday.AddDate(0, 0, -5); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(t.Context(), []keptRepo{{name: rules[0].DeployRepo, deploys: true, rule: rules[0]}}, day, nil)
+		read, err := r.registry.readDeliveryDay(t.Context(), []keptRepo{{name: rules[0].DeployRepo, deploys: true, rule: rules[0]}}, day, nil, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %s: %v", day.Format(time.DateOnly), err)
 		}

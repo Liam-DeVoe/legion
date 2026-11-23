@@ -103,16 +103,22 @@ func failureProjectOf(settings delivery.ProjectSettings) (failureProject, bool) 
 	if !settings.Delivery || len(settings.FailureSources) == 0 || settings.FailuresMeasuredSince == nil {
 		return failureProject{}, false
 	}
-	posted := slices.ContainsFunc(settings.Sources, func(source delivery.DeploySource) bool {
-		return source.Kind == delivery.SourceKindEvents
-	})
 	project := failureProject{
-		project: settings.Project, sources: settings.FailureSources, since: measures.Midnight(*settings.FailuresMeasuredSince), posted: posted,
+		project: settings.Project, sources: settings.FailureSources, since: measures.Midnight(*settings.FailuresMeasuredSince),
+		posted: holdsEventsSource(settings),
 	}
 	if settings.DefaultRepo != nil {
 		project.defaultRepo = *settings.DefaultRepo
 	}
 	return project, true
+}
+
+// holdsEventsSource reports whether settings hold an events deploy source, whose posted deploys
+// count for the project (EventsRepo, failureProject.posted).
+func holdsEventsSource(settings delivery.ProjectSettings) bool {
+	return slices.ContainsFunc(settings.Sources, func(source delivery.DeploySource) bool {
+		return source.Kind == delivery.SourceKindEvents
+	})
 }
 
 // reaches reports whether c, one of the projects or owner keys a deploy counts for
@@ -146,7 +152,7 @@ type failureDeploy struct {
 	via bool
 }
 
-// failureRecord is what one project's failure rows are built from (readFailureRecord): every
+// failureRecord is what one project's failure rows are built from (readFailureRecords): every
 // deploy row that finished from the project's first day on that the attribution counts for it, in
 // the order they finished (index by id), and the failures counted for it on them (counted, in the
 // order they were detected), with, by deploy id, how many counted failures blame it (failed), how
@@ -163,68 +169,109 @@ type failureRecord struct {
 	restoredOn map[time.Time][]int
 }
 
-// readFailureRecord reads, in q, project's failureRecord: the deploy rows of projects (every
-// project, so a deploy of another project's repository that ships the project's pull request is
-// read) that finished from its first day on (prodevents.DeploysFrom), the issues of the pull
-// requests the GitHub ones ship (readShippedIssues), and the failure rows on the deploys that count
-// for it (prodevents.FailuresOf).
+// readFailureRecord reads, in q, project's failureRecord (readFailureRecords).
 func readFailureRecord(ctx context.Context, q delivery.Querier, project failureProject, projects []string) (failureRecord, error) {
-	record := failureRecord{
-		project: project, index: map[string]int{}, failed: map[string]int{}, open: map[string]int{},
-		restores: map[string]bool{}, restoredOn: map[time.Time][]int{},
-	}
-	deploys, err := prodevents.DeploysFrom(ctx, q, projects, project.since)
+	records, err := readFailureRecords(ctx, q, []failureProject{project}, projects)
 	if err != nil {
 		return failureRecord{}, err
 	}
-	attribute, issueOf, err := readShippedIssues(ctx, q, deploys)
+	return records[0], nil
+}
+
+// readFailureRecords reads, in q, the failureRecord of each of failures, in their order, from one
+// read of the record: the deploy rows of projects (every project, so a deploy of another project's
+// repository that ships a project's pull request is read) that finished from the earliest of their
+// first days on (prodevents.DeploysFrom), the issues of the pull requests the GitHub ones ship
+// (readShippedIssues), and the failure rows on the deploys that count for any of them
+// (prodevents.FailuresOf). Each project's record is what of them counts for it, from its own first
+// day on.
+func readFailureRecords(ctx context.Context, q delivery.Querier, failures []failureProject, projects []string) ([]failureRecord, error) {
+	if len(failures) == 0 {
+		return nil, nil
+	}
+	from := failures[0].since
+	for _, project := range failures[1:] {
+		if project.since.Before(from) {
+			from = project.since
+		}
+	}
+	deploys, err := prodevents.DeploysFrom(ctx, q, projects, from)
 	if err != nil {
-		return failureRecord{}, err
+		return nil, err
 	}
-	for _, deploy := range deploys {
-		if deploy.Source == prodevents.SourceAPI && !project.posted {
-			continue
-		}
-		counts := attribute.recordProjects(deploy, issueOf)
-		at := slices.IndexFunc(counts, project.reaches)
-		if at < 0 {
-			continue
-		}
-		record.index[deploy.ID] = len(record.deploys)
-		record.deploys = append(record.deploys, failureDeploy{Event: deploy, via: counts[at].via})
-	}
-	failures, err := prodevents.FailuresOf(ctx, q, slices.Collect(maps.Keys(record.index)))
+	attribute, err := readShippedIssues(ctx, q, deploys)
 	if err != nil {
-		return failureRecord{}, err
+		return nil, err
 	}
-	for _, failure := range failures {
-		if failure.State != prodevents.StateCounted || !project.counts(failure.Signal) {
-			continue
+	records := make([]failureRecord, len(failures))
+	var counting []string
+	held := map[string]bool{}
+	for i, project := range failures {
+		record := failureRecord{
+			project: project, index: map[string]int{}, failed: map[string]int{}, open: map[string]int{},
+			restores: map[string]bool{}, restoredOn: map[time.Time][]int{},
 		}
-		blamed := *failure.DeployID
-		record.failed[blamed]++
-		if failure.RestoredAt == nil {
-			record.open[blamed]++
-		} else {
-			day := measures.Midnight(*failure.RestoredAt)
-			record.restoredOn[day] = append(record.restoredOn[day], len(record.counted))
-		}
-		if by := failure.RestoredByDeploy; by != nil {
-			if _, held := record.index[*by]; held {
-				record.restores[*by] = true
+		first, _ := slices.BinarySearchFunc(deploys, project.since, func(deploy prodevents.Event, at time.Time) int {
+			return deploy.FinishedAt.Compare(at)
+		})
+		for _, deploy := range deploys[first:] {
+			if deploy.Source == prodevents.SourceAPI && !project.posted {
+				continue
+			}
+			counts := attribute.recordProjects(deploy)
+			at := slices.IndexFunc(counts, project.reaches)
+			if at < 0 {
+				continue
+			}
+			record.index[deploy.ID] = len(record.deploys)
+			record.deploys = append(record.deploys, failureDeploy{Event: deploy, via: counts[at].via})
+			if !held[deploy.ID] {
+				held[deploy.ID] = true
+				counting = append(counting, deploy.ID)
 			}
 		}
-		record.counted = append(record.counted, failure)
+		records[i] = record
 	}
-	return record, nil
+	blamed, err := prodevents.FailuresOf(ctx, q, counting)
+	if err != nil {
+		return nil, err
+	}
+	for i := range records {
+		records[i].count(blamed)
+	}
+	return records, nil
+}
+
+// count adds to f, in their order, each of failures it counts: one that blames a deploy of f, is
+// counted, and is of a signal f's project counts.
+func (f *failureRecord) count(failures []prodevents.Event) {
+	for _, failure := range failures {
+		blamed := *failure.DeployID
+		if _, held := f.index[blamed]; !held || failure.State != prodevents.StateCounted || !f.project.counts(failure.Signal) {
+			continue
+		}
+		f.failed[blamed]++
+		if failure.RestoredAt == nil {
+			f.open[blamed]++
+		} else {
+			day := measures.Midnight(*failure.RestoredAt)
+			f.restoredOn[day] = append(f.restoredOn[day], len(f.counted))
+		}
+		if by := failure.RestoredByDeploy; by != nil {
+			if _, held := f.index[*by]; held {
+				f.restores[*by] = true
+			}
+		}
+		f.counted = append(f.counted, failure)
+	}
 }
 
 // recordProjects is what deploy, a deploy row of the record, counts for, by deployProjects' rule:
 // a posted deploy its route's project alone, through no repository; a GitHub deploy the projects
-// of the pull requests it ships through the issue its stored row names (issueOf, by row key), and
-// its repository's owner key where one names no issue, or the row's project where it ships none; a
-// dropped deploy nothing.
-func (a attribution) recordProjects(deploy prodevents.Event, issueOf map[string]string) []counted {
+// of the pull requests it ships through the issue its stored row names (attribution.pulls, by row
+// key), and its repository's owner key where one names no issue, or the row's project where it
+// ships none; a dropped deploy nothing.
+func (a attribution) recordProjects(deploy prodevents.Event) []counted {
 	switch {
 	case deploy.Status == prodevents.StatusDropped:
 		return nil
@@ -238,7 +285,7 @@ func (a attribution) recordProjects(deploy prodevents.Event, issueOf map[string]
 			continue
 		}
 		pr := &delivery.DeliveryPullRequest{Repo: repo, Number: number}
-		if issue, named := issueOf[PullRequestMember(repo, number)]; named {
+		if issue, named := a.pulls[PullRequestMember(repo, number)]; named {
 			pr.IssueKey = &issue
 		}
 		shipped = append(shipped, pr)
@@ -248,50 +295,31 @@ func (a attribution) recordProjects(deploy prodevents.Event, issueOf map[string]
 
 // readShippedIssues reads, in q, what attributes the pull requests the GitHub deploys of deploys
 // ship (production_events.pull_requests, containment's): the issue each one's stored row names, by
-// its row key (issueOf), and that issue's project (the attribution's issues), where the population
-// holds a row of the pull request naming an issue the issues table holds. One statement, a probe of
-// delivery_pull_requests' key for each pull request.
-func readShippedIssues(ctx context.Context, q delivery.Querier, deploys []prodevents.Event) (attribution, map[string]string, error) {
-	attribute, issueOf := attribution{issues: map[string]string{}, pulls: map[string]string{}}, map[string]string{}
-	var members, repos []string
-	var numbers []int32
-	named := map[string]bool{}
+// its row key (the attribution's pulls), and that issue's project (its issues), where the
+// population holds a row of the pull request naming an issue the issues table holds
+// (readPullRequestIssues).
+func readShippedIssues(ctx context.Context, q delivery.Querier, deploys []prodevents.Event) (attribution, error) {
+	attribute := attribution{issues: map[string]string{}, pulls: map[string]string{}}
+	var prs pullRequestSet
 	for _, deploy := range deploys {
 		if deploy.Source == prodevents.SourceAPI || deploy.Status == prodevents.StatusDropped {
 			continue
 		}
 		for _, ref := range deploy.PullRequests {
-			repo, number, ok := parsePullRequestRef(ref)
-			if !ok {
-				continue
-			}
-			member := PullRequestMember(repo, number)
-			if !named[member] {
-				named[member] = true
-				members, repos, numbers = append(members, member), append(repos, repo), append(numbers, int32(number))
+			if repo, number, ok := parsePullRequestRef(ref); ok {
+				prs.add(repo, number)
 			}
 		}
 	}
-	if len(members) == 0 {
-		return attribute, issueOf, nil
+	if len(prs.members) == 0 {
+		return attribute, nil
 	}
-	rows, err := q.Query(ctx, `
-		select given.member, request.issue_key, issue.project_key
-		from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
-		join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
-		join issues issue on issue.key = request.issue_key
-	`, members, repos, numbers)
+	pulls, projects, err := readPullRequestIssues(ctx, q, prs, "the deploys ship")
 	if err != nil {
-		return attribution{}, nil, fmt.Errorf("read the issues of the %d pull requests the deploys ship: %w", len(members), err)
+		return attribution{}, err
 	}
-	var member, issue, project string
-	if _, err := pgx.ForEachRow(rows, []any{&member, &issue, &project}, func() error {
-		issueOf[member], attribute.issues[issue] = issue, project
-		return nil
-	}); err != nil {
-		return attribution{}, nil, fmt.Errorf("read the issues of the %d pull requests the deploys ship: %w", len(members), err)
-	}
-	return attribute, issueOf, nil
+	attribute.pulls, attribute.issues = pulls, projects
+	return attribute, nil
 }
 
 // deploysFrom is the index in f.deploys of the first deploy that finished at or after at.
@@ -332,7 +360,7 @@ func (f failureRecord) day(day time.Time) ProjectDay {
 		if !deploy.FinishedAt.Before(end) {
 			break
 		}
-		one := measures.FailureDeploy{ID: deploy.ID, FinishedAt: *deploy.FinishedAt, Failures: f.failed[deploy.ID], Restores: f.restores[deploy.ID]}
+		one := measures.FailureDeploy{Failures: f.failed[deploy.ID], Restores: f.restores[deploy.ID]}
 		for _, c := range cutsOf(deploy.Repo) {
 			c.deploys = append(c.deploys, one)
 			if deploy.via {
@@ -492,34 +520,80 @@ func deleteStaleFailureDays(ctx context.Context, tx pgx.Tx, project string, eval
 	return nil
 }
 
-// writeFailures writes project's failure rows (writeFailureDays) as of the pass: every day from
-// its first day through today where named is nil (a whole write, every row where its measures are
-// off deleted, which the walk then leaves for the day: r.failuresWritten), and otherwise each day
-// named holds and the finish day of each deploy that restored a counted failure among changed (the
-// record's rows a page's changes name, by id), up to today. It writes nothing where named is set
-// and the project's measures are off.
-func (r *refresh) writeFailures(ctx context.Context, project string, named map[time.Time]bool, changed map[string]bool) (err error) {
-	if named == nil {
-		defer func() {
-			if err == nil {
-				r.failuresWritten[project] = r.today
-			}
-		}()
+// deleteFailureDays deletes, in one transaction, every stored failure row of projects, each a
+// project whose failure measures are off, and folds again the stored figures of each day a row
+// went from (foldFiguresInTx), each project's in turn. Its change rows wait in the change log's
+// outbox and are moved into the log once it has committed (drainChanges). It writes nothing for no
+// project.
+func (s *Store) deleteFailureDays(ctx context.Context, projects []string, builtBy string) error {
+	if len(projects) == 0 {
+		return nil
 	}
-	failures, on := r.failures[project]
-	if !on {
-		if named != nil {
-			return nil
+	evalIDs := make([]string, 0, len(projects)*len(failureDaySlugs))
+	for _, project := range projects {
+		for _, slug := range failureDaySlugs {
+			evalIDs = append(evalIDs, EvalID(project, slug))
 		}
-		return r.store.writeFailureDays(ctx, failureWrite{project: project, whole: true}, r.build)
 	}
-	record, err := readFailureRecord(ctx, r.store.database.Pool, failures, r.projects)
+	tx, err := s.database.Pool.Begin(ctx)
 	if err != nil {
+		return fmt.Errorf("begin the failure rows of %v: %w", projects, err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `
+		delete from eval_days where project_key = any($1) and eval_id = any($2) and writer = $3
+		returning project_key, eval_id, day
+	`, projects, evalIDs, writerComputation)
+	if err != nil {
+		return fmt.Errorf("delete the failure rows of %v, whose failure measures are off: %w", projects, err)
+	}
+	spans := map[string]map[string]daySpan{}
+	var project, evalID string
+	var day time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&project, &evalID, &day}, func() error {
+		if spans[project] == nil {
+			spans[project] = map[string]daySpan{}
+		}
+		addSpan(spans[project], evalID, day, day)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("delete the failure rows of %v, whose failure measures are off: %w", projects, err)
+	}
+	for _, project := range projects {
+		if err := foldFiguresInTx(ctx, tx, builtBy, project, spans[project]); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit the failure rows of %v: %w", projects, err)
+	}
+	s.drainChanges(ctx)
+	return nil
+}
+
+// clearFailures deletes every failure row of projects, each a project whose failure measures are
+// off (deleteFailureDays), as a whole write of each, which the walk then leaves for the day
+// (r.failuresWritten).
+func (r *refresh) clearFailures(ctx context.Context, projects []string) error {
+	if err := r.store.deleteFailureDays(ctx, projects, r.build); err != nil {
 		return err
 	}
+	for _, project := range projects {
+		r.failuresWritten[project] = r.today
+	}
+	return nil
+}
+
+// writeFailures writes the failure rows of record's project, one whose measures are on
+// (writeFailureDays), as of the pass: every day from its first day through today where named is
+// nil (a whole write, which the walk then leaves for the day: r.failuresWritten), and otherwise
+// each day named holds and the finish day of each deploy that restored a counted failure among
+// changed (the record's rows a page's changes name, by id), up to today.
+func (r *refresh) writeFailures(ctx context.Context, record failureRecord, named map[time.Time]bool, changed map[string]bool) error {
+	project := record.project.project
 	var days []time.Time
 	if named == nil {
-		for day := failures.since; !day.After(r.today); day = day.AddDate(0, 0, 1) {
+		for day := record.project.since; !day.After(r.today); day = day.AddDate(0, 0, 1) {
 			days = append(days, day)
 		}
 	} else {
@@ -543,7 +617,13 @@ func (r *refresh) writeFailures(ctx context.Context, project string, named map[t
 		write.days = append(write.days, record.day(day))
 		r.report.days[builtDay{family: failureFamily, project: project, day: day}] = true
 	}
-	return r.store.writeFailureDays(ctx, write, r.build)
+	if err := r.store.writeFailureDays(ctx, write, r.build); err != nil {
+		return err
+	}
+	if named == nil {
+		r.failuresWritten[project] = r.today
+	}
+	return nil
 }
 
 // applyFailures writes the failure rows a page's changes move (the package comment's rule): of each
@@ -552,10 +632,12 @@ func (r *refresh) writeFailures(ctx context.Context, project string, named map[t
 // page begins a rebuild (a database or a change cursor whose changes are lost, or rules the rows
 // stand built under that are not recorded), and of every project whose measures are on, where the
 // repositories kept for the delivery rows moved (w.kept), the rows whole; and otherwise, of every
-// project whose measures are on, the days the record's changes name (writeFailures).
+// project whose measures are on, the days the record's changes name (writeFailures). The record is
+// read once for every project it writes whose measures are on (readFailureRecords), and the rows of
+// a project whose measures are off are deleted (clearFailures).
 func (r *refresh) applyFailures(ctx context.Context, w *pageWork) error {
 	named, changed := map[time.Time]bool{}, map[string]bool{}
-	for _, rows := range w.posted {
+	for _, rows := range w.prodEvents {
 		for id, days := range rows {
 			changed[id] = true
 			for _, day := range days {
@@ -563,35 +645,83 @@ func (r *refresh) applyFailures(ctx context.Context, w *pageWork) error {
 			}
 		}
 	}
+	whole := map[string]bool{}
+	var written []string
+	var on []failureProject
 	for _, project := range r.projects {
-		_, on := r.failures[project]
+		failures, measured := r.failures[project]
 		switch {
-		case w.rebuild != "" || w.settingsOf[project] || w.kept != nil && on || w.defaults != nil && slices.Contains(w.defaults.moved, project):
-			if err := r.writeFailures(ctx, project, nil, nil); err != nil {
-				return err
-			}
-		case on && len(changed) > 0:
-			if err := r.writeFailures(ctx, project, named, changed); err != nil {
-				return err
-			}
+		case w.rebuild != "" || w.settingsOf[project] || w.kept != nil && measured || w.defaults != nil && slices.Contains(w.defaults.moved, project):
+			whole[project] = true
+		case measured && len(changed) > 0:
+		default:
+			continue
+		}
+		written = append(written, project)
+		if measured {
+			on = append(on, failures)
+		}
+	}
+	read, err := readFailureRecords(ctx, r.store.database.Pool, on, r.projects)
+	if err != nil {
+		return err
+	}
+	records := make(map[string]failureRecord, len(read))
+	for _, record := range read {
+		records[record.project.project] = record
+	}
+	for _, project := range written {
+		record, measured := records[project]
+		switch {
+		case !measured:
+			err = r.clearFailures(ctx, []string{project})
+		case whole[project]:
+			err = r.writeFailures(ctx, record, nil, nil)
+		default:
+			err = r.writeFailures(ctx, record, named, changed)
+		}
+		if err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-// walkFailures writes each project's failure rows whole (writeFailures) once a UTC day: on the
-// first walking pass of a process and of each UTC day, of each project no whole write of this
-// process reached that day (r.failuresWritten, the loop's). Each project is a write of the walks,
-// which stop between two of them for an owed wake (yields) and leave the rest to the next pass.
+// walkFailures writes each project's failure rows whole once a UTC day: on the first walking pass
+// of a process and of each UTC day, of each project no whole write of this process reached that day
+// (r.failuresWritten, the loop's). The rows of every such project whose measures are off are
+// deleted in one write (clearFailures), and then each other project's are a write of its own
+// (writeFailures). Each is a write of the walks, which stop between two of them for an owed wake
+// (yields) and leave the rest to the next pass.
 func (r *refresh) walkFailures(ctx context.Context) error {
+	var off []string
 	for _, project := range r.projects {
-		if r.failuresWritten[project].Equal(r.today) {
+		if _, on := r.failures[project]; !on && !r.failuresWritten[project].Equal(r.today) {
+			off = append(off, project)
+		}
+	}
+	if len(off) > 0 {
+		if r.yields(ctx) {
+			return nil
+		}
+		if err := r.clearFailures(ctx, off); err != nil {
+			return err
+		}
+		r.walkBuilt++
+	}
+	for _, project := range r.projects {
+		failures, on := r.failures[project]
+		if !on || r.failuresWritten[project].Equal(r.today) {
 			continue
 		}
 		if r.yields(ctx) {
 			return nil
 		}
-		if err := r.writeFailures(ctx, project, nil, nil); err != nil {
+		record, err := readFailureRecord(ctx, r.store.database.Pool, failures, r.projects)
+		if err != nil {
+			return err
+		}
+		if err := r.writeFailures(ctx, record, nil, nil); err != nil {
 			return err
 		}
 		r.walkBuilt++
@@ -624,37 +754,43 @@ func failureFirstDays(ctx context.Context, q delivery.Querier, entries []Entry, 
 		}
 		id := entry.Definition.EvalID
 		delete(firsts, id)
-		day, on := since[entry.Definition.ProjectKey]
-		if !on {
+		day := since[entry.Definition.ProjectKey]
+		if day == nil {
 			continue
 		}
 		firsts[id] = make(map[string]time.Time, len(entry.Series))
 		for _, series := range entry.Series {
-			firsts[id][series.Series] = day
+			firsts[id][series.Series] = *day
 		}
 	}
 	return nil
 }
 
-// failuresSinceIn reads in q the first day of the failure rows of each of projects whose failure
-// measures are on (failureProjectOf's rule: delivery on and a failure source), by project: the UTC
-// midnight of its failures_measured_since, read as the settings reads read it.
-func failuresSinceIn(ctx context.Context, q delivery.Querier, projects []string) (map[string]time.Time, error) {
+// failuresSinceIn reads in q, by project, each project of projects (every project where projects
+// is nil) that has delivery on: with the first day of its failure rows where its failure measures
+// are on (failureProjectOf's rule: delivery on and a failure source), the UTC midnight of its
+// failures_measured_since, and nil where they are off. The day is read as stored, a date, which no
+// session time zone moves.
+func failuresSinceIn(ctx context.Context, q delivery.Querier, projects []string) (map[string]*time.Time, error) {
 	rows, err := q.Query(ctx, `
-		select project_key, failures_measured_since::timestamptz from project_delivery_settings
-		where project_key = any($1) and delivery and cardinality(failure_sources) > 0 and failures_measured_since is not null
+		select s.project_key, case when cardinality(s.failure_sources) > 0 then s.failures_measured_since end
+		from project_delivery_settings s join projects p on p.key = s.project_key
+		where s.delivery and ($1::text[] is null or s.project_key = any($1))
 	`, projects)
 	if err != nil {
-		return nil, fmt.Errorf("read the first days of the failure measures of %d projects: %w", len(projects), err)
+		return nil, fmt.Errorf("read the first days of the failure measures: %w", err)
 	}
-	since := map[string]time.Time{}
+	since := map[string]*time.Time{}
 	var project string
-	var day time.Time
+	var day *time.Time
 	if _, err := pgx.ForEachRow(rows, []any{&project, &day}, func() error {
-		since[project] = measures.Midnight(day.UTC())
+		since[project] = nil
+		if day != nil {
+			since[project] = new(*day)
+		}
 		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("read the first days of the failure measures of %d projects: %w", len(projects), err)
+		return nil, fmt.Errorf("read the first days of the failure measures: %w", err)
 	}
 	return since, nil
 }
@@ -697,38 +833,41 @@ func (s *Store) DeploymentFailures(ctx context.Context, days Range) (DeploymentF
 		return DeploymentFailures{}, fmt.Errorf("begin the read of the deployment's failure measures: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	settings, err := delivery.ListProjectSettings(ctx, tx)
+	since, err := failuresSinceIn(ctx, tx, nil)
 	if err != nil {
 		return DeploymentFailures{}, err
 	}
-	settings = slices.DeleteFunc(settings, func(one delivery.ProjectSettings) bool { return !one.Delivery })
-	if len(settings) != 1 {
+	if len(since) != 1 {
 		return DeploymentFailures{}, nil
 	}
-	project, on := failureProjectOf(settings[0])
-	if !on {
+	var project string
+	var first *time.Time
+	for key, day := range since {
+		project, first = key, day
+	}
+	if first == nil {
 		return DeploymentFailures{}, nil
 	}
-	read := DeploymentFailures{since: &project.since}
+	read := DeploymentFailures{since: first}
 	evalIDs := make([]string, len(failureDaySlugs))
 	for i, slug := range failureDaySlugs {
-		evalIDs[i] = EvalID(project.project, slug)
+		evalIDs[i] = EvalID(project, slug)
 	}
 	rows, err := tx.Query(ctx, `
 		select `+dayColumns+` from eval_days
 		where project_key = $1 and eval_id = any($2) and writer = $3 and deploy_repo = '' and repo = '' and listed
 		  and day >= $4::date and day < $5::date
 		order by day, eval_id, series
-	`, project.project, evalIDs, writerComputation, days.From, days.To)
+	`, project, evalIDs, writerComputation, days.From, days.To)
 	if err != nil {
-		return DeploymentFailures{}, fmt.Errorf("read the failure rows of %s: %w", project.project, err)
+		return DeploymentFailures{}, fmt.Errorf("read the failure rows of %s: %w", project, err)
 	}
 	stored, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (DayRow, error) { return scanDay(row) })
 	if err != nil {
-		return DeploymentFailures{}, fmt.Errorf("read the failure rows of %s: %w", project.project, err)
+		return DeploymentFailures{}, fmt.Errorf("read the failure rows of %s: %w", project, err)
 	}
 	for _, row := range stored {
-		switch slugOf(project.project, row.EvalID) {
+		switch slugOf(project, row.EvalID) {
 		case SlugChangeFailRate:
 			read.parts.ChangeFail = append(read.parts.ChangeFail, row.DayPart)
 		case SlugFailedDeployRecovery:
@@ -853,8 +992,7 @@ func FailureItemsIn(ctx context.Context, q delivery.Querier, project, slug strin
 		case SlugFailedDeployRecovery:
 			switch {
 			case failure.RestoredAt != nil && inRange(*failure.RestoredAt):
-				one := measures.RestoredFailure{DeployFinishedAt: *deploy.FinishedAt, RestoredAt: *failure.RestoredAt}
-				minutes := measures.RecoveryDay(measures.Midnight(*failure.RestoredAt), []measures.RestoredFailure{one}, 0)[0].Samples[0]
+				minutes := measures.RestoreMinutes(measures.RestoredFailure{DeployFinishedAt: *deploy.FinishedAt, RestoredAt: *failure.RestoredAt})
 				counted = append(counted, FailureItem{Event: failure, Relation: RelationRestored, Repo: deploy.Repo, At: *failure.RestoredAt, Minutes: &minutes})
 				blame(failure)
 			case failure.RestoredAt == nil && inRange(*deploy.FinishedAt):

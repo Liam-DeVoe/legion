@@ -251,47 +251,44 @@ func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deplo
 	}
 	var projects, evalIDs, writers, repos []string
 	for _, entry := range entries {
+		if isFailureMeasure(entry.Definition) {
+			// Its first day is its project's, whatever rows stand (failureFirstDays).
+			continue
+		}
 		for _, repo := range DeployRepoOf(entry.Definition, deployRepos) {
 			projects, evalIDs = append(projects, entry.Definition.ProjectKey), append(evalIDs, entry.Definition.EvalID)
 			writers, repos = append(writers, entry.Definition.writer()), append(repos, repo)
 		}
 	}
-	if len(evalIDs) == 0 {
-		return firsts, nil
-	}
-	rows, err := q.Query(ctx, `
-		select given.eval_id, s.series, min(first.day)
-		from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as given(project_key, eval_id, writer, deploy_repo)
-		cross join lateral (select series from eval_series_current s where s.eval_id = given.eval_id) s
-		join eval_project_owners o on o.project_key = given.project_key
-		cross join lateral (
-			select d.day from eval_days d
-			where d.project_key = o.owner and d.eval_id = o.owner || substr(given.eval_id, length(given.project_key) + 1)
-			  and d.writer = given.writer and d.deploy_repo = given.deploy_repo and d.series = s.series and d.repo = ''
-			order by d.day
-			limit 1
-		) first
-		group by given.eval_id, s.series
-	`, projects, evalIDs, writers, repos)
-	if err != nil {
-		return nil, fmt.Errorf("read the first days of %d evals: %w", len(entries), err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var evalID, series string
-		var day time.Time
-		if err := rows.Scan(&evalID, &series, &day); err != nil {
+	if len(evalIDs) > 0 {
+		rows, err := q.Query(ctx, `
+			select given.eval_id, s.series, min(first.day)
+			from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as given(project_key, eval_id, writer, deploy_repo)
+			cross join lateral (select series from eval_series_current s where s.eval_id = given.eval_id) s
+			join eval_project_owners o on o.project_key = given.project_key
+			cross join lateral (
+				select d.day from eval_days d
+				where d.project_key = o.owner and d.eval_id = o.owner || substr(given.eval_id, length(given.project_key) + 1)
+				  and d.writer = given.writer and d.deploy_repo = given.deploy_repo and d.series = s.series and d.repo = ''
+				order by d.day
+				limit 1
+			) first
+			group by given.eval_id, s.series
+		`, projects, evalIDs, writers, repos)
+		if err != nil {
 			return nil, fmt.Errorf("read the first days of %d evals: %w", len(entries), err)
 		}
-		if firsts[evalID] == nil {
-			firsts[evalID] = map[string]time.Time{}
-		}
-		if held, found := firsts[evalID][series]; !found || day.Before(held) {
+		var evalID, series string
+		var day time.Time
+		if _, err := pgx.ForEachRow(rows, []any{&evalID, &series, &day}, func() error {
+			if firsts[evalID] == nil {
+				firsts[evalID] = map[string]time.Time{}
+			}
 			firsts[evalID][series] = day.UTC()
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the first days of %d evals: %w", len(entries), err)
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the first days of %d evals: %w", len(entries), err)
 	}
 	if err := failureFirstDays(ctx, q, entries, firsts); err != nil {
 		return nil, err
