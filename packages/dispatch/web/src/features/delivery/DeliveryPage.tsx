@@ -357,8 +357,9 @@ function OwnColourPicker({
       options={[...new Set([...selected, ...options])]}
       searchLabel="Search parent agents…"
       selected={selected}
+      size="compact"
       triggerAriaLabel={`Own colour and lane: ${state}`}
-      triggerClassName={`flex h-8 items-center rounded border px-2 text-sm ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`}
+      triggerClassName={`flex items-center rounded border text-sm ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`}
     >
       <span className="truncate">Own colour: {state}</span>
     </MultiSelect>
@@ -383,7 +384,7 @@ const FACETS: { key: FacetKey; label: string }[] = [
 ];
 
 const facetLabelClass = `mb-1 block text-xs tracking-wide uppercase ${textMutedOnCanvas}`;
-const facetTriggerClass = `flex h-7 w-full items-center justify-between rounded border px-2 text-left text-xs ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`;
+const facetTriggerClass = `flex w-full items-center justify-between rounded border text-left text-xs ${borderStrong} ${surfaceBg} ${textPrimaryOnSurface}`;
 
 /** One facet's searchable checkbox list: "Any <facet>" until something is picked, each value
  *  with its count, in the order `values` gives. A facet with no values in the window and nothing
@@ -430,6 +431,7 @@ function Facet({
         options={options}
         searchLabel={`Search ${label.toLowerCase()}\u2026`}
         selected={selected}
+        size="compact"
         triggerAriaLabel={`${label}: ${state}`}
         triggerClassName={facetTriggerClass}
       >
@@ -789,6 +791,7 @@ export function DeliveryPage(): ReactNode {
         {notConfigured ? null : (
           <WindowControl
             onChange={(window) => setState({ ...state, window, brush: null })}
+            size="compact"
             value={state.window}
           />
         )}
@@ -872,7 +875,8 @@ export function DeliveryPage(): ReactNode {
                   }
                   options={COLOR_FACETS}
                   searchLabel="Search color choices"
-                  triggerClassName={`rounded border px-2 py-1 text-left ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`}
+                  size="compact"
+                  triggerClassName={`rounded border text-left ${surfaceMutedBg} ${borderStrong} ${textPrimaryOnCanvas}`}
                   value={state.view.colorBy}
                 />
               </div>

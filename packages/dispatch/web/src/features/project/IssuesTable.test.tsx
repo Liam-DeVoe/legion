@@ -14,6 +14,7 @@ import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
 import { boardMoveMutationKey, projectIssuesQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { type ControlSize, controlPadding } from "../../components/control-names";
 import { readLayout } from "../../components/table-storage";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -554,6 +555,41 @@ test("Clear filters also clears Needs you, Unread and the lapsed-claim filter", 
       expect(screen.getByRole("button", { name }).getAttribute("aria-pressed")).toBe("false")
     );
   }
+});
+
+/** The size `control` draws (`controlPadding`): the one whose every class it carries, else
+ *  none of the two. */
+function drawnSize(control: Element): ControlSize | "a size of its own" {
+  const drawn = control.className.split(/\s+/);
+  const sizes: ControlSize[] = ["compact", "comfortable"];
+  return (
+    sizes.find((size) => controlPadding[size].split(" ").every((name) => drawn.includes(name))) ??
+    "a size of its own"
+  );
+}
+
+// R2: each control takes its size from the page, comfortable or compact, as a value the page
+// passes. The project List is compact, as its row's controls and its bar's steps are, so the
+// chips of its Filters panel and its bar's Move to epic draw the compact size's room
+// (`controlPadding.compact`), rather than the comfortable size or room of their own.
+test("R2: the Filters panel's chips and the bar's Move to epic draw the List's compact size", async () => {
+  const user = userEvent.setup();
+  table([issue("CORE-1"), issue("CORE-2")]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  const moveTo = screen.getByRole("button", { name: pickNamed("Move to epic") });
+  await user.click(screen.getByRole("button", { name: /^Filters · \d+$/ }));
+  const chip = (name: string) => drawnSize(screen.getByRole("button", { name }));
+  expect({
+    moveTo: drawnSize(moveTo),
+    needsYou: chip("Needs you"),
+    unclaimed: chip("Unclaimed"),
+    unread: chip("Unread"),
+  }).toEqual({
+    moveTo: "compact",
+    needsYou: "compact",
+    unclaimed: "compact",
+    unread: "compact",
+  });
 });
 
 test("the Done facet does not claim an unloaded count is zero", async () => {

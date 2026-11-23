@@ -35,6 +35,9 @@ export function subscriber(
 
 export async function renderRecipients({
   agents = [],
+  client: queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  }),
   props = {},
   removeFollower = async () => {},
   rescued = false,
@@ -42,6 +45,9 @@ export async function renderRecipients({
 }: {
   /** An Error rejects the agent registry read, as an unreachable Envoy listener does. */
   agents?: Agent[] | Error;
+  /** The query client the card reads through: a plain one unless the case needs the app's own
+   *  (`DispatchQueryClient`). */
+  client?: QueryClient;
   props?: Partial<AskRecipientsProps>;
   removeFollower?: AskRecipientsProps["removeFollower"];
   /** Draws the card in the shell's main content with the page's focus rescue mounted on it
@@ -65,9 +71,6 @@ export async function renderRecipients({
     getIssueSubscribers.mockResolvedValue(subscribers);
     getArtifactSubscribers.mockResolvedValue(subscribers);
   }
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   // Each recipient is an `AgentName`, whose live link needs a router.
   const recipients = (drawn: Partial<AskRecipientsProps>) => {

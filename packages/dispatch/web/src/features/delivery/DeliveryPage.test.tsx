@@ -26,6 +26,7 @@ import type {
   LiveServerFrame,
   LiveSubscribe,
 } from "../../api/types";
+import { type ControlSize, controlPadding } from "../../components/control-names";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { DeliveryPage } from "./DeliveryPage";
 
@@ -814,6 +815,46 @@ test("the Color merges by list opens with a text box, a typed word narrows the c
   expect(colorBy).toHaveFocus();
   // Parent agent offers its values their own colour and lane.
   expect(screen.getByRole("button", { name: /^Own colour and lane/ })).toBeDefined();
+});
+
+/** The size `control` draws (`controlPadding`): the one whose every class it carries, else
+ *  none of the two. */
+function drawnSize(control: Element): ControlSize | "a size of its own" {
+  const drawn = control.className.split(/\s+/);
+  const sizes: ControlSize[] = ["compact", "comfortable"];
+  return (
+    sizes.find((size) => controlPadding[size].split(" ").every((name) => drawn.includes(name))) ??
+    "a size of its own"
+  );
+}
+
+// R2: each control takes its size from the page, comfortable or compact, as a value the page
+// passes. The Delivery page is compact, as its search box and its Filter trigger are, so its
+// Window, Color merges by, Own colour and lane and each facet in its Filter panel draw the
+// compact size's room (`controlPadding.compact`), rather than room of their own.
+test("R2: the Window, Color merges by, Own colour and lane and the Filter panel's facets draw the Delivery page's compact size", async () => {
+  const user = userEvent.setup();
+  renderPage(`${DELIVERY_URL}&colorBy=parentAgent`);
+  await answered({
+    ...emptyTimeline,
+    color_counts: { ...emptyTimeline.color_counts, parent_agent: { Reviewer: 2 } },
+    facet_counts: { ...emptyCounts, repo: { "acme/widgets": 1 } },
+  });
+  const window = await screen.findByLabelText("Window");
+  const colorBy = await screen.findByRole("button", { name: pickNamed("Color merges by") });
+  const ownColour = await screen.findByRole("button", { name: /^Own colour and lane/ });
+  const repository = await panelFacet(user, "Repository");
+  expect({
+    colorBy: drawnSize(colorBy),
+    ownColour: drawnSize(ownColour),
+    repository: drawnSize(repository),
+    window: drawnSize(window),
+  }).toEqual({
+    colorBy: "compact",
+    ownColour: "compact",
+    repository: "compact",
+    window: "compact",
+  });
 });
 
 test("a malformed custom window falls back to the 28-day preset and removes its bad parameters", async () => {
