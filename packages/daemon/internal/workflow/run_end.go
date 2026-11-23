@@ -290,8 +290,10 @@ type issueReader func(key string) (*record.Issue, error)
 // (nil for none), restarted whether a start of its place is about to begin, and read how its tree's
 // root is read. A run is over when its issue has no record, or stands at another place on the walk
 // of its run or in another generation (standingStep, which an issue its plan holds stands in no
-// step of); when a start of its place begins; or when its tree's root lingers, unless it is a
-// merge that can still land in that linger (mergeCanLand, whose closed lingers runs holds).
+// step of), but the run of the step the task's running fix runs again, which stands beside the
+// issue's own step until the fix ends it (fixRunsAt); when a start of its place begins; or when its
+// tree's root lingers, unless it is a merge that can still land in that linger (mergeCanLand,
+// whose closed lingers runs holds).
 func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run runAt, now *record.Issue, restarted bool, read issueReader) (bool, error) {
 	if restarted || now == nil {
 		return true, nil
@@ -304,7 +306,10 @@ func (e *Engine) runOver(ctx context.Context, tx pgx.Tx, runs *factRuns, run run
 		return false, err
 	}
 	if step, ok := standingStep(w, *now); !ok || step.place != run.place {
-		return true, nil
+		fixes, err := e.fixRunsAt(ctx, tx, *now, w, run.place)
+		if err != nil || !fixes {
+			return err == nil, err
+		}
 	}
 	root := now
 	if now.Tree != now.Key {

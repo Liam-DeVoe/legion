@@ -172,8 +172,9 @@ var stepStopped = StepEnd{Result: ResultStopped}
 // the issue leaves, or that its place held, reaches Dispatch before this start. The record never
 // makes the start wait: the row reaches Dispatch on a lane of its own (record.LaneRecord). A phase
 // that runs no step and a record key that is no issue key are no step its callers find
-// (standingStep).
-func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token) error {
+// (standingStep). fixCheck is the check a fix's run is of, which its record names, "" for a run of
+// no fix.
+func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token, fixCheck string) error {
 	if err := e.settleStart(ctx, tx, issue.Key, step.place); err != nil {
 		return err
 	}
@@ -183,6 +184,9 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
 		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
 		write.StartedAt = new(now)
+		if fixCheck != "" {
+			write.FixCheck = new(fixCheck)
+		}
 		return write
 	})
 	if err != nil {
@@ -393,7 +397,7 @@ func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil {
 		return err
 	}
-	return e.startStep(ctx, tx, issue, step, agent)
+	return e.startStep(ctx, tx, issue, step, agent, "")
 }
 
 // stepClaim is the claim token of role on key, in issue's project.
