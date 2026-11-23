@@ -90,11 +90,12 @@ func TestEdgeFrameVerdict(t *testing.T) {
 // "tOpIc" beside "topic" on the generic, GitHub, role and agent branches. A frame with a top-level
 // "__proto__" key, in either spelling, whose fields the plugin's zod read takes as the envelope's
 // own, is withheld under prototype_key. A frame on an agent subject that encoding/json does not
-// read and that is no role message, and a GitHub envelope or payload encoding/json does not read,
-// is withheld, as main withheld it. The controls, each with one exact key, get the verdict main
-// gives them. A row that names goTopic, goRole or goRepo first checks that encoding/json, the read
-// main judged by, reads the frame that way, so no row passes on a frame that does not split the
-// readers as it says.
+// read and that is no role message whose topic is a role lane or an agent subject, and a GitHub
+// envelope or payload encoding/json does not read, is withheld, as the edge withheld it when it
+// read frames with encoding/json, before #5192. The controls, each with one exact key, get the
+// verdict that read gave them. A row that names goTopic, goRole or goRepo first checks that
+// encoding/json, the edge's read before #5192, reads the frame that way, so no row passes on a
+// frame that does not split the readers as it says.
 func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 	const session = "ses_v"
 	own := contracts.LegacyAgentSubject(session)
@@ -190,13 +191,13 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 			data: []byte(`{"source":"agent","topic":"` + own + `","payload":"hi"} x`), want: notHeld},
 		{name: "the session's own message with a misspelt literal", subject: own,
 			data: []byte(`{"source":"agent","topic":"` + own + `","payload":tru}`), want: notHeld},
-		{name: "the token's project's event with text after it (control: judged by its subject, as main)", subject: ownIssue,
+		{name: "the token's project's event with text after it (control: judged by its subject, as the encoding/json read judged it)", subject: ownIssue,
 			data: []byte(`{"source":"dispatch","topic":"` + ownIssue + `"} x`), want: framePasses()},
 		{name: "another project's event with text after it, under the token's project", subject: ownIssue,
 			data: []byte(`{"source":"dispatch","topic":"` + otherIssue + `"} x`), want: notHeld},
 		{name: "a GitHub event of the token's repository with text after it", subject: github,
 			data: append(object(field{"topic", text(github)}, field{"payload", pubRepo}), " x"...), want: notInProject},
-		{name: "control: a frame that is no JSON, under the token's project, passes by its subject as on main", subject: ownIssue,
+		{name: "control: a frame that is no JSON, under the token's project, passes by its subject as the encoding/json read passed it", subject: ownIssue,
 			data: []byte("xxxxxxxx"), want: framePasses()},
 
 		{name: "another project's role mark and a later Role of the token's project", subject: own,
@@ -395,8 +396,9 @@ func TestEdgeFrameVerdictTellsARoleAsTheRelayDoes(t *testing.T) {
 // by that topic. A lane forward of the token's project's lane that carries another project's role
 // mark is withheld by that mark. The controls are the role messages a producer writes - a
 // role-marked send on the session's own subject in either form, a kept or taken copy on the
-// previous holder's subject, a lane forward with or without its own role mark - which pass, and
-// the frames main already withholds by their role. Each row first checks that readRoleFrame, the
+// previous holder's subject, a lane forward - which pass, a lane forward carrying its own lane's
+// role mark, which passes too, and the frames readRoleFrame's role withholds on any topic: another
+// project's role mark, and another project's lane. Each row first checks that readRoleFrame, the
 // relay's read, tells the frame a role message of the role the row names, so no row passes on a
 // frame that read does not take as a role message.
 func TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject(t *testing.T) {
@@ -471,7 +473,7 @@ func TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject(t *testing.T) {
 			frame(topic(pubLane), role(privRole)), pubKey, notHeld},
 		{"control: another project's role mark on the session's own subject",
 			frame(topic(own), role(pubRole)), pubKey, notHeld},
-		{"control: another project's role mark on the token's project's event, withheld as main withholds it",
+		{"control: another project's role mark on the token's project's event, withheld by that mark",
 			frame(topic(ownIssue), role(pubRole)), pubKey, notHeld},
 		{"control: the token's role mark on the token's project's event, judged by that event",
 			frame(topic(ownIssue), role(privRole)), privKey, framePasses()},

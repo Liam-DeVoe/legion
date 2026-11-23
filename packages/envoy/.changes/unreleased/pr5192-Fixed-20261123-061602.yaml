@@ -11,9 +11,9 @@ body: |-
   in case, is now withheld and counted under `reason="ambiguous_key"`, and a frame with a top-level
   `__proto__` key, whose fields the plugin reads as the envelope's own, under
   `reason="prototype_key"`. A frame on an agent subject that `encoding/json` does not read and
-  that is no role message is withheld, and a GitHub event whose envelope or payload it does not
-  read names no repository, as before; a frame with a byte order mark is judged by the topic past
-  it.
+  that is no role message whose topic is a role lane or an agent subject is withheld, and a GitHub
+  event whose envelope or payload it does not read names no repository, as before; a frame with a
+  byte order mark is judged by the topic past it.
 time: 2026-11-23T06:16:02Z
 custom:
     Issue: pr5192

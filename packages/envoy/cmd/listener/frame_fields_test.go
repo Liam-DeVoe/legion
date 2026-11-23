@@ -14,8 +14,9 @@ import (
 // row names where the two may part: the relay refuses a frame with text after its object, as
 // JSON.parse does, which the edge still reads and judges by frameIsJSON, and the edge refuses a
 // field readers disagree on (errAmbiguousFrameKey, errPrototypeFrameKey), under which it reads
-// none. Both read through one reader of a frame's top-level fields (topLevelJSONFields), and a
-// second reader for either call site makes a row fail.
+// none. Both read through one reader of a frame's top-level fields (topLevelJSONFields); a second
+// reader for either call site that splits one of these frames' fields differently makes its row
+// fail, and one that agrees with it on every row here passes them all.
 func TestTheEdgeAndTheRelayReadAFramesFieldsAlike(t *testing.T) {
 	const bom = "\xef\xbb\xbf"
 	const plain = `{"topic":"notifications.agent.ses_v","role":"legion-priv-priv-1-tester"}`

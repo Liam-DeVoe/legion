@@ -11,8 +11,9 @@ package main
 // projects (relaySocket.admitted, relaySocket.verdict), and the relay holds the token this replica
 // admitted the session's registration on, in memory (edgeAdmissions). So nothing the bus stores -
 // a session's entry, an interest row, a role claim, the filter of the session's consumer - can
-// put another project's frame in front of the session. Every frame the rule withholds is
-// acknowledged undelivered and counted under project_not_held.
+// put another project's frame in front of the session. Every frame the rule drops is acknowledged
+// undelivered and counted under its verdict's reason (frameVerdict.reason); frameAction names the
+// other ways it withholds one.
 
 import (
 	"bytes"
@@ -117,7 +118,8 @@ func frameAnswerUnknownVerdict() frameVerdict {
 //     names: the session's own agent subject is a message to the session, a send or a dead
 //     letter, which passes, and any other topic is judged as a frame of that topic. A forward of
 //     a GitHub event or of another agent subject, an envelope that names no topic, and a frame
-//     encoding/json does not read (frameIsJSON) that is no role message, are withheld;
+//     encoding/json does not read (frameIsJSON) that is no role message whose topic is a role lane
+//     or an agent subject, are withheld;
 //   - every other frame passes when contracts.SubjectProject gives it a project the token lists
 //     and, where its envelope names a topic, that topic is of the same project: the subject a
 //     relay header names and the envelope it carries are both what a publisher on the relay
@@ -156,12 +158,12 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		// under a key that differs from "role" only in case, which readRoleFrame passes over and
 		// encoding/json takes - is withheld first, as one whose topic they disagree on is above
 		// (exactFrameField). A role mark is judged by its role only where a role message's topic
-		// is (roleFrameVerdict): the plugin shows the frame by its topic too, so a mark of the
-		// token's project on another project's event would pass that event. A message whose role
-		// that read cannot tell is no role message, as the relay sends it, and is judged by its
-		// topic below, and so is a role-marked frame roleFrameVerdict leaves to it; one
-		// encoding/json does not read (frameIsJSON) is withheld there, as it was when the edge
-		// read the topic with encoding/json.
+		// is (roleFrameVerdict): the plugin shows the frame by its topic, so a mark of the token's
+		// project on another project's event would pass that event. A message whose role that
+		// read cannot tell is no role message, as the relay sends it, and is judged by its topic
+		// below, and so is a role-marked frame roleFrameVerdict leaves to it; one encoding/json
+		// does not read (frameIsJSON) is withheld there, as it was when the edge read the topic
+		// with encoding/json.
 		if _, _, err := exactFrameField(data, "role"); err != nil {
 			return frameKeyWithheld(err)
 		}
@@ -206,17 +208,20 @@ func exactFrameTopic(data []byte) (string, bool, error) {
 
 // roleFrameVerdict is the edge's verdict on frame, a role message on the session's own agent
 // subject (readRoleFrame), and false for one it leaves to be judged by its topic, as a frame with
-// no role mark. A legitimate role message's topic is a role lane (a lane forward,
-// roleForward.forwarded) or an agent subject: the target session's own (a role-marked send,
-// contracts.AgentSendEnvelope) or, for a kept or taken copy, the previous holder's. On those it is
-// judged by its role, the lane's for a lane forward and the role mark's otherwise
-// (roleOfProjects). A role mark of a project the token does not list is withheld wherever the
-// topic points, a lane of the token's project among them, since the plugin shows the mark beside
-// the frame; off a lane this is the verdict readRoleFrame's role gives such a frame, so a mark on
-// another topic keeps it. A frame whose topic is neither - another project's event, a GitHub
-// event, an agent subject of a project the token does not list - or that names no topic is left
-// to its topic, since a mark of the token's project there would pass another project's event,
-// which the plugin shows by its topic.
+// no role mark. A role message's topic is a role lane (a lane forward, roleForward.forwarded) or
+// an agent subject (a role-marked send, contracts.AgentSendEnvelope, or a kept or taken copy, on
+// the previous holder's subject). The edge cannot tell which session held a role before, so it
+// checks the topic's form alone (roleMarkOnAgentSubject): an agent subject in the old form, or in
+// the new form under one of the token's projects. On a lane or such a subject the frame is judged
+// by its role, the lane's for a lane forward and the role mark's otherwise (roleOfProjects). A
+// role mark of a project the token does not list is withheld on any topic, a lane of the token's
+// project among them: off a lane that is the verdict readRoleFrame's role already gives such a
+// frame, and on a lane it costs nothing, since no producer puts a role mark on a lane forward. A
+// frame whose topic is neither - another project's event, a GitHub event, an agent subject of a
+// project the token does not list - or that names no topic is left to its topic, since a mark of
+// the token's project there would pass another project's event, which the plugin shows by its
+// topic. The verdict beside false is a drop, so a caller that ignores the bool withholds the frame
+// rather than delivering it (framePass is frameAction's zero value).
 func roleFrameVerdict(frame roleFrame, projects []string) (frameVerdict, bool) {
 	topic, _ := frame.text("topic")
 	if mark, _ := frame.text("role"); mark != "" {
@@ -225,7 +230,7 @@ func roleFrameVerdict(frame roleFrame, projects []string) (frameVerdict, bool) {
 		}
 	}
 	if _, lane := roleOfLaneTopic(topic); !lane && !roleMarkOnAgentSubject(projects, topic) {
-		return frameVerdict{}, false
+		return frameDrops(withheldProjectNotHeld), false
 	}
 	if roleOfProjects(frame.role, projects) {
 		return framePasses(), true
@@ -265,10 +270,11 @@ var errPrototypeFrameKey = errors.New(`a frame holds a "__proto__" key, whose fi
 // frameIsJSON reports whether data, past one leading byte order mark, is JSON encoding/json reads
 // (json.Valid). A frame it is not is either text JSON.parse refuses too, such as an object with
 // text after it or a misspelt literal, or a document nested deeper than 10,000. The edge withholds
-// such a frame on an agent subject unless the relay's read tells it a role message, which is
-// judged by its role (readRoleFrame), and names no repository for such a GitHub event, as it did
-// when it read both with encoding/json; on any other subject it judges such a frame by the topic
-// exactFrameTopic reads, or by its subject when it names none, as it judged it then.
+// such a frame on an agent subject unless the relay's read tells it a role message whose topic is
+// a role lane or an agent subject, which is judged by its role (readRoleFrame, roleFrameVerdict),
+// and names no repository for such a GitHub event, as it did when it read both with encoding/json;
+// on any other subject it judges such a frame by the topic exactFrameTopic reads, or by its subject
+// when it names none, as it judged it then.
 func frameIsJSON(data []byte) bool {
 	return json.Valid(bytes.TrimPrefix(data, utf8BOM))
 }
