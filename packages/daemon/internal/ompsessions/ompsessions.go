@@ -3,8 +3,9 @@
 // DSNFileVariable points at, libpq's own name for a unix socket, and the two URL spellings of one
 // unix-socket endpoint). The table is Oh My Pi's own (sql-session-storage.ts at
 // the release .omp-pin names): it creates and migrates omp_session_files and
-// omp_session_files_parts, and from that release on the lease table omp_session_leases, when it
-// starts, keys a session by the path its file would have had (the
+// omp_session_files_parts, the lease table omp_session_leases, and the blob and reference tables
+// omp_session_files_blobs and omp_session_files_refs, when it starts, keys a session by the path
+// its file would have had (the
 // session file a claim records), and reads a session as the row's content followed by its parts in
 // offset order. Legion reads it to hold a resume to a session the table holds (Written, the role
 // launcher's check) and to find the file of a session named by its id alone (FindByID, the same
@@ -46,8 +47,9 @@ const (
 // this package names its tables: under the search_path every transaction of the package pins
 // (pinSearchPath) a bare name would be pg_catalog's, where no table can be made. Each is IF NOT
 // EXISTS, so they change nothing Oh My Pi already made, which it migrates itself when it starts.
-// The pinned release makes a third table, its lease table omp_session_leases, which Legion
-// writes nothing to and leaves to Oh My Pi and the database's owner.
+// The pinned release makes three more tables, its lease table omp_session_leases and its blob and
+// reference tables omp_session_files_blobs and omp_session_files_refs, which Legion writes nothing
+// to and leaves to Oh My Pi and the database's owner.
 var createTables = []string{
 	"CREATE TABLE IF NOT EXISTS public.omp_session_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, mtime_ms BIGINT NOT NULL, " +
 		"title TEXT, title_source TEXT, title_updated_at TEXT, byte_len BIGINT)",
@@ -56,9 +58,10 @@ var createTables = []string{
 }
 
 // pinSearchPath is the first statement of every transaction the package runs (inTransaction),
-// the search_path Oh My Pi runs its own statements under (PG_SEARCH_PATH, sql-session-storage.ts
-// at the pinned tag). The session database is shared: each pod's Oh My Pi writes it, and any
-// login that can create in its public schema, or in the database, can plant objects there.
+// the search_path Oh My Pi runs its own statements under (the search_path entry of
+// sql-session-postgres-settings.ts at the pinned tag). The session database is shared: each
+// pod's Oh My Pi writes it, and any login that can create in its public schema, or in the
+// database, can plant objects there.
 // Postgres resolves a function or an operator to an exact argument match in any schema of the
 // search_path over an inexact one in pg_catalog, wherever pg_catalog stands on it, and the
 // default path, "$user", public, searches first a schema that a login able to create in the
