@@ -543,13 +543,17 @@ cfg_load() {
 
 # cfg_current: 0 when CFG_TYPE and CFG_VALUE hold the file as it is now. It reads the file's text
 # and takes a new reading (cfg_parse) when that text is not the one the reading was taken from. A
-# file it cannot read, or one holding a NUL, which no shell variable holds, is jq's: 1.
+# file it cannot read, an empty one, or one holding a NUL anywhere, which no shell variable holds,
+# is jq's: 1. The shell's read, given NUL as its end, says which: it stops at the first NUL and
+# returns 0, or reads the whole file and returns 1 at its end. (mapfile, which this used, drops a
+# NUL that ends the file, so a file ending in one was answered from the reading where jq refuses
+# it.)
 cfg_current() {
-  local parts=()
+  local text="" status=2
   [ -n "$CFG_FILE" ] && [ "$CFG_FILE" = "$CONFIG" ] || return 1
-  mapfile -d '' parts 2>/dev/null <"$CONFIG" || return 1
-  ((${#parts[@]} == 1)) || return 1
-  [ "${parts[0]}" = "$CFG_TEXT" ] || cfg_parse "${parts[0]}"
+  { IFS= read -r -d '' text; status=$?; } 2>/dev/null <"$CONFIG" || true
+  ((status == 1)) && [ -n "$text" ] || return 1
+  [ "$text" = "$CFG_TEXT" ] || cfg_parse "$text"
   [ -n "$CFG_LOADED" ]
 }
 

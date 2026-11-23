@@ -2699,6 +2699,20 @@ IFS=$'\t' read -r filter by from_reading from_jq <<<"$answers"
 [ "$by" = jq ] && [ "$from_reading" = "$from_jq" ] && [[ $from_jq == 1:* ]] ||
   fail "cfg answered .s of a file of two documents with [$from_reading] (${by}), where jq refuses it: [$from_jq]"
 
+# A file holding a NUL is no reading, wherever the NUL is: a jq of its own refuses it, so cfg
+# refuses it with jq's status and words. One NUL ending the file is the case the shell's mapfile
+# missed (it drops a NUL that ends the file); one in the middle and one ending a file that ends
+# in a newline before it are put too.
+printf '{"s": "x"}\0' >"$tmp/nul-ended.json"
+printf '{"s": "x"}\n\0' >"$tmp/newline-nul-ended.json"
+printf '{"s": "x"}\0 \n' >"$tmp/nul-inside.json"
+for file in "$tmp/nul-ended.json" "$tmp/newline-nul-ended.json" "$tmp/nul-inside.json"; do
+  answers=$(cfg_answers "$file" .s)
+  IFS=$'\t' read -r filter by from_reading from_jq <<<"$answers"
+  [ "$by" = jq ] && [ "$from_reading" = "$from_jq" ] && [[ $from_jq == [1-9]*:* ]] ||
+    fail "cfg answered .s of ${file##*/}, which holds a NUL, with [$from_reading] (${by}), where jq refuses it: [$from_jq]"
+done
+
 # A key holding a control character is spelt escaped in the reading, as jq's tojson spells it, so
 # a filter holding the character itself is jq's to answer, and cfg gives jq's answer. It is put
 # apart from cfg_answers, whose lines a tab in a filter would split.
