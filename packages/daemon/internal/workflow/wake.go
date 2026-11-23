@@ -385,7 +385,7 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 		return intake.Result{}, err
 	}
 	if found {
-		return intake.Result{}, e.listenerWakeInRelease(held, marked, kind, detail, fact)
+		return intake.Result{}, e.listenerWakeInRelease(ctx, held, marked, kind, detail, fact)
 	}
 	released, found, err := readReleased(ctx, tx, detail)
 	if err != nil || !found {
@@ -413,11 +413,12 @@ func (e *Engine) listenerWakeReleased(ctx context.Context, tx pgx.Tx, released s
 // stop to end. The report is then applied again after wakeRetryInRelease (intake.RetryLater,
 // Waiting): once the release records the claim, the report wakes it, and once a cancel ends the
 // release, the report finds the claim live or its start queued. A report still in that gap
-// wakeHeldForRelease after its own time is dropped with one warning.
-func (e *Engine) listenerWakeInRelease(held supervise.Claim, marked time.Time, kind, detail string, fact intake.ListenerWake) error {
+// wakeHeldForRelease after its own time is dropped with one warning, once the fact that drops it
+// commits.
+func (e *Engine) listenerWakeInRelease(ctx context.Context, held supervise.Claim, marked time.Time, kind, detail string, fact intake.ListenerWake) error {
 	deadline := fact.At.Add(wakeHeldForRelease)
 	if !e.now().Before(deadline) {
-		e.log.Warn("wake: a wake that came during a release was dropped: the release did not end within 15 minutes of the report",
+		e.warnOnCommit(ctx, "wake: a wake that came during a release was dropped: the release did not end within 15 minutes of the report",
 			"issue", held.Issue, "role", held.Role, "kind", kind, "detail", detail, "report", fact.Report, "at", fact.At)
 		return nil
 	}
@@ -677,7 +678,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issu
 		return false, err
 	}
 	if queued {
-		e.log.Info("wake: the role is coming back on a start already queued; this wake takes nothing",
+		e.logOnCommit(ctx, "wake: the role is coming back on a start already queued; this wake takes nothing",
 			"issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
 		return false, nil
 	}
@@ -686,7 +687,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issu
 		return false, err
 	}
 	if newest > 0 {
-		e.log.Warn("wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
+		e.warnOnCommit(ctx, "wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
 			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}
 	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, e.now(), pause)
@@ -697,7 +698,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issu
 	if stopping != 0 {
 		stop = StoppedByPause
 	}
-	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail,
+	e.logOnCommit(ctx, "wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail,
 		"pause", pause, "stopped_by_pause", stopping)
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, kind, pause, WakeTask(kind, detail, stop)))
 }

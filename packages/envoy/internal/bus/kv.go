@@ -755,10 +755,10 @@ func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
 // (unanswered). A call that waits for its client's connection itself passes a nil conn too: a send
 // window's first pin (window.pinFirst). So does a call that reads its connection's state itself, an
 // intake's flush of its hand-backs (delivery's flushHandBacks), and a read of roles.Buckets, which
-// begins its bucket's open at once (roles.within). So does the listener's /healthz flush
-// (cmd/listener healthzHandler): a flush takes nats.go's connection lock before it waits on its
-// context, and again to forget its PING once that context ends, so a reconnect's handshake would
-// otherwise hold the check past its budget.
+// begins its bucket's open at once (roles.within). So does the listener's flush that /healthz and
+// /readyz share (cmd/listener busAnswers): a flush takes nats.go's connection lock before it waits
+// on its context, and again to forget its PING once that context ends, so a reconnect's handshake
+// would otherwise hold the check past its budget.
 //
 // Once call has started, answered is false when ctx ended first, and err is then ctx's error; the
 // abandoned call runs on to its own end and its answer is dropped. So a write or a delete that was

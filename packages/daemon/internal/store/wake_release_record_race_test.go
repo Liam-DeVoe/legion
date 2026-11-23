@@ -38,7 +38,7 @@ func TestAWakeTakenWhileItsReleaseIsRecordedNamesThatRelease(t *testing.T) {
 	markRelease(t, store, 1, 1, 1, 0, claim.RoleImplementer)
 	records := &PodRecords{store: store, project: "legion"}
 
-	tx, err := store.Pool().Begin(ctx)
+	tx, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the wake's transaction: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestAWakeTakenWhileItsReleaseIsCancelledLeavesNoResume(t *testing.T) {
 	stoppedByTheRelease(t, store, claim.RoleImplementer, boundary)
 	records := &PodRecords{store: store, project: "legion"}
 
-	tx, err := store.Pool().Begin(ctx)
+	tx, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the wake's transaction: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 	// The teardown's record of that release has locked the mark and written the release's row, and
 	// has not committed: the first two statements of RecordPodRelease. The rest of it changes
 	// nothing here, since the mark names no role and the pod has no hold.
-	rec, err := store.Pool().Begin(ctx)
+	rec, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the record's transaction: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 	done := make(chan woken, 1)
 	go func() {
 		var w woken
-		w.err = store.Tx(wakeCtx, func(tx pgx.Tx) error {
+		w.err = Transact(wakeCtx, store.Pool(), func(wakeCtx context.Context, tx pgx.Tx) error {
 			var err error
 			if w.closed, err = records.ClosePodGoneResume(wakeCtx, tx, rootIssue, claim.RoleImplementer); err != nil {
 				return err

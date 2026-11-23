@@ -67,6 +67,11 @@ type releaseRuntime struct {
 	// the pod down, as production's runtime fails when a step after the suspend (the wait for the
 	// pod, the delete of the Secrets, the record on the Sandbox) does not go through.
 	failsAfterAuthorize int
+	// sandboxReached, when set, is sent each issue whose Sandbox a pass reads, and sandboxGate
+	// holds that read until the issue's channel closes: a test holds a pass open between two of
+	// its issues with them.
+	sandboxReached chan string
+	sandboxGate    map[string]chan struct{}
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
@@ -75,7 +80,16 @@ func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
 	return r.onImage
 }
 
-func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
+func (r *releaseRuntime) IssueSandbox(issue string) (string, bool) {
+	r.mu.Lock()
+	reached, gate := r.sandboxReached, r.sandboxGate[issue]
+	r.mu.Unlock()
+	if reached != nil {
+		reached <- issue
+	}
+	if gate != nil {
+		<-gate
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.sandboxGone {

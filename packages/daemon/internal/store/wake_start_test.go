@@ -526,7 +526,7 @@ func TestADeliveryWakeWaitsForATakeoverOfItsClaimAndTakesNothing(t *testing.T) {
 	ctx := context.Background()
 	openRunningTree(t, st)
 	releasedClaim(t, st, claim.RoleImplementer)
-	takeover, err := st.Pool().Begin(ctx)
+	takeover, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the takeover's transaction: %v", err)
 	}
