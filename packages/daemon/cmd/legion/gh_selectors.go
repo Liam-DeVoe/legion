@@ -57,9 +57,7 @@ type ghNamed struct {
 }
 
 // shown is the named thing as a refusal names it: its slot, and the owner and the name read from
-// the value, which every path that records them (repositoryTarget, ghRemote.repository,
-// checkedOwner) has held to a GitHub login and a repository name's characters (ghconfig.IsOwner,
-// ghrepo.IsName) before anything is named.
+// the value, which add's callers have checked before recording them (selectors.add).
 func (n ghNamed) shown() string {
 	if n.name == "" {
 		return n.kind + " naming " + n.owner
@@ -67,7 +65,11 @@ func (n ghNamed) shown() string {
 	return n.kind + " naming " + n.owner + "/" + n.name
 }
 
-// add records owner and name as named by the slot kind, unless a selector already named them.
+// add records owner and name as named by the slot kind, unless a selector already named them. A
+// refusal prints all three (ghNamed.shown), so every caller passes an owner ghconfig.IsOwner
+// admitted and a name, if any, ghrepo.IsName admitted once its `.git` was trimmed, and a kind built
+// from literals, help-listed names and ghRemote.what, which prints a remote's URL or a marker's
+// value only as a checked OWNER/REPO.
 func (s *selectors) add(owner, name, kind string) {
 	if !slices.ContainsFunc(s.named, func(named ghNamed) bool { return named.owner == owner && named.name == name }) {
 		s.named = append(s.named, ghNamed{owner: owner, name: name, kind: kind})
@@ -575,7 +577,7 @@ func repositoryTarget(value, kind string, api bool) (owner, repo string, err err
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", cannotPlace(shown, "names no owner", api)
 	}
-	if !ghrepo.IsName(parts[1]) {
+	if !ghrepo.IsName(strings.TrimSuffix(parts[1], ".git")) {
 		return "", "", cannotPlace(shown, "names a repository whose name holds a character no GitHub repository's name does", api)
 	}
 	owner, err = checkedOwner(parts[0], kind, api)
@@ -616,18 +618,35 @@ func ghMarkerLine(line string) ghRemote {
 	return ghRemote{name: name, marker: true, key: key, resolved: value, valued: valued}
 }
 
-// what is the remote line as a refusal names it, its URL as remoteShown prints it: a remote's URL,
-// and a marker's value when it holds a ":", an "@", a "?" or a "#" (gh writes a remote's name or
-// an OWNER/REPO there, but a person can write a URL, a token included, with a scheme or without).
+// what is the remote line as a refusal names it. A URL line is named by its remote's name and, when
+// it names a github.com OWNER/REPO this reads (repository), by its URL as remoteShown prints it;
+// any other URL, which no rule has read as a repository's and whose path can hold a token
+// (`https://github.com/acme/x-access-token:<token>`, where the URL rule finds no user info), as
+// redact.URLNotPrinted. A marker line is named by its key and its value as markerShown prints it.
 func (r ghRemote) what() string {
 	if r.marker {
-		resolved := r.resolved
-		if strings.ContainsAny(resolved, ":@?#") {
-			resolved = remoteShown(resolved)
-		}
-		return fmt.Sprintf("remote.%s.gh-resolved %s", r.name, resolved)
+		return fmt.Sprintf("remote.%s.gh-resolved %s", r.name, markerShown(r.resolved))
+	}
+	if owner, _, _ := r.repository(); owner == "" {
+		return fmt.Sprintf("remote %q %s", r.name, redact.URLNotPrinted)
 	}
 	return fmt.Sprintf("remote %q (%s)", r.name, remoteShown(r.url))
+}
+
+// markerShown is a gh-resolved marker's value as a refusal prints it: as written when it is empty,
+// `base` or the OWNER/REPO gh writes there, an owner that is a GitHub login and a name a
+// repository's (ghrepo.IsName, its `.git` trimmed), with nothing before or after it; anything
+// else, which only a person writes, as redact.URLNotPrinted. A host before it, a URL's user info
+// or text after the name (`github.com/acme/widgets/<token>`, which repositoryTarget reads as
+// acme/widgets) can hold a token the URL rule does not see.
+func markerShown(value string) string {
+	if value == "" || value == "base" {
+		return value
+	}
+	if owner, name, ok := strings.Cut(value, "/"); ok && ghconfig.IsOwner(strings.ToLower(owner)) && ghrepo.IsName(strings.TrimSuffix(name, ".git")) {
+		return value
+	}
+	return redact.URLNotPrinted
 }
 
 // remoteShown is a remote's URL as legion gh prints it: read as gh reads it (ghParseGitURL, which
@@ -695,14 +714,15 @@ func ghParseGitURL(raw string) (*url.URL, error) {
 // repository is the lowercased owner and the name of the github.com repository the remote line
 // names, read as gh reads it (ghParseGitURL), "" for one naming none gh reads: a remote with no
 // host (a local path) or on another host, and a marker line with no value, an empty one or
-// "base", whose remote's own URL is read beside it. The name is carried on as the line spells it,
-// `.git` and all, which the selector that records it normalizes (selectors.repository), once it
-// has a GitHub repository name's characters (ghrepo.IsName), as a marker's and a -R value's do: a
-// refusal of two owners prints it (ghNamed.shown), and a token written into the URL's path
-// (`https://github.com/acme/x-access-token:<token>@github.com`, `…/acme/<token>%40x`) stands there.
-// why says why a line is one this cannot read: a URL gh's parser refuses, an ssh remote on another
-// host, which gh may read as an alias of github.com from ssh's configuration, and a github.com one
-// naming no OWNER/REPO whose owner is a GitHub login and whose name is a repository name.
+// "base", whose remote's own URL is read beside it. A URL line's name must have a repository
+// name's characters once its `.git` is trimmed (ghrepo.IsName), as a marker's and a -R value's
+// must, since the refusal of two owners prints it (ghNamed.shown) and a token can be written into
+// the URL's path (`https://github.com/acme/x-access-token:<token>@github.com`, `…/acme/<token>%40x`).
+// It is then carried on as the line spells it, `.git` and all, and fromWorkingDirectory keys it
+// with ghconfig.RepositoryName. why says why a line is one this cannot read: a URL gh's parser
+// refuses, an ssh remote on another host, which gh may read as an alias of github.com from ssh's
+// configuration, and a github.com one naming no OWNER/REPO whose owner is a GitHub login and whose
+// name is a repository name.
 func (r ghRemote) repository() (owner, repo, why string) {
 	if r.marker {
 		if r.resolved == "" || r.resolved == "base" {
@@ -726,7 +746,7 @@ func (r ghRemote) repository() (owner, repo, why string) {
 		return "", "", ""
 	}
 	parts := strings.SplitN(strings.Trim(u.Path, "/"), "/", 3)
-	if owner = strings.ToLower(parts[0]); len(parts) != 2 || parts[1] == "" || !ghconfig.IsOwner(owner) || !ghrepo.IsName(parts[1]) {
+	if owner = strings.ToLower(parts[0]); len(parts) != 2 || parts[1] == "" || !ghconfig.IsOwner(owner) || !ghrepo.IsName(strings.TrimSuffix(parts[1], ".git")) {
 		return "", "", "names no OWNER/REPO whose owner is a GitHub login and whose name is a repository name"
 	}
 	return owner, parts[1], ""
@@ -737,7 +757,8 @@ func (r ghRemote) repository() (owner, repo, why string) {
 // rewrites through ssh's own configuration (go-gh pkg/ssh/ssh.go), on a host gh's
 // normalizeHostname (cli/cli internal/ghrepo/repo.go: a leading lower-case `www.` stripped, then
 // lower-cased) makes github.com, the one host context/remote.go's FilterByHosts keeps, and it
-// names an OWNER/REPO whose owner is a GitHub login (repository).
+// names an OWNER/REPO whose owner is a GitHub login and whose name is a repository name
+// (repository).
 func (r ghRemote) isPlainGitHubURL() bool {
 	u, err := ghParseGitURL(r.url)
 	if err != nil || u.Scheme == "ssh" || strings.ToLower(strings.TrimPrefix(u.Hostname(), "www.")) != "github.com" {

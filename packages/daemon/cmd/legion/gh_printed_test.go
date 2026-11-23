@@ -26,12 +26,15 @@ func ghPrinted(err error) string {
 // (repositoryTarget): a URL with a user name or a password, on github.com or another host, and on
 // another host with a token in its path; a value with no scheme, which the URL rule cannot read
 // (a user name and password before its host, a token as its user, a token in its query, on another
-// host or on a github.com one), which is refused, not admitted. A marker with no scheme, in scp
-// form, or with a space before its "@" prints through remoteShown. A remote whose repository
+// host or on a github.com one), which is refused, not admitted. A marker's value other than `base`
+// or the OWNER/REPO gh writes prints as no URL (markerShown), and so does a refused remote's URL
+// (ghRemote.what), whose path no rule has read as a repository's. A remote whose repository
 // segment holds a token (written into the URL's path, as a user name and password, as a token and
 // an "@", as a token and a %40, or in an scp-like URL), beside an upstream of another served owner,
 // is refused as naming no OWNER/REPO, so the refusal of two owners, which prints the owner and name
-// a remote names, never reaches it.
+// a remote names, never reaches it; a remote with a token in its path and no "@", where the URL
+// rule finds no user info, is named by its git name alone; and a marker naming acme/widgets with a
+// token after it, beside an upstream of another owner, prints none of it in the two-owner refusal.
 func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 	at := "@"
 	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
@@ -77,7 +80,7 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 		"-R with user info on github": {[]string{"pr", "list", "-R", tokenURL("github.com")}, with(nil), noGitRepository, "a -R value holds a user name or a password"},
 		"-R on another host":          {[]string{"pr", "list", "-R", "https://ghe.example.com/" + madeUpGhToken + "/widgets"}, with(nil), noGitRepository, "a -R value names another host than github.com"},
 		"GH_REPO on another host":     {[]string{"pr", "list"}, with(map[string]string{"GH_REPO": "ghe.example.com/" + madeUpGhToken + "/widgets"}), noGitRepository, "the GH_REPO value names another host than github.com"},
-		"a gh-resolved marker's URL":  {[]string{"pr", "list"}, with(nil), marker(tokenURL("ghe.example.com")), "remote.origin.gh-resolved https://[a URL with credentials]/acme/widgets"},
+		"a gh-resolved marker's URL":  {[]string{"pr", "list"}, with(nil), marker(tokenURL("ghe.example.com")), "remote.origin.gh-resolved (a URL that is not printed)"},
 		"an scp-form marker": {[]string{"pr", "list"}, with(nil), marker("x-access-token:" + madeUpGhToken + at + "ghe.example.com:acme/widgets"),
 			"remote.origin.gh-resolved (a URL that is not printed)"},
 		"a marker with no scheme": {[]string{"pr", "list"}, with(nil), marker("x-access-token:" + madeUpGhToken + at + "ghe.example.com/acme/widgets"),
@@ -99,9 +102,14 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 		"a token and a %40 in the path":       "https://github.com/acme/" + madeUpGhToken + "%40x",
 		"a token in an scp-like path":         "git" + at + "github.com:acme/u:" + madeUpGhToken + at + "github.com",
 	} {
-		rows["pr list, a remote with "+shape] = row{[]string{"pr", "list"}, with(nil), beside(origin), remoteWords}
-		rows["pr view, a remote with "+shape] = row{[]string{"pr", "view", "1"}, with(nil), beside(origin), remoteWords}
+		rows["a remote with "+shape] = row{[]string{"pr", "list"}, with(nil), beside(origin), remoteWords}
 	}
+	rows["a refused remote with a token in its path and no @"] = row{[]string{"pr", "list"}, with(nil),
+		beside("https://github.com/acme/x-access-token:" + madeUpGhToken), `the working directory's remote "origin" (a URL that is not printed) ` + remoteWords}
+	rows["a marker with a token after OWNER/REPO, beside another owner"] = row{[]string{"pr", "list"}, with(nil),
+		func() ([]ghRemote, error) {
+			return []ghRemote{ghMarkerLine("remote.origin.gh-resolved github.com/acme/widgets/" + madeUpGhToken), {name: "upstream", url: "https://github.com/other/app"}}, nil
+		}, "acme (the working directory's remote.origin.gh-resolved (a URL that is not printed) naming acme/widgets)"}
 	for shape, value := range schemeless {
 		rows["-R, "+shape] = row{[]string{"pr", "list", "-R", value}, with(nil), noGitRepository, "a -R value " + kindWords}
 		rows["GH_REPO, "+shape] = row{[]string{"pr", "list"}, with(map[string]string{"GH_REPO": value}), noGitRepository, "the GH_REPO value " + kindWords}
@@ -249,7 +257,9 @@ func TestReadGitRemotesNamesAnUnreadableLineByItsRemoteAlone(t *testing.T) {
 // its host with it, as every other user info does: the rule cannot tell an SSH login from a token
 // written as the user (`<token>@gh-work:owner/repo`), and newRoot passes every command's stderr
 // through the URL rule whatever remoteShown writes. remoteShown reads the URL as gh reads it,
-// which drops a port and reads git+ssh as ssh, and keeps the path, the repository it names.
+// which drops a port and reads git+ssh as ssh, and keeps the path, the repository it names. An ssh
+// remote on another host, which the alias-host rule refuses, is named by its git name alone: its
+// path is no checked OWNER/REPO.
 func TestLegionGhPrintsAnSSHRemotesLoginAsTheMark(t *testing.T) {
 	at := "@"
 	for raw, want := range map[string]string{
@@ -271,8 +281,8 @@ func TestLegionGhPrintsAnSSHRemotesLoginAsTheMark(t *testing.T) {
 	if err == nil {
 		t.Fatal("fromWorkingDirectory = nil, want the alias-host refusal")
 	}
-	if printed := ghPrinted(err); strings.Contains(printed, madeUpGhToken) || !strings.Contains(printed, `remote "work" (ssh://[a URL with credentials]/sjawhar/legion.git)`) {
-		t.Errorf("legion gh printed %q, want the remote named with its user info as the mark and no token", printed)
+	if printed := ghPrinted(err); strings.Contains(printed, madeUpGhToken) || !strings.Contains(printed, `remote "work" (a URL that is not printed) is an ssh remote whose host`) {
+		t.Errorf("legion gh printed %q, want the refused remote named by its git name alone and no token", printed)
 	}
 }
 

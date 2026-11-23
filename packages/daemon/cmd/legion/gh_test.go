@@ -402,15 +402,24 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// an SSH login from a token written as the user.
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}), err: `more than one owner, acme (the working directory's remote "origin" (https://github.com/Acme/widgets.git) naming acme/widgets) and sjawhar (the working directory's remote "upstream" (ssh://[a URL with credentials]/sjawhar/legion.git) naming sjawhar/legion)`},
 		// A remote URL a CI checkout writes with its token as the user info prints the mark in its
-		// place, whether the remote names no OWNER/REPO (refused) or one beside another owner's;
-		// its host is masked with it and its path, the repository, still prints.
+		// place beside another owner's, its host masked with it and its path, the repository, still
+		// printed; a remote this refuses, naming no OWNER/REPO, is named by its git name alone.
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://x-access-token:madeUpRemoteToken0123" + "@" + "github.com/ownera/repo/tree/main"}),
-			err: `the working directory's remote "origin" (https://[a URL with credentials]/ownera/repo/tree/main) names no OWNER/REPO`},
+			err: `the working directory's remote "origin" (a URL that is not printed) names no OWNER/REPO`},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "https://x-access-token:madeUpRemoteToken0123" + "@" + "github.com/sjawhar/legion.git"}),
 			err: `sjawhar (the working directory's remote "upstream" (https://[a URL with credentials]/sjawhar/legion.git) naming sjawhar/legion)`},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved sjawhar/legion")), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion naming sjawhar/legion)"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "fork", url: "ssh://git@ssh.github.com:443/Sjawhar/legion"}), err: "more than one owner"},
-		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: `remote "work" (ssh://[a URL with credentials]/sjawhar/legion.git) is an ssh remote whose host gh may read as github.com`},
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: `remote "work" (a URL that is not printed) is an ssh remote whose host gh may read as github.com`},
+		// GitHub's 100-character limit counts a repository's name without the `.git` `gh repo
+		// clone` writes into a remote, so a 97 to 100 character name with it is a repository's, in
+		// a remote and in -R; 101 characters is none.
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://github.com/acme/" + strings.Repeat("a", 97) + ".git"}), owner: "acme"},
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "git@github.com:acme/" + strings.Repeat("b", 100) + ".git"}), owner: "acme"},
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://github.com/acme/" + strings.Repeat("c", 101) + ".git"}), err: "names no OWNER/REPO"},
+		{argv: []string{"pr", "list", "-R", "acme/" + strings.Repeat("a", 97) + ".git"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
+		{argv: []string{"pr", "list", "-R", "https://github.com/acme/" + strings.Repeat("b", 100) + ".git"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
+		{argv: []string{"pr", "list", "-R", "acme/" + strings.Repeat("c", 101) + ".git"}, env: pane, remotes: remotes(sjawharClone), err: "a -R value names a repository whose name"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "mirror", url: "https://gitlab.example.com/sjawhar/legion"}, ghRemote{name: "local", url: "/srv/legion"}), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_CONFIG_DIR": "/owners", "LEGION_GH_OWNERS_DIR": "/owners"}, remotes: remotes(acmeClone), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: func() ([]ghRemote, error) { return nil, fmt.Errorf("bad config line 3") }, err: "cannot be read (bad config line 3)"},
