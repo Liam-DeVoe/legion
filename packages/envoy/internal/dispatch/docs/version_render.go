@@ -170,11 +170,13 @@ func QueueVersionRender(b *store.WriteBatch, artifactID string, number int, reco
 	return nil
 }
 
-// queryOfBand is the query whose record covers the versions of an issue's document of each band
+// queryOfBand is the query whose record can cover the versions of an issue's document of each band
 // (refs.DocumentBandSQL, the one statement of which document plays which part): the spec, the
 // Verification document and the plan. A document of any other band - the issue room's own
 // fragment, an upload, a project's document - is covered by no query's record, and its versions
-// take no version_renders row: they answer their stored bytes.
+// take no version_renders row: they answer their stored bytes. Of a document of one of these
+// bands, a query's record covers only a query version this build's version write made
+// (madeQueryVersion); every other version answers its stored bytes too.
 var queryOfBand = map[string]string{
 	string(refs.RankBandSpec):         graphstore.QuerySpec,
 	string(refs.RankBandVerification): graphstore.QueryVerification,
@@ -189,9 +191,9 @@ type statedVersion struct {
 }
 
 // recordStatedVersions records on the ledger that runs tx's write phase each version of versions a
-// pass of tx stated, whose version_renders row that ledger writes once its write phase has run
-// (Ledger.writeStatedRenders). A version a pass states in a transaction no ledger of ctx knows
-// takes no row and answers its stored bytes.
+// pass of tx stated. That ledger writes the version_renders row of each one a query's record
+// covers (readCovered) once its write phase has run (Ledger.writeStatedRenders). A version a pass
+// states in a transaction no ledger of ctx knows takes no row and answers its stored bytes.
 func recordStatedVersions(ctx context.Context, tx pgx.Tx, versions refs.Versions) {
 	ledger := ledgerFrom(ctx)
 	if ledger == nil || ledger.writer != tx && ledger.tx != tx {
@@ -204,66 +206,129 @@ func recordStatedVersions(ctx context.Context, tx pgx.Tx, versions refs.Versions
 	}
 }
 
-// statedDocumentsStatement is the issue and the band (refs.DocumentBandSQL) of each document $1
-// names, which say whether a query's record covers its versions and which one (queryOfBand).
+// statedDocumentsStatement reads, for each version the arrays $1 and $2 name pair by pair - a
+// stored document and a number - what says whether a query's record covers it (readCovered): the
+// document's issue and band (refs.DocumentBandSQL, queryOfBand); whether the store holds the
+// version's node present, at the address graphstore.VersionID gives it and at any state but gone,
+// since a node held gone is no present node (graphcensus reads a row at its address as a later row
+// at a freed address), and whether that node holds definition_version; whether the store holds
+// the version's row; and what the version's node takes of its document
+// (graphstore.VersionOwnerColumns), as ReadVersionOwner reads it.
 var statedDocumentsStatement = `
-	select d.id::text, coalesce(d.issue_key, ''), ` + refs.DocumentBandSQL("d") + `
-	from artifacts d where d.id = any($1::uuid[])`
+	select s.id::text, s.number, coalesce(d.issue_key, ''), ` + refs.DocumentBandSQL("d") + `,
+	       n.id is not null, coalesce(n.attributes ? '` + graphstore.AttributeDefinitionVersion + `', false),
+	       exists (select 1 from artifact_versions v where v.artifact_id = s.id and v.number = s.number),
+	       ` + graphstore.VersionOwnerColumns("s.id") + `
+	from unnest($1::uuid[], $2::int[]) as s (id, number)
+	join artifacts d on d.id = s.id
+	left join graph_nodes n on n.kind = '` + graphstore.KindVersion + `' and n.id = d.ref_key || '@v' || s.number
+		and n.state <> '` + graphstore.StateGone + `'`
 
-// queryOf is the issue and the query whose record covers a document's versions.
+// queryOf is the issue and the query whose record covers a version.
 type queryOf struct{ issue, query string }
 
-// readStatedDocuments reads which query's record covers each document a pass of the ledger's
-// transaction stated a version of (recordStatedVersions), into covered, which the fill reads
+// madeQueryVersion reports whether a version a pass stated is a query version this build's version
+// write made, whose node holds definition_version once the transaction's write phase has run: the
+// one kind of version a query's record covers. Where the store holds the version's node present
+// (held), that node holds definition_version (defined). Where it holds none and this transaction
+// queued the version's insert (queued), the node that write queues holds it, as
+// graphstore.VersionFacts writes it of the version's owner, read as ReadVersionOwner reads it: a
+// query node naming a definition version, at an address inside the store's bound. A version with
+// no node that this transaction did not write - one a process of the release before wrote, whose
+// node no pass has written yet - is none: the pass that states it may write its node in the same
+// transaction (graphcensus.PlanMissingVersionNodes), with no definition_version, and it renders
+// from its stored markdown. So is a version written before its document converted, whose node
+// holds no definition_version.
+func madeQueryVersion(held, defined, queued bool, owner graphstore.VersionOwner, number int) bool {
+	switch {
+	case held:
+		return defined
+	case queued:
+		return owner.Query && owner.DefinitionVersion != 0 && graphstore.AddressFits(graphstore.VersionID(owner.RefKey, number))
+	}
+	return false
+}
+
+// readCovered reads, through tx, which query's record covers each of versions, versions a pass of
+// the ledger's transaction stated (recordStatedVersions), before that transaction's write phase
+// sends its first batch: its document's band maps to a query (queryOfBand) and the document has an
+// issue, and it is a query version this build's version write made (madeQueryVersion). A document
+// the transaction creates is read off the address it was registered under
+// (RegisterPendingArtifact), whose row no statement reads before the batch writes it: the store
+// holds no version of it and no node, so each of its versions is one the transaction queued, whose
+// owner is a query node where the node the transaction writes of the document is one
+// (pendingQuery), as ReadVersionOwner reads it. Every other document's versions are read in one
+// statement (statedDocumentsStatement), which reads a version this transaction queued as one whose
+// row the store does not hold yet; none runs where versions names no stored document. The band it
+// reads is the one a read after the batch would: the columns a band is decided by - the issue, the
+// kind, is_primary, the role and the slug - are written with the row, and the one write of one of
+// them a write phase makes later, an upload's repair of a role left null (api's storeArtifact),
+// writes the role the row's slug already gives it (refs.DocumentBandSQL). The owner it reads of a
+// version the transaction queued is the one the store holds before the batch, which is the one
+// that version's writer read in the read phase (ReadVersionOwner), and so the one its node takes.
+func (l *Ledger) readCovered(ctx context.Context, tx pgx.Tx, versions []statedVersion) (map[statedVersion]queryOf, error) {
+	covered := map[statedVersion]queryOf{}
+	var ids []string
+	var numbers []int
+	for _, version := range versions {
+		address, pending := l.PendingDocument(version.artifactID)
+		if !pending {
+			ids, numbers = append(ids, version.artifactID), append(numbers, version.number)
+			continue
+		}
+		owner := graphstore.VersionOwner{RefKey: address.RefKey}
+		if l.pendingQuery(version.artifactID) {
+			owner.Query, owner.DefinitionVersion = true, graphstore.QueryDefinitionVersion
+		}
+		if of := (queryOf{issue: address.IssueKey, query: queryOfBand[string(address.Band)]}); of.issue != "" && of.query != "" &&
+			madeQueryVersion(false, false, true, owner, version.number) {
+			covered[version] = of
+		}
+	}
+	if len(ids) == 0 {
+		return covered, nil
+	}
+	rows, err := tx.Query(ctx, statedDocumentsStatement, ids, numbers)
+	if err != nil {
+		return nil, fmt.Errorf("read which query's record covers the versions the passes stated: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var version statedVersion
+		var of queryOf
+		var band string
+		var held, defined, stored bool
+		var owner graphstore.VersionOwner
+		if err := rows.Scan(append([]any{&version.artifactID, &version.number, &of.issue, &band, &held, &defined, &stored}, owner.Targets()...)...); err != nil {
+			return nil, fmt.Errorf("read which query's record covers the versions the passes stated: %w", err)
+		}
+		if of.query = queryOfBand[band]; of.issue != "" && of.query != "" && madeQueryVersion(held, defined, !stored, owner, version.number) {
+			covered[version] = of
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read which query's record covers the versions the passes stated: %w", err)
+	}
+	return covered, nil
+}
+
+// readStatedDocuments reads which query's record covers each version a pass of the ledger's
+// transaction stated (recordStatedVersions, readCovered), into covered, which the fill reads
 // (statedRenders). It runs once the queue is sealed and before the write phase's first batch is
-// sent (runQueue), so the read holds no transaction id the batch takes, and it reads the issue and
-// the band of a document the transaction creates off the address it was registered under
-// (RegisterPendingArtifact), whose row no statement reads before the batch writes it, and those of
-// every other document off its artifacts row, in one statement (statedDocumentsStatement). A
-// transaction whose passes stated no version of a stored document runs none. What it reads is what
-// a read after the batch would: the columns a band is decided by - the issue, the kind, is_primary,
-// the role and the slug - are written with the row, and the one write of one of them a write phase
-// makes later, an upload's repair of a role left null (api's storeArtifact), writes the role the
-// row's slug already gives it (refs.DocumentBandSQL).
+// sent (runQueue), so the read holds no transaction id the batch takes, and a version the
+// transaction queued is not stored yet. A transaction whose passes stated no version of a stored
+// document runs no statement.
 func (l *Ledger) readStatedDocuments(ctx context.Context) error {
 	if len(l.stated) == 0 {
 		return nil
 	}
-	covered := map[string]queryOf{}
-	var stored []string
-	for _, version := range l.stated {
-		address, pending := l.PendingDocument(version.artifactID)
-		if !pending {
-			stored = append(stored, version.artifactID)
-			continue
-		}
-		if of := (queryOf{issue: address.IssueKey, query: queryOfBand[string(address.Band)]}); of.issue != "" && of.query != "" {
-			covered[version.artifactID] = of
-		}
+	tx := l.writer
+	if tx == nil {
+		tx = l.tx
 	}
-	if len(stored) > 0 {
-		tx := l.writer
-		if tx == nil {
-			tx = l.tx
-		}
-		rows, err := tx.Query(ctx, statedDocumentsStatement, stored)
-		if err != nil {
-			return fmt.Errorf("read the documents whose versions the passes stated: %w", err)
-		}
-		for rows.Next() {
-			var id, band string
-			var of queryOf
-			if err := rows.Scan(&id, &of.issue, &band); err != nil {
-				rows.Close()
-				return fmt.Errorf("read the documents whose versions the passes stated: %w", err)
-			}
-			if of.query = queryOfBand[band]; of.issue != "" && of.query != "" {
-				covered[id] = of
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("read the documents whose versions the passes stated: %w", err)
-		}
+	covered, err := l.readCovered(ctx, tx, l.stated)
+	if err != nil {
+		return err
 	}
 	l.covered = covered
 	return nil
@@ -305,14 +370,15 @@ func (c *cutRecords) record(ctx context.Context, q Queryer, of queryOf) (QueryRe
 }
 
 // writeStatedRenders writes, in the ledger's transaction, the version_renders row of each version
-// a pass of it stated (recordStatedVersions) whose document a query's record covers (queryOfBand,
-// read before the write phase's first batch, readStatedDocuments): the digest of that query's
-// record, and the time and the seq of the cut it was read at, one cut for the whole transaction,
-// read once its write phase has run (refs.HeadCut), so the record and the render as of the row's
-// time hold every tuple the passes appended under their events. It runs after the write phase's
-// batch and before the commit (runQueue): the record is built in Go from the store as that batch
-// leaves it (IssueTree.QueryRecord), which no statement of the batch can read. Where no query's
-// record covers a stated version's document, it runs no statement.
+// a pass of it stated (recordStatedVersions) that a query's record covers - a query version this
+// build's version write made, of a document of a band a query covers (readCovered, read before the
+// write phase's first batch, readStatedDocuments): the digest of that query's record, and the time
+// and the seq of the cut it was read at, one cut for the whole transaction, read once its write
+// phase has run (refs.HeadCut), so the record and the render as of the row's time hold every tuple
+// the passes appended under their events. It runs after the write phase's batch and before the
+// commit (runQueue): the record is built in Go from the store as that batch leaves it
+// (IssueTree.QueryRecord), which no statement of the batch can read. Where no query's record
+// covers a stated version, it runs no statement, and the version answers its stored bytes.
 //
 // A version a restore carry pins (carryRestored) holds its row already: the digest the approval it
 // carries pinned, which the insert trigger of the carry's review took from it. Its record is read
@@ -369,18 +435,17 @@ func (l *Ledger) writeStatedRenders(ctx context.Context) ([]*restoredCarry, erro
 	})
 }
 
-// statedRender is a version a pass of the transaction stated whose document a query's record
-// covers, with that record as the fill read it.
+// statedRender is a version a pass of the transaction stated that a query's record covers, with
+// that record as the fill read it.
 type statedRender struct {
 	version statedVersion
 	record  QueryRecord
 }
 
 // statedRenders reads, through tx, the record of each version a pass of the ledger's transaction
-// stated whose document a query's record covers (covered, readStatedDocuments), once a version, in
-// the order the passes stated them: every record at one cut, each issue's tree walked once
-// (cutRecords). It reads no version_renders row, and nothing where no stated version's document is
-// covered.
+// stated that a query's record covers (covered, readStatedDocuments), once a version, in the order
+// the passes stated them: every record at one cut, each issue's tree walked once (cutRecords). It
+// reads no version_renders row, and nothing where no stated version is covered.
 func (l *Ledger) statedRenders(ctx context.Context, tx pgx.Tx) ([]statedRender, error) {
 	if len(l.covered) == 0 {
 		return nil, nil
@@ -393,7 +458,7 @@ func (l *Ledger) statedRenders(ctx context.Context, tx pgx.Tx) ([]statedRender, 
 	var renders []statedRender
 	written := map[statedVersion]bool{}
 	for _, version := range l.stated {
-		of, held := l.covered[version.artifactID]
+		of, held := l.covered[version]
 		if !held || written[version] {
 			continue
 		}
@@ -444,22 +509,21 @@ func queuePinnedRenderCut(b *store.WriteBatch, version statedVersion, record Que
 
 // rendersInTransaction reports whether version number of artifactID takes its version_renders row
 // at the end of the first part of tx's write phase (writeStatedRenders): a pass of tx stated it
-// (recordStatedVersions) and a query's record covers its document (queryOfBand), which a document
-// tx creates reads off the address it was registered under.
+// (recordStatedVersions) and a query's record covers it (readCovered), read here, in tx's read
+// phase, by the same predicate the fill's read takes before the write phase's first batch, so the
+// carry's place and the row agree. A version tx queued is not stored yet in either read.
 func rendersInTransaction(ctx context.Context, tx pgx.Tx, artifactID string, number int) (bool, error) {
 	ledger := queueFor(ctx, tx)
-	if ledger == nil || !slices.Contains(ledger.stated, statedVersion{artifactID: artifactID, number: number}) {
+	version := statedVersion{artifactID: artifactID, number: number}
+	if ledger == nil || !slices.Contains(ledger.stated, version) {
 		return false, nil
 	}
-	if address, pending := ledger.PendingDocument(artifactID); pending {
-		return address.IssueKey != "" && queryOfBand[string(address.Band)] != "", nil
+	covered, err := ledger.readCovered(ctx, tx, []statedVersion{version})
+	if err != nil {
+		return false, err
 	}
-	var issue, band string
-	if err := tx.QueryRow(ctx, `select coalesce(d.issue_key, ''), `+refs.DocumentBandSQL("d")+` from artifacts d where d.id = $1`,
-		artifactID).Scan(&issue, &band); err != nil {
-		return false, fmt.Errorf("read whether a query's record covers document %s: %w", artifactID, err)
-	}
-	return issue != "" && queryOfBand[band] != "", nil
+	_, held := covered[version]
+	return held, nil
 }
 
 // carryAfterRender runs carry, a carry of an approval to version number of artifactID that a
@@ -470,9 +534,10 @@ func rendersInTransaction(ctx context.Context, tx pgx.Tx, artifactID string, num
 // insert's trigger takes the digest it answers at the insert. A carry that restores the approved
 // text is the one exception: its writes keep their place, before the version's artifact.version,
 // behind the row it writes itself (carryRestored). A version that takes no row in tx - one a pass
-// left to the reconciliation, one of a document no query's record covers, one written in a
-// transaction no ledger queues - keeps its carry where its writer runs it, and pins the digest of
-// its stored markdown.
+// left to the reconciliation, one no query's record covers (a version of a document of no query's
+// band, or of a document whose node was no query node as the version was written), one written in
+// a transaction no ledger queues - keeps its carry where its writer runs it, and pins the digest
+// of its stored markdown.
 func carryAfterRender(ctx context.Context, tx pgx.Tx, artifactID string, number int, carry func() error) error {
 	rendered, err := rendersInTransaction(ctx, tx, artifactID, number)
 	if err != nil {
@@ -572,11 +637,13 @@ func LockQueryRooms(ctx context.Context, tx pgx.Tx, issueKey string) error {
 // every writer of a version takes first and which its caller holds already, and reads at one cut
 // of tx (refs.HeadCut) each query document's record (IssueTree.QueryRecord, the issue's tree walked
 // once) and its render as of the cut's time (RenderAt). A document whose newest version holds no
-// version_renders row is left as it is: no pass has stated that version yet, so the tree may not
-// hold it (a deferred pass), and the pass that states it records its digest. A document whose
-// record digests to its newest version's digest and whose render is that version's markdown is
-// left too. Each other one takes a version whose markdown is the render, which for a record moved
-// alone is the bytes of the version before it, written by writer, with its version node
+// version_renders row is left as it is: either no pass has stated that version yet, so the tree may
+// not hold it (a deferred pass), and the pass that states it records its digest, or it is no query
+// version this build's version write made (madeQueryVersion), which no row ever covers and which
+// answers its stored bytes for good. A document whose record digests to its newest version's
+// digest and whose render is that version's markdown is left too. Each other one takes a version
+// whose markdown is the render, which for a record moved alone is the bytes of the version before
+// it, written by writer, with its version node
 // (WriteVersionNode, whose owner names the query and its definition_version, ReadVersionOwner) and
 // its version_renders row holding the record's digest and the cut's time and seq, as a pass records
 // them (QueueVersionRender): the census reads it as every rendered version, and never as deferred.

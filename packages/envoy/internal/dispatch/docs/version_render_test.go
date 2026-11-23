@@ -299,6 +299,43 @@ func writeUnconvertedIssue(t *testing.T, database *store.Store) int {
 	return len(words)
 }
 
+// writeQueryNode writes the node of the document slug of issue, in project, as the query node of
+// query an issue born converted holds (graphstore.QueryNode, as api's create and upload write it),
+// part of the issue, and names it on the document's row where that row stands: a version this
+// build then writes of the document is a query version, holding its query's definition_version,
+// which a query's record covers. A test that writes a document by SQL, which writes no node, calls
+// it before the document's first version that should take a version_renders row.
+func writeQueryNode(t *testing.T, database *store.Store, project, issue, slug, query string) {
+	t.Helper()
+	ctx := context.Background()
+	refKey := graphstore.ArtifactRefKey(issue, project, "", slug)
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		at, err := graphstore.StatementTime(ctx, tx, graphstore.KindArtifact, refKey)
+		if err != nil {
+			return err
+		}
+		node := graphstore.Created(graphstore.QueryNode(refKey, project, query, renderWho, at))
+		facts := graphstore.AttributeFacts([]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, issue, renderWho, at)}, node)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, facts); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `update artifacts set node_kind = $2, node_address = $1 where ref_key = $1`, refKey, graphstore.KindArtifact)
+		return err
+	}); err != nil {
+		t.Fatalf("write %s as the %s query's node: %v", refKey, query, err)
+	}
+}
+
+// writeRoomQueryNodes writes the node of each of room's spec, Verification document and plan as
+// the query node of its query (writeQueryNode), as an issue born converted holds them:
+// createIssueRoom writes the rows by SQL with no node.
+func writeRoomQueryNodes(t *testing.T, database *store.Store, room issueRoom) {
+	t.Helper()
+	writeQueryNode(t, database, "DOC", room.issue, "spec", graphstore.QuerySpec)
+	writeQueryNode(t, database, "DOC", room.issue, model.ArtifactSlugVerification, graphstore.QueryVerification)
+	writeQueryNode(t, database, "DOC", room.issue, model.ArtifactSlugPlan, graphstore.QueryPlan)
+}
+
 // A version this child's writer wrote renders again from the tree, in the text order its author
 // wrote. The test writes a
 // subtree of DOC-2's spec straight into the store, writes version 3 from it - its rendering and its
@@ -350,7 +387,10 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 		t.Fatalf("read DOC-2's ref_keys: %v", err)
 	}
 
-	// DOC-1's spec, written by a real settlement of its room once the peer's update has landed.
+	// DOC-1's spec, written by a real settlement of its room once the peer's update has landed. Its
+	// documents are query nodes, as a converted issue's are, so the version the settlement writes
+	// is a query version, which takes the row its room pass records.
+	writeRoomQueryNodes(t, database, rig.settled)
 	peer := connectPeer(t, server.URL, rig.settled.spec, "alice")
 	stored := roomUpdateCount(t, database, rig.settled.tree)
 	if _, err := peer.Send(writeParagraph(peer.Doc, rig.settled.spec, "Spec words.")); err != nil {
@@ -802,6 +842,11 @@ func renderStepTextOrder(t *testing.T, rig *renderRig, service *Service) {
 		values ('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U')`); err != nil {
 		t.Fatalf("seed project CORE: %v", err)
 	}
+	// The spec and the Verification document are query nodes before their first versions, as a
+	// converted issue's are, so each version the real path writes of them is a query version,
+	// which takes the row the pass that states it records. Their rows, written after, name no node.
+	writeQueryNode(t, database, "CORE", "CORE-1", "spec", graphstore.QuerySpec)
+	writeQueryNode(t, database, "CORE", "CORE-1", model.ArtifactSlugVerification, graphstore.QueryVerification)
 	treeDocument(t, database, service, "CORE-1", "verification-md", false, model.ArtifactRoleVerification, orderProof)
 	var ask string
 	if err := database.Pool.QueryRow(ctx, `
@@ -933,6 +978,7 @@ func renderStepFragments(t *testing.T, rig *renderRig, service *Service, serverU
 	ctx := context.Background()
 	database := rig.database
 	room := createIssueRoom(t, database, 3)
+	writeRoomQueryNodes(t, database, room)
 	documents := []struct {
 		id, query, text string
 	}{

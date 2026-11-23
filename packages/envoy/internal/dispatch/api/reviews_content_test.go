@@ -134,7 +134,10 @@ func TestEveryApprovalReadNamesTheApprovedBytes(t *testing.T) {
 // attribute case while two builds serve: the answer is written into the block for the release
 // before's pages (docs' rollWindowAskAttributes), so the version it settles into differs from the
 // approved one in the block's server-owned attributes alone, and its bytes are not the approved
-// version's.
+// version's. The issue is created while a process of the release before serves, so it has not
+// converted: its spec's node is no query node, and the version the carry settles into, which this
+// build writes, holds no version_renders row. It answers the sha256 of its stored markdown as its
+// digest, and the carried review pins that.
 func TestACarriedApprovalPinsTheVersionItCarriesTo(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	registerTwoBuilds(t, database)
@@ -151,23 +154,32 @@ func TestACarriedApprovalPinsTheVersionItCarriesTo(t *testing.T) {
 	waitForArtifactVersion(t, handler, id, approved+1)
 	requireReviewCarriedWith(t, handler, id, approved+1, approved, attributeRemovalSentence(approved), nil)
 	h2 := contentHash(versionMarkdown(t, handler, id, approved+1))
-	d2 := recordedDigest(t, database, issue.Key, graphstore.QuerySpec, id, approved+1)
+	carried := "version " + strconv.Itoa(approved+1) + " of a spec that has not converted, which the carry settles into"
+	requireVersionDigest(t, handler, carried, id, approved+1, h2, h2)
+	requireNoVersionRender(t, database, carried, id, approved+1)
 	reviews := contentReviews(t, handler, id)
-	if h2 == h1 || len(reviews) != 2 || reviews[0].ContentSHA256 == nil || *reviews[0].ContentSHA256 != d2 || reviews[0].ContentSHA256Source == nil || *reviews[0].ContentSHA256Source != "insert" {
+	if h2 == h1 || len(reviews) != 2 || reviews[0].ContentSHA256 == nil || *reviews[0].ContentSHA256 != h2 || reviews[0].ContentSHA256Source == nil || *reviews[0].ContentSHA256Source != "insert" {
 		t.Fatalf("carried reviews = %#v; hashes %s / %s", reviews, h1, h2)
 	}
 }
 
 // A document's version answers digest, what an approval of it covers, on the version read and on
-// the artifact read's version list alike. The issue is born converted, so version 1 of its spec
-// holds the version_renders row its pass recorded, and answers its record's digest
-// (recordedDigest), which is not the sha256 of its markdown. An upload of notes.md, which no query
-// covers, and a version of the spec written straight into artifact_versions as an older build
-// wrote one, which no pass has stated, each answer the sha256 of their stored markdown. A review
-// of version 1 pins that version's digest, as its approval on the artifact read names it. The
-// version read's sha256 names the bytes it answers in every case.
+// the artifact read's version list alike. The issue is born converted, so version 1 of its spec, a
+// query version the create wrote, holds the version_renders row its pass recorded, and answers its
+// record's digest (recordedDigest), which is not the sha256 of its markdown. An upload of notes.md,
+// which no query covers, and a version of the spec written straight into artifact_versions as an
+// older build wrote one, which no pass has stated, each answer the sha256 of their stored
+// markdown. A review of version 1 pins that version's digest, as its approval on the artifact read
+// names it. A query's record covers only a query version this build's version write made, so the
+// older build's version takes no row when a pass states it: with the spec marked owed as the boot's
+// backfill marks a document no pass of this rule stated, the reconciliation states version 2, and
+// the version still answers the sha256 of its stored markdown and holds no row. Nor does a version
+// this build writes through the edit route of the spec of an issue that has not converted, whose
+// document's node is no query node: it answers the sha256 of its stored markdown, which a person's
+// approval of it pins. The version read's sha256 names the bytes it answers in every case.
 func TestAVersionAnswersTheDigestAnApprovalCovers(t *testing.T) {
-	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	handler, database, documents := settlingCarryDocuments(t, 20*time.Millisecond)
+	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "DGST", "A version's digest", revisedSpec)
 	spec := issue.PrimaryArtifactID
 	specBytes := contentHash(versionMarkdown(t, handler, spec, 1))
@@ -202,14 +214,78 @@ func TestAVersionAnswersTheDigestAnApprovalCovers(t *testing.T) {
 		t.Fatalf("the spec's approval = %#v, want it to pin version 1's digest %s", approval, digest)
 	}
 
-	older := "The spec's opening words, as an older build stored them.\n"
-	if _, err := database.Pool.Exec(context.Background(), `
+	// The older build's version holds the bytes the spec's room holds, version 1's stored markdown,
+	// so a settlement of the room that runs while the reconciliation below does finds nothing to
+	// write as a version of its own, which its pass would state in place of version 2.
+	var older string
+	if err := database.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = 1`, spec).Scan(&older); err != nil {
+		t.Fatalf("read version 1's stored markdown: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
 		insert into artifact_versions (artifact_id, number, markdown, authors)
 		select artifact_id, 2, $2, authors from artifact_versions where artifact_id = $1 and number = 1
 	`, spec, older); err != nil {
 		t.Fatalf("write version 2 as an older build would: %v", err)
 	}
 	requireVersionDigest(t, handler, "version 2 of the spec, which no pass stated", spec, 2, contentHash(older), contentHash(older))
+
+	if _, err := database.Pool.Exec(ctx, `
+		update document_block_versions set store_owed_at = now(), stated_version = null, stated_rule = null where artifact_id = $1`, spec); err != nil {
+		t.Fatalf("mark the spec owed as the backfill marks a document no pass of this rule stated: %v", err)
+	}
+	for passes := 1; ; passes++ {
+		if _, err := documents.ReconcileBlockIndex(ctx, docs.BlockIndexCursors{}, nil); err != nil {
+			t.Fatalf("pass %d of the block-index reconciliation: %v", passes, err)
+		}
+		owed := readCoverage(t, handler, issue.Key).OwedDocuments
+		if len(owed) == 0 {
+			break
+		}
+		if passes == 8 {
+			t.Fatalf("eight passes of the reconciliation left %s owing %+v", issue.Key, owed)
+		}
+	}
+	var stated string
+	if err := database.Pool.QueryRow(ctx, `select coalesce(stated_version::text, 'none') from document_block_versions where artifact_id = $1`, spec).Scan(&stated); err != nil {
+		t.Fatalf("read the version the reconciliation stated the spec at: %v", err)
+	}
+	if stated != "2" {
+		t.Fatalf("the reconciliation left the spec stated at version %s, want version 2, the older build's", stated)
+	}
+	reconciled := "version 2 of the spec, which the reconciliation stated"
+	requireVersionDigest(t, handler, reconciled, spec, 2, contentHash(older), contentHash(older))
+	requireNoVersionRender(t, database, reconciled, spec, 2)
+
+	unconverted := createDigestIssue(t, handler, database, "DGST", "A spec that has not converted", revisedSpec, true)
+	written := unconverted.PrimaryArtifactID
+	reviseDocument(t, handler, written, "The spec's opening words.", "The spec's first words.", 2)
+	edited := newestQueryVersion(t, database, written)
+	if edited.number != 2 {
+		t.Fatalf("the edit left the spec of %s at version %d, want version 2", unconverted.Key, edited.number)
+	}
+	editedBytes := contentHash(edited.markdown)
+	unconvertedEdit := "version 2 of the spec of an issue that has not converted, which the edit route wrote"
+	requireVersionDigest(t, handler, unconvertedEdit, written, 2, editedBytes, editedBytes)
+	requireNoVersionRender(t, database, unconvertedEdit, written, 2)
+	if review := reviewDocument(t, handler, written, "alice", "approved", ""); review.Version != 2 || review.ContentSHA256 == nil || *review.ContentSHA256 != editedBytes {
+		t.Errorf("alice's approval of version %d of the spec of %s pins %q, want version 2's digest, the sha256 of its stored markdown, %s",
+			review.Version, unconverted.Key, deref(review.ContentSHA256), editedBytes)
+	}
+}
+
+// requireNoVersionRender fails t unless version number of the document artifactID holds no
+// version_renders row, naming the digest a row it holds records.
+func requireNoVersionRender(t *testing.T, database *store.Store, what, artifactID string, number int) {
+	t.Helper()
+	var digest string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce((select record_sha256 from version_renders where artifact_id = $1 and number = $2), '')`,
+		artifactID, number).Scan(&digest); err != nil {
+		t.Fatalf("%s: read the version_renders row of version %d: %v", what, number, err)
+	}
+	if digest != "" {
+		t.Errorf("%s: version %d holds a version_renders row recording the digest %s, want none", what, number, digest)
+	}
 }
 
 // requireVersionDigest fails unless version number of the document artifactID answers digest as

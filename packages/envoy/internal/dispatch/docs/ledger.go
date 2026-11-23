@@ -195,11 +195,13 @@ type Ledger struct {
 	// (asks.PlanSettleAfter) rather than from the tables.
 	settledAsks map[string]asks.Settled
 	// stated holds each version a pass of this transaction stated (recordStatedVersions), whose
-	// version_renders row the write phase's end writes (writeStatedRenders). covered is the query
-	// whose record covers each of their documents, where one does, read once the queue is sealed
-	// and before the write phase's first batch is sent (readStatedDocuments).
+	// version_renders row the write phase's end writes (writeStatedRenders) where a query's record
+	// covers it. covered is the query whose record covers each stated version that is a query
+	// version this build's version write made, of a document of a query's band (readCovered), read
+	// once the queue is sealed and before the write phase's first batch is sent
+	// (readStatedDocuments).
 	stated  []statedVersion
-	covered map[string]queryOf
+	covered map[statedVersion]queryOf
 	// rendered is the write phase's second part: the writes of the carries to a version whose
 	// version_renders row the first part's end writes (carryAfterRender), which run once that row
 	// stands, so the review a carry inserts pins the digest its row records. toRendered is set while
@@ -367,15 +369,15 @@ func queueWrites(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 // or a step that fails before it has queued its statements, once those queued before it have run
 // - stops it, and runQueue returns that error as it came, so a caller still tells a typed error -
 // a unique violation, ErrDocumentTooLarge, a guarded update's refusal - apart with errors.Is and
-// errors.As. It seals the queue first, and then reads which query's record covers each document a
-// pass of the transaction stated a version of (readStatedDocuments), before the first batch is
-// sent, so that read holds no transaction id the batch takes. Once the batch has run, it writes the
-// version_renders row of each version a pass stated whose document such a record covers
-// (writeStatedRenders), whose record is read from the store as the batch left it, and then sends
-// the write phase's second part, the writes of the carries to those versions (carryAfterRender), as
-// a batch of its own, so the reviews they insert pin the digests those rows record. A transaction
-// whose passes stated no version such a record covers runs nothing between its batch and its
-// commit.
+// errors.As. It seals the queue first, and then reads which query's record covers each version a
+// pass of the transaction stated (readStatedDocuments): a query version this build's version write
+// made, of a document of a query's band (readCovered). It reads before the first batch is sent, so
+// that read holds no transaction id the batch takes. Once the batch has run, it writes the
+// version_renders row of each stated version such a record covers (writeStatedRenders), whose
+// record is read from the store as the batch left it, and then sends the write phase's second
+// part, the writes of the carries to those versions (carryAfterRender), as a batch of its own, so
+// the reviews they insert pin the digests those rows record. A transaction whose passes stated no
+// version such a record covers runs nothing between its batch and its commit.
 //
 // A transaction that holds a restore carry (carryRestored) splits its batch at the insert of the
 // first version such a carry pins: the steps before it go as one batch, the rest behind a
