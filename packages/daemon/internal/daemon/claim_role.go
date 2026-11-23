@@ -165,7 +165,7 @@ func roleBackends(backendFor func(claim.Role) runtime.Backend, read planRoleRead
 		if err != nil {
 			return "", fmt.Errorf("the harness of %s on %s: %w", role, issue, err)
 		}
-		if stepplan.SourceOf(string(role), found, true) == stepplan.SourcePlan {
+		if stepplan.Overrides(string(role), found) {
 			return runtime.BackendOmp, nil
 		}
 		return backend, nil

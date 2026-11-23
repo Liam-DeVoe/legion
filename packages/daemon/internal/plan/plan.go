@@ -196,6 +196,16 @@ func SourceOf(name string, planned, deployed bool) Source {
 	return SourceNone
 }
 
+// Overrides is whether the issue's plan in force takes name over the deployment's settings: it
+// defines a role of that name (planned) and the name is none of Legion's, which is SourceOf's
+// answer where the deployment holds the name too. Such a role takes neither the deployment's role
+// of its name nor any setting the deployment keys by its name (its harness in worker_backends, its
+// bound in worker_stall_backstop_hours, a hook's roles), so a reader of one of those settings asks
+// this first.
+func Overrides(name string, planned bool) bool {
+	return SourceOf(name, planned, true) == SourcePlan
+}
+
 // RoleOf is the definition a role's name takes for one issue, by SourceOf: the role the issue's
 // plan in force defines (planned, nil where it defines none), of its type and its model on Oh My
 // Pi, and none of the settings the deployment keys by its name; else d's role of that name. For a

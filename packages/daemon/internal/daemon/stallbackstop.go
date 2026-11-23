@@ -83,12 +83,12 @@ func (s *supervision) backstopStalledTurns(ctx context.Context, claims []supervi
 
 // stallBackstopOf is the backstop bound of c's role (config.Config.StallBackstopFor). A role the
 // plan in force of c's issue defines takes none of the settings the deployment keys by its name
-// (stepplan.SourceOf, the rule every reader of a role asks), so where `worker_stall_backstop_hours`
-// names a bound for a deployment role of that name, such a claim runs under the bound of a role the
-// file names none for (config.Config.UnnamedStallBackstopFor). The plan is read for such a name
-// alone: a role of Legion's, a role the file names no bound for and a claim of no issue read none,
-// and neither does a supervision with no reader of the plan (planRole nil). A read that fails is
-// the error.
+// (stepplan.Overrides, of the one rule every reader of a role asks), so where
+// `worker_stall_backstop_hours` names a bound for a deployment role of that name, such a claim runs
+// under the bound of a role the file names none for (config.Config.UnnamedStallBackstopFor). The
+// plan is read for such a name alone: a role of Legion's, a role the file names no bound for and a
+// claim of no issue read none, and neither does a supervision with no reader of the plan (planRole
+// nil). A read that fails is the error.
 func (s *supervision) stallBackstopOf(ctx context.Context, c supervise.Claim) (time.Duration, error) {
 	bound, named := s.cfg.WorkerStallBackstops[c.Role]
 	if !named {
@@ -101,7 +101,7 @@ func (s *supervision) stallBackstopOf(ctx context.Context, c supervise.Claim) (t
 	if err != nil {
 		return 0, err
 	}
-	if stepplan.SourceOf(string(c.Role), planned, true) == stepplan.SourcePlan {
+	if stepplan.Overrides(string(c.Role), planned) {
 		return s.cfg.UnnamedStallBackstopFor(c.Role), nil
 	}
 	return bound, nil

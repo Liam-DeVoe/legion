@@ -79,8 +79,8 @@ func hookCount(hook Hook, counts map[string]int) int {
 // naming what fired and whom it reached, or that it reached none.
 //
 // A hook names roles of the deployment. A role the plan in force of the issue defines is the
-// plan's role, even where the deployment defines a role of that name (plan.SourceOf, the rule
-// every reader of a role asks), and it takes none of the settings the deployment keys by that
+// plan's role, even where the deployment defines a role of that name (plan.Overrides, of the one
+// rule every reader of a role asks), and it takes none of the settings the deployment keys by that
 // name, a hook's prompt among them, so the firing passes it over on that issue
 // (record.Store.PlanRoleOf). Legion's names are no plan's and read no plan.
 //
@@ -114,7 +114,7 @@ func (e *Engine) fireHook(ctx context.Context, tx pgx.Tx, issue record.Issue, ho
 			if err != nil {
 				return err
 			}
-			if plan.SourceOf(string(role), planned, true) == plan.SourcePlan {
+			if plan.Overrides(string(role), planned) {
 				continue
 			}
 		}

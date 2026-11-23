@@ -288,3 +288,35 @@ func TestRolesOfIsLegionsRolesThenThePlansThenTheDeployments(t *testing.T) {
 		t.Errorf("RolesOf changed the deployment's roles: %+v", d.Roles)
 	}
 }
+
+// A plan's role overrides the deployment's settings of its name exactly where SourceOf gives the
+// name to the plan with the deployment holding it too: a name the plan defines that is none of
+// Legion's. A name the plan does not define, and a name of Legion's whatever the plan says, keep
+// the deployment's settings.
+func TestAPlansRoleOverridesTheDeploymentForANameOfItsOwnAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		planned bool
+		want    bool
+	}{
+		{"prober", true, true},
+		{"prober", false, false},
+		{"implementer", true, false},
+		{"controller", true, false},
+		{"acceptance", true, false},
+		{"tester", false, false},
+	} {
+		if got := Overrides(tc.name, tc.planned); got != tc.want {
+			t.Errorf("Overrides(%s, %t) = %t, want %t", tc.name, tc.planned, got, tc.want)
+		}
+		var planned *PlanRole
+		if tc.planned {
+			planned = &PlanRole{Name: tc.name, Type: TypeTesting}
+		}
+		d := Deployment{Roles: map[string]RoleDef{tc.name: {Name: tc.name, Type: TypeTesting}}}
+		if _, source := RoleOf(tc.name, planned, d); (source == SourcePlan) != tc.want {
+			t.Errorf("RoleOf(%s) with the plan defining it %t and the deployment holding it answers %v, which disagrees with Overrides' %t",
+				tc.name, tc.planned, source, tc.want)
+		}
+	}
+}

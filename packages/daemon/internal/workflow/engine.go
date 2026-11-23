@@ -2871,9 +2871,9 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 			return err
 		}
 		for _, role := range w.Roles {
-			// A name the deployment and the plan in force both hold is the plan's (plan.SourceOf),
+			// A name the deployment and the plan in force both hold is the plan's (plan.Overrides),
 			// which is what makes the deployment's role a shadowed one on this issue.
-			if _, deployed := e.cfg.Deployment.Roles[role.Role]; !deployed || plan.SourceOf(role.Role, true, deployed) != plan.SourcePlan {
+			if _, deployed := e.cfg.Deployment.Roles[role.Role]; !deployed || !plan.Overrides(role.Role, true) {
 				continue
 			}
 			if _, seen := shadowed[role.Role]; !seen {
