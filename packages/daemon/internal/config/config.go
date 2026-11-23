@@ -284,6 +284,10 @@ type Config struct {
 	// a project still sets such a key (readProject's `deploys`): the key is accepted and warned
 	// about rather than refused, since the deployment that writes it releases on its own schedule
 	// (docs/solutions/envoy/a-setting-another-repositorys-deployment-sets-is-removed-in-two-releases-pr2674.md).
+	// One line also names each value this release takes and the next release refuses, with what
+	// this release does with it: an entry of `models` that is not one model's name, or names one
+	// again (readModels), and a step of a project's `default_steps` whose key names one agent on
+	// two models or two harnesses (checkDefaultSteps).
 	// `legion start` logs each before any other work this boot does with the configuration, and
 	// `legion config check` prints each right after its OK line, so an operator reads the
 	// same sentence either way.
@@ -1152,7 +1156,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	cfg.Hooks = settleHooks(file.Hooks, configDir)
 	// Every key whose names it judges is set by now.
-	if err := checkDeploymentRoleKeys(cfg); err != nil {
+	if err := checkDeploymentRoleKeys(&cfg); err != nil {
 		return Config{}, err
 	}
 	if cfg.Runtime.Name == "kubernetes" {

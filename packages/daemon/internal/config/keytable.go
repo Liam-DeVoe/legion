@@ -310,8 +310,13 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "models", Default: "no model is listed", RequiredBy: "no",
-			Description: "The models a role an owner's plan defines may name, in the order an operator reads them back: each one word, as the role's harness takes it, and each named once. The model each role of `roles` names is listed after them, so `legion config check`, the served settings and the owner read one list.",
-			Read:        reads(readModels, func(f *fileConfig, v []string) { f.Models = v }),
+			Description: "The models a role an owner's plan defines may name, in the order an operator reads them back: each one word, as the role's harness takes it, and each named once. The model each role of `roles` names is listed after them, so `legion config check`, the served settings and the owner read one list. This release takes a value that is not a list, and an entry that is not one model's name or names a model again, with a warning at boot and at `legion config check`, and lists no such entry; the next release refuses them.",
+			Read: func(value *yaml.Node, key string, file *fileConfig) error {
+				// The warnings join whatever a key above raised, in file order (readProjects').
+				models, raised := readModels(value, key)
+				file.Models, file.Warnings = models, append(file.Warnings, raised...)
+				return nil
+			},
 		},
 		{
 			Name: "capabilities", Default: "every capability the deployment leaves open is reported open", RequiredBy: "no",
@@ -550,7 +555,7 @@ var nestedKeys = []memberGroup{
 		{Name: "commit_issue_trailer_repos", Default: "a pane stamps no commit with its issue key", RequiredBy: "no",
 			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; the load checks each name's shape and refuses two names of one repository, and a pane working any other repository stamps nothing."},
 		{Name: "default_steps", Default: "`[" + strings.Join(defaultStepWords, ", ") + "]`, today's line up to the owner's acceptance", RequiredBy: "no",
-			Description: "The steps a task runs when its plan block names neither steps nor a sub-owner, and the steps of the one task of an issue whose owner gives no plan, each entry one step: a role, or a role and the key of its agent, as `acceptance:owner`; Legion's retro and merge follow them, and the loader refuses an empty list and each list this release would refuse as a task's steps, with the reason. Name it only once every daemon that reads the file runs this release: an earlier daemon refuses the whole file (`Unknown key \"projects.<KEY>.default_steps\"`)."},
+			Description: "The steps a task runs when its plan block names neither steps nor a sub-owner, and the steps of the one task of an issue whose owner gives no plan, each entry one step: a role, or a role and the key of its agent, as `acceptance:owner`; Legion's retro and merge follow them, and the loader refuses an empty list and each list this release would refuse as a task's steps, with the reason, but one: a key that names one agent for roles of two models or two harnesses is taken with a warning, its later such step runs as an agent of its own, and the next release refuses it. Name it only once every daemon that reads the file runs this release: an earlier daemon refuses the whole file (`Unknown key \"projects.<KEY>.default_steps\"`)."},
 		{Name: "deploys", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; a project that still sets it is warned about once at boot and the key is read for nothing."},
 		{Name: "experiments", Default: "every tree and issue of the project runs on the deployment's own settings", RequiredBy: "no",

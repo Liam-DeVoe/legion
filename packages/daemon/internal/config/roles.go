@@ -220,8 +220,8 @@ func (c Config) withRoles(legion []claim.Role) []claim.Role {
 // list names both. Its keys: `worker_backends`, `role_config_files`,
 // `worker_stall_backstop_hours` and each hook's `roles`. Then it judges each project's
 // `default_steps`, which readDefaultSteps only parses, in the order of the projects' keys
-// (checkDefaultSteps).
-func checkDeploymentRoleKeys(cfg Config) error {
+// (checkDefaultSteps), which can give a step of them another agent, with a warning.
+func checkDeploymentRoleKeys(cfg *Config) error {
 	issueRoles := cfg.issueRoles()
 	if err := namedRoles(cfg.WorkerBackends, "worker_backends", "an issue role", issueRoles); err != nil {
 		return err
@@ -247,14 +247,21 @@ func checkDeploymentRoleKeys(cfg Config) error {
 // its roles, Legion's and those of `roles`, with their models and harnesses, the models it lists
 // and the owner's role), so the steps a task with none runs are steps this release
 // carries out. The projects are judged in the order of their keys, and a refusal names the key,
-// then gives every reason of both checks.
-func checkDefaultSteps(cfg Config) error {
+// then gives every reason of both checks. One cause is taken with a warning first, since this
+// release is the first to judge it: a key naming one agent for roles of two models or two
+// harnesses (oneAgentOneModel), whose step this release runs as an agent of its own and the next
+// release refuses.
+func checkDefaultSteps(cfg *Config) error {
 	deployment := cfg.Deployment()
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
-		steps := cfg.Projects[key].DefaultSteps
-		if steps == nil {
+		project := cfg.Projects[key]
+		if project.DefaultSteps == nil {
 			continue
 		}
+		steps, warnings := oneAgentOneModel(key, project.DefaultSteps, deployment)
+		project.DefaultSteps = steps
+		cfg.Projects[key] = project
+		cfg.Warnings = append(cfg.Warnings, warnings...)
 		task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
 		refusals := append(plan.Supported(task, deployment), plan.Validate(task, deployment)...)
 		if len(refusals) == 0 {
@@ -267,6 +274,60 @@ func checkDefaultSteps(cfg Config) error {
 		return fmt.Errorf("projects.%s.default_steps: %s", key, strings.Join(reasons, " "))
 	}
 	return nil
+}
+
+// oneAgentOneModel is steps, the `default_steps` of the project project, with no key on each step
+// whose key names one agent for it and for an earlier step whose role runs on another model or
+// another harness, as d gives each role: one agent runs on one model and one harness, which
+// plan.Validate holds a plan's key to, and a step with no key runs as an agent of its own. It
+// answers one warning for each such step, naming the entry, the two steps and what they run on,
+// and saying the next release refuses it. The release before this one held no key of
+// `default_steps` to one model or one harness, so a file it took is taken here, and runs. The key
+// owner and a role d does not define are left as they are: plan.Supported and plan.Validate judge
+// them. steps is not changed: the answer is a copy where any key is left out.
+func oneAgentOneModel(project string, steps []plan.Step, d plan.Deployment) ([]plan.Step, []string) {
+	type firstStep struct {
+		role  string
+		place int
+		def   plan.RoleDef
+	}
+	first := map[string]firstStep{}
+	kept := steps
+	var warnings []string
+	for i, step := range steps {
+		role, defined := d.Roles[step.Role]
+		if step.Key == "" || step.Key == "owner" || !defined {
+			continue
+		}
+		was, seen := first[step.Key]
+		if !seen {
+			first[step.Key] = firstStep{role: step.Role, place: i + 1, def: role}
+			continue
+		}
+		if role.Model == was.def.Model && role.Backend == was.def.Backend {
+			continue
+		}
+		runOn, one := fmt.Sprintf("two models (%s, %s)", modelNamed(was.def.Model), modelNamed(role.Model)), "model"
+		if role.Model == was.def.Model {
+			runOn, one = fmt.Sprintf("two harnesses (%s, %s)", was.def.Backend, role.Backend), "harness"
+		}
+		if len(warnings) == 0 {
+			kept = slices.Clone(steps)
+		}
+		kept[i].Key = ""
+		warnings = append(warnings, fmt.Sprintf("projects.%s.default_steps[%d] is %s, and the key %s names one agent for %s at step %d and %s at step %d, whose roles run on %s; "+
+			"one agent runs on one %s: this release runs step %d as an agent of its own, and the next release refuses it; give that step another key, or none, in legion.yaml",
+			project, i, step, step.Key, was.role, was.place, step.Role, i+1, runOn, one, i+1))
+	}
+	return kept, warnings
+}
+
+// modelNamed is a model as a warning writes it: "" is the default model.
+func modelNamed(model string) string {
+	if model == "" {
+		return "the default model"
+	}
+	return model
 }
 
 // namedRoles refuses the first role in name order that key names and roles does not hold, as the
