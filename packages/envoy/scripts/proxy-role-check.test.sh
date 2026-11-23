@@ -93,19 +93,28 @@ call() { # call <host> <path> [curl args...]: the status of one call, its body i
 alpha_token="ghs_standin_""acme-alpha"
 beta_token="ghs_standin_""acme-beta"
 placeholder="agent-secrets-placeholder-""dddddddddddddddddddddddddddddddd"
-auth() { printf 'Authorization: %s %s' "$1" "$2"; } # auth <scheme> <token>: one header line
-status="$(call api.github.com /repos/acme-alpha/demo -H "$(auth token "$alpha_token")")"
+# call_as <scheme> <token> <host> <path> [curl args...]: call with an Authorization header of
+# scheme and token, which curl reads on standard input, so no process's arguments hold it.
+call_as() {
+	local scheme="$1" token="$2"
+	shift 2
+	if [ "$scheme" = Basic ]; then
+		token="$(printf '%s' "x-access-token:$token" | base64 -w0)"
+	fi
+	printf 'Authorization: %s %s\n' "$scheme" "$token" | call "$@" -H @-
+}
+status="$(call_as token "$alpha_token" api.github.com /repos/acme-alpha/demo)"
 check "an installation token reads the repository" "$([ "$status" = 200 ] && [ "$(jq -r .full_name "$work/body")" = acme-alpha/demo ] && echo 0 || echo 1)"
 check "and is recorded as acme-alpha's App token, by digest" "$(jq -se --arg sha "$(printf '%s' "$alpha_token" | sha256sum | cut -c1-16)" \
 	'.[-1] | .kind == "app" and .account == "acme-alpha" and .token_sha16 == $sha' "$records" >/dev/null && echo 0 || echo 1)"
-status="$(call api.github.com /repos/acme-alpha/demo -H "$(auth token "$placeholder")")"
+status="$(call_as token "$placeholder" api.github.com /repos/acme-alpha/demo)"
 check "a placeholder is refused 401 and recorded as a placeholder" "$([ "$status" = 401 ] && jq -se '.[-1].kind == "placeholder"' "$records" >/dev/null && echo 0 || echo 1)"
 status="$(curl -sS -o /dev/null -D "$work/headers" -w '%{http_code}' --cacert "$work/standin.pem" --resolve "github.com:$port:127.0.0.1" \
 	"https://github.com:$port/acme-alpha/demo.git/info/refs?service=git-upload-pack")"
 check "git with no credential gets 401 and a Basic challenge" "$([ "$status" = 401 ] && grep -qi '^www-authenticate: basic' "$work/headers" && echo 0 || echo 1)"
-status="$(call github.com '/acme-beta/demo.git/info/refs?service=git-receive-pack' -u "x-access-token:$beta_token")"
+status="$(call_as Basic "$beta_token" github.com '/acme-beta/demo.git/info/refs?service=git-receive-pack')"
 check "git with acme-beta's token reads the receive-pack advertisement" "$([ "$status" = 200 ] && grep -q 'refs/heads/main' "$work/body" && jq -se '.[-1] | .kind == "app" and .account == "acme-beta"' "$records" >/dev/null && echo 0 || echo 1)"
-status="$(call api.github.com /graphql -X POST -H "$(auth bearer "$alpha_token")" -d '{"query":"query { viewer { login } }"}')"
+status="$(call_as bearer "$alpha_token" api.github.com /graphql -X POST -d '{"query":"query { viewer { login } }"}')"
 check "GraphQL answers the viewer" "$([ "$status" = 200 ] && [ "$(jq -r .data.viewer.login "$work/body")" = 'proxy-role-check[bot]' ] && echo 0 || echo 1)"
 check "no record holds a credential" "$(! grep -q 'ghs_standin_\|agent-secrets-placeholder-' "$records" && [ "$(wc -l <"$records")" -ge 5 ] && echo 0 || echo 1)"
 
