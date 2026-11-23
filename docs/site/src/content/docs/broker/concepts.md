@@ -1514,8 +1514,11 @@ placeholder of each slot of the value, and the hosts the entry binds. A placehol
 `agent-secrets-placeholder-` and 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
 brokers; `envoy-broker profiles check <file> [--against <old file>] [--private-upstream
-<host>=<url>]` says whether a broker would serve a file, and what that file adds and removes
-against the one in force.
+<host>=<url> [--cluster-ranges <CIDR prefixes>]]` says whether a broker would serve a file, and
+what that file adds and removes against the one in force. Given the broker's values of
+`BROKER_AIRLOCK_PRIVATE_UPSTREAM` and `BROKER_AIRLOCK_CLUSTER_RANGES`, it also holds the results
+profile to that destination and the destination's address to the rule the broker holds it to at
+start; without `--cluster-ranges` it says which address it did not judge against the ranges.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's
@@ -1615,9 +1618,12 @@ What the airlock does not stop is as much of the design as what it does:
   setting, or when no range in it holds that address. A command that needs such a call sets its
   own `NO_PROXY` entry for that name.
   The one exception is `BROKER_AIRLOCK_PRIVATE_UPSTREAM` (`<host>=<url>`): the allowed requests
-  of the profile `DISPATCH_RESULTS_TOKEN`, whose proxy block binds that host alone, go to the URL,
-  at an address the proxy refuses to every other request and never at a loopback, link-local or
-  metadata server's address, and a tunnel or plain-HTTP request to that address stays refused.
+  of the profile `DISPATCH_RESULTS_TOKEN`, whose proxy block binds that host alone, go to the URL.
+  The proxy dials it only at an address in a range the destination may be in — private,
+  `100.64.0.0/10`, or inside `BROKER_AIRLOCK_CLUSTER_RANGES` — and never at a loopback,
+  link-local, unspecified, multicast or IPv4 broadcast address, one in `0.0.0.0/8`, a cloud
+  metadata server's, or an IPv6 address that carries an IPv4 address (NAT64, 6to4, Teredo and
+  the IPv4-compatible form); a tunnel or plain-HTTP request to that address stays refused.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.
