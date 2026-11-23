@@ -335,6 +335,11 @@ type WorkspaceWork struct {
 	Commits []string
 	// Count is how many work commits there are in all, those Commits lists included.
 	Count int
+	// PodUID is the pod whose workspace the read was made in, which a read through the pod's
+	// launcher names (PodWorkspaceReader), with its error too once it has chosen the pod; "" where
+	// the runtime cannot say. A read is evidence of that pod alone: a pod that took its place since
+	// holds another disk (R6 of dispatch://INFRA-3271, Sol's point 2).
+	PodUID string
 }
 
 // HoldsWork is whether the read found work: a change in the working copy, or a commit origin does

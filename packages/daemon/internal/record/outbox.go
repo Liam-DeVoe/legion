@@ -1341,11 +1341,16 @@ func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }
 // zero moment is a fence that any turn passes. A release before this field refuses a row that
 // carries it (DisallowUnknownFields), so a rollback waits for such rows to run
 // (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+//
+// PodUID, on the suspension a left pod's close queues after its launcher's clean read, is the pod
+// that read found clean (IssueWorkspaceCheck.PodUID): the suspension takes that pod or nothing,
+// read under the runtime's pod lock (internal/daemon's suspendIssue). "" binds no pod.
 type IssueSuspend struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
 	TreeGeneration uint64     `json:"treeGeneration"`
 	TurnStart      *time.Time `json:"turnStart,omitempty"`
+	PodUID         string     `json:"podUid,omitempty"`
 }
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
@@ -1388,6 +1393,12 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // A release before these two fields refuses a row that carries either (DisallowUnknownFields), so
 // a rollback waits for such rows to run (docs/kubernetes.md, "Rolling back the release that keeps
 // no saved workspace").
+//
+// PodUID, on a launcher's row, is the pod the pass read the runtime holding when it queued the
+// check (pods.IdleView.PodUID), "" where it could not say: a read the launcher made of another pod
+// is evidence of that pod alone, and is discarded (internal/daemon's checkIssueWorkspace and
+// checkLeftPodWorkspace), and the teardown and the suspension that a clean read lets through take
+// that pod or nothing (IssueRelease.PodUID, IssueSuspend.PodUID).
 type IssueWorkspaceCheck struct {
 	Tree           string       `json:"tree"`
 	Generation     uint64       `json:"generation"`
@@ -1397,6 +1408,7 @@ type IssueWorkspaceCheck struct {
 	TurnStart      time.Time    `json:"turnStart,omitzero"`
 	Launcher       bool         `json:"launcher,omitempty"`
 	Close          bool         `json:"close,omitempty"`
+	PodUID         string       `json:"podUid,omitempty"`
 }
 
 // LeftPodClose is whether the check is the first act of a left pod's close (CloseRoles, or Close
@@ -1418,10 +1430,16 @@ func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundl
 // again from what was pushed to the issue's branch. The check took the pod only because the
 // workspace held nothing that was not pushed. A new pod of a kept Sandbox mounts the volume the
 // last pod used.
+//
+// PodUID, on the teardown of a release whose launcher reads the workspace first, is the pod that
+// check reads (IssueWorkspaceCheck.PodUID): the teardown takes that pod or nothing, read under the
+// runtime's pod lock, and a pod that took its place since cancels the release (internal/daemon's
+// releaseIssue). "" binds no pod.
 type IssueRelease struct {
 	Tree           string `json:"tree"`
 	Generation     uint64 `json:"generation"`
 	TreeGeneration uint64 `json:"treeGeneration"`
+	PodUID         string `json:"podUid,omitempty"`
 }
 
 func (IssueRelease) OutboxKind() OutboxKind { return OutboxKindIssueRelease }

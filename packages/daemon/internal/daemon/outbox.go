@@ -3314,6 +3314,16 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 	// starts true.
 	ended, authorized := true, false
 	if err := suspender.SuspendIssue(ctx, row.Issue, value.Tree, func(ctx context.Context) (bool, error) {
+		// A close that a launcher's clean read let through takes the pod that read found clean or
+		// nothing (record.IssueSuspend.PodUID), read under the pod lock: a pod that took its place
+		// is one no read showed clean, so the suspension finishes without acting, and the next
+		// pass decides that pod.
+		if value.PodUID != "" && !r.holdsPod(row.Issue, value.PodUID) {
+			r.log.Info("outbox: the pod the close's launcher read is no longer the issue's pod; the suspension takes nothing",
+				"issue", row.Issue, "readPod", value.PodUID)
+			ended = false
+			return false, nil
+		}
 		act, err := r.trees.IssueSuspension(ctx, r.project, closing, record.OutOfWorkflow)
 		ended = act
 		authorized = act && err == nil
@@ -3405,6 +3415,15 @@ func (r *outbox) checkIssueWorkspace(ctx context.Context, row record.OutboxRow, 
 	// after the decline it may record (pods.IdleDecline.Stands).
 	readAt := r.now().UTC()
 	work, failed := r.readIssueWorkspace(ctx, row.Issue, payload)
+	if readOtherPod(payload, work) {
+		// The launcher read a pod that took the place of the one the release was marked over: its
+		// answer is evidence of that pod alone, which no pass decided, so it declines nothing and
+		// lets nothing through, and the release is cancelled for the next pass to decide afresh.
+		r.log.Info("outbox: the launcher read another pod than the one the release of a pod no claim owns was marked over; the read is discarded and the release cancelled",
+			"issue", row.Issue, "markedPod", payload.PodUID, "readPod", work.PodUID)
+		hold, why := releaseHold(store.ReleaseCauseOvertaken)
+		return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
+	}
 	if failed != nil || work.HoldsWork() {
 		return r.declineRelease(ctx, row.Issue, payload, readAt, work, failed)
 	}
@@ -3443,6 +3462,38 @@ func (r *outbox) readIssueWorkspace(ctx context.Context, issue string, payload r
 	return reader.WorkspaceWork(ctx, issue, payload.Role)
 }
 
+// readOtherPod is whether a launcher's read of the check (payload.Launcher) was made in another pod
+// than the one the pass queued the check over (record.IssueWorkspaceCheck.PodUID): a pod took its
+// place, and the read is evidence of that pod alone (R6 of dispatch://INFRA-3271, Sol's point 2).
+// A check or a read that names no pod is no such read.
+func readOtherPod(payload record.IssueWorkspaceCheck, work runtime.WorkspaceWork) bool {
+	return payload.Launcher && payload.PodUID != "" && work.PodUID != "" && work.PodUID != payload.PodUID
+}
+
+// readPod is the pod a launcher's clean read lets a teardown take: the pod it read, else the pod
+// the check was queued over. A role's read binds none ("").
+func readPod(payload record.IssueWorkspaceCheck, work runtime.WorkspaceWork) string {
+	switch {
+	case !payload.Launcher:
+		return ""
+	case work.PodUID != "":
+		return work.PodUID
+	}
+	return payload.PodUID
+}
+
+// holdsPod is whether the runtime holds pod as issue's pod, read by a teardown that a launcher's
+// clean read of pod let through (releaseIssue, suspendIssue) under the runtime's pod lock, which
+// orders it after any launch that replaced the pod. A runtime that cannot say holds it.
+func (r *outbox) holdsPod(issue, pod string) bool {
+	pods, ok := r.supervisor.deps.Runtime.(issuePods)
+	if !ok {
+		return true
+	}
+	now, read := pods.IssuePod(issue)
+	return read && now == pod
+}
+
 // checkLeftPodWorkspace is the first act of the close of a pod whose issue left the workflow while
 // its tree runs on (workflow.LeftPodClose): the close deletes the pod's disk, so the disk is read
 // first, as the idle release reads it, through a live role where one runs in the pod, and through
@@ -3476,6 +3527,14 @@ func (r *outbox) readIssueWorkspace(ctx context.Context, issue string, payload r
 func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow, payload record.IssueWorkspaceCheck) error {
 	readAt := r.now().UTC()
 	work, failed := r.readIssueWorkspace(ctx, row.Issue, payload)
+	if readOtherPod(payload, work) {
+		// The launcher read a pod that took the place of the one the close was queued over: its
+		// answer is evidence of that pod alone. The close marked nothing, so the check finishes
+		// without acting and the next pass decides the pod that is there.
+		r.log.Info("outbox: the launcher read another pod than the one the close of a left pod was queued over; the read is discarded",
+			"issue", row.Issue, "queuedPod", payload.PodUID, "readPod", work.PodUID)
+		return nil
+	}
 	now := r.now().UTC()
 	declines := failed != nil || work.HoldsWork()
 	var decline store.IdleReleaseDecline
@@ -3508,7 +3567,7 @@ func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow
 			if err := r.trees.ForgetIdleDecline(ctx, r.project, row.Issue); err != nil {
 				return err
 			}
-			closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now, payload.TurnStart))
+			closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now, payload.TurnStart, readPod(payload, work)))
 			if err != nil {
 				return err
 			}
@@ -3545,8 +3604,11 @@ func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow
 // (store's recordDecline). Its hold is recorded under the unowned_ names, so a reader of the
 // records can tell a pod no role runs in from one whose live role holds the work.
 func (r *outbox) declineFor(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, readAt time.Time, work runtime.WorkspaceWork, failed error) (store.IdleReleaseDecline, workflow.IdleHold, string, error) {
-	pod := ""
-	if podRuntime, ok := r.supervisor.deps.Runtime.(issuePods); ok {
+	// A launcher's read names the pod it read, which is the pod its decline names: a pod that took
+	// its place since holds another disk (runtime.WorkspaceWork.PodUID). A role's read names the
+	// pod the runtime holds now.
+	pod := work.PodUID
+	if podRuntime, ok := r.supervisor.deps.Runtime.(issuePods); ok && !payload.Launcher {
 		if uid, read := podRuntime.IssuePod(issue); read {
 			pod = uid
 		}
@@ -3782,6 +3844,14 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		inner, err := r.trees.IssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
 		if err != nil {
 			return false, err
+		}
+		// A release whose launcher read the workspace first takes the pod that read found clean
+		// or nothing (record.IssueRelease.PodUID): read here, under the pod lock, a pod that took
+		// its place is one no read showed clean, and the release is cancelled as one overtaken.
+		if inner.Act == store.ReleaseActs && payload.PodUID != "" && !r.holdsPod(row.Issue, payload.PodUID) {
+			r.log.Info("outbox: the pod the release's launcher read is no longer the issue's pod; the teardown takes nothing and the release is cancelled",
+				"issue", row.Issue, "readPod", payload.PodUID)
+			inner.Act, inner.Cause = store.ReleaseCancel, store.ReleaseCauseOvertaken
 		}
 		decision = inner
 		return inner.Act == store.ReleaseActs, nil

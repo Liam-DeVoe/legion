@@ -665,7 +665,7 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 	check := record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
 		TreeGeneration: view.Root.Generation, TurnStart: view.NewestTurnStart()}
 	if len(decision.Roles) == 0 {
-		check.Role, check.Launcher, check.Close = claim.RoleArchitect, true, true
+		check.Role, check.Launcher, check.Close, check.PodUID = claim.RoleArchitect, true, true, view.PodUID
 	} else {
 		check.Role, check.CloseRoles = decision.Roles[0], decision.Roles
 		if open := workflow.OpenPhaseRole(view.Phase); slices.Contains(decision.Roles, open) {
@@ -688,13 +688,13 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 // rows where it does not. Each stop and the suspension carry turnStart on, so a turn that starts
 // after this decision and before the lane runs the stop holds the stop and finishes the suspension
 // (record.SuperviseRequest.TurnStart, record.IssueSuspend.TurnStart).
-func leftPodStopsAfterCheck(now, turnStart time.Time) func(pods.IdleView) (store.IdleReleaseMark, error) {
+func leftPodStopsAfterCheck(now, turnStart time.Time, pod string) func(pods.IdleView) (store.IdleReleaseMark, error) {
 	return func(view pods.IdleView) (store.IdleReleaseMark, error) {
 		decision := workflow.LeftPodCloseAfterCheck(view, turnStart)
 		if !decision.Close {
 			return store.IdleReleaseMark{}, nil
 		}
-		return leftPodStopRows(view, decision, now, turnStart)
+		return leftPodStopRows(view, decision, now, turnStart, pod)
 	}
 }
 
@@ -707,7 +707,11 @@ func leftPodStopsAfterCheck(now, turnStart time.Time) func(pods.IdleView) (store
 // start that check read (record.SuperviseRequest.TurnStart, record.IssueSuspend.TurnStart): a
 // turn after the read, of a role the close stops or of one that started since in a pod no role
 // ran in, voids the read, and the suspension finishes without acting.
-func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now, turnStart time.Time) (store.IdleReleaseMark, error) {
+//
+// pod, for a close whose launcher read the workspace, is the pod that read found clean
+// (record.IssueWorkspaceCheck.PodUID): the suspension takes that pod or nothing
+// (record.IssueSuspend.PodUID). A close of live roles binds none ("").
+func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now, turnStart time.Time, pod string) (store.IdleReleaseMark, error) {
 	mark := store.IdleReleaseMark{Generation: view.Generation, Close: true}
 	add := func(payload record.OutboxPayload) error {
 		row, err := record.NewOutboxRow(view.Issue, payload, now)
@@ -726,7 +730,7 @@ func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now, tu
 		}
 	}
 	if err := add(record.IssueSuspend{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation, TurnStart: fence}); err != nil {
+		TreeGeneration: view.Root.Generation, TurnStart: fence, PodUID: pod}); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
 	return mark, nil
@@ -767,14 +771,18 @@ func unownedReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now 
 		mark.Rows = append(mark.Rows, store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload, Boundary: boundary})
 		return nil
 	}
+	// pod is the pod the launcher's check reads, which binds the teardown (record.IssueRelease's
+	// PodUID): a release that reads nothing binds none.
+	pod := ""
 	if decision.Read {
+		pod = view.PodUID
 		if err := add(record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
-			TreeGeneration: view.Root.Generation, Role: claim.RoleArchitect, Launcher: true}, false); err != nil {
+			TreeGeneration: view.Root.Generation, Role: claim.RoleArchitect, Launcher: true, PodUID: pod}, false); err != nil {
 			return store.IdleReleaseMark{}, err
 		}
 	}
 	if err := add(record.IssueRelease{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation}, true); err != nil {
+		TreeGeneration: view.Root.Generation, PodUID: pod}, true); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
 	return mark, nil

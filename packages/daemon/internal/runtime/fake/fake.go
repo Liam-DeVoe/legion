@@ -329,12 +329,23 @@ func (r *Runtime) WorkspaceWork(_ context.Context, issue string, role claim.Role
 }
 
 // PodWorkspaceWork is the read the Sandbox runtime has the issue pod's launcher make: it records
-// its call, with no role, and answers as WorkspaceWork does.
+// its call, with no role, and answers as WorkspaceWork does, naming the pod the issue's Sandbox
+// holds at the call (ScriptIssuePod, followed through the replacements the fake made), as the
+// Sandbox runtime names the pod its launcher read, error or not. An issue no ScriptIssuePod named
+// names no pod.
 func (r *Runtime) PodWorkspaceWork(_ context.Context, issue string) (runtime.WorkspaceWork, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "PodWorkspaceWork", Issue: issue})
-	return r.workspaceWork(issue)
+	pod := ""
+	if scripted, ok := r.issuePods[issue]; ok && scripted != "" {
+		if now, live := r.podNow(scripted); live {
+			pod = now
+		}
+	}
+	work, err := r.workspaceWork(issue)
+	work.PodUID = pod
+	return work, err
 }
 
 // workspaceWork is what a read of issue answers, the caller holding mu.

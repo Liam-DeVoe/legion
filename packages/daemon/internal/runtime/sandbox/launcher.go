@@ -293,10 +293,11 @@ var _ runtime.PodWorkspaceReader = (*Runtime)(nil)
 // (runtime.PodWorkspaceReader, R6 of dispatch://INFRA-3271). The pod is the one the runtime holds
 // for the issue now (IssuePod); the launcher is a connected one of that pod whose hello said it
 // reads a workspace (launchers.workspaceReader). The read is bounded by the read's own budget
-// (runtime.WorkspaceWorkTimeout) and one API call's time for the frame each way. A pod the runtime
-// cannot name or holds none of, a pod with no such launcher, a connection that closes before the
-// answer and a launcher that refuses are each an error, which the caller reads as a read that
-// could not be made, never as no work.
+// (runtime.WorkspaceWorkTimeout) and one API call's time for the frame each way. The answer names
+// the pod read (runtime.WorkspaceWork.PodUID), and so does the error of a read once it has chosen
+// the pod. A pod the runtime cannot name or holds none of, a pod with no such launcher, a
+// connection that closes before the answer and a launcher that refuses are each an error, which
+// the caller reads as a read that could not be made, never as no work.
 func (r *Runtime) PodWorkspaceWork(ctx context.Context, issue string) (runtime.WorkspaceWork, error) {
 	pod, read := r.IssuePod(issue)
 	switch {
@@ -305,32 +306,39 @@ func (r *Runtime) PodWorkspaceWork(ctx context.Context, issue string) (runtime.W
 	case pod == "":
 		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: the runtime holds no pod of the issue", issue)
 	}
+	return r.launcherWorkspaceWork(ctx, issue, pod)
+}
+
+// launcherWorkspaceWork is PodWorkspaceWork's read of pod, the issue's pod the caller chose: every
+// answer, an error's included, names pod.
+func (r *Runtime) launcherWorkspaceWork(ctx context.Context, issue, pod string) (runtime.WorkspaceWork, error) {
+	none := runtime.WorkspaceWork{PodUID: pod}
 	session := r.launchers.workspaceReader(issue, pod)
 	if session == nil {
-		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: no launcher of pod %s that reads a workspace is connected", issue, pod)
+		return none, fmt.Errorf("read %s's workspace: no launcher of pod %s that reads a workspace is connected", issue, pod)
 	}
 	id := rand.Text()
 	frame := shimwire.WorkspaceWork{ID: id, Issue: issue, TimeoutMs: int(runtime.WorkspaceWorkTimeout.Milliseconds())}
 	if err := frame.Validate(); err != nil {
-		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace: %w", issue, err)
+		return none, fmt.Errorf("read %s's workspace: %w", issue, err)
 	}
 	bounded, cancel := context.WithTimeout(ctx, runtime.WorkspaceWorkTimeout+apiTimeout)
 	defer cancel()
 	answer, _, err := r.launchers.requestSession(bounded, session, frame, id)
 	if err != nil {
-		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace through launcher %s of pod %s: %w", issue, session.token, pod, err)
+		return none, fmt.Errorf("read %s's workspace through launcher %s of pod %s: %w", issue, session.token, pod, err)
 	}
 	result, ok := answer.(shimwire.WorkspaceWorkResult)
 	if !ok {
-		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace through launcher %s: answered by a %s frame", issue, session.token, answer.FrameType())
+		return none, fmt.Errorf("read %s's workspace through launcher %s: answered by a %s frame", issue, session.token, answer.FrameType())
 	}
 	if err := result.Validate(); err != nil {
-		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace through launcher %s: %w", issue, session.token, err)
+		return none, fmt.Errorf("read %s's workspace through launcher %s: %w", issue, session.token, err)
 	}
 	if !result.OK {
-		return runtime.WorkspaceWork{}, fmt.Errorf("read %s's workspace through launcher %s: the launcher refused: %s", issue, session.token, result.Error)
+		return none, fmt.Errorf("read %s's workspace through launcher %s: the launcher refused: %s", issue, session.token, result.Error)
 	}
-	return runtime.WorkspaceWork{Head: result.Head, Changed: result.Changed, Commits: result.Commits, Count: result.Count}, nil
+	return runtime.WorkspaceWork{Head: result.Head, Changed: result.Changed, Commits: result.Commits, Count: result.Count, PodUID: pod}, nil
 }
 
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
