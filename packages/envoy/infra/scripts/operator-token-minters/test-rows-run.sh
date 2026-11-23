@@ -32,12 +32,18 @@
 #   (bc) a copy of the script missing output.sh, or missing analysis.jq, prints "UNKNOWN run" naming
 #        it, writes that to --report, and exits 2 before any step runs;
 #   (cj) --service-agent naming an agent's own Google service account is a usage error, and a run
-#        given --service-agent, --rbac-only-member and --fleet none writes each into --report's
-#        allowances;
-#   (co) a credential pasted alone, as the value of a flag that names a thing, or as a file flag's
-#        file is printed in neither stdout, stderr nor --report: a flag that names a thing refuses
-#        it, naming the flag and never its text, and a file flag's file is named by the flag and
-#        its place;
+#        given --service-agent, --rbac-only-member, --fleet none and two --credentials-arg flags,
+#        one bare and one --account=<email>, writes each into --report's allowances, the
+#        --credentials-arg flags by their gcloud flag's name alone;
+#   (co) a credential pasted alone, or as a file flag's file, is printed in neither stdout, stderr
+#        nor --report; one pasted as the value of a flag that names a thing, of another form than
+#        the flag's, is refused, naming the flag and never its text; a token of a Secret Manager
+#        ID's form given as --signing-secret is printed nowhere, with that secret unbound, bound
+#        (live and in the preview) or its analysis refused naming it; and --credentials-arg
+#        --access-token=<token> is refused. A name flag whose form admits a token-shaped string
+#        (--secret, --agent-namespace, --namespace) prints that string: the row proves only that a
+#        value of the wrong form is never printed, and that --signing-secret's value and a value
+#        given to a --credentials-arg flag are printed nowhere, whatever their form;
 #   (cp) the list of a guarded namespace's token Secrets is asked in the API server's Table form,
 #        whose response carries no data field, so no Secret's data reaches the box, the run's work
 #        directory or its output.
@@ -52,7 +58,7 @@ if row a; then
   for step in "permission names" "code: RBAC" "code: IAM" "live: RBAC on operator-cluster" "live: GKE IAM on project $project" \
     "live: minters of $gsa" "live: minters of the broker account $broker" "live: hold writers: Cloud SQL users of example-instance" \
     "live: hold writers: Secret example-db/broker-db-login" "live: hold writers: the broker program's state in gs://example-state" \
-    "live: hold writers: the signing key hold-signing-example" "admin tag of ENVOY_OPERATOR" \
+    "live: hold writers: the signing key in the secret --signing-secret names" "admin tag of ENVOY_OPERATOR" \
     "live: who can register a cluster to, or write namespaces and RBAC on, the fleet of project $project" "live: who can set IAM on organizations/100"; do
     want_text "PASS $step: " "a clean world's $step"
   done
@@ -329,7 +335,7 @@ fi
 # --- (cj) The allowances: --service-agent names a Google service agent alone, and every allowance a
 # run is given (--service-agent, --rbac-only-member, --fleet none, --credentials-arg, which chooses
 # how each cluster is reached) is written into --report, so a reader can hold each to what was
-# accepted. ---
+# accepted; a --credentials-arg by its gcloud flag's name alone, never --account's email. ---
 allowance_row() {
   local report="$temporary_dir/allowances.json"
   base_world
@@ -345,28 +351,41 @@ allowance_row() {
       edge_member
       edit "$world/fleet.json" '.memberships = [.memberships[] | select(.id == "edge")]'
       run --report "$report" --service-agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" --rbac-only-member edge --fleet none \
-        --credentials-arg=--internal-ip
+        --credentials-arg=--internal-ip --credentials-arg=--account=ops-reader@example.com
       jq -e --arg agent "service-$number@gcp-sa-cloudbuild.iam.gserviceaccount.com" '.allowances == [
           {flag: "--service-agent", value: $agent}, {flag: "--rbac-only-member", value: "edge"}, {flag: "--fleet", value: "none"},
-          {flag: "--credentials-arg", value: "--internal-ip"}]' "$report" >/dev/null ||
-        fail "the report does not hold the four allowances the run was given: $(jq -c '.allowances // "absent"' "$report")"
+          {flag: "--credentials-arg", value: "--internal-ip"}, {flag: "--credentials-arg", value: "--account"}]' "$report" >/dev/null ||
+        fail "the report does not hold the five allowances the run was given, the --credentials-arg flags by name alone: $(jq -c '.allowances // "absent"' "$report")"
+      ! grep -qF -- ops-reader@example.com "$report" || fail "the report holds the email --credentials-arg gave --account: $(cat "$report")"
       ;;
   esac
 }
 if row cj; then
   each allowance_row not-an-agent written
-  passed "(cj) --service-agent refuses an address that is no Google service agent, and every allowance a run is given, --credentials-arg included, is written into --report"
+  passed "(cj) --service-agent refuses an address that is no Google service agent, and every allowance a run is given, --credentials-arg included by its flag's name alone, is written into --report"
 fi
 
-# --- (co) No text given is printed unless it is of its flag's form: a token pasted alone, as the
-# value of a flag that names a thing, or as a file flag's file (--rbac-render, --iam-preview,
-# --report, the last both where it can be written and where it cannot) is in neither stdout, stderr
-# nor --report. A flag that names a thing refuses it, naming the flag and never the text; a file
-# flag's file is named by the flag and its place. Each item runs in a directory of its own, with
-# stdout and stderr apart, and writes --report there. ---
+# --- (co) No credential is printed: a token pasted alone, or as a file flag's file (--rbac-render,
+# --iam-preview, --report, the last both where it can be written and where it cannot), is in
+# neither stdout, stderr nor --report, and a flag that names a thing refuses a value of another
+# form than its own, naming the flag and never the text. --signing-secret's form, a Secret Manager
+# ID, admits most tokens, so a ghp_-style token given there must be printed nowhere: with no
+# binding on that secret (the step's UNKNOWN names it), with bindings on it live and in the
+# preview (findings name it, and where each is granted), and with every analysis refused, the
+# refusal quoting the resource asked about. --credentials-arg refuses a value given to any gcloud
+# flag but --account (--access-token=<token>). A name flag whose form admits a token-shaped string
+# (--secret, --agent-namespace, --namespace) prints that string: this row proves only that a value
+# of the wrong form is never printed, and that --signing-secret's value and a value given to a
+# --credentials-arg flag are printed nowhere, whatever their form. Each item runs in a directory of
+# its own, with stdout and stderr apart, and writes --report there. ---
 pasted_canary="eyJhbGciOiJFZERTQSJ9.PASTED-CANARY-5c1e.sig"
+# A GitHub-style token, of a Secret Manager ID's form (^[-_A-Za-z0-9]{1,255}$), built from parts
+# so that no line of this file holds a whole token, which a push's secret scan refuses.
+token_canary="ghp""_TOKENCANARY7d2bAbCdEfGhIjKlMnOpQrStu"
 pasted_row() {
-  local own="$temporary_dir/co-$1" args=() full report want want_exit=2 where
+  local own="$temporary_dir/co-$1" args=() full report want want_exit=2 where mark=PASTED-CANARY-5c1e also=""
+  local token_res="//secretmanager.googleapis.com/projects/$number/secrets/$token_canary"
+  local shown="the secret --signing-secret names"
   base_world
   mkdir -p "$own"
   report="$own/report.json"
@@ -377,6 +396,31 @@ pasted_row() {
     iam-preview) args=("--$1" "$pasted_canary") want="UNKNOWN code: IAM: --iam-preview entry 2 cannot be read" ;;
     report) report="$own/$pasted_canary" want="operator-token-minters: no finding and nothing unknown: exit 0" want_exit=0 ;;
     report-unwritable) report="$own/$pasted_canary/report.json" want="operator-token-minters: --report cannot be written" ;;
+    signing-secret-unbound)
+      args=(--signing-secret "$token_canary") mark=TOKENCANARY7d2b
+      want="UNKNOWN live: hold writers: the signing key in $shown: the analysis does not list serviceAccount:$gsa"
+      ;;
+    signing-secret-bound)
+      args=(--signing-secret "$token_canary") mark=TOKENCANARY7d2b want_exit=1
+      iam "$token_res" roles/secretmanager.secretAccessor "serviceAccount:$gsa"
+      iam "$token_res" roles/secretmanager.secretAccessor "serviceAccount:$worker_gsa"
+      edit "$world/preview.json" '.steps += [{op: "same", urn: "urn:pulumi:example::iam::gcp:secretmanager/secretIamMember:SecretIamMember::worker-reads-key",
+          provider: "example-provider", newState: {urn: "urn:pulumi:example::iam::gcp:secretmanager/secretIamMember:SecretIamMember::worker-reads-key",
+          custom: true, type: "gcp:secretmanager/secretIamMember:SecretIamMember",
+          inputs: {project: $p, secretId: "projects/\($p)/secrets/\($s)", role: "roles/secretmanager.secretAccessor", member: "serviceAccount:\($w)"}}}]' \
+        --arg p "$project" --arg s "$token_canary" --arg w "$worker_gsa"
+      want="FINDING serviceAccount:$worker_gsa: secretmanager.versions.access on $shown through roles/secretmanager.secretAccessor, granted at $shown"
+      also="FINDING serviceAccount:$worker_gsa: secretmanager.versions.access on $shown through roles/secretmanager.secretAccessor, declared by urn:pulumi:example::iam::gcp:secretmanager/secretIamMember:SecretIamMember::worker-reads-key"
+      ;;
+    signing-secret-refused)
+      args=(--signing-secret "$token_canary") mark=TOKENCANARY7d2b
+      : >"$world/refuse-analyze-resource"
+      want="UNKNOWN live: hold writers: the signing key in $shown: Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on organizations/100): ERROR: (gcloud.asset.analyze-iam-policy) PERMISSION_DENIED: Permission 'cloudasset.assets.analyzeIamPolicy' denied on resource '$shown'"
+      ;;
+    credentials-arg-value)
+      args=("--credentials-arg=--access-token=$pasted_canary")
+      want="operator-token-minters: --credentials-arg takes a value for --account alone; one of its values gives another flag a value"
+      ;;
     *) args=("--$1" "$pasted_canary") want="operator-token-minters: --$1 " ;;
   esac
   mapfile -t full < <(full_args)
@@ -385,17 +429,19 @@ pasted_row() {
     --report "$report" ${args[@]+"${args[@]}"} >"$own/stdout" 2>"$own/stderr") || status=$?
   output="$(cat "$own/stdout" "$own/stderr")"
   for where in stdout stderr; do
-    ! grep -qF -- PASTED-CANARY-5c1e "$own/$where" || fail "a pasted credential ($1) is in $where: $(grep -F -- PASTED-CANARY-5c1e "$own/$where")"
+    ! grep -qF -- "$mark" "$own/$where" || fail "a pasted credential ($1) is in $where: $(grep -F -- "$mark" "$own/$where")"
   done
-  [ ! -f "$report" ] || ! grep -qF -- PASTED-CANARY-5c1e "$report" || fail "a pasted credential ($1) is in --report: $(cat "$report")"
+  [ ! -f "$report" ] || ! grep -qF -- "$mark" "$report" || fail "a pasted credential ($1) is in --report: $(cat "$report")"
   want_text "$want" "--$1 given a pasted credential"
+  [ -z "$also" ] || want_text "$also" "--$1 given a pasted credential"
   want_status "$want_exit" "a pasted credential ($1)"
 }
 if row co; then
   each pasted_row alone unknown-flag project pool-project cluster location namespace service-account gsa agent-namespace \
-    broker-account broker-workload sql-instance db-secret broker-state signing-secret secret rbac-only-member credentials-arg \
-    analysis-scope fleet service-agent guarded rbac-render iam-preview report report-unwritable
-  passed "(co) a credential pasted alone, as a name flag's value or as a file flag's file is printed in neither stdout, stderr nor --report"
+    broker-account broker-workload sql-instance db-secret broker-state signing-secret signing-secret-unbound signing-secret-bound \
+    signing-secret-refused secret rbac-only-member credentials-arg credentials-arg-value analysis-scope fleet service-agent guarded \
+    rbac-render iam-preview report report-unwritable
+  passed "(co) a credential pasted alone, as a file flag's file or as a name flag's value of the wrong form, a token given as --signing-secret, and a value given to a --credentials-arg flag are printed in neither stdout, stderr nor --report; a name flag's value of its own form is printed"
 fi
 
 # --- (cp) The token Secrets are listed in the Table form: the API server's response to each list

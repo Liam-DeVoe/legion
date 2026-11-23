@@ -71,10 +71,14 @@ analyze() {
   fi
 }
 
-# live_iam CHECK [PASS_NOTE]: the check's analysis, each holder judged.
+# live_iam CHECK [PASS_NOTE]: the check's analysis, each holder judged. Policy Analyzer is asked
+# about the check's resource by its full name; every line and report field names it as
+# shown_resource does (the signing key's as the secret --signing-secret names), in a refusal's text
+# and in the resource a binding is made on too.
 live_iam() {
   local check="$1" step="${CHECK_STEP[$1]}" resource="${CHECK_RESOURCE[$1]}" witness_member="${CHECK_WITNESS[$1]:-}"
-  local holders what identity role attached perms how designed hattached text chains=0
+  local holders what identity role attached perms how designed hattached text chains=0 shown
+  shown="$(shown_resource "$check")"
   if [ -n "${CHECK_MISSING[$check]:-}" ]; then
     unknown "$step" "${CHECK_MISSING[$check]}"
     return
@@ -93,11 +97,11 @@ live_iam() {
     return
   fi
   if ! analyze "$resource" "${CHECK_PERMS[$check]// /,}" "$scope_flag" "$scope"; then
-    unknown "$step" "$ANALYZE_ERROR"
+    unknown "$step" "${ANALYZE_ERROR//"$resource"/"$shown"}"
     return
   fi
   if [ ! -s "$WORK/analysis.rec" ]; then
-    unknown "$step" "the analysis lists no holder of ${CHECK_PERMS[$check]// /, } on $resource, though its project's owners hold them, so it saw nothing"
+    unknown "$step" "the analysis lists no holder of ${CHECK_PERMS[$check]// /, } on $shown, though its project's owners hold them, so it saw nothing"
     return
   fi
   mark
@@ -118,6 +122,7 @@ live_iam() {
   holders="$(awk -F"$US" '$1 == "row" { print $2 }' "$WORK/analysis.rec" | sort -u | wc -l | tr -d ' ')"
   # A chain record's holder role and holder are in its written-out chain, the sentence's part.
   while IFS="$US" read -r -u 3 what identity role attached perms how designed _ hattached _ text; do
+    attached="${attached//"$resource"/"$shown"}" hattached="${hattached//"$resource"/"$shown"}" text="${text//"$resource"/"$shown"}"
     if [ "$what" = chain ]; then
       # The outermost impersonator, judged as a holder of what the holder holds; a designed link's
       # principal is the account it acts as, already judged.
@@ -125,14 +130,14 @@ live_iam() {
       [ "$designed" != designed ] || continue
       iam_verdict "$check" "$identity" "$role" "$attached" "$how"
       [ "$VERDICT" != finding ] ||
-        finding "$identity" "$(held_text "$check" "$perms") on $resource: $text, granted at $hattached$NOTE" \
-          "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
+        finding "$identity" "$(held_text "$check" "$perms") on $shown: $text, granted at $hattached$NOTE" \
+          "$role" "$shown" "$(held_list "$check" "$perms")" "$attached"
       continue
     fi
     iam_verdict "$check" "$identity" "$role" "$attached" "$how"
     [ "$VERDICT" != finding ] ||
-      finding "$identity" "$(held_text "$check" "$perms") on $resource through $role, granted at $attached$NOTE" \
-        "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
+      finding "$identity" "$(held_text "$check" "$perms") on $shown through $role, granted at $attached$NOTE" \
+        "$role" "$shown" "$(held_list "$check" "$perms")" "$attached"
   done 3<"$WORK/analysis.rec"
   if unchanged; then
     pass "$step" "$holders holders listed, each a person, a group judged by its members, Google's service agent or the one allowed by name, and $chains impersonation chains, each from such a principal or by design${2:+; $2}"

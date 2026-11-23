@@ -134,6 +134,9 @@ case "${words[*]}" in
       [ -z "${flag[$kind]:-}" ] || scope="$kind/${flag[$kind]}"
     done
     [ ! -e "$world/refuse-analyze" ] || refuse asset.analyze-iam-policy "Permission 'cloudasset.assets.analyzeIamPolicy' denied on resource '//cloudresourcemanager.googleapis.com/${scope/\//s/}' (or it may not exist)."
+    # A refusal naming the resource asked about, as an API error may quote the request's resource.
+    [ ! -e "$world/refuse-analyze-resource" ] ||
+      refuse asset.analyze-iam-policy "Permission 'cloudasset.assets.analyzeIamPolicy' denied on resource '${flag[full-resource-name]:-}' (or it may not exist)."
     # A binding on the resource, on the project that holds it (a bucket's `_` and the project
     # number are this world's project), or, from the organization's scope, on the organization.
     # With --analyze-service-account-impersonation, each service account among the holders gets an

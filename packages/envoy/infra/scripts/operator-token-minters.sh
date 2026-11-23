@@ -343,16 +343,18 @@
 # this run's or none. --report <file> writes {"run_at": "<RFC 3339>", "findings": [{"principal",
 # "right", "role", "resource", "permissions", "granted_at"}], "unknown": [{"step", "reason"}],
 # "allowances": [{"flag", "value"}]} beside the text, run_at being when the run began. `allowances`
-# names each allowance the run was given (each --service-agent, each --rbac-only-member, and
-# --fleet none), each of which lets a principal or a reading pass, so a reader holds each one to
-# what was accepted; it is [] when there is none. `right` is the sentence the text prints; the rest
-# are its parts, for a reader that matches a finding against an accepted entry by principal and role:
+# names each allowance the run was given (each --service-agent, each --rbac-only-member, --fleet
+# none, which each let a principal or a reading pass, and each --credentials-arg, by its gcloud
+# flag's name alone), so a reader holds each one to what was accepted; it is [] when there is none.
+# `right` is the sentence the text prints; the rest are its parts, for a reader that matches a
+# finding against an accepted entry by principal and role:
 #   role         the IAM role (roles/container.admin), for an impersonation chain the role of its
 #                outermost link; for an RBAC finding the right's label (create
 #                serviceaccounts/token envoy-operator in envoy-operator); for the namespace and the
 #                secret's tags, what is wrong (namespace envoy-operator, admin, tier, secret);
-#   resource     what the right is on: the analysed resource's full name, `cluster:<name>` (the
-#                operator's cluster; `<project>/<location>/<name>` for every other) or
+#   resource     what the right is on: the analysed resource's full name (the signing key's printed
+#                as the phrase "the secret --signing-secret names", never its ID), `cluster:<name>`
+#                (the operator's cluster; `<project>/<location>/<name>` for every other) or
 #                `membership:<pool>/<location>/<id>`, or `secret:<name>`;
 #   permissions  the IAM permissions the role grants among those asked, for a chain the holder's;
 #                for an RBAC finding the right's label; empty for the namespace and the secret's tags;
@@ -426,8 +428,9 @@ usage: operator-token-minters.sh [flags]
   --iam-preview FILE         `pulumi preview --json --show-sames` of an IAM program; repeatable
   --analysis-scope organizations/N|folders/N|projects/ID
                              Policy Analyzer's scope (default: the project's top ancestor)
-  --credentials-arg ARG      one gcloud flag, --name or --name=value, passed to each
-                             `gcloud container clusters get-credentials`; repeatable
+  --credentials-arg ARG      one gcloud flag passed to each `gcloud container clusters
+                             get-credentials`: a bare --name, or --account=EMAIL, the one flag it
+                             takes with a value; repeatable
   --report FILE              also write the result as JSON
 USAGE
 }
@@ -458,7 +461,11 @@ AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_
 # A usage error names the flag, or an argument's place, and never the text given: a value pasted in
 # the wrong place may be a credential. Each flag that names a thing is held to that thing's form
 # below, before any step runs, so a value of another form reaches no command line, output line or
-# report; a file flag's file is named by the flag and its place (--rbac-render entry 2).
+# report; a file flag's file is named by the flag and its place (--rbac-render entry 2). A value
+# of the flag's form is printed, and some forms admit a token-shaped string: --secret an uppercase
+# base32 key, --agent-namespace and --namespace a lowercase hex one. Two flags print no value at
+# all: --signing-secret, whose form, a Secret Manager ID, admits most tokens, is printed as the
+# phrase "the secret --signing-secret names", and --credentials-arg by its gcloud flag's name.
 total_args=$#
 while [ "$#" -gt 0 ]; do
   place=$((total_args - $# + 1))
@@ -541,8 +548,19 @@ refuse_form --signing-secret '^[-_A-Za-z0-9]{1,255}$' "a Secret Manager secret I
 # The broker's secret-name rule (internal/cipher/policy/names.go).
 refuse_form --secret '^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$' "a broker secret name, uppercase letters, digits and single underscores starting with a letter" "$SECRET"
 refuse_form --rbac-only-member "$k8s_label" "a fleet membership ID" ${RBAC_ONLY_MEMBERS[@]+"${RBAC_ONLY_MEMBERS[@]}"}
-refuse_form --credentials-arg '^--[a-z][-a-z0-9]*(=[^[:space:]]+)?$' "one gcloud flag, --name or --name=value" \
-  ${CREDENTIALS_ARGS[@]+"${CREDENTIALS_ARGS[@]}"}
+# --credentials-arg passes one gcloud flag to each `gcloud container clusters get-credentials`: a
+# bare --name, or --account=<email>, the one flag it takes with a value, held to an email's form,
+# which no token or key takes. Any other --name=value is refused, since its value could be a
+# credential pasted there (--access-token=...), and --report names each by its flag's name alone.
+for value in ${CREDENTIALS_ARGS[@]+"${CREDENTIALS_ARGS[@]}"}; do
+  case "$value" in
+    --account=*) pattern='^--account=[A-Za-z0-9][-+._A-Za-z0-9]*@[a-z0-9][-.a-z0-9]*\.[a-z]{2,}$' ;;
+    --*=*) usage_error "--credentials-arg takes a value for --account alone; one of its values gives another flag a value" ;;
+    *) pattern='^--[a-z][-a-z0-9]*$' ;;
+  esac
+  [[ "$value" =~ $pattern ]] ||
+    usage_error "--credentials-arg is one gcloud flag, a bare --name or --account=<email>; one of its values is not"
+done
 refuse_form --analysis-scope "^(organizations/[0-9]+|folders/[0-9]+|projects/([0-9]+|$project_id))\$" \
   "organizations/N, folders/N or projects/ID" "$ANALYSIS_SCOPE"
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
@@ -556,13 +574,14 @@ done
 # allowances_json: the JSON array of each allowance the run was given, {flag, value}: each
 # --service-agent, each --rbac-only-member and --fleet none, which let a principal or a reading pass,
 # and each --credentials-arg, which chooses how each cluster is reached, so a reader of --report can
-# hold each one to what was accepted.
+# hold each one to what was accepted. A --credentials-arg is written as its gcloud flag's name
+# alone (--account, never --account=<email>).
 allowances_json() {
   {
     for value in ${SERVICE_AGENTS[@]+"${SERVICE_AGENTS[@]}"}; do printf -- '--service-agent\t%s\n' "$value"; done
     for value in ${RBAC_ONLY_MEMBERS[@]+"${RBAC_ONLY_MEMBERS[@]}"}; do printf -- '--rbac-only-member\t%s\n' "$value"; done
     [ -z "${FLEET:-}" ] || printf -- '--fleet\t%s\n' "$FLEET"
-    for value in ${CREDENTIALS_ARGS[@]+"${CREDENTIALS_ARGS[@]}"}; do printf -- '--credentials-arg\t%s\n' "$value"; done
+    for value in ${CREDENTIALS_ARGS[@]+"${CREDENTIALS_ARGS[@]}"}; do printf -- '--credentials-arg\t%s\n' "${value%%=*}"; done
   } | jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {flag: .[0], value: .[1]}]'
 }
 # The guarded pairs: the operator's first, then the broker's (--broker-workload), then each

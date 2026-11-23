@@ -114,7 +114,9 @@ if row n; then
   run --report "$temporary_dir/report.json"
   want_status 1 "one holder of each hold-writer right"
   report="$temporary_dir/report.json"
-  for right in "cloudsql.users.create, cloudsql.users.update on $sql_res" "storage.objects.get on $bucket_res" "secretmanager.versions.access on $signing_res"; do
+  # The signing key's secret is printed as the secret --signing-secret names, never by its ID.
+  for right in "cloudsql.users.create, cloudsql.users.update on $sql_res" "storage.objects.get on $bucket_res" \
+    "secretmanager.versions.access on the secret --signing-secret names through roles/secretmanager.secretAccessor, granted at the secret --signing-secret names"; do
     jq -e --arg p "serviceAccount:$worker_gsa" --arg r "$right" 'any(.findings[]; .principal == $p and (.right | startswith($r)))' "$report" >/dev/null ||
       fail "the report does not list serviceAccount:$worker_gsa with $right: $(jq -c .findings "$report")"
   done
@@ -231,15 +233,18 @@ if row ag; then
   passed "(ag) a chain through two service accounts is followed to its outermost principal"
 fi
 
-# --- (ah) Who can write IAM policy over a checked resource holds every permission there. ---
+# --- (ah) Who can write IAM policy over a checked resource holds every permission there. The
+# signing key's secret is printed as the secret --signing-secret names. ---
 iam_writer_row() {
-  local permission="${1%%=*}" resource="${1#*=}"
+  local permission="${1%%=*}" resource="${1#*=}" shown
+  shown="$resource"
+  [ "$resource" != "$signing_res" ] || shown="the secret --signing-secret names"
   base_world
   role "projects/$project/roles/only.$permission" "$permission"
   iam "$resource" "projects/$project/roles/only.$permission" "serviceAccount:$worker_gsa"
   run
   want_status 1 "$permission held by $worker_gsa on $resource"
-  want_line "FINDING serviceAccount:$worker_gsa: $permission on $resource through projects/$project/roles/only.$permission, granted at $resource" \
+  want_line "FINDING serviceAccount:$worker_gsa: $permission on $shown through projects/$project/roles/only.$permission, granted at $shown" \
     "$permission held by $worker_gsa on $resource"
 }
 if row ah; then

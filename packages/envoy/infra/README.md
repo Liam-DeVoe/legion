@@ -4690,11 +4690,17 @@ selector, reads UNKNOWN, and so does a cluster where Backup for GKE is installed
 (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming
 each principal and right, or 2 naming each step it could not read, a run that stopped mid-way
 included. `--report <file>` writes the same as JSON, with each allowance the run was given
-(`--service-agent`, `--rbac-only-member`, `--fleet none`, `--credentials-arg`) under `allowances`,
-and is deleted when a run starts, so a report is that run's or none. Each flag that names a thing
-(a project, a cluster, a namespace, an account, a secret) is checked for that thing's form before
-any step runs, and a value of another form is a usage error naming the flag, never the value; a
-file flag's file is named by the flag and its place (`--rbac-render entry 2`), never its path.
+(`--service-agent`, `--rbac-only-member`, `--fleet none`, and `--credentials-arg` by its gcloud
+flag's name alone) under `allowances`, and is deleted when a run starts, so a report is that run's
+or none. Each flag that names a thing (a project, a cluster, a namespace, an account, a secret) is
+checked for that thing's form before any step runs, and a value of another form is a usage error
+naming the flag, never the value; a file flag's file is named by the flag and its place
+(`--rbac-render entry 2`), never its path. A value of the flag's form is printed, and a name flag
+whose form admits a token-shaped string (`--secret`, `--agent-namespace`, `--namespace`) prints
+that string: the check's test proves only that a value of the wrong form is never printed. Two
+flags print no value whatever its form: `--signing-secret`, a Secret Manager ID, whose form admits
+most tokens, is printed as "the secret --signing-secret names", and `--credentials-arg` takes a
+bare gcloud flag or `--account=<email>` alone and is reported by the flag's name.
 `scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
 `gcloud`, `curl` and `agent-secrets`.
 

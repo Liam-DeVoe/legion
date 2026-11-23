@@ -49,7 +49,12 @@ CHECK_STEP[state]="live: hold writers: $state_name"
 CHECK_RESOURCE[state]="//storage.googleapis.com/projects/_/buckets/$BUCKET"
 CHECK_PERMS[state]="storage.objects.get"
 [ -n "$BUCKET" ] || CHECK_MISSING[state]="no --broker-state: where the broker program's state is kept is not named"
-CHECK_STEP[signing]="live: hold writers: the signing key ${SIGNING_SECRET:-of the writer hold}"
+# The signing key's secret is printed as SIGNING_SHOWN, never by its ID: a Secret Manager ID's form
+# ([-_A-Za-z0-9]{1,255}) admits a token or a key pasted in its place, so its ID reaches gcloud's
+# argv alone, never stdout, stderr or --report. Its full resource name, CHECK_RESOURCE[signing], is
+# set by step-code-iam.sh, which reads the project number it holds.
+SIGNING_SHOWN="the secret --signing-secret names"
+CHECK_STEP[signing]="live: hold writers: the signing key in $SIGNING_SHOWN"
 CHECK_PERMS[signing]="secretmanager.versions.access secretmanager.secrets.setIamPolicy"
 CHECK_WITNESS[signing]="serviceAccount:$GSA"
 if [ -z "$SIGNING_SECRET" ]; then
@@ -66,6 +71,9 @@ if [ -z "$PROJECT" ]; then
   for check in "${CHECKS[@]}"; do CHECK_MISSING[$check]="no --project: the project that runs the operator's cluster is not named"; done
 fi
 [ -n "$BROKER" ] || CHECK_MISSING[broker]=skip
+# shown_resource CHECK: the check's resource as a run prints it: the signing key's as SIGNING_SHOWN,
+# every other as its full name.
+shown_resource() { if [ "$1" = signing ]; then printf '%s' "$SIGNING_SHOWN"; else printf '%s' "${CHECK_RESOURCE[$1]}"; fi; }
 
 # iam_verdict CHECK MEMBER ROLE ATTACHED HOW: sets VERDICT to ok (allowed), skip (a group judged by
 # its members) or finding, with NOTE beside a finding. ATTACHED is the resource the binding is
