@@ -15,11 +15,14 @@ const releaseSuspendsClaimsVersion = 20261122102933
 
 // 20261122102933 makes a release's mark name the claims it suspended by their tokens. A mark in
 // flight names roles: it is rewritten to the token of every claim of the issue that holds one of
-// them, which is the set the release before matched, so two claims of the implementer's role both
+// them, which is the set the release before matched, so three claims of the implementer's role all
 // stand in it and the architect, whose role it does not name, does not. pod_releases gains
 // `claims`, at its default on every record it finds. The way back the header gives writes the mark
-// back as the roles of the claims it names, each once, drops the column and deletes its version
-// row, so the roll-forward runs the migration again.
+// back as the role each token names, its last part, each once: two of those claims are on the
+// implementer's role only because this release moved them to the step they work
+// (supervise.Machine.Rerole writes claims.role), and the release before finds a claim by its
+// token's role, so each comes back as that role, the one whose name holds dashes among them. It
+// then drops the column and deletes its version row, so the roll-forward runs the migration again.
 func TestTheReleaseSuspendsClaimsMigrationNamesAMarksClaimsByTheirTokens(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -29,7 +32,9 @@ func TestTheReleaseSuspendsClaimsMigrationNamesAMarksClaimsByTheirTokens(t *test
 		role  claim.Role
 	}{
 		{"legion-legion-legion-208-implementer", claim.RoleImplementer},
-		// The agent of a key on the implementer's step, beside the role's own claim.
+		// The agents of two keys on the implementer's step, beside the role's own claim: one named
+		// for a role the deployment defines.
+		{"legion-legion-legion-208-security-reviewer", claim.RoleImplementer},
 		{"legion-legion-legion-208-tester", claim.RoleImplementer},
 		{"legion-legion-legion-208-architect", claim.RoleArchitect},
 	} {
@@ -59,7 +64,8 @@ func TestTheReleaseSuspendsClaimsMigrationNamesAMarksClaimsByTheirTokens(t *test
 		}
 		return suspended
 	}
-	if got, want := mark(), []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"}; !slices.Equal(got, want) {
+	moved := []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-security-reviewer", "legion-legion-legion-208-tester"}
+	if got, want := mark(), moved; !slices.Equal(got, want) {
 		t.Fatalf("the mark in flight after the migration = %v, want %v: each claim of the role it named, by its token", got, want)
 	}
 	if got := rowsAsText(t, store, `select roles || '|' || claims from pod_releases order by id`); !slices.Equal(got, []string{"implementer|"}) {
@@ -71,8 +77,8 @@ func TestTheReleaseSuspendsClaimsMigrationNamesAMarksClaimsByTheirTokens(t *test
 	if _, err := store.Pool().Exec(ctx, wayBackOf(t, releaseSuspendsClaimsVersion, "the release's claims")); err != nil {
 		t.Fatalf("run the way back: %v", err)
 	}
-	if got := mark(); !slices.Equal(got, []string{"implementer"}) {
-		t.Fatalf("the mark after the way back = %v, want the implementer's role once, as the release before reads it", got)
+	if got, want := mark(), []string{"implementer", "security-reviewer", "tester"}; !slices.Equal(got, want) {
+		t.Fatalf("the mark after the way back = %v, want %v: the role each token names, each once, as the release before reads it", got, want)
 	}
 	var column int
 	if err := store.Pool().QueryRow(ctx, `select count(*) from information_schema.columns
@@ -86,7 +92,7 @@ func TestTheReleaseSuspendsClaimsMigrationNamesAMarksClaimsByTheirTokens(t *test
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("roll forward after the way back: %v", err)
 	}
-	if got, want := mark(), []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"}; !slices.Equal(got, want) {
+	if got, want := mark(), moved; !slices.Equal(got, want) {
 		t.Fatalf("the mark after the roll-forward = %v, want %v", got, want)
 	}
 }
