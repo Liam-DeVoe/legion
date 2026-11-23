@@ -3226,6 +3226,23 @@ func (s *Postgres) TaskBranchQueued(ctx context.Context, tx pgx.Tx, issue string
 	return queued, nil
 }
 
+// StepStopQueued says whether the outbox still holds a supervise row of issue whose op is
+// step_stop (workflow's stopTask), queued before the row before — due, running or backing off — so
+// the process of the step a stopped task ran may not be stopped yet. A row of the lifecycle lane
+// runs once its own turn comes, and a row that backs off holds none of its issue's later rows back
+// (outboxInOrder), so this is the read for a row that must run after such a stop: the removal of a
+// removed task's working copy (TaskCopyRemove), which the process of the task's step may still be
+// working in. A stop queued after before holds it back from nothing.
+func (s *Postgres) StepStopQueued(ctx context.Context, tx pgx.Tx, issue string, before int64) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2
+		and payload->>'op' = 'step_stop' and id < $3)`,
+		issue, string(OutboxKindSupervise), before).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether a step stop of %s queued before row %d is still in the outbox: %w", issue, before, err)
+	}
+	return queued, nil
+}
+
 // UnfinishedLanes is every lane of project's issues with a row still in the outbox — due, running,
 // backing off or held — by issue then lane: the lanes the runner needs an executor for. The kinds
 // left are read and sorted into lanes here (LaneOf), rather than mapped in SQL, so laneKinds stays

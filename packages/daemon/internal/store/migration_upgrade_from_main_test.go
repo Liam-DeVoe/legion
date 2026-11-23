@@ -140,11 +140,15 @@ import (
 // table: they add `plan_tasks.branch` and `plan_tasks.join_conflicts` at defaults every row reads
 // as the issue's own branch and no conflicted join, create `plan_branches`, and restate
 // 20261119003157's kinds with task_branch (migration_20261121165047_test.go).
-// The pull requests by task (20261122122826) stand above every other version of this list: they
-// key the table by the issue and the branch, which every row the upgrade finds holds, store no
-// task (the record reads a row's task from the plan's tables at each read), and restate
-// 20261121165047's kinds with task_pull_requests_close, so that list is the last word of
-// outbox_kind_check now (migration_20261122122826_test.go).
+// The pull requests by task (20261122122826) stand above every other version of this list but the
+// removal of a removed task's working copy: they key the table by the issue and the branch, which
+// every row the upgrade finds holds, store no task (the record reads a row's task from the plan's
+// tables at each read), and restate 20261121165047's kinds with task_pull_requests_close
+// (migration_20261122122826_test.go).
+// The removal of a removed task's working copy (20261123072431) stands above every other version
+// of this list: it touches no table but the outbox's check, and restates 20261122122826's kinds
+// with task_copy_remove, so that list is the last word of outbox_kind_check now
+// (migration_20261123072431_test.go).
 // The branch of a pending delivery (20261122131321) is applied after all of these and touches no
 // outbox_kind_check: it adds pending_task_deliveries.branch at its default, the empty string, on
 // every row it finds, so it needs no row of its own here (migration_20261122131321_test.go).
@@ -170,7 +174,7 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117204629, 20261117213545, 20261117223524, 20261117224125, 20261119003157, 20261120012547,
 	20261120042902, 20261120055717, 20261121165047, 20261121183336, 20261122072945, 20261122074350,
-	20261122122826, 20261122131321,
+	20261122122826, 20261122131321, 20261123072431,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -189,12 +193,12 @@ var thisBranchsMigrations = []int{
 // 20261117200337, the name of each step's agent's 20261117213545, dispatch://INFRA-4374's
 // 20261119003157, dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the claim of each resume's 20261121183336, the claim of
-// each backstop's 20261122072945, one open resume per claim's 20261122074350, and the four the
+// each backstop's 20261122072945, one open resume per claim's 20261122074350, and the five the
 // task copies add, the working copies of a saved bundle (20261117204629), the held task
-// (20261117224125), the copies of a plan's tasks (20261121165047) and the pull requests by task
-// (20261122122826). That is why the loop below
-// holds the list rather than counting it, so that a version added above any of them is named here
-// rather than read as main's.
+// (20261117224125), the copies of a plan's tasks (20261121165047), the pull requests by task
+// (20261122122826) and the removal of a removed task's working copy (20261123072431). That is why
+// the loop below holds the list rather than counting it, so that a version added above any of them
+// is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
