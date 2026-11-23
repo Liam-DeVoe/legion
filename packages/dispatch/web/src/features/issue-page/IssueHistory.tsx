@@ -323,7 +323,6 @@ export function IssueHistory({
   const navigation = useNavigationType();
   const heading = useRef<HTMLHeadingElement>(null);
   const headingLanded = useRef<string | undefined>(undefined);
-  const landedBefore = useRef(false);
   useEffect(() => {
     const element = heading.current;
     if (
@@ -335,9 +334,8 @@ export function IssueHistory({
     ) {
       return;
     }
+    const comingBack = navigation === "POP" && headingLanded.current !== undefined;
     headingLanded.current = activityFollowing;
-    const comingBack = navigation === "POP" && landedBefore.current;
-    landedBefore.current = true;
     if (comingBack) return;
     const box = scrollingAncestor(element);
     if (box === null) return;

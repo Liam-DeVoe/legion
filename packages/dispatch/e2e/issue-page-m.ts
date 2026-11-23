@@ -41,6 +41,16 @@ export function historyPanel(page: Page): Locator {
   return page.getByTestId("issue-history");
 }
 
+/** The history's heading, "History", in Details. */
+export function historyHeading(page: Page): Locator {
+  return historyPanel(page).getByRole("heading", { exact: true, name: CONTROL_LABELS.history });
+}
+
+/** The history's Load older control, which reads the log's next page. */
+export function historyLoadOlder(page: Page): Locator {
+  return historyPanel(page).getByRole("button", { name: CONTROL_LABELS.load_older });
+}
+
 /** One turn of an agents' thread in the history, by the comment's or the message's id. */
 export function historyItem(page: Page, id: string): Locator {
   return historyPanel(page).locator(`[data-history-item="${id}"]`);

@@ -600,14 +600,16 @@ function holdLandedPlace(target: string, frames: number): () => void {
       claim?.();
       claim = undefined;
     };
-    // The focused element is brought into the view before its top is kept, by the rule this
-    // function's doc states for the opener's row.
+    // The focused element is brought into the view before its top is kept, as this function's
+    // doc states: the opener brings the control's row into the view, not the control.
     const own = ownScrollMark();
     const landing = control.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
     const tall = landing.height > view.height;
-    const whollyIn = landing.top >= view.top && landing.bottom <= view.bottom;
-    if (!whollyIn && !(tall && overlaps(landing, view))) {
+    const away = tall
+      ? !overlaps(landing, view)
+      : landing.top < view.top || landing.bottom > view.bottom;
+    if (away) {
       const before = scroller.scrollTop;
       control.scrollIntoView({ block: tall ? "start" : "nearest" });
       own.move(before, scroller.scrollTop);

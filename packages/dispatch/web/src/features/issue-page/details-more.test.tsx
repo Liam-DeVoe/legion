@@ -35,6 +35,7 @@ import { useKeymapScope } from "../shell/keymap";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
+import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -1666,9 +1667,10 @@ test("Back to the history's address from the issue's own address opens Details a
   }
 });
 
-// The reader loads `/issues/<key>/activity`, which opens Details, follows a link to the address
-// of a comment that has a row of the outline, where the outline lands on that row and opens no
-// Details, closes Details there, and goes Back to the history's address: Details opens again.
+// Back to an earlier entry of `/issues/<key>/activity` is that entry's following again. A
+// comment's address with a row of the outline opens no Details, so Details forgets the following
+// it last opened for there, and Back to the history's address opens it again, though the reader
+// closed it at the comment.
 test("Back to the history's address from a comment's address with a row of the outline opens Details again, though the reader closed it there", async () => {
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
   const { client, getIssueCoverage, names } = agentsThreadClient();
@@ -1882,7 +1884,7 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
     row.matches(HISTORY_BLOCK)
       ? heightIn(row)
       : (heights.get(
-          row.getAttribute("data-testid") ?? row.getAttribute("data-details-row") ?? ""
+          row.getAttribute("data-testid") ?? row.getAttribute(DETAILS_ROW_ATTRIBUTE) ?? ""
         ) ?? ROW_HEIGHT);
   /** The top and height of `target` in `block`, whose top is `top`, where `block` holds it. */
   const placeIn = (block: Element, top: number, target: Element): DOMRect => {
@@ -1917,11 +1919,11 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
     for (const row of box.firstElementChild?.children ?? []) {
       if (row.contains(this)) {
         if (row.matches(HISTORY_BLOCK)) return placeIn(row, top, this);
-        const head = row.matches("[data-details-row]")
+        const head = row.matches(`[${DETAILS_ROW_ATTRIBUTE}]`)
           ? row.firstElementChild?.firstElementChild
           : null;
         return head?.contains(this) === true
-          ? rectOf(top, Math.min(ROW_HEIGHT, rowHeight(row)))
+          ? rectOf(top, ROW_HEIGHT)
           : rectOf(top, rowHeight(row));
       }
       top += rowHeight(row);
@@ -2035,6 +2037,10 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
         )
       );
       await nextFrames(2);
+    },
+    /** Waits for the history to draw `count` entries. */
+    async historyDrawn(count: number): Promise<void> {
+      await waitFor(() => expect(box.querySelectorAll("[data-history-entry]")).toHaveLength(count));
     },
     /** Sets the height of `row` - a row of the box by its `data-testid` or its
      *  `data-details-row`, or an entry of the history by its `data-history-entry` - `by` taller,
@@ -2207,15 +2213,13 @@ test("t o pressed again at /collaborators with Details read far below a collabor
   });
   try {
     await page.focused("a load of /collaborators");
-    await waitFor(() =>
-      expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length)
-    );
+    await page.historyDrawn(log.length);
     // The list the address opened, drawn under the control, makes its row taller than the view.
     page.grow("collaborators", 2 * BOX_HEIGHT);
     page.heightsChanged();
     // The reader leaves the control and reads down to the end of Details.
     act(() => page.control().blur());
-    readerScrolls(page.box, page.box.scrollHeight - BOX_HEIGHT - page.box.scrollTop);
+    readerScrollsToEnd(page.box);
     expect(
       page.control().getBoundingClientRect().bottom,
       "the reader's place left the Collaborators control in Details' view, so the case proves nothing"
@@ -2324,9 +2328,7 @@ test("t v pressed again at /activity with Details read far down lands the histor
     log: Promise.resolve(log),
   });
   try {
-    await waitFor(() =>
-      expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length)
-    );
+    await page.historyDrawn(log.length);
     const history = screen.getByTestId("issue-history");
     const heading = history.querySelector<HTMLElement>("h2");
     if (heading === null) throw new Error("the history drew no heading");
@@ -2337,7 +2339,7 @@ test("t v pressed again at /activity with Details read far down lands the histor
       ).toBe(BOX_TOP)
     );
     // The reader reads down to the end of Details.
-    readerScrolls(page.box, page.box.scrollHeight - BOX_HEIGHT - page.box.scrollTop);
+    readerScrollsToEnd(page.box);
     expect(
       heading.getBoundingClientRect().bottom,
       "the reader's place left the history's heading in Details' view, so the case proves nothing"
@@ -2406,6 +2408,11 @@ function readerScrolls(box: HTMLElement, by: number): void {
     box.scrollTop += by;
     box.dispatchEvent(new Event("scroll"));
   });
+}
+
+/** The reader scrolling Details' box down to the end of what it holds (`readerScrolls`). */
+function readerScrollsToEnd(box: HTMLElement): void {
+  readerScrolls(box, box.scrollHeight - BOX_HEIGHT - box.scrollTop);
 }
 
 /** The pointer coming to rest on `entry` at `point` of the page: the `pointerover` and the
@@ -2626,9 +2633,7 @@ async function readerLeftAPlace(place: EarlierPlace) {
   try {
     act(() => page.hold.open?.(true));
     // Each claim is an entry, and so is the agents' thread.
-    await waitFor(() =>
-      expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length + 1)
-    );
+    await page.historyDrawn(log.length + 1);
     const entries = [...page.box.querySelectorAll<HTMLElement>("[data-history-entry]")];
     const entry =
       place === "older"
@@ -2847,9 +2852,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
       });
       try {
         act(() => page.hold.open?.(true));
-        await waitFor(() =>
-          expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length)
-        );
+        await page.historyDrawn(log.length);
         await userEvent.keyboard("tv");
         const history = screen.getByTestId("issue-history");
         await waitFor(() =>
@@ -2880,9 +2883,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
 
         if (above === "arrives") {
           act(() => prependEventToLog(client, claimMade(log.length + 1, 1)));
-          await waitFor(() =>
-            expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length + 1)
-          );
+          await page.historyDrawn(log.length + 1);
         } else {
           growEntryAbove(page, entry);
         }
@@ -2908,9 +2909,7 @@ test("after t o and the pointer resting on an entry of the history, the reader's
   const page = drawPeopleInDrawer(`/issues/${KEY}`, { heldClock: true, log: Promise.resolve(log) });
   try {
     act(() => page.hold.open?.(true));
-    await waitFor(() =>
-      expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length)
-    );
+    await page.historyDrawn(log.length);
     await userEvent.keyboard("to");
     await page.focused("t o");
     page.frame();
