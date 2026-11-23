@@ -427,7 +427,7 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	})
 
 	natsClient := intakeTestClient(t)
-	settingsCache := newSettingsCache(pool, settingsWake(t, pool))
+	settingsCache := newSettingsCache(pool, settingsWake(t, pool), tuningFor(t).log)
 	runSettingsCache(t, settingsCache)
 	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settingsCache, unrenamed())
 	startIntake(t, intake)
