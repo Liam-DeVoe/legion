@@ -654,7 +654,10 @@ func readIssueAskStateWrites(
 // empty reports whether w has nothing to write.
 func (w *issueAskStateWrites) empty() bool {
 	// kept for one release: roll-window-attributes
-	return len(w.writes.repairs) == 0 && len(w.repeats) == 0
+	if len(w.repeats) > 0 {
+		return false
+	}
+	return len(w.writes.repairs) == 0
 }
 
 // apply makes w's writes on live, a tree of w's document, recording each unindexed block it marks
