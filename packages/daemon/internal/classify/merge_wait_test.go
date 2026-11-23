@@ -86,6 +86,39 @@ func TestARoundWaitsOnTheMergeStateOnlyWhereAnApprovalStandsOnAHeadGitHubWillNot
 	}
 }
 
+// A review step the owner of the task does (`reviewer:owner`, where the claim that works the place
+// is the architect: record.Issue.OwnersPlace) has no round for GitHub's merge state to settle: it
+// ends by the owner's own report, and workflow's settleRound returns at once there. A qualifying
+// review on GitHub still writes its decision on the reviewer's row, so an approval can stand on a
+// head GitHub will not merge from; the round waits on no answer all the same, so the state shows no
+// mergeWait for it and the engine owes no read of GitHub's merge state for it. The same approval at
+// a review step another agent does, with plan rows or with none, waits as it always has.
+func TestNoRoundWaitsOnTheMergeStateAtAReviewStepTheOwnerDoes(t *testing.T) {
+	const issue, head = "LEGION-208", "h2"
+	approval := record.PhaseRow{Issue: issue, Role: claim.RoleReviewer,
+		Decision: &record.ReviewDecision{State: "approved", Head: head}}
+	blocked := &record.PullRequest{Issue: issue, Number: 42, HeadSHA: head,
+		State: record.PullRequestOpen, MergeState: record.MergeStateBlocked}
+	reviewing := func(placeRole claim.Role) record.Issue {
+		return record.Issue{Key: issue, Tree: issue, Phase: phase.Reviewing, StepRole: claim.RoleReviewer, PlaceRole: placeRole}
+	}
+	for _, tc := range []struct {
+		name  string
+		issue record.Issue
+		want  bool
+	}{
+		{"reviewer:owner", reviewing(claim.RoleArchitect), false},
+		{"reviewer with no key", reviewing(claim.RoleReviewer), true},
+		{"reviewing with no plan rows", record.Issue{Key: issue, Tree: issue, Phase: phase.Reviewing}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RoundWaitsOnMergeState(tc.issue, approval, blocked); got != tc.want {
+				t.Fatalf("RoundWaitsOnMergeState at %s with an approval of a blocked head = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 // A push to no commit (record.NoCommit) is GitHub's deletion of the branch. It names no code, so it
 // is never on its way (CodeOnItsWay), whether the record holds the pull request open or merged, and
 // the path does not run through it to a push that makes the branch again. A release before the

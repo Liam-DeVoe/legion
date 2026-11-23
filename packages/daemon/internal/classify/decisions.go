@@ -1204,8 +1204,14 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 // one it held before the merge. A closed one merges nothing until a reopen, and a reopen asks for
 // a read of the head again (the opened handler, then Apply's askMergeState). Projection's
 // mergeWaitView makes no state test of its own and relies on this one.
+//
+// It does not hold at a review step the owner does (`reviewer:owner`, record.Issue.OwnersPlace):
+// that step ends by the owner's own report, and no review on GitHub settles it (workflow's
+// settleRound returns there at once), so a qualifying review on GitHub, which still writes its
+// decision on the reviewer's row, leaves no round waiting on GitHub's answer: the engine reads no
+// merge state for it and the state build shows no mergeWait.
 func RoundWaitsOnMergeState(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) bool {
-	if issue.Phase != phase.Reviewing || pr == nil || reviewer.Decision == nil {
+	if issue.Phase != phase.Reviewing || issue.OwnersPlace() || pr == nil || reviewer.Decision == nil {
 		return false
 	}
 	return pr.State == record.PullRequestOpen && reviewer.Decision.State == "approved" &&

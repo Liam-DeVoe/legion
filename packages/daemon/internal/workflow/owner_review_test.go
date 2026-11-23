@@ -96,6 +96,35 @@ func TestAnOwnersReviewStepEndsByItsReport(t *testing.T) {
 	})
 }
 
+// At a review step the owner does, an approval on GitHub from an account with write access still
+// writes its decision on the reviewer's row, but no round waits on GitHub's merge state there
+// (classify.RoundWaitsOnMergeState): the step ends by the owner's own report, and settleRound
+// returns at once. So the review, a fact the gate owes no read for in reviewing
+// (classify.MergeStateReadOwed), asks for no read of GitHub's merge state, although the approval
+// stands on a head GitHub holds `blocked`. The control is the rule before this one, where the
+// round of that approval waited on GitHub and the review asked for a read that nothing would ever
+// settle.
+func TestAnApprovalOnGitHubAtTheOwnersReviewStepAsksForNoMergeStateRead(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := ownerAtReviewStep(t, pool, engine)
+	pr := recordedPR(t, pool, root.Key)
+	pr.MergeState = record.MergeStateBlocked
+	seedPR(t, pool, pr)
+	var asked []string
+	engine.cfg.ReadMergeState = func(issue string) { asked = append(asked, issue) }
+
+	applyFacts(t, pool, engine)("person-approves", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 3,
+		State: "approved", CommitID: "head", HeadSHA: "head", Author: "a-writer", AuthorCanWrite: true, Body: "ship it"})
+	if row := roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer); row.Decision == nil || row.Decision.State != "approved" || row.Decision.Head != "head" {
+		t.Fatalf("the reviewer's row after the approval holds the decision %+v, want the approval of head: this test proves nothing without it", row.Decision)
+	}
+	if len(asked) != 0 {
+		t.Fatalf("the approval at the owner's review step asked for %d reads of GitHub's merge state %v, want none: no round waits there", len(asked), asked)
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
+}
+
 // taskRounds is the review rounds counted on task a of key's run at generation 1
 // (record.Store.ReturnCounts).
 func taskRounds(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) int {
