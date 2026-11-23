@@ -146,7 +146,7 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 // a silence only the store can answer: false for a phase its terminating fact has met
 // (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted (the
 // phase row's CompletedAt, which the next phase's start clears in clearHandoff). The row is the
-// role's row now (record.PhaseRowOf), the row of the step whose entry was raised last, since a
+// role's row now (record.PhaseRowOf), the row of the step with the highest entry, since a
 // role that stands at two steps has a row for each and its worker is owed the turn of the one it
 // works. It answers that row too, an empty row naming the issue and role where the record holds
 // none, so the silence repair reads it once.
@@ -352,7 +352,7 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 // round inherits an earlier decision. The architect reports no handoff, so it has none to clear:
 // its phases row holds only the entry it was handed work on (EnterArchitect), which no move
 // between phases clears.
-func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
+func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
@@ -570,7 +570,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	row, err := e.phaseRow(ctx, tx, issue, role)
 	if err != nil {
 		return err
 	}
@@ -770,7 +770,7 @@ type startMarks struct {
 // (record.SuperviseRequest.Claim) and the agent it runs on that claim (record.SuperviseRequest.Agent).
 // The claim is the claim of the step's agent its entry writes on the role's phases row
 // (stepReach), or the claim a rule weighed against that row (claimReach, and the resume task's
-// starts). The outbox acts on that claim and fences the start on it (record.StartLeft), so a start
+// starts). The outbox acts on that claim and fences the start on its entry (record.StartLeft), so a start
 // the task has left since finishes, or reaches the claim it was queued for, and never the claim
 // the role's row names by then. The claim is empty only for an issue whose key names no claims
 // (recordsSteps), whose start the outbox gives its role's worker.
@@ -1033,7 +1033,9 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // queue writes them into every other task of the reviewer (namingTheReviewRound, queuedRow). That
 // is why enter answers the text and its two phase-worker callers send what it answers, marked as
 // the stored task (startMarks.stored) so the queue writes the sentences no second time, never
-// their own task: the number is known only once it is raised, here.
+// their own task: the number is known only once it is raised, here. It answers whom the start
+// reaches too (entered.to), the claim it wrote on the row and that step's agent, which those two
+// callers queue the start for.
 //
 // movedBack is written with them: whether the start raising this entry was a move back to an
 // earlier phase. Its one reader is the completion route's entry fence, which takes a completion
@@ -1163,30 +1165,26 @@ type entered struct {
 }
 
 // stepRunRow is the row an entry of role's step at place of task raises, among rows, and whether
-// it is the role's row of no step, which the entry moves to the step (record.Store.MovePhaseToStep):
-// the row the step's earlier runs wrote; else the role's row of no step, a row a new generation
-// cleared or the release before wrote, which was the role's one row and so is the step's, as the
-// one row of a role was raised at each step it ran; else, for a later step's first run, now, the
-// role's row now, with no handoff (phaseHandoff) and stamped with the step, so the new row carries
-// what the role's one row carried into its next phase and the row of the role's earlier step keeps
-// its report.
+// it is the role's row of no step, which the entry moves to the step (record.Store.MovePhaseToStep),
+// by the lookup every read of a step's row makes (record.StepRowOf): the row the step's earlier
+// runs wrote, which takes the record the role named last from now, the role's row now, since a
+// return to an earlier step of the role comes after the role named a record at a later one, and the
+// next completion must name one written anew (HANDOFF_NOT_NEW); else the role's row of no step,
+// which was the role's one row and so is the step's, as the one row of a role was raised at each
+// step it ran; else, for a later step's first run, now, with no handoff (phaseHandoff) and stamped
+// with the step, so the new row carries what the role's one row carried into its next phase and
+// the row of the role's earlier step keeps its report.
 func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int) (record.PhaseRow, bool) {
-	var noStep *record.PhaseRow
-	for i, row := range rows {
-		switch {
-		case row.Role != role:
-		case row.StepTask == task && row.StepPlace == place:
-			return row, false
-		case row.StepTask == "" && noStep == nil:
-			noStep = &rows[i]
-		}
-	}
-	if noStep != nil {
-		row := *noStep
+	row, found := record.StepRowOf(rows, role, task, place)
+	switch found {
+	case record.RowOfTheStep:
+		row.LastHandoff = now.LastHandoff
+		return row, false
+	case record.RowOfNoStep:
 		row.StepTask, row.StepPlace = task, place
 		return row, true
 	}
-	row := phaseHandoff{}.onto(now)
+	row = phaseHandoff{}.onto(now)
 	row.StepTask, row.StepPlace = task, place
 	return row, false
 }

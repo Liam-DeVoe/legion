@@ -186,8 +186,10 @@ with a `--summary` of one sentence naming what changed since the earlier approva
 sentence with both reviews' results. A to-do only a human can do is a `dispatch ask`.
 
 The merge is the close: once a pull request merges while its issue awaits the merge, the daemon
-writes `done`, and the tester's production check follows in its own session, on the pull
-request, asking nothing of you. Your acceptance comes before it where the issue's task holds your
+writes `done`, unless an issue beneath it is still in the workflow, a state a deploy can leave,
+where it holds the issue in `merging` until the last such issue leaves (a `pr-merged` notice says
+so), and the tester's production check follows in its own session, on the pull request, asking
+nothing of you. Your acceptance comes before it where the issue's task holds your
 step `acceptance:owner`: the pass of the step before it moves the issue to `accepting` (in the
 default steps, the reviewer's approval). That step's notice of it comes to you for the root, and
 for another issue when neither its own architect nor an architect between it and the root holds its

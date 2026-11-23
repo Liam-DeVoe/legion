@@ -20,7 +20,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
   A root's questions go on the root: one on a child starts no wait, and the tree stands still.
   A child's own architect opens none; it sends each question to the architect above it with `envoy_publish`.
 
-- Message a role with `envoy_publish` to `notifications.role.<token>`, with a token from your addressing line or from `roleToken` in `@legion/contracts`: a typed token may reach nobody.
+- Message a step's worker with `envoy_publish` to `notifications.role.<token>`, the token your addressing line or `dispatch steps --issue <KEY>` gives its agent; a role's own token reaches the agent named for that role, and a typed one may reach nobody.
 
 - The deployment instructions override this skill where they conflict.
 

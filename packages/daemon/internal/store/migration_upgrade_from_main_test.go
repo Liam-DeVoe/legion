@@ -98,7 +98,7 @@ import (
 // is still queued.
 // The name of each step's agent (20261117213545) stands above 20261117200337 and below
 // 20261119003157, so an upgrade applies it between those two: it adds `plan_steps.agent` to the
-// plan's step table and touches no outbox_kind_check, and every row it finds reads as its role
+// plan's step table and touches no outbox_kind_check, and it names the agent of every row it finds
 // (migration_20261117213545_test.go).
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
 // (20261119003157) is the last version of this list to rewrite outbox_kind_check: no version above
@@ -119,23 +119,28 @@ import (
 // so every row an upgrade finds passes them (migration_20261117223524_test.go), and it touches no
 // outbox_kind_check.
 // The claim of each resume (20261121183336) is applied after all of these and touches no
-// outbox_kind_check: it adds pod_resumes.claim at its default, the empty string, on every row it
-// finds, so it needs no row of its own here.
+// outbox_kind_check: it adds pod_resumes.claim, names on every row it finds the claim of its role,
+// and makes the one open resume per role one per claim, and closes no row, so it needs no row of
+// its own here (migration_20261121183336_test.go).
 // The key of a phases row by its step (20261122062637) is applied after the claim of each resume
 // and touches no outbox_kind_check: it writes the primary key of phases over step_task and
 // step_place, which the plan of an issue (20261117034837) added, and every row it finds keeps its
 // step (migration_20261122062637_test.go).
 // The claim of each backstop (20261122072945) is applied after it and touches no
-// outbox_kind_check: it adds pod_wake_backstops.claim at its default, the empty string, on every
-// row it finds, and splits the one open backstop per role into one per claim for the rows that
-// name one, so it needs no row of its own here (migration_20261122072945_test.go).
-// One open resume per claim (20261122074350) is applied after it and touches no
-// outbox_kind_check: it keeps the one open resume per role for the resumes that name no claim and
-// holds one per claim for the rest, and closes no row, so it needs no row of its own here
-// (migration_20261122074350_test.go).
-// The agent of a claim's session (20261122120917) is applied after one open resume per claim and
-// touches no outbox_kind_check: it adds claims.session_agent at its default, the empty string, on
-// every row it finds, so it needs no row of its own here (migration_20261122120917_test.go).
+// outbox_kind_check: it adds pod_wake_backstops.claim, names on every row it finds the claim of its
+// role, and makes the one open backstop per role one per claim, so it needs no row of its own here
+// (migration_20261122072945_test.go).
+// The claims a release suspended (20261122102933) is applied after it and touches no
+// outbox_kind_check: it rewrites a release's mark in flight as the tokens of the claims of the
+// roles it names and adds pod_releases.claims at its default, the empty string, on every row it
+// finds, so it needs no row of its own here (migration_20261122102933_test.go).
+// The agent of a claim's session (20261122120917) is applied after the claims a release
+// suspended and touches no outbox_kind_check: it adds claims.session_agent at its default, the
+// empty string, on every row it finds, so it needs no row of its own here
+// (migration_20261122120917_test.go).
+// The record that a claim took another role (20261123033101) is applied after it and touches no
+// outbox_kind_check: it adds claims.role_change, null on every row it finds, so it needs no row of
+// its own here (migration_20261123033101_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -146,7 +151,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117213545, 20261117223524, 20261119003157, 20261120042902, 20261120055717, 20261121183336,
-	20261122062637, 20261122072945, 20261122074350, 20261122120917,
+	20261122062637, 20261122072945, 20261122102933, 20261122120917, 20261123033101,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -165,10 +170,10 @@ var thisBranchsMigrations = []int{
 // 20261117200337, the name of each step's agent's 20261117213545, dispatch://INFRA-4374's
 // 20261119003157, dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717,
 // the claim of each resume's 20261121183336, the key of a phases row by its step's 20261122062637,
-// the claim of each backstop's 20261122072945, one open resume per claim's 20261122074350 and the
-// agent of a claim's session's 20261122120917. That is why the loop below holds the list rather
-// than counting it, so that a version added above any of them is named here rather than read as
-// main's.
+// the claim of each backstop's 20261122072945, the claims a release suspended's 20261122102933, the
+// agent of a claim's session's 20261122120917 and the record that a claim took another role's
+// 20261123033101. That is why the loop below holds the list rather than counting it, so that a
+// version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

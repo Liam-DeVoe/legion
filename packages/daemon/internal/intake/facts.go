@@ -1033,8 +1033,10 @@ func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 // architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
 // claim of the architect, the issue's generation and the run of the step the issue stood in
 // (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
-// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three, and
-// carries PhaseEntry instead, which the architect's move does not: each check reads its own field.
+// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries By alone of the three,
+// the claim that asked it, which the workflow holds to the claim the role's row names on its step
+// (two claims of one issue can hold one role); it carries PhaseEntry too, which the architect's
+// move does not: each check reads its own field.
 type BackwardMove struct {
 	Issue      string
 	Requester  claim.Role
@@ -1384,8 +1386,15 @@ func (f CloseRoot) Message() string {
 // cluster did — and because it is persisted on the claim, so the boot's replay of a failure no
 // daemon applied reports the same end (the daemon's replayTerminal).
 type ClaimFailed struct {
-	Issue        string
-	Role         claim.Role
+	Issue string
+	Role  claim.Role
+	// Claim is the token of the claim that failed. Two claims of one issue can hold one role — the
+	// agent of a key on a step of another role, beside that role's own claim of an earlier version
+	// of the plan — so the role does not name the claim: only the failure of the claim that works
+	// the role's step holds the issue, and only the failure of a look's claim ends that look
+	// (workflow's claimFailed). It is "" on a fact from a daemon before the claim was carried,
+	// which keeps the role's rule.
+	Claim        claim.Token
 	Reason       string
 	Death        string
 	StartFailure string
@@ -1438,6 +1447,23 @@ type SessionStoreFault struct {
 }
 
 func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
+
+// PodRefusedLaunch is a launch of a claim refused because the issue's pod cannot run it until that
+// pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): the claim is
+// suspended, charged nothing, and runs nothing while that pod stands (supervise's podRefused). It
+// is told on the issue and to the controller at the first refusal and hourly while the pod
+// stands. Queue asks for a start of the claim, which a refused launch no outbox start stood behind
+// needs, so that whatever replaces the pod resumes the claim.
+type PodRefusedLaunch struct {
+	Issue  string
+	Role   claim.Role
+	Claim  claim.Token
+	Pod    string
+	Detail string
+	Queue  bool
+}
+
+func (f PodRefusedLaunch) namedIssue() (string, bool) { return f.Issue, true }
 
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
@@ -1677,10 +1703,9 @@ const (
 // at its due_at): the claim it was armed for (Claim), the worker of the open phase at its release,
 // is woken where it stands released (ReleasedClaimByToken), whatever else did or did not happen
 // since the release, and a backstop of an issue the record no longer holds does nothing. Role is
-// the role that claim held then; a backstop the release before armed names no claim, and wakes the
-// claim of the worker on Role's step. It is never decoded from an event — the daemon's own pass
-// reads the due rows and applies one fact per row, under the row's id, so a backstop that came due
-// while the daemon was down fires once after it starts.
+// the role that claim held then. It is never decoded from an event — the daemon's own pass reads
+// the due rows and applies one fact per row, under the row's id, so a backstop that came due while
+// the daemon was down fires once after it starts.
 type PodBackstopDue struct {
 	ID    int64
 	Issue string
@@ -1694,10 +1719,14 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 // between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence),
 // and its session's report explaining none of that quiet. The sweep applies it from the live
 // claims, never from an event, and its handler decides in the fact's own transaction
-// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is).
+// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is). Claim
+// is the claim the sweep read: two claims of one issue can hold one role, and the handler judges
+// only the one that works the role's step, so a fact of the other is passed over; "" on a fact
+// from before the claim was carried, which the handler reads as the step's worker's.
 type WorkerSilent struct {
 	Issue      string
 	Role       claim.Role
+	Claim      claim.Token
 	Generation uint64
 	LastStep   time.Time
 	Bound      time.Duration
@@ -1709,10 +1738,12 @@ func (f WorkerSilent) namedIssue() (string, bool) { return f.Issue, true }
 // on background work of its own (Kinds) whose session's report, at ReportedAt, is older than
 // Bound (config.Config.WorkerBackground). The sweep applies it from the live claims, never from
 // an event, and its handler tells the architect and sends nothing (internal/daemon's
-// workerBackgroundEventID says what its id is).
+// workerBackgroundEventID says what its id is). Claim is the claim the sweep read, as
+// WorkerSilent's is.
 type WorkerBackgroundStalled struct {
 	Issue      string
 	Role       claim.Role
+	Claim      claim.Token
 	Generation uint64
 	ReportedAt time.Time
 	Kinds      []string
@@ -2030,9 +2061,10 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
 // row names (record.PhaseRow.Entry), movedBack whether the move that raised it was a move back
 // (record.PhaseRow.EntryMovedBack), and otherSteps the highest entry another step's row of the role
-// holds (record.OtherStepsEntry), 0 for a role at one step; issue is the record as the same read
-// holds it, pr the pull request it holds, and pending the claim's queued task, which only the
-// route reads.
+// holds (record.OtherStepsEntry), 0 for a role at one step; served is the claim the role's row on
+// the served entry names (record.ServedClaim) and holder the claim the row on current names
+// (record.PhaseRow.Claim); issue is the record as the same read holds it, pr the pull request it
+// holds, and pending the claim's queued task, which only the route reads.
 //
 // Like a completion of a run that is over (HANDOFF_STALE_GENERATION), a completion of a phase
 // entry the issue's phase has moved past is refused, and for the reason the run alone cannot
@@ -2076,10 +2108,20 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // An entry above the row's is refused with the entry below it (unraisedEntry), though the record
 // should never produce it: the transition raises the row's entry in the transaction that composes
 // that entry's task, so no delivery can carry an entry the row does not already name, and a row's
-// entry only rises. An entry behind the row's is refused (StaleEntry) unless BehindEntryClause
-// takes it.
-func EntryFence(issue record.Issue, role claim.Role, entry, current int64, movedBack bool, otherSteps int64, commit string, pr *record.PullRequest,
-	pending *supervise.Delivery) *Refusal {
+// entry only rises.
+//
+// An entry behind the row's whose run is another agent's is a turn of that agent
+// (AnotherAgentsStep): two agents of one role keep a row each, as `implementer:a tester:b
+// implementer:b` does once a failed review returns the task to key a's step 1 while key b's turn
+// of step 3 is still open. served, the claim the role's row on the served entry names, is then not
+// holder, the claim of the row the task stands at, whose entry's task goes to holder alone, so
+// StaleEntry's words, which tell the worker that task comes to it, would have it wait for nothing.
+// An entry no row of the role stands on any longer (a run of the same step the role was handed
+// again) and either row naming no claim (one the release before wrote) are no such turn.
+//
+// Every other entry behind the row's is refused (StaleEntry) unless BehindEntryClause takes it.
+func EntryFence(issue record.Issue, role claim.Role, served, holder claim.Token, entry, current int64, movedBack bool, otherSteps int64, commit string,
+	pr *record.PullRequest, pending *supervise.Delivery) *Refusal {
 	if entry == 0 || current == 0 || entry == current {
 		return nil
 	}
@@ -2090,12 +2132,26 @@ func EntryFence(issue record.Issue, role claim.Role, entry, current int64, moved
 	if entry > current {
 		return &Refusal{Status: 409, Code: StaleEntryCode, Message: unraisedEntry(issue.Key, role, p, current, entry)}
 	}
+	if served != "" && holder != "" && served != holder {
+		return AnotherAgentsStep(issue.Key, role, p, current, entry, holder)
+	}
 	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).
 	_, _, recordBacked := phase.Handoff(p)
 	if clause := BehindEntryClause(recordBacked, commit, pr, movedBack, entry <= otherSteps); clause != "" {
 		return StaleEntry(issue.Key, role, p, current, entry, pending, clause)
 	}
 	return nil
+}
+
+// AnotherAgentsStep is the 409 HANDOFF_NOT_CURRENT_PHASE refusal of a completion of entry serving
+// of role's phase p of issue, behind the entry current that the role's row where the task stands
+// is on, whose step is the work of another agent's claim, holder (EntryFence). The code is the one
+// every worker's prompt names for a completion of work it no longer has (NotCurrentPhase): the
+// completing claim has no step of the task to do, and nothing of holder's step comes to it.
+func AnotherAgentsStep(issue string, role claim.Role, p phase.Phase, current, serving int64, holder claim.Token) *Refusal {
+	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf(
+		"the %s step of %s that the task stands at, in phase %s, is the work of another agent's claim, %s, on entry %d; this completion is of entry %d, a step this claim ran that the task has left, so no task of that step comes to this claim: do not wait for one and do not complete again; this completion changed nothing",
+		role, issue, p, holder, current, serving)}
 }
 
 // unraisedEntry is the refusal of a completion of a phase entry above the one the role's phases

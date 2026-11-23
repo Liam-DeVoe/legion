@@ -935,12 +935,31 @@ func strandedWithoutRetired(t *testing.T, stranded any) []any {
 	return kept
 }
 
-// strandedWithoutTokens takes `token` off each entry of a baseline body's `strandedClaims`, the
-// report a pod below strandedTokenContract is served (api's withoutStrandedTokens).
+// strandedWithoutTokens takes off a baseline body every key strandedTokenContract added to the
+// state, which a pod below that contract is served without: `token` off each entry of
+// `strandedClaims` (api's withoutStrandedTokens), and off each issue's claim views, and each
+// issue's `otherClaims` (api's withoutClaimTokens).
 func strandedWithoutTokens(body map[string]any) {
 	rows, _ := body["strandedClaims"].([]any)
 	for _, row := range rows {
 		delete(row.(map[string]any), "token")
+	}
+	issues, _ := body["issues"].(map[string]any)
+	for _, issue := range issues {
+		issue, ok := issue.(map[string]any)
+		if !ok {
+			continue
+		}
+		delete(issue, "otherClaims")
+		if architect, ok := issue["architect"].(map[string]any); ok {
+			delete(architect, "token")
+		}
+		workers, _ := issue["workers"].(map[string]any)
+		for _, worker := range workers {
+			if view, ok := worker.(map[string]any)["claim"].(map[string]any); ok {
+				delete(view, "token")
+			}
+		}
 	}
 }
 

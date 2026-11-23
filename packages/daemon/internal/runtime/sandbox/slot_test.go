@@ -216,17 +216,18 @@ func TestALocatorOfANameThatIsNoRoleIsAnIssuePodsAndIsObserved(t *testing.T) {
 		t.Fatalf("Cut(%s) names no issue", workerToken)
 	}
 	agent := claim.Token(issue + "-implementer-2")
-	for token, want := range map[claim.Token]claim.Role{
+	for token, want := range map[claim.Token]claim.Agent{
 		agent:           "implementer-2",
-		workerToken:     claim.RoleTester,
-		controllerToken: claim.RoleController,
+		workerToken:     claim.Agent(claim.RoleTester),
+		controllerToken: claim.Agent(claim.RoleController),
 	} {
-		if got := slotOf(token); got != want {
-			t.Errorf("slotOf(%s) = %q, want %q", token, got, want)
+		if got, ok := token.Slot(); !ok || got != want {
+			t.Errorf("%s.Slot() = %q, %t; want %q", token, got, ok, want)
 		}
 	}
-	if _, issuePod := podKindFor(slotOf(agent)).(issuePod); !issuePod {
-		t.Errorf("podKindFor(slotOf(%s)) = %T, want the issue pod", agent, podKindFor(slotOf(agent)))
+	slot, _ := agent.Slot()
+	if _, issuePod := podKindFor(launcherOf(slot)).(issuePod); !issuePod {
+		t.Errorf("podKindFor(launcherOf(%s)) = %T, want the issue pod", slot, podKindFor(launcherOf(slot)))
 	}
 	loc := sandboxLocator(agent, recorded)
 	if err := loc.Validate(); err != nil {
@@ -328,7 +329,7 @@ func TestTwoAgentsOfOneRoleRunAtOneTimeInTwoSlots(t *testing.T) {
 		t.Fatalf("the Sandbox %s is gone", name)
 	}
 	for token, slot := range map[claim.Token]claim.Role{secondImplementer: "implementer-2", deploymentImplementer: claim.RoleImplementer} {
-		if got, want := startEnv(lastStart(t, g, token))["XDG_STATE_HOME"], roleStateHome(slot); got != want {
+		if got, want := startEnv(lastStart(t, g, token))["XDG_STATE_HOME"], roleStateHome(claim.Agent(slot)); got != want {
 			t.Errorf("the start of %s names the state home %q, want the slot %s's %q", token, got, slot, want)
 		}
 		if _, recorded := s.Annotations[addressesAnnotation(slot)]; !recorded {

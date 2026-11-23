@@ -917,9 +917,10 @@ The state names the same claims on every read, after a restart or not, each with
 legion state --config legion.yaml --json | jq '.strandedClaims'
 ```
 
-Act only on the claims this list names, and leave out any you suspended on purpose. A claim's token
-is `legion-<project>-<issue, lowercased>-<agent>`, as `legion claims list` shows: it ends in the
-name of the claim's agent, the role of that agent's first step, whatever role its step is on now.
+Act only on the claims this list names, and leave out any you suspended on purpose. A claim of an
+issue has the token `legion-<project>-<issue, lowercased>-<agent>`, as `legion claims list` shows:
+it ends in the name of the claim's agent, the role of that agent's first step, whatever role its
+step is on now; the project's controller claim is `legion-<project>-controller`.
 The line and `legion state` name a role's own claim by its issue and role, and the claim of an agent
 named for another role by its token beside them (`WIDGETS-12 tester (claim
 legion-widgets-widgets-12-implementer)`), so two claims of one role on one issue read apart.
@@ -1566,15 +1567,18 @@ These arrive as messages on the Dispatch issue:
   reviewer had not completed. The daemon ends no turn, so the turn reporting the completion is of
   an entry behind the one the role's phases row names, and nothing is recorded. The refusal
   names the issue, the role and the phase, the entry the completion is of and the entry the
-  role's phases row is on, and then what decided it, which is one of four readings: the
+  role's phases row is on, and then what decided it, which is one of five readings: the
   completion is at another commit than the head the record holds, or the record holds no pull
   request for the issue; it names no commit at all, so it says nothing about any head; the phase
   ends with no handoff record this role writes — retro and merging — so nothing the completion
-  names says which entry's work it is, and no head it reports on answers for it; or the move
+  names says which entry's work it is, and no head it reports on answers for it; the move
   that handed the phase out again moved the issue back, which asks for this phase's work to be
-  done again whatever head the completion names. When the task of that entry already waits on
-  the claim, the refusal says the turn began before it reached the session. It then tells the
-  worker what to do in the same words the `legion` tool's description gives for the code
+  done again whatever head the completion names; or the entry the completion serves is of
+  another step of the same role in the task, such as step 1 of `implementer:a reviewer
+  implementer:a` once step 3 runs, whose work is not the work of the step the task stands at.
+  When the task of that entry already waits on the claim, the refusal says the turn began
+  before it reached the session. It then tells the worker what to do in the same words the
+  `legion` tool's description gives for the code
   (`packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two equal): end the turn
   without completing; the task of the entry the phase is on is owed to the claim and the daemon
   sends it by itself, which it does on every admission pass and on a sweep each minute; and that
@@ -1594,7 +1598,15 @@ These arrive as messages on the Dispatch issue:
   workflow answers that code with, `the <role> does not run phase <phase> of <KEY>; this
   completion changed nothing`, and nothing is recorded: the task of that role's entry was
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
-  none.
+  none. Where two agents of one role run its steps, as `implementer:a tester:b implementer:b`
+  does, a turn of one agent's step that completes while the task stands at the other agent's
+  step of that role is answered `HANDOFF_NOT_CURRENT_PHASE` too, with these words: `the <role>
+  step of <KEY> that the task stands at, in phase <phase>, is the work of another agent's claim,
+  <claim>, on entry <n>; this completion is of entry <m>, a step this claim ran that the task has
+  left, so no task of that step comes to this claim: do not wait for one and do not complete
+  again; this completion changed nothing`. The task of the entry the phase is on goes to the
+  claim it names, so this refusal, unlike `HANDOFF_STALE_ENTRY`, promises the completing agent
+  nothing.
 
 An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
 conflicts with its base is waiting on the daemon's merge forward or on nothing at all. The daemon

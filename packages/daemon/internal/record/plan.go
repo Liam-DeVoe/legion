@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -91,6 +92,40 @@ func (p TaskPlace) Started() bool {
 	return p != TaskPlace{}
 }
 
+// Rank orders the places of one task's line: no act first, then each step by its place, then the
+// retro, then the merge. It is the one order of a task's places: a move back is a move to a lower
+// rank (workflow's Walk.MovesBack), and the place of a role nearest where a task stands is read by
+// it (NearestPlace).
+func (p TaskPlace) Rank() int {
+	switch p.Kind {
+	case PlaceStep:
+		return p.Position
+	case PlaceRetro:
+		return math.MaxInt - 1
+	case PlaceMerge:
+		return math.MaxInt
+	}
+	return 0
+}
+
+// NearestPlace is the place of places, in line order, nearest at: the latest at or before at
+// (Rank), else the first after it; ok false where places is empty. A role can stand at two places
+// of a task, and the one a reader with no run to go by means is the one the task stands at or left
+// last, or, before the first, the first: where a role's row is read and written (RolePlace) and
+// which acceptance the task stands at (workflow's acceptedRole).
+func NearestPlace(places []TaskPlace, at TaskPlace) (TaskPlace, bool) {
+	if len(places) == 0 {
+		return TaskPlace{}, false
+	}
+	nearest := places[0]
+	for _, place := range places {
+		if place.Rank() <= at.Rank() {
+			nearest = place
+		}
+	}
+	return nearest, true
+}
+
 // valid says whether p is a place a task can stand at.
 func (p TaskPlace) valid() bool {
 	switch p.Kind {
@@ -147,16 +182,35 @@ type PlanStep struct {
 	Type       plan.Type
 	AgentKey   string
 	// Agent is the name of the step's agent, the last part of its claim token, which NameAgents
-	// gives before the step is written and nothing else writes. A step a release before the column
-	// wrote holds none.
+	// gives before the step is written and nothing else writes. A step of the key owner holds
+	// none (20261117213545 named every other step a release before the column wrote).
 	Agent claim.Agent
 }
 
-// AgentName is the name of the step's agent, by the one rule every reader of a stored step names
-// it by (plan.StoredAgentName), and the one reader of Agent: none for a step of the key owner, the
-// stored name, or the role on a step a release before the column wrote.
+// PlanAgent is the agent of the step (plan.AgentOf): the agent of its key, which every step of that
+// key shares in any task, or for a step with no key the agent of that step alone.
+func (s PlanStep) PlanAgent() plan.Agent {
+	return plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey})
+}
+
+// AgentName is the name of the step's agent, the last part of its claim token, by the one rule
+// every reader of a stored step names it by (plan.StoredAgentName), and the one reader of Agent:
+// none for a step of the key owner, since its agent is the tree's architect, whose token names the
+// tree and no name on the issue, and the stored name otherwise.
 func (s PlanStep) AgentName() claim.Agent {
 	return claim.Agent(plan.StoredAgentName(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}, string(s.Agent)))
+}
+
+// StepToken is the claim token of the agent of step, a step of issue, whose tree is tree, in
+// project (already a claim.ProjectToken): the one rule of a step's token, which the workflow writes
+// when the step starts and a launch's addressing names. A step of the key owner is the tree's
+// architect's, whose token names the tree and no name on the issue; every other step's is the token
+// of its agent's name (AgentName), so the steps of one key are one claim.
+func StepToken(project, issue, tree string, step PlanStep) (claim.Token, error) {
+	if step.PlanAgent().Owner() {
+		return claim.NewToken(project, tree, claim.RoleArchitect)
+	}
+	return claim.AgentToken(project, issue, step.AgentName())
 }
 
 // StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by

@@ -123,7 +123,7 @@ child's notices come to you
 | A child that looks independent of the tree, capacity, or a cross-tree conflict | Message the controller with `envoy_publish` to the controller topic your `Legion addressing` line names. The controller asks a person before it re-files a child as a root. |
 | A problem outside this tree | Never file an issue for it. A clear defect in code this tree touches or depends on is fixed in this tree's own pull request. Send any other clear defect to the controller with its evidence, and it goes to the tree that owns that code. Send a problem that needs a decision to the architect above you. The root architect opens the `dispatch ask` for it, as `skill://legion-worker/references/findings.md` says. |
 | Product, scope, or design decision, yours or a worker's | Answer from tree context, or send it up. A sub-architect writes no decision block. It sends a decision only a person can make to the architect above it, never into the child's spec, and the root architect asks it on the root. The root architect writes the root spec's, knowing the new version closes the design gate for the whole tree until the human answers. An answer that is the whole change since the version they approved carries their approval to the new version, so it requests nothing. After an answer that changes the spec's text outside the block, it rewrites that text and runs the two fresh reviews of the new version. `plan-gap-analyst` finds its gaps, and `plan-reviewer`, told that the document is a spec, checks each factual claim. It resolves every finding, and checks with a command or removes each claim either review marks unverified. Then it requests approval again with a `--summary` of two sentences: what changed since the earlier approval, and both reviews' results. A to-do only a human can do goes up the same way, and the root architect opens a `dispatch ask` for it. |
-| Worker question or failure | Handle it or message the worker with `envoy_publish` to its role token. |
+| Worker question or failure | Handle it or message the worker with `envoy_publish` to the topic of the agent that works its step: where your issue ran a plan when you were started, your `Legion addressing` line names it for each of the plan's steps, and `dispatch steps --issue <issue>` gives each run's `agent`. |
 
 Where this child's task holds your step `acceptance:owner`, the pass of the step before it moves
 the child to `accepting` (in the default steps, the reviewer's approval), where no worker runs and
@@ -160,9 +160,10 @@ write the request into this child's spec, and have the architect above you revie
 `criteria` step where it is gated.
 Retro (`skill://legion-retro`) is mandatory and runs before the merger's merge: the daemon starts
 the implementer on it once you sign off, or, on a task with no `acceptance:owner` step, once its
-last step passes (on a parent, once the issues beneath it have left, `retro-held`). Every started role keeps its
-session until its issue closes, so an `envoy_publish` to a role that finished its phase still
-reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
+last step passes (on a parent, once the issues beneath it have left, `retro-held`). Every started agent keeps its
+session until its issue closes, so an `envoy_publish` to the topic of the agent that worked a
+finished step still reaches that agent's session, and wakes it when the daemon released its idle
+pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
 session and on the pull request, and asks nothing of you. A tester completion that rejects the
 implementer's results goes back to the implementer, or to the earlier step its completion names;
@@ -170,7 +171,7 @@ a worker that reports
 no surface reaches the changed path gets the surface built in this tree
 (`skill://legion-architect`, wake routing,
 `phase-finished`), and waits, with its phase and its task kept, until you tell it to continue
-(`envoy_publish` to its role topic, which wakes it when its idle pod was released): once that
+(`envoy_publish` to its agent's topic, which wakes it when its idle pod was released): once that
 child closes, or at once when the surface folds into an open pull request of this tree and a
 backward move to `implementing` builds it there.
 
@@ -190,9 +191,13 @@ handoff and report no phase completion, since the daemon accepts a completion on
 that works the issue's current phase.
 Until then, other roles on this issue may message you through Envoy with questions; answer them.
 You may message any role on this issue, and the architect above you, with `envoy_publish` to
-`notifications.role.` followed by its encoded role token — never hand-format one: your own role
-topic and the topic of the architect above you are in the `Legion addressing` line of your system
-prompt, and a sibling role's topic is yours with the trailing
-`-<role>` replaced; or compute one with the `roleToken` helper from `@legion/contracts` exactly the
-way the daemon does (`legion-<project>-<key>-<role>` with the issue key lower-cased; for example,
-project `acme`, issue `LEGION-41`, role `architect` encodes to `legion-acme-legion-41-architect`).
+`notifications.role.` followed by its encoded token — never hand-format one: your own role topic,
+the topic of the architect above you and, where your issue ran a plan when you were started, the
+topic of the agent of each of its steps are in the `Legion addressing` line of your system
+prompt, and `dispatch steps --issue <issue>`
+gives each run's `agent`. Two claims of one issue can hold one role, so a topic spelled from a
+role — yours with the trailing `-<role>` replaced, or one the `roleToken` helper from
+`@legion/contracts` computes (`legion-<project>-<key>-<role>` with the issue key lower-cased; for
+example, project `acme`, issue `LEGION-41`, role `architect` encodes to
+`legion-acme-legion-41-architect`) — reaches the agent named for that role, which need not be the
+one that works that role's step.

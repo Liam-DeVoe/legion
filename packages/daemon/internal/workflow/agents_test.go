@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -112,7 +111,6 @@ func TestAStartNamesTheAgentOfItsStepWhateverThePlanInForceHeldBefore(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := returnEngine()
-			tickingClock(engine)
 			apply := applyFacts(t, pool, engine)
 			root := stepRoot(t, pool, phase.Admitted)
 			key, gen := root.Key, root.Generation
@@ -163,7 +161,6 @@ func TestAStartNamesTheAgentOfItsStepWhateverThePlanInForceHeldBefore(t *testing
 func TestAKeyLeftOutOfOneVersionFindsItsClaimWhenALaterVersionGivesItAgain(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
-	tickingClock(engine)
 	apply := applyFacts(t, pool, engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	key, gen := root.Key, root.Generation
@@ -299,18 +296,6 @@ func TestTheDefaultStepsKeepANameAKeyHeldInRowsOfAnEarlierGeneration(t *testing.
 	}
 }
 
-// tickingClock gives engine a clock that moves a second at each read, as a real clock moves
-// between two transactions: a role that stands at two steps has a row for each, and its row now is
-// the one whose entry was raised last (record.PhaseRowOf), which a clock that never moves cannot
-// tell apart.
-func tickingClock(engine *Engine) {
-	now := stepClock
-	engine.cfg.Clock = func() time.Time {
-		now = now.Add(time.Second)
-		return now
-	}
-}
-
 // rolesRows is every phases row of key's role, by place.
 func rolesRows(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role) map[int]record.PhaseRow {
 	t.Helper()
@@ -327,8 +312,8 @@ func rolesRows(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, rol
 	return rows
 }
 
-// roleRowNow is role's row of key now, the one whose entry was raised last (record.PhaseRowOf),
-// read with no walk: where an entry rose since, it is the row that rose.
+// roleRowNow is role's row of key now, the one with the highest entry (record.PhaseRowOf), read
+// with no walk: where an entry rose since, it is the row that rose.
 func roleRowNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role) record.PhaseRow {
 	t.Helper()
 	var row record.PhaseRow
@@ -347,7 +332,6 @@ func roleRowNow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, ro
 func TestARowOfNoStepBecomesTheRowOfTheRolesStep(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: agentToken(t, "implementer"), Entry: 4,
 		LastHandoff: "implement-of-the-generation-before", EntryRaisedAt: stepClock})
@@ -386,7 +370,6 @@ func TestTheThirdStepsTaskNamesTheReportsOfStepsOneAndTwo(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := textEngine()
-			tickingClock(engine)
 			root := stepRoot(t, pool, phase.Admitted)
 			seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
 			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
@@ -427,7 +410,6 @@ func TestTheThirdStepsTaskNamesTheReportsOfStepsOneAndTwo(t *testing.T) {
 func TestAReviewerReadsTheLatestImplementersRowBeforeIt(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "implementer:a")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
@@ -456,12 +438,11 @@ func TestAReviewerReadsTheLatestImplementersRowBeforeIt(t *testing.T) {
 func TestAWriteBeforeARolesFirstStepLandsOnThatStepsRow(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		row, err := engine.phaseRow(ctx, tx, root.Key, claim.RoleReviewer)
+		row, err := engine.phaseRow(ctx, tx, root, claim.RoleReviewer)
 		if err != nil {
 			return err
 		}
@@ -484,7 +465,6 @@ func TestAWriteBeforeARolesFirstStepLandsOnThatStepsRow(t *testing.T) {
 func TestAMoveBackToAPhaseThatRunsTwiceReachesTheNearest(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "implementer:a", "tester")
 	implementer := agentToken(t, "implementer")
@@ -509,7 +489,6 @@ func TestAMoveBackToAPhaseThatRunsTwiceReachesTheNearest(t *testing.T) {
 func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:b", "implementer:b", "reviewer")
 	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "tester")
@@ -521,7 +500,7 @@ func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			row, err := engine.phaseRow(ctx, tx, root.Key, claim.RoleImplementer)
+			row, err := engine.phaseRow(ctx, tx, root, claim.RoleImplementer)
 			if err != nil {
 				return err
 			}
@@ -550,14 +529,17 @@ func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 // Two agents of one role keep a row of it each, and the entry a step's start raises is above every
 // row of its role: in `implementer:a tester:b implementer:b reviewer`, the failed review returns
 // the task to step 1, whose row rises above step 3's, so key b's completion at the entry it was
-// handed for step 3 is behind step 1's and refused HANDOFF_STALE_ENTRY, and step 1's row keeps key
-// a and no report. Before, the entry rose only above the rows of its own agent, so step 1's row and
-// step 3's stood on one entry, and key b's completion passed the fence and was recorded as step 1's,
-// its claim and its record on that row.
+// handed for step 3 is behind step 1's, and step 1's row keeps key a and no report. Step 1 is key
+// a's work, so the refusal is HANDOFF_NOT_CURRENT_PHASE naming key a, and it tells key b that no
+// task of that step comes to it, unspent. Before, the entry rose only above the rows of its own
+// agent, so step 1's row and step 3's stood on one entry, and key b's completion passed the fence
+// and was recorded as step 1's, its claim and its record on that row; and then it was refused
+// HANDOFF_STALE_ENTRY, whose words told key b that step 1's task was owed to it and came by itself,
+// though that task goes to key a. A turn of the same agent's other step is still refused
+// HANDOFF_STALE_ENTRY (TestATurnOfARolesEarlierStepDoesNotCompleteItsLaterStep).
 func TestAStepsEntryRisesAboveEveryRowOfItsRole(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "tester:b", "implementer:b", "reviewer")
 	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "tester")
@@ -570,9 +552,17 @@ func TestAStepsEntryRisesAboveEveryRowOfItsRole(t *testing.T) {
 	result := applyFacts(t, pool, engine)("implementer-late-key-b", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
 		Claim: keyB, Entry: served, Summary: "done", Commit: "head", HandoffRecord: "implement-3", HandoffVersion: 3})
 	rows := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)
-	if result.Refusal == nil || result.Refusal.Code != intake.StaleEntryCode {
-		t.Fatalf("key b's completion at entry %d after the return to step 1 = %+v, want %s; step 1's row names %q with the record %q at entry %d",
-			served, result.Refusal, intake.StaleEntryCode, rows[1].Claim, rows[1].HandoffRecord, rows[1].Entry)
+	if result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_CURRENT_PHASE" || !result.Unspent {
+		t.Fatalf("key b's completion at entry %d after the return to step 1 = %+v (unspent %t), want HANDOFF_NOT_CURRENT_PHASE, unspent; step 1's row names %q with the record %q at entry %d",
+			served, result.Refusal, result.Unspent, rows[1].Claim, rows[1].HandoffRecord, rows[1].Entry)
+	}
+	for _, says := range []string{"is the work of another agent's claim, " + string(keyA), "no task of that step comes to this claim", "do not wait for one"} {
+		if !strings.Contains(result.Refusal.Message, says) {
+			t.Fatalf("the refusal = %q, want it to say %q", result.Refusal.Message, says)
+		}
+	}
+	if strings.Contains(result.Refusal.Message, intake.StaleEntryInstruction) {
+		t.Fatalf("the refusal = %q, want no promise of step 1's task to key b", result.Refusal.Message)
 	}
 	if first, third := rows[1], rows[3]; first.Claim != keyA || first.HandoffRecord != "" || first.Entry <= third.Entry {
 		t.Fatalf("step 1's row after the refusal names %q with the record %q at entry %d, want %q with none, above step 3's entry %d",
@@ -591,7 +581,6 @@ func TestAStepsEntryRisesAboveEveryRowOfItsRole(t *testing.T) {
 func TestATurnOfARolesEarlierStepDoesNotCompleteItsLaterStep(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 42, Branch: "legion/" + root.Key,
 		HeadSHA: "head", Failing: []string{}})
@@ -616,6 +605,115 @@ func TestATurnOfARolesEarlierStepDoesNotCompleteItsLaterStep(t *testing.T) {
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(3))
 }
 
+// A role's late report of its later step is the report of that step's run: the run whose entry it
+// serves. In `implementer:a reviewer:r implementer:a reviewer:r`, step 4's run ends before the
+// reviewer completes: the review's request for changes returns the task to step 1, its first
+// implementation step, and the reviewer's move back to implementing returns it to step 3, between
+// the reviewer's two steps. Either way, the reviewer's completion at step 4's entry is then taken,
+// moving nothing: step 4's row records it, step 4's record names its report, and step 2's row and
+// record keep their own. Before, the row read was the reviewer's place nearest where the task
+// stands, step 2's, whose entry is below the one served, so the completion was refused
+// HANDOFF_NOT_CURRENT_PHASE, and past that fence its report would have been written onto step 2's
+// record.
+func TestALateReportOfARolesLaterStepIsTakenOnThatStep(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ends func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string)
+		at   record.TaskPlace
+	}{
+		{"the review requests changes", func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+			reviewRequestsChanges(t, pool, engine, key)
+		}, stepPlace(1)},
+		{"the reviewer moves the task back to implementing", func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+			if result := applyFacts(t, pool, engine)("reviewer-back", intake.BackwardMove{Issue: key, Requester: claim.RoleReviewer, To: phase.Implementing,
+				Reason: "the change needs a migration"}); result.Refusal != nil {
+				t.Fatalf("the reviewer's move back to implementing was refused: %+v", result.Refusal)
+			}
+		}, stepPlace(3)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Admitted)
+			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:r", "implementer:a", "reviewer:r")
+			implementer := agentToken(t, "implementer")
+			reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
+			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
+			completesAs(t, pool, engine, claim.RoleReviewer, reviewer, "review", 1)
+			move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+			completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 2)
+			assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(4))
+			served := rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)[4].Entry
+			tc.ends(t, pool, engine, root.Key)
+			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, tc.at)
+			before := reportsAt(t, pool, root.Key, 2)
+
+			report := reportOf(claim.RoleReviewer, reviewer, "review-2")
+			report.Entry = served
+			if result := applyFacts(t, pool, engine)("reviewer-late-step-4", report); result.Refusal != nil {
+				t.Fatalf("the reviewer's completion at step 4's entry %d after the task returned to %+v = %d %s %q, want it taken on step 4",
+					served, tc.at, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
+			}
+			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, tc.at)
+			rows := rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)
+			if rows[4].HandoffRecord != "review-2" || rows[4].Entry != served || rows[2].HandoffRecord != "review-1" {
+				t.Fatalf("the reviewer's rows after its late report: step 2 %+v, step 4 %+v; want review-1 kept on step 2 and review-2 on step 4 at entry %d",
+					rows[2], rows[4], served)
+			}
+			if got := reportsAt(t, pool, root.Key, 4); !slices.Equal(got, []string{"a:review-2"}) {
+				t.Fatalf("the reports of step 4 = %v, want the late report a:review-2", got)
+			}
+			if got := reportsAt(t, pool, root.Key, 2); !slices.Equal(got, before) {
+				t.Fatalf("the reports of step 2 = %v, want them as they stood, %v", got, before)
+			}
+		})
+	}
+}
+
+// A return to a role's earlier step carries the record the role named last, as the first run of a
+// later step does. In `implementer:a reviewer implementer:a tester`, the tester fails naming step 1,
+// and agent a's completion of step 1 then names the record it wrote for step 3: it is refused
+// HANDOFF_NOT_NEW, and a record written anew is taken. Before, the return raised step 1's row as it
+// stood, still naming step 1's first record, so the record of step 3 passed as new work and later
+// steps read it as step 1's report.
+func TestAReturnToARolesEarlierStepRefusesTheRecordOfItsLaterStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "implementer:a", "tester")
+	implementer := agentToken(t, "implementer")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 1)
+	completesAs(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), "review", 1)
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	completesAs(t, pool, engine, claim.RoleImplementer, implementer, "implement", 3)
+	assertWalksAt(t, pool, engine, root.Key, phase.Testing, stepPlace(4))
+	apply := applyFacts(t, pool, engine)
+	if result := apply("tester-fails-to-step-1", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleTester, Claim: agentToken(t, "tester"),
+		Summary: "fails", Commit: "head", Verdict: "fail", ReturnTo: 1, HandoffRecord: "test-1", HandoffVersion: 1}); result.Refusal != nil {
+		t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+
+	stale := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer, Claim: implementer, Summary: "done", Commit: "head",
+		HandoffRecord: "implement-3", HandoffVersion: 3}
+	result := apply("implementer-step-1-names-step-3", stale)
+	if result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_NEW" {
+		t.Fatalf("agent a's completion of step 1 naming its step-3 record implement-3 = %+v, want HANDOFF_NOT_NEW; step 1's row is %+v",
+			result.Refusal, rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[1])
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+	fresh := stale
+	fresh.HandoffRecord, fresh.HandoffVersion = "implement-4", 4
+	if result := apply("implementer-step-1-anew", fresh); result.Refusal != nil {
+		t.Fatalf("agent a's completion of step 1 naming a record written anew = %+v, want it taken", result.Refusal)
+	}
+	if first := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)[1]; first.HandoffRecord != "implement-4" {
+		t.Fatalf("step 1's row after the completion = %+v, want implement-4 recorded", first)
+	}
+}
+
 // A keyed agent's next step after a new generation is numbered above every entry its claim was
 // given, whatever rows the generation's clear folded away. In `implementer:a reviewer:b
 // implementer:b`, key b, named reviewer, works steps 2 and 3 and the retro, the last of them on the
@@ -630,7 +728,6 @@ func TestATurnOfARolesEarlierStepDoesNotCompleteItsLaterStep(t *testing.T) {
 func TestAKeyedAgentsStepAfterANewGenerationRisesAboveWhatItsClaimWasGiven(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	steps := []string{"implementer:a", "reviewer:b", "implementer:b"}
 	seedStepsPlan(t, pool, root.Key, root.Generation, steps...)
@@ -683,7 +780,6 @@ func TestAKeyedAgentsStepAfterANewGenerationRisesAboveWhatItsClaimWasGiven(t *te
 func TestEachStartNamesTheClaimItWasQueuedFor(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
-	tickingClock(engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:b", "implementer:b")
 	keyA, keyB := agentToken(t, "implementer"), agentToken(t, "reviewer")
