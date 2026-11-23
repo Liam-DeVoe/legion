@@ -3775,6 +3775,30 @@ func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testi
 				pair.name(process), durable, strings.Join(errorLines, "\n"), pair.buffers())
 		}
 	}
+	// The period each reconcile tick served, or found served, is read off its line, a record of the
+	// interval the loop was given, and no clock: duty.LeasePeriod of staggeredSweepPeriod has one
+	// bucket from 1970's start, and a reconcile main.go starts at delivery.ReconcileInterval rather
+	// than at the interval DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL gives serves the
+	// four-and-a-half-minute bucket its tick fell in, which lets a later pass land in the counting
+	// second again. A skip that found the lease held names no period, so only the skips that found
+	// the period served are read.
+	firstBucket := time.Unix(0, 0).UTC().Format(time.RFC3339Nano)
+	ran := 0
+	for _, process := range []*dispatchProcess{pair.a, pair.b} {
+		passes := process.wholeLogLines(leaseRan, "lease=delivery-reconcile")
+		ran += len(passes)
+		for _, line := range slices.Concat(passes, process.wholeLogLines(leaseSkipped, "lease=delivery-reconcile", "period=")) {
+			if period := leasePeriodOf(t, line); period != firstBucket {
+				t.Errorf("%s's delivery-reconcile tick was in the period starting %s, want %s, the first bucket of staggeredSweepPeriod: "+
+					"the reconcile did not run at the interval DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL gave it: %s", pair.name(process), period, firstBucket, line)
+			}
+		}
+	}
+	// The pass at start (DISPATCH_TEST_RECONCILE_AT_START) ran on one process, so there is a line
+	// to read; with none, the check above would hold nothing.
+	if ran == 0 {
+		t.Errorf("neither process logged a delivery-reconcile pass, though each runs one as it starts:\n%s", pair.buffers())
+	}
 	pair.requireRunning(t)
 }
 
