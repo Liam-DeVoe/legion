@@ -158,11 +158,14 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // relatedTermLimit; relatedMatchBudget bounds the hits, not the tests. That is the plan read on
 // the production corpus and on a synthetic project of 3,000 issues (PostgreSQL 18.6, 2026-11-23).
 //
-// Not the obvious shape - one tsquery to find the candidates, then relatedCoordinationRank's
-// per-candidate `sum(idf) from term_weights where search @@ tq` - because that tests each
-// candidate's spec vector once per term, so its cost grows with the length of every candidate's
-// spec, and a project's specs are long. As planned (above), the per-term join also tests each
-// open issue's spec vector once per term, through no index.
+// The obvious shape is one tsquery to find the candidates, then relatedCoordinationRank's
+// per-candidate `sum(idf) from term_weights where search @@ tq`, which tests each candidate's
+// spec vector once per term. The reason recorded when this shape was written instead is that the
+// obvious shape's cost grows with the length of every candidate's spec, while this shape's
+// per-term join would do its work inside a GIN index. The plan above reads no such index and
+// tests each open issue's title and spec vector once per term, so both shapes test each spec
+// vector once per term and that reason does not hold. No other reason was recorded, and neither
+// shape has been timed against the other, so which of the two costs less is open.
 //
 // A term that matches both a candidate's title and its spec counts once: the two arms are joined
 // with `union`, which takes distinct (key, lexeme, idf) before the sum, and idf is a function of
