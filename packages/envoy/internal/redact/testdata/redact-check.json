@@ -1837,9 +1837,7 @@
       {
         "row": "record-admin-api-echo",
         "base": "74cb685538897604595fa6ce23e6212fb0c1971c",
-        "files": [
-          "packages/daemon/internal/sessionproxy/admin_api_echo_test.go"
-        ],
+        "files": ["packages/daemon/internal/sessionproxy/admin_api_echo_test.go"],
         "capture": "sessionproxy.admin-api-echo"
       },
       {
@@ -4242,6 +4240,69 @@
       "package": "./internal/redact",
       "test": "TestAListenerSendsWordsPrintAndAnUndeclaredFieldDoesNot",
       "production": "redact.requestTokens with the public-name table: a listener send's target_session, expects_reply, message and payload print as they came, and a string under an undeclared body name is still redacted"
+    },
+    {
+      "id": "redact-routes-listener-messages",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAListenerMessagesNamesArePublicOnlyOnTheSendAndPublishRoutes",
+      "production": "redact.requestTokens with the public-name table's routes: a listener message's target_session, message, payload, expects_reply, topic and dedupe_key print on POST /v1/messages/send or POST /v1/messages/publish as their contract names them, and are redacted on the other route, another method, a path below or under a base path, and another server's route"
+    },
+    {
+      "id": "redact-routes-listener-reads",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAListenerReadsNamesArePublicOnlyOnItsRegistryReads",
+      "production": "redact.requestTokens with the public-name table's routes: include prints on GET /v1/sessions, GET /v1/roles/{role} and GET /v1/registry/{id}, and issue on GET /v1/legion/agents, and each is redacted below those routes, on a POST and on the listener's other reads"
+    },
+    {
+      "id": "redact-routes-daemon-claims",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestARoleIsPublicOnlyOnTheDaemonsOperatorClaimRoutes",
+      "production": "redact.requestTokens with the public-name table's routes: role prints on POST /legion/v1/operator/claims and the POST routes below it, and is redacted on the list's GET and on the daemon's other routes"
+    },
+    {
+      "id": "redact-routes-enrollments",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnEnrollmentsNamesArePublicOnlyOnPostEnrollments",
+      "production": "redact.requestTokens with the public-name table's routes: an enrollment's kind, runtime_id, session_id, operator and thumbprint print on POST /v1/enrollments and are redacted below it, on a GET and on the broker's other routes"
+    },
+    {
+      "id": "redact-routes-broker-requests",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestTheBrokersRequestAndReleaseNamesArePublicOnlyOnTheirRoutes",
+      "production": "redact.requestTokens with the public-name table's routes: wait prints on GET /v1/requests/{id}, owner and repositories on POST /v1/requests and POST /v1/grants/{id}/values, reason and command on the release alone, and each is redacted on any other of the broker's paths or methods"
+    },
+    {
+      "id": "redact-routes-token-exchange",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestATokenExchangesNamesArePublicOnlyOnItsRoutes",
+      "production": "redact.requestTokens with the public-name table's routes: the broker's session, projects and launcher_credential print on POST /v1/oauth/token and the token request's grant_type, token types and audience on any POST, while client_id and scope print on any request; the broker's names on another path or a GET, and a token request's on a GET or a PUT, are redacted"
+    },
+    {
+      "id": "redact-routes-iam-generate-access-token",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnImpersonationsNamesArePublicOnlyOnGenerateAccessToken",
+      "production": "redact.requestTokens with the public-name table's routes: delegates and lifetime print on POST /v1/projects/{project}/serviceAccounts/{account}:generateAccessToken and are redacted on generateIdToken, a GET, the account's own path and a segment with no account"
+    },
+    {
+      "id": "redact-routes-github-pagination",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAPageNumberIsPublicOnlyOnAGet",
+      "production": "redact.requestTokens with the public-name table's routes: GitHub's page and per_page print on a GET of any path and are redacted in a POST's body"
+    },
+    {
+      "id": "redact-routes-metadata-flavor",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAMetadataFlavorIsPublicOnlyOnAMetadataRead",
+      "production": "redact.requestTokens with the public-name table's routes: Metadata-Flavor prints on a GET of /computeMetadata/v1 or below it and is redacted on a PUT, the metadata server's root and another server's path"
     },
     {
       "id": "library-error-needs-its-record",
@@ -8437,6 +8498,69 @@
       "file": "packages/contracts/src/public-request-names.test.ts",
       "test": "a request's value is a credential unless its name is public",
       "production": "requestCredentials"
+    },
+    {
+      "id": "public-routes-ts-listener-messages",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "a listener message's names are public only on the send and publish routes",
+      "production": "requestCredentials with the public-name table's routes: a listener message's names are no credential on POST /v1/messages/send or POST /v1/messages/publish as their contract names them, and are one on the other route, another method, a path below or under a base path, and another server's route"
+    },
+    {
+      "id": "public-routes-ts-listener-reads",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "a listener read's names are public only on its registry reads",
+      "production": "requestCredentials with the public-name table's routes: include on GET /v1/sessions, GET /v1/roles/{role} and GET /v1/registry/{id}, and issue on GET /v1/legion/agents, are no credential, and each is one below those routes, on a POST and on the listener's other reads"
+    },
+    {
+      "id": "public-routes-ts-daemon-claims",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "a role is public only on the daemon's operator claim routes",
+      "production": "requestCredentials with the public-name table's routes: role is no credential on POST /legion/v1/operator/claims and the POST routes below it, and is one on the list's GET and on the daemon's other routes"
+    },
+    {
+      "id": "public-routes-ts-enrollments",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "an enrollment's names are public only on POST /v1/enrollments",
+      "production": "requestCredentials with the public-name table's routes: an enrollment's names are no credential on POST /v1/enrollments and are one below it, on a GET and on the broker's other routes"
+    },
+    {
+      "id": "public-routes-ts-broker-requests",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "the broker's request and release names are public only on their routes",
+      "production": "requestCredentials with the public-name table's routes: wait on GET /v1/requests/{id}, owner and repositories on POST /v1/requests and POST /v1/grants/{id}/values, and reason and command on the release alone are no credential, and each is one on any other of the broker's paths or methods"
+    },
+    {
+      "id": "public-routes-ts-token-exchange",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "a token exchange's names are public only on its routes",
+      "production": "requestCredentials with the public-name table's routes: the broker's session, projects and launcher_credential on POST /v1/oauth/token, the token request's names on any POST, and client_id and scope on any request are no credential; the broker's names on another path or a GET, and a token request's on a GET or a PUT, are"
+    },
+    {
+      "id": "public-routes-ts-iam-generate-access-token",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "an impersonation's names are public only on generateAccessToken",
+      "production": "requestCredentials with the public-name table's routes: delegates and lifetime are no credential on POST /v1/projects/{project}/serviceAccounts/{account}:generateAccessToken and are one on generateIdToken, a GET, the account's own path and a segment with no account"
+    },
+    {
+      "id": "public-routes-ts-github-pagination",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "a page number is public only on a GET",
+      "production": "requestCredentials with the public-name table's routes: GitHub's page and per_page are no credential on a GET of any path and are one in a POST's body"
+    },
+    {
+      "id": "public-routes-ts-metadata-flavor",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/public-request-routes.test.ts",
+      "test": "a Metadata-Flavor is public only on a metadata read",
+      "production": "requestCredentials with the public-name table's routes: Metadata-Flavor is no credential on a GET of /computeMetadata/v1 or below it and is one on a PUT, the metadata server's root and another server's path"
     },
     {
       "id": "ts-record-interleaved",

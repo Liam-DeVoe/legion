@@ -224,10 +224,10 @@ func TestAShortCredentialIsRedactedOnlyAsATokenOfItsOwn(t *testing.T) {
 	}
 }
 
-// TestARefusalPrintsAPublicNamesValueAndRedactsAnUnlistedOnes: an issuer refuses a trade with a
-// description that echoes two values of its form: the session, a name the broker's wire contract
-// declares public, which prints, and a value under a name no contract lists, which is redacted
-// like any credential (redact.public-name/unlisted).
+// TestARefusalPrintsAPublicNamesValueAndRedactsAnUnlistedOnes: an issuer refuses a trade at the
+// broker's token endpoint with a description that echoes two values of its form: the session, a
+// name the broker's wire contract declares public on that route, which prints, and a value under a
+// name no contract lists, which is redacted like any credential (redact.public-name/unlisted).
 func TestARefusalPrintsAPublicNamesValueAndRedactsAnUnlistedOnes(t *testing.T) {
 	const session, unlisted = "worker-session-public-7", "a-new-parameters-value-RDX-" + redacttest.Token
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -237,7 +237,7 @@ func TestARefusalPrintsAPublicNamesValueAndRedactsAnUnlistedOnes(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"error":"invalid_request","error_description":"no registration for session %s; got %s"}`, r.PostForm.Get("session"), r.PostForm.Get("a_new_parameter"))
 	}))
 	defer srv.Close()
-	cfg := &oauth2.Config{ClientID: "probe-client", Endpoint: oauth2.Endpoint{TokenURL: srv.URL, AuthStyle: oauth2.AuthStyleInParams}}
+	cfg := &oauth2.Config{ClientID: "probe-client", Endpoint: oauth2.Endpoint{TokenURL: srv.URL + "/v1/oauth/token", AuthStyle: oauth2.AuthStyleInParams}}
 	_, err := redact.OAuth2(cfg.Exchange(context.Background(), "the-code", oauth2.SetAuthURLParam("session", session), oauth2.SetAuthURLParam("a_new_parameter", unlisted)))
 	if err == nil {
 		t.Fatal("OAuth2 answered no error")

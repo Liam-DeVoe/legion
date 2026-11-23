@@ -6,7 +6,7 @@
 // halves are held to the fixture at packages/envoy/internal/redact/testdata/remote.json.
 
 import { errorClass } from "./log-text";
-import { isPublicRequestName } from "./public-request-names";
+import { isPublicRequestName, type RequestRoute, requestRoute } from "./public-request-names";
 
 /** What a message prints in place of a field the rule cannot read as clean: Go's
  *  `redact.WordsNotReadable`. */
@@ -879,8 +879,13 @@ function withheldClass(thrown: unknown, status: number): string {
   return `${errorClass(thrown)}${suffix}`;
 }
 
-/** The request a fetch sends: the options it is sent with, a header record or a `Headers`. */
-type FetchOptions = { body?: unknown; headers?: ConstructorParameters<typeof Headers>[0] };
+/** The request a fetch sends: the options it is sent with, its method (GET where it names none), a
+ *  header record or a `Headers`, and its body. */
+type FetchOptions = {
+  body?: unknown;
+  headers?: ConstructorParameters<typeof Headers>[0];
+  method?: string;
+};
 
 /**
  * `base`, a fetch openid-client is given (its `customFetch`) or one beneath it, which records the
@@ -911,21 +916,24 @@ export function refusalFetch<Options extends FetchOptions>(
 }
 
 /**
- * Every value a request carries under a name a wire contract does not declare public
- * (`PUBLIC_REQUEST_NAMES` in public-request-names.ts): each such header's value whole and after
- * its scheme, but for an `Authorization` or a `Proxy-Authorization` that names a scheme, whose
- * scheme (Bearer, token, Basic, any word before its first space) is the header's grammar and no
- * credential, only the part after it; a Basic pair's user and password as sent and decoded; its
- * URL's user and password and each such value of its query; and each such value of its form or
- * string of its JSON body. A name nobody listed counts, so a new parameter is a credential until a
- * contract declares it public. Go's `requestTokens`.
+ * Every value a request carries under a name a wire contract does not declare public on the
+ * request's route (`PUBLIC_REQUEST_NAMES` in public-request-names.ts, each name public only on the
+ * routes its contract names, where it names any; the route is the method, GET where `options`
+ * names none, and the URL's path): each such header's value whole and after its scheme, but for an
+ * `Authorization` or a `Proxy-Authorization` that names a scheme, whose scheme (Bearer, token,
+ * Basic, any word before its first space) is the header's grammar and no credential, only the part
+ * after it; a Basic pair's user and password as sent and decoded; its URL's user and password and
+ * each such value of its query; and each such value of its form or string of its JSON body. A name
+ * nobody listed counts, so a new parameter is a credential until a contract declares it public,
+ * and so does a listed name on a route its contract does not name. Go's `requestTokens`.
  */
 export function requestCredentials(url: string, options: FetchOptions): string[] {
   const credentials: string[] = [];
+  const route = requestRoute(url, options.method);
   let contentType = "";
   for (const [name, value] of new Headers(options.headers ?? {})) {
     if (name.toLowerCase() === "content-type") contentType = value.toLowerCase();
-    if (isPublicRequestName("header", name)) continue;
+    if (isPublicRequestName("header", name, route)) continue;
     const authorization = ["authorization", "proxy-authorization"].includes(name.toLowerCase());
     const space = value.trim().indexOf(" ");
     if (!authorization || space < 0) credentials.push(value);
@@ -950,18 +958,21 @@ export function requestCredentials(url: string, options: FetchOptions): string[]
       if (part !== "") credentials.push(...unescaped(part), part);
     }
     for (const [name, value] of parsed.searchParams) {
-      if (!isPublicRequestName("field", name)) credentials.push(value);
+      if (!isPublicRequestName("field", name, route)) credentials.push(value);
     }
   }
-  return credentials.concat(bodyCredentials(options.body, contentType));
+  return credentials.concat(bodyCredentials(options.body, contentType, route));
 }
 
-/** Each value of a form body, or string of a JSON body, under a name no contract declares public;
- *  none for any other body. A JSON string's name is the key of the object it is a member of,
- *  through any arrays between; an object under a public key is read by its own keys. */
-function bodyCredentials(body: unknown, contentType: string): string[] {
+/** Each value of a form body, or string of a JSON body, under a name no contract declares public on
+ *  `route`, the request's; none for any other body. A JSON string's name is the key of the object
+ *  it is a member of, through any arrays between; an object under a public key is read by its own
+ *  keys. */
+function bodyCredentials(body: unknown, contentType: string, route: RequestRoute): string[] {
   const formValues = (form: URLSearchParams): string[] =>
-    [...form].filter(([name]) => !isPublicRequestName("field", name)).map(([, value]) => value);
+    [...form]
+      .filter(([name]) => !isPublicRequestName("field", name, route))
+      .map(([, value]) => value);
   if (body instanceof URLSearchParams) return formValues(body);
   const text =
     typeof body === "string"
@@ -982,7 +993,7 @@ function bodyCredentials(body: unknown, contentType: string): string[] {
       for (const element of value) walk(element, isPublic);
     } else if (value !== null && typeof value === "object") {
       for (const [key, member] of Object.entries(value)) {
-        walk(member, isPublicRequestName("field", key));
+        walk(member, isPublicRequestName("field", key, route));
       }
     }
   };

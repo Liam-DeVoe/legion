@@ -12,9 +12,10 @@ import (
 // RefusalClient is base (nil is http.DefaultClient), its timeout, redirect rule and cookie jar as
 // they are, whose transport keeps a record of every request it sends (requestTokens reads each
 // one's credentials when an error is read: every value under a name no wire contract declares
-// public, of a header, the URL's user information and query, and a form or JSON body) and changes
-// nothing of any answer, so the library that sent the request parses the answer as it came. The
-// record travels with what the request led to, and nothing matches it by text:
+// public on the request's route, of a header, the URL's user information and query, and a form or
+// JSON body) and changes nothing of any answer, so the library that sent the request parses the
+// answer as it came. The record travels with what the request led to, and nothing matches it by
+// text:
 //
 //   - an answer carries it on its Request's context (resp.Request), so the boundary reads an
 //     *oauth2.RetrieveError x/oauth2 makes of it with the record of its own requests, and a client

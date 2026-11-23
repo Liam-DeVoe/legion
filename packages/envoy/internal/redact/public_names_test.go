@@ -11,9 +11,11 @@ import (
 )
 
 // TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder: every entry of the table
-// of names whose values are public names the contract that declares it, and none is a name a
-// credential travels under (testdata/credential-names.json, which the TypeScript guard reads too).
-// An entry with no source, or a credential's name, fails here.
+// of names whose values are public names the contract that declares it, and each route the entry
+// is public on in its source's words, and none is a name a credential travels under
+// (testdata/credential-names.json, which the TypeScript guard reads too). An entry with no source,
+// a route that is no "<METHOD> /<path>" or that its source does not name, or a credential's name,
+// fails here.
 func TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder(t *testing.T) {
 	data, err := os.ReadFile("testdata/credential-names.json")
 	if err != nil {
@@ -40,6 +42,11 @@ func TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder(t *tes
 		if entry.Place != "header" && entry.Place != "field" {
 			t.Errorf("the public name %q is carried at %q, neither header nor field", entry.Name, entry.Place)
 		}
+		for _, route := range entry.Routes {
+			if !routeShape.MatchString(route) || !strings.Contains(entry.Source, route) {
+				t.Errorf("the public name %q is public on %q, which is no \"<METHOD> /<path>\" its source %q names", entry.Name, route, entry.Source)
+			}
+		}
 		for _, name := range forbidden.Names {
 			if strings.EqualFold(entry.Name, name) {
 				t.Errorf("the public name %q is a name a credential travels under", entry.Name)
@@ -53,12 +60,15 @@ func TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder(t *tes
 	}
 }
 
+// routeShape is an entry's route: an upper-case method, one space and a path from its root.
+var routeShape = regexp.MustCompile(`^[A-Z]+ /[^ ]*$`)
+
 // TestARequestsValueIsACredentialUnlessItsNameIsPublic: a value under a name no contract declares
 // public, a new one included, is among the request's credentials, and a value under a listed name
-// is not, in a header, a query, a form and a JSON body alike.
+// is not, on a route its contract names, in a header, a query, a form and a JSON body alike.
 func TestARequestsValueIsACredentialUnlessItsNameIsPublic(t *testing.T) {
 	form := url.Values{"session": {"public-session-name"}, "a_new_parameter": {"unlisted-value-RDX"}}
-	request, err := http.NewRequest(http.MethodPost, "https://broker.example/token?scope=public-scope&new_query=unlisted-query-RDX", strings.NewReader(form.Encode()))
+	request, err := http.NewRequest(http.MethodPost, "https://broker.example/v1/oauth/token?scope=public-scope&new_query=unlisted-query-RDX", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +86,7 @@ func TestARequestsValueIsACredentialUnlessItsNameIsPublic(t *testing.T) {
 			t.Errorf("requestTokens holds %q, a value under a public name: %q", public, got)
 		}
 	}
-	body := `{"operator":"ada@example.com","pod_token":"pod-token-RDX","nested":{"session_id":"public-session-id","proof":"nested-proof-RDX"},"delegates":["sa@example.iam.gserviceaccount.com"]}`
+	body := `{"operator":"ada@example.com","pod_token":"pod-token-RDX","nested":{"session_id":"public-session-id","proof":"nested-proof-RDX"}}`
 	jsonRequest, err := http.NewRequest(http.MethodPost, "https://broker.example/v1/enrollments", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -88,9 +98,18 @@ func TestARequestsValueIsACredentialUnlessItsNameIsPublic(t *testing.T) {
 			t.Errorf("requestTokens holds no %q from the JSON body: %q", want, got)
 		}
 	}
-	for _, public := range []string{"ada@example.com", "public-session-id", "sa@example.iam.gserviceaccount.com"} {
+	for _, public := range []string{"ada@example.com", "public-session-id"} {
 		if strings.Contains(got, public) {
 			t.Errorf("requestTokens holds %q from a public JSON field: %q", public, got)
 		}
+	}
+	impersonation, err := http.NewRequest(http.MethodPost, "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/writer@example.iam.gserviceaccount.com:generateAccessToken",
+		strings.NewReader(`{"delegates":["sa@example.iam.gserviceaccount.com"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	impersonation.Header.Set("Content-Type", "application/json")
+	if got := strings.Join(requestTokens(impersonation), "\n"); strings.Contains(got, "sa@example.iam.gserviceaccount.com") {
+		t.Errorf("requestTokens holds %q from a public JSON field: %q", "sa@example.iam.gserviceaccount.com", got)
 	}
 }

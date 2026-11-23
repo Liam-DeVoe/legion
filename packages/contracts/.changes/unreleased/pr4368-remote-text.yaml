@@ -19,7 +19,8 @@ body: |-
   (`equals`, `equalsIgnoringCase`, `startsWith`, `isEmpty`) and parses a time (`date`). It also
   exports `tokens`, Go's `redact.Tokens` (both replay `testdata/tokens.json`), and `refusalFetch`,
   the fetch every openid-client call is handed: it records the credentials each refused request
-  carried, every value under a name `public-request-names.ts` does not declare public (of an
+  carried, every value under a name `public-request-names.ts` does not declare public on the
+  request's method and path, an entry that names routes being public on those alone (of an
   `Authorization` or a `Proxy-Authorization`, only the part after its scheme, as Go's
   `requestTokens` reads it), and changes no answer, and a `LibraryError` prints the error's words
   with them redacted while its code compares as the answer gave it. `callLibrary` is the one way

@@ -134,7 +134,8 @@ func characterOffset(s string, n int) int {
 }
 
 // requestTokens is every credential r carries, for Tokens: every value it carries under a name a
-// wire contract does not declare public (publicRequestNames). That is the whole value of each such
+// wire contract does not declare public on r's route (publicRequestNames, each name public only on
+// the routes its contract names, where it names any). That is the whole value of each such
 // header (a Cookie its client's jar added, an instance metadata token, a proof, whatever its
 // name), but for an Authorization or a Proxy-Authorization that names a scheme, whose scheme
 // (Bearer, token, Basic, any word before its first space) is the header's grammar and no
@@ -142,15 +143,17 @@ func characterOffset(s string, n int) int {
 // unescaped (x/oauth2 escapes them); the user and password of its URL and each such value of its
 // query; and each such value of its form or string of its JSON body, read through GetBody so the
 // request is left as it was, a subject or an actor token among them. A name nobody listed counts,
-// so a new parameter is a credential until a contract declares it public. A request without
-// GetBody names no body value; every one net/http or x/oauth2 builds has it.
+// so a new parameter is a credential until a contract declares it public, and so does a listed
+// name on a route its contract does not name. A request without GetBody names no body value;
+// every one net/http or x/oauth2 builds has it.
 func requestTokens(r *http.Request) []string {
 	if r == nil {
 		return nil
 	}
+	route := routeOf(r)
 	var tokens []string
 	for name, values := range r.Header {
-		if publicHeader(name) {
+		if publicHeader(route, name) {
 			continue
 		}
 		authorization := http.CanonicalHeaderKey(name) == "Authorization" || http.CanonicalHeaderKey(name) == "Proxy-Authorization"
@@ -181,12 +184,12 @@ func requestTokens(r *http.Request) []string {
 			}
 		}
 		for name, values := range r.URL.Query() {
-			if !publicField(name) {
+			if !publicField(route, name) {
 				tokens = append(tokens, values...)
 			}
 		}
 	}
-	return append(tokens, requestBodyValues(r)...)
+	return append(tokens, requestBodyValues(r, route)...)
 }
 
 // escapedAndNot is s, and s unescaped where that differs.
@@ -198,10 +201,10 @@ func escapedAndNot(s string) []string {
 }
 
 // requestBodyValues is each value of r's form, or string of its JSON body, under a name no contract
-// declares public, read again through GetBody (at most requestBodyLimit); none where r carries
-// neither or cannot give its body again. A JSON string's name is the key of the object it is a
-// member of, through any arrays between; an object under a public key is read by its own keys.
-func requestBodyValues(r *http.Request) []string {
+// declares public on route, r's; read again through GetBody (at most requestBodyLimit); none where
+// r carries neither or cannot give its body again. A JSON string's name is the key of the object it
+// is a member of, through any arrays between; an object under a public key is read by its own keys.
+func requestBodyValues(r *http.Request, route requestRoute) []string {
 	if r.GetBody == nil {
 		return nil
 	}
@@ -223,7 +226,7 @@ func requestBodyValues(r *http.Request) []string {
 	if form {
 		parsed, _ := url.ParseQuery(string(data))
 		for name, v := range parsed {
-			if !publicField(name) {
+			if !publicField(route, name) {
 				values = append(values, v...)
 			}
 		}
@@ -246,7 +249,7 @@ func requestBodyValues(r *http.Request) []string {
 			}
 		case map[string]any:
 			for k, e := range v {
-				walk(e, publicField(k))
+				walk(e, publicField(route, k))
 			}
 		}
 	}

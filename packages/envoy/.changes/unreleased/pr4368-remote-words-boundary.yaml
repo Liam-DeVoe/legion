@@ -12,8 +12,11 @@ body: |-
   Every word of a refusal, its code, description, error_uri, body and reason phrase, is read with
   every credential its own request carried redacted first: every value of a header, of the URL's
   user information and query, and of a form or JSON body, under any name a wire contract does not
-  declare public (`packages/contracts/src/public-request-names.ts`, which Go reads as generated
-  code). So an answer in a server's place that echoes the request, a Cookie, an instance metadata
+  declare public on that request's route (`packages/contracts/src/public-request-names.ts`, which
+  Go reads as generated code: a name whose contract names routes, such as the listener's `message`
+  on `POST /v1/messages/send` and `POST /v1/messages/publish` or GitHub's `page` on a `GET`, is
+  public on those alone, and a value under it on any other method or path is a credential). So an
+  answer in a server's place that echoes the request, a Cookie, an instance metadata
   token, a subject token or a proof among it, no longer prints it, in the broker's trade, the
   helper's broker calls and every client this change hands x/oauth2, go-oidc or Google's
   impersonation (`redact.Tokens`, `redact.Carried`). A credential shorter than 8 characters is

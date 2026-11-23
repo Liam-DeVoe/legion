@@ -12,14 +12,21 @@ const forbidden: { names: string[]; headerPatterns: string[] } = JSON.parse(
   readFileSync(FORBIDDEN_PATH, "utf8")
 );
 
-// Every entry names the contract that declares its value public, and none is a name a credential
-// travels under. Go's TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder.
+// Every entry names the contract that declares its value public, and each route it is public on
+// in its source's words, and none is a name a credential travels under. Go's
+// TestThePublicNameTableHoldsOnlyContractNamesNoCredentialTravelsUnder.
 test("the public-name table holds only contract names no credential travels under", () => {
   expect(forbidden.names.length).toBeGreaterThan(0);
   expect(PUBLIC_REQUEST_NAMES.length).toBeGreaterThan(0);
   const patterns = forbidden.headerPatterns.map((pattern) => new RegExp(pattern, "i"));
   for (const entry of PUBLIC_REQUEST_NAMES) {
     expect(entry.source.trim(), `${entry.name} names no contract`).not.toBe("");
+    for (const route of entry.routes ?? []) {
+      expect(
+        /^[A-Z]+ \/[^ ]*$/.test(route) && entry.source.includes(route),
+        `${entry.name} is public on ${route}, which is no "<METHOD> /<path>" its source names`
+      ).toBe(true);
+    }
     for (const name of forbidden.names) {
       expect(entry.name.toLowerCase(), `${entry.name} is a credential's name`).not.toBe(
         name.toLowerCase()
@@ -35,11 +42,13 @@ test("the public-name table holds only contract names no credential travels unde
 });
 
 // A value under a name no contract declares public, a new one included, is a credential; a value
-// under a listed name is not. Go's TestARequestsValueIsACredentialUnlessItsNameIsPublic.
+// under a listed name, on a route its contract names, is not. Go's
+// TestARequestsValueIsACredentialUnlessItsNameIsPublic.
 test("a request's value is a credential unless its name is public", () => {
   const got = requestCredentials(
-    "https://broker.example/token?scope=public-scope&new_query=unlisted-query-RDX",
+    "https://broker.example/v1/oauth/token?scope=public-scope&new_query=unlisted-query-RDX",
     {
+      method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded",
         "user-agent": "public-agent",
