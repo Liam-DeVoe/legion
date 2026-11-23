@@ -558,6 +558,12 @@ type server struct {
 	// test sets it, so a read past the span an answer is believed for is the test's choice rather
 	// than a wait of that span on the wall clock.
 	resultsClock func() time.Time
+	// drainDeadlineSet is called with the moment a drain began and the read deadline it computed
+	// from that moment, before the drain sets the deadline on the connection (readFor); nil, which
+	// every server the deployment builds leaves it, calls nothing. Only a test sets it, to judge the
+	// deadline in effect when a stalled read ended against the bound the drain chose, which no
+	// clock the test reads afterwards can name.
+	drainDeadlineSet func(began, deadline time.Time)
 	// repeatFoundInFlight is called when the keyed layer finds a repeat's key held by a first
 	// request still running, before it reads a byte of the repeat's body; nil, which every server
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
