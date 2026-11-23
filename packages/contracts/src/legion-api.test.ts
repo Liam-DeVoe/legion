@@ -1815,19 +1815,19 @@ test("an operator claim carries a refusal the store has not recorded", () => {
       unrecordedRefusal?: { since: string; attempts: number; error: string };
     }[];
   };
-  const token = "legion-legion-legion-211-tester";
-  const tester = listing.claims.find((claim) => claim.token === token);
+  const testerClaim = "legion-legion-legion-211-tester";
+  const tester = listing.claims.find((claim) => claim.token === testerClaim);
   if (tester === undefined) {
-    throw new Error(`operator-claims fixture lacks ${token}`);
+    throw new Error(`operator-claims fixture lacks ${testerClaim}`);
   }
   const unrecorded = {
     since: "2026-11-23T17:00:00Z",
     attempts: 3,
-    error: `apply fact supervise/pod-refused:${token}:1: the database did not answer`,
+    error: `apply fact supervise/pod-refused:${testerClaim}:1: the database did not answer`,
   };
   tester.unrecordedRefusal = unrecorded;
   expect(
-    LegionOperatorClaimsResponse.parse(listing).claims.find((claim) => claim.token === token)
+    LegionOperatorClaimsResponse.parse(listing).claims.find((claim) => claim.token === testerClaim)
       ?.unrecordedRefusal
   ).toEqual(unrecorded);
 
