@@ -565,6 +565,74 @@ test("a stopped write that a newer landed write of the same text supersedes is k
   expect(sentCount()).toBe(2);
 });
 
+// "A" over "Old" was stopped with no verdict and stays on the shell's line. Another person's "Bob"
+// arrives, the field takes it in, and the reader edits his text: "Bob, mine" over "Bob" lands. It
+// was made on another text than the one "A" names, so it carries none of "A": "A" stays on the
+// line, and its Retry sends it over "Old", which another person's text refuses into the page's
+// keeping, where her text is offered once.
+test("a stopped write that a newer landed write over another person's text does not supersede stays: its Retry is refused into the page's keeping", async () => {
+  const { answer, client, kept, read, readCount, rename, sentAt, stopLate } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  const writes = writesOf(client);
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    const stopped = await stopLate(0);
+    act(() => {
+      void client.invalidateQueries({ queryKey: ["priorities"] });
+    });
+    await read(1, "Bob");
+    rename("Bob, mine", "Bob");
+    expect(await sentAt(1)).toEqual({ expected: { title: "Bob" }, title: "Bob, mine" });
+    await answer(1, false);
+    expect(writes.rows()).toMatchObject([{ id: stopped?.id, status: "refused" }]);
+    act(() => writes.retry(stopped?.id ?? 0));
+    await turns();
+    expect(writes.rows()).toMatchObject([{ id: stopped?.id, status: "sending" }]);
+    expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "A" });
+    await answer(2, true);
+  });
+  for (let at = 2; at < readCount(); at += 1) await read(at, "Bob, mine");
+  await waitFor(() => expect(kept("Bob, mine")).toEqual(["A"]));
+  expect(writes.rows()).toMatchObject([
+    { claimed: true, detail: { expected: "Old", text: "A" }, status: "refused" },
+  ]);
+});
+
+// The same through a reload: the tab still keeps "A" once "Bob, mine" lands, so the line after
+// the reload offers it, and its Retry sends it over "Old", which another person's text refuses;
+// the line keeps her text.
+test("a stopped write that a newer landed write over another person's text does not supersede is kept: a reload offers it, and its Retry sends it", async () => {
+  const { answer, client, read, reload, rename, sentAt, stopLate } = pageWrites(SHOWS_P1);
+  await read(0, "Old");
+  let key = "";
+  await onFakeClock(async () => {
+    rename("A", "Old");
+    key = (await stopLate(0))?.key ?? "";
+    act(() => {
+      void client.invalidateQueries({ queryKey: ["priorities"] });
+    });
+    await read(1, "Bob");
+    rename("Bob, mine", "Bob");
+    expect(await sentAt(1)).toEqual({ expected: { title: "Bob" }, title: "Bob, mine" });
+    await answer(1, false);
+  });
+  expect(JSON.parse(sessionStorage.getItem(`dispatch.write:${key}`) ?? "null")).toMatchObject({
+    detail: { expected: "Old", text: "A" },
+  });
+  const after = reload();
+  await turns();
+  const [line] = after.rows();
+  expect(after.rows()).toMatchObject([
+    { detail: { expected: "Old", text: "A" }, status: "refused" },
+  ]);
+  act(() => after.retry(line?.id ?? 0));
+  expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "A" });
+  await answer(2, true);
+  expect(after.rows()).toMatchObject([
+    { detail: { text: "A" }, refusal: { status: 409 }, status: "refused" },
+  ]);
+});
+
 // A chain's start is a text the server took: an edit started from it after a read showed it -
 // another person set it back - names it, whatever became of the chain's own writes.
 test("a write from the text another person set back, once the read shows it, names that text", async () => {

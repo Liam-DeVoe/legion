@@ -184,11 +184,15 @@ const mountedPages = new Set<MountedPage>();
  * at once where its refusal lands later, whether a page shows the priority or not, and else once
  * the held text is handed back to the shell's line, so the line names that text once. Where no
  * page shows the priority, the shell's line offers the text to copy (`draft`). A write of a text
- * that lands makes needless every earlier write of the same text of the same priority that ended
- * with no verdict and stands on the shell's line (`outdates`): the server holds the reader's newer
- * text, and a Retry of the older one would name a text the server no longer holds, be refused,
- * and offer the older text back as another person's. The store keeps it no longer, so a reload
- * does not bring it back, and its Retry sends nothing.
+ * that lands makes needless every earlier write of that text of that priority that ended with no
+ * verdict and stands on the shell's line, where the landed one is a newer write made on the same
+ * text - both name the same `expected` (`outdates`): it went over the server's text the older one
+ * went over, so it carries the reader's stopped edit, and a Retry of the older one would name a
+ * text the server no longer holds, be refused, and offer the older text back as another person's.
+ * The store keeps it no longer, so a reload does not bring it back, and its Retry sends nothing. A
+ * newer write made on another text - another person's - carries nothing of the older one, which
+ * stays on the line and in the tab's storage: its Retry is sent, and refused as a write over
+ * another person's text is, which keeps the reader's text.
  */
 export const priorityTextWrite = defineWriteKind<PriorityTextWrite>({
   claims: (client, write) =>
@@ -197,7 +201,9 @@ export const priorityTextWrite = defineWriteKind<PriorityTextWrite>({
   kept: keptTextWrite,
   name: "priority-text",
   outdates: (landed, earlier) =>
-    landed.detail.id === earlier.detail.id && landed.detail.attribute === earlier.detail.attribute,
+    landed.detail.id === earlier.detail.id &&
+    landed.detail.attribute === earlier.detail.attribute &&
+    landed.detail.expected === earlier.detail.expected,
   supersedes: (refused, unsent) =>
     refused.detail.id === unsent.detail.id &&
     refused.detail.attribute === unsent.detail.attribute &&

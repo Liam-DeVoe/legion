@@ -179,10 +179,11 @@ export interface WriteKind<D, K = D> {
   /** Whether `landed`, a write of this kind that landed, makes `earlier` needless: a write of this
    *  kind pressed before it that ended with no verdict of Dispatch's (`endedWithoutVerdict`) -
    *  stopped, its key spent, or refused after an attempt that went unanswered - and stands refused
-   *  for a Retry. The newer write landed over what the older one was of, so a Retry of the older
-   *  would only go back over it. The store then keeps `earlier` no longer, so a reload does not
-   *  take it up, and its Retry lets it go and sends nothing (`Writes.retry`). Left out, no landing
-   *  makes another write needless. */
+   *  for a Retry. Only a newer write made on the same text does: it went over what the older one
+   *  went over, so it carries the older one's change, and a Retry of the older would only go back
+   *  over it; one made on another text - another person's - carries none of it. The store then
+   *  keeps `earlier` no longer, so a reload does not take it up, and its Retry lets it go and
+   *  sends nothing (`Writes.retry`). Left out, no landing makes another write needless. */
   readonly outdates?: (landed: Write<D>, earlier: Write<D>) => boolean;
   /** What a kind lets go of once whoever is signed in changes, or the person signs out: what it
    *  remembered of their answers, which the next person's writes must not build on. The writes
@@ -395,9 +396,9 @@ let watcher: ((store: Writes) => void) | undefined;
  * settles it there (`settle`) or the surface goes (`unclaim`); so does a text of the reader's a
  * surface claims though no write of it was sent (`claimUnsent`), until a refused write that went
  * out carries it too (`WriteKind.supersedes`). A refused write that ended with no verdict, and
- * that a newer write of the same thing makes needless as it lands (`WriteKind.outdates`), is kept
- * no longer, and its Retry sends nothing. A conflict (`isConflict`) refuses the same body every
- * time, so no Retry makes it again. A write belongs to the person who pressed it: a session
+ * that a newer write made on the same text makes needless as it lands (`WriteKind.outdates`), is
+ * kept no longer, and its Retry sends nothing. A conflict (`isConflict`) refuses the same body
+ * every time, so no Retry makes it again. A write belongs to the person who pressed it: a session
  * that lapses (whoami answers 401, or the write itself is answered 401) stops every write's trying
  * and starts none, but keeps them all, in memory and in storage, until someone signs in - the same
  * person's sign-in takes them up again, and anyone else's drops every write of another login
@@ -1359,10 +1360,11 @@ export class Writes {
     }
   }
 
-  /** Marks each write the landed `landed` makes needless (`WriteKind.outdates`) and keeps it no
-   *  longer: one of its kind pressed before it that stands refused with no verdict of Dispatch's
-   *  (`endedWithoutVerdict`), for a Retry - no conflict, which no Retry makes again. Its Retry
-   *  then lets it go (`retry`), and a reload does not take it up. */
+  /** Marks each write the landed `landed` makes needless (`WriteKind.outdates`), as a newer write
+   *  made on the same text, and keeps it no longer: one of its kind pressed before it that stands
+   *  refused with no verdict of Dispatch's (`endedWithoutVerdict`), for a Retry - no conflict,
+   *  which no Retry makes again. Its Retry then lets it go (`retry`), and a reload does not take
+   *  it up. */
   #outdate(landed: Write): void {
     const outdates = kinds.get(landed.kind)?.outdates;
     if (outdates === undefined) return;
