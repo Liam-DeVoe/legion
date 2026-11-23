@@ -228,7 +228,7 @@ func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) str
 		select {
 		case <-ctx.Done():
 			return ""
-		case <-time.After(w.mergeStateWait()):
+		case <-w.mergeStateAfter(w.mergeStateWait()):
 		}
 	}
 }
@@ -288,14 +288,12 @@ func (w *workflowRuntime) followWait(ctx context.Context, issue string, wait tim
 	if asked {
 		return false
 	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
 	case <-run.wake:
 		return false
-	case <-timer.C:
+	case <-w.mergeStateAfter(wait):
 		return true
 	}
 }
@@ -310,6 +308,16 @@ func (w *workflowRuntime) mergeStateWait() time.Duration {
 		return w.mergeStateRetry
 	}
 	return mergeStateLadderWait
+}
+
+// mergeStateAfter is the clock the ladder's waits run on, the climb's between its reads and each
+// wait before a read after it (followWait): time.After, unless the runtime's mergeStateTimer names
+// another, as a test does that must decide when a wait ends rather than race it.
+func (w *workflowRuntime) mergeStateAfter(wait time.Duration) <-chan time.Time {
+	if w.mergeStateTimer != nil {
+		return w.mergeStateTimer(wait)
+	}
+	return time.After(wait)
 }
 
 // readMergeState reads issue's pull request from GitHub once (one GET /pulls/{number}) and applies

@@ -302,12 +302,14 @@ type workflowRuntime struct {
 	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
 	// long the outbox's merge-queue read and second conflict read wait before they read again
 	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
-	// shortens (overrides.mergeStateRetry).
+	// shortens (overrides.mergeStateRetry). mergeStateTimer is the clock the ladder's waits run on
+	// (mergeStateAfter), time.After when nil; a test that must say when a wait ends holds it.
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateQueued  map[string]string
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
+	mergeStateTimer   func(time.Duration) <-chan time.Time
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
