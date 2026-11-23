@@ -58,7 +58,7 @@ func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint
 }
 
 // reviewRequestsChanges ends key's review round, in reviewing, with a request for changes whose
-// body is changesBody, as the review's settlement moves it (settleRound).
+// body is changesBody, as settleRound moves the round of a reviewer step no owner does.
 func reviewRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -289,9 +289,10 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
-	// The type is forged: no plan of this release writes it. Each failed step a plan can hold comes
-	// after its implementer (plan.Supported), so only a stored type that no plan gives reaches the
-	// stop this test asserts (returnTarget).
+	// The type is forged so that this control walks the plan of the test it controls and counts the
+	// implementer's starts. A plan whose failed step has no step of the type implementation before
+	// it, such as `tester reviewer` (which plan.Supported takes), reaches the same stop
+	// (returnTarget).
 	if _, err := pool.Exec(t.Context(), "update plan_steps set type = 'review' where issue = $1 and task = 'a' and position = 1", root.Key); err != nil {
 		t.Fatalf("store the implementer step's type as review: %v", err)
 	}

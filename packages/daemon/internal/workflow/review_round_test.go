@@ -76,7 +76,9 @@ func deliveredTask(t *testing.T, pool *pgxpool.Pool, path string) string {
 //
 // The resume task made because the stored text is empty (a clear emptied it, and no entry was
 // raised since) names no entry, `none`, since no review of that entry moves the commit. A task of
-// any other role names neither (TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry).
+// any other role names no entry, and a commit only where that role's step is of the type review
+// (namingTheReviewRound): the implementer's and the tester's here name neither
+// (TestEachWakeOfTheReviewerInReviewingEndsNamingItsEntry).
 func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 	const withCommit, withNone = "a row with a commit", "a row with none"
 	both := []string{withCommit, withNone}
@@ -110,7 +112,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				pool, _, _ := reviewRoundTwoNaming(t, noCommit)
 				for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 					if task := roleRow(t, pool, role).EntryTask; task == "" || strings.Contains(task, reviewround.EntryLabel) || strings.Contains(task, reviewround.CommitLabel) {
-						t.Fatalf("the %s's row holds the task %q, want round 2's task with no sentence of the review round: only the reviewer is told them", role, task)
+						t.Fatalf("the %s's row holds the task %q, want round 2's task with no sentence of the review round: a role with no review step is told neither", role, task)
 					}
 				}
 				return pool, "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +

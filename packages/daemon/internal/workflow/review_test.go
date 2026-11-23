@@ -21,16 +21,24 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The review event decides the round, and the reviewer's handoff records its findings
-// (dispatch://INFRA-714/spec R1): a request for changes on the current head returns the issue to
-// implementing the moment GitHub reports it, counting the round, and an approval of a head GitHub
-// reports clean moves it to accepting. The reviewer is still mid-turn when either happens, so the
-// completion that follows is recorded on its own row with the issue where the review left it -
-// the findings the next implementer reads - rather than refused as a phase it no longer runs. A
-// completion that arrives first records the same row and moves nothing, the review deciding when
-// it lands. In either order the review records the head its footer names as the commit the
-// reviewer read (record.PhaseRow.ReviewedHead), over the one an earlier review recorded, and a
-// request for changes tells the reviewer's next round that head.
+// The tests of this file are of the review round of the reviewer step of an issue with no plan
+// rows, which a worker does, on an issue with a pull request: the round reviews on GitHub decide
+// (settleRound), and each round, decision and review-stuck notice below is of it. A review step
+// that no review on GitHub decides has no such round and ends by its verdict: the reviewer of an
+// issue with no pull request, whose fail counts a round as a request for changes does
+// (TestAStepOfTheTypeReviewWithNoPullRequestEndsByItsVerdict), and a review step the owner does,
+// whose fail counts none (TestAnOwnersReviewStepEndsByItsReport).
+
+// The review event decides the round of a reviewer step the owner does not do, and the reviewer's
+// handoff records its findings (dispatch://INFRA-714/spec R1): a request for changes on the
+// current head returns the issue to implementing the moment GitHub reports it, counting the
+// round, and an approval of a head GitHub reports clean moves it to accepting. The reviewer is
+// still mid-turn when either happens, so the completion that follows is recorded on its own row
+// with the issue where the review left it - the findings the next implementer reads - rather than
+// refused as a phase it no longer runs. A completion that arrives first records the same row and
+// moves nothing, the review deciding when it lands. In either order the review records the head
+// its footer names as the commit the reviewer read (record.PhaseRow.ReviewedHead), over the one an
+// earlier review recorded, and a request for changes tells the reviewer's next round that head.
 func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -1256,7 +1264,8 @@ func TestALateDeliveredApprovalEndsAStuckRound(t *testing.T) {
 	}
 }
 
-// A round ends only on a review that decides it: an APPROVE of the head or a REQUEST_CHANGES. A
+// A round ends only on a review that decides it: an APPROVE of the head or a REQUEST_CHANGES (a
+// review step that no review on GitHub decides has no such round, and ends by its verdict). A
 // reviewer that completes its round with none - it submitted a COMMENT, a review in any other
 // state, or no review at all - leaves the issue in reviewing with nothing on its way to end it, so
 // its architect is told, naming the head, and told again each time the reviewer (the review App)
@@ -1655,14 +1664,16 @@ func reviewStuckNotices(t *testing.T, pool *pgxpool.Pool) []record.Notice {
 const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
 
 // seedRoundOneRows seeds LEGION-208's implementer and reviewer rows as a first review round holds
-// them. The implementer's row names the claim its completion carried. The reviewer's row holds the
-// entry the round's start raised, with its task, raised before any review of the round
-// (record.PhaseRow.Entry, EntryTask and EntryRaisedAt), as every round's row does: only a review
-// submitted after that entry moves the commit the reviewer read (workflow's review). It names no
-// claim yet: the reviewer submits its review before it completes, and only a completion writes a
-// row's claim (record.PhaseRow.Claim, which the engine's completion handler writes). The reviewer's
-// claim is recorded as the daemon records it, under the token the daemon names it by
-// (reviewClaim) and with the session its agent registered, the session reviewBody's footer names.
+// them, but for the reviewer's claim. The implementer's row names the claim its completion carried.
+// The reviewer's row holds the entry the round's start raised, with its task, raised before any
+// review of the round (record.PhaseRow.Entry, EntryTask and EntryRaisedAt), as every round's row
+// does: only a review submitted after that entry moves the commit the reviewer read (workflow's
+// review). It names no claim, as a row that a release before this one raised and no completion
+// named a claim on does: a raise now writes the claim of the step's agent (record.PhaseRow.Claim,
+// Engine.enter), and a completion the claim it carried, but the reviewer's claim of an issue with
+// no plan rows is its role's own token whatever the row names (record.WorkerClaim). The reviewer's
+// claim is recorded as the daemon records it, under the token the daemon names it by (reviewClaim)
+// and with the session its agent registered, the session reviewBody's footer names.
 func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1,
@@ -1734,12 +1745,12 @@ func TestAReviewAppReviewFromAnotherSessionIsSetAside(t *testing.T) {
 // because the reviewer's claim records no session yet (workflow's RefusedWhileNoSession).
 const reviewWaitsLine = "workflow: a review of the review App waits: the reviewer's claim records no session, so the next read of the pull request's reviews judges it again"
 
-// In the reviewer's first round its row names no claim (seedRoundOneRows): the reviewer submits the
-// review of its first round before it completes, and only a completion writes a row's claim. The
-// reviewer's session is the one the claims record holds for the claim the daemon starts the
-// reviewer under, in that round as in every later one, so another review-App session's APPROVE or
-// REQUEST_CHANGES at the head - the controller's, here - decides nothing in round 1 either: it is
-// set aside as in a later round, the issue stays in reviewing and the round has no decision. The
+// In the reviewer's first round here its row names no claim (seedRoundOneRows), and the reviewer
+// submits the review of its first round before it completes. The reviewer's session is the one the
+// claims record holds for the claim the daemon starts the reviewer under, in that round as in every
+// later one, so another review-App session's APPROVE or REQUEST_CHANGES at the head - the
+// controller's, here - decides nothing in round 1 either: it is set aside as in a later round, the
+// issue stays in reviewing and the round has no decision. The
 // reviewer's own review decides, and records the commit it read. Until the reviewer's agent
 // registers, that claim records no session - the outbox makes the claim with none, and before the
 // outbox takes the start it has no row - and a review-App review then decides nothing, whoever
