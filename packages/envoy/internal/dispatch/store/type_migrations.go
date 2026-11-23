@@ -17,4 +17,7 @@ var TypeMigrations = []string{
 	// each held to its migration by cmd/dispatch's requireStoreOnlyAttributesMatchTheirMigrations.
 	"20261116123354_lens_catalogue.up.sql",
 	"20261116163700_issue_tree_block_schema.up.sql",
+	// The supertags of the priority store's and the workflow store's kinds, priority, step and
+	// plan, with their attribute nodes, written as literal rows beside the move's record table.
+	"20261123134318_stores_moved.up.sql",
 }

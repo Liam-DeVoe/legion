@@ -43,21 +43,24 @@ const storeMigrations = "../../internal/dispatch/store/migrations"
 const blockSchemaFile = "../../internal/dispatch/pmdoc/schema/blocks.json"
 
 // closedSupertags is the root's closed list of types (R21 of the parent change's specification
-// and R6 of this change's): the twenty-seven this change creates, and the three of the later
-// changes this tree holds. `proposed` is a value of a node's state and no type, and the role is
-// the agent, so neither is a supertag. The store holds one supertag node for each and no other.
-// Each later change that creates a kind adds it to this list in its own pull request: the change
-// that moves lenses and lens kinds adds `lens_kind` (20261116123354_lens_catalogue), the change
-// that moves issues and their documents adds `query` and `query version`
-// (20261116121500_issue_tree_query_supertags), the change that moves handoffs adds `handoff`, and
-// the root adds `priority`, `step` and `plan`. The list is written here as the test's own copy, so
-// a seed that adds or drops a name has to be read by a person before this test agrees with it.
+// and R6 of this change's): the twenty-seven this change creates, and the six of the later
+// changes and of the root this tree holds. `proposed` is a value of a node's state and no type,
+// and the role is the agent, so neither is a supertag. The store holds one supertag node for each
+// and no other. Each later change that creates a kind adds it to this list in its own pull
+// request: the change that moves lenses and lens kinds adds `lens_kind`
+// (20261116123354_lens_catalogue), the change that moves issues and their documents adds `query`
+// and `query version` (20261116121500_issue_tree_query_supertags), the change that moves handoffs
+// adds `handoff`, and the root adds `priority`, `step` and `plan` (20261123134318_stores_moved),
+// which the store holds from that migration on, before the boot moves a row of either store. The
+// list is written here as the test's own copy, so a seed that adds or drops a name has to be read
+// by a person before this test agrees with it.
 var closedSupertags = []string{
 	"issue", "document", "document version", "block", "callout", "ask", "requirement",
 	"plan_task", "check", "result", "decision", "reading", "criterion",
 	"constraint", "lens", "risk", "comment", "message", "person", "session", "role",
 	"page", "interaction", "delivery_attempt", "component", "supertag", "attribute",
 	"lens_kind", "query", "query version",
+	"priority", "step", "plan",
 }
 
 // TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt proves that a type is data: the seed
@@ -313,6 +316,15 @@ type storeOnlyNode struct {
 // kind and its position among that type's attributes.
 var storeOnlyAttribute = regexp.MustCompile(`\('([a-z_ ]+)', '([a-z_]+)', '([a-z\[\]]+)', ([0-9]+)\)`)
 
+// literalStoreOnlyAttribute matches the same four, in the same order, where a literal type
+// migration (literalTypeMigrations) declares the attribute as the row of its node, as
+// 20261123134318 writes each: `('attribute', '<supertag>/<name>', 'attribute', 'project', 'live',
+// '{"kind": …, "name": …, "store_name": …, "position": …}'`, those four keys alone. An attribute a
+// literal migration adds to a block type carries the version it is read from (`since`) among its
+// keys, as each of 20261116082319's does, so its row is no match.
+var literalStoreOnlyAttribute = regexp.MustCompile(`\('attribute', '([a-z_ ]+)/([a-z_]+)', 'attribute', 'project', 'live',\s*` +
+	`'\{"kind": "([a-z\[\]]+)", "name": "[a-z_]+", "store_name": "[a-z_]+", "position": ([0-9]+)\}'`)
+
 // requireStoreOnlyAttributesMatchTheirMigrations holds the attribute nodes of the types that
 // declare no block type to the type migrations that declare them, field by field and in both
 // directions: each node's one tie is to the supertag its migration names it under, and it carries
@@ -331,13 +343,15 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeO
 		if err != nil {
 			t.Fatalf("read the type migration %s: %v", name, err)
 		}
-		for _, match := range storeOnlyAttribute.FindAllStringSubmatch(string(text), -1) {
-			position, err := strconv.Atoi(match[4])
-			if err != nil {
-				t.Fatalf("read the position of %s/%s in %s: %v", match[1], match[2], name, err)
-			}
-			declared[match[1]+"/"+match[2]] = declaration{
-				supertag: match[1], name: match[2], kind: match[3], migration: name, position: position,
+		for _, form := range []*regexp.Regexp{storeOnlyAttribute, literalStoreOnlyAttribute} {
+			for _, match := range form.FindAllStringSubmatch(string(text), -1) {
+				position, err := strconv.Atoi(match[4])
+				if err != nil {
+					t.Fatalf("read the position of %s/%s in %s: %v", match[1], match[2], name, err)
+				}
+				declared[match[1]+"/"+match[2]] = declaration{
+					supertag: match[1], name: match[2], kind: match[3], migration: name, position: position,
+				}
 			}
 		}
 	}
@@ -535,6 +549,9 @@ func (d *schemaDrift) report(t *testing.T) {
 // appended again. The runner applies a version once, so no store runs one twice.
 var literalTypeMigrations = []struct{ name, writer string }{
 	{"20261116082319_graph_supertags_decision_reading.up.sql", `{"kind": "system", "id": "block-schema-decision-reading"}`},
+	// The supertags of the moved stores' kinds and their attribute nodes. Its record table is
+	// created `if not exists`, so a second run finds it and goes on to the rows.
+	{"20261123134318_stores_moved.up.sql", `{"kind": "system", "id": "stores-moved"}`},
 }
 
 // shadowedTypeMigrations are the type migrations of store.TypeMigrations, by file name, each with

@@ -93,10 +93,17 @@ var ErrKeySetMismatch = errors.New("this process's signing key set does not matc
 // issue is born converted only while every live process lists it (decision 7 of that plan).
 const CapabilityIssueRoom = "issue_room"
 
+// CapabilityStoresMoved is the capability of a build that reads and writes the priority store's
+// and the workflow store's kinds in the graph store (dispatch://INFRA-1098's R32): a build of the
+// release after this one drops the views and the triggers this build's boot leaves for the release
+// before only where the newest announcement of another build lists it, so a rollback never reaches
+// a build that reads the four old names.
+const CapabilityStoresMoved = "stores_moved"
+
 // Capabilities is what this build serves, as Register writes it into
 // server_processes.capabilities and the build's announcement lists it (refs.TupleKinds). A process
 // of a build before the column holds null there, which lists nothing.
-var Capabilities = []string{CapabilityIssueRoom}
+var Capabilities = []string{CapabilityIssueRoom, CapabilityStoresMoved}
 
 // Instance is what a process registers: the build it serves, the keys it signs and verifies with,
 // and what the decisions over the fleet read (migration 20261101030537).

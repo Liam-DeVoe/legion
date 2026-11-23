@@ -66,10 +66,31 @@ var migrationFiles embed.FS
 // override them, deliberately and per pool (Pool.separate).
 const poolSizeParam = "pool_max_conns"
 
+// StoresMovedWriterSetting is the session setting every connection this build opens to Dispatch's
+// database carries, on, as a startup parameter (markWriter): the mark of a writer of this build,
+// whose writes of the priority store's and the workflow store's kinds go through graphstore. Once
+// the boot has moved those two stores into the graph store (dispatch://INFRA-1098's R32), the
+// triggers on graph_nodes that complete a run or a plan the release before writes through the
+// views act only where current_setting(StoresMovedWriterSetting, true) is not on, so they pass
+// over every write of this build. A release before this one sets no such parameter, and the
+// setting reads null on its connections.
+const StoresMovedWriterSetting = "dispatch.stores_moved_writer"
+
+// markWriter sets on config the startup parameters every connection this build opens to
+// Dispatch's database carries: StoresMovedWriterSetting on. It is the one place they are set.
+// Every opener calls it or copies a configuration it was called on: Open for the shared pool, whose
+// configuration each of Pool.separate's pools, processes.Register's registry pool and pgmigrate's
+// lock watch copies, and connConfig for a connection of its own (Connect, CheckVersions, and the
+// census's connection).
+func markWriter(config *pgx.ConnConfig) {
+	config.RuntimeParams[StoresMovedWriterSetting] = "on"
+}
+
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
+// (scanTimestampsInUTC) and carries the writer mark (markWriter), as do the pools Pool.separate
+// copies from its configuration.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
@@ -86,6 +107,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
+	markWriter(config.ConnConfig)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)

@@ -10,8 +10,12 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
-// censusApplicationName is how the census's one connection appears in pg_stat_activity.
-const censusApplicationName = "envoy-dispatch census"
+// censusApplicationName is how the census's one connection appears in pg_stat_activity, and
+// versionsApplicationName how the version check's does.
+const (
+	censusApplicationName   = "envoy-dispatch census"
+	versionsApplicationName = "envoy-dispatch versions"
+)
 
 // Census takes the pre-deploy census (pgmigrate.Census) of the database databaseURL names against
 // the migrations this binary embeds, on one connection of its own: a deployment runs it before it
@@ -25,11 +29,10 @@ func census(ctx context.Context, databaseURL string, fsys fs.FS, options pgmigra
 	if err != nil {
 		return nil, fmt.Errorf("migrations refused: %w", err)
 	}
-	config, err := pgx.ParseConfig(databaseURL)
+	config, err := connConfig(databaseURL, censusApplicationName)
 	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+		return nil, err
 	}
-	config.RuntimeParams["application_name"] = censusApplicationName
 	// The census's one author-written statement is pinned to the extended protocol on its own
 	// call (pgmigrate.Census); this pins the connection's default too, so a connection string
 	// asking for the simple protocol changes nothing the census runs.
@@ -51,9 +54,9 @@ func CheckVersions(ctx context.Context, databaseURL string) (*pgmigrate.VersionC
 	if err != nil {
 		return nil, fmt.Errorf("migrations refused: %w", err)
 	}
-	conn, err := pgx.Connect(ctx, databaseURL)
+	conn, err := Connect(ctx, databaseURL, versionsApplicationName)
 	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
+		return nil, err
 	}
 	defer conn.Close(ctx)
 	return pgmigrate.CheckVersions(ctx, conn, migrations, versionTable)

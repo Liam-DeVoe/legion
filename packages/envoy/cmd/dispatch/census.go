@@ -165,9 +165,10 @@ func versions(ctx context.Context, databaseURL string, out, errOut io.Writer) in
 
 // inCensusSnapshot runs read in a read-only snapshot on a connection of its own, as the census
 // reads what only docs reads (docs.ReadDecisionsCensus, docs.ReadVersionRenderCensus); what names
-// that read in an error.
+// that read in an error. The connection is store.Connect's, so it carries what every connection
+// this build opens to Dispatch's database carries.
 func inCensusSnapshot(ctx context.Context, databaseURL, what string, read func(pgx.Tx) error) error {
-	conn, err := pgx.Connect(ctx, databaseURL)
+	conn, err := store.Connect(ctx, databaseURL, "envoy-dispatch census")
 	if err != nil {
 		return fmt.Errorf("connect for %s: %w", what, err)
 	}
