@@ -109,6 +109,37 @@ func ChangedTasks(held, next Plan) []string {
 
 // sameBlock says whether two tasks of one id say the same thing.
 func sameBlock(a, b Task) bool {
-	return a.Text == b.Text && a.PartOf == b.PartOf && a.Owner == b.Owner && a.Merges == b.Merges &&
+	return a.Text == b.Text && sameBesideText(a, b)
+}
+
+// sameBesideText says whether two tasks of one id say the same thing but for their text: the same
+// steps, `needs`, `owner`, `part_of` and `merges`. It is the one rule of a change that is only
+// text: the change a running task takes (RunningChange).
+func sameBesideText(a, b Task) bool {
+	return a.PartOf == b.PartOf && a.Owner == b.Owner && a.Merges == b.Merges &&
 		slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Steps, b.Steps)
+}
+
+// RunningChange is the refusal of next's change of task, a task of held that runs: nil where next
+// keeps the task's block but for its text (sameBesideText), which a running task takes, and
+// RunningTaskChanged where next removes it or changes any other part of its block. A change of
+// `serves` is no change of the task at all (ChangedTasks). The task's agent works on the steps,
+// and the text says what each step must do: a later text reaches the later starts of the task, and
+// leaves the work of the running step as it is.
+func RunningChange(held, next Plan, task string) *Refusal {
+	at := slices.IndexFunc(held.Tasks, func(t Task) bool { return t.ID == task })
+	to := slices.IndexFunc(next.Tasks, func(t Task) bool { return t.ID == task })
+	if at >= 0 && to >= 0 && sameBesideText(held.Tasks[at], next.Tasks[to]) {
+		return nil
+	}
+	refusal := RunningTaskChanged(task)
+	return &refusal
+}
+
+// RunningTaskChanged is the reason a later version of the plan is refused when it removes task,
+// which is running, or changes more of it than its text (RunningChange): it names the task, says
+// that it runs, and says that the owner stops it first.
+func RunningTaskChanged(task string) Refusal {
+	return Refusal{Task: task, Reason: fmt.Sprintf("task %s is running, so a later version can change only its text. "+
+		"Stop it with stop_task before you change any other part of it or remove it.", task)}
 }

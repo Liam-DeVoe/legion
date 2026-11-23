@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
@@ -162,6 +163,44 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 		return PlanTask{}, fmt.Errorf("the plan of %s at generation %d holds %d tasks, and this release walks one", p.Version.Issue, p.Version.Generation, len(p.Tasks))
 	}
 	return p.Tasks[0], nil
+}
+
+// RunningStep is where one running task of a plan stands, as register_plan's answer names it: the
+// task, the act it stands at (a step of the task from place 1, its retro or its merge), and the
+// role whose agent works that act, the role of the phase it runs as (phase.RoleFor). It is the
+// agent an owner tells of a decision for the act that runs now: the task's text carries the
+// decision to every later start of the task, and the agent already at work reads no new start.
+type RunningStep struct {
+	Task  string
+	Place TaskPlace
+	Role  claim.Role
+}
+
+// Running is each running task of p (TaskRunning) and where it stands (RunningStep), in the order
+// of p's tasks, which is the order of their ids; nil where no task runs. A step runs as the phase
+// of its role (plan.BuiltinRoles, the roles a step of this release names), the retro as retro and
+// the merge as merging. A step whose place p's steps do not hold, or whose role runs as no phase,
+// is named with no role.
+func (p *StoredPlan) Running() []RunningStep {
+	var running []RunningStep
+	for _, task := range p.Tasks {
+		if task.State != TaskRunning {
+			continue
+		}
+		var runsAs phase.Phase
+		switch task.Place.Kind {
+		case PlaceRetro:
+			runsAs = phase.Retro
+		case PlaceMerge:
+			runsAs = phase.Merging
+		case PlaceStep:
+			if steps := p.Steps[task.Task]; task.Place.Position >= 1 && task.Place.Position <= len(steps) {
+				runsAs = plan.BuiltinRoles()[steps[task.Place.Position-1].Role].Phase
+			}
+		}
+		running = append(running, RunningStep{Task: task.Task, Place: task.Place, Role: phase.RoleFor(runsAs)})
+	}
+	return running
 }
 
 // PutPlan stores version v of the plan of v.Issue at v.Generation, with the tasks it gives and the

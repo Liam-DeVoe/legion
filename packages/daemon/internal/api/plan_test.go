@@ -201,7 +201,7 @@ func TestRegisterPlanAnswersTheWorkflowsRefusals(t *testing.T) {
 		name    string
 		refusal *intake.Refusal
 	}{
-		{"a version that changes the running task", intake.PlanRefused([]plan.Refusal{intake.RunningTaskChanged("a")})},
+		{"a version that changes the running task beyond its text", intake.PlanRefused([]plan.Refusal{plan.RunningTaskChanged("a")})},
 		{"a version at or below the one in force", intake.PlanVersionOld("LEGION-208", 4, 4)},
 		{"a version of another document", intake.PlanDocumentChanged("LEGION-208", childDoc)},
 	} {
@@ -212,7 +212,8 @@ func TestRegisterPlanAnswersTheWorkflowsRefusals(t *testing.T) {
 			statuses.givePlan(planDoc, 4, taskBlock("a", "implementer reviewer"))
 			recorder := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4)
 			if tc.refusal.Reasons != nil {
-				assertPlanRefused(t, recorder, PlanReason{Task: "a", Reason: "task a is running: stop it with stop_task before you change it."})
+				assertPlanRefused(t, recorder, PlanReason{Task: "a", Reason: "task a is running, so a later version can change only its text. " +
+					"Stop it with stop_task before you change any other part of it or remove it."})
 				return
 			}
 			refusedSaying(t, recorder, tc.refusal.Status, tc.refusal.Code, tc.refusal.Message)

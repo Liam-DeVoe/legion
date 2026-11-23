@@ -1142,7 +1142,7 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
 // has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (RunningTaskChanged, or StartedBeforePlans for an issue that ran before Legion took plans),
+// (plan.RunningChange, or StartedBeforePlans for an issue that ran before Legion took plans),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
@@ -1671,10 +1671,15 @@ type Handler interface {
 // Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
 // sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
 // id stays the same, and writes nothing where it sets it.
+//
+// Running is where each running task of a plan an owner gave stands (PlanGiven), read in the
+// transaction that took the version, which register_plan answers: the owner tells the agent of the
+// act that runs of a decision for it. Every other fact, a refusal and a duplicate carry none.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
+	Running   []record.RunningStep
 }
 
 type commitHooksKey struct{}
@@ -1727,20 +1732,15 @@ type Refusal struct {
 
 // PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
 // cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
-// the workflow for a version that changes or removes a running task (RunningTaskChanged). The
-// message holds every reason in its order, so a reader of the sentence alone reads every cause.
+// the workflow for a version that removes a running task or changes more of it than its text
+// (plan.RunningChange). The message holds every reason in its order, so a reader of the sentence
+// alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
 		texts[i] = reason.Reason
 	}
 	return &Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + strings.Join(texts, " "), Reasons: reasons}
-}
-
-// RunningTaskChanged is the reason a later version of the plan is refused when it changes or
-// removes task, which is running: the owner stops it first.
-func RunningTaskChanged(task string) plan.Refusal {
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is running: stop it with stop_task before you change it.", task)}
 }
 
 // PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,
@@ -2105,6 +2105,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 			result.Refusal = candidate.Refusal
 		}
 		result.Unspent = result.Unspent || candidate.Unspent
+		result.Running = append(result.Running, candidate.Running...)
 	}
 	if err := settle(ctx, tx); err != nil {
 		return Result{}, err

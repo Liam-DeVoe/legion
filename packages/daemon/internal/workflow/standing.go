@@ -11,19 +11,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 // Standing is the part of a start's task that names where the started worker's work stands, as
 // standingPart writes it, in two parts a task places apart. Its lines are the daemon's: the
 // working copy line for every start, and for an issue with plan rows the task, the worker's step
 // in it, the task's steps and the report of each earlier step, which a task places right after
-// its continue line. Its owners part is a step worker's alone: the text of the task's block, which
-// the owner of the issue wrote in a version of the plan document and which a task places last of
-// what it composes, after every line of the daemon's, inside a fence (ownersText), so a line of
-// that text shaped like one of the daemon's labels is never read as the daemon's; the queue adds
-// the two sentences of a reviewer's round after the fence (namingTheReviewRound, queuedRow). It has
-// a type of its own, so a caller of task passes the one writer's part and no other string in its
-// place. A package outside this one gets a value of it from WorkingCopy alone.
+// its continue line. Its owners part is a step worker's and the retro's: the text of the task's
+// block, which the owner of the issue wrote in a version of the plan document and which a task
+// places last of what it composes, after every line of the daemon's, inside a fence (ownersText),
+// so a line of that text shaped like one of the daemon's labels is never read as the daemon's; the
+// queue adds the two sentences of a reviewer's round after the fence (namingTheReviewRound,
+// queuedRow). It has a type of its own, so a caller of task passes the one writer's part and no
+// other string in its place. A package outside this one gets a value of it from WorkingCopy alone.
 type Standing struct {
 	lines, owners string
 }
@@ -49,13 +50,13 @@ func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
 }
 
 // ownersText is the owners part of a step's standing (Standing), the text of its task's block as
-// a task places it, last: ` Task text: ` and one sentence that says the owner of the issue wrote
-// it (Legion's own text for the task default, record.PlanSourceDefault, which the sentence names
-// too), then the text between two fence lines, and a line end after the closing one. A fence is a
-// line of backticks one longer than the longest run of backticks the text holds, and three at the
-// least, so no line of the text closes it and stands after it as a line of the daemon's. The line
-// end puts what a task adds after the owner's part, the reviewer's round (namingTheReviewRound), on
-// a line of its own, since a line that holds more than backticks closes no fence.
+// a task places it, last: ownersOpening, which says the owner of the issue wrote it (Legion's own
+// text for the task default, record.PlanSourceDefault, which the sentence names too), then the
+// text between two fence lines, and a line end after the closing one. A fence is a line of
+// backticks one longer than the longest run of backticks the text holds, and three at the least,
+// so no line of the text closes it and stands after it as a line of the daemon's. The line end
+// puts what a task adds after the owner's part, the reviewer's round (namingTheReviewRound), on a
+// line of its own, since a line that holds more than backticks closes no fence.
 func ownersText(text string) string {
 	longest, run := 0, 0
 	for _, r := range text {
@@ -67,9 +68,50 @@ func ownersText(text string) string {
 		longest = max(longest, run)
 	}
 	fence := strings.Repeat("`", max(3, longest+1))
-	return " " + taskTextLabel + ": the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task " +
-		defaultTask + "), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n" +
-		fence + "\n" + text + "\n" + fence + "\n"
+	return ownersOpening + fence + "\n" + text + "\n" + fence + "\n"
+}
+
+// ownersOpening is the sentence the owners part of a standing opens with (ownersText), the
+// daemon's own words before the opening fence line.
+const ownersOpening = " " + taskTextLabel + ": the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task " +
+	defaultTask + "), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n"
+
+// WithTaskText is task, a start's task as a store keeps it, with the owners part it ends with
+// holding text, the text of the task's block as the plan in force gives it now, in place of the
+// text it was composed with, and whether task holds an owners part at all. It is the one rewrite
+// of a start's task whose task's text a later version of the plan changed while the task ran
+// (plan.RunningChange takes such a version): the stored task of the running step's entry
+// (record.PhaseRow.EntryTask, retext), which the send of an owed entry sends again, and a task a
+// claim holds that is sent again (the daemon's send-time read of a held task, supervise's
+// Deps.TaskText). A task composed after the version holds the new text already and is answered as
+// it is.
+//
+// The owners part is the last of what a task composes (task, resumeText), and only the two
+// sentences of a reviewer's round follow it (namingTheReviewRound), which the rewrite keeps after
+// the new part (reviewround.Split). So it is read from the end: the closing fence is the last line
+// of the task before those sentences, a line of three backticks or more and nothing else, and the
+// opening is the last ownersOpening followed by that same fence line before it. The text between
+// holds no run of backticks as long as the fence (ownersText), so no line of it is that fence, and
+// the part found must be exactly what ownersText writes of that text. A task that does not end so
+// holds no owners part, and is answered whole: the task of an issue with no plan rows, of the
+// merge, of an architect, and every task an operator wrote.
+func WithTaskText(task, text string) (string, bool) {
+	body, round, _ := reviewround.Split(task)
+	closed, ok := strings.CutSuffix(body, "\n")
+	if !ok {
+		return task, false
+	}
+	end := strings.LastIndexByte(closed, '\n')
+	fence := closed[end+1:]
+	if end < 0 || len(fence) < 3 || strings.Trim(fence, "`") != "" {
+		return task, false
+	}
+	opening := ownersOpening + fence + "\n"
+	at := strings.LastIndex(closed[:end], opening)
+	if at < 0 || ownersText(closed[at+len(opening):end]) != body[at:] {
+		return task, false
+	}
+	return body[:at] + ownersText(strings.TrimSpace(text)) + round, true
 }
 
 // standingPart is where the work of a worker started in issue's phase stands, the part of its
@@ -79,9 +121,12 @@ func ownersText(text string) string {
 // names its one task: a step's worker is told ` Task: <id>. Step <i> of <n>: <role>.`, the task's
 // steps (stepsLine) and the report of each step before its own (reportsBefore), and, last of its
 // task, the text of the task's block inside a fence (ownersText). The retro and the merge run no
-// step of the task, so their worker is told ` Task: <id>.` and the task's steps alone: the merger
+// step of the task, so their worker is told ` Task: <id>.` and the task's steps: the merger
 // reads from them whether the task has a review step, and each reads the runs of the steps and
-// their reports from Dispatch (`dispatch steps`), which keeps every run, the failed ones too.
+// their reports from Dispatch (`dispatch steps`), which keeps every run, the failed ones too. The
+// retro is the last start of the task that acts on what its owner decided, such as a learning to
+// record, so it is told the text of the task's block last, as a step is. The merge acts on
+// GitHub's state and on Legion's rules, and is told no text.
 //
 // The phase the worker starts in is issue.Phase, the phase each caller has put the issue in
 // before it composes the task, and w is the walk of its run as the caller read it, after any move
@@ -112,8 +157,11 @@ func standingText(issue record.Issue, dir func(record.Issue) string, w Walk, row
 	}
 	lines := at.lines + fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
 	words := plan.Words(namedSteps(w.Steps))
-	if place.Kind != record.PlaceStep {
+	switch place.Kind {
+	case record.PlaceMerge:
 		return Standing{lines: lines + stepsLine(words)}, nil
+	case record.PlaceRetro:
+		return Standing{lines: lines + stepsLine(words), owners: ownersText(strings.TrimSpace(w.Text))}, nil
 	}
 	lines += fmt.Sprintf(" Step %d of %d: %s.", place.Position, len(w.Steps), words[place.Position-1])
 	lines += stepsLine(words) + reportsBefore(rows, w, words, place.Position)

@@ -738,9 +738,11 @@ func (c Claim) openRoundHoldsTask() bool {
 
 // sendPending sends the pending delivery if everything a send needs is true now: the claim is
 // ready or idle, the delivery is neither confirmed nor already on its way, the issue is still in
-// the phase the task was queued for, a task carrying news of the approved design still has some
-// to say (currentNews, which renders it again from the record), the root of a root architect's
-// task of a run has an architect to hear it, the claim's connection is registered, and — for a
+// the phase the task was queued for, a phase worker's task holds the text of its task's block as
+// the plan in force gives it (currentTaskText, which rewrites it from the record), a task carrying
+// news of the approved design still has some to say (currentNews, which renders it again from the
+// record), the root of a root architect's task of a run has an architect to hear it, the claim's
+// connection is registered, and — for a
 // task that adopts the working copy the issue's roles share (adopts) — no other claim of the
 // issue is in a turn or has a prompt on its way to one. A missing connection is not a failure —
 // the shim's next hello sends it. A delivery an earlier daemon may have sent is sent again only
@@ -895,6 +897,9 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		}
 	}
 	if holds {
+		if err := m.currentTaskText(ctx); err != nil {
+			return err
+		}
 		var err error
 		if says, err = m.currentNews(ctx); err != nil {
 			return err
@@ -1169,6 +1174,42 @@ func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, new
 		return err
 	}
 	*m.claim.Pending = next
+	return nil
+}
+
+// currentTaskText writes a phase worker's held task back to the text of its task's block as the
+// plan in force gives it now (Deps.TaskText), before the news it carries is rendered again from
+// the start's own text (currentNews). A later version of the plan can change only the text of a
+// running task, and the claim of the step that runs holds the start task it was given: the task
+// waits for its send, or a turn of it was cut off and the task was taken back (interrupted), and
+// the send that follows goes to the relaunched agent, which can be a fresh session. That send
+// carries the text the plan holds now, and no send is made for the version itself. This is where
+// the task is rewritten, because it is the machine that owns the pending delivery: the version
+// commits in a transaction of the workflow's, with no lock on this claim, and a task rewritten
+// there would be overwritten by the machine's next write of what memory still held.
+//
+// The id is kept, as currentRootTask keeps it across a rewrite of the text: a send under that id
+// that reached the agent before is one the shim answers from its record, and the agent then keeps
+// the start task it already read. A task taken back from a turn carries a new id already
+// (rotateTaskID), so its send is a new prompt. The daemon's own delivery of a relaunch's record has
+// no task text to rewrite, and a delivery of no phase or no run is no phase worker's start.
+func (m *Machine) currentTaskText(ctx context.Context) error {
+	p := m.claim.Pending
+	if m.deps.TaskText == nil || p.Relaunch() || p.Phase == "" || p.Generation == 0 {
+		return nil
+	}
+	task, news, err := m.deps.TaskText(ctx, m.claim, *p)
+	if err != nil {
+		return fmt.Errorf("read the text of the task of %s's held task now: %w", m.claim.Token, err)
+	}
+	if task == p.Task && bytes.Equal(news, p.News) {
+		return nil
+	}
+	if err := m.rewritePending(ctx, p.ID, task, p.Kept, news); err != nil {
+		return err
+	}
+	m.log.Info("supervise: a later version of the plan changed the text of this held task's task; the task is sent with it",
+		"delivery", p.ID, "issue", m.claim.Issue, "phase", p.Phase, "run", p.Generation)
 	return nil
 }
 

@@ -23,6 +23,11 @@ import (
 // after stop_task, and the owner's plan given again at the generation the record holds meets the
 // rules of a later version there.
 //
+// A version taken on a recorded issue answers where each running task of the plan in force
+// stands once it is taken (record.StoredPlan.Running), read in this transaction, which
+// register_plan answers: the act that runs is the one whose agent its owner tells of a decision
+// for it, since that agent reads no new start of the task.
+//
 // Apply judged the plan already on the record as the fact reads it, since the route read the
 // record, or Dispatch, before the fact lock (requestRefusal): a giver that owns the issue no
 // longer is refused ISSUE_OUTSIDE_TREE there, and a plan of a run the issue has left
@@ -36,18 +41,28 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	if err != nil || !given.recorded {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.afterVersion(ctx, tx, fact, given, written)
+	if err := e.afterVersion(ctx, tx, fact, given, written); err != nil {
+		return intake.Result{}, err
+	}
+	stored, err := e.store.Plan(ctx, tx, fact.Issue, fact.Generation)
+	if err != nil || stored == nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{Running: stored.Running()}, nil
 }
 
 // givenVersion is what versionRefusal read of a version it takes: the issue the record holds (nil
 // for one it does not), whether the version is of the issue's own generation (recorded, false for
-// a plan waiting at generation 0), the plan in force at the fact's generation (nil for none), and
-// the tasks the version changes, adds or removes over it (plan.ChangedTasks).
+// a plan waiting at generation 0), the plan in force at the fact's generation (nil for none), the
+// tasks the version changes, adds or removes over it (plan.ChangedTasks), and of those the running
+// tasks whose text alone it changes (retexted, plan.RunningChange), which keep their steps and go
+// on where they stand.
 type givenVersion struct {
 	issue    *record.Issue
 	recorded bool
 	stored   *record.StoredPlan
 	changed  []string
+	retexted []string
 }
 
 // versionRefusal judges fact's version, and answers what it read for the write, or the refusal.
@@ -63,9 +78,10 @@ type givenVersion struct {
 // A later version is compared, task by task, with the version in force as its owner gave it
 // (heldPlan, plan.ChangedTasks). A version of another document than the one in force is refused,
 // but over the default steps, and so is a version at or below it (laterVersionRefusal). A task the
-// version changes or removes must wait or be stopped: a running task is refused, one reason for
-// each, and so is a task that is done or left the workflow. A plan given in a lingering tree is
-// refused too.
+// version changes or removes must wait or be stopped, but for a running task whose text alone it
+// changes, which it takes (plan.RunningChange): every other change of a running task is refused,
+// one reason for each, and so is any change of a task that is done or left the workflow. A plan
+// given in a lingering tree is refused too.
 func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (givenVersion, *intake.Refusal, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -90,7 +106,8 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		if refusal := laterVersionRefusal(fact.Issue, given.stored.Version, fact.Plan); refusal != nil {
 			return givenVersion{}, refusal, nil
 		}
-		given.changed = plan.ChangedTasks(heldPlan(given.stored), fact.Plan)
+		held := heldPlan(given.stored)
+		given.changed = plan.ChangedTasks(held, fact.Plan)
 		var running []plan.Refusal
 		for _, id := range given.changed {
 			at := slices.IndexFunc(given.stored.Tasks, func(task record.PlanTask) bool { return task.Task == id })
@@ -101,9 +118,14 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			if refusal := intake.FinishedTask(fact.Issue, id, state, intake.ChangeOfTask); refusal != nil {
 				return givenVersion{}, refusal, nil
 			}
-			if state == record.TaskRunning {
-				running = append(running, intake.RunningTaskChanged(id))
+			if state != record.TaskRunning {
+				continue
 			}
+			if refusal := plan.RunningChange(held, fact.Plan, id); refusal != nil {
+				running = append(running, *refusal)
+				continue
+			}
+			given.retexted = append(given.retexted, id)
 		}
 		if len(running) > 0 {
 			return givenVersion{}, intake.PlanRefused(running), nil
@@ -137,10 +159,11 @@ type writtenVersion struct {
 }
 
 // writeVersion stores fact's version as the version in force (givenRows): each task it leaves as
-// it was keeps its steps and where it stands, each task it changes takes the steps its block now
-// names, and each task it removes is deleted. It answers what it read of the version before.
+// it was, and each running task whose text alone it changes, keeps its steps and where it stands,
+// each other task it changes takes the steps its block now names, and each task it removes is
+// deleted. It answers what it read of the version before.
 func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion) (writtenVersion, error) {
-	version, tasks, steps := givenRows(fact, given.stored, given.changed, e.cfg.DefaultSteps, e.now())
+	version, tasks, steps := givenRows(fact, given.stored, given.changed, given.retexted, e.cfg.DefaultSteps, e.now())
 	var removed []string
 	var written writtenVersion
 	if given.stored != nil {
@@ -175,7 +198,8 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // (waitForFirstStep). A version taken after the work started writes the run's plan node again,
 // whole (planNode): the start wrote it at the version then in force, and the node names the plan
 // the run walks now. A version taken before the work starts writes none, since the start writes
-// the version in force.
+// the version in force. A running task whose text alone the version changes goes on where it
+// stands, and the stored start task of the act it runs at takes the new text (retext).
 func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion, written writtenVersion) error {
 	issue := *given.issue
 	ends := len(written.stopped) > 0 && given.stored != nil && record.HeldFor(issue, record.HoldTaskStopped)
@@ -191,6 +215,9 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 			return err
 		}
 	}
+	if err := e.retext(ctx, tx, issue, given.retexted); err != nil {
+		return err
+	}
 	if !ends {
 		return nil
 	}
@@ -199,6 +226,46 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		return e.waitForFirstStep(ctx, tx, issue, w, reason)
 	}
 	return e.restartTask(ctx, tx, issue, w, reason)
+}
+
+// retext writes again the stored start task of the act each task of retexted runs at, a running
+// task whose text alone the version just written changed, with the text its block now holds
+// (WithTaskText): the task the phases row of the role whose agent works that act holds for the
+// entry it is on (record.PhaseRow.EntryTask, record.StoredPlan.Running), which the send of an owed
+// entry sends again (sendOwedEntry), to a fresh session among others. It writes in the transaction
+// that takes the version and sends nothing: the agent at work read its start already, and its owner
+// tells it by message of a decision for the act it works. A start composed after the version reads
+// the text from the plan in force (standingPart), and a task a claim holds takes it where the claim's
+// machine sends that task again (supervise's Deps.TaskText).
+func (e *Engine) retext(ctx context.Context, tx pgx.Tx, issue record.Issue, retexted []string) error {
+	if len(retexted) == 0 {
+		return nil
+	}
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return err
+	}
+	for _, running := range stored.Running() {
+		at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.Task == running.Task })
+		if running.Role == "" || at < 0 || !slices.Contains(retexted, running.Task) {
+			continue
+		}
+		row, err := e.phaseRow(ctx, tx, issue.Key, running.Role)
+		if err != nil {
+			return err
+		}
+		task := WithTaskText(row.EntryTask, stored.Tasks[at].BlockText)
+		if task == row.EntryTask {
+			continue
+		}
+		row.EntryTask = task
+		if err := e.store.PutPhase(ctx, tx, row); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: the stored start task of a running task takes the text of its task's block a later version wrote",
+			"issue", issue.Key, "task", running.Task, "role", running.Role, "entry", row.Entry, "version", stored.Version.Version)
+	}
+	return nil
 }
 
 // waitsAtZero says whether a plan given at generation 0 for issue, which the daemon recorded after
@@ -254,12 +321,14 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 }
 
 // givenRows is the rows of fact's version, given at now over stored, the plan in force (nil for
-// none), of which changed are the tasks it changes, adds or removes. Each task takes the
-// version's block, and a task new to the generation waits at no act (PutPlan keeps where a task
-// the generation holds stands). A task the version leaves as it was keeps its stored steps; any
-// other task takes the steps its block names (StepsOf), or, for a block that names none, defaults,
-// the project's default steps (Config.DefaultSteps), each with the type of its role (planSteps).
-func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+// none), of which changed are the tasks it changes, adds or removes, and retexted the running
+// tasks of changed whose text alone it changes. Each task takes the version's block, and a task new
+// to the generation waits at no act (PutPlan keeps where a task the generation holds stands). A
+// task the version leaves as it was, or a running task whose text alone it changes, keeps its
+// stored steps, so its place stays the place of the step it runs; any other task takes the steps
+// its block names (StepsOf), or, for a block that names none, defaults, the project's default
+// steps (Config.DefaultSteps), each with the type of its role (planSteps).
+func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed, retexted []string, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
 		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now}
 	var tasks []record.PlanTask
@@ -268,7 +337,7 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 		tasks = append(tasks, record.PlanTask{Issue: fact.Issue, Generation: fact.Generation, Task: given.ID, PlanVersion: fact.Plan.Version,
 			BlockText: given.Text, Needs: given.Needs, PartOf: given.PartOf, OwnerRole: given.Owner, Merges: given.Merges,
 			StepsByDefault: !given.NamesSteps() && given.Owner == "", State: record.TaskWaiting})
-		if stored != nil && !slices.Contains(changed, given.ID) {
+		if stored != nil && (!slices.Contains(changed, given.ID) || slices.Contains(retexted, given.ID)) {
 			steps = append(steps, stored.Steps[given.ID]...)
 			continue
 		}

@@ -1025,6 +1025,17 @@ type Deps struct {
 	// retired rather than sent. It is asked only about a delivery that carries news, and nil leaves
 	// every task as it was queued.
 	DesignNews func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
+	// TaskText is what a phase worker's held task says of its task's text now: the task with the
+	// owner's part it ends with holding the text of the task's block as the plan in force gives it,
+	// re-read from the record at the moment the task is about to be sent, and the news it carries
+	// with the start's own text (record.DeliveryNews.Task) rewritten the same way. A later version of
+	// the plan can change the text of a running task while its task waits, or after a turn of it was
+	// cut off and taken back (interrupted), and the task sent again, a fresh session's first among
+	// them, carries the text the plan holds then. A task that holds no owner's part, or the text
+	// already, is answered as it is. It is asked about a delivery that names a phase and a run, and
+	// never about the daemon's own delivery of a relaunch's record; nil leaves every task as it was
+	// queued.
+	TaskText func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
 	// TreeClosable answers whether the operator may close this claim's tree: false refuses the
 	// close, and an error is the read itself failing, which the caller sees as a failure rather
 	// than a refusal. It is asked for the operator's own close — the workflow's linger close is its

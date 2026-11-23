@@ -17,8 +17,9 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 	accepting := func(starts int64) record.StepEntry {
 		return record.StepEntry{Place: record.StepPlace{Task: "a", Kind: "step", Place: 2}, Starts: starts}
 	}
-	running := RunningTaskChanged("a")
-	if want := (plan.Refusal{Task: "a", Reason: "task a is running: stop it with stop_task before you change it."}); running != want {
+	running := plan.RunningTaskChanged("a")
+	if want := (plan.Refusal{Task: "a", Reason: "task a is running, so a later version can change only its text. " +
+		"Stop it with stop_task before you change any other part of it or remove it."}); running != want {
 		t.Fatalf("RunningTaskChanged(a) = %+v, want %+v", running, want)
 	}
 	reasons := []plan.Refusal{
@@ -32,7 +33,8 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 	}{
 		{"a refused plan", PlanRefused(reasons), Refusal{Status: http.StatusConflict, Code: "PLAN_REFUSED",
 			Message: "Legion refused this plan and recorded nothing: the plan has 2 tasks (a, b), and this release runs one task for each issue. " +
-				"This release of Legion does not carry it out yet. task a is running: stop it with stop_task before you change it.",
+				"This release of Legion does not carry it out yet. task a is running, so a later version can change only its text. " +
+				"Stop it with stop_task before you change any other part of it or remove it.",
 			Reasons: reasons}},
 		{"a version at or below the one in force", PlanVersionOld("LEGION-208", 3, 2), Refusal{Status: http.StatusConflict, Code: "PLAN_VERSION_OLD",
 			Message: "the plan in force of LEGION-208 is version 3, and Legion takes only a later version: version 2 changed nothing."}},

@@ -2,6 +2,7 @@ package plan
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -51,5 +52,53 @@ func TestChangedTasksReadsStepsTextAndAttributes(t *testing.T) {
 	next := planOf(t, 1, task(map[string]string{"steps": "implementer reviewer"}, "Do the change."))
 	if got, want := ChangedTasks(heldDefault, next), []string{"a", "default"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ChangedTasks(default, {a}) = %#v, want %#v (one new, one gone)", got, want)
+	}
+}
+
+// A running task takes a later version that changes its text alone, or `serves`, which says what
+// the task is for and nothing Legion carries out. Every other change of its block, and its removal,
+// is refused, with a reason that names the task and says that it runs.
+func TestARunningTaskTakesAChangeOfItsTextAlone(t *testing.T) {
+	attributes := func(changes ...string) map[string]string {
+		held := map[string]string{"steps": "implementer reviewer", "serves": "dispatch://ACME-1/spec#b-r1"}
+		for i := 0; i < len(changes); i += 2 {
+			held[changes[i]] = changes[i+1]
+		}
+		return held
+	}
+	task := func(attributes map[string]string, text string) Block {
+		return Block{ID: "a", Type: TaskBlockType, Attributes: attributes, Text: text}
+	}
+	held := planOf(t, 1, task(attributes(), "Text one."))
+
+	for _, tc := range []struct {
+		name    string
+		next    Plan
+		refused bool
+	}{
+		{name: "the text alone", next: planOf(t, 2, task(attributes(), "Text two."))},
+		{name: "serves alone", next: planOf(t, 2, task(attributes("serves", "dispatch://ACME-1/spec#b-r2"), "Text one."))},
+		{name: "the steps", next: planOf(t, 2, task(attributes("steps", "implementer tester reviewer"), "Text one.")), refused: true},
+		{name: "needs", next: planOf(t, 2, task(attributes("needs", "dispatch://ACME-1/artifact/plan-md#b-b"), "Text one.")), refused: true},
+		{name: "owner", next: planOf(t, 2, task(attributes("owner", "sub-architect"), "Text one.")), refused: true},
+		{name: "part_of", next: planOf(t, 2, task(attributes("part_of", "b"), "Text one.")), refused: true},
+		{name: "merges", next: planOf(t, 2, task(attributes("merges", "true"), "Text one.")), refused: true},
+		{name: "the task removed", next: planOf(t, 2, Block{ID: "b", Type: TaskBlockType, Attributes: attributes(), Text: "Text one."}), refused: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RunningChange(held, tc.next, "a")
+			if !tc.refused {
+				if got != nil {
+					t.Fatalf("RunningChange = %+v, want the change taken", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("RunningChange took the change, want it refused")
+			}
+			if got.Task != "a" || !strings.Contains(got.Reason, "task a is running") {
+				t.Fatalf("RunningChange = %+v, want a refusal of task a whose reason says that task a is running", *got)
+			}
+		})
 	}
 }
