@@ -25,6 +25,7 @@ import {
   blockIdOfNode,
   decisionNodeChanges,
   decisionNodes,
+  firstOfEachId,
   inReviewList,
   parentsIn,
 } from "../decision-review";
@@ -213,7 +214,7 @@ export function treeDraftsFrom(
   reads: IssueTreeReads,
   context: TreeWords
 ): Map<string, Draft> {
-  const nodes = nodesById(answer);
+  const nodes = firstOfEachId(answer.nodes ?? []);
   const tuples = new Map<string, TreeTuple[]>();
   const ending = new Map<string, TreeTuple[]>();
   for (const tuple of answer.tuples ?? []) {
@@ -360,7 +361,7 @@ export function treeIdOfNode(
  * does not hold is its own tree id.
  */
 export function treeIdOf(answer: TreeAnswer, reads: TreeIdReads): (readId: string) => string {
-  const nodes = nodesById(answer);
+  const nodes = firstOfEachId(answer.nodes ?? []);
   const idOfNode = nodeIdsIn(reads);
   return (readId) => {
     const node = nodes.get(readId);
@@ -391,7 +392,7 @@ function nodeIdsIn(reads: TreeIdReads): (node: TreeAnswerNode) => string {
  * issue's tree. Every node a step is offered then has its ancestors' drafts made before it.
  */
 function walkOf(answer: TreeAnswer, key: string): TreeAnswerNode[] {
-  const nodes = nodesById(answer);
+  const nodes = firstOfEachId(answer.nodes ?? []);
   const inTree = new Map<TreeAnswerNode, boolean>();
   const reachesIssue = (node: TreeAnswerNode): boolean => {
     const known = inTree.get(node);
@@ -988,15 +989,6 @@ function namesAny(node: TreeAnswerNode, kind: string, context: TreeDraftContext)
 /** Whether the read marks `node` as another issue's. */
 function isForeign(node: TreeAnswerNode, key: string): boolean {
   return node.issue !== undefined && node.issue !== key;
-}
-
-/** Each node of the answer by its read id, the first the answer holds where two share one. */
-function nodesById(answer: TreeAnswer): Map<string, TreeAnswerNode> {
-  const nodes = new Map<string, TreeAnswerNode>();
-  for (const node of answer.nodes ?? []) {
-    if (!nodes.has(node.id)) nodes.set(node.id, node);
-  }
-  return nodes;
 }
 
 /** The page's other reads, each row by the tree id of the node it tells about (`KeptReads`). A

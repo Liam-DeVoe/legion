@@ -316,7 +316,7 @@ function filterView(
 }
 
 /**
- * One filter drawn from its view read (`TreeNode.views`, R4): the nodes the view's query took of
+ * One filter drawn from its view read (`TreeNode.views`): the nodes the view's query took of
  * the filter's row kinds, each drawn as the tree's node of the same identity (`treeIdOfNode`),
  * so a row reads as it does in the outline, under the row the read places it under, else at the
  * top; two nodes of one read id, blocks of two documents, are two rows of two nodes. Verification
@@ -661,8 +661,8 @@ export function filterSignals(
   query: string
 ): Readonly<Record<Filter, PresetSignal>> {
   const view = (filter: Filter) => presetView(root, filter, query);
-  // Once a filter's view read is held, its count is that read's own nodes of its main kind whose
-  // words hold the query (R4); until then, what the view read off the tree draws.
+  // Once a filter's view read is held, its count is the held view's own nodes of its main kind
+  // whose words hold the query; until then, what the view read off the tree draws.
   const count = (filter: TreeFilter): number => {
     const held = root.views?.[filter];
     if (held === undefined) return view(filter).matches;

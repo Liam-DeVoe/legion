@@ -84,8 +84,9 @@ export function dropViews(queryClient: QueryClient, key: string): void {
  * tree is built once and never from part of the walk. A cursor the walk has asked for already
  * fails the read with an error that names it: the server named one page twice, so the pages past
  * it are missing, and the walk neither answers the pages it read as the whole tree nor asks
- * without end. A page that fails fails the read too. Such a failure with no answer held draws the
- * outline's failed-read line and its Retry; over a held answer the page keeps that answer, as
+ * without end. A page that fails fails the read too. A failure of the tree read with no answer
+ * held draws the outline's failed-read line and its Retry, and a view's leaves its filter drawn
+ * off the tree (`presets.ts`' `presetView`); over a held answer the page keeps that answer, as
  * TanStack keeps a query's data through a failed refetch. A read made again - a refetch, a retry -
  * starts from the first page, since a cursor names a place in the walk as it stood when the page
  * that gave it was answered. A read TanStack gives up (`signal`: a reset, the last observer gone)

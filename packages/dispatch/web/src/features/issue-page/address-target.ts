@@ -114,8 +114,8 @@ export function landingPath(to: string): string {
  * a thread only agents wrote in (`agentsOnlyItem`), which the outline draws no node for: the
  * entry the turn was written under - the comment its write answered (`answers`, else the head of
  * its thread, `reply_to`), the ask it replies under (`ask_id`), the message it answers
- * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-drafts.ts`'s
- * `addTurns` places each turn. Where the tree holds none of them - the head of such a thread
+ * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-read/tree-nodes.ts`
+ * places each turn, by its `parent`. Where the tree holds none of them - the head of such a thread
  * sits under the issue, and an approval request is no node (`draftAsk`) - it is the issue alone.
  */
 function agentsOnlyAncestor(
@@ -219,7 +219,7 @@ function landingReadKey(route: ItemRoute): QueryKey {
 interface Following {
   /** Whether the following draws the line that the tree holds no node of the block or the
    *  children its address names (`absent`), as last stored here. The children come with the
-   *  issue's own read alone (`tree-drafts.ts`'s `addChildren`), so the children's line, once
+   *  issue's own read, each child's row (`tree-read/tree-nodes.ts`), so the children's line, once
    *  drawn, stays while the tree's reads are out again; a block's line goes then, since a
    *  document added to the issue may hold the block. */
   readonly absent: boolean;

@@ -150,9 +150,10 @@ export const issueMessagesQuery = (key: string) =>
     queryFn: () => api.listIssueMessages(key),
   });
 
-/** The reads a tree is built from (`IssueTreeReads`) beside the tree read's answer, which holds
- *  the trees built from it (`builtTrees`), each compared by identity. Every other member is named
- *  here, so a member added to `IssueTreeReads` does not compile until it is named. */
+/** The reads a tree is built from (`IssueTreeReads`) beside the tree read's answer, each compared
+ *  by identity; the answer is not among them, since `builtTrees` holds the trees built from it
+ *  keyed by it. Every other member is named here, so a member added to `IssueTreeReads` does not
+ *  compile until it is named. */
 const TREE_INPUTS: Readonly<Record<Exclude<keyof IssueTreeReads, "tree">, true>> = {
   asks: true,
   comments: true,

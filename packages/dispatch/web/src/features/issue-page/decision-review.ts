@@ -260,8 +260,9 @@ export function parentsIn(
   return parents;
 }
 
-/** Each node of `nodes` by its id, the first where two share one. */
-function firstOfEachId(nodes: readonly TreeAnswerNode[]): Map<string, TreeAnswerNode> {
+/** Each node of `nodes` by its id, the first where two share one: the node of an id `parentsIn`
+ *  falls back to, and the one the outline looks a read id up by (`tree-read/tree-nodes.ts`). */
+export function firstOfEachId(nodes: readonly TreeAnswerNode[]): Map<string, TreeAnswerNode> {
   const first = new Map<string, TreeAnswerNode>();
   for (const node of nodes) {
     if (!first.has(node.id)) first.set(node.id, node);
