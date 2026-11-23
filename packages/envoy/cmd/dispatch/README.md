@@ -1588,6 +1588,8 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   A type is data, so a type added by a migration reaches a running server without a restart;
   a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value the install refuses; `schemanodes.Installer` makes both checks, the read's (`schemanodes.Read`) and the install's (`pmdoc.Install`).
   Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
+  Migration `20261123080000` adds `plan_task`'s `steps` attribute node and moves every block type to version 5, the version `pmdoc/schema/blocks.json` declares since #4611.
+  It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
   A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
   A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
@@ -3363,6 +3365,7 @@ It refuses:
     Nor may the migration hold a statement after which its names can resolve to another table, a `set` of any setting but `lock_timeout` and `statement_timeout` among them.
     An enabled trigger of the table, and the default of a column an insert leaves out, run for each row written, and the census reads neither, as it reads no function's body.
     A column default does not refuse, but an enabled trigger can read any table, so the admission is refused while the table has one that is not on the census's reviewed list (`reviewedTriggers`), whose entry says why its body is bounded; an admitted table's report prints the number of statements, the bound and the table's enabled triggers.
+    The list holds `graph_nodes`' two triggers, `graph_nodes_block_schema_written` and `graph_nodes_block_schema_removed` (migration `20261109051232`): each runs `block_schema_changed`, which reads no table and sends one `dispatch_block_schema` notification, one per transaction however many rows it writes.
     An enabled event trigger does not take the admission away either, since an `insert` and an `update` fire none.
     A migration that writes rows of such a table any other way is refused with what is not bounded (`…, and lock table is not one`, `…, and an insert of 1,001 rows, above the 1,000 a bounded write may hold, is not one`), and one that writes none of its rows and is not exempt above is refused on the size alone;
 
@@ -4306,8 +4309,9 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)
 
-  Sign in the person `login` names, lowercased, without the sign-in issuer: `302` to the sanitized `next` (default `/`) with the session cookie.
-  `400 DEV_SIGNIN_INPUT` without `login`, `403 DEV_SIGNIN_FORBIDDEN` for a non-loopback peer or a request carrying `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP` or `Via`.
+  Sign in the person `login` names, lowercased, without the sign-in issuer: `302` with the session cookie to the page `next` names on the dashboard origin, as an absolute URL of that origin (default its `/`).
+  `next` is a path, or an absolute URL of the dashboard origin.
+  `400 DEV_SIGNIN_INPUT` without `login`, or for a `next` off the dashboard origin (another host, port or scheme, `//host`, userinfo, a relative path, a backslash), before anyone is recorded or any cookie minted; `403 DEV_SIGNIN_FORBIDDEN` for a non-loopback peer or a request carrying `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP` or `Via`.
   Each mint logs at WARN with the email and the peer.
   Not mounted otherwise.
 
@@ -5444,6 +5448,10 @@ Each item below names a path with its method and identity, then its purpose.
   `?download=true` is the download address, which the web app's Download links use (exactly `true`; any other value answers as without it):
   every kind answers there `Content-Disposition: attachment` under that name and `Cache-Control: private, no-cache`, so a browser asks again before it uses a copy it holds and saves under the name of the moment, an older version's `-v<number>` included once a newer version arrives.
   A document version answers there its Markdown, the text the JSON's `markdown` field holds, rather than the JSON, as `text/markdown; charset=utf-8`, its name given `.md` first when it ends in neither `.md` nor `.markdown`, whatever their case (`Launch notes-v1.md`).
+  `?blocks=true` (exactly `true`) carries the document version's typed blocks under `blocks`, each read from that version's own text under the id its opening line writes, with its `type`, its `attributes`, its `token` and its `from` and `to` byte range in the `markdown` of the same answer.
+  That `markdown`, with `sha256` and `size`, is the version as this build renders it, which is the stored text unless an earlier renderer wrote it otherwise; a version holding an element this build cannot read is then `409 DOC_NEWER_CONTENT`.
+  Untyped blocks are not listed, because the stored text names no id for them; a listed block's `references` read zero and it carries no `embedding`, which describe the live document.
+  A build before this one ignores the parameter and answers no `blocks` key.
 
 - `/api/v1/artifacts/{id}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -5533,7 +5541,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read an issue artifact version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` included.
+  Read an issue artifact version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` and `?blocks=true` included.
 
 - `/api/v1/issues/{key}/artifacts/{slug}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -5561,7 +5569,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read an unlinked project document version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` included.
+  Read an unlinked project document version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` and `?blocks=true` included.
 
 - `/api/v1/projects/{key}/artifacts/{slug}/versions` (POST; cookie, trusted header, or bearer)
 

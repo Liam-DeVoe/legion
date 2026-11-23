@@ -39,18 +39,6 @@ func seedReleaseStopped(t *testing.T, pool *pgxpool.Pool, issue string, role cla
 	return token
 }
 
-// roleStartsOf is the start rows the boot left for issue's role.
-func roleStartsOf(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) []record.SuperviseRequest {
-	t.Helper()
-	var starts []record.SuperviseRequest
-	for _, start := range superviseRowsOf(t, pool, issue, "start") {
-		if start.Role == role {
-			starts = append(starts, start)
-		}
-	}
-	return starts
-}
-
 // The daemon's next boot starts again each claim the project release stopped, whatever its role
 // (dispatch://INFRA-3583/spec R8), one start each, at its wake pace, on the session the claim
 // kept; a claim one of the boot's other steps already started gets none, and the controller's
@@ -154,7 +142,7 @@ func TestTheBootStartsEachClaimTheProjectReleaseStoppedOnce(t *testing.T) {
 	// and the ruleResume mark, with no entry and no slot.
 	resuming := func(t *testing.T, start record.SuperviseRequest, issue record.Issue) {
 		t.Helper()
-		if want := ResumePhaseTask(issue); start.Task != want || !start.ResumeTask || start.Entry != 0 || start.Phase != issue.Phase ||
+		if want := phaseResumeTask(t, pool, testEngine(config.DesignGateRootIssues, nil), issue.Key); start.Task != want || !start.ResumeTask || start.Entry != 0 || start.Phase != issue.Phase ||
 			!start.RuleResume || start.NeedsSlot || start.CheckLook != 0 {
 			t.Fatalf("the boot's start = %+v, want one of phase %q carrying the resume task %q, marked ResumeTask and ruleResume, with no entry and no slot",
 				start, issue.Phase, want)

@@ -55,7 +55,7 @@ import (
 // work on, and the work of an entry this claim was never given is work it does not have, so the
 // resume would spend the claim's first turn after the boot on the wrong prompt and the completion
 // it answered with would be refused as behind that entry. A claim level with that entry is sent
-// the task that takes its phase on (ResumePhaseTask), which the outbox does not deliver to a claim
+// the task that takes its phase on (ResumeTask), which the outbox does not deliver to a claim
 // still holding its phase's task. Either start resumes the claim by rule and takes the slot mark
 // the slot rule gives its phase (StartOrOwe), as every start of a phase worker built through
 // started does, so it waits for the issue's admission slot in a phase up to the review and for
@@ -151,7 +151,7 @@ type releaseStopped struct {
 //   - A phase owner behind that entry is sent the work of that entry at that entry
 //     (sendOwedEntry, with the ruleResume mark), as the resume by rule sends it.
 //   - A phase owner level with its entry — its phase unfinished, nothing owed — gets one start of
-//     its phase carrying the phase's resume task (ResumePhaseTask, marked ResumeTask) and the
+//     its phase carrying the phase's resume task (Engine.ResumeTask, marked ResumeTask) and the
 //     ruleResume mark: its turn ended with nothing pending, and readyWorkerTask, which gives such
 //     a worker that same task once it reports ready, would otherwise write it a second start.
 //     The outbox delivers no resume task to a claim that still holds a task of the phase, so a
@@ -316,7 +316,11 @@ func (e *Engine) startStoppedClaim(ctx context.Context, tx pgx.Tx, stopped relea
 		}
 		// Level with its entry: the phase's resume task rides this start, so readyWorkerTask finds
 		// the task held once the worker reports ready and writes no second start.
-		request.Phase, request.Task, request.ResumeTask = issue.Phase, ResumePhaseTask(issue), true
+		resume, err := e.ResumeTask(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		request.Phase, request.Task, request.ResumeTask = issue.Phase, resume, true
 	} else if !StartFor(run, root, issue.Generation, "") || !StartFor(run, root, issue.Generation, issue.Phase) {
 		return nil
 	}
@@ -446,7 +450,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // built from the entry row names, and says whether the claim stands behind that entry. A claim
 // behind it (OwedEntry, which reads the owner's root for a tree close) is sent the work of that
 // entry at that entry (sendOwedEntry). A claim level with it is sent the phase's resume task
-// (ResumePhaseTask) at entry 0: that start hands the role the work it is already on rather than a
+// (ResumeTask) at entry 0: that start hands the role the work it is already on rather than a
 // new entry, so it moves no phases row either. The boot's resume by rule (booted) and the
 // cutover's repair of a merger the `awaiting_merge` cutover left released (oweCutoverMerger) both
 // build their start here, so the two are built alike. Neither hands it a claim the operator
@@ -467,8 +471,11 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
 	}
-	return false, e.started(ctx, tx, owner.issue, owner.role, ResumePhaseTask(owner.issue), 0,
-		startMarks{resumeTask: true, ruleResume: true, reasserts: true})
+	resume, err := e.ResumeTask(ctx, tx, owner.issue)
+	if err != nil {
+		return false, err
+	}
+	return false, e.started(ctx, tx, owner.issue, owner.role, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported

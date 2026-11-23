@@ -365,11 +365,12 @@ func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *
 	ctx := context.Background()
 	stored := stoppedByRelease(t, claim.RoleImplementer)
 	rig := newReleaseDeliveryRig(t, stored)
+	pull := record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
+		Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: rig.clock.Now(), Failing: []string{},
+		CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: &record.MergeForward{Head: "sha-1", Base: "main",
+			Phase: phase.Implementing, Why: record.ConflictCheckNotGreen, AskedAt: rig.clock.Now()}}
 	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return rig.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
-			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: rig.clock.Now(), Failing: []string{},
-			CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: &record.MergeForward{Head: "sha-1", Base: "main",
-				Phase: phase.Implementing, Why: record.ConflictCheckNotGreen, AskedAt: rig.clock.Now()}})
+		return rig.records.PutPullRequest(ctx, tx, pull)
 	}); err != nil {
 		t.Fatalf("seed the pull request and the merge forward it holds: %v", err)
 	}
@@ -392,7 +393,7 @@ func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *
 	rig.run(t)
 	attempts, delivered := rig.publisher.snapshot()
 	if attempts != 1 || len(delivered) != 1 || delivered[0].topic != topic || delivered[0].keep ||
-		delivered[0].key != record.OutboxKey(id) || delivered[0].message != ask.Message("LEGION-208", "acme/widgets") {
+		delivered[0].key != record.OutboxKey(id) || delivered[0].message != ask.Message("LEGION-208", pull) {
 		t.Fatalf("once the claim holds its role: %d publish attempts delivered %+v, want the ask published once to %s under its row's key, unkept",
 			attempts, delivered, topic)
 	}

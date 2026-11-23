@@ -25,7 +25,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -237,6 +236,29 @@ func (m *projectMove) operator(t *testing.T, act string, issue idleRigIssue, rol
 
 // controllerToken is the project controller's claim, which the daemon launches in a pod of its own.
 func (m *projectMove) controllerToken() claim.Token { return claim.ControllerToken(m.rig.project) }
+
+// resumeTask is the resume task the daemon sends the worker of issue's phase, as the record holds
+// the issue now: workflow.Engine.ResumeTask, the one place every resume is composed, on the
+// daemon's own engine configuration (engineConfig), read in a transaction that writes nothing.
+func (m *projectMove) resumeTask(t *testing.T, issue string) string {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := m.rig.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin the read of the resume task of %s: %v", issue, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	records := record.NewStore()
+	stored, err := records.Issue(ctx, tx, issue)
+	if err != nil || stored == nil {
+		t.Fatalf("read the record of %s: %+v, %v", issue, stored, err)
+	}
+	task, err := workflow.New(records, engineConfig(m.rig.cfg, "", nil), quietLogger()).ResumeTask(ctx, tx, *stored)
+	if err != nil {
+		t.Fatalf("compose the resume task of %s: %v", issue, err)
+	}
+	return task
+}
 
 // awaitController waits until the project controller the daemon launched runs, registered.
 func (m *projectMove) awaitController(t *testing.T) {
@@ -820,8 +842,7 @@ func (m *projectMove) checkStarts(t *testing.T, cluster *issueSandboxAPI, rd *mo
 		}
 		// A phase owner level with its entry starts with its phase's resume task, so its ready
 		// writes no second start; every other role starts with no task.
-		// The rig's board lists each issue titled by its key, which the daemon records as its title.
-		resume := workflow.ResumePhaseTask(record.Issue{Key: c.issue, Title: c.issue, Phase: phase.Implementing})
+		resume := m.resumeTask(t, c.issue)
 		switch {
 		case behind:
 		case role == claim.RoleImplementer && (start.request.Task != resume || !start.request.ResumeTask):
