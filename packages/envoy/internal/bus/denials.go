@@ -292,7 +292,7 @@ func clientOwning(conn *nats.Conn) *Client {
 // a connection and no client, such as EnsureKeyValue, writes its lines.
 func loggerOwning(conn *nats.Conn) *slog.Logger {
 	if owner := clientOwning(conn); owner != nil {
-		return owner.logger
+		return owner.log()
 	}
 	return followsDefault
 }

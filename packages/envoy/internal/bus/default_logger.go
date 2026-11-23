@@ -31,8 +31,15 @@ func (h defaultHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.current().Enabled(ctx, level)
 }
 
+// Handle reads the default's handler once and checks the record against that handler: a
+// SetDefault between the logger's Enabled and this call would otherwise hand a record to a handler
+// that does not take its level.
 func (h defaultHandler) Handle(ctx context.Context, record slog.Record) error {
-	return h.current().Handle(ctx, record)
+	handler := h.current()
+	if !handler.Enabled(ctx, record.Level) {
+		return nil
+	}
+	return handler.Handle(ctx, record)
 }
 
 func (h defaultHandler) WithAttrs(attrs []slog.Attr) slog.Handler {

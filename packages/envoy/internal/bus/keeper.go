@@ -104,7 +104,7 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 	var restored []string
 	if err == nil {
 		err = step(func(ctx context.Context) (err error) {
-			restored, err = keepStream(ctx, c.logger, js, cfg, defaultsAnUnsetCap)
+			restored, err = keepStream(ctx, c.log(), js, cfg, defaultsAnUnsetCap)
 			return err
 		})
 	}
@@ -112,9 +112,9 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 	case err != nil && c.stopped():
 		return
 	case err != nil:
-		c.logger.Warn("envoy nats keeper could not restore the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("error", err.Error()))
+		c.log().Warn("envoy nats keeper could not restore the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("error", err.Error()))
 	case len(restored) > 0:
-		c.logger.Warn("envoy nats keeper restored the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("restored", strings.Join(restored, ", ")))
+		c.log().Warn("envoy nats keeper restored the stream", slog.String("name", c.name), slog.String("stream", Stream), slog.String("restored", strings.Join(restored, ", ")))
 	}
 	for _, bucket := range buckets {
 		if c.stopped() {
@@ -122,7 +122,7 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 		}
 		var from int
 		err := step(func(ctx context.Context) (err error) {
-			from, err = raiseReplicas(ctx, c.logger, js, bucket, cfg.Replicas)
+			from, err = raiseReplicas(ctx, c.log(), js, bucket, cfg.Replicas)
 			return err
 		})
 		switch {
@@ -130,9 +130,9 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 		case err != nil && c.stopped():
 			return
 		case err != nil:
-			c.logger.Warn("envoy nats keeper could not raise a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("error", err.Error()))
+			c.log().Warn("envoy nats keeper could not raise a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("error", err.Error()))
 		case from > 0:
-			c.logger.Warn("envoy nats keeper raised a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("replicas", fmt.Sprintf("%d -> %d", from, cfg.Replicas)))
+			c.log().Warn("envoy nats keeper raised a bucket", slog.String("name", c.name), slog.String("bucket", bucket), slog.String("replicas", fmt.Sprintf("%d -> %d", from, cfg.Replicas)))
 		}
 	}
 }

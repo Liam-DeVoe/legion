@@ -221,11 +221,11 @@ func WithName(name string) ConnectOption {
 // its connection (EnsureKeyValue, SetKeyValueMaxAge, OpenKeyValue and WrapKeyValue find it through
 // the connection, loggerOwning) and ConnectRoleLane's fall back to the machine's queue group.
 // Without it the client writes where slog.Default() points as each line is written
-// (followsDefault), as it did before it took a logger. A program passes
-// its own JSON logger rather than setting the default (store.WithLogger says why), and a test
-// passes a logger over a handler of its own, so it reads the lines of its own client alone and can
-// run beside other tests. Dial honours it too, for its connection's lifecycle lines: a connection
-// Dial returns is no client's, so a bucket call made on it writes where slog.Default() points.
+// (followsDefault), as it did before it took a logger. No program passes one today, so every
+// program logs as it did; a test passes a logger over a handler of its own, so it reads the lines
+// of its own client alone and can run beside other tests. Dial honours it too, for its connection's
+// lifecycle lines: a connection Dial returns is no client's, so a bucket call made on it writes where
+// slog.Default() points.
 func WithLogger(logger *slog.Logger) DialOption {
 	return func(o *connectOpts) { o.logger = logger }
 }
@@ -373,6 +373,8 @@ type recoverableSubscription struct {
 // the subject (and queue group) the transport already holds replaces its subscription, and any
 // other is refused with ErrSubscriptionHeld, so a caller that needs two durables takes one Client
 // per durable.
+//
+// A Client writes its lines through log, which a zero-value Client answers with followsDefault.
 type Client struct {
 	Conn *nats.Conn
 	js   nats.JetStreamContext
@@ -649,7 +651,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		c.streamConfig = &stream
 	}
 	dial := func(first nats.Option) (*nats.Conn, error) {
-		return connect(c.logger, c.name, urls, allOf(c.connectionSettings, first), dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
+		return connect(c.log(), c.name, urls, allOf(c.connectionSettings, first), dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
 	}
 	if opts.background {
 		c.awaitingConnection = true
@@ -675,7 +677,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 			}
 			return nil
 		}
-		if _, err := connectFirstInBackground(c.logger, c.name, urls, c.reconnectErrClock, dial, c.onConnect, install); err != nil {
+		if _, err := connectFirstInBackground(c.log(), c.name, urls, c.reconnectErrClock, dial, c.onConnect, install); err != nil {
 			return nil, err
 		}
 		go c.followDeployedSubjects(opts.streamSubjectsRefresh)
@@ -773,7 +775,7 @@ const streamSubjectsRead = 10 * time.Second
 // no consumer cap is one the server caps at a default of its own. ctx ends the ensure's waits on
 // the server, which the start's hang guard bounds too (ensureStreamWithConfig).
 func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, defaultsAnUnsetCap bool, at streamEnsure) error {
-	subjects, err := ensureStreamWithConfig(ctx, c.logger, js, c.streamConfig, defaultsAnUnsetCap, at)
+	subjects, err := ensureStreamWithConfig(ctx, c.log(), js, c.streamConfig, defaultsAnUnsetCap, at)
 	if err != nil {
 		return err
 	}
@@ -855,12 +857,12 @@ func (c *Client) readDeployedSubjects(ctx context.Context, conn *nats.Conn, time
 		}
 	}
 	if errors.Is(err, ErrPublishDenied) || publishDenial(conn.LastError(), streamInfoSubject) != nil {
-		c.logger.Info("envoy nats may not read the stream's subjects; the client decides each topic's transport by the subjects it compiles",
+		c.log().Info("envoy nats may not read the stream's subjects; the client decides each topic's transport by the subjects it compiles",
 			slog.String("name", c.name), slog.String("subject", streamInfoSubject))
 		c.subjectsRefused.Store(true)
 		return false
 	}
-	c.logger.Debug("envoy nats could not read the stream's subjects", slog.String("name", c.name), slog.String("error", err.Error()))
+	c.log().Debug("envoy nats could not read the stream's subjects", slog.String("name", c.name), slog.String("error", err.Error()))
 	return true
 }
 
@@ -951,6 +953,12 @@ func (c *Client) Connected() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Conn != nil && c.Conn.Status() == nats.CONNECTED
+}
+
+// log is the logger the client writes its lines to: WithLogger's, or followsDefault, which also
+// answers a zero-value Client (nil logger) rather than leaving a line to panic.
+func (c *Client) log() *slog.Logger {
+	return cmp.Or(c.logger, followsDefault)
 }
 
 // Connection is the client's connection now, read under its lock. A KV handle opened outside this
@@ -1532,7 +1540,7 @@ func (c *Client) ResendRefusedCore() error {
 	c.subscriptionsMu.Unlock()
 	c.mu.Unlock()
 	if queue != registration.queue {
-		c.logger.Warn("envoy nats core subscription sent again in another queue group, since the server refused it in its own",
+		c.log().Warn("envoy nats core subscription sent again in another queue group, since the server refused it in its own",
 			slog.String("name", c.name),
 			slog.String("subject", registration.subject),
 			slog.String("queue", queue),
@@ -2014,7 +2022,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 
-		nc, err := connectWithContext(ctx, c.logger, c.name, c.urls, c.connectionSettings, c.dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
+		nc, err := connectWithContext(ctx, c.log(), c.name, c.urls, c.connectionSettings, c.dialer, c.onReconnect, c.onDisconnect, c.onClosed, c.onAsyncError, c.reconnectErrClock)
 		if err != nil {
 			return err
 		}
@@ -2043,7 +2051,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			nc.SetClosedHandler(nil)
 			nc.SetDisconnectErrHandler(nil)
 			nc.Close()
-			c.logger.Info("envoy nats discarded a second replacement connection", slog.String("name", c.name))
+			c.log().Info("envoy nats discarded a second replacement connection", slog.String("name", c.name))
 			continue
 		}
 		c.Conn = nc
