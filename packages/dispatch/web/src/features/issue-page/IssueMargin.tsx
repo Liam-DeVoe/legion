@@ -23,8 +23,8 @@ import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
-import { ReferencedBy } from "../refs/ReferencedBy";
-import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
+import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
+import { EVENT_FRESH, referencesQuery, standsFailed } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -348,6 +348,12 @@ export function IssueMarginPanel({
   const waiting = (blocking.data?.edges ?? []).flatMap((edge) =>
     edge.kind !== "blocked_by" || edge.node.issue_key === undefined ? [] : [edge.node.issue_key]
   );
+  // The list Referenced by opens, as the cache holds it: this never reads it itself, so the
+  // control has a number only once the list has been read, and then it is the rows the list
+  // shows, since the issue's count also holds its own asks, comments and messages, which the list
+  // leaves out (`listedEdges`).
+  const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
+  const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
   const waitingRead = referenceTargetsQuery(
     waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))
   );
@@ -828,7 +834,8 @@ export function IssueMarginPanel({
           {/* Details' own control of the list, with the name, the role and the states of the
               application's `ReferencedByToggle`, in the page's ink rather than its link blue. A
               count of zero is a fact and not a control, as there: opening it would only say
-              that nothing references the issue. */}
+              that nothing references the issue. Otherwise it reads the rows the list shows once
+              the list has been read. */}
           {issue.referenced_by_count === 0 ? (
             <span
               className={`inline-flex min-h-11 items-center text-sm md:min-h-0 ${pageQuietText}`}
@@ -844,7 +851,7 @@ export function IssueMarginPanel({
               ref={referencesControl}
               type="button"
             >
-              {referencedByControlName(issue.referenced_by_count)}
+              {referencedByControlName(referencesListed)}
             </button>
           )}
           {/* The list reads what references the issue, and reads it again on each event about
@@ -853,6 +860,7 @@ export function IssueMarginPanel({
           {referencesOpen && readingReferences ? (
             <ReferencedBy
               className="w-full"
+              page
               reference={issueReference}
               {...referencesRetry}
               toggle={{ id: referencesPanelId }}

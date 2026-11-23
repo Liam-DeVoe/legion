@@ -17,8 +17,7 @@ import {
 import { AgentParts } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
-import { wordsOf } from "../refs/tree-fragment";
-import { drawnLine, firstLineOf } from "./issue-tree";
+import { drawnLine, firstLineOf, lineWords } from "./issue-tree";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
@@ -170,9 +169,8 @@ export function IssuePins({
   );
 }
 
-/** A pinned record's words as its row in the outline reads them (`issue-tree.ts`'s `nodeWords`):
- *  the words of the server's reading of its text where the read sent one, so the line holds
- *  none of the symbols its body draws as formatting, and its text as stored otherwise. */
+/** The words a pinned record's one line is cut from, read as its row in the outline reads them
+ *  (`issue-tree.ts`'s `lineWords`). */
 function recordWords(text: string, tree: DisplayTree | undefined): string {
-  return tree === undefined ? text : wordsOf(tree);
+  return lineWords({ text, tree });
 }

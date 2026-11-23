@@ -386,14 +386,18 @@ test("Details opens on the properties and holds no conversation @phone", async (
       await expect(
         marginShell(page).getByRole("tab", { name: /^(Comments|Pinned)\b/ })
       ).toHaveCount(0);
-      await expect(
-        marginShell(page).getByText(UNPINNED_COMMENT, { exact: false }),
-        "Details draws a comment of the issue"
-      ).toHaveCount(0);
-      await expect(
-        marginShell(page).getByText(QUESTION, { exact: false }),
-        "Details draws a question of the issue"
-      ).toHaveCount(0);
+      // The facts of the row the reader is on quote that row, which may be the issue's
+      // question or a comment, by design; nothing else of Details draws the conversation.
+      const outsideFacts = (text: string) =>
+        marginShell(page)
+          .getByText(text, { exact: false })
+          .evaluateAll(
+            (found) =>
+              found.filter((one) => one.closest('[data-testid="focused-node-facts"]') === null)
+                .length
+          );
+      expect(await outsideFacts(UNPINNED_COMMENT), "Details draws a comment of the issue").toBe(0);
+      expect(await outsideFacts(QUESTION), "Details draws a question of the issue").toBe(0);
       await expect(
         marginShell(page).locator("[title]"),
         "an element of Details carries a title"
@@ -690,10 +694,10 @@ test("every property with a value is visible in Details at every width @phone", 
           ),
         ],
         [
-          "Referenced by's count",
+          "Referenced by's control",
           marginSection(page, "references").getByRole("button", {
             exact: true,
-            name: referencedByControlName(oneRead.referenced_by_count),
+            name: referencedByControlName(undefined),
           }),
         ],
         [

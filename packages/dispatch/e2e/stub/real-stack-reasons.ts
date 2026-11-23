@@ -179,6 +179,7 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-switch.e2e.ts":
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issue-page-i.e2e.ts": "the server's reads fold the outline; read marks and typed words persist",
+  "issue-page-j.e2e.ts": "the Spec view reads the server's stored decisions, ties and results",
   "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
   "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
   "issue-page-v.e2e.ts":
@@ -189,6 +190,8 @@ export const realStackReasons: Record<string, string> = {
     "each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue",
   "issue-page-h.e2e.ts":
     "the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload",
+  "issue-page-m.e2e.ts":
+    "the history reads the issue's event log and its live stream, the people rows read the fake listener's subscriptions and Legion's record, and every row signs in for real with the new page turned on by that login's stored preference",
   "issue-page-p.e2e.ts":
     "each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval",
   "issue.e2e.ts":

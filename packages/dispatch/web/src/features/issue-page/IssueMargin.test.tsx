@@ -58,8 +58,8 @@ import { userPreferenceStorageKey } from "../shell/userPreference";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { FOLD_AFTER } from "./details-leaves";
-import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
+import { emptyDetailsReads } from "./details-reads-fixture";
 import {
   DETAILS_OPENER_ATTRIBUTE,
   DETAILS_ROW_ATTRIBUTE,
@@ -267,42 +267,25 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
   );
 }
 
-/** The reads Details makes of a fixture's issue, each answering the API's empty shape, and the
- *  issue's PATCH answered as the server does, with the narrow `Issue`. A read that reached the
- *  network would fail the file (`__tests__/network-guard.ts`). */
+/** The reads Details makes of the fixture's issue: the issue's own, answered with `issue`, and
+ *  every other read as `emptyDetailsReads` answers it, the reader's state holding the issue
+ *  unread and unpinned; and the issue's PATCH answered as the server does, with the narrow
+ *  `Issue`. */
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
-    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-  });
-  const reads = [
-    spyOn(api, "whoAmI").mockResolvedValue({ login: "alice" } as Awaited<
-      ReturnType<typeof api.whoAmI>
-    >),
-    spyOn(api, "listProjects").mockResolvedValue([]),
-    spyOn(api, "listAgents").mockResolvedValue([]),
-    spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
-    spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
-  ];
-  const pinReads = {
-    asks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
-    comments: spyOn(api, "listComments").mockResolvedValue([]),
-    messages: spyOn(api, "listIssueMessages").mockResolvedValue([]),
-  };
+  const reads = emptyDetailsReads();
   const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
     patchAnswer(issue, input)
   );
 
   return {
     getIssue,
-    getMyState,
+    getMyState: reads.getMyState,
     patchIssue,
-    pinReads,
+    pinReads: reads.pinReads,
     restore: () => {
       getIssue.mockRestore();
-      getMyState.mockRestore();
-      for (const spy of reads) spy.mockRestore();
-      for (const spy of Object.values(pinReads)) spy.mockRestore();
+      reads.restore();
       patchIssue.mockRestore();
     },
   };
@@ -2774,7 +2757,7 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    const toggle = await screen.findByRole("button", { name: referencedByControlName(3) });
+    const toggle = await screen.findByRole("button", { name: referencedByControlName(undefined) });
     expect(toggle, "Referenced by's control is not in the page's ink").toHaveClass(pageInkText);
     for (const token of linkText.split(" ")) {
       expect(toggle, "Referenced by's control is in the application's link blue").not.toHaveClass(
@@ -2792,6 +2775,10 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
       "aria-controls",
       list.id
     );
+    expect(
+      await screen.findByRole("button", { name: referencedByControlName(0) }),
+      "Referenced by's control does not read the rows of the list it opened"
+    ).toBe(toggle);
   } finally {
     unmount();
     getReferences.mockRestore();
@@ -2820,7 +2807,9 @@ test("in Details, Referenced by's Retry keeps the focus while the read it sent i
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     const retry = await within(list).findByRole("button", { name: "Retry" });
 
@@ -2939,7 +2928,9 @@ function referencedByDetails() {
     answerList,
     listKey,
     open: async () => {
-      const control = await screen.findByRole("button", { name: referencedByControlName(3) });
+      const control = await screen.findByRole("button", {
+        name: referencedByControlName(undefined),
+      });
       await user.click(control);
       const list = await screen.findByRole("region", { name: "Referenced by" });
       return { control, list, retry: await within(list).findByRole("button", { name: "Retry" }) };
@@ -3127,7 +3118,7 @@ test("in Details, a refresh that fails over the list Referenced by holds keeps t
   try {
     details.answerList(() => Promise.resolve(WAITER_REFERENCES));
     await details.user.click(
-      await screen.findByRole("button", { name: referencedByControlName(3) })
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
     );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     await within(list).findAllByRole("link");
@@ -3172,7 +3163,9 @@ test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus 
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     const retry = await within(list).findByRole("button", { name: "Retry" });
     drawIssue(getIssue, queryClient, { ...issue, referenced_by_count: 0 });
@@ -3249,15 +3242,18 @@ test("closing References or Details takes an open Referenced by list, and its re
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
   const { queryClient, redraw, unmount } = renderDetails(undefined, OPEN_DRAWER);
-  // What observes the list's read (`ReferencedBy`'s `referencesQuery`).
+  // What reads the list (`ReferencedBy`'s `referencesQuery`). The control's own watch of that
+  // read's cache, which counts the rows it lists, is `enabled: false` and reads nothing.
   const listReaders = () =>
-    queryClient
-      .getQueryCache()
-      .find({ exact: true, queryKey: ["references", "to", reference] })
-      ?.getObserversCount() ?? 0;
+    (
+      queryClient.getQueryCache().find({ exact: true, queryKey: ["references", "to", reference] })
+        ?.observers ?? []
+    ).filter((observer) => observer.options.enabled !== false).length;
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     expect(listReaders(), "the open Referenced by list does not read what references it").toBe(1);
 
@@ -3322,7 +3318,9 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
   const { unmount } = renderDetails(undefined, OPEN_DRAWER, client);
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     await waitFor(() => {
       expect(titleReads(titles, blocker)).toBe(1);
       expect(blocksReads(getReferences, reference)).toBe(1);
@@ -7300,7 +7298,7 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { issue: { ...issue, referenced_by_count: 0 } },
       before: { issue: { ...issue, referenced_by_count: 3 } },
-      focused: () => screen.findByRole("button", { name: referencedByControlName(3) }),
+      focused: () => screen.findByRole("button", { name: referencedByControlName(undefined) }),
     },
   ],
   [
@@ -7664,15 +7662,5 @@ test.each(
     priorities.mockRestore();
     getReferences.mockRestore();
     restore();
-  }
-});
-
-// Details keeps three places nothing fills yet (`details-more.tsx`): the people, the focused
-// row's facts and the history. Until something fills them, each draws nothing.
-test("Details' places for the people, the focused row's facts and the history draw nothing", () => {
-  for (const Place of [DetailsPeople, DetailsFocusedNode, DetailsHistory]) {
-    const view = render(<Place issue={issue} state={undefined} />);
-    expect(view.container.innerHTML, `${Place.name} drew something`).toBe("");
-    view.unmount();
   }
 });
