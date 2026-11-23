@@ -1796,21 +1796,21 @@ func TestPublicTLSSitesAreAskedOnlyWhereTheirPositiveControlAccepts(t *testing.T
 	}
 }
 
-// A vendored chain's positive control decides whether clients are held to it. Where curl verifies
-// a chain during the handshake, as every script here but the last rows' does at curl's timing run,
-// whose first branch refuses the chain with the control's root (the plan's F2), the control is
-// curl's: one whose curl, given the CA-published root alone, gets past the chain to the server's
-// signature, and refuses the control's chain with that root, is asked; one that refuses the chain
-// as expired, as every one does once its leaf has expired, is not, and its line says why as
-// UNKNOWN. Every other control run that does not pass fails the probe, as a built chain's positive
-// control does, since the copy is served on the pod's own loopback from roots the probe embeds: a
-// curl that gets past every chain, as `curl -k` does, which only the isolation at the control
-// shows; a curl that cannot read its root (exit 77), as when the probe ran with the image's roots
-// and an image lacked them; a refusal for another cause; and a run its own limit or a signal ended,
-// at the chain or at its isolation. A run the probe's deadline ended has no verdict, which fails
-// nothing and leaves the chain unasked. Where curl's timing run fails the server's signature, curl
-// verifies a chain after the handshake, and the probe's own check takes the control's place, with
-// the CA-published roots the probe's server writes and at the probe's clock: inside every
+// A vendored chain's positive control decides whether clients are held to it. Where curl verifies a
+// chain during the handshake, as every script here but the last rows' does at curl's timing run,
+// whose first branch refuses the chain with the control's root (curlRefusingAnUnknownIssuer), the
+// control is curl's: one whose curl, given the CA-published root alone, gets past the chain to the
+// server's signature, and refuses the control's chain with that root, is asked; one that refuses
+// the chain as expired, as every one does once its leaf has expired, is not, and its line says why
+// as UNKNOWN. Every other control run that does not pass fails the probe, as a built chain's
+// positive control does, since the copy is served on the pod's own loopback from roots the probe
+// embeds: a curl that gets past every chain, as `curl -k` does, which only the isolation at the
+// control shows; a curl that cannot read its root (exit 77), as when the probe ran with the image's
+// roots and an image lacked them; a refusal for another cause; and a run its own limit or a signal
+// ended, at the chain or at its isolation. A run the probe's deadline ended has no verdict, which
+// fails nothing and leaves the chain unasked. Where curl's timing run fails the server's signature,
+// curl verifies a chain after the handshake, and the probe's own check takes the control's place,
+// with the CA-published roots the probe's server writes and at the probe's clock: inside every
 // certificate's validity both chains are asked and no curl run holds a chain to its CA-published
 // root, past the first end of a certificate's validity both are unasked with the check's reason,
 // and a CA-published root the check cannot read fails the probe.
@@ -1822,7 +1822,7 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 			t.Fatal(err)
 		}
 	}
-	const pastTheChain = "echo 'curl: (35) TLS connect error: error:030000EA:digital envelope routines::provider signature failure' >&2; exit 35\n"
+	const pastTheChain = "echo '" + curlPastTheVendoredChain + "' >&2; exit 35\n"
 	const refusesTheControl = "*" + tlsControlHost + "*) echo 'curl: (60) SSL certificate problem: unable to get local issuer certificate' >&2; exit 60 ;;\n"
 	timingRefused := curlBranch("*fixture-control-root*", curlRefusingAnUnknownIssuer, "60")
 	install("#!/bin/sh\ncase \"$*\" in\n" + timingRefused + refusesTheControl +
@@ -1921,7 +1921,7 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 	// The one exception: a first run a signal ended after its output showed the server's signature
 	// failing got past the chain, so the isolation decides the copy, and here it is asked.
 	t.Run("a signal ended the run at the chain after the server's signature failed", func(t *testing.T) {
-		install(stalls(atTheChain, "echo 'curl: (35) TLS connect error: error:030000EA:digital envelope routines::provider signature failure' >&2; kill -9 $$"))
+		install(stalls(atTheChain, "echo '"+curlPastTheVendoredChain+"' >&2; kill -9 $$"))
 		tlsPositiveControlSpec.timeout = time.Minute
 		sites, _, err := probeVendoredTLSSites(context.Background(), env, stateDir, testTLSSites(stateDir))
 		if err != nil || len(sites) != 2 || sites[0].unasked != "" || sites[1].unasked != "" {
@@ -1930,17 +1930,10 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 	})
 
 	// curl verifies a chain after the handshake: its timing run, and any run at a vendored chain,
-	// fails the server's signature (the plan's F1), so the probe's own check decides each chain,
-	// with each CA-published root in the file the probe's server writes (writeTLSPublishedRoots).
-	var chains [][]*x509.Certificate
-	for _, host := range []string{tlsEmSignHost, tlsAAAHost} {
-		chain, err := vendoredTLSChain(host)
-		if err != nil {
-			t.Fatal(err)
-		}
-		chains = append(chains, chain)
-	}
-	latestStart, firstEnding := tlsChainsValidity(chains...)
+	// fails the server's signature (curlPastTheVendoredChain), so the probe's own check decides
+	// each chain, with each CA-published root in the file the probe's server writes
+	// (writeTLSPublishedRoots).
+	latestStart, firstEnding := vendoredTLSChainsValidity(t)
 	previousNow := tlsProbeNow
 	t.Cleanup(func() { tlsProbeNow = previousNow })
 	publishedDir := t.TempDir()
@@ -1951,33 +1944,29 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 		sites := testTLSSites(publishedDir)
 		for index, site := range sites {
 			if site.kind == tlsVendoredSite {
-				sites[index].root = filepath.Join(publishedDir, site.root)
+				sites[index].root = tlsPublishedRootIn(publishedDir, site)
 			}
 		}
 		return sites
 	}
-	afterTheHandshake := func(runs string) string {
-		return loggingCurl(runs, curlBranch(curlRunsAt("", tlsEmSignHost, tlsAAAHost), curlPastTheVendoredChain, "35")+
-			curlBranch(curlRunsAt("", tlsControlHost), curlRefusingAnUnknownIssuer, "60"))
-	}
 
 	t.Run("curl verifies after the handshake, inside every certificate's validity", func(t *testing.T) {
 		runs := t.TempDir()
-		install(afterTheHandshake(runs))
+		install(curlVerifyingAfterTheHandshake(runs))
 		tlsProbeNow = func() time.Time { return latestStart.Add(time.Hour) }
 		sites, timing, err := probeVendoredTLSSites(context.Background(), env, publishedDir, published())
 		if err != nil || timing.verdict != tlsCurlAfterHandshake || len(sites) != 2 || sites[0].unasked != "" || sites[1].unasked != "" {
 			t.Fatalf("probeVendoredTLSSites() = %+v, %+v, %v; want curl after the handshake, both chains asked and no failure", sites, timing, err)
 		}
 		for _, run := range tlsRunsLogged(t, runs) {
-			if root := filepath.Base(curlCACert(run)); root == publicEmSignTLSSite.root || root == publicAAATLSSite.root {
+			if curlTookAPublishedRoot(run) {
 				t.Errorf("curl ran as %q, with a CA-published root, where it verifies a chain after the handshake", run)
 			}
 		}
 	})
 
 	t.Run("curl verifies after the handshake, past the first end of a certificate's validity", func(t *testing.T) {
-		install(afterTheHandshake(t.TempDir()))
+		install(curlVerifyingAfterTheHandshake(t.TempDir()))
 		tlsProbeNow = func() time.Time { return firstEnding.NotAfter.Add(24 * time.Hour) }
 		sites, _, err := probeVendoredTLSSites(context.Background(), env, publishedDir, published())
 		if err != nil || len(sites) != 2 {
@@ -1991,7 +1980,7 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 	})
 
 	t.Run("curl verifies after the handshake, with a CA-published root the check cannot read", func(t *testing.T) {
-		install(afterTheHandshake(t.TempDir()))
+		install(curlVerifyingAfterTheHandshake(t.TempDir()))
 		tlsProbeNow = func() time.Time { return latestStart.Add(time.Hour) }
 		sites := published()
 		sites[slices.IndexFunc(sites, func(site tlsSite) bool { return site.name == "vendored emSign" })].root = filepath.Join(publishedDir, "no-such-root.pem")
@@ -2001,18 +1990,6 @@ func TestVendoredTLSSitesAreAskedOnlyWhereTheirPositiveControlGetsPastTheChain(t
 		}
 	})
 }
-
-// The image's curl at a vendored chain, the plan's fixtures F1 and F2. curlPastTheVendoredChain is
-// curl 8.18.0 on OpenSSL 3.5.5, which verifies a chain only after the handshake, so it fails the
-// server's signature first whatever root it holds (theorem-labs/agent-infra job 137340412198, log
-// lines 7414 and 7415); curl 8.14.1 gives the same at a vendored chain with its CA-published root.
-// curlRefusingAnUnknownIssuer is curl 8.14.1 on OpenSSL 3.5.7, which verifies a chain during the
-// handshake, refusing a chain its root does not issue, captured on 2026-11-22 in the INFRA-5350
-// pod's worker image.
-const (
-	curlPastTheVendoredChain    = "curl: (35) TLS connect error: error:030000EA:digital envelope routines::provider signature failure"
-	curlRefusingAnUnknownIssuer = "curl: (60) SSL certificate problem: unable to get local issuer certificate More details here: https://curl.se/docs/sslcerts.html  curl failed to verify the legitimacy of the server and therefore could not establish a secure connection to it. To learn more about this situation and how to fix it, please visit the webpage mentioned above."
-)
 
 // curlBranch is a branch of a fake curl's case "$*": a run whose arguments match pattern prints
 // output to stderr and exits status.
@@ -2118,15 +2095,45 @@ func tlsChainsValidity(chains ...[]*x509.Certificate) (latestStart time.Time, fi
 	return latestStart, firstEnding
 }
 
-// R1, R2 and R3 where the image's curl verifies a chain during the handshake. curl's timing run at
-// each vendored chain, the positive controls' curl with the control's root as its only trust,
-// refuses the chain at the probe's server, so the probe says so on its own line with curl's output,
-// holds curl to the vendored chains with every client that verifies during the handshake, while
-// node, CodeGraph's node, wget and git stay at the public sites, and keeps today's control of each
-// chain: curl given the chain's CA-published root fails the server's signature there, and its
-// isolation refuses the control, so each chain prints "chain verified". The two timing runs are
-// curl's first runs at a vendored chain, before any run with a CA-published root and before any
-// client's run there, and no run asks curl its version: the probe reads what curl does.
+// vendoredTLSChainsValidity is tlsChainsValidity of the two vendored chains, emSign's first.
+func vendoredTLSChainsValidity(t *testing.T) (latestStart time.Time, firstEnding *x509.Certificate) {
+	t.Helper()
+	var chains [][]*x509.Certificate
+	for _, host := range []string{tlsEmSignHost, tlsAAAHost} {
+		chain, err := vendoredTLSChain(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chains = append(chains, chain)
+	}
+	return tlsChainsValidity(chains...)
+}
+
+// curlVerifyingAfterTheHandshake is a fake curl that logs its runs to dir/runs (loggingCurl) and
+// answers as curl 8.18.0 on OpenSSL does: past each vendored chain to the server's signature,
+// whatever root it holds, and refused at the control.
+func curlVerifyingAfterTheHandshake(dir string) string {
+	return loggingCurl(dir, curlBranch(curlRunsAt("", tlsEmSignHost, tlsAAAHost), curlPastTheVendoredChain, "35")+
+		curlBranch(curlRunsAt("", tlsControlHost), curlRefusingAnUnknownIssuer, "60"))
+}
+
+// curlTookAPublishedRoot says whether the curl run loggingCurl logged as run took a CA-published
+// root, either public site's, as --cacert.
+func curlTookAPublishedRoot(run string) bool {
+	root := filepath.Base(curlCACert(run))
+	return root == publicEmSignTLSSite.root || root == publicAAATLSSite.root
+}
+
+// Where the image's curl verifies a chain during the handshake (dispatch://INFRA-5350 R1, R2 and
+// R3), curl's timing run at each vendored chain, the positive controls' curl with the control's
+// root as its only trust, refuses the chain at the probe's server, so the probe says so on its own
+// line with curl's output, holds curl to the vendored chains with every client that verifies during
+// the handshake, while node, CodeGraph's node, wget and git stay at the public sites, and keeps
+// today's control of each chain: curl given the chain's CA-published root fails the server's
+// signature there, and its isolation refuses the control, so each chain prints "chain verified".
+// The two timing runs are curl's first runs at a vendored chain, before any run with a CA-published
+// root and before any client's run there, and no run asks curl its version: the probe reads what
+// curl does.
 func TestTLSProbeHoldsACurlThatVerifiesDuringTheHandshakeToTheVendoredChains(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -2194,7 +2201,7 @@ func TestTLSProbeHoldsACurlThatVerifiesDuringTheHandshakeToTheVendoredChains(t *
 		if fields := strings.Fields(run); slices.Contains(fields, "--version") || slices.Contains(fields, "-V") {
 			t.Errorf("curl ran as %q, want no run that asks its version", run)
 		}
-		if root := filepath.Base(curlCACert(run)); root == publicEmSignTLSSite.root || root == publicAAATLSSite.root {
+		if curlTookAPublishedRoot(run) {
 			firstPublished = min(firstPublished, index)
 		}
 		if strings.Contains(run, publicEmSignTLSSite.url) || strings.Contains(run, publicAAATLSSite.url) {
@@ -2234,15 +2241,16 @@ func (c timingRunTLSClient) probe(_ context.Context, site tlsSite, _ tlsRunTerms
 	return c.outcomes[site.name]
 }
 
-// R1's reading of curl's two timing runs, one at each vendored chain, each run with the control's
-// root as its only trust. A refusal where the probe's server began a handshake for the chain means
-// curl verifies a chain during the handshake, an expired leaf's refusal too; a failed server
-// signature means after the handshake, whatever ended the run; and reached names each chain whose
-// run began a handshake, a site with no handshake counter counting as begun. A run the probe's
-// deadline ended has no verdict, which makes the whole reading no verdict and names the run. Every
-// other outcome fails the probe, beside a run with no verdict too: a refusal where no handshake
-// began, an acceptance, a curl that cannot read its root, a run its own limit ended with no failed
-// signature, two runs that disagree, and sites with no control to take the root from.
+// The probe reads curl's two timing runs, one at each vendored chain, each run with the control's
+// root as its only trust (dispatch://INFRA-5350 R1). A refusal where the probe's server began a
+// handshake for the chain means curl verifies a chain during the handshake, an expired leaf's
+// refusal too; a failed server signature means after the handshake, whatever ended the run; and
+// reached names each chain whose run began a handshake, a site with no handshake counter counting
+// as begun. A run the probe's deadline ended has no verdict, which makes the whole reading no
+// verdict and names the run. Every other outcome fails the probe, beside a run with no verdict too:
+// a refusal where no handshake began, an acceptance, a curl that cannot read its root, a run its
+// own limit ended with no failed signature, two runs that disagree, and sites with no control to
+// take the root from.
 func TestTLSCurlTimingReadsWhatCurlDoesAtTheVendoredChains(t *testing.T) {
 	stateDir := t.TempDir()
 	controlRoot := testTLSSite(stateDir, "control").trust
@@ -2340,11 +2348,11 @@ func TestTLSCurlTimingReadsWhatCurlDoesAtTheVendoredChains(t *testing.T) {
 	}
 }
 
-// R1's run with no verdict at the probe's level: a timing run the probe's deadline ends shows
-// nothing of when curl verifies a chain, so it joins the probe's runs with no verdict, which take
-// the no-verdict exit (bootprobe.NoVerdictExit) with no OK line, and curl counts as verifying after
-// the handshake: the probe says so on its own line, with the run's detail, and holds curl to the
-// public sites in place of the vendored chains.
+// At the probe's level, a timing run the probe's deadline ends shows nothing of when curl verifies
+// a chain (dispatch://INFRA-5350 R1), so it joins the probe's runs with no verdict, which take the
+// no-verdict exit (bootprobe.NoVerdictExit) with no OK line, and curl counts as verifying after the
+// handshake: the probe says so on its own line, with the run's detail, and holds curl to the public
+// sites in place of the vendored chains.
 func TestProbeImageTakesTheNoVerdictExitWhenTheDeadlineCutsCurlsTimingRun(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -2378,14 +2386,15 @@ func TestProbeImageTakesTheNoVerdictExitWhenTheDeadlineCutsCurlsTimingRun(t *tes
 	}
 }
 
-// R3's own check of a vendored chain as the probe's server serves it, with Go's x509 primitives
-// and not x509.Certificate.Verify, which refuses both chains whatever the roots. Each chain, with
-// its CA-published root, passes at a time inside every certificate's validity; at a time before its
-// leaf's start, or past the first end of a certificate's validity, it is outside, naming that
-// certificate, and is unasked; and it fails against the fixture root of its root's name, which has
-// another key, for a host its leaf does not name, and without the certificate between its leaf and
-// its root. A failure wins over a time outside the validity. The site's check fails where it
-// cannot read the CA-published root its site names.
+// The probe's own check of a vendored chain, as the probe's server serves it (dispatch://INFRA-5350
+// R3), uses Go's x509 primitives and not x509.Certificate.Verify, which refuses both chains
+// whatever the roots. Each chain, with its CA-published root, passes at a time inside every
+// certificate's validity; at a time before its leaf's start, or past the first end of a
+// certificate's validity, it is outside, naming that certificate, and is unasked; and it fails
+// against the fixture root of its root's name, which has another key, for a host its leaf does not
+// name, and without the certificate between its leaf and its root. A failure wins over a time
+// outside the validity. The site's check fails where it cannot read the CA-published root its site
+// names.
 func TestTLSVendoredChainCheckInTheProbesOwnCode(t *testing.T) {
 	var emSignInside time.Time
 	for _, public := range publicTLSSites {
@@ -2464,7 +2473,7 @@ func TestTLSVendoredChainCheckInTheProbesOwnCode(t *testing.T) {
 	}
 	t.Run("vendored emSign: a CA-published root that names no file", func(t *testing.T) {
 		site := testTLSSite("", "vendored emSign")
-		site.root = filepath.Join(t.TempDir(), publicEmSignTLSSite.root)
+		site.root = tlsPublishedRootIn(t.TempDir(), publicEmSignTLSSite)
 		const want = "cannot read its CA-published root"
 		if unasked, err := checkVendoredTLSSite(site, emSignInside); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("checkVendoredTLSSite() with no file at %s = %q, %v; want the failure %q", site.root, unasked, err, want)
@@ -2472,33 +2481,22 @@ func TestTLSVendoredChainCheckInTheProbesOwnCode(t *testing.T) {
 	})
 }
 
-// R3 where the image's curl verifies a chain after the handshake, at the probe's level: curl's
-// timing runs fail the server's signature, so the probe checks each vendored chain in its own code
-// in place of today's curl control, and no curl run at a vendored chain holds that chain's
-// CA-published root. At a clock inside every certificate's validity, each chain is asked, and its
-// line says it was checked in the probe's own code, never "chain verified"; curl is held to the
-// public sites with node, CodeGraph's node, wget and git, and every other client refuses both
-// chains. At a clock past the first end of a certificate's validity, each chain is unasked, naming
-// its leaf, every client is held to the public sites in its place, and the probe warns of both
-// served leaves. The clock is the probe's (tlsProbeNow), never the day the test runs.
+// At the probe's level, where the image's curl verifies a chain after the handshake
+// (dispatch://INFRA-5350 R3), curl's timing runs fail the server's signature, so the probe checks
+// each vendored chain in its own code in place of today's curl control, and no curl run at a
+// vendored chain holds that chain's CA-published root. At a clock inside every certificate's
+// validity, each chain is asked, and its line says it was checked in the probe's own code, never
+// "chain verified"; curl is held to the public sites with node, CodeGraph's node, wget and git, and
+// every other client refuses both chains. At a clock past the first end of a certificate's
+// validity, each chain is unasked, naming its leaf, every client is held to the public sites in its
+// place, and the probe warns of both served leaves. The clock is the probe's (tlsProbeNow), never
+// the day the test runs.
 func TestTLSProbeChecksTheVendoredChainsInItsOwnCodeWhereCurlVerifiesAfterTheHandshake(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	runs := t.TempDir()
-	// The image's curl as curl 8.18.0 on OpenSSL runs it: past each vendored chain to the server's
-	// signature, whatever root it holds, and refused at the control.
-	img.install(t, "curl", loggingCurl(runs,
-		curlBranch(curlRunsAt("", tlsEmSignHost, tlsAAAHost), curlPastTheVendoredChain, "35")+
-			curlBranch(curlRunsAt("", tlsControlHost), curlRefusingAnUnknownIssuer, "60")))
-	var chains [][]*x509.Certificate
-	for _, host := range []string{tlsEmSignHost, tlsAAAHost} {
-		chain, err := vendoredTLSChain(host)
-		if err != nil {
-			t.Fatal(err)
-		}
-		chains = append(chains, chain)
-	}
-	latestStart, firstEnding := tlsChainsValidity(chains...)
+	img.install(t, "curl", curlVerifyingAfterTheHandshake(runs))
+	latestStart, firstEnding := vendoredTLSChainsValidity(t)
 	previousNow := tlsProbeNow
 	t.Cleanup(func() { tlsProbeNow = previousNow })
 
@@ -2526,7 +2524,7 @@ func TestTLSProbeChecksTheVendoredChainsInItsOwnCodeWhereCurlVerifiesAfterTheHan
 			continue
 		}
 		atVendored++
-		if root := filepath.Base(curlCACert(run)); root == publicEmSignTLSSite.root || root == publicAAATLSSite.root {
+		if curlTookAPublishedRoot(run) {
 			t.Errorf("curl ran at a vendored chain as %q, with a CA-published root, where it verifies a chain after the handshake", run)
 		}
 	}
@@ -2577,20 +2575,20 @@ func (c limitEndedTLSClient) probe(_ context.Context, site tlsSite, terms tlsRun
 	}
 }
 
-// R3's reached rule: where curl verifies a chain after the handshake, a vendored chain the probe's
-// own check passed counts as reached only where curl's timing run at it began a handshake at the
-// probe's server (tlsCurlTiming.reached), since no control run reached it. So a client whose own
-// limit ends its run at a vendored chain has no verdict at the chain the timing run reached, and
-// cannot verify refusal of the chain it did not, which fails the probe.
+// Where curl verifies a chain after the handshake (dispatch://INFRA-5350 R3), a vendored chain the
+// probe's own check passed counts as reached only where curl's timing run at it began a handshake
+// at the probe's server (tlsCurlTiming.reached), since no control run reached it. So a client whose
+// own limit ends its run at a vendored chain has no verdict at the chain the timing run reached,
+// and cannot verify refusal of the chain it did not, which fails the probe.
 func TestTLSProbeCountsAVendoredChainReachedOnlyWhereCurlsTimingRunReachedIt(t *testing.T) {
 	previousClients, previousControls, previousVendored, previousPublic := newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites
 	t.Cleanup(func() {
 		newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites = previousClients, previousControls, previousVendored, previousPublic
 	})
 	newTLSPositiveControls, newPublicTLSSites = passingTLSPositiveControls, unaskedPublicTLSSites
-	newVendoredTLSSites = func(_ context.Context, _ []string, _ string, sites []tlsSite) ([]tlsSite, tlsCurlTiming, error) {
-		vendored := slices.DeleteFunc(slices.Clone(sites), func(site tlsSite) bool { return site.kind != tlsVendoredSite })
-		return vendored, tlsCurlTiming{verdict: tlsCurlAfterHandshake, detail: "the test's stand-in", reached: []string{"vendored emSign"}}, nil
+	newVendoredTLSSites = func(ctx context.Context, env []string, stateDir string, sites []tlsSite) ([]tlsSite, tlsCurlTiming, error) {
+		vendored, _, err := askedVendoredTLSSites(ctx, env, stateDir, sites)
+		return vendored, tlsCurlTiming{verdict: tlsCurlAfterHandshake, detail: "the test's stand-in", reached: []string{"vendored emSign"}}, err
 	}
 	newImageTLSClients = theseTLSClients(limitEndedTLSClient{clientName: "bun"})
 
@@ -2653,11 +2651,9 @@ func TestTLSProbeHoldsEachClientToItsSitesAndNamesEveryUnknown(t *testing.T) {
 	})
 	expired := "its positive control was refused, where it must get past the chain to the server's signature: certificate has expired"
 	newTLSPositiveControls = func(context.Context, []string, string, []tlsSite) error { return nil }
-	var timing tlsCurlTiming
 	newVendoredTLSSites = func(ctx context.Context, env []string, stateDir string, sites []tlsSite) ([]tlsSite, tlsCurlTiming, error) {
 		vendored, measured, err := askedVendoredTLSSites(ctx, env, stateDir, sites)
 		vendored[1].unasked = expired
-		timing = measured
 		return vendored, measured, err
 	}
 	newPublicTLSSites = unaskedPublicTLSSites
@@ -2671,6 +2667,7 @@ func TestTLSProbeHoldsEachClientToItsSitesAndNamesEveryUnknown(t *testing.T) {
 		t.Fatalf("runTLSProbe() with the public hosts unreachable has runs with no verdict %q, want none: an UNKNOWN public site takes no exit 75", noVerdict)
 	}
 	out := stdout.String()
+	_, timing, _ := askedVendoredTLSSites(context.Background(), nil, "", nil)
 	afterHandshake := tlsAfterHandshakeClients(timing)
 	public := unaskedPublicTLSSites(context.Background(), nil, "")
 	for _, client := range workerTLSClientNames() {
@@ -2879,8 +2876,9 @@ func tlsLines(stdout, client, site string) []string {
 	return lines
 }
 
-// tlsRunsLogged are the runs the stand-in clients sharing dir logged, "<client> <site>" each, in
-// the order they started.
+// tlsRunsLogged are the lines dir/runs holds, one per run in the order the runs started, from
+// whichever stand-ins share dir: "<client> <site>" from shTLSClient, curl's arguments from
+// loggingCurl, and "client <name> <site>" from loggedTLSClient.
 func tlsRunsLogged(t *testing.T, dir string) []string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(dir, "runs"))

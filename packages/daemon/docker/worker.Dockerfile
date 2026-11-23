@@ -1616,9 +1616,9 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # copies show it reads a chain after the handshake too (this image's curl 8.14.1 reads it during the
 # handshake, so it stays at the served copies). Those sites fail the build only where a client
 # accepts their chains and print `probe-image: UNKNOWN: <client> against <host>` where they cannot
-# be reached (packages/daemon/cmd/legion/tls_probe.go says why). A
-# deployment image without one of those five is not refused for it (the probe reports it
-# `absent`), because those five are outside the floor every deployment's image is held to. It
+# be reached (packages/daemon/cmd/legion/tls_probe.go says why). A deployment image without one of
+# gcloud, bq, az, mise and socat is not refused for it (the probe reports it `absent`), because
+# those five are outside the floor every deployment's image is held to. It
 # prints the table, one `probe-image: capability <name>: <status> (<detail>)` line per row, every TLS
 # decision, then `probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered
 # agent-models=skipped capabilities=checked model-fallback=on daemon-api-version=<N>` — `on` here is
