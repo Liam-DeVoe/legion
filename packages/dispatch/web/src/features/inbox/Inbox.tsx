@@ -470,10 +470,12 @@ interface ShortRowProps {
 
 /**
  * The frame both short rows draw in, two lines deep: the kind's icon at the left edge, then
- * what the row is about and when it was last written in; under them the priority tag, an ask's
- * urgency, the approval state of the row's issue, and what the row says about its owner. Every
- * mark is `shrink-0`, so the title is what shortens and neither the marks nor the key are ever
- * cut. `children` is drawn under the two lines.
+ * what the row is about and when it was last written in; under them the approval state of the
+ * row's issue, the priority tag, an ask's urgency, and what the row says about its owner. The
+ * approval mark stands first on that line, at its start, so the marks of rows one above another
+ * start at one x whatever the other marks and the owner say. Every mark is `shrink-0`, so the
+ * title is what shortens and neither the marks nor the key are ever cut. `children` is drawn
+ * under the two lines.
  */
 function ShortRowFrame({
   age,
@@ -523,9 +525,9 @@ function ShortRowFrame({
           </time>
         </div>
         <div className="flex min-w-0 items-baseline gap-2 pl-6">
+          <RowApprovalMark gate={rowApprovalGate(row)} />
           <RowPriorityTag priority={rowPriority(row)} />
           <RowUrgencyMark urgency={rowUrgency(row)} />
-          <RowApprovalMark gate={rowApprovalGate(row)} />
           {owner}
         </div>
         {children}
@@ -761,13 +763,19 @@ function InboxCardRow({
       {/* One line: the issue this question belongs to on the left, the controls that defer or
           reroute it on the right. It wraps rather than overlapping - a refusal from Snooze or
           Assign to me is a full-width row inside the right group, so it never draws over the
-          issue key. */}
+          issue key. The approval mark stands first in the left group, right after the checkbox
+          and the kind's icon, so the marks of cards one above another start at one x. The left
+          group wraps too: neither the mark nor the issue key shrinks, so on a phone a long mark
+          and a long key side by side would run past the card's edge. The owner's link asks the
+          line for its key's width alone (`sizedByKey`), so it moves under the mark only when the
+          key does not fit beside it, and otherwise stays there and cuts its title as before. */}
       <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
         {reads}
         <MarkCheckbox id={ask.id} marked={marked} name={name} onMark={onMark} />
         <RowKindIcon type={rowType(row)} />
-        <div className="flex min-w-0 grow basis-48 items-baseline gap-2">
-          <InboxOwnerLink ask={ask} rowOwner />
+        <div className="flex min-w-0 grow basis-48 flex-wrap items-baseline gap-x-2 gap-y-1">
+          <RowApprovalMark gate={rowApprovalGate(row)} />
+          <InboxOwnerLink ask={ask} rowOwner sizedByKey />
           {/* The reply chip truncates rather than squeezing the title away. */}
           <span className="min-w-0 max-w-[40%] shrink truncate">
             <InboxRowChip ask={ask} />
@@ -778,7 +786,6 @@ function InboxCardRow({
             the group's width and widen the whole document past the viewport on a phone. */}
         <div className="flex max-w-full shrink-0 flex-wrap items-center gap-1">
           <RowUrgencyMark urgency={askUrgency(ask.urgency)} />
-          <RowApprovalMark gate={rowApprovalGate(row)} />
           {ask.issue_key === null ? null : (
             <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask.priority)} />
           )}

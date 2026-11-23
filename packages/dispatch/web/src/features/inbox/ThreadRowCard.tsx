@@ -30,9 +30,10 @@ import { ThreadTitle } from "./ThreadTitle";
  * A Reply or an Agent row as a card: the layout below the reading pane's width, and the one the
  * drawer shows at every width.
  *
- * It draws the head - the kind icon, the title and the time of the last write, then the priority
- * tag, the approval state of the thread's issue (`RowApprovalMark`) and the whole issue key and
- * title - then the thread itself, exactly as the reading pane draws it and collapsed the same way
+ * It draws the head - the kind icon, the title and the time of the last write, then the approval
+ * state of the thread's issue (`RowApprovalMark`), first on its line so the marks of cards one
+ * above another start at one x, the priority tag and the whole issue key and title - then the
+ * thread itself, exactly as the reading pane draws it and collapsed the same way
  * (`ThreadBody`), and the three controls a thread row offers: **Open**, **Mark read**, and the
  * **Dismiss** that takes the row out of the Inbox - **Move to Inbox** in the Dismissed view -
  * which the list it is drawn in provides (`DismissControl`). A thread anchored in a document shows
@@ -78,8 +79,8 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
         </span>
       </div>
       <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-2">
-        <RowPriorityTag priority={rowPriority(row)} />
         <RowApprovalMark gate={approvalGateOf(thread)} />
+        <RowPriorityTag priority={rowPriority(row)} />
         <ThreadOwnerLine className={`truncate text-sm ${textMutedOnCanvas}`} thread={thread} />
       </div>
       <ThreadBody quote thread={thread} />

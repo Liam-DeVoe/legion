@@ -19,6 +19,7 @@ export function AskOwnerLink({
   className = "",
   inboxOwner = false,
   owner,
+  sizedByKey = false,
 }: {
   askId?: string;
   /** Flex sizing from the host's line, e.g. `grow`. */
@@ -26,6 +27,10 @@ export function AskOwnerLink({
   /** Marks the link an Inbox row's `o` binding follows; a group header's link is never one. */
   inboxOwner?: boolean;
   owner: OpenAskOwner;
+  /** For a line that wraps: an issue's link asks the line for its key's width alone, and its
+   *  title, drawn at no width of its own, grows into whatever room the line leaves. So the link
+   *  moves to a line of its own only when its key does not fit beside what stands before it. */
+  sizedByKey?: boolean;
 }): ReactNode {
   const marker = inboxOwner ? "" : undefined;
   const issue = owner.issue;
@@ -41,7 +46,7 @@ export function AskOwnerLink({
         {...referenceTriggerProps({ key, kind: "issue" })}
       >
         <span className="shrink-0 font-semibold">{key}</span>
-        <TruncatedText>{title}</TruncatedText>
+        <TruncatedText className={sizedByKey ? "w-0 grow" : ""}>{title}</TruncatedText>
       </Link>
     );
   }
@@ -73,9 +78,12 @@ export function AskOwnerLink({
 export function InboxOwnerLink({
   ask,
   rowOwner,
+  sizedByKey = false,
 }: {
   ask: OpenAskRow;
   rowOwner: boolean;
+  /** `AskOwnerLink`'s: the link asks its line for its key's width alone. */
+  sizedByKey?: boolean;
 }): ReactNode {
   const key = askIssueKey(ask);
   const owner: OpenAskOwner | null =
@@ -87,7 +95,15 @@ export function InboxOwnerLink({
   if (owner === null) {
     return <p className={`truncate text-sm ${textMutedOnCanvas}`}>Document ask</p>;
   }
-  return <AskOwnerLink askId={ask.id} className="grow" inboxOwner={rowOwner} owner={owner} />;
+  return (
+    <AskOwnerLink
+      askId={ask.id}
+      className="grow"
+      inboxOwner={rowOwner}
+      owner={owner}
+      sizedByKey={sizedByKey}
+    />
+  );
 }
 
 /** A thread row's owner, wherever one is drawn: the short row beside the reading pane, the

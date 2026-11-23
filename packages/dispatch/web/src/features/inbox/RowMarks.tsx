@@ -128,7 +128,10 @@ function approvalMarkText(gate: readonly ApprovalGateLine[], line: ApprovalGateL
 
 /** The approval state of the row's issue, in the issue page's words and in its own text, so its
  *  colour states nothing alone (`approvalMarkText`). A row of no issue, and a row whose read
- *  carried no gate - a server older than the field - wears nothing. */
+ *  carried no gate - a server older than the field - wears nothing. Each of the four renderers
+ *  draws it first in its line - on an ask's card, first after the checkbox and the kind's icon -
+ *  at one fixed place in the row, so the marks of rows one above another start at one x
+ *  whatever the row's other text and the mark's own words. */
 export function RowApprovalMark({
   gate,
 }: {

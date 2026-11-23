@@ -1419,6 +1419,187 @@ test("the step that holds the gate", async ({ browser }) => {
   }
 });
 
+/** Which of the four renderers drew a row: the short rows beside the reading pane, or the cards
+ *  below its width. */
+type MarkRenderer = "short ask row" | "short thread row" | "ask card" | "thread card";
+
+/** One row whose mark the place test reads: its id, the renderer that drew it and its mark's
+ *  words. */
+interface PlacedMark {
+  readonly id: string;
+  readonly renderer: MarkRenderer;
+  readonly words: string;
+}
+
+/** The words of row `rowId` that the box of its approval mark covers by more than half a pixel
+ *  each way: every text of the row outside the mark, read by the boxes its lines are drawn in. */
+async function textUnderMark(page: Page, rowId: string): Promise<string[]> {
+  return inboxRow(page, rowId).evaluate((row) => {
+    const mark = row.querySelector("[data-inbox-approval]");
+    if (mark === null) return ["(the row draws no mark)"];
+    const box = mark.getBoundingClientRect();
+    const covered: string[] = [];
+    const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const text = (node.textContent ?? "").trim();
+      if (text === "" || mark.contains(node)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      for (const rect of range.getClientRects()) {
+        const across = Math.min(box.right, rect.right) - Math.max(box.left, rect.left);
+        const down = Math.min(box.bottom, rect.bottom) - Math.max(box.top, rect.top);
+        if (across > 0.5 && down > 0.5) {
+          covered.push(text);
+          break;
+        }
+      }
+    }
+    return covered;
+  });
+}
+
+/** Reads where each row's mark starts, and requires the marks drawn by one renderer to start at
+ *  one x, within a pixel. A failure prints every row's x with the renderer that drew it. */
+async function expectMarksInOnePlace(page: Page, rows: readonly PlacedMark[]): Promise<void> {
+  const placed: (PlacedMark & { x: number })[] = [];
+  for (const row of rows) {
+    const box = await markOf(page, row.id).boundingBox();
+    expect(box, `${row.renderer} ${row.id}: its mark has a box`).not.toBeNull();
+    placed.push({ ...row, x: box?.x ?? Number.NaN });
+  }
+  const report = placed
+    .map((row) => `  ${row.renderer} ${row.id} "${row.words}": x = ${row.x}`)
+    .join("\n");
+  for (const renderer of new Set(placed.map((row) => row.renderer))) {
+    const xs = placed.filter((row) => row.renderer === renderer).map((row) => row.x);
+    expect(
+      Math.max(...xs) - Math.min(...xs),
+      `the marks of every ${renderer} start at one x, within a pixel; the marks start at:\n${report}`
+    ).toBeLessThanOrEqual(1);
+  }
+}
+
+test("the approval mark stands at one place on every row", async ({ browser }) => {
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "MARKPLACE", name: "One place" });
+  await setGatedSteps("MARKPLACE", ["spec"]);
+  // Four issues whose rows differ in everything beside the mark: titles of 12 and of 80
+  // characters, an urgent ask and a calm one, a priority or none, and a mark of two lengths.
+  const seeds = [
+    { changed: false, priority: 1, title: "Lease window", urgency: "high" },
+    {
+      changed: false,
+      priority: null,
+      title: "Retire the old mirror retry budget once every region reads the shared lease sets",
+      urgency: "low",
+    },
+    { changed: true, priority: null, title: "Mirror retry", urgency: "low" },
+    {
+      changed: true,
+      priority: 3,
+      title: "Move the nightly ledger replays onto the new storage cluster before the cutover.",
+      urgency: "high",
+    },
+  ] as const;
+  // Each issue's ask row and thread row, as the short rows and as the cards draw them.
+  const short: PlacedMark[] = [];
+  const cards: PlacedMark[] = [];
+  for (const seed of seeds) {
+    const { issue, row, spec } = await issueWithThread("MARKPLACE", seed.title);
+    if (seed.priority !== null) await patchIssue(issue.key, { priority: seed.priority });
+    const ask = await createAsk(
+      issue.key,
+      {
+        options: [{ label: "Ship" }, { label: "Hold" }],
+        question: `Ship "${seed.title}"?`,
+        urgency: seed.urgency,
+      },
+      session
+    );
+    await reviewArtifact(spec, { state: "approved" }, { login: "alice" });
+    if (seed.changed) await editSpec(spec);
+    const words = seed.changed ? "Approved v1 · changed since" : "Approved v1";
+    short.push(
+      { id: ask.id, renderer: "short ask row", words },
+      { id: row, renderer: "short thread row", words }
+    );
+    cards.push(
+      { id: ask.id, renderer: "ask card", words },
+      { id: row, renderer: "thread card", words }
+    );
+  }
+
+  /** The list draws the eight rows and no other, each wearing its mark; the marks of one
+   *  renderer start at one x; and no mark covers any other text of its row. */
+  const expectMarksInPlace = async (page: Page, rows: readonly PlacedMark[]) => {
+    await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
+    for (const row of rows) {
+      await expect(markOf(page, row.id), `${row.renderer} ${row.id}`).toHaveText(row.words);
+    }
+    await expectMarksInOnePlace(page, rows);
+    for (const row of rows) {
+      expect(
+        await textUnderMark(page, row.id),
+        `${row.renderer} ${row.id}: the text its mark covers`
+      ).toEqual([]);
+    }
+  };
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+
+    // Beside the reading pane: the two short rows, which draw no card.
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto("/");
+    expect(hasReadingPane(page)).toBe(true);
+    await expect(inboxPane(page)).toBeVisible();
+    await expectMarksInPlace(page, short);
+    await expect(page.locator("[data-inbox-row] [data-inbox-thread-card]")).toHaveCount(0);
+
+    // Below its width: the two cards.
+    await page.setViewportSize({ height: 768, width: 1024 });
+    await page.goto("/");
+    expect(hasReadingPane(page)).toBe(false);
+    for (const row of cards) {
+      await expect(
+        row.renderer === "ask card"
+          ? page.getByTestId(`ask-${row.id}`)
+          : inboxRow(page, row.id).locator("[data-inbox-thread-card]"),
+        `${row.renderer} ${row.id}`
+      ).toBeVisible();
+    }
+    await expectMarksInPlace(page, cards);
+  } finally {
+    await alice.close();
+  }
+});
+
+/** Reads that the approval mark and the issue key of row `rowId` stand inside the row's card,
+ *  left and right. Neither shrinks, so where the two do not fit on one line the key must move
+ *  under the mark rather than run past the card's edge. */
+async function expectMarkAndKeyInCard(scope: Page | Locator, rowId: string): Promise<void> {
+  const boxes = await scope.locator(`[data-inbox-row="${rowId}"]`).evaluate((row) => {
+    const across = (element: Element | null) => {
+      const box = element?.getBoundingClientRect();
+      return box === undefined ? null : { left: box.left, right: box.right };
+    };
+    return {
+      card: across(row),
+      key: across(row.querySelector("[data-inbox-owner] > span")),
+      mark: across(row.querySelector("[data-inbox-approval]")),
+    };
+  });
+  const { card } = boxes;
+  for (const part of ["mark", "key"] as const) {
+    const at = boxes[part];
+    expect(
+      at !== null && card !== null && at.left >= card.left - 0.5 && at.right <= card.right + 0.5,
+      `${rowId}: the ${part} stands inside its card: ${JSON.stringify(boxes)}`
+    ).toBe(true);
+  }
+}
+
 // The two short rows beside the pane are read by the five states and the live change, at the
 // pane's width. Below the pane's width each row is a card, a claim the desktop projects cannot
 // make, so the row runs on the phone projects alone. @phone @phone-only
@@ -1439,6 +1620,35 @@ test("the approval mark at phone width @phone @phone-only", async ({ browser }) 
   const row = replyRowId(
     await seedCommentThread(issue.key, "Is the plan approved?", "It is, at version 1.")
   );
+  // The longest mark a row draws beside the longest key a project takes, in its widest letters:
+  // a root issue of a project that gates both steps, whose Verification was approved and then
+  // changed.
+  await createProject({ key: "WMWMWMWMWM", name: "Wide keys" });
+  await setGatedSteps("WMWMWMWMWM", ["criteria", "spec"]);
+  const wide = await createIssue({
+    project: "WMWMWMWMWM",
+    spec: "The plan.",
+    title: "A root issue whose checks moved",
+  });
+  const checks = await createIssueArtifact(wide.key, {
+    content: "# Verification\n\nOne check.\n",
+    name: "verification.md",
+  });
+  await reviewArtifact(checks.artifact.id, { state: "approved" }, { login: "alice" });
+  await editArtifact(
+    checks.artifact.id,
+    { ops: [{ op: "replace", find: "One check.", with: "Two checks." }] },
+    session
+  );
+  await expect
+    .poll(async () => (await getArtifact(checks.artifact.id, { login: "alice" })).approval?.state)
+    .toBe("stale");
+  const wideAsk = await createAsk(
+    wide.key,
+    { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship the checked plan?" },
+    session
+  );
+  const longMark = "Verification · Approved v1 · changed since";
 
   const alice = await asUser(browser, "alice");
   try {
@@ -1450,6 +1660,9 @@ test("the approval mark at phone width @phone @phone-only", async ({ browser }) 
     await expect(markOf(page, ask.id)).toHaveText("Approved v1");
     await expect(inboxRow(page, row).locator("[data-inbox-thread-card]")).toBeVisible();
     await expect(markOf(page, row)).toHaveText("Approved v1");
+    // The long mark and the long key stay inside their card.
+    await expect(markOf(page, wideAsk.id)).toHaveText(longMark);
+    await expectMarkAndKeyInCard(page, wideAsk.id);
     await assertPageFits(page);
 
     // The drawer draws the same cards over another page.
@@ -1458,6 +1671,8 @@ test("the approval mark at phone width @phone @phone-only", async ({ browser }) 
     await expect(drawer(page)).toBeVisible();
     await expect(markOf(drawer(page), ask.id)).toHaveText("Approved v1");
     await expect(markOf(drawer(page), row)).toHaveText("Approved v1");
+    await expect(markOf(drawer(page), wideAsk.id)).toHaveText(longMark);
+    await expectMarkAndKeyInCard(drawer(page), wideAsk.id);
     await assertPageFits(page);
   } finally {
     await alice.close();
