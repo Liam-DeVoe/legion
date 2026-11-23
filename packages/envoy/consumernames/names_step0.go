@@ -63,12 +63,14 @@ func (n *Names) settleOp(ctx context.Context, sel Selection, create CreateFunc, 
 
 // abandon settles sel's open create or replace for a call that creates nothing (a delete, a
 // cleanup, a read): its candidate is retired and the operation cleared, so the current stays what
-// it was and the saved start stands for the next create. A replace of the key's fixed name (a
-// convert's) is closed only once its fixed name is gone, so no fixed name is left on the server
-// with no operation naming it: with a saved start the fixed name is deleted first (deleteOwned), a
-// delete that fails being the call's error with the replace kept open; with no saved start the
-// fixed consumer's floor is the only record of the position, so the replace is left open, as it
-// was, for a call that creates.
+// it was and the saved start stands for the next create. The write also drops each retired name
+// the server no longer holds, by DropRetired's rule (settleRetired), as every retirement's does
+// (rereserve), so a key whose refused creates alternate with calls that create nothing stays
+// bounded too. A replace of the key's fixed name (a convert's) is closed only once its fixed name
+// is gone, so no fixed name is left on the server with no operation naming it: with a saved start
+// the fixed name is deleted first (deleteOwned), a delete that fails being the call's error with
+// the replace kept open; with no saved start the fixed consumer's floor is the only record of the
+// position, so the replace is left open, as it was, for a call that creates.
 func (n *Names) abandon(ctx context.Context, sel Selection) (Selection, error) {
 	op := sel.Record.Op
 	if op.Kind == OpReplace && op.Old == n.fixed(sel.Logical) {
@@ -80,7 +82,7 @@ func (n *Names) abandon(ctx context.Context, sel Selection) (Selection, error) {
 			return sel, stepError(sel.Logical, OperationRecover, op.Old, err)
 		}
 	}
-	record := n.abandonCandidate(sel.Record.clone(), *op)
+	record := n.abandonCandidate(n.settleRetired(ctx, sel.Logical, sel.Record.clone(), false), *op)
 	record.Op = nil
 	next, err := n.write(ctx, sel, record)
 	if err != nil {

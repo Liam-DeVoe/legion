@@ -214,11 +214,11 @@ revision:
   server's other consumers and never uses a first-create rule.
 - **Ambiguous answers:** an unanswered create is checked with an info: present means adopt (as
   above), missing means retire. No name is sent to the server's create twice.
-- **A bounded record:** each retirement of a candidate (Step 0's, or a retry's after an unanswered
-  create) also drops the retired names the server no longer holds, by `DropRetired`'s rule. So a
-  key refused at every call, at a full cap or by a create the server keeps refusing, keeps only the
-  candidates retired less than their create bound and the settle age ago, and each call reads only
-  those.
+- **A bounded record:** each retirement of a candidate (Step 0's, in a call that creates or in one
+  that creates nothing, or a retry's after an unanswered create) also drops the retired names the
+  server no longer holds, by `DropRetired`'s rule. So a key refused at every call, at a full cap or
+  by a create the server keeps refusing, whatever calls come between, keeps only the candidates
+  retired less than their create bound and the settle age ago, and each call reads only those.
 
 ## The two modes
 
