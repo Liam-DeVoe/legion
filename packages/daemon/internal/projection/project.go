@@ -70,10 +70,12 @@ type Inputs struct {
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
 // role whose phase entry and given entry each issue's view carries is the role that works the
-// issue at its phase (record.Issue.RoleAt): the role of the claim that works its task's place, the
-// architect at a step or a retro the owner does, and otherwise the role of its step at step and
-// the phase's role (phase.RoleFor) elsewhere. The two handshake times beside them are that role's
-// claim's, but for a tree's own root, whose times are its architect's claim's in every phase
+// issue at its phase (record.Issue.RoleAt): the role of the claim that works its task's place, and
+// otherwise the role of its step at step and the phase's role (phase.RoleFor) elsewhere. At a step
+// or a retro the owner does, where that role is the architect, the view carries the entry of the
+// row the owner's run raises instead, the place's own role's (record.Issue.OwnersRowRole), and no
+// given entry. The two handshake times beside them are the claim's of the role that works the
+// issue, but for a tree's own root, whose times are its architect's claim's in every phase
 // (supervise.Claim.Handshake).
 func Project(ctx context.Context, in Inputs) (api.State, error) {
 	issues, err := in.Store.Issues(ctx, in.Tx)
@@ -278,7 +280,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			// The architect is the issue's architect and no worker of its `workers` map, so no
 			// phase view is built for it. Its row is read all the same: the entry below is
 			// read off `phases` by the role that works the issue (record.Issue.RoleAt), which
-			// is the architect for a root at admitted and at a step or a retro the owner does.
+			// is the architect for a root at admitted and at accepting with no plan rows.
 			if item.Role == claim.RoleArchitect {
 				view.Architect = &claimView
 				continue
@@ -307,17 +309,24 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// given: what a reader tells a role holding the work its row names from one the daemon has
 		// still to send that work to (api.Issue.PhaseEntry and GivenEntry). A root carries them as
 		// a child does, since Issue.RoleAt answers the role of the claim that works the task's place
-		// where the issue has plan rows (the architect at a step or a retro the owner does,
-		// acceptance for the fresh agent of acceptance), and otherwise the architect for admitted
-		// and accepting, a phase role for each phase of Legion's after, and at step the role of the
-		// running step; a phase no role works carries neither, where no row would be read and a
-		// difference written for one would never close. No row of a role the issue has moved past
-		// is read either, since that role keeps its entry and is sent nothing.
+		// where the issue has plan rows (acceptance for the fresh agent of acceptance), and otherwise
+		// the architect for admitted and accepting, a phase role for each phase of Legion's after,
+		// and at step the role of the running step; a phase no role works carries neither, where no
+		// row would be read and a difference written for one would never close. No row of a role
+		// the issue has moved past is read either, since that role keeps its entry and is sent
+		// nothing.
+		// At a step or a retro the owner does, RoleAt answers the architect, whose own row and
+		// claim count the architect's own starts and not the step that runs: the owner's run raises
+		// its entry on the row of the place's own role (record.Issue.OwnersRowRole: the step's role,
+		// and the implementer at the owner's retro), and the owner is told its step by a notice that
+		// gives no claim an entry, so the issue carries that row's entry and no given entry.
 		// The entry is 0 where the rows hold none of that role (record.PhaseRowOf), a role no
 		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
 		// the same role's claim against, so the state shows what the admission pass weighs.
 		role := issue.RoleAt(issue.Phase)
-		if role != "" {
+		if owners := issue.OwnersRowRole(); owners != "" {
+			view.PhaseEntry = record.PhaseRowOf(phases, owners).Entry
+		} else if role != "" {
 			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
 		}
 		// Beside them the two times of a handshake: when a task of an entry was first queued to a

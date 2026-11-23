@@ -1340,16 +1340,18 @@ type entryBehind struct {
 // and its delivery, so the difference alone would name a healthy root at every read. A root is an
 // issue whose tree is its own key (api.Issue.Tree, claim.IsTreeRoot), and the numbers it carries
 // where another role works its place are that role's, which the line names for no root; where
-// its architect works the place (admitted, its own acceptance, a step or a retro the owner does),
-// the line names them beside the arms. The numbers are named for the role a phase worker works on
+// its architect works the place as itself, on its own row (admitted, and accepting on an issue with
+// no plan rows, where the state names no place role), the line names them beside the arms. At a
+// step or a retro the owner does, the numbers are the entry of the row the owner's run raises, the
+// place's own role's, with no given entry (projection.Project), so the line names them for no root
+// there either. The numbers are named for the role a phase worker works on
 // any other issue, which is dispatch://INFRA-2800's line; a role of the architect's, a child at
 // admitted among them, which phase.RoleFor names the architect's phase, is named for nothing.
 // Where the state names the role
 // of the claim that works the issue's place (api.Issue.PlaceRole, an issue with plan rows) and the
 // issue is not held, that is the role: at accepting the fresh agent of a step `acceptance` with no
 // key, named as any worker, or the architect where the owner accepts or does any other step of
-// its own, named for nothing, as the projection reads the same role for the numbers
-// (record.Issue.RoleAt). At step the role is the one that runs the issue's step, which the state
+// its own, named for nothing. At step the role is the one that runs the issue's step, which the state
 // names (api.Issue.StepRole) and no phase does, and so is the role of an issue held from step,
 // which carries no number as every held issue does. An
 // issue whose current phase names no role at all carries neither number and is never named for
@@ -1371,7 +1373,7 @@ func entriesBehind(issues map[string]api.Issue) []entryBehind {
 				continue
 			}
 			row := entryBehind{issue: key, role: legionclaim.RoleArchitect, arms: issue.ArchitectStalls}
-			if role == legionclaim.RoleArchitect {
+			if role == legionclaim.RoleArchitect && issue.PlaceRole == "" {
 				row.numbered, row.entry, row.given = true, issue.PhaseEntry, issue.GivenEntry
 			}
 			behind = append(behind, row)

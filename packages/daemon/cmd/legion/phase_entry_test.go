@@ -25,11 +25,14 @@ import (
 // uses, so the line reads none of its own: a root whose fields would have read as an arm to a
 // reader of the times, the claim and the gate is named by nothing while the state names no arm.
 //
-// The numbers are the architect's where the root's architect works the place it stands at
-// (admitted, its own acceptance, a step or a retro the owner does), and elsewhere they are the
-// numbers of the role that works that place, so the architect of such a root is named with its arm
-// and no numbers, and that role is not named for the numbers at all. An issue that is not its
-// tree's root is named for its numbers where they differ, as every role a phase worker works is.
+// The numbers are the architect's where the root's architect works the place it stands at as
+// itself, on its own row (admitted, and accepting on an issue with no plan rows), and elsewhere
+// they are the numbers of the role whose row the place's run raises, so the architect of such a
+// root is named with its arm and no numbers, and that role is not named for the numbers at all.
+// That includes a step or a retro the owner does itself, where the state serves the entry of the
+// step's own row and no given entry (the owner is told its step by a notice, which gives no claim
+// an entry). An issue that is not its tree's root is named for its numbers where they differ, as
+// every role a phase worker works is.
 //
 // The role is the one that works the place the issue's task stands at, which the state names
 // (api.Issue.PlaceRole) where the issue has plan rows: at accepting, the fresh agent of a step
@@ -104,6 +107,14 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 		`"tree":"LEGION-599","workers":{},"phaseEntry":3,"givenEntry":1},` +
 		`"LEGION-601":{"key":"LEGION-601","generation":1,"phase":"accepting","placeRole":"architect","status":"needs_review",` +
 		`"tree":"LEGION-599","workers":{},"phaseEntry":2,"givenEntry":1}`
+	// Two roots the state names an arm for at a place their owner works: LEGION-700 at its step
+	// `implementer:owner` and LEGION-701 at the owner's retro. The state serves the entry of the
+	// implementer's row the owner's run raised and no given entry, which are not the architect's,
+	// so each architect is named with its arm and no numbers.
+	owners := `"LEGION-700":{"key":"LEGION-700","generation":1,"phase":"implementing","placeRole":"architect","status":"in_progress",` +
+		`"tree":"LEGION-700","workers":{},"phaseEntry":1,"architectStalls":["claim-unreachable"]},` +
+		`"LEGION-701":{"key":"LEGION-701","generation":1,"phase":"retro","placeRole":"architect","status":"in_progress",` +
+		`"tree":"LEGION-701","workers":{},"phaseEntry":3,"architectStalls":["took-nothing"]}`
 	for _, tc := range []struct {
 		name, issues, want string
 	}{
@@ -142,6 +153,12 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor
 			name:   "an accepting a fresh agent works, beside one the owner works",
 			issues: `{"issues":{` + accepting + `}}`,
 			want:   "roles not given their phase entry, and roots a wake names: 1 — LEGION-600 acceptance: entry 3, given 1\n",
+		},
+		{
+			name:   "roots at a step and a retro their owner works, each with an arm",
+			issues: `{"issues":{` + owners + `}}`,
+			want: "roles not given their phase entry, and roots a wake names: 2 — " +
+				"LEGION-700 architect: the architect's claim cannot be reached; LEGION-701 architect: the architect took nothing\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

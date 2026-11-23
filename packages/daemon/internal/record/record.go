@@ -2774,6 +2774,27 @@ func (i Issue) OwnersPlace() bool {
 	return i.Hold == nil && i.Phase != phase.Admitted && i.RoleAt(i.Phase) == claim.RoleArchitect
 }
 
+// OwnersRowRole is the role of the phases row the owner's run raises its entry on where issue's
+// task stands at a place of its plan rows the owner works (OwnersPlace, where the claim that works
+// the place, PlaceRole, is the architect), and "" everywhere else. It is the role of that place
+// (PlaceWorker's Worker.Role, which workflow's startOwnersStep raises the entry on): at a step of
+// the key owner, the owner's acceptance among them, the step's own role (StepRole), and at the
+// owner's retro the role of the owner's retro (ownersRetroRole). There the role that works the
+// issue (RoleAt) is the architect, whose own row and claim count the architect's own starts and
+// not the step that runs, so a reader of the entry of the issue's place reads this role's row
+// instead (projection.Project). It is "" at a place another agent works, at admitted, while the
+// issue is held, and on an issue with no plan rows, whose accepting the architect works as itself,
+// on its own row.
+func (i Issue) OwnersRowRole() claim.Role {
+	if i.PlaceRole != claim.RoleArchitect || !i.OwnersPlace() {
+		return ""
+	}
+	if i.Phase == phase.Retro {
+		return ownersRetroRole
+	}
+	return i.StepRole
+}
+
 // OwnerActsAs is the role whose App the owner's slot holds while the owner does a step of issue's
 // task, and false where the owner does none: the role of the step where the issue's task stands at
 // a step of the key owner (PlaceRole is the architect and StepRole names that step) and the issue

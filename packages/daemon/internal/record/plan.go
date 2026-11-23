@@ -209,6 +209,12 @@ func (w Worker) Name(steps []PlanStep) claim.Agent {
 	return steps[w.Step-1].AgentName()
 }
 
+// ownersRetroRole is the role of the retro the owner of a task does (PlaceWorker): the implementer,
+// the role of the phase retro, on whose phases row the owner's retro is recorded, since the claim
+// that works it keeps the architect's role. PlaceWorker gives it to every retro of the owner's and
+// Issue.OwnersRowRole reads it for the row of the owner's retro, so the two never name two rows.
+const ownersRetroRole = claim.RoleImplementer
+
 // PlaceWorker is who works place of task, whose plan rows are steps, and ok false at the merge, at
 // no act and at a step the task does not hold, which no agent of the plan works. At a step it is
 // the step's own role and agent. At the retro it is read from the type each row records: the agent
@@ -240,11 +246,11 @@ func PlaceWorker(task string, place TaskPlace, steps []PlanStep) (Worker, bool) 
 			}
 			agent := agentOf(i + 1)
 			if agent.Owner() {
-				return Worker{Role: claim.RoleImplementer, Agent: agent, Step: i + 1}, true
+				return Worker{Role: ownersRetroRole, Agent: agent, Step: i + 1}, true
 			}
 			return Worker{Role: claim.Role(steps[i].Role), Agent: agent, Step: i + 1}, true
 		}
-		return Worker{Role: claim.RoleImplementer, Agent: plan.Agent{Key: "owner"}}, true
+		return Worker{Role: ownersRetroRole, Agent: plan.Agent{Key: "owner"}}, true
 	}
 	return Worker{}, false
 }
