@@ -215,16 +215,20 @@ export function RefPickerList({
   const sessionOf = (one: RefPickerRow) =>
     one.kind === "agent" ? one.agent?.sessionId : undefined;
   // A session's row on a surface with no tooltips draws the session's full id as a line of its
-  // own, under its detail, quiet and cut to one line as the detail is. The line is hidden from
-  // assistive technology, so its words are no part of the row's name. The row names it in
-  // `aria-describedby`, which reads a line it names even when that line is hidden, so the id is
-  // still the row's description.
+  // own, under its detail, quiet and wrapped whole: no tooltip on that surface could give back
+  // what an ellipsis cut. The line is hidden from assistive technology, so its words are no part
+  // of the row's name. The row names it in `aria-describedby`, which reads a line it names even
+  // when that line is hidden, so the id is still the row's description.
   const sessionLineId = (one: RefPickerRow) =>
     !tooltips && sessionOf(one) !== undefined ? `${headingPrefix}-${one.id}` : undefined;
   const sessionLine = (one: RefPickerRow) => {
     const id = sessionLineId(one);
     return id === undefined ? null : (
-      <span aria-hidden="true" className={`truncate text-xs ${textOptionDescription}`} id={id}>
+      <span
+        aria-hidden="true"
+        className={`min-w-0 text-xs [overflow-wrap:anywhere] ${textOptionDescription}`}
+        id={id}
+      >
         {sessionOf(one)}
       </span>
     );
