@@ -1839,11 +1839,11 @@ func RunningTaskChanged(task string) plan.Refusal {
 // AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task
 // would take name — the name its key held in an earlier version, or its role's — which another
 // agent of the plan holds from an earlier version (record.NameAgents, record.UnnamedAgents). This
-// release runs one agent of each role for an issue, so such a version is refused as a plan before
-// anything is written, never as an error of the write.
+// release names each agent of an issue for a role and gives each name to one agent, so such a
+// version is refused as a plan before anything is written, never as an error of the write.
 func AgentUnnamed(task string, place int, name string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and another agent of this plan holds the name %s, which this step's agent would take, "+
-		"from an earlier version; this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, name)}
+		"from an earlier version; this release names each agent of an issue for a role and gives each name to one agent. This release of Legion does not carry it out yet.", place, task, name)}
 }
 
 // PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,

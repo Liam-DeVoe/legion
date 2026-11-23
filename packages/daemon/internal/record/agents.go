@@ -104,8 +104,8 @@ type UnnamedAgent struct {
 
 // UnnamedAgents is each agent of named, steps NameAgents gave from earlier, but the owner, that has
 // no name, with the name it would have taken: a key's newest earlier name (earlierKeyNames), and
-// otherwise its role's (RoleName). This release runs one agent of each role for an issue, so a
-// version with one is refused before any write.
+// otherwise its role's (RoleName). This release names each agent of an issue for a role and gives
+// each name to one agent, so a version with one is refused before any write.
 func UnnamedAgents(earlier, named []PlanStep) []UnnamedAgent {
 	keyNames := earlierKeyNames(earlier)
 	var unnamed []UnnamedAgent
