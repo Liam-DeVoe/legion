@@ -75,12 +75,6 @@
 #                         (title.txt, messages.md, asks.json, and old-spec.md for an issue);
 #                         --agent-texts --since <t> --until <t> --out <dir> writes
 #                         <dir>/agent-texts.json
-#   rule-search.ts <checkout> <base|head> <label>...
-#                         classifies each sentence of each label's rule in each text the label's
-#                         role reads: cut, kept with a reason, or a FAULT (exit 1)
-#   rule-search.ts <checkout> texts <reviewer|architect>
-#                         lists each text the role reads, with its depth and the chain of links
-#                         that reaches it first
 # label-comments.ts and fetch-spec-sources.ts read production Dispatch with the operator's own
 # credentials, which this script unsets, so the operator runs them before a batch. Each refuses an
 # --out inside a git or jj checkout (exit 2). Nothing they write is committed.
@@ -179,8 +173,8 @@
 # ask-on-message and tester-proof are controls: their rules also live in dispatch-first and
 # `dispatch ask --help`, and in the tester role prompt, so ablate scores as the head does
 # and they cannot detect a lost skill rule. A new scenario is an instrument only once an ablate
-# arm has scored lower on it. A label's cuts come from rule-search.ts, which classifies each
-# sentence of the label's rule in each text that its role reads, to the closure of their links.
+# arm has scored lower on it. A label's cuts are its patch's (label-checkouts.sh), and its runs
+# show that the patch cuts the rule: the label scores below the head.
 #
 # A batch's services are a Postgres container, a NATS container, and the Envoy listener built from
 # this checkout. Each run gets a Dispatch of its own (own_dispatch): a database named after the

@@ -449,10 +449,9 @@ names scripts/sessions for.
 src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER) and
 asserts an exact file list over the tree it writes, so this job reads that whole
 package and the one entry of its BUNDLE_ENTRYPOINTS (in scripts/build.ts) that
-lives outside it; scripts/skill-scenarios/gate-search.ts's buildGenerated, which
-gate-search.test.ts runs, spawns that script too and reads the legion/ it writes. A
-spawn carries no import, so no derivation of this repository sees the reach: both
-patterns are hand-kept, with their declared reads in ci_job_reads.py.
+lives outside it. A spawn carries no import, so no derivation of this repository
+sees the reach: the patterns are hand-kept, with their declared reads in
+ci_job_reads.py.
 
 ## pi_legion: The Dispatch e2e client that scripts/skill-scenarios/seed.ts imports
 
