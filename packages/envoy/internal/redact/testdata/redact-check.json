@@ -4644,6 +4644,13 @@
       "production": "redact.RemoteText: String, GoString, Format, MarshalJSON, MarshalText, LogValue"
     },
     {
+      "id": "print-kept-credentials",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestAKeptCredentialPrintsUnderNoVerbAtAnyHolding",
+      "production": "redact.RemoteText's carried (a func), redact.Answer's tokens, data and rec, a hop error's and a scope's record of the request: a bearer, a Basic pair and a URL's user information kept there print under no fmt verb and no bad verb at any holding"
+    },
+    {
       "id": "print-cipherclient.RefusedError",
       "requirement": "r2-held",
       "package": "./internal/cipherclient",
@@ -6504,6 +6511,13 @@
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestARateLimitIsDecidedOnGitHubsWordsAsTheyCame",
       "production": "githubrest AnswerOf: GitHub's secondary limit decided on the body as it came (oauth2call.Holds), printed as the rule reads it"
+    },
+    {
+      "id": "githubrest-answer-kept",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAnAnswerPrintsNoCredentialItKeeps",
+      "production": "githubrest.Answer's read, the answer as it came, whose record keeps the token the call carried: it prints under no fmt verb and no bad verb at any holding"
     },
     {
       "id": "appauth-decided-as-it-came-422",
@@ -8818,6 +8832,11 @@
       "site": "Answer.Decode's error printed encoding/json's type-error path, which since Go 1.27 runs json v1 on v2 holds the answer's own map keys: a key that echoes the request's credential printed it",
       "source": "the review of #4368 at de683f95d2, finding 2",
       "guard": "redact-answer-decode-map-key"
+    },
+    {
+      "site": "RemoteText kept its request's credentials behind a *[]string, which fmt spells out at the top level under a verb a pointer does not take (%s, %q, %t) from a box in an unexported field: a struct, a pointer to one or a slice of them printed the bearer, the client secret and the subject token",
+      "source": "the review of #4368 at de683f95d2, finding 4",
+      "guard": "print-kept-credentials"
     },
     {
       "site": "daemon dispatchError: Dispatch's code taken through SendBack, so a message that quotes ISSUE_NOT_FOUND made a permanent refusal codeless and retried for ever",

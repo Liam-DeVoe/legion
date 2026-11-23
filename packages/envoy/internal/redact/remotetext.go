@@ -22,7 +22,10 @@ import (
 // is printed directly: String, GoString and Format (every verb), MarshalJSON and MarshalText, and
 // LogValue. The pointer is to a string and not to a struct: under a verb that is wrong for a
 // pointer (%s, %q), fmt prints the pointer's target at the top level, and it spells out the
-// fields of a struct there, while it prints a *string as an address whatever the verb.
+// fields of a struct there, while it prints a *string as an address whatever the verb. The
+// credentials it keeps of its request (WithoutTokens) sit behind a func for the same reason: fmt
+// prints a func as an address whatever the verb, where it would spell out a pointer to a slice of
+// them at the top level.
 //
 // Only this type's methods read the text, and each reads it in one of three ways alone: as the
 // argument of the rule (Field), as an operand of a comparison or a parse whose answer is a bool,
@@ -34,9 +37,9 @@ import (
 // field.
 type RemoteText struct {
 	text *string
-	// carried is the credentials the request this field answers carried, which every printer
+	// carried answers the credentials the request this field answers carried, which every printer
 	// redacts from the text before the rule reads it (WithoutTokens); nil for none.
-	carried *[]string
+	carried func() []string
 }
 
 // NewRemoteText is text, a field another party wrote, as a RemoteText.
@@ -50,19 +53,20 @@ func (t RemoteText) String() string {
 	return fieldWithout(*t.text, t.carried)
 }
 
-// fieldWithout is Field of text with each of carried redacted from it first (Tokens): the rule's
-// reading of a field whose own request's credentials an answer can echo.
-func fieldWithout(text string, carried *[]string) string {
+// fieldWithout is Field of text with each credential carried answers redacted from it first
+// (Tokens): the rule's reading of a field whose own request's credentials an answer can echo.
+func fieldWithout(text string, carried func() []string) string {
 	if carried != nil {
-		text = Tokens(text, -1, *carried...)
+		text = Tokens(text, -1, carried()...)
 	}
 	return Field(text)
 }
 
-// ruledWithout is ruled of text with each of carried redacted from it first (Tokens).
-func ruledWithout(text string, carried *[]string) string {
+// ruledWithout is ruled of text with each credential carried answers redacted from it first
+// (Tokens).
+func ruledWithout(text string, carried func() []string) string {
 	if carried != nil {
-		text = Tokens(text, -1, *carried...)
+		text = Tokens(text, -1, carried()...)
 	}
 	return ruled(text)
 }
@@ -135,9 +139,9 @@ func (t RemoteText) WithoutTokens(tokens ...string) RemoteText {
 	}
 	carried := tokens
 	if t.carried != nil {
-		carried = append(append([]string(nil), *t.carried...), tokens...)
+		carried = append(append([]string(nil), t.carried()...), tokens...)
 	}
-	t.carried = &carried
+	t.carried = func() []string { return carried }
 	return t
 }
 
