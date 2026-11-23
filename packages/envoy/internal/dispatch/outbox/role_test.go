@@ -845,7 +845,7 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
 	t.Cleanup(func() { bustest.Close(t, client) })
-	conn, err := testnats.ConnectSeed(t, url, seed)
+	conn, err := testnats.AwaitConnectSeed(t, url, seed)
 	if err != nil {
 		t.Fatalf("connect the test's connection: %v", err)
 	}

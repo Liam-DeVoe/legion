@@ -300,25 +300,46 @@ func streamOrder(t *testing.T, conn *natsgo.Conn) (map[string][]int64, []int64) 
 	return bySubject, all
 }
 
-// envelopeEventID is the dispatch event id data's envelope carries (sourceEventID).
+// envelopeEventID is the dispatch event id data's envelope carries (sourceEventID), for a caller on
+// the test's goroutine.
 func envelopeEventID(t *testing.T, data []byte) int64 {
 	t.Helper()
+	id, err := envelopeEventIDOf(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// envelopeEventIDOf is envelopeEventID's reading with its error answered rather than failed on,
+// for a caller off the test's goroutine, such as subscribeInOrder's reader, whose take reports
+// through t.Error: t.Fatal there would end the reader's goroutine and not the test.
+func envelopeEventIDOf(data []byte) (int64, error) {
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		t.Fatalf("decode an envelope: %v", err)
+		return 0, fmt.Errorf("decode an envelope: %w", err)
 	}
-	return sourceEventID(t, envelope)
+	return sourceEventIDOf(envelope)
 }
 
 // sourceEventID is the dispatch event id envelope was made of, for a caller that has decoded it
 // already.
 func sourceEventID(t *testing.T, envelope contracts.Envelope) int64 {
 	t.Helper()
-	id, err := strconv.ParseInt(envelope.SourceEventID, 10, 64)
+	id, err := sourceEventIDOf(envelope)
 	if err != nil {
-		t.Fatalf("envelope source event id %q: %v", envelope.SourceEventID, err)
+		t.Fatal(err)
 	}
 	return id
+}
+
+// sourceEventIDOf is sourceEventID's reading with its error answered.
+func sourceEventIDOf(envelope contracts.Envelope) (int64, error) {
+	id, err := strconv.ParseInt(envelope.SourceEventID, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("envelope source event id %q: %w", envelope.SourceEventID, err)
+	}
+	return id, nil
 }
 
 // ascending reports the first position at which ids decreases, or -1.
@@ -447,7 +468,13 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	t.Cleanup(reader.Close)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
 	rig.holder = subscribeInOrder(t, reader, client.Connection(), contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg, _ <-chan struct{}) {
-		id := envelopeEventID(t, message.Data)
+		// The reader's goroutine runs this, not the test's: a forward it cannot read is reported
+		// and passed over, and the row's own counts then fail it by name.
+		id, err := envelopeEventIDOf(message.Data)
+		if err != nil {
+			t.Errorf("the holder's forward %q: %v", message.Data, err)
+			return
+		}
 		rig.roleMu.Lock()
 		rig.role = append(rig.role, id)
 		rig.roleMu.Unlock()

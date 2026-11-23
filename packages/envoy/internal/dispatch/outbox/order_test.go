@@ -256,7 +256,13 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 		arrivals []int64
 	)
 	toS := subscribeInOrder(t, rig.conn, rig.client.Connection(), contracts.LegacyAgentSubject(holder), func(msg *natsgo.Msg, _ <-chan struct{}) {
-		id := envelopeEventID(t, msg.Data)
+		// The reader's goroutine runs this, not the test's: a forward it cannot read is reported
+		// and passed over, and the row's own counts then fail it by name.
+		id, err := envelopeEventIDOf(msg.Data)
+		if err != nil {
+			t.Errorf("a forward to S %q: %v", msg.Data, err)
+			return
+		}
 		mu.Lock()
 		arrivals = append(arrivals, id)
 		mu.Unlock()
