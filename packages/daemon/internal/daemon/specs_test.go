@@ -641,7 +641,8 @@ func TestTheControllersLaunchNamesTheProjectsSlackChannels(t *testing.T) {
 // daemon-launched controller both read how far the project's token reaches; a worker's
 // addressing carries the same clause after a `; `. Neither names a repository: the App
 // installation decides where the project works (INFRA-2543 R6), and the owners are the
-// controller's own App's, the review App's, which the daemon answers for the controller role
+// controller's own App's, the review App's, which the launch's resolution of its role names
+// (resolveClaimRole, appauth.AppRoleFor) and the daemon answers for the controller role
 // (plan.appOwners).
 func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
@@ -668,11 +669,15 @@ func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 		{"no installation", nil, "Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var asked []claim.Role
+			type asked struct {
+				app  appauth.AppRole
+				role claim.Role
+			}
+			var asks []asked
 			s := specs{
 				stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(),
-				appOwners: func(_ context.Context, _ appauth.AppRole, role claim.Role) []string {
-					asked = append(asked, role)
+				appOwners: func(_ context.Context, app appauth.AppRole, role claim.Role) []string {
+					asks = append(asks, asked{app, role})
 					return tc.owners
 				},
 			}
@@ -683,8 +688,47 @@ func TestTheControllersAddressingGainsTheReachItsAppGives(t *testing.T) {
 			if want := DesignGateFragment(config.DesignGateOff.Steps()) + " " + tc.want; spec.Prompt.Addressing != want {
 				t.Errorf("addressing = %q, want %q", spec.Prompt.Addressing, want)
 			}
-			if !slices.Equal(asked, []claim.Role{claim.RoleController}) {
-				t.Errorf("the launch asked for the owners of %v, want the controller's own role", asked)
+			if want := []asked{{appauth.Review, claim.RoleController}}; !slices.Equal(asks, want) {
+				t.Errorf("the launch asked for the owners of %+v, want the controller's own role as the review App", asks)
+			}
+		})
+	}
+}
+
+// The controller's launch runs on the harness its role resolves to, as every launch does
+// (resolveClaimRole): the one worker_backends names for the controller, and Oh My Pi where the
+// daemon names none. It is told the prompt part of that harness after its role's parts.
+func TestTheControllersLaunchRunsOnTheHarnessItsRoleResolvesTo(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	controllerOnClaude := func(role claim.Role) runtime.Backend {
+		if role == claim.RoleController {
+			return runtime.BackendClaude
+		}
+		return runtime.BackendOmp
+	}
+	for _, tc := range []struct {
+		name    string
+		backend func(claim.Role) runtime.Backend
+		want    runtime.Backend
+	}{
+		{"worker_backends names the controller's harness", controllerOnClaude, runtime.BackendClaude},
+		{"a daemon that names no backend", nil, runtime.BackendOmp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(), backendFor: tc.backend, appOwners: noAppOwners}
+			spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController})
+			if err != nil {
+				t.Fatalf("SpawnSpec: %v", err)
+			}
+			if spec.Backend != tc.want {
+				t.Errorf("the controller's backend = %q, want %q", spec.Backend, tc.want)
+			}
+			part := composer.Part(runtime.Backends[runtime.BackendClaude].PromptPart)
+			if told := slices.Contains(spec.Prompt.RolePromptPaths, part); told != (tc.want == runtime.BackendClaude) {
+				t.Errorf("the controller is told the Claude Code part %t, want %t", told, tc.want == runtime.BackendClaude)
 			}
 		})
 	}

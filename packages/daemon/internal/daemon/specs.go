@@ -157,8 +157,9 @@ func (s specs) ownersOf(ctx context.Context, app appauth.AppRole, role claim.Rol
 // deployment instructions and the instructions of each arm the claim's unit was drawn into
 // — and its repository with that repository's default branch, whose workspace is on the daemon's
 // host by then when the runtime leaves workspaces to the daemon
-// (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both name the
-// backend the role runs on and are told its prompt part after the role's parts (launchBackend).
+// (ensureWorkspace). The controller's launch (controllerSpawnSpec) is its own. Both resolve the
+// claim's role once (resolveClaimRole), which names the backend the role runs on and the App it
+// acts as, and both are told the backend's prompt part after the role's parts (backendPart).
 // Plugins carries the plugin pair a stale-plugin relaunch installs (stalePluginInstall), set the
 // same way for both — the controller the daemon launches (`controller: daemon`) is covered like
 // any claim.
@@ -168,11 +169,7 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 	var spec runtime.SpawnSpec
 	var err error
 	if c.Role == claim.RoleController {
-		spec, err = s.controllerSpawnSpec(ctx)
-		spec.Backend = runtime.BackendOmp
-		if s.backendFor != nil {
-			spec.Backend = s.backendFor(claim.RoleController)
-		}
+		spec, err = s.controllerSpawnSpec(ctx, c)
 	} else {
 		spec, err = s.workerSpawnSpec(ctx, c)
 	}
@@ -429,15 +426,15 @@ var refusalCooldownVariables = []string{
 // the daemon knows no pair (s.plugins nil, the degraded mode). A fresh copy, so a caller mutating
 // one launch's spec never reaches another's.
 //
-// backend is the launch's, as SpawnSpec resolved it (launchBackend). A Claude Code launch gets
-// nothing: that install is `@sjawhar/pi-legion` and `@sjawhar/pi-envoy` from npm
-// (runtime/sandbox's plugins.go), no workflow releases claude-envoy, and a Claude worker's plugin
-// is the image's — so a plugin-contract change for such a role is answered by a new image, not by
-// an install. The stale-plugin lane relaunches no such claim under Kubernetes (noPluginInstall):
-// its registration stands, and the update round over its pod brings the new image, whose plugin
-// the image probe holds to the contract. The daemon-launched
-// controller runs on Oh My Pi (runtime.Backends runs Claude Code for phase workers alone), so its
-// launch is covered here exactly as before.
+// backend is the launch's, as its resolution of the claim's role named it (resolveClaimRole). A
+// Claude Code launch gets nothing: that install is `@sjawhar/pi-legion` and `@sjawhar/pi-envoy`
+// from npm (runtime/sandbox's plugins.go), no workflow releases claude-envoy, and a Claude
+// worker's plugin is the image's — so a plugin-contract change for such a role is answered by a
+// new image, not by an install. The stale-plugin lane relaunches no such claim under Kubernetes
+// (noPluginInstall): its registration stands, and the update round over its pod brings the new
+// image, whose plugin the image probe holds to the contract. The daemon-launched controller runs
+// on Oh My Pi (runtime.Backends runs Claude Code for phase workers alone), so its launch is
+// covered here exactly as before.
 func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *runtime.PluginInstall {
 	if runtime.Of(backend) == runtime.BackendClaude {
 		return nil
@@ -464,21 +461,27 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // commits nothing, so it stamps no issue key into one either (runtime.SpawnSpec.IssueTrailer,
 // which validateControllerShape refuses on a controller's spec). It runs in no experiment and is
 // told no variant instructions whatever the modes are: an experiment's unit is a tree or an
-// issue of one, and the controller runs in neither.
+// issue of one, and the controller runs in neither. Its harness and the App whose reach its
+// addressing names are its role's resolution, as every launch's are (resolveClaimRole): the
+// harness worker_backends names for the controller, and the App appauth.AppRoleFor names for it.
 //
 // Of the passthrough variables it carries the two refusal cooldowns itself: the model fallback
 // those two bound serves every Legion role, the controller's session among them
 // (refusalCooldownVariables). The stall limits reach it from SpawnSpec, after the fork, as they
 // reach a worker's launch (stallLimitVariables).
-func (s specs) controllerSpawnSpec(ctx context.Context) (runtime.SpawnSpec, error) {
+func (s specs) controllerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
 	if s.prompts == nil {
 		return runtime.SpawnSpec{}, errors.New("the daemon prompt bundle was not constructed at boot")
+	}
+	resolved, err := resolveClaimRole(ctx, s.planRole, s.roles, s.backendFor, c.Issue, c.Role)
+	if err != nil {
+		return runtime.SpawnSpec{}, fmt.Errorf("the role of %s: %w", c.Token, err)
 	}
 	paths, err := s.prompts.ControllerPromptPaths(true)
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
-	addressing := DesignGateFragment(s.designSteps) + " " + RepositoriesSentence(s.ownersOf(ctx, appauth.Review, claim.RoleController))
+	addressing := DesignGateFragment(s.designSteps) + " " + RepositoriesSentence(s.ownersOf(ctx, resolved.app, c.Role))
 	if len(s.slackChannels) > 0 {
 		addressing += " " + SlackChannelsFragment(s.slackChannels)
 	}
@@ -487,6 +490,7 @@ func (s specs) controllerSpawnSpec(ctx context.Context) (runtime.SpawnSpec, erro
 	return runtime.SpawnSpec{
 		Env:     env,
 		Secrets: maps.Clone(s.secrets),
+		Backend: runtime.Backend(resolved.def.Backend),
 		Prompt: runtime.PromptParts{
 			RolePromptPaths:            paths,
 			Addressing:                 addressing,
