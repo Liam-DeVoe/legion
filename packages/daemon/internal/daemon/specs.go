@@ -536,8 +536,11 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // Oh My Pi resume the session by its id itself, through a pod launcher older than the lookup
 // (c.AgentResumeGeneration equal to c.Generation, which only that launch's copy has), is told that
 // its workspace may have been recreated: that launcher reads no row of the session, so its word
-// that the workspace was not recreated was not checked (dispatch://INFRA-4108 R3). The guidance is
-// that of the plugin's own notice of a recreated workspace
+// that the workspace was not recreated was not checked (dispatch://INFRA-4108 R3). Such a workspace
+// holds what was pushed to the claim's own branch, which the sentence names: the branch of the task
+// its pending delivery is of (supervise.Delivery.Branch), and the issue's own where that names none
+// or the claim holds no delivery, as the replacement of an abandoned session is told (supervise's
+// abandonedTask). The guidance is that of the plugin's own notice of a recreated workspace
 // (packages/pi-shared/src/workspace-recreated.ts). Each sentence that names a session quotes its id
 // as a Go string (%q), as the workflow's message of a forgotten session does: the id is what an
 // agent's registration chose, and the quotes bound it in a text the agent reads.
@@ -570,12 +573,16 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 			"the turns, tool calls and subagents of your earlier work are gone, and only what you pushed and committed survives. " + readFirst
 	}
 	if c.AgentResumeGeneration != 0 && c.AgentResumeGeneration == c.Generation {
+		branch := claim.IssueBranch(c.Issue)
+		if c.Pending != nil && c.Pending.Branch != "" {
+			branch = c.Pending.Branch
+		}
 		fragment += fmt.Sprintf(" This launch has Oh My Pi resume the session %q by its id itself. The pod's launcher is older than this release and did not read "+
 			"when that session was last written, so its word that your workspace was not recreated was not checked: your workspace may have been recreated "+
 			"since the session last ran. If it was, it holds what was pushed to %s (the repository's default branch if nothing was), and anything you had not "+
 			"pushed is gone. Before you continue, check the workspace against what you remember doing, and read the last handoff recorded on %s again with "+
 			"`dispatch handoff-read --issue %s --phase <word>`; Dispatch keeps it, whatever the workspace holds.",
-			c.Session, claim.IssueBranch(c.Issue), c.Issue, c.Issue)
+			c.Session, branch, c.Issue, c.Issue)
 	}
 	if repo.IsZero() {
 		return fragment
