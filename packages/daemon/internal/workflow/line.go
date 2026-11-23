@@ -146,6 +146,19 @@ func (w Walk) MovesBack(row Row) bool {
 	return row.ToPlace.Kind != "" && placeRank(row.ToPlace) < placeRank(row.FromPlace)
 }
 
+// passedStep says whether the step of w's task that runs as p stands before the place the task
+// stands at while its issue stands in at (placeIn): the implementer's work behind a later step, or
+// the reviewer's review an issue past it stands on. It compares places (placeRank), so it reads a
+// task whose steps of roles the deployment defines all run as step as the stored table does
+// (MovesBack). A phase the line does not hold, and an issue that stands at no place of the line,
+// passed nothing. Where two steps run as p it reads the first (PlaceOf); its readers ask of
+// implementing and reviewing, which each stand once in a line.
+func (w Walk) passedStep(at, p phase.Phase) bool {
+	here, standing := w.placeIn(at)
+	there, held := w.PlaceOf(p)
+	return standing && held && placeRank(there) < placeRank(here)
+}
+
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done
 // for a task that is done or left the workflow before it was done (record.TaskLeft), whatever its
 // place, which is the phase of an issue out of the workflow; the phase of the step at place, retro

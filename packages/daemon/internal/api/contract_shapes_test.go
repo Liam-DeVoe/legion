@@ -87,7 +87,7 @@ func bootstrapMessage() string {
 //
 // NoBody, KeyPaths and Domains are all written on every record, so an answer that writes no body
 // at all (`claims/ready` and its three siblings, which answer 204) reads differently from one
-// whose body has no key (the empty object the eight fact routes answer). The first is
+// whose body has no key (the empty object the fact routes answer). The first is
 // `"noBody": true` with no key path, the second `"noBody": false` with no key path. An answer
 // with no enumerated field of its own writes `"domains": {}`.
 type contractShape struct {
@@ -621,7 +621,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// object: READY and the daemon's merge went, and the `note` that reported them with
 		// them, so the body this route writes carries no key at any contract from 86 on.
 		AnswerHandoffComplete: {roots: typesOf(HandoffCompleteResponse{}), bodies: []any{HandoffCompleteResponse{}}},
-		// The empty object the eight fact routes answer. Six Go types write it, and none of them
+		// The empty object the fact routes answer. Six Go types write it, and none of them
 		// declares a field, so the record of this answer is an empty set of key paths over a
 		// body that exists.
 		AnswerEmptyObject: {
@@ -653,7 +653,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// claim routes answer; api.Failure, which adds the stable `code` the credential and
 		// workflow routes carry; api.PauseFailure, the Failure with what a refusal of the pause
 		// names beside it (contract 178); and api.PlanRefusal, the Failure with one reason for
-		// each cause of a refused plan beside it (contract 211). A client parses any of them on
+		// each cause of a refused plan beside it (contract 219). A client parses any of them on
 		// every answer that is not a success, so the fixture holds each and the record is the keys
 		// of the four read as one set. The pause refusals are the three the goldens hold
 		// (TestPauseRouteGoldens): the setting that turns the pause off, the pause that stands,
