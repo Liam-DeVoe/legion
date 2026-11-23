@@ -21,7 +21,7 @@ func TestAnAdoptionTheShimRefusesNamesTheAppsGitNameOnlyInItsShape(t *testing.T)
 	conn := fake.NewConn()
 	g.conns.Register(workerToken, conn)
 	loc := g.spawn(workerSpec(t))
-	bot := githubtest.InstallationToken(t.Name())
+	bot := githubtest.InstallationToken(t.Name()) + "-RDX-"
 	conn.FailAdoptWorkingCopy(errors.New("jj metaedit exited 1"))
 
 	err := g.r.AdoptWorkingCopy(g.ctx, loc, runtime.GitIdentity{Name: bot, Email: "7+" + bot + "@users.noreply.github.com"})

@@ -35,7 +35,7 @@ func (t echoedBotTokens) Token(ctx context.Context, role appauth.AppRole, owner 
 // and holds no run of the token. Captures daemon.answer-words/permission-bot.
 func TestAPermissionReadGitHubRefusesLogsTheAppsBotOnlyInItsShape(t *testing.T) {
 	pool := reviewPermissionPool(t)
-	bot := githubtest.InstallationToken(t.Name())
+	bot := githubtest.InstallationToken(t.Name()) + "-RDX-"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = io.WriteString(w, `{"message":"Resource not accessible by integration","status":"403"}`)

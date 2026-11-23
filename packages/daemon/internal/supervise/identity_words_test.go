@@ -20,7 +20,7 @@ const notALogin = "(a login GitHub does not allow)"
 // allows, here its fixed phrase, and holds no run of the token. Captures
 // supervise.answer-words/adopted-identity.
 func TestAnAdoptionLogsTheAppsGitNameOnlyInItsShape(t *testing.T) {
-	bot := runtime.GitIdentity{Name: githubtest.InstallationToken(t.Name()), Email: "7+bot@users.noreply.github.com"}
+	bot := runtime.GitIdentity{Name: githubtest.InstallationToken(t.Name()) + "-RDX-", Email: "7+bot@users.noreply.github.com"}
 	h := newHarness(t)
 	h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) { return bot, nil }
 	h.restart()

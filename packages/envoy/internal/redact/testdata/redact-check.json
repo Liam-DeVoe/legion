@@ -6551,7 +6551,7 @@
       "mutation": {
         "file": "packages/daemon/internal/supervise/delivery.go",
         "preimage": "\"identity\", githubrest.ShownLogin(id.Name)",
-        "replacement": "\"identity\", id.Name"
+        "replacement": "\"identity\", githubrest.ShownLogin(id.Name)[:0]+id.Name"
       }
     },
     {
@@ -6565,7 +6565,7 @@
       "mutation": {
         "file": "packages/daemon/internal/runtime/sandbox/sandbox.go",
         "preimage": "loc.Claim, githubrest.ShownLogin(id.Name), err)",
-        "replacement": "loc.Claim, id.Name, err)"
+        "replacement": "loc.Claim, githubrest.ShownLogin(id.Name)[:0]+id.Name, err)"
       }
     },
     {

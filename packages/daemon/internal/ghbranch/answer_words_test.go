@@ -35,11 +35,11 @@ func TestABaseThatIsNoBranchNameIsNamedByAFixedPhrase(t *testing.T) {
 		name, base, named string
 		answer            http.HandlerFunc
 	}{
-		{"refused", installationToken, notABranch, refused},
-		{"no-commit", installationToken, notABranch, func(w http.ResponseWriter, _ *http.Request) {
+		{"refused", installationToken + "-RDX-", notABranch, refused},
+		{"no-commit", installationToken + "-RDX-", notABranch, func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = io.WriteString(w, `{"ref":"refs/heads/main","object":{"type":"commit"}}`)
 		}},
-		{"unanswered", installationToken, notABranch, func(w http.ResponseWriter, _ *http.Request) {
+		{"unanswered", installationToken + "-RDX-", notABranch, func(w http.ResponseWriter, _ *http.Request) {
 			conn, _, err := w.(http.Hijacker).Hijack()
 			if err != nil {
 				t.Errorf("hijack the base's read: %v", err)
