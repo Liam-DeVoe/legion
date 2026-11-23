@@ -132,10 +132,12 @@ credential refreshed`, with the claim, role, App, `expiresAt` and the directorie
 it adopted after a restart is refreshed for the repository its claim's issue works, read from the
 daemon's own state, never one read from the pane's directory. While the architect does a step of
 its own plan (one whose key is `owner`), its pane's directories hold the App of that step's role
-instead: the daemon writes them before it tells the architect the step (the log line `tmux
-runtime: github credential written for a step`, with the claim, role, App, `expiresAt` and the
-directories written), each refresh writes the App the pane acts as then, and the end of the step
-writes the architect's own App back. Each of those tokens reaches every
+instead. Where that App is not the architect's own, the daemon writes them before it tells the
+architect the step (the log line `tmux runtime: github credential written for a step`, with the
+claim, role, App, `expiresAt` and the directories written); each refresh writes the App the pane
+acts as then; and the end of the step writes the architect's own App back, unless its next step
+of another App has already begun, and a notice to the architect queued after that write waits for
+it. Each of those tokens reaches every
 repository its own installation holds, which the account chose when it installed the App, and the
 daemon asks GitHub to narrow none of them to a repository. The bundle's root also holds one file
 of its own, `renames.txt`, the configured renames the project's pairs resolve to, which both

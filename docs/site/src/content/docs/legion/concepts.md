@@ -212,9 +212,10 @@ agent: two steps of one key are one agent's, and the key `owner` makes the step 
 own, of any role and at any place: `acceptance:owner` is its acceptance in `accepting`, and
 `implementer:owner` its own implementation. A step `acceptance` with no key is a fresh agent of
 the role `acceptance`. Legion tells the architect each step of its own with an `owner-step` notice,
-once its slot holds the App of the step's role, and tells it again, with the same task, at each
-launch of the architect and when it is idle past the silence bound while that step runs; it
-starts no other agent for the step, and takes its report
+once its slot holds the App of the step's role, and only while the step runs; while it runs and no
+such notice of it is queued, Legion tells it again, with the same task, at each launch of the
+architect and when the architect is idle past the silence bound. It starts no other agent for the
+step, and takes its report
 with the `legion` tool's `complete_step`: the issue, the step's place (1 for the first, 0 for the
 retro), a summary, and the verdict `pass` or `fail` where the step reports one, with the commit it
 read for a review step. The retro is done by the agent of the task's last step of the type
