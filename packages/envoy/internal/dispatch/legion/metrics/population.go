@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 // askTurnEventTypes are the ask events a person's turn starts and ends with: the two that hand an
@@ -67,6 +68,18 @@ type Handoff struct {
 	At      time.Time
 }
 
+// StepRun is one run of a step of a role the deployment defines, as Dispatch holds it
+// (workflowstore's step node): its role, its start and its end, nil while it runs, and whether it
+// failed and returned its task to an earlier step. The fallback timeline reads it as that role's
+// time at `step` (fallbackMarks), since the event log holds no handoff of such a role and the
+// `in_progress` the workflow writes as the step starts reads as a send-back.
+type StepRun struct {
+	Role     string
+	Start    time.Time
+	End      *time.Time
+	Returned bool
+}
+
 // Issue is one issue of the population with every fact the rules read of it.
 type Issue struct {
 	Key       string
@@ -97,6 +110,9 @@ type Issue struct {
 
 	// StatusMarks is every status the issue's own events snapshotted, oldest first.
 	StatusMarks []Mark
+
+	// Runs are the runs of the steps of roles the deployment defines, oldest first (readRuns).
+	Runs []StepRun
 
 	// Observed is every value a read found changed, by legion_observations field (legion's
 	// FieldPhase, FieldSlot, ClaimFieldPrefix+role and the rest), oldest first within a field.
@@ -173,7 +189,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 		return nil, err
 	}
 	keys := population.scopeKeys(from, to)
-	// The seven reads below write disjoint fields — five take the keys above and write fields of
+	// The eight reads below write disjoint fields — six take the keys above and write fields of
 	// those issues, readSampled the window's observations and the project's reported set, and
 	// readPhaseWork the phase-work keys — so they run together rather than one after another, as
 	// the delivery population's independent reads do (api/delivery.go). errgroup answers the first
@@ -183,6 +199,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 		func(ctx context.Context) error { return population.readStatusMarks(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readAskTurns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
+		func(ctx context.Context) error { return population.readRuns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readSampled(ctx, pool, project, keys) },
 		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, github, keys) },
 		func(ctx context.Context) error { return population.readPhaseWork(ctx, pool) },
@@ -569,6 +586,31 @@ func (p *Population) readHandoffs(ctx context.Context, pool *store.Pool, keys []
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the handoffs: %w", err)
+	}
+	return nil
+}
+
+// readRuns reads the runs of the steps of the issues (workflowstore.IssuesSteps), keeping the
+// runs of a step of a role the deployment defines that started: a role that is not one of
+// Legion's own (ownRole), whose time the fallback timeline reads from its runs. A run of Legion's
+// own roles is left out: their phases come from their own events, handoffs and statuses.
+func (p *Population) readRuns(ctx context.Context, pool *store.Pool, keys []string) error {
+	runs, err := workflowstore.IssuesSteps(ctx, pool, keys)
+	if err != nil {
+		return err
+	}
+	for key, held := range runs {
+		issue := p.Issues[key]
+		if issue == nil {
+			continue
+		}
+		for _, run := range held {
+			if run.Kind != workflowstore.StepKindStep || run.StartedAt == nil || ownRole(run.Role) {
+				continue
+			}
+			issue.Runs = append(issue.Runs, StepRun{Role: run.Role, Start: run.StartedAt.UTC(), End: run.EndedAt,
+				Returned: run.Result == workflowstore.ResultFailed && run.ReturnedTo != nil})
+		}
 	}
 	return nil
 }
