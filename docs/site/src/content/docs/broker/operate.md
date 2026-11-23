@@ -1296,7 +1296,9 @@ checks (revoked, expired, its proof) and before it opens a transaction:
   15 seconds;
 - a decision on the approval page, answering a `403` page that decides nothing;
 - introspection, which answers the token active with `held: true`, so Dispatch and the Envoy
-  listener refuse it `401 MEMBERSHIP_HELD`;
+  listener refuse it `401 MEMBERSHIP_HELD`, and a socket the token already opened closes at its
+  next check of the token: Dispatch's at its next heartbeat, and an edge listener's relay socket,
+  which checks every 20 seconds, `4403 membership_held`;
 - a session's connection to the NATS hub, where the broker runs the hub's auth service: it is
   refused, counted under the reason `membership_held`, and so is one whose person's not-held answer
   has passed its deadline (`deadline_passed`) or whose hold cannot be read (`hold_uncheckable`, not
