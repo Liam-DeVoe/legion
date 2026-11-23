@@ -18,7 +18,6 @@ const tables = [
   // The read-only personal tokens (migration 20261120023712), a table of their own beside
   // agent_tokens that no foreign key reaches.
   "agent_read_tokens",
-  "repo_projects",
   "architecture_sources",
   "legion_current",
   "legion_observations",

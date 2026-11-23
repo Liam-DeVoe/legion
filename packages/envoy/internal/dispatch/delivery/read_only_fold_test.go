@@ -27,7 +27,9 @@ type resultsHeadsRead struct {
 	// read is the read as plan D30 names it: the name of its statement where the statement has
 	// one (headsAttributedQuery), and else the name of its function (HeadStoredAt).
 	read string
-	// function is the read's one entry point, which both callers call.
+	// function is the read's one entry point, which both callers call: a function by its name, or
+	// a method as Type.Method, as the two reads of an issue's linked pull requests are methods of
+	// the Attributor whose rename pairs their statements read (NewAttributor).
 	function string
 	// statement is the name of the package-level constant or variable that holds the read's one
 	// statement text: the text after its WITH list. function must reach it through the package's
@@ -43,10 +45,10 @@ type resultsHeadsRead struct {
 // TestEachHeadsReadOnTheResultsPathIsOneStatement holds the package to it, and
 // TestTheReadOnlyFoldAnswersAsTheWritersPath asks each read of it its questions (foldQuestions).
 var resultsHeadsReads = []resultsHeadsRead{
-	{read: "headsAttributedQuery", function: "HeadsAttributedTo", statement: "headsAttributedQuery", text: headsAttributedQuery},
+	{read: "headsAttributedQuery", function: "Attributor.HeadsAttributedTo", statement: "headsAttributedQuery", text: headsAttributedQuery},
 	{read: "HeadStoredAt", function: "HeadStoredAt", statement: "headStoredAtQuery", text: headStoredAtQuery},
 	{read: "BaseBranchMergedFor", function: "BaseBranchMergedFor", statement: "baseBranchMergedForQuery", text: baseBranchMergedForQuery},
-	{read: "baseBranchMergedInQuery", function: "BaseBranchMergedIn", statement: "baseBranchMergedInQuery", text: baseBranchMergedInQuery},
+	{read: "baseBranchMergedInQuery", function: "Attributor.BaseBranchMergedIn", statement: "baseBranchMergedInQuery", text: baseBranchMergedInQuery},
 	{read: "NewestPullRequestHead", function: "NewestPullRequestHead", statement: "newestPullRequestHeadQuery", text: newestPullRequestHeadQuery},
 }
 
@@ -209,12 +211,12 @@ func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
 		}
 		for _, history := range foldHistories() {
 			t.Run(history.name, func(t *testing.T) {
-				pool, ctx, answers := foldSetup(t, history.steps)
+				pool, ctx, attributor, answers := foldSetup(t, history.steps)
 				recorder := &storetest.StatementRecorder{}
 				traced := storetest.Traced(t, pool, recorder, nil)
 				for _, question := range foldQuestions(t, history.steps) {
 					before := len(recorder.Statements())
-					if _, err := foldRead(ctx, traced, answers, question); err != nil {
+					if _, err := foldRead(ctx, traced, attributor, answers, question); err != nil {
 						t.Errorf("%s, given the request's answers: %v", question, err)
 						continue
 					}
@@ -304,19 +306,51 @@ func parsePackageSource(t *testing.T) *packageSource {
 	return source
 }
 
-// declare records key, which name refers to, and the names node refers to as key's.
+// declare records key, which name refers to, and the names node refers to as key's. A field that
+// a composite literal of a package type sets is a declaration of its own, keyed Type.field under
+// the field's name, which refers to the names of every value a literal sets it to, and the
+// declaration holding the literal refers to none of them: storing a value runs nothing, and a
+// selector of the field's name, such as a method's read of its receiver's field, reaches what was
+// stored. So the statement of a read that a constructor builds once into its type, as
+// NewAttributor builds the Attributor's from the rename pairs, is reached from the method that
+// reads the field it is held in, and not from the constructor.
 func (s *packageSource) declare(name, key string, node ast.Node) {
-	s.declared[name] = append(s.declared[name], key)
-	refers := map[string]bool{}
-	if node != nil {
-		ast.Inspect(node, func(node ast.Node) bool {
-			if ident, isIdent := node.(*ast.Ident); isIdent {
-				refers[ident.Name] = true
-			}
-			return true
-		})
+	if !slices.Contains(s.declared[name], key) {
+		s.declared[name] = append(s.declared[name], key)
 	}
-	s.refers[key] = refers
+	refers := s.refers[key]
+	if refers == nil {
+		refers = map[string]bool{}
+		s.refers[key] = refers
+	}
+	if node == nil {
+		return
+	}
+	var visit func(ast.Node) bool
+	visit = func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.Ident:
+			refers[node.Name] = true
+		case *ast.CompositeLit:
+			typeName, ofPackageType := node.Type.(*ast.Ident)
+			if !ofPackageType {
+				return true
+			}
+			refers[typeName.Name] = true
+			for _, element := range node.Elts {
+				if field, keyed := element.(*ast.KeyValueExpr); keyed {
+					if fieldName, named := field.Key.(*ast.Ident); named {
+						s.declare(fieldName.Name, typeName.Name+"."+fieldName.Name, field.Value)
+						continue
+					}
+				}
+				ast.Inspect(element, visit)
+			}
+			return false
+		}
+		return true
+	}
+	ast.Inspect(node, visit)
 }
 
 // declaresFunction is whether key is a function or method of the package.
@@ -330,10 +364,11 @@ func (s *packageSource) declaresFunction(key string) bool {
 }
 
 // reaches is whether from refers to target, directly or through the package's functions,
-// methods, constants and variables, never through the declaration keyed avoid ("" avoids none).
-// A name is read as every declaration of the package it could refer to, so a method call reaches
-// every method of that name: the test asks whether the statement is run at all, not by which
-// path.
+// methods, constants, variables and the fields its literals set (declare), never through the
+// declaration keyed avoid ("" avoids none). A name is read as every declaration of the package it
+// could refer to, so a method call reaches every method of that name and a field's read every
+// value a literal sets a field of that name to: the test asks whether the statement is run at all,
+// not by which path.
 func (s *packageSource) reaches(from, target, avoid string) bool {
 	seen := map[string]bool{from: true, avoid: true}
 	next := []string{from}
@@ -500,15 +535,15 @@ func (q foldQuestion) String() string {
 func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
 	for _, history := range foldHistories() {
 		t.Run(history.name, func(t *testing.T) {
-			pool, ctx, answers := foldSetup(t, history.steps)
+			pool, ctx, attributor, answers := foldSetup(t, history.steps)
 			if held, runs := len(answers.columns.repo), foldAnswerRuns(history.steps); held != runs {
 				t.Errorf("the request holds %d answers, want %d, one for each run of its answers for one pull request equal in every column "+
 					"but checked_at: the writer's upserts of a run leave the row as the upsert of its last answer alone does (plan D33)", held, runs)
 			}
 			questions := foldQuestions(t, history.steps)
-			want := foldOracle(t, ctx, pool, history.steps, questions)
+			want := foldOracle(t, ctx, pool, attributor, history.steps, questions)
 			for _, question := range questions {
-				got, err := foldRead(ctx, pool, answers, question)
+				got, err := foldRead(ctx, pool, attributor, answers, question)
 				if err != nil {
 					t.Errorf("%s, the read-only read: %v", question, err)
 					continue
@@ -680,12 +715,13 @@ func manyAnswers() []foldStep {
 
 // foldSetup makes one history's database, which the test owns: the fold issues (seedFoldIssues)
 // and then each writer's step, run through the writer's own statement (foldWrite). It answers the
-// pool, the test's context, and the request's answers, added in the order the request read them.
-// It fails where a writer's step comes after an answer of the request.
-func foldSetup(t *testing.T, steps []foldStep) (*store.Pool, context.Context, HeadAnswers) {
+// pool, the test's context, the Attributor of the rename pairs the fold issues seed, and the
+// request's answers, added in the order the request read them. It fails where a writer's step
+// comes after an answer of the request.
+func foldSetup(t *testing.T, steps []foldStep) (*store.Pool, context.Context, *Attributor, HeadAnswers) {
 	t.Helper()
 	pool, ctx := deliveryTestPool(t)
-	seedFoldIssues(t, ctx, pool)
+	attributor := seedFoldIssues(t, ctx, pool)
 	var answers HeadAnswers
 	answering := false
 	for index, step := range steps {
@@ -700,7 +736,7 @@ func foldSetup(t *testing.T, steps []foldStep) (*store.Pool, context.Context, He
 		}
 		foldWrite(t, ctx, pool, step)
 	}
-	return pool, ctx, answers
+	return pool, ctx, attributor, answers
 }
 
 // at is minute minutes past 9:00 on 2026-11-20, in UTC: the times of the fold histories.
@@ -788,8 +824,10 @@ func foldHead(repo string, number int, commit string) PullRequestHead {
 }
 
 // seedFoldIssues writes foldIssue, of deliveryRepo, and foldLinkingIssue, of gadgetsRepo, which
-// gadgetsOldRepo was renamed to, and links foldLinkingIssue to deliveryRepo's pull request 5.
-func seedFoldIssues(t *testing.T, ctx context.Context, pool *store.Pool) {
+// gadgetsOldRepo was renamed to, and links foldLinkingIssue to deliveryRepo's pull request 5. It
+// answers the Attributor of the rename pairs the database then holds, as a process builds its own
+// at boot (renamesOf).
+func seedFoldIssues(t *testing.T, ctx context.Context, pool *store.Pool) *Attributor {
 	t.Helper()
 	if key := seedHeadIssue(t, ctx, pool, 701); key != foldIssue {
 		t.Fatalf("seeded %s, want %s", key, foldIssue)
@@ -804,10 +842,12 @@ func seedFoldIssues(t *testing.T, ctx context.Context, pool *store.Pool) {
 	`, foldLinkingIssue, link); err != nil {
 		t.Fatalf("link %s to %s: %v", foldLinkingIssue, link, err)
 	}
-	linked, err := LinkedPullRequests(ctx, pool, foldLinkingIssue)
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
+	linked, err := attributor.LinkedPullRequests(ctx, pool, foldLinkingIssue)
 	if err != nil || len(linked) != 1 || linked[0] != (LinkedPullRequest{Repo: deliveryRepo, Number: 5}) {
 		t.Fatalf("the pull requests %s links = %v, %v; want %s#5 alone", foldLinkingIssue, linked, err, deliveryRepo)
 	}
+	return attributor
 }
 
 // foldWrite runs a writer's step through the writer's own statement.
@@ -865,8 +905,9 @@ func foldQuestions(t *testing.T, steps []foldStep) []foldQuestion {
 // rolled back once the reads have run, each answer of the request is stored on the rows the
 // writers left, in the order the request read them, as a writer's read-through stores it: through
 // upsertHeadRow, and with the row a read asked under an old name kept under that name dropped, as
-// upsertHeadUnderCanonicalName drops it. Then the writer's read runs in the transaction.
-func foldOracle(t *testing.T, ctx context.Context, pool *store.Pool, steps []foldStep, questions []foldQuestion) map[string]string {
+// upsertHeadUnderCanonicalName drops it. Then the writer's read runs in the transaction, through
+// attributor as the read-only read's does.
+func foldOracle(t *testing.T, ctx context.Context, pool *store.Pool, attributor *Attributor, steps []foldStep, questions []foldQuestion) map[string]string {
 	t.Helper()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -891,7 +932,7 @@ func foldOracle(t *testing.T, ctx context.Context, pool *store.Pool, steps []fol
 	}
 	answers := map[string]string{}
 	for _, question := range questions {
-		answer, err := foldRead(ctx, tx, HeadAnswers{}, question)
+		answer, err := foldRead(ctx, tx, attributor, HeadAnswers{}, question)
 		if err != nil {
 			t.Fatalf("%s, the writer's read: %v", question, err)
 		}
@@ -936,13 +977,14 @@ func foldColumn[T any](value *T) string {
 	return fmt.Sprint(*value)
 }
 
-// foldRead asks question of its read on q, with answers: the pool and the request's answers for
-// the read-only read, and the oracle's transaction and none for the writer's.
-func foldRead(ctx context.Context, q refs.Queryer, answers HeadAnswers, question foldQuestion) (string, error) {
+// foldRead asks question of its read on q, through attributor, with answers: the pool and the
+// request's answers for the read-only read, and the oracle's transaction and none for the
+// writer's.
+func foldRead(ctx context.Context, q refs.Queryer, attributor *Attributor, answers HeadAnswers, question foldQuestion) (string, error) {
 	args := question.args
 	switch question.read {
 	case "headsAttributedQuery":
-		heads, err := HeadsAttributedTo(ctx, q, args[0], answers)
+		heads, err := attributor.HeadsAttributedTo(ctx, q, args[0], answers)
 		return describeAttributedHeads(heads), err
 	case "HeadStoredAt":
 		stored, err := HeadStoredAt(ctx, q, args[0], args[1], answers)
@@ -951,7 +993,7 @@ func foldRead(ctx context.Context, q refs.Queryer, answers HeadAnswers, question
 		branch, err := BaseBranchMergedFor(ctx, q, args[0], answers)
 		return fmt.Sprintf("%q", branch), err
 	case "baseBranchMergedInQuery":
-		branch, err := BaseBranchMergedIn(ctx, q, args[0], args[1], answers)
+		branch, err := attributor.BaseBranchMergedIn(ctx, q, args[0], args[1], answers)
 		return fmt.Sprintf("%q", branch), err
 	case "NewestPullRequestHead":
 		head, found, err := NewestPullRequestHead(ctx, q, args[0], answers)

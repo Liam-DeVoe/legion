@@ -218,12 +218,13 @@ func (w *driveWorld) seed(t *testing.T) {
 	w.values["relatedProject"] = driveRelatedProject
 	w.values["precheckProject"] = precheckRelatedProject
 
-	// The projects: the drive project, mapped to its repository, defaulting to P and reading its
-	// architecture from legion/arch; and the two projects with no work and no term statistics.
+	// The projects: the drive project, whose default repository is driveRepo, defaulting to P and
+	// reading its architecture from legion/arch; and the two projects with no work and no term
+	// statistics.
 	for _, project := range []string{driveProject, driveRelatedProject, precheckRelatedProject} {
 		w.as(t, alice, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": "The " + project + " project"}, http.StatusCreated)
 	}
-	w.as(t, alice, http.MethodPut, "/api/v1/settings/repo-projects/"+driveRepo, map[string]any{"project": driveProject, "default": true}, http.StatusOK)
+	w.as(t, alice, http.MethodPut, "/api/v1/projects/"+driveProject+"/default-repository", map[string]any{"repo": driveRepo}, http.StatusOK)
 	w.as(t, alice, http.MethodPut, "/api/v1/projects/"+driveProject+"/default-assignee", map[string]any{"assignee": ada}, http.StatusOK)
 	w.as(t, alice, http.MethodPut, "/api/v1/projects/"+driveProject+"/architecture-sources/legion/arch", map[string]any{"branch": "main"}, http.StatusOK)
 	w.as(t, alice, http.MethodPost, "/api/v1/projects/"+driveProject+"/architecture-sources/legion/arch/sync", nil, http.StatusOK)
