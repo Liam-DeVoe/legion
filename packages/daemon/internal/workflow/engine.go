@@ -150,6 +150,14 @@ type Config struct {
 	// reads nothing, so a record names no session and no model, which is the API-only daemon and
 	// every test that reads no agent.
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
+	// TestingLeavesCI is whether the testing move leaves out each check a CI job runs, the one
+	// whose state names its job's case (judgeStates' leaveCI, which decideTesting reads from here
+	// alone): true, the move reads only the checks that no CI job runs, and a failure of one a CI
+	// job runs reaches the implementer by its own message (tellCIFailure) while the later steps go
+	// on. The daemon wires it false (engineConfig) until the end of a task holds its checks that a
+	// CI job runs: before then a task whose steps after testing hold no review and no acceptance
+	// would end with no gate on those checks. The zero value reads every check.
+	TestingLeavesCI bool
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.
