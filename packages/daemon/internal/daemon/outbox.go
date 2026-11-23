@@ -1305,9 +1305,9 @@ func (handOverRule) refused(r *outbox, row record.OutboxRow, payload record.Stat
 	return follow, told, true
 }
 
-// closeRule judges the daemon's own close of an issue (record.CloseStatusRow): the done a merge
-// or an architect's close_root writes, queued in the transaction that took the record out of the
-// workflow.
+// closeRule judges the daemon's own close of an issue (record.CloseStatusRow): the done a merge,
+// the end of the retro of an issue with no pull request, or an architect's close_root writes,
+// queued in the transaction that took the record out of the workflow.
 type closeRule struct{}
 
 // firstAttempt asks the one question a close has of its own (closeStands): whether the close this
@@ -1739,15 +1739,18 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 
 // notice publishes a notice row to its architect (noticeArchitect), on that architect's own role
 // topic, and to nothing else: a catch-up to the architect of its own issue, whose state it states,
+// an owner-step to its issue's own architect, the owner of the step it tells (record.OwnerClaim),
 // and every other notice to the architect that owns its issue. Every notice kind is for an
 // architect, and no claim subscribes to an issue topic (packages/pi-legion/src/claim-session.ts),
 // so no issue topic carries one. The architect, the earlier notices it waits behind, and whether
 // its tree lingers are read from one snapshot of the tree (notice_routing.go). A notice waits
 // behind an earlier notice of its tree that is held for the same architect, so each architect is
 // told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
-// earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). A role
-// topic with no live holder refuses the publish (notify.ErrNoHolder): while the architect's claim
-// can hold its role again — relaunching, a root the operator suspended and can resume, or the
+// earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). An
+// owner-step waits besides until its architect's slot holds the App of the step it tells, and
+// finishes undelivered once that step no longer runs (ownerSlotHolds). A role topic with no live
+// holder refuses the publish (notify.ErrNoHolder): while the architect's claim can hold its role
+// again — relaunching, a root the operator suspended and can resume, or the
 // architect of a catch-up's own issue suspended while that issue is in the workflow, which its
 // next start resumes — the row is held for it; once nobody will hold that role for this notice —
 // the claim has failed or retired, or its tree lingers or has closed — the row finishes
@@ -3124,7 +3127,8 @@ func (r *outbox) claimsOfIssue(issue string) []*supervise.Machine {
 // revive only a claim that failed (workflow's reviveArchitect). The child's notices would go to the
 // architect above it (record.OwningArchitect) to its close, which R2 of dispatch://INFRA-3915 keeps
 // only for a child started before that change (plan D9), and this child's first phase start did
-// queue the start.
+// queue the start; and an owner-step of the child's, which goes to the child's own architect alone
+// (record.OwnerClaim), would reach nobody.
 //
 // The linger is read as Lingers reads it, a deadline armed, and not as one still running at the
 // moment (record.Lingering), since a tree can run again after its deadline: a root past it is

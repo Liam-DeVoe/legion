@@ -129,12 +129,13 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 	return route.issues[key], route, nil
 }
 
-// earlierNoticeFor is the oldest of tree's earlier notices that goes to architect as the claims
-// run now — its id and the moment it is due — or 0 and the zero moment when there is none. Each
-// earlier notice's architect is resolved again rather than recorded when it was held, since a
-// sub-architect can start or end while it waits, and by the rule its own publish follows
-// (noticeArchitect). An earlier row whose architect cannot be resolved is no architect's, so it
-// holds back no later notice; it finishes on its own attempt (notice).
+// earlierNoticeFor is the oldest of tree's earlier notices that goes to architect now — its id
+// and the moment it is due — or 0 and the zero moment when there is none. Each earlier notice's
+// architect is resolved again rather than recorded when it was held, since a sub-architect can
+// start or end while it waits, and by the rule its own publish follows (noticeArchitect): by the
+// claims as they run now, but for a catch-up and an owner-step, which go to the architect of
+// their own issue whatever runs. An earlier row whose architect cannot be resolved is no
+// architect's, so it holds back no later notice; it finishes on its own attempt (notice).
 //
 // The moment is what the row behind it waits for: an earlier row the wake pacing holds is due
 // minutes out — at the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or, for
@@ -192,11 +193,11 @@ func noticeArchitect(project string, tree map[string]record.Issue, issue record.
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's
 // rule holds (record.HoldsRole: it has not ended, and it is not suspended unless the idle release
 // suspended it), and that decision is not stopping its process for good (supervise.ClaimView's
-// Stopping) — a suspension, a failure, a release. The owner walk reads it, so no notice but a
-// catch-up is routed to a sub-architect whose session is being stopped: such a notice goes on up
-// the tree while the stop runs. It goes on up after the stop too, unless the stop is the idle
-// release's, whose released claim holds its role again (record.HoldsRole). A catch-up waits for
-// the architect of its own issue (noticeArchitect).
+// Stopping) — a suspension, a failure, a release. The owner walk reads it, so no notice the walk
+// routes reaches a sub-architect whose session is being stopped: such a notice goes on up the
+// tree while the stop runs. It goes on up after the stop too, unless the stop is the idle
+// release's, whose released claim holds its role again (record.HoldsRole). A catch-up and an
+// owner-step take no walk: each waits for the architect of its own issue (noticeArchitect).
 func holdsRole(held supervise.ClaimView) bool {
 	return record.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }
