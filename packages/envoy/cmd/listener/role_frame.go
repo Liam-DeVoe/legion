@@ -2,7 +2,9 @@ package main
 
 // The one read of a stored message that the session relay (sessionRelays.takeOverFrame), a
 // takeover pass (takenRoleMessage), the kept lane's walk (judgeKeptRoleCopy) and the edge's frame
-// rule (edgeFrameVerdict) share, so the four tell a role message by one rule.
+// rule (edgeFrameVerdict) share, so the four tell a role message by one rule, and the one reader
+// of a frame's top-level fields (topLevelJSONFields) under it and under the edge's exact-key read
+// of a field (exactJSONString), so the edge and the relay read each field of a frame alike.
 
 import (
 	"bytes"
@@ -71,59 +73,74 @@ func readRoleFrame(data []byte) (roleFrame, error) {
 
 // topLevelFields reads data, past JSON whitespace, as a JSON object and returns its top-level
 // fields by their exact keys, the last value of a repeated key winning, as the plugins' JSON.parse
-// keeps them. It finds each value's end by its brackets and strings alone, at any depth:
-// encoding/json refuses a document nested deeper than 10,000 and JSON.parse does not, so a reader
-// with that limit would tell a role message with a value nested that deep a message whose role
-// cannot be read, and the session's plugin would read it as the role message it is. It refuses a
-// document that is not a JSON object, such as `null` or an array, which JSON.parse reads but which
-// holds no topic or role mark to tell, and otherwise only what JSON.parse refuses too: a string
-// with no end, a key that is no string or holds a bad escape, a missing colon or comma, a value
-// that is missing, an object or array with no end, and text after the object. It checks no more of
-// a value than where it ends, so a value JSON.parse would refuse is kept as its raw text, which the
-// field's own read (roleFrame.text, roleFrame.envelope) refuses in turn.
+// keeps them (topLevelJSONFields). It refuses, beside what topLevelJSONFields refuses, text after
+// the object, as JSON.parse does (endOfJSONDocument).
 func topLevelFields(data []byte) (map[string]json.RawMessage, error) {
+	fields := map[string]json.RawMessage{}
+	end, err := topLevelJSONFields(data, func(key string, value json.RawMessage) { fields[key] = value })
+	if err != nil {
+		return nil, err
+	}
+	return fields, endOfJSONDocument(data, end)
+}
+
+// topLevelJSONFields reads data, past JSON whitespace, as a JSON object, calls visit with each of
+// its top-level keys, its escapes read (jsonKey), and the raw text of the key's value, in the order
+// data holds them, a repeated key each time, and answers the index just past the object's closing
+// brace. It is the one reader of a frame's top-level fields: the relay's (topLevelFields, under
+// readRoleFrame) and the edge's (exactJSONString) both read through it, so the two cannot split a
+// frame's fields differently. It finds each value's end by its brackets and strings alone, at any
+// depth: encoding/json refuses a document nested deeper than 10,000 and JSON.parse does not, so a
+// reader with that limit would name no topic or role for a frame whose topic or role the plugin
+// reads. It refuses a document that is not a JSON object, such as `null` or an array, which
+// JSON.parse reads but which holds no field to judge, and otherwise only what JSON.parse refuses
+// too: a string with no end, a key that is no string or holds a bad escape, a missing colon or
+// comma, a value that is missing, and an object or array with no end. It reads nothing after the
+// closing brace, which each caller judges (topLevelFields, frameIsJSON), and checks no more of a
+// value than where it ends, so a value JSON.parse would refuse is kept as its raw text, which the
+// field's own read (roleFrame.text, roleFrame.envelope, exactJSONString) refuses in turn.
+func topLevelJSONFields(data []byte, visit func(key string, value json.RawMessage)) (int, error) {
 	i := skipJSONSpace(data, 0)
 	if i == len(data) || data[i] != '{' {
-		return nil, errors.New("it does not start with {")
+		return 0, errors.New("it does not start with {")
 	}
-	fields := map[string]json.RawMessage{}
 	i = skipJSONSpace(data, i+1)
 	if i < len(data) && data[i] == '}' {
-		return fields, endOfJSONDocument(data, i+1)
+		return i + 1, nil
 	}
 	for {
 		if i == len(data) || data[i] != '"' {
-			return nil, fmt.Errorf("the key at byte %d is not a string", i)
+			return 0, fmt.Errorf("the key at byte %d is not a string", i)
 		}
 		keyEnd, err := endOfJSONString(data, i)
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 		key, err := jsonKey(data[i:keyEnd])
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 		i = skipJSONSpace(data, keyEnd)
 		if i == len(data) || data[i] != ':' {
-			return nil, fmt.Errorf("the key %q has no colon after it", key)
+			return 0, fmt.Errorf("the key %q has no colon after it", key)
 		}
 		start := skipJSONSpace(data, i+1)
 		end, err := endOfJSONValue(data, start)
 		if err != nil {
-			return nil, fmt.Errorf("the value of %q: %w", key, err)
+			return 0, fmt.Errorf("the value of %q: %w", key, err)
 		}
-		fields[key] = json.RawMessage(data[start:end])
+		visit(key, json.RawMessage(data[start:end]))
 		i = skipJSONSpace(data, end)
 		if i == len(data) {
-			return nil, errors.New("the object has no end")
+			return 0, errors.New("the object has no end")
 		}
 		switch data[i] {
 		case ',':
 			i = skipJSONSpace(data, i+1)
 		case '}':
-			return fields, endOfJSONDocument(data, i+1)
+			return i + 1, nil
 		default:
-			return nil, fmt.Errorf("byte %d is neither a comma nor the object's end", i)
+			return 0, fmt.Errorf("byte %d is neither a comma nor the object's end", i)
 		}
 	}
 }

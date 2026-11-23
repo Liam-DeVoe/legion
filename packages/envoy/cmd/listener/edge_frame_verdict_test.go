@@ -384,3 +384,107 @@ func TestEdgeFrameVerdictTellsARoleAsTheRelayDoes(t *testing.T) {
 		})
 	}
 }
+
+// TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject holds the edge's frame rule to where a
+// role message's topic is (roleFrameVerdict, roleMarkOnAgentSubject): a role-marked send's topic
+// is an agent subject, the target session's own (contracts.AgentSendEnvelope) or, for a kept or
+// taken copy, the previous holder's, and a lane forward's is its lane. A frame on the session's
+// own agent subject whose role mark names the token's role but whose topic is another project's
+// event, a GitHub event, an agent subject of another project or the wildcard project, or no topic
+// at all, is judged by its topic, as a frame with no role mark, and withheld: the plugin shows it
+// by that topic. A lane forward of the token's project's lane that carries another project's role
+// mark is withheld by that mark. The controls are the role messages a producer writes - a
+// role-marked send on the session's own subject in either form, a kept or taken copy on the
+// previous holder's subject, a lane forward with or without its own role mark - which pass, and
+// the frames main already withholds by their role. Each row first checks that readRoleFrame, the
+// relay's read, tells the frame a role message of the role the row names, so no row passes on a
+// frame that read does not take as a role message.
+func TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject(t *testing.T) {
+	const session = "ses_v"
+	own := contracts.LegacyAgentSubject(session)
+	const privRole, pubRole = "legion-priv-priv-1-tester", "legion-pub-pub-1-tester"
+	privLane, pubLane := contracts.RoleTopicPrefix+privRole, contracts.RoleTopicPrefix+pubRole
+	const ownIssue = "notifications.dispatch.issue.PRIV.PRIV-1.comment.created"
+	const otherIssue = "notifications.dispatch.issue.PUB.PUB-1.comment.created"
+	const github = "notifications.github.acme.pub.pr.1"
+	projects := []string{"PRIV"}
+	notHeld := frameDrops(withheldProjectNotHeld)
+
+	// frame writes a JSON object of fields in order, each a key and a raw JSON value.
+	frame := func(fields ...[2]string) []byte {
+		parts := make([]string, len(fields))
+		for i, f := range fields {
+			parts[i] = `"` + f[0] + `":` + f[1]
+		}
+		return []byte("{" + strings.Join(parts, ",") + "}")
+	}
+	text := func(s string) string {
+		data, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	topic := func(s string) [2]string { return [2]string{"topic", text(s)} }
+	role := func(s string) [2]string { return [2]string{"role", text(s)} }
+	pubComment := [2]string{"payload", text(`{"issue":"PUB-1","comment":"PUB's comment"}`)}
+	dispatch := [2]string{"source", text("dispatch")}
+	privKey, pubKey := store.RoleClaimKeyOf(privRole), store.RoleClaimKeyOf(pubRole)
+
+	for _, tc := range []struct {
+		name string
+		data []byte
+		// role is the claim key readRoleFrame gives the frame.
+		role string
+		want frameVerdict
+	}{
+		{"another project's issue event under the token's role mark (the review's frame)",
+			frame(topic(otherIssue), role(privRole), dispatch, pubComment), privKey, notHeld},
+		{"a GitHub event under the token's role mark",
+			frame(topic(github), role(privRole), [2]string{"payload", text(`{"repo":"acme/secret"}`)}), privKey, notHeld},
+		{"another session's agent subject under another project, with the token's role mark",
+			frame(topic(contracts.AgentSubject("PUB", "ses_w")), role(privRole)), privKey, notHeld},
+		{"the wildcard project's agent subject with the token's role mark",
+			frame(topic(contracts.AgentTopicPrefix+"*."+session), role(privRole)), privKey, notHeld},
+		{"no topic, with the token's role mark",
+			frame(role(privRole), dispatch, pubComment), privKey, notHeld},
+		{"a null topic, with the token's role mark",
+			frame([2]string{"topic", "null"}, role(privRole)), privKey, notHeld},
+		{"a topic that is no string, with the token's role mark",
+			frame([2]string{"topic", "7"}, role(privRole)), privKey, notHeld},
+		{"the token's project's lane forward carrying another project's role mark",
+			frame(topic(privLane), role(pubRole)), privKey, notHeld},
+
+		{"control: the token's role-marked send on the session's own subject",
+			frame(topic(own), role(privRole)), privKey, framePasses()},
+		{"control: the token's role-marked send on the session's own subject in the new form",
+			frame(topic(contracts.AgentSubject("PRIV", session)), role(privRole)), privKey, framePasses()},
+		{"control: a kept or taken copy on the previous holder's subject",
+			frame(topic(contracts.LegacyAgentSubject("ses_w")), role(privRole)), privKey, framePasses()},
+		{"control: a copy on the previous holder's subject in the new form under the token's project",
+			frame(topic(contracts.AgentSubject("PRIV", "ses_w")), role(privRole)), privKey, framePasses()},
+		{"control: the token's project's lane forward",
+			frame(topic(privLane), dispatch), privKey, framePasses()},
+		{"control: the token's project's lane forward carrying its own role mark",
+			frame(topic(privLane), role(privRole)), privKey, framePasses()},
+		{"control: another project's lane forward carrying the token's role mark",
+			frame(topic(pubLane), role(privRole)), pubKey, notHeld},
+		{"control: another project's role mark on the session's own subject",
+			frame(topic(own), role(pubRole)), pubKey, notHeld},
+		{"control: another project's role mark on the token's project's event, withheld as main withholds it",
+			frame(topic(ownIssue), role(pubRole)), pubKey, notHeld},
+		{"control: the token's role mark on the token's project's event, judged by that event",
+			frame(topic(ownIssue), role(privRole)), privKey, framePasses()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := readRoleFrame(tc.data); err != nil || got.role != tc.role {
+				t.Fatalf("readRoleFrame = {role %q}, %v; want role %q: the frame is not the role message the row says", got.role, err, tc.role)
+			}
+			verdict := edgeFrameVerdict(nil, session, projects, own, tc.data)
+			if verdict != tc.want {
+				t.Fatalf("edgeFrameVerdict(subject=%q, %s) = {action %d, reason %q}, want {action %d, reason %q}",
+					own, tc.data, verdict.action, verdict.reason, tc.want.action, tc.want.reason)
+			}
+		})
+	}
+}
