@@ -59,8 +59,8 @@ func (d *driver) openOnPhase(key string, to phase.Phase) {
 
 // startPiece opens, for a start of role on key that the stub took, serving the phase served, the
 // next piece of key's work that role's start opens: the first piece not yet run that is role's in
-// served; a piece before it the replay passes over, counted. It answers the piece it opened, nil
-// for none.
+// served; a piece before it the replay passes over (passOver), counted. It answers the piece it
+// opened, nil for none.
 func (d *driver) startPiece(key string, role claim.Role, served phase.Phase, retry bool) *piece {
 	for _, p := range d.script.pieces[key] {
 		if p.state != pieceWaiting {
@@ -71,7 +71,7 @@ func (d *driver) startPiece(key string, role claim.Role, served phase.Phase, ret
 		}
 		for _, before := range d.script.pieces[key][:p.index] {
 			if before.state == pieceWaiting {
-				before.state = pieceSkipped
+				d.passOver(before)
 				d.counters.SkippedSegments++
 			}
 		}
@@ -165,7 +165,7 @@ func (d *driver) queueAct(p *piece, a act, when time.Time) {
 	case actTurnEnd:
 		d.push(&item{at: when, class: classTurnEnd, rec: a.rec, piece: p, run: func() error { return d.turnEnds(p, a.role, a.turn) }})
 	case actEvent:
-		d.placePieceEvent(a.event, when, p)
+		d.placePieceEvent(a, when, p)
 	case actRegistration:
 		d.push(&item{at: when, class: classAct, rec: a.rec, order: lineOrder + int64(a.order), piece: p,
 			run: func() error { return d.register(p.issue, d.gateFor(p, a.gate)) }})
@@ -180,8 +180,12 @@ func (d *driver) queueAct(p *piece, a act, when time.Time) {
 	}
 }
 
-// placePieceEvent queues the recorded event events[i], an act of p's work, at when.
-func (d *driver) placePieceEvent(i int, when time.Time, p *piece) {
+// placePieceEvent queues the recorded event of a, an act of p's work, at when, ordered among the
+// items of its instant by the act's moment in the record of p's work: the event's own, or, for an
+// event another piece's work took over (giveEvents), its moment in that work. A person's answer to
+// it is placed once it is applied (placeAnswers).
+func (d *driver) placePieceEvent(a act, when time.Time, p *piece) {
+	i := a.event
 	event := &d.script.events[i]
 	if event.placed {
 		return
@@ -189,19 +193,48 @@ func (d *driver) placePieceEvent(i int, when time.Time, p *piece) {
 	event.placed = true
 	d.placed[i] = when
 	var applied []byte
-	d.push(&item{at: when, class: classAct, rec: event.at, order: int64(event.order), piece: p, eventKey: event.env.key,
+	d.push(&item{at: when, class: classAct, rec: a.rec, order: int64(event.order), piece: p, eventKey: event.env.key,
 		eventKind: event.env.kind,
 		dispatch: func() error {
 			var err error
+			event.dispatched = true
 			applied, err = d.dispatchEvent(i)
+			d.placeAnswers(event)
 			return err
 		},
 		run: func() error { return d.applyEvent(i, applied) }})
-	if d.answerWall {
-		return
-	}
-	for _, dependent := range event.dependents {
-		d.placeEvent(dependent, when.Add(d.script.events[dependent].offset))
+}
+
+// passOver passes over p, a piece of work the replay has not opened and will not run: its
+// recorded events are placed by their anchors (placeUnrun).
+func (d *driver) passOver(p *piece) {
+	p.state = pieceSkipped
+	d.placeUnrun(p)
+}
+
+// cancelPiece cancels p, running or paused, so nothing more of its work goes on: its recorded
+// events still to come in it are placed by their anchors (placeUnrun).
+func (d *driver) cancelPiece(p *piece) {
+	p.state = pieceCancelled
+	d.placeUnrun(p)
+}
+
+// placeUnrun places each recorded event of p's work that p no longer runs, p passed over or
+// cancelled, as an event no piece places (placeByAnchor): each event p never queued, and each it
+// queued that it has not applied, whose item the queue drops with p's. So each worker's event is
+// applied once: where the replay runs its piece, by that piece; otherwise as any other event.
+func (d *driver) placeUnrun(p *piece) {
+	for _, a := range p.acts {
+		if a.kind != actEvent {
+			continue
+		}
+		event := &d.script.events[a.event]
+		if event.piece != p || event.dispatched {
+			continue
+		}
+		event.piece, event.placed = nil, false
+		delete(d.placed, a.event)
+		d.placeByAnchor(a.event)
 	}
 }
 
@@ -257,12 +290,12 @@ func (d *driver) resumePiece(p *piece) error {
 	return nil
 }
 
-// cancelWork cancels every piece of key's work under way: its issue left the workflow, or its
-// claims were closed, so nothing of that work goes on.
+// cancelWork cancels every piece of key's work under way (cancelPiece): its issue left the
+// workflow, or its claims were closed, so nothing of that work goes on.
 func (d *driver) cancelWork(key string) {
 	for _, p := range d.script.pieces[key] {
 		if p.state == pieceRunning || p.state == piecePaused {
-			p.state = pieceCancelled
+			d.cancelPiece(p)
 		}
 	}
 }
@@ -469,8 +502,9 @@ func (d *driver) merged(key string, move *Move, to phase.Phase, refuse func(stri
 // stretchEnds is the end of a stretch in which a head can conflict whose recorded end is a
 // conflict (MoveDraw, assumption 3), where the replay's stretch did not conflict, or merged its
 // base forward and kept its phase (mergedForward): the stretch goes on past the loop the record
-// ran for its conflict, with the work the record shows after the loop returned to the phase it
-// left, which opens at once and is not drawn a second time.
+// ran for its conflict, whose work the replay passes over (passOver), with the work the record
+// shows after the loop returned to the phase it left, which opens at once and is not drawn a second
+// time.
 func (d *driver) stretchEnds(p *piece) error {
 	pieces := d.script.pieces[p.issue]
 	for _, next := range pieces[p.index+1:] {
@@ -482,7 +516,7 @@ func (d *driver) stretchEnds(p *piece) error {
 			d.openPiece(next, d.clock.Instant(), false)
 			return nil
 		}
-		next.state = pieceSkipped
+		d.passOver(next)
 	}
 	return nil
 }

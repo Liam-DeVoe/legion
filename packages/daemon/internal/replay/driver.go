@@ -593,18 +593,8 @@ func (d *driver) run() error {
 		}
 	}
 	for i := range d.script.events {
-		event := &d.script.events[i]
-		switch {
-		case event.at.Before(w.From):
-			continue
-		case event.anchor == anchorTime, event.anchor == anchorWait && d.timingWall, event.anchor == anchorEvent && d.answerWall:
-			d.placeEvent(i, event.at)
-		case event.anchor == anchorWait:
-			d.anchored = append(d.anchored, i)
-			d.push(&item{at: event.at, class: classAct, rec: event.at, order: int64(event.order), run: func() error {
-				d.placeUnbegun(i)
-				return nil
-			}})
+		if event := &d.script.events[i]; !event.at.Before(w.From) && event.piece == nil {
+			d.placeByAnchor(i)
 		}
 	}
 	d.openSeeded()
@@ -625,7 +615,9 @@ func (d *driver) run() error {
 			continue
 		}
 		if it.piece != nil && it.piece.state != pieceRunning {
-			// A paused piece keeps the item for its resume; an ended or cancelled one drops it.
+			// A paused piece keeps the item for its resume; an ended, cancelled or passed-over one
+			// drops it, its recorded events placed by their anchors as it was cancelled or passed
+			// over (placeUnrun).
 			if it.piece.state != piecePaused {
 				it.done = true
 			}
@@ -783,6 +775,26 @@ func (d *driver) firstSlotBefore(key string) time.Time {
 	return time.Time{}
 }
 
+// placeByAnchor places the recorded event events[i] by its anchor, as no piece of work places it:
+// at its recorded time, from its question (Branch.Answer) or from the replay's start of the wait it
+// ended (Branch.Timing), as the branch asks; and never before the clock's instant, which an event
+// whose piece the replay does not run can stand past by then (placeUnrun). A person's answer under
+// answer offset waits for its question to place it.
+func (d *driver) placeByAnchor(i int) {
+	event := &d.script.events[i]
+	at := later(event.at, d.clock.Instant())
+	switch {
+	case event.anchor == anchorTime, event.anchor == anchorWait && d.timingWall, event.anchor == anchorEvent && d.answerWall:
+		d.placeEvent(i, at)
+	case event.anchor == anchorWait:
+		d.anchored = append(d.anchored, i)
+		d.push(&item{at: at, class: classAct, rec: event.at, order: int64(event.order), run: func() error {
+			d.placeUnbegun(i)
+			return nil
+		}})
+	}
+}
+
 // placeEvent queues the recorded event events[i] at at: its change to the shadow, then its fact.
 func (d *driver) placeEvent(i int, at time.Time) {
 	event := &d.script.events[i]
@@ -795,15 +807,27 @@ func (d *driver) placeEvent(i int, at time.Time) {
 	d.push(&item{at: at, class: classAct, rec: event.at, order: int64(event.order), eventKey: event.env.key, eventKind: event.env.kind,
 		dispatch: func() error {
 			var err error
+			event.dispatched = true
 			applied, err = d.dispatchEvent(i)
+			d.placeAnswers(event)
 			return err
 		},
 		run: func() error { return d.applyEvent(i, applied) }})
+}
+
+// placeAnswers places each person's answer to event, a question the replay has just applied to its
+// copy of Dispatch, at its recorded offset from this moment (Branch.Answer offset): an answer comes
+// from the replay's moment of its question, wherever the replay placed that question — at its
+// offset in its piece of work, at its moment after a pause, or by its anchor where the replay did
+// not run its piece (placeUnrun) — so no answer comes before its question. Under answer wall each
+// answer was placed at its recorded time at the start.
+func (d *driver) placeAnswers(event *scriptEvent) {
 	if d.answerWall {
 		return
 	}
-	for _, dependent := range event.dependents {
-		d.placeEvent(dependent, at.Add(d.script.events[dependent].offset))
+	now := d.clock.Instant()
+	for _, answer := range event.dependents {
+		d.placeEvent(answer, later(now.Add(d.script.events[answer].offset), now))
 	}
 }
 

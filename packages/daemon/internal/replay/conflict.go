@@ -809,7 +809,8 @@ func (d *driver) mergedForward(forward *piece) error {
 // that phase to p's through its own most recent work in each phase between (wayBack); where its
 // work before p holds none in that phase, it is given no drawn loop and goes on with its own work.
 // Each start of the issue's workers so opens the next piece of its work, passing over none. A
-// drawn loop that is the issue's own runs as recorded.
+// drawn loop that is the issue's own runs as recorded. The recorded events of the issue's own loop
+// go with the work that takes its place (giveEvents).
 func (d *driver) drawLoop(p *piece) {
 	pieces := d.script.pieces[p.issue]
 	own, back := []*piece(nil), p.index+1
@@ -840,7 +841,55 @@ func (d *driver) drawLoop(p *piece) {
 	for _, dropped := range pieces[p.index+1 : back] {
 		dropped.state = pieceSkipped
 	}
+	d.giveEvents(pieces[p.index+1:back], work)
 	d.replacePieces(p.issue, p.index+1, back, work)
+}
+
+// giveEvents gives each recorded event of own, an issue's recorded pieces of work that work, the
+// replay's own work for that issue, takes the place of, to the piece of work that stands in for
+// its piece: the one of the same role and phase in the same place among those of that role and
+// phase, or the last of them. The event is an act of that work as it was of its own piece, so it
+// keeps its offset, but no later than the end of a shorter piece: an act the record shows after a
+// piece's end comes at the replay's end of it (sizePiece), and its moment in the record orders it
+// there, before that end. An event of a piece whose role and phase no piece of work holds is placed
+// by its anchor (placeUnrun).
+func (d *driver) giveEvents(own, work []*piece) {
+	type kind struct {
+		role  claim.Role
+		phase phase.Phase
+	}
+	given := map[kind]int{}
+	for _, q := range own {
+		k := kind{q.role, q.phase}
+		place := given[k]
+		given[k]++
+		var to *piece
+		for _, c := range work {
+			if c.role != q.role || c.phase != q.phase {
+				continue
+			}
+			to = c
+			if place == 0 {
+				break
+			}
+			place--
+		}
+		if to == nil {
+			d.placeUnrun(q)
+			continue
+		}
+		for _, a := range q.acts {
+			if a.kind != actEvent || d.script.events[a.event].piece != q {
+				continue
+			}
+			offset := a.offset
+			if !to.end.IsZero() {
+				offset = min(offset, to.recorded())
+			}
+			to.acts = append(to.acts, act{kind: actEvent, offset: offset, rec: to.start.Add(offset), event: a.event})
+			d.script.events[a.event].piece = to
+		}
+	}
 }
 
 // returnTo is pieces up to the first in left or a phase after it in phase.Order: the part of a run

@@ -928,8 +928,8 @@ func (d *driver) gateClosed(issue record.Issue) (bool, error) {
 // taken back unconfirmed, so the entry it was given falls to the one it served and the admission
 // pass sends that entry again once the issue holds its slot again (admit's resumeSlottedWorkers),
 // and the claim stands suspended by the daemon (`supervise: suspended`). The issue's segment the
-// role works pauses with the rest of its length, or is cancelled where the issue has left the
-// workflow.
+// role works pauses with the rest of its length, or is cancelled (cancelPiece) where the issue has
+// left the workflow.
 func (d *driver) suspend(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue, token claim.Token) error {
 	c, found := d.claims[token]
 	if !found || c.State == supervise.StateFailed || c.State == supervise.StateRetired || c.State == supervise.StateSuspended ||
@@ -942,7 +942,7 @@ func (d *driver) suspend(row record.OutboxRow, payload record.SuperviseRequest, 
 				return err
 			}
 		} else {
-			p.state = pieceCancelled
+			d.cancelPiece(p)
 		}
 	}
 	if d.turnOpen(d.claims[token]) {
@@ -986,12 +986,12 @@ func (d *driver) closeTree(row record.OutboxRow, payload record.SuperviseRequest
 
 // retireClaim retires the claim token names, its issue closed or its tree's linger expired: the
 // turn under way ends, the task it held goes with it, the session is kept, and every segment of the
-// role's work on the issue is cancelled.
+// role's work on the issue is cancelled (cancelPiece).
 func (d *driver) retireClaim(row record.OutboxRow, token claim.Token) error {
 	c := d.claims[token]
 	for _, p := range d.script.pieces[c.Issue] {
 		if p.role == c.Role && (p.state == pieceRunning || p.state == piecePaused) {
-			p.state = pieceCancelled
+			d.cancelPiece(p)
 		}
 	}
 	if d.turnOpen(c) {

@@ -302,9 +302,15 @@ Most Dispatch events that the daemon's own session wrote are its outbox's status
 The daemon's API also writes statuses under that session for an agent, and no outbox row writes these: a move to backlog, icebox or triage, a move from one of those or from done to todo that adds no `legion` label, and the controller's todo on a root whose phase is held.
 The controller's `set_status`, an architect's `release_children` and `rerun_child` and, in releases that have it, an architect's `park_child` write such moves, and the replay enters each one as recorded.
 The replay knows the controller's todo on a held root by the record's release of that hold, whose reason names a todo.
-An event that a worker's session wrote enters at its offset in the work of that worker's issue, so it moves with that work.
+An event that a worker's session wrote inside a work segment of that worker's role on that worker's issue enters at its offset in that segment, so it moves with that work.
 The record names that session by an id under the title `Legion <role> · <KEY>`, which names the role and the issue of the claim that the session runs.
 Where a window's events name a worker's session by its claim token instead, the replay reads the claim from that token.
+A worker's event outside every work segment of its role is part of no segment, so it enters as an event that no worker wrote enters: at its recorded time, or at its offset from the replay's start of the wait that it ended.
+A root's architect writes such events between the phases of its root, for example when it files a child while its root is in implementing.
+Where the replay does not run the segment of an event, because it passes over that segment or ends its work before the event, the event enters in the same way, at once where its recorded time has passed.
+Where `answer` is `offset`, a person's answer to a worker's question enters at its offset from the moment that the question entered the replay, wherever the question entered, so no answer comes before its question.
+Where a drawn conflict loop takes the place of the issue's own recorded loop, each event of the issue's own loop enters at its offset in the drawn loop's segment of the same role and phase, or at the end of that segment where the segment is shorter, and an event of a role and phase that the drawn loop does not hold enters as an event that no worker wrote.
+So the replay enters each recorded event once.
 After each fact, a worker stub runs the outbox rows that the daemon's lanes would take.
 Each claim that the replay writes runs the session that the record shows that claim running at that moment.
 A claim runs a fresh session after a fresh start of its agent, so at each launch the claim takes the latest session whose first event comes at or before that moment, or else the first session after it.

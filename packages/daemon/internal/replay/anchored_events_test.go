@@ -1,0 +1,297 @@
+package replay
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
+)
+
+// passedLoopWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5, its inputs
+// reaching back to the daemon's boot at 07:00, in which a root's recorded conflict loop holds acts
+// of two of its workers. ACME-2, a root promoted at 07:10, moves to testing at 08:40, and a
+// conflict moves it back to implementing at 09:20, its stretch holding no commit of the base
+// branch. In that loop its architect, whose session Dispatch names under the title `Legion
+// architect · ACME-2`, files ACME-4 under it in triage at 09:35, and its implementer posts a
+// comment at 09:40. ACME-2 is back in testing at 09:50 and its tester passes it at 10:20. At 10:30
+// the architect releases ACME-4 (the daemon's session writes its todo), and ACME-4 takes a slot and
+// starts. ACME-3, a root promoted at 09:00, works 15 minutes in each phase, and a conflict moves it
+// back from reviewing at 10:45, its stretch holding the base branch's one commit, at 10:40: its two
+// stretches are the window's only ones in the fit, and they separate, so the chance fitted at M =
+// 0 is 0, and ACME-2's stretch draws no conflict under any seed.
+func passedLoopWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(2 * time.Hour)
+	b.capped(3)
+	b.boot(clock(7, 0))
+	move := func(hour, minute int, to phase.Phase, trigger workflow.TriggerKind) builtMove {
+		return builtMove{clock(hour, minute), to, trigger}
+	}
+	rootThrough(b, "ACME-2", "a2", clock(7, 10), clock(7, 25), move(7, 40, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(8, 40, phase.Testing, workflow.TriggerImplementationReady), move(9, 20, phase.Implementing, workflow.TriggerConflict))
+	architect := recordedSession("ACME-2", claim.RoleArchitect, "00000000-0000-4000-8000-0000000000c2")
+	b.filedBy(clock(9, 35), "ACME-4", filing{Title: "Ship the ACME-4 change", Parent: "ACME-2", Tree: "ACME-2", Status: "triage", Rank: "a4"},
+		architect)
+	b.commented(clock(9, 40), "ACME-2", recordedSession("ACME-2", claim.RoleImplementer, "00000000-0000-4000-8000-0000000000c3"))
+	b.segmentEnds(clock(9, 50), "ACME-2", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	b.segmentEnds(clock(10, 20), "ACME-2", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
+	b.daemonWrites(clock(10, 30), "ACME-4", "todo")
+	b.childStarts(clock(10, 30), "ACME-4")
+	rootThrough(b, "ACME-3", "a3", clock(9, 0), clock(9, 15), move(9, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(9, 45, phase.Testing, workflow.TriggerImplementationReady), move(10, 0, phase.Implementing, workflow.TriggerTesterFailed),
+		move(10, 15, phase.Testing, workflow.TriggerImplementationReady), move(10, 30, phase.Reviewing, workflow.TriggerTesterPassed),
+		move(10, 45, phase.Implementing, workflow.TriggerConflict), move(11, 0, phase.Testing, workflow.TriggerImplementationReady),
+		move(11, 15, phase.Reviewing, workflow.TriggerTesterPassed))
+	window := b.build()
+	window.Merges = map[string][]Merge{builtRepository: {
+		{SHA: "7c4d2e9f1a3b5067b1c2d3e4f5a6b7c8d9e0f1a2", At: clock(10, 40), Branch: "main"},
+	}}
+	return window
+}
+
+// commented is a worker's session posting a comment on key at at that answers no ask
+// (comment.created), which the daemon reads as no fact.
+func (b *windowBuilder) commented(at time.Time, key string, worker eventActor) {
+	b.t.Helper()
+	b.event(at, key, "comment.created", worker, map[string]any{
+		"id": fmt.Sprintf("00000000-0000-4000-8000-%012x", 0xd00+len(b.events)), "body": "The base branch is merged in again.",
+		"author": worker, "ask_id": nil,
+	})
+}
+
+// eventsApplied is each moment the replay applied an event of kind on key to its copy of Dispatch
+// (shadow), the copy the run handed its atStart.
+func eventsApplied(t *testing.T, copied *shadow, key, kind string) []time.Time {
+	t.Helper()
+	if copied == nil {
+		t.Fatal("the run never handed the test its copy of Dispatch at the window's start")
+	}
+	iss := copied.issues[key]
+	if iss == nil {
+		return nil
+	}
+	var applied []time.Time
+	for i, raw := range iss.log[iss.seeded:] {
+		var event struct {
+			Type      string    `json:"type"`
+			CreatedAt time.Time `json:"created_at"`
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatalf("read event %d of %s in the copy of Dispatch: %v", i+1, key, err)
+		}
+		if event.Type == kind {
+			applied = append(applied, event.CreatedAt)
+		}
+	}
+	return applied
+}
+
+// A root's architect works between its root's phases, where the replay runs no work segment of
+// its own, so an event its session writes there is no act of a segment and enters as any other
+// event enters (placeEvents). The test replays passedLoopWindow under legion-v20.42.5: the
+// architect's filing of ACME-4 at 09:35 falls in ACME-2's conflict loop, a segment of its
+// implementer, which the replay passes over, ACME-2's stretch drawing no conflict. The filing
+// enters at 09:35, and the release at 10:30 starts ACME-4 then. Placed in the implementer's segment,
+// the filing never enters: the replay never creates ACME-4, and the release starts nothing.
+func TestAnArchitectsEventOutsideItsOwnWorkIsApplied(t *testing.T) {
+	_, log := knobRun(t, passedLoopWindow(t), replayedRule(t, "legion-v20.42.5"), "main")
+	started := linesAt(log, func(line replayLine) bool {
+		return line.Msg == phaseChangedLine && line.Issue == "ACME-4" && line.From == string(phase.Admitted) && line.To == string(phase.Planning)
+	})
+	if want := []time.Time{clock(10, 30)}; !slices.EqualFunc(started, want, time.Time.Equal) {
+		t.Errorf("ACME-4 moved into planning at %s, want once at %s: its architect files it at 09:35 and releases it at 10:30",
+			describeTimes(started), describeTimes(want))
+	}
+}
+
+// A worker's event inside a work segment of its role is an act of that segment, and enters where
+// the replay runs it; where the replay passes over the segment, it enters as any other event
+// enters, once (placeUnrun). The test replays passedLoopWindow under legion-v20.42.5, where ACME-2's
+// stretch draws no conflict and goes on past its recorded loop: the replay passes over the loop's
+// segment of the implementer at 09:20, and the implementer's comment at 09:40 in it enters the
+// replay's copy of Dispatch once, at 09:40. Left with the segment, it never enters.
+func TestAnEventOfAPassedOverSegmentIsAppliedOnce(t *testing.T) {
+	var copied *shadow
+	cfg := RunConfig{Window: passedLoopWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: 1, Slowdown: 1,
+		PGDSN: replayDSN(t), Out: t.TempDir()}
+	cfg.atStart = func(s *shadow) { copied = s }
+	if _, err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("replay passedLoopWindow under legion-v20.42.5: %v", err)
+	}
+	if applied, want := eventsApplied(t, copied, "ACME-2", "comment.created"), []time.Time{clock(9, 40)}; !slices.EqualFunc(applied, want, time.Time.Equal) {
+		t.Errorf("the copy of Dispatch holds the implementer's comment on ACME-2 applied at %s, want once, at %s",
+			describeTimes(applied), describeTimes(want))
+	}
+}
+
+// givenLoopWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5, whose two
+// recorded conflict loops left testing. ACME-2, a root promoted at 09:00, works 15 minutes in each
+// phase: its tester fails it at 10:00, a conflict moves it back from reviewing at 10:45, its loop
+// is 15 minutes in implementing and 15 in testing, and it is back in reviewing at 11:15 to the
+// window's end. ACME-4, a root promoted at 09:30, works 15 minutes in each phase to testing at
+// 10:15, a conflict moves it back at 10:30, its loop is 10 minutes in implementing, and it is back
+// in testing at 10:40 to the window's end. ACME-3, a root promoted at 11:00, works 15 minutes in
+// each phase to testing at 11:45, a conflict moves it back at 12:00, and its loop is 25 minutes in
+// implementing, in which its implementer posts a comment at 12:20; it is back in testing at 12:25
+// to the window's end. The base branch took a commit inside each stretch that ends in a conflict,
+// at 10:25, 10:40 and 11:50, and none inside ACME-2's stretch that its tester ended: the stretches
+// separate, so the chance fitted at M = 0 is 0 and at M = 1 is 1, and each stretch that ended in a
+// conflict draws one under any seed.
+func givenLoopWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.capped(4)
+	b.boot(clock(9, 0))
+	move := func(hour, minute int, to phase.Phase, trigger workflow.TriggerKind) builtMove {
+		return builtMove{clock(hour, minute), to, trigger}
+	}
+	rootThrough(b, "ACME-2", "a2", clock(9, 0), clock(9, 15), move(9, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(9, 45, phase.Testing, workflow.TriggerImplementationReady), move(10, 0, phase.Implementing, workflow.TriggerTesterFailed),
+		move(10, 15, phase.Testing, workflow.TriggerImplementationReady), move(10, 30, phase.Reviewing, workflow.TriggerTesterPassed),
+		move(10, 45, phase.Implementing, workflow.TriggerConflict), move(11, 0, phase.Testing, workflow.TriggerImplementationReady),
+		move(11, 15, phase.Reviewing, workflow.TriggerTesterPassed))
+	rootThrough(b, "ACME-4", "a4", clock(9, 30), clock(9, 45), move(10, 0, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(10, 15, phase.Testing, workflow.TriggerImplementationReady), move(10, 30, phase.Implementing, workflow.TriggerConflict),
+		move(10, 40, phase.Testing, workflow.TriggerImplementationReady))
+	rootThrough(b, "ACME-3", "a3", clock(11, 0), clock(11, 15), move(11, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		move(11, 45, phase.Testing, workflow.TriggerImplementationReady), move(12, 0, phase.Implementing, workflow.TriggerConflict))
+	b.commented(clock(12, 20), "ACME-3", recordedSession("ACME-3", claim.RoleImplementer, "00000000-0000-4000-8000-0000000000c5"))
+	b.segmentEnds(clock(12, 25), "ACME-3", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	window := b.build()
+	window.Merges = map[string][]Merge{builtRepository: {
+		{SHA: "5b8e1d3f7a2c4069b1c2d3e4f5a6b7c8d9e0f1a2", At: clock(10, 25), Branch: "main"},
+		{SHA: "7c4d2e9f1a3b5067b1c2d3e4f5a6b7c8d9e0f1a2", At: clock(10, 40), Branch: "main"},
+		{SHA: "9f2b6d4a8c1e3057c2d3e4f5a6b7c8d9e0f1a2b3", At: clock(11, 50), Branch: "main"},
+	}}
+	return window
+}
+
+// Where a drawn conflict loop takes the place of an issue's own recorded loop, the events of the
+// issue's own loop go with the drawn work that stands in for theirs, the segment of the same role
+// and phase, at their offsets, or at its end where it is shorter (giveEvents), and enter once. The
+// test replays givenLoopWindow under legion-v20.42.5 at the seeds 1 to 8. ACME-3's stretch draws
+// its conflict at 12:00 and is given, by the seed, its own loop or ACME-4's. Given its own, it is
+// back in testing at 12:25 and its implementer's comment enters at 12:20, as recorded; given
+// ACME-4's, its implementer works that loop's 10 minutes, it is back in testing at 12:10, and the
+// comment, 20 minutes into ACME-3's own loop, enters at 12:10, the end of the shorter loop's
+// segment of the implementer, before the move it ends with. The test fails where no seed gives
+// ACME-3 ACME-4's loop.
+func TestAnEventOfALoopADrawnLoopReplacesGoesWithIt(t *testing.T) {
+	dsn := replayDSN(t)
+	window := givenLoopWindow(t)
+	given := 0
+	for seed := int64(1); seed <= 8; seed++ {
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			var copied *shadow
+			out := t.TempDir()
+			cfg := RunConfig{Window: window, Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: seed, Slowdown: 1, PGDSN: dsn,
+				Out: out}
+			cfg.atStart = func(s *shadow) { copied = s }
+			if _, err := Run(context.Background(), cfg); err != nil {
+				t.Fatalf("replay givenLoopWindow under legion-v20.42.5 at seed %d: %v", seed, err)
+			}
+			back := linesAt(replayLog(t, out), func(line replayLine) bool {
+				return line.Msg == phaseChangedLine && line.Issue == "ACME-3" && line.From == string(phase.Implementing) &&
+					line.To == string(phase.Testing) && line.Time.After(clock(12, 0))
+			})
+			want := clock(12, 20)
+			switch {
+			case slices.EqualFunc(back, []time.Time{clock(12, 10)}, time.Time.Equal):
+				given++
+				want = clock(12, 10)
+			case !slices.EqualFunc(back, []time.Time{clock(12, 25)}, time.Time.Equal):
+				t.Fatalf("at seed %d ACME-3 moved back to testing at %s, want at 12:10 after ACME-4's loop or at 12:25 after its own",
+					seed, describeTimes(back))
+			}
+			if applied := eventsApplied(t, copied, "ACME-3", "comment.created"); !slices.EqualFunc(applied, []time.Time{want}, time.Time.Equal) {
+				t.Errorf("at seed %d the copy of Dispatch holds the implementer's comment on ACME-3 applied at %s, want once, at %s",
+					seed, describeTimes(applied), describeTimes([]time.Time{want}))
+			}
+		})
+	}
+	if given == 0 {
+		t.Error("no seed from 1 to 8 gave ACME-3 ACME-4's loop")
+	}
+}
+
+// cancelledQuestionWindow is a window from 09:00 to 13:00 recorded under main, whose cap is 1 and
+// whose deployment gates the spec, in which a root's later start in a replay under keep-past-review
+// runs its architect's question past the person's close of the root. ACME-1, a root, holds the slot
+// from 09:00 through its review, gives it back at its accepting at 10:15 and merges at 11:00; ACME-2
+// is promoted at 10:15, and its architect, whose session Dispatch names under the title `Legion
+// architect · ACME-2`, writes version 1 of its spec 10 minutes into its turn (10:25) and registers
+// it, unapproved, at 10:30. A person approves the version 30 minutes after it (10:55), which opens
+// the gate and starts ACME-2's planning, and closes ACME-2 at 11:05.
+func cancelledQuestionWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.capped(1)
+	b.gated(record.DesignStepSpec)
+	b.boot(clock(9, 0))
+	b.file(clock(9, 0), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion})
+	b.rootPromoted(clock(9, 0), "ACME-1")
+	b.file(clock(9, 2), "ACME-2", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.specWritten(clock(9, 5), "ACME-1")
+	b.approves(clock(9, 10), "ACME-1", "")
+	b.rootDesigned(clock(9, 15), "ACME-1")
+	b.segmentEnds(clock(9, 30), "ACME-1", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	b.segmentEnds(clock(9, 45), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	b.segmentEnds(clock(10, 0), "ACME-1", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
+	b.segmentEnds(clock(10, 15), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.segmentEnds(clock(10, 30), "ACME-1", phase.Accepting, phase.Retro, workflow.TriggerSignOff)
+	b.segmentEnds(clock(10, 45), "ACME-1", phase.Retro, phase.Merging, workflow.TriggerRetroCompleted)
+	b.turnEnds(clock(11, 0), "ACME-1", claim.RoleMerger)
+	b.moved(clock(11, 0), "ACME-1", phase.Merging, phase.Done, workflow.TriggerPullRequestMerged)
+	b.leaves(clock(11, 0), "ACME-1", record.DoneStatus)
+	b.rootPromoted(clock(10, 15), "ACME-2")
+	b.specWrittenBy(clock(10, 25), "ACME-2", recordedSession("ACME-2", claim.RoleArchitect, "00000000-0000-4000-8000-0000000000c6"))
+	b.turnEnds(clock(10, 30), "ACME-2", claim.RoleArchitect)
+	b.registered(clock(10, 30), "ACME-2", false)
+	b.approves(clock(10, 55), "ACME-2", "")
+	b.info(clock(10, 55), "workflow: design gate opened", "issue", "ACME-2", "artifact", b.artifact("ACME-2"), "event", "artifact.approved",
+		"version", 1)
+	b.rootFirstPhase(clock(10, 55), "ACME-2")
+	b.edit(clock(11, 5), "ACME-2", setStatus(record.DoneStatus))
+	b.leaves(clock(11, 5), "ACME-2", record.DoneStatus)
+	return b.build()
+}
+
+// Under answer offset a person's answer to a worker's question comes at its recorded offset from
+// the replay's moment of the question, wherever the replay places the question (placeAnswers), so
+// no answer comes before its question. The test replays cancelledQuestionWindow under
+// keep-past-review, where ACME-1 keeps its slot past its review to its merge at 11:00, so ACME-2 is
+// promoted then, 45 minutes later than in the record, and its architect's version falls at 11:10.
+// The person's close of ACME-2 at 11:05 cancels the architect's segment before it: the version
+// enters by its anchor, at once (11:05), and the approval 30 minutes after it, at 11:35. Timed from
+// the version's place in the cancelled segment, the approval would enter at 11:40; and the version,
+// dropped with the segment, never entered at all.
+func TestAnAnswerComesFromItsQuestionsNewPlace(t *testing.T) {
+	var copied *shadow
+	out := t.TempDir()
+	cfg := RunConfig{Window: cancelledQuestionWindow(t), Rule: replayedRule(t, "keep-past-review"), Branch: MainBranch, Seed: 1,
+		Slowdown: 1, PGDSN: replayDSN(t), Out: out}
+	cfg.atStart = func(s *shadow) { copied = s }
+	if _, err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("replay cancelledQuestionWindow under keep-past-review: %v", err)
+	}
+	taken := linesAt(replayLog(t, out), func(line replayLine) bool { return line.Msg == "admission: slot taken" && line.Issue == "ACME-2" })
+	if want := []time.Time{clock(11, 0)}; !slices.EqualFunc(taken, want, time.Time.Equal) {
+		t.Fatalf("ACME-2 took a slot at %s, want at %s, as ACME-1 merges", describeTimes(taken), describeTimes(want))
+	}
+	for _, want := range []struct {
+		kind string
+		at   []time.Time
+	}{{"artifact.version", []time.Time{clock(11, 5)}}, {"artifact.approved", []time.Time{clock(11, 35)}}} {
+		if applied := eventsApplied(t, copied, "ACME-2", want.kind); !slices.EqualFunc(applied, want.at, time.Time.Equal) {
+			t.Errorf("the copy of Dispatch holds the %s of ACME-2 applied at %s, want once, at %s", want.kind, describeTimes(applied),
+				describeTimes(want.at))
+		}
+	}
+}

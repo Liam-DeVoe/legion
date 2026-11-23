@@ -169,9 +169,9 @@ type actKind int
 const (
 	actTurnStart actKind = iota
 	actTurnEnd
-	// actEvent is a Dispatch event a worker of the issue made (its session the actor), which
-	// moves with the work it was made in: a child filed, a document's version written, an ask
-	// opened, a link set.
+	// actEvent is a Dispatch event a worker of the issue made (its session the actor) inside a
+	// piece of its role's work (script.workPiece), which moves with that work: a child filed, a
+	// document's version written, an ask opened, a link set.
 	actEvent
 	// actRegistration is the architect's registration of a design document
 	// (intake.GateRegistered, from its `workflow: design gate registered` line).
@@ -217,14 +217,13 @@ type script struct {
 	inFlight stretchCount
 }
 
-// anchorKind is what places an event of the record in a replay.
+// anchorKind is what places an event of the record in a replay where no piece of work does
+// (scriptEvent.piece).
 type anchorKind int
 
 const (
 	// anchorTime places the event at its recorded time.
 	anchorTime anchorKind = iota
-	// anchorPiece places it at its offset in a piece of its actor's work (actEvent).
-	anchorPiece
 	// anchorEvent places it at its offset from another event the replay places first: a
 	// person's answer from the question it answers (Branch.Answer).
 	anchorEvent
@@ -240,6 +239,9 @@ type scriptEvent struct {
 	env    envelope
 	at     time.Time
 	order  int
+	// piece is the piece of work the event is an act of (actEvent), nil for none: the replay places
+	// it where that piece runs it, and by its anchor where the piece does not run it (placeUnrun).
+	piece  *piece
 	anchor anchorKind
 	// on is the event an anchorEvent is placed from, and offset the event's own distance from
 	// it; wait is the wait an anchorWait ended in the record.
@@ -248,8 +250,9 @@ type scriptEvent struct {
 	wait   waitAnchor
 	// dependents is every event placed from this one.
 	dependents []int
-	// placed is whether the replay has placed the event.
-	placed bool
+	// placed is whether the replay has placed the event, and dispatched whether it has applied it
+	// to its copy of Dispatch.
+	placed, dispatched bool
 	// releasesHold says the event is the daemon session's todo on a held root that the record's
 	// release of the hold names as its cause (markHeldRootTodos).
 	releasesHold bool
@@ -432,6 +435,32 @@ func (s *script) pieceAt(key string, at time.Time, starting bool) *piece {
 	return found
 }
 
+// workPiece is the piece of the work of ran, a claim of an issue, that an act of its worker at at
+// falls in: of the pieces of ran's role, the latest whose start is before at, or, where none is,
+// the first that starts at it, where the record shows that piece under way at at, at or before its
+// end or, for a piece the record shows unended, its visit's exit. Nil for none: the worker acted
+// outside every piece of its role's work, as a root's architect acts between its root's phases,
+// where no start of its own opens a piece.
+func (s *script) workPiece(ran SessionClaim, at time.Time) *piece {
+	var found *piece
+	for _, p := range s.pieces[ran.Issue] {
+		if p.role == ran.Role && (p.start.Before(at) || found == nil && p.start.Equal(at)) {
+			found = p
+		}
+	}
+	if found == nil {
+		return nil
+	}
+	end := found.end
+	if end.IsZero() && found.visit != nil {
+		end = found.visit.Exit
+	}
+	if !end.IsZero() && at.After(end) {
+		return nil
+	}
+	return found
+}
+
 // placeTurns puts each turn of each issue's workers into the piece it falls in, its start and its
 // end at their offsets from the piece's start.
 func (s *script) placeTurns(t Trace) {
@@ -549,11 +578,13 @@ func closedByArchitect(iss *IssueTrace, leave Leave) bool {
 }
 
 // placeEvents reads every recorded event of the window at or after its start, and says how a
-// replay places it: a worker's event — one whose actor is a session the record shows running a
-// claim of an issue, by the session's title or by the claim token its id is (actorClaimOf) — at its
-// offset in the piece of that issue's work it falls in; a person's answer from its question
-// (Branch.Answer); an event that ended a wait in the record from the replay's start of that wait
-// (Branch.Timing); every other at its recorded time.
+// replay places it. A worker's event — one whose actor is a session the record shows running a
+// claim of an issue, by the session's title or by the claim token its id is (actorClaimOf) — that
+// falls in a piece of that claim's role's work (workPiece) is an act of that piece, placed at its
+// offset in it where the replay runs the piece. Every other event is placed by its anchor, and so
+// is a worker's event whose piece the replay does not run (placeUnrun): a person's answer from its
+// question (Branch.Answer); an event that ended a wait in the record from the replay's start of
+// that wait (Branch.Timing); every other at its recorded time.
 func (s *script) placeEvents(t Trace, w Window) error {
 	for _, key := range slices.Sorted(maps.Keys(w.Events)) {
 		for _, raw := range w.Events[key] {
@@ -577,13 +608,12 @@ func (s *script) placeEvents(t Trace, w Window) error {
 			continue
 		}
 		if ran, ok := actorClaimOf(event.parsed); ok {
-			if p := s.pieceAt(ran.Issue, event.at, false); p != nil {
-				event.anchor = anchorPiece
+			if p := s.workPiece(ran, event.at); p != nil {
+				event.piece = p
 				p.acts = append(p.acts, act{kind: actEvent, offset: event.at.Sub(p.start), rec: event.at, event: i})
-				continue
 			}
 		}
-		if question, ok := questions[i]; ok && !s.events[question].at.Before(t.From) {
+		if question, ok := questions[i]; ok && event.piece == nil && !s.events[question].at.Before(t.From) {
 			event.anchor, event.on, event.offset = anchorEvent, question, event.at.Sub(s.events[question].at)
 			s.events[question].dependents = append(s.events[question].dependents, i)
 			continue
