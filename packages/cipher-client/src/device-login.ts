@@ -67,7 +67,7 @@ import {
 } from "./device-login-lock";
 import { type DpopKey, dpopKeyOf } from "./dpop";
 import { messageOf } from "./error-text";
-import { endsGrant, outage, refusalCode, slowsDown } from "./oauth-refusal";
+import { endsGrant, outage, refusalCode } from "./oauth-refusal";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   BROKER_URL_SETTING,
@@ -445,10 +445,11 @@ function retryAfterMs(error: unknown): number {
  * ({@link refusalCode}): `authorization_pending` and `slow_down` poll again, `access_denied` is a
  * denial (the broker answers it 403), and `expired_token` or `invalid_grant` (a code the broker no
  * longer knows) is an expiry, as is the code's own lifetime passing, which names how many polls
- * in a row before it the broker did not answer or answered with an outage. Each `slow_down`, at
- * whatever status it comes ({@link slowsDown}), and each poll the broker did not answer or
- * answered with an outage, polls five seconds further apart from then on, once for a poll that is
- * both: RFC 8628 Section 3.5 grows the interval on a `slow_down` and slows the polling on a
+ * in a row before it the broker did not answer or answered with an outage. Each `slow_down` and
+ * each poll the broker did not answer or answered with an outage polls five seconds further apart
+ * from then on, once for a poll that is both: the library reads an OAuth error only in a 4xx, so a
+ * `slow_down` is a refusal's code or comes in a 408 or a 429, an outage, and adds its 5 s either
+ * way. RFC 8628 Section 3.5 grows the interval on a `slow_down` and slows the polling on a
  * connection timeout, and `pollLogin` grows it the same way. An outage whose answer names a
  * `Retry-After`, in seconds or as an HTTP date, is waited at least that long before the next
  * poll, though never past the code's lifetime, as `pollLogin` waits it. Any other answer of a 4xx,
@@ -518,7 +519,7 @@ export async function finishDeviceLogin(
       const status = statusOf(error);
       const unanswered = status === 0 || outage(status);
       outages = unanswered ? outages + 1 : 0;
-      if (slowsDown(error) || unanswered) interval += 5;
+      if (code === "slow_down" || unanswered) interval += 5;
       const pollAgain = code === "authorization_pending" || code === "slow_down" || unanswered;
       if (!pollAgain) {
         const refusal = brokerRefusal(
