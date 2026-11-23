@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -423,9 +424,7 @@ func startPushBus(t *testing.T, importer *Importer, database *store.Store) *push
 	if err != nil {
 		t.Fatalf("connect the publisher: %v", err)
 	}
-	t.Cleanup(func() {
-		testwait.Returns(t, "the push publisher's NATS client to close and its stream keeper to end", publisher.Close)
-	})
+	t.Cleanup(func() { bustest.Close(t, publisher) })
 	callers, err := database.Pool.Leases()
 	if err != nil {
 		t.Fatalf("open the lease pool: %v", err)

@@ -16,6 +16,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -899,7 +900,7 @@ func TestARebuildAnnouncesTheDocumentsChange(t *testing.T) {
 	// invalid makes the document's first load unreadable, which is what a rebuild needs to see
 	// before it replaces the history (rebuild_test.go).
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	heard := listenForDocumentChanges(t, database)
 
 	replacement := "Rebuilt.\n"

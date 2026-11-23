@@ -441,7 +441,7 @@ func newHeldAppendsService(t *testing.T, database *store.Store) (*Service, *http
 		TestHooks: true,
 	})
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

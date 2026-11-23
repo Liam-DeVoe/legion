@@ -111,7 +111,7 @@ func newRoleRigWith(t *testing.T, options ...session.SessionRegistryOption) *rol
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	return newRoleRigOn(t, url, client, testnats.Connect(t, url), options...)
 }
 
@@ -844,7 +844,7 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	conn, err := testnats.ConnectSeed(t, url, seed)
 	if err != nil {
 		t.Fatalf("connect the test's connection: %v", err)
@@ -961,7 +961,7 @@ func TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	rig := newRoleRigOn(t, url, client, testnats.Connect(t, url))
 	const role, holder = "reviewer", "ses_stream_full"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})

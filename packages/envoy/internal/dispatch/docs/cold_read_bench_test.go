@@ -9,6 +9,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -112,7 +113,7 @@ func newColdBenchmarkDocument(b *testing.B, size int) (*Service, *PgVersioned, s
 	}
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
 	b.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(b, context.Background(), service); err != nil {
 			b.Errorf("shutdown cold benchmark service: %v", err)
 		}
 	})

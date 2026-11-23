@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -77,7 +78,7 @@ func credentialTestHandler(t *testing.T, brokerURL, tokenFile string, grants clo
 	documentService := docs.New(docs.Deps{
 		Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
 	})
-	t.Cleanup(func() { _ = shutdownDocuments(t, t.Context(), documentService) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, t.Context(), documentService) })
 	seedPeople(t, database, "alice", "bob")
 	depsInput := DepsInput{
 		Store:       database,

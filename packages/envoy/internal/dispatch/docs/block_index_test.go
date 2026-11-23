@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -41,7 +42,7 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
 	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
 	stop := testwait.Context(t)
-	t.Cleanup(func() { _ = service.Shutdown(stop) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, stop, service) })
 	return database, service
 }
 

@@ -13,6 +13,7 @@ import (
 	"time"
 	"weak"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -197,7 +198,7 @@ func TestTheLeakCheckNamesAServiceItsTestLeftRunning(t *testing.T) {
 	database := storetest.Open(t)
 	service := New(testServiceDeps(database))
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -213,7 +214,7 @@ func TestTheLeakCheckNamesAServiceItsTestLeftRunning(t *testing.T) {
 func TestTheLeakCheckNamesAServiceSomethingHoldsAfterItsShutdown(t *testing.T) {
 	database := storetest.Open(t)
 	service := New(testServiceDeps(database))
-	if err := service.Shutdown(context.Background()); err != nil {
+	if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 		t.Fatalf("shutdown document service: %v", err)
 	}
 	collect()

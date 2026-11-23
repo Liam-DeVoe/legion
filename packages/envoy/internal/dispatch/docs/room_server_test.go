@@ -26,7 +26,7 @@ func TestCloseGatesDoNotOutliveTheirRooms(t *testing.T) {
 	ctx := context.Background()
 	generation := owedStamp(t, service, first)
 	service.settleRoom(first, generation) // a repair (applySuppressed)
-	if err := service.srv.CloseRoom(first, true); err != nil {
+	if err := closeRoomJoined(t, service, first, true); err != nil {
 		t.Fatalf("close the settled room: %v", err)
 	}
 	var evicted []string
@@ -104,7 +104,7 @@ func TestHoldOpenRefusesRoomThatNoLongerHoldsItsDocument(t *testing.T) {
 	if doc == nil {
 		t.Fatal("document room is not resident")
 	}
-	if err := service.srv.CloseRoom(artifactID, true); err != nil {
+	if err := closeRoomJoined(t, service, artifactID, true); err != nil {
 		t.Fatalf("close document room: %v", err)
 	}
 	if release, open := service.srv.holdOpen(artifactID, doc); open {
@@ -242,4 +242,48 @@ func closeGates(service *Service) int {
 	service.srv.gatesMu.Lock()
 	defer service.srv.gatesMu.Unlock()
 	return len(service.srv.gates)
+}
+
+// closeRoomJoined closes room through service's roomServer.CloseRoom, as a test's own close of a
+// room does, and answers the close's error. CloseRoom waits on no context for the room's close
+// gate and then for ygo's close, which closes each peer and waits for its read loop to exit, waits
+// for the room's persistence worker to flush and drain, and runs the service's unload hook
+// (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:629-740), so the call runs through
+// the shared wait: a close that never returns fails the test naming it rather than hanging the
+// binary to its timeout.
+func closeRoomJoined(t testing.TB, service *Service, room string, force bool) error {
+	t.Helper()
+	var err error
+	testwait.Returns(t, "the room's close to return", func() { err = service.srv.CloseRoom(room, force) })
+	return err
+}
+
+// closeRoomInHelper is closeRoomJoined for a close a test makes off the test goroutine, in a hook
+// the service runs on a goroutine of its own (afterSettleWarm), where nothing may end the test: it
+// waits through the shared wait's helper form, naming helper, and answers its give-up as the error,
+// for the caller to report through t.Error with the close's own error.
+func closeRoomInHelper(helper string, service *Service, room string, force bool) error {
+	closed := make(chan error, 1)
+	go func() { closed <- service.srv.CloseRoom(room, force) }()
+	err, gaveUp := testwait.ReceiveInHelper(helper, "the room's close to return", closed)
+	if gaveUp != nil {
+		return gaveUp
+	}
+	return err
+}
+
+// closeInstanceJoined runs closing, a test's call of one of the service's closes of a room
+// instance (closeRoomBehindHead, closeReservedRoom, closeRoomInstance), and answers what it
+// answered. Each ends in closeRoomInstance, whose ctx bounds only its Apply's admission: the close
+// inside it, ygo's CloseRoomWithin, joins the room's peers' read loops and its persistence worker on
+// no context (roomServer.closeInstance), so the call runs through the shared wait, and a close that
+// never returns fails the test naming it rather than hanging the binary to its timeout.
+func closeInstanceJoined(t testing.TB, closing func() (bool, error)) (bool, error) {
+	t.Helper()
+	var (
+		closed bool
+		err    error
+	)
+	testwait.Returns(t, "the room instance's close to return", func() { closed, err = closing() })
+	return closed, err
 }

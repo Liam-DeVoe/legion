@@ -19,6 +19,7 @@ import (
 
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -100,7 +101,7 @@ func refuseSocket(t *testing.T, serverURL, id, what string) {
 	t.Helper()
 	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if connection != nil {
-		leaveDocument(connection)
+		leaveDocument(t, connection)
 	}
 	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("%s: response=%v err=%v, want the socket refused with 503", what, response, err)
@@ -142,7 +143,7 @@ func refuseSpelling(t *testing.T, serverURL, spelling, canonical, what string) {
 	t.Helper()
 	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, spelling), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if connection != nil {
-		leaveDocument(connection)
+		leaveDocument(t, connection)
 	}
 	if err == nil || response == nil || response.StatusCode != http.StatusNotFound {
 		t.Fatalf("%s: response=%v err=%v, want the socket refused 404", what, response, err)
@@ -400,7 +401,7 @@ func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
 
 	// The room cap: the 1,001st room is refused, while a live room still admits a socket.
 	refuseSocket(t, server.URL, spare[0], "the 1,001st room")
-	leaveDocument(admitSocket(t, server.URL, resident[0], "a live room while the room cap is reached"))
+	leaveDocument(t, admitSocket(t, server.URL, resident[0], "a live room while the room cap is reached"))
 	waitFor(t, "the socket that left to be forgotten", func() bool {
 		return registeredConnections(service) == 0
 	})
@@ -509,7 +510,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			MaxDocConnections: connections,
 		})
 		t.Cleanup(func() {
-			if err := service.Shutdown(testwait.Context(t)); err != nil {
+			if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
@@ -659,7 +660,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	})
 	t.Cleanup(func() {
 		letLoad()
-		if err := service.Shutdown(testwait.Context(t)); err != nil {
+		if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

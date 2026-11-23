@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -309,9 +310,10 @@ func newHeldWriteFixture(t *testing.T, settle time.Duration, configure ...func(*
 			Clock:       f.settles,
 		})
 		// The shutdown's drain budget runs on f.settles too, which nothing moves past it, so the
-		// shared wait's context ends a shutdown that waits.
+		// shared wait's context ends a shutdown that waits. The call runs through the shared wait
+		// as well (docstest.Shutdown): Shutdown's last steps wait on no context.
 		t.Cleanup(func() {
-			if err := f.docs.Shutdown(testwait.Context(t)); err != nil {
+			if err := docstest.Shutdown(t, testwait.Context(t), f.docs); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})

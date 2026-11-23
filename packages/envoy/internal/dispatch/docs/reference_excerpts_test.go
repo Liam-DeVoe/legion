@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -240,7 +241,7 @@ func newExcerptService(t *testing.T, database *store.Store, persistence Versione
 func newExcerptServiceOn(t *testing.T, database *store.Store, persistence VersionedStore, serviceClock clock.Clock) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Clock: serviceClock})
-	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	return service
 }
 

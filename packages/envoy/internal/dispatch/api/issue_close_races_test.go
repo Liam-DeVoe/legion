@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -129,7 +130,7 @@ func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t
 		// An hour, so the only settlements are the ones this test runs: the one the resolution
 		// arms for the copy never fires while the test runs.
 		documents = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		wrapper.API = documents
 		return wrapper
 	})
@@ -184,7 +185,7 @@ func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t
 		// An hour, so the only settlements are the ones this test runs: the one the answer arms
 		// for the copy never fires while the test runs.
 		documents = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		wrapper.API = documents
 		return wrapper
 	})
@@ -238,7 +239,7 @@ func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		// An hour, so the only settlements are the ones this test runs.
 		documents = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		return documents
 	})
 	issue, decision, copied := decisionWithCopy(t, handler, documents)
@@ -389,7 +390,7 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 				<-release
 			}
 		})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		// Registered after the shutdown, so it runs before it: a test that fails while the
 		// settlement is held still lets it finish.
 		t.Cleanup(releaseSettlement)
@@ -493,7 +494,7 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 				(*cancelClose.Load())()
 			}
 		})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		return documents
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "A close its client hangs up on", "Context\n")

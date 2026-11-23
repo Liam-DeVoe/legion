@@ -434,7 +434,7 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 	}
 	t.Cleanup(release)
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -830,7 +830,7 @@ func TestStoredOrderSoak(t *testing.T) {
 	})
 	watched.service.Store(service)
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

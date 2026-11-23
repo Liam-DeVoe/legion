@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -577,7 +578,7 @@ func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, "Context\n")
 	approveStoredVersion(t, database, artifactID, 1, "alice")
 
@@ -656,7 +657,7 @@ func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Se
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, regionSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: settle})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, regionSpec)
 	// Settlement indexes the block as an ask of this document, the row the carry reads.
 	service.SettleNow(artifactID)
@@ -751,7 +752,7 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
-	t.Cleanup(func() { _ = service.Shutdown(ctx) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, ctx, service) })
 	seedServiceText(t, service, artifactID, "Context\n")
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	// The approved version is one this service wrote, so the version named below restores its

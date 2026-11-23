@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -28,11 +29,11 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	before := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = before.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), before) })
 	foldPoint := writeRoomRows(t, before, artifactID)
 	// The rows are young as the service stops, so its rooms' close compactions leave them; they
 	// come of age while no service runs.
-	if err := before.Shutdown(ctx); err != nil {
+	if err := docstest.Shutdown(t, ctx, before); err != nil {
 		t.Fatalf("shut down the first service: %v", err)
 	}
 	ageUpdatesThrough(t, database, artifactID, foldPoint, time.Hour)
@@ -40,7 +41,7 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 	reading := storedReading(t, NewPgVersioned(database), artifactID)
 
 	restarted := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = restarted.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), restarted) })
 	restarted.compactionSweepTick(ctx, excerptLeases(t, database), time.Now())
 
 	requireCompactedFrom(t, database, artifactID, rows, foldPoint, cursor)
@@ -63,9 +64,9 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = first.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), first) })
 	other := New(Deps{Store: second, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), other) })
 
 	swept := storeAgedRows(t, database, 3, 20*time.Minute)
 	first.compactionSweepTick(ctx, excerptLeases(t, database), hour.Add(10*time.Minute))
@@ -102,7 +103,7 @@ func TestTheCompactionSweepLeavesADocumentWhoseRowsAreYoungerThanTheAgeRule(t *t
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	old := storeAgedRows(t, database, 3, 20*time.Minute)
 	young := storeAgedRows(t, database, 3, 5*time.Minute)
 	oldRows, youngRows := storedRows(t, database, old), storedRows(t, database, young)
@@ -224,7 +225,7 @@ func TestTheCompactionSweepForgetsADocumentWithNoRowAfterItsFirst(t *testing.T) 
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	pruned := storeAgedRows(t, database, 3, time.Hour)
 	if err := NewPgVersioned(database).PruneAfter(ctx, pruned, 1, nil); err != nil {
 		t.Fatalf("prune to version 1: %v", err)
@@ -278,7 +279,7 @@ func TestTheCompactionSweepReadsNoRowOfADocumentThatIsNotDue(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	const notDue = 2000
 	createDocuments(t, database, notDue)
 	due := storeAgedRows(t, database, 3, 20*time.Minute)
@@ -352,7 +353,7 @@ func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
 	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	steps := recordCompactionSteps(service)
 	busy := storeAgedRows(t, database, 3, 20*time.Minute)
 	free := storeAgedRows(t, database, 3, 20*time.Minute)

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -58,7 +59,7 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, fake *cloc
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: testServerURL, Docs: documents, Events: broker,

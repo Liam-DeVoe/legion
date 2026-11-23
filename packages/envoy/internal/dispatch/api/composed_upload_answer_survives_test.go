@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -168,7 +169,7 @@ func answerSurvivesHandler(t *testing.T, settles *clocktest.Fake) http.Handler {
 			Store: database, Identity: headerIdentity(database), Settle: answerSurvivesSettle, Clock: settles,
 		})
 		t.Cleanup(func() {
-			if err := documentService.Shutdown(testwait.Context(t)); err != nil {
+			if err := docstest.Shutdown(t, testwait.Context(t), documentService); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})

@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/deliveryaudit"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
@@ -153,7 +154,7 @@ func newRig(t *testing.T) *rig {
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
 	t.Cleanup(func() {
-		if err := documents.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), documents); err != nil {
 			t.Errorf("shut down the document service: %v", err)
 		}
 	})

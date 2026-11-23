@@ -30,6 +30,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -399,7 +400,7 @@ func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, bloc
 	if err != nil {
 		t.Fatalf("connect the process's intake: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	process := &intakeProcess{client: client, leases: &cuttableLeases{pool: leasePool}, fetched: map[int]int{}}
 
 	held := make(chan struct{})
@@ -893,7 +894,7 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 	}
 	awaitAckPending(t, publisher, len(stranded))
 	holder.leases.cut.Store(true)
-	holder.client.Close()
+	bustest.Close(t, holder.client)
 
 	// A try while the abandoned hold is still live stands by: the try has ended once the next one
 	// is armed, and then the hold still names the holder and the standby has handled nothing.
@@ -1095,7 +1096,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the newer build's process: %v", err)
 	}
-	t.Cleanup(newerBuild.Close)
+	t.Cleanup(func() { bustest.Close(t, newerBuild) })
 	newerLeases := storetest.Leases(t, storetest.SecondProcess(t, &store.Store{Pool: pool}).Pool)
 	hold, err := duty.TryHold(ctx, newerLeases, intakeHold, uuid.New(),
 		duty.HoldOptions{TTL: 15 * time.Second, Renew: 5 * time.Second, Margin: 2 * time.Second, Token: newer.DeliverSubject})
@@ -1181,7 +1182,7 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the previous build's process: %v", err)
 	}
-	t.Cleanup(previousBuild.Close)
+	t.Cleanup(func() { bustest.Close(t, previousBuild) })
 	var received atomic.Int32
 	held, err := previousBuild.Subscribe(githubIntakeSubject, func(msg *natsgo.Msg) {
 		received.Add(1)
@@ -1513,7 +1514,7 @@ func previousBuildReconciler(t *testing.T, pool *store.Pool, natsURL string) *pr
 	if err != nil {
 		t.Fatalf("connect the previous build's process: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	p := &previousBuild{t: t, leases: leases, client: client, passed: make(chan struct{})}
 	t.Cleanup(p.stop)
 	return p

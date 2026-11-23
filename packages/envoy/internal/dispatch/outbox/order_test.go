@@ -18,6 +18,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -158,7 +159,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	reader := testnats.Connect(t, url)
 	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
@@ -361,7 +362,7 @@ func newSessionOrderRig(t *testing.T) sessionOrderRig {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	reader := testnats.Connect(t, url)
 	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
@@ -759,7 +760,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		database := storetest.Open(t)
 		event := seed(t, database)
 		shifted := shiftedClock(t, database)
@@ -798,7 +799,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		database := storetest.Open(t)
 		event := seed(t, database)
 		gate := &probeGate{Client: client, probing: make(chan struct{})}
@@ -823,7 +824,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		database := storetest.Open(t)
 		event := seed(t, database)
 		proxy.Cut()

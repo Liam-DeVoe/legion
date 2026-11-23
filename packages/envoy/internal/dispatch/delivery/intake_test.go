@@ -19,6 +19,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -343,8 +344,19 @@ func intakeTestClient(t *testing.T) *bus.Client {
 	if err != nil {
 		t.Fatalf("connect NATS: %v", err)
 	}
-	t.Cleanup(natsClient.Close)
+	t.Cleanup(func() { bustest.Close(t, natsClient) })
 	return natsClient
+}
+
+// stopDeliveringJoined runs intake's StopDelivering on ctx, as a test's own stop of an intake does.
+// The stop waits for every handler of the intake to return (keyedRunner.wait in
+// intakeDelivery.stop), which only ctx's end gives up (abandon), so on a context that does not end
+// before the stop must return - context.Background(), or t.Context() in the row's body - the call
+// runs through the shared wait: a handler that never returns fails the test naming the stop rather
+// than hanging the binary to its timeout.
+func stopDeliveringJoined(t testing.TB, ctx context.Context, intake *Intake) {
+	t.Helper()
+	testwait.Returns(t, "the intake's stop to return once its handlers have", func() { intake.StopDelivering(ctx) })
 }
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a

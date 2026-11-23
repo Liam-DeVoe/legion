@@ -245,7 +245,7 @@ func TestARoomThisProcessClosesRemovesItsReadersAwarenessOnTheOther(t *testing.T
 	setAwareness(t, alice, aliceClient, cursorOf("alice", 1))
 	requireAwareness(t, bob, holdsAwareness(aliceClient, cursorOf("alice", 1)), "alice's cursor on task A reaching bob on task B")
 
-	if err := pair.taskA.srv.CloseRoom(pair.artifactID, true); err != nil {
+	if err := closeRoomJoined(t, pair.taskA, pair.artifactID, true); err != nil {
 		t.Fatalf("close task A's room: %v", err)
 	}
 	testwait.Receive(t, "alice's socket to end with the close of her room", alice.Ended)

@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -95,7 +96,7 @@ func TestSeedTextStoresTreeAndReturnsCanonicalMarkdown(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +137,7 @@ func TestSeedTextRollsBackWithCreatingTransaction(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -244,7 +245,7 @@ func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 	ledger.Discard()
 	// The durable document is what is read once no room holds it.
 	if service.srv.GetDoc(artifactID) != nil {
-		if err := service.srv.CloseRoom(artifactID, true); err != nil {
+		if err := closeRoomJoined(t, service, artifactID, true); err != nil {
 			t.Fatalf("close live document: %v", err)
 		}
 		waitForNoLiveDocument(t, service, artifactID)
@@ -803,7 +804,7 @@ func TestColdSnapshotCapturesFirstEditAfterWarm(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.srv.Apply(context.Background(), artifactID, func(_ *crdt.Doc, _ func(func(*crdt.Transaction))) {}); err != nil && !errors.Is(err, ygws.ErrNoChanges) {
 		t.Fatalf("warm cold document: %v", err)

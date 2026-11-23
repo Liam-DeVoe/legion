@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -427,7 +428,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		var gate *firstReplaceGate
 		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			gate = &firstReplaceGate{
 				API: service, firstEntered: make(chan struct{}), releaseFirst: make(chan struct{}), secondEntered: make(chan struct{}),
 			}
@@ -470,7 +471,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		var service *docs.Service
 		handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			return service
 		})
 		handler = withDeadline(t, handler)
@@ -512,7 +513,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		var service *docs.Service
 		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			return service
 		})
 		handler = withDeadline(t, handler)
@@ -540,7 +541,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 	t.Run("a message whose event collides", func(t *testing.T) {
 		handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 			service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			return service
 		})
 		handler = withDeadline(t, handler)

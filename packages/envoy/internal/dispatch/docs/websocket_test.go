@@ -53,12 +53,7 @@ func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 	}
 	service.issueOpenChanged(context.Background(), "DOC-1")
 	waitForNoLiveDocument(t, service, artifactID)
-	connection.SetReadDeadline(time.Now().Add(time.Second))
-	for {
-		if _, _, err := connection.ReadMessage(); err != nil {
-			break
-		}
-	}
+	readUntilServerCloses(t, connection, "the closed issue's room to close the editor's connection")
 	if err := service.srv.Apply(context.Background(), artifactID, func(_ *crdt.Doc, _ func(func(*crdt.Transaction))) {}); !errors.Is(err, ErrIssueClosed) {
 		t.Fatalf("server write after issue close = %v, want ErrIssueClosed", err)
 	}
@@ -295,7 +290,7 @@ func TestLoadFailureMakesDocumentServiceUnavailable(t *testing.T) {
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
@@ -324,7 +319,7 @@ func TestCorruptLoadRefusesTheSocketAndReadsAsUnloadable(t *testing.T) {
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
@@ -423,7 +418,7 @@ func TestTheStoreJudgesAnUpdateByItsHeader(t *testing.T) {
 				Identity:    headerIdentity(database),
 				Settle:      time.Hour,
 			})
-			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			// The failed room's eviction is held, so the failure it carries is still the room's
 			// to read below: the eviction releases the room's state as it goes.
 			hold := make(chan struct{})
@@ -505,7 +500,7 @@ func TestALoadThatPanicsFailsItsRoomWhereThePanicIsMet(t *testing.T) {
 				Identity:    headerIdentity(database),
 				Settle:      time.Hour,
 			})
-			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 			// The failed room's eviction is held, so the failure the load leaves is still the
 			// room's to read below: the eviction releases the room's state as it goes.
 			evicting := make(chan struct{})
@@ -670,7 +665,7 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 		Store: database, Events: events.NewBroker(),
 		Identity: headerIdentity(database),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
@@ -689,12 +684,7 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 	})
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(context.Background()) }()
-	connection.SetReadDeadline(time.Now().Add(time.Second))
-	for {
-		if _, _, err := connection.ReadMessage(); err != nil {
-			break
-		}
-	}
+	readUntilServerCloses(t, connection, "Shutdown to close the editor's connection")
 	if err := testwait.Receive(t, "service.Shutdown to return with a document peer connected", shutdown); err != nil {
 		t.Fatalf("shutdown with document peer: %v", err)
 	}
@@ -722,7 +712,7 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	// caller's deadline, and the locked append has landed since, so this one drains nothing and
 	// returns nil.
 	t.Cleanup(func() {
-		if err := service.Shutdown(testwait.Context(t)); err != nil {
+		if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -772,7 +762,7 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 		t.Fatalf("wait for the locked append to be stored: %v", err)
 	}
 	reloaded := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	defer reloaded.Shutdown(context.Background())
+	defer docstest.Shutdown(t, context.Background(), reloaded)
 	if got, err := reloaded.Text(context.Background(), artifactID); err != nil || got != "after\n" {
 		t.Fatalf("text after the shutdown the locked append outlasted = %q (%v), want after", got, err)
 	}
@@ -788,7 +778,7 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 		Identity:    headerIdentity(database),
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
@@ -801,12 +791,7 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 	t.Cleanup(func() { _ = connection.Close() })
 
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	connection.SetReadDeadline(time.Now().Add(time.Second))
-	for {
-		if _, _, err := connection.ReadMessage(); err != nil {
-			break
-		}
-	}
+	readUntilServerCloses(t, connection, "the failed room to close the editor's connection")
 	_ = connection.Close()
 	waitForNoLiveDocument(t, service, artifactID)
 	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "before\n" {
@@ -823,7 +808,7 @@ func TestFailedRoomEvictsAndReloadsOnNextAccess(t *testing.T) {
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)

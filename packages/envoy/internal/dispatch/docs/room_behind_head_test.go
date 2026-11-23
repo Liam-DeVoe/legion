@@ -426,7 +426,9 @@ func TestACloseOfAReplacedHistoryClosesOnlyTheRoomItChecked(t *testing.T) {
 	}
 	replacement := pair.taskA.srv.GetDoc(pair.artifactID)
 
-	closed, err := pair.taskA.closeRoomBehindHead(context.Background(), pair.artifactID, stale)
+	closed, err := closeInstanceJoined(t, func() (bool, error) {
+		return pair.taskA.closeRoomBehindHead(context.Background(), pair.artifactID, stale)
+	})
 	if err != nil || closed {
 		t.Fatalf("close the replaced room = %v, %v, want false and no error", closed, err)
 	}
@@ -535,7 +537,9 @@ func TestACloseOfAReplacedRoomIsNotRefusedByItsClosedIssue(t *testing.T) {
 		t.Fatalf("close the document's issue: %v", err)
 	}
 
-	closed, err := pair.taskA.closeRoomBehindHead(context.Background(), pair.artifactID, stale)
+	closed, err := closeInstanceJoined(t, func() (bool, error) {
+		return pair.taskA.closeRoomBehindHead(context.Background(), pair.artifactID, stale)
+	})
 	if err != nil {
 		t.Fatalf("close the closed issue's replaced room: %v", err)
 	}
@@ -562,7 +566,9 @@ func TestACloseOfAReplacedRoomThatFailsLiftsItsReservation(t *testing.T) {
 		}
 	}
 
-	closed, err := pair.taskA.closeRoomBehindHead(context.Background(), pair.artifactID, stale)
+	closed, err := closeInstanceJoined(t, func() (bool, error) {
+		return pair.taskA.closeRoomBehindHead(context.Background(), pair.artifactID, stale)
+	})
 	pair.taskA.rebuilding.Delete(pair.artifactID)
 	if !reserved.Load() {
 		t.Fatal("the close never reserved task A's room")
@@ -629,7 +635,9 @@ func TestAWriteThatOpensBeforeTheCloseTakesItsLockLeavesTheRoomOpen(t *testing.T
 	state := pair.taskA.lockState(pair.artifactID)
 	state.liveWriter = nil
 	pair.taskA.unlockState(pair.artifactID, state)
-	closed, err := pair.taskA.closeRoomBehindHead(context.Background(), pair.artifactID, live)
+	closed, err := closeInstanceJoined(t, func() (bool, error) {
+		return pair.taskA.closeRoomBehindHead(context.Background(), pair.artifactID, live)
+	})
 	if err != nil {
 		t.Fatalf("close the room once its write has ended: %v", err)
 	}
@@ -697,7 +705,9 @@ func TestARoomOnAReplacedHistoryAnotherCallerIsInsideIsClosedOnceItLeaves(t *tes
 	}
 
 	leaveRoom()
-	closed, err := pair.taskA.closeRoomBehindHead(context.Background(), pair.artifactID, live)
+	closed, err := closeInstanceJoined(t, func() (bool, error) {
+		return pair.taskA.closeRoomBehindHead(context.Background(), pair.artifactID, live)
+	})
 	if err != nil {
 		t.Fatalf("close the room once the caller has left it: %v", err)
 	}
@@ -742,7 +752,9 @@ func TestAReplacedRoomThatIsAnotherClosesIsAnAnswerForTheCatchUp(t *testing.T) {
 				t.Fatal("the room could not be reserved, so nothing here is tested")
 			}
 			return func() {
-				if _, err := pair.taskA.closeReservedRoom(context.Background(), reservation); err != nil {
+				if _, err := closeInstanceJoined(t, func() (bool, error) {
+					return pair.taskA.closeReservedRoom(context.Background(), reservation)
+				}); err != nil {
 					t.Fatalf("make the reserved close: %v", err)
 				}
 			}
@@ -847,7 +859,7 @@ func TestARoomReservedForTheInstanceItReplacedIsTriedAgain(t *testing.T) {
 
 	// The reserving close returns, having closed nothing of its own, and the retry the catch-up
 	// armed closes the replacement.
-	if closed, err := pair.taskA.closeReservedRoom(ctx, reservation); err != nil || closed {
+	if closed, err := closeInstanceJoined(t, func() (bool, error) { return pair.taskA.closeReservedRoom(ctx, reservation) }); err != nil || closed {
 		t.Fatalf("the close reserved for the first instance = %v, %v, want false and no error", closed, err)
 	}
 	now = now.Add(catchUps.wakeIn())
@@ -894,20 +906,30 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 
 	var holdErr error
 	var heldThrough bool
-	// The hook runs on the test's goroutine, inside the close's Server.Apply (closeRoomInstance).
+	// The hook runs inside the close's Server.Apply (closeRoomInstance), on the goroutine the shared
+	// wait runs the close on (closeInstanceJoined), so its waits take the helper form and report
+	// through holdErr, which the test reads once the close has returned.
 	service.afterRoomClosePinned = func(room string) {
 		browser.Close()
 		// The service forgets the browser once ygo's teardown of it has returned, which is after
 		// that teardown stamped the room idle.
-		waitFor(t, "the browser's leaving to be torn down", func() bool { return connected() == 0 })
+		if err := testwait.InHelper("afterRoomClosePinned", "the browser's leaving to be torn down", func() bool { return connected() == 0 }); err != nil {
+			holdErr = err
+			return
+		}
 		if err := service.warmLiveDocument(context.Background(), sentinel); err != nil {
 			holdErr = fmt.Errorf("load the sentinel document's room: %w", err)
 			return
 		}
-		waitFor(t, "ygo's idle sweep to retire the sentinel room", func() bool { return service.srv.GetDoc(sentinel) == nil })
+		if err := testwait.InHelper("afterRoomClosePinned", "ygo's idle sweep to retire the sentinel room", func() bool { return service.srv.GetDoc(sentinel) == nil }); err != nil {
+			holdErr = err
+			return
+		}
 		heldThrough = service.srv.GetDoc(room) == live
 	}
-	closed, err := service.closeRoomInstance(context.Background(), artifactID, live)
+	closed, err := closeInstanceJoined(t, func() (bool, error) {
+		return service.closeRoomInstance(context.Background(), artifactID, live)
+	})
 	if err != nil {
 		t.Fatalf("close the room: %v", err)
 	}
@@ -2024,7 +2046,7 @@ func TestAFailedRoomsEvictionWaitsForTheStampsCommitAndReloadsIt(t *testing.T) {
 	appends := &failingBrowserAppendStore{VersionedStore: NewPgVersioned(database)}
 	service := New(Deps{Store: database, Persistence: appends, Events: events.NewBroker(), Settle: time.Hour})
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

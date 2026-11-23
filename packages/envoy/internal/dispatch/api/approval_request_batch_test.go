@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -28,7 +29,7 @@ import (
 func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testing.T) {
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documents := docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 		return documents
 	})
 	first := createInteractionIssue(t, handler, "APPR", "Approve the first", "A spec")

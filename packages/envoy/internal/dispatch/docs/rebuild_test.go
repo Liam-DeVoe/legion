@@ -12,6 +12,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -87,7 +88,7 @@ func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
 
 	service := newSchemaRepairService(database)
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown rebuilt service: %v", err)
 		}
 	})
@@ -189,7 +190,7 @@ func TestAStoredHistoryYgoRefusesFromItsClocksCannotLoad(t *testing.T) {
 
 	service := newSchemaRepairService(database)
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown service: %v", err)
 		}
 	})
@@ -229,7 +230,7 @@ func TestTheRebuildAStoredHistoryYgoRefusesIsOfferedRestoresTheDocument(t *testi
 
 	service := newSchemaRepairService(database)
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown service: %v", err)
 		}
 	})
@@ -316,7 +317,7 @@ func TestRebuildDocumentWritesThroughItsInjectedPersistence(t *testing.T) {
 		invalid:        true,
 	}
 	service := New(Deps{Store: database, Persistence: persist})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	replacement := "replacement\n"
 	if _, _, err := rebuildDocument(t, service, artifactID, &replacement); err != nil {
 		t.Fatalf("rebuild document: %v", err)
@@ -341,7 +342,7 @@ func TestARebuildFromTheLatestVersionRestoresItWhateverItWeighs(t *testing.T) {
 		t.Fatalf("store a version past the element limit: %v", err)
 	}
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	if _, _, err := rebuildDocument(t, service, artifactID, nil); err != nil {
 		t.Fatalf("rebuild from a version past the element limit: %v", err)
 	}
@@ -359,7 +360,7 @@ func storeLatestVersion(t *testing.T, database *store.Store, artifactID, markdow
 		t.Fatalf("store the latest version: %v", err)
 	}
 	service := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	return service
 }
 
@@ -427,7 +428,7 @@ func TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge(t *testing.T) {
 	before := history(t)
 	persist := &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}
 	service := New(Deps{Store: database, Persistence: persist})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	_, _, err := rebuildDocument(t, service, artifactID, nil)
 	if !errors.Is(err, ErrDocumentTooLarge) || !strings.HasPrefix(err.Error(), "document too large to store: ") || !strings.Contains(err.Error(), fmt.Sprintf("exceed the %d", maxUpdateItems)) {
 		t.Fatalf("rebuild from a version past ygo's item cap: %v, want ErrDocumentTooLarge naming the cap, unwrapped", err)
@@ -446,7 +447,7 @@ func TestARebuildFromSuppliedMarkdownIsWeighedAsANewDocument(t *testing.T) {
 	artifactID := createDocument(t, database, "before\n")
 	persist := &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}
 	service := New(Deps{Store: database, Persistence: persist})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	headings := func(width int) string {
 		return strings.Repeat("# "+strings.Repeat("a", width-3)+"\n", 16_384)
 	}
@@ -480,7 +481,7 @@ func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
 	artifactID := createDocument(t, database, "")
 	service := newSchemaRepairService(database)
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown: %v", err)
 		}
 	})
@@ -511,7 +512,7 @@ func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
 	// rebuildCaptureStore{invalid: true} is how rebuild_test stands one up.
 	rebuilding := New(Deps{Store: database, Persistence: &rebuildCaptureStore{VersionedStore: NewPgVersioned(database), invalid: true}})
 	t.Cleanup(func() {
-		if err := rebuilding.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), rebuilding); err != nil {
 			t.Errorf("shutdown rebuilding service: %v", err)
 		}
 	})
@@ -527,7 +528,7 @@ func TestAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
 	third := createDocument(t, database, "")
 	fresh := newSchemaRepairService(database)
 	t.Cleanup(func() {
-		if err := fresh.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), fresh); err != nil {
 			t.Errorf("shutdown fresh service: %v", err)
 		}
 	})

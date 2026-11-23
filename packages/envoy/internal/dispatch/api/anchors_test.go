@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -20,7 +21,7 @@ func TestQuoteAnchorWritesServerMark(t *testing.T) {
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Quote anchor", "The quick brown fox")
@@ -58,7 +59,7 @@ func TestMarkAnchorVerifiesBrowserMark(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Browser mark", "The quick brown fox")
@@ -119,7 +120,7 @@ func TestMarkAnchorSuggestionProjectsBrowserKind(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Browser suggestion", "The quick brown fox")
@@ -146,7 +147,7 @@ func TestQuoteAnchorCommentSpansParagraphs(t *testing.T) {
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Cross-block comment", "one\n\ntwo")
@@ -166,7 +167,7 @@ func TestSuggestionAcceptSpansParagraphs(t *testing.T) {
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Cross-block suggestion", "one\n\ntwo")
@@ -204,7 +205,7 @@ func browserDocumentService(t *testing.T) (*docs.Service, http.Handler, *store.S
 			Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond,
 			Identity: headerIdentity(database),
 		})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	return documentService, handler, database
@@ -303,7 +304,7 @@ func TestSuggestionAcceptKeepsTheCalloutItLandsIn(t *testing.T) {
 			var documentService *docs.Service
 			handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
-				t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				return documentService
 			})
 			issue := createInteractionIssue(t, handler, "TEST", "A callout's only paragraph",
@@ -405,7 +406,7 @@ func TestSuggestionAcceptRewritesOnlyTheTypedBlockUnderItsOwnID(t *testing.T) {
 			var documentService *docs.Service
 			handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
-				t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				return documentService
 			})
 			issue := createInteractionIssue(t, handler, "TEST", "A typed block rewritten", test.spec)
@@ -675,7 +676,7 @@ func TestMarkAnchorMissingAfterWaitIs409(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Missing browser mark", "The quick brown fox")

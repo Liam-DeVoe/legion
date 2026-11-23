@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -116,7 +117,7 @@ func newUploadRaceFixture(t *testing.T) *uploadRaceFixture {
 		})
 		// Runs before the service shuts down: a failed assertion must not leave the upload
 		// held inside its transaction.
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 		t.Cleanup(f.persistence.release)
 		f.docs = &engagingDocs{API: service, engaged: make(chan struct{})}
 		return f.docs

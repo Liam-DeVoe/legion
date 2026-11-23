@@ -1,7 +1,8 @@
 // Package docstest speaks the Hocuspocus websocket sync that docs.Service.ServeHTTP serves,
-// writes the deep trees a crafted client sends, and builds the load harness's spec, for Dispatch
-// tests in more than one package. It is an ordinary package rather than a _test.go file because
-// api, docs and pmdoc cannot import one another's test helpers, and it imports none of them.
+// writes the deep trees a crafted client sends, builds the load harness's spec and shuts a
+// document service down through the shared wait, for Dispatch tests in more than one package. It
+// is an ordinary package rather than a _test.go file because api, docs and pmdoc cannot import one
+// another's test helpers, and it imports none of them.
 package docstest
 
 import (
@@ -545,4 +546,17 @@ func NestedLinkUpdate(t testing.TB, doc *crdt.Doc, nested any) []byte {
 		t.Fatal(err)
 	}
 	return update
+}
+
+// Shutdown shuts service, a docs.Service, down on ctx, as a test's cleanup does once the test is
+// over, and answers Shutdown's error. Shutdown joins the service's room workers, its settlements,
+// its evictions, its compaction worker and its awareness relay's sends, and the last of these
+// waits on no context, so the call runs through the shared wait: a join that never returns fails
+// the test naming the shutdown rather than hanging the binary to its timeout. The service is taken
+// by its method because this package imports no docs package (see the package comment).
+func Shutdown(t testing.TB, ctx context.Context, service interface{ Shutdown(context.Context) error }) error {
+	t.Helper()
+	var err error
+	testwait.Returns(t, "the document service's shutdown to return", func() { err = service.Shutdown(ctx) })
+	return err
 }

@@ -2,7 +2,9 @@ package docs
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -14,6 +16,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -59,7 +62,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 	if connection, err := dialDocument(httpServer.URL, untouched); err != nil {
 		t.Errorf("open a document nobody touched after %d were: %v, want it admitted", len(ids)-1, err)
 	} else {
-		leaveDocument(connection)
+		leaveDocument(t, connection)
 	}
 	waitFor(t, "the untouched document's room to go idle", func() bool {
 		return len(service.srv.Rooms()) <= written
@@ -93,7 +96,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open a document nobody touched after %d were: %v, want it admitted", len(touched), err)
 	}
-	leaveDocument(connection)
+	leaveDocument(t, connection)
 	waitFor(t, "the untouched document's room to go idle", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
@@ -213,7 +216,7 @@ func newRoomReleaseService(t *testing.T) (*Service, *store.Store) {
 	// timeout when the first room starts it, so it is set before any room.
 	service.srv.RoomIdleTimeout = time.Second
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -351,7 +354,7 @@ func openInEditor(t *testing.T, service *Service, serverURL string, ids []string
 			break
 		}
 		waitFor(t, "document "+open.id+"'s room to go live", func() bool { return service.srv.GetDoc(open.id) != nil })
-		leaveDocument(open.connection)
+		leaveDocument(t, open.connection)
 	}
 	close(failures)
 	var refused []error
@@ -381,17 +384,35 @@ func dialDocument(serverURL, id string) (*gws.Conn, error) {
 }
 
 // leaveDocument closes connection as a browser tab does, with a close frame, and waits for the
-// server's close in reply.
-func leaveDocument(connection *gws.Conn) {
-	deadline := time.Now().Add(5 * time.Second)
-	_ = connection.WriteControl(gws.CloseMessage, gws.FormatCloseMessage(gws.CloseNormalClosure, ""), deadline)
-	_ = connection.SetReadDeadline(deadline)
-	for {
-		if _, _, err := connection.NextReader(); err != nil {
-			break
-		}
-	}
+// server's close in reply (readUntilServerCloses).
+func leaveDocument(t *testing.T, connection *gws.Conn) {
+	t.Helper()
+	_ = connection.WriteControl(gws.CloseMessage, gws.FormatCloseMessage(gws.CloseNormalClosure, ""), readDeadline(t))
+	readUntilServerCloses(t, connection, "the server's close in reply to the tab's")
 	_ = connection.Close()
+}
+
+// readUntilServerCloses reads connection until the server closes it, under the shared wait's
+// give-up (readDeadline), and fails the test naming what unless the read ends on the close itself:
+// a close frame or the connection's end, which gorilla reports as a *websocket.CloseError (1006
+// for an end with no frame), or a reset. A read that ends on the deadline means the server never
+// closed the connection.
+func readUntilServerCloses(t *testing.T, connection *gws.Conn, what string) {
+	t.Helper()
+	if err := connection.SetReadDeadline(readDeadline(t)); err != nil {
+		t.Fatalf("%s: set the read deadline: %v", what, err)
+	}
+	for {
+		_, _, err := connection.ReadMessage()
+		if err == nil {
+			continue
+		}
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			t.Fatalf("testwait: %s: gave up waiting for %s: the read reached the shared wait's give-up with the connection still open: %v", t.Name(), what, err)
+		}
+		return
+	}
 }
 
 // waitForStateToFollowLiveRooms waits until every map the service keeps per document holds the

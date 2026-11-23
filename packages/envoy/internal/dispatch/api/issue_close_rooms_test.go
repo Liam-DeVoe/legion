@@ -19,6 +19,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -93,7 +94,7 @@ func TestClosingAnIssueClosesItsRoomsFromItsCommit(t *testing.T) {
 			Identity: headerIdentity(database),
 			Settle:   time.Hour,
 		})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	runDocumentRoomSync(t, database, documentService)
@@ -148,7 +149,7 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Identity: headerIdentity(database), Settle: 20 * time.Millisecond})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		wrapper.API = documentService
 		return wrapper
 	})
@@ -160,7 +161,7 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	// The browser's room is on another process, which hears the close from its commit.
 	second := storetest.SecondProcess(t, database)
 	other := docs.New(docs.Deps{Store: second, Identity: headerIdentity(second), Settle: time.Hour})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), other) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), other) })
 	runDocumentRoomSync(t, second, other)
 	peer := connectBrowserPeer(t, other, issue.PrimaryArtifactID)
 	wrapper.insert = func() {

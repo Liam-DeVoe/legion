@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -51,7 +52,7 @@ func useNewerAskManifest(t *testing.T) {
 func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Duration) (http.Handler, *docs.Service) {
 	t.Helper()
 	service := docs.New(docs.Deps{Store: database, Settle: settle})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	deps, err := NewDeps(DepsInput{
 		Store:       database,
 		Identity:    headerIdentity(database),

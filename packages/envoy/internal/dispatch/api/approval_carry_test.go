@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -55,7 +56,7 @@ func settlingCarryDocuments(t *testing.T, settle time.Duration) (http.Handler, *
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: settle})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 		documentService = service
 		return service
 	})

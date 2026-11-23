@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -81,7 +82,7 @@ func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTrac
 		people = checkedIdentity(t, people)
 	}
 	documents := docs.New(docs.Deps{Store: database, Identity: people, Settle: settle, RoomIdleTimeout: repairRoomsNeverIdleOut})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	// A close or reopen reaches the document rooms from its commit (migration 20261101181500's
 	// trigger), whoever wrote it, an older release's SQL below included.
 	runDocumentRoomSync(t, database, documents)
@@ -513,7 +514,7 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	untouched := createInteractionIssue(t, f.handler, "OTHER", "Settled after its close", "Context\n")
 	awaitSettled(t, f.database, swept.PrimaryArtifactID, untouched.PrimaryArtifactID)
 	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), other) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), other) })
 	peers := map[string]*syncedPeer{
 		swept.PrimaryArtifactID:     connectBrowserPeer(t, other, swept.PrimaryArtifactID),
 		untouched.PrimaryArtifactID: connectBrowserPeer(t, other, untouched.PrimaryArtifactID),
@@ -574,7 +575,7 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 	fresh := createInteractionIssue(t, f.handler, "OTHER", "Marked after the bound", "Context\n")
 	awaitSettled(t, f.database, stale.PrimaryArtifactID, fresh.PrimaryArtifactID)
 	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), other) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), other) })
 	peers := map[string]*syncedPeer{
 		stale.PrimaryArtifactID: connectBrowserPeer(t, other, stale.PrimaryArtifactID),
 		fresh.PrimaryArtifactID: connectBrowserPeer(t, other, fresh.PrimaryArtifactID),

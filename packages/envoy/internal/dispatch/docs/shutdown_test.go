@@ -51,7 +51,7 @@ func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) 
 	typeOver(t, editor, "before", "after")
 	waitForSettlementOwed(t, service, artifactID)
 
-	if err := service.Shutdown(testwait.Context(t)); err != nil {
+	if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 		t.Fatalf("shutdown with an editor connected: %v", err)
 	}
 	testwait.Receive(t, "the editor's connection to end once Shutdown returned", editor.Ended)
@@ -85,7 +85,7 @@ func TestShutdownSettlesTheDocumentAColdWriteLeftOwing(t *testing.T) {
 	}
 	waitForSettlementOwed(t, service, artifactID)
 
-	if err := service.Shutdown(testwait.Context(t)); err != nil {
+	if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 		t.Fatalf("shutdown with a cold write's settlement owed: %v", err)
 	}
 	if number, markdown, authors := latestDocumentVersion(t, database, artifactID); number != 2 || markdown != "after\n" ||
@@ -518,7 +518,7 @@ func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T)
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	if err := service.Shutdown(ctx); err != nil {
+	if err := docstest.Shutdown(t, ctx, service); err != nil {
 		t.Fatalf("shutdown with a settlement that must stamp its room: %v", err)
 	}
 	state := service.room(artifactID)
@@ -561,7 +561,7 @@ func newShutdownTestServiceOn(t *testing.T, database *store.Store, appends Versi
 	// A test that already called Shutdown runs this one a second time; it logs its own
 	// "left to resume" line but does no second settlement attempt (settleRoomWithin's
 	// s.stopping guard returns it almost instantly), so it is a harmless no-op, not a race.
-	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	return service
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -52,7 +53,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	person := &endableIdentity{}
 	fake := clocktest.New(time.Now())
 	opened := fake.Now()
@@ -91,7 +92,7 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documents) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	person := &endableIdentity{}
 	source := agentstream.NewMemory()
 	source.SetResponder(plannerSessionID, true)
@@ -261,7 +262,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration, serverClock clo
 	}
 	broker := events.NewBroker()
 	rig.documents = docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), rig.documents) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), rig.documents) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: person, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: rig.documents, Events: broker,
 		StreamHeartbeat: heartbeat, Clock: serverClock,

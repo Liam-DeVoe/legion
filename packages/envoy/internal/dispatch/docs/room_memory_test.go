@@ -152,7 +152,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	// Once both sockets have left, whatever still holds the losing history is something other than
 	// the sockets, and the check above proves nothing.
 	for _, connection := range connections {
-		leaveDocument(connection)
+		leaveDocument(t, connection)
 	}
 	waitFor(t, "both sockets to be forgotten", func() bool {
 		return registeredConnections(service) == 0

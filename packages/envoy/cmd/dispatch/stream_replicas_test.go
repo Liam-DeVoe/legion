@@ -67,7 +67,7 @@ func connectDispatchStream(t *testing.T, urls []string, overrides map[string]str
 	if err != nil {
 		t.Fatalf("connect Dispatch's publisher for %v: %v", overrides, err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	return dispatchStart{boot: boot, client: client, logged: logged, overrides: overrides}
 }
 

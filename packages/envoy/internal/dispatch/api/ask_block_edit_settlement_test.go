@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -31,7 +32,7 @@ func blockAskHandlerWithDocuments(t *testing.T) (http.Handler, *store.Store, *do
 		documentService = docs.New(docs.Deps{
 			Store: database, Identity: headerIdentity(database), Settle: 20 * time.Millisecond,
 		})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	return handler, database, documentService
@@ -1049,7 +1050,7 @@ func TestEditOfAnAskWhoseBlockHoldsASecondListKeepsTheRowsOptions(t *testing.T) 
 		documentService = docs.New(docs.Deps{
 			Store: database, Settle: 20 * time.Millisecond, Identity: headerIdentity(database),
 		})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue, askID := seedBlockAsk(t, handler, "Block ask second list", "decision", transportAsk, "Which transport?")

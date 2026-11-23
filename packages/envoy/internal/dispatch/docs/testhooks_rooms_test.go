@@ -32,13 +32,13 @@ func TestRoomCountersCountServiceClosesAndSettlementResumptions(t *testing.T) {
 	waitForLandedAppends(t, service, artifactID)
 	alice := connectWithScope(t, server.URL, artifactID, "alice", "read-write", "before\n")
 
-	if err := service.srv.CloseRoom(artifactID, false); !errors.Is(err, ygws.ErrRoomHasPeers) {
+	if err := closeRoomJoined(t, service, artifactID, false); !errors.Is(err, ygws.ErrRoomHasPeers) {
 		t.Fatalf("an unforced close of the room alice is in = %v, want ErrRoomHasPeers", err)
 	}
 	if closes := requireRoomCounters(t, service, artifactID).RoomCloses; closes != 0 {
 		t.Fatalf("room closes after a close refused for the room's peers = %d, want 0", closes)
 	}
-	if err := service.srv.CloseRoom(artifactID, true); err != nil {
+	if err := closeRoomJoined(t, service, artifactID, true); err != nil {
 		t.Fatalf("close the room: %v", err)
 	}
 	if closes := requireRoomCounters(t, service, artifactID).RoomCloses; closes != 1 {
@@ -46,7 +46,7 @@ func TestRoomCountersCountServiceClosesAndSettlementResumptions(t *testing.T) {
 	}
 	requireEnds(t, alice, "closing the room left alice's browser connected")
 	const untouched = "00000000-0000-0000-0000-000000000000"
-	if err := service.srv.CloseRoom(untouched, true); !errors.Is(err, ygws.ErrRoomNotFound) {
+	if err := closeRoomJoined(t, service, untouched, true); !errors.Is(err, ygws.ErrRoomNotFound) {
 		t.Fatalf("a close of a document no room holds = %v, want ErrRoomNotFound", err)
 	}
 

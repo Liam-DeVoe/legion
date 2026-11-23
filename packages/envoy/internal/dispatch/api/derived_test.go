@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -22,7 +23,7 @@ func derivedHandler(t *testing.T) (http.Handler, *store.Store) {
 	t.Helper()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), service) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 		return service
 	})
 	return withDeadline(t, handler), database

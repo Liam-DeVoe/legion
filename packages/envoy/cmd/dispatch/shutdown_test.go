@@ -33,6 +33,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -682,7 +683,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the publisher: %v", err)
 	}
-	t.Cleanup(publisher.Close)
+	t.Cleanup(func() { bustest.Close(t, publisher) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -828,7 +829,7 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the publisher: %v", err)
 	}
-	t.Cleanup(publisher.Close)
+	t.Cleanup(func() { bustest.Close(t, publisher) })
 	githubServer := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(githubServer.Close)
 	ctx, cancel := context.WithCancel(context.Background())

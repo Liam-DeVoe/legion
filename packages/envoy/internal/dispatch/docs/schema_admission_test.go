@@ -211,7 +211,7 @@ func newAdmissionServer(t *testing.T, future bool) (*Service, string, *httptest.
 	artifactID := createDocument(t, database, "# First")
 	seeding := New(testServiceDeps(database))
 	seedServiceText(t, seeding, artifactID, markdown)
-	if err := seeding.Shutdown(context.Background()); err != nil {
+	if err := docstest.Shutdown(t, context.Background(), seeding); err != nil {
 		t.Fatalf("shutdown the seeding document service: %v", err)
 	}
 	restoreUncreatable, err := pmdoc.UseStagedBlockForTest("future", false)

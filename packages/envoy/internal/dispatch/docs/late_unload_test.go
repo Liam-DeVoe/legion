@@ -15,6 +15,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -854,7 +855,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
 	stop := testwait.Context(t)
 	t.Cleanup(func() {
-		if err := service.Shutdown(stop); err != nil {
+		if err := docstest.Shutdown(t, stop, service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -959,7 +960,7 @@ func (r *reloadedRoom) closeUnderHeldDeparture() func() {
 	held, letDeparture := r.holdDeparture()
 	_ = r.socket.Close()
 	r.awaitHeld(held, "the second room's browser")
-	if err := r.service.srv.CloseRoom(r.room, true); err != nil {
+	if err := closeRoomJoined(r.t, r.service, r.room, true); err != nil {
 		r.t.Fatalf("close the second room: %v", err)
 	}
 	r.awaitUnload("the second room")

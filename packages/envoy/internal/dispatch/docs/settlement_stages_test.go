@@ -149,7 +149,7 @@ func TestSettlementTakeOfARoomNoRoomHolds(t *testing.T) {
 				return
 			}
 			closed = true
-			if err := service.srv.CloseRoom(room, true); err != nil {
+			if err := closeRoomInHelper("afterSettleWarm", service, room, true); err != nil {
 				t.Errorf("close the room between take's warm-up and its read: %v", err)
 			}
 		}

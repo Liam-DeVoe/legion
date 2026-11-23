@@ -45,6 +45,7 @@ import (
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -157,7 +158,7 @@ func newContractRig(t *testing.T) *contractRig {
 	documentService := docs.New(docs.Deps{
 		Store: dispatchDB, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
 	})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 	seedPeople(t, dispatchDB, contractApprover, contractOther)
 	deps, err := NewDeps(DepsInput{
 		Store: dispatchDB, Identity: headerIdentity(dispatchDB),

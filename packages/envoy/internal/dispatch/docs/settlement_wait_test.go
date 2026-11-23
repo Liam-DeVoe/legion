@@ -11,6 +11,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -140,7 +141,7 @@ func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
 	versioned, _, _ := latestDocumentVersion(t, observer, artifactID)
 	unlock := holdDocumentLock(t, observer, artifactID)
 	since := tracer.mark()
-	if err := service.Shutdown(testwait.Context(t)); err != nil {
+	if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 		t.Errorf("Shutdown with the document's lock held elsewhere: %v", err)
 	}
 	unlock()

@@ -16,6 +16,7 @@ import (
 	ygws "github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -99,7 +100,7 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 		MarkWait: markWait,
 		Clock:    fake,
 	})
-	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
 	type verified struct {
@@ -161,7 +162,7 @@ func TestVerifyMarkReadsTheDocumentAgainWhenItsWaitEnds(t *testing.T) {
 		MarkWait: markWait,
 		Clock:    fake,
 	})
-	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
 	var replaced atomic.Int32
@@ -556,7 +557,7 @@ func newUnrecordedMarkService(t *testing.T) (*Service, string, func(age time.Dur
 	started := time.Now()
 	var aged atomic.Int64
 	service.now = func() time.Time { return started.Add(time.Duration(aged.Load())) }
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	return service, artifactID, func(age time.Duration) { aged.Store(int64(age)) }
 }
 
@@ -767,7 +768,7 @@ func TestSettleKeepsTheAnchoredMarkOfAnAskThatAlsoNamesABlock(t *testing.T) {
 	started := time.Now()
 	var aged atomic.Int64
 	service.now = func() time.Time { return started.Add(time.Duration(aged.Load())) }
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, documentA, "The quick brown fox")
 	seedServiceText(t, service, documentB, "The quick brown fox")
 	askID := insertAnchoredAsk(t, service, documentA, "brown")

@@ -61,12 +61,12 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen
 
 	writeAskBeforeClose(t, service, artifactID, actor)
 	closeTestIssue(t, service)
-	if err := service.Shutdown(ctx); err != nil {
+	if err := docstest.Shutdown(t, ctx, service); err != nil {
 		t.Fatalf("stop the service between close and reopen: %v", err)
 	}
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
 	t.Cleanup(func() {
-		if err := restarted.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), restarted); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
 	})
@@ -204,7 +204,7 @@ func TestTwoCreditedWritersBothSurviveACrashRestart(t *testing.T) {
 
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
 	t.Cleanup(func() {
-		if err := restarted.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), restarted); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
 	})
@@ -371,7 +371,7 @@ func TestAVersionedAuthorIsNotCreditedAgainAfterACrashRestart(t *testing.T) {
 
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
 	t.Cleanup(func() {
-		if err := restarted.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), restarted); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
 	})
@@ -779,7 +779,7 @@ func newTestServiceInstanceOn(t *testing.T, database *store.Store, serviceClock 
 		Clock:     serviceClock,
 	})
 	t.Cleanup(func() {
-		if err := service.Shutdown(testwait.Context(t)); err != nil {
+		if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -848,7 +848,7 @@ func TestABrowserEditAfterARoomReloadIsOwed(t *testing.T) {
 		t.Fatalf("wait for the setup rounds to become durable: %v", err)
 	}
 
-	if err := service.srv.CloseRoom(artifactID, true); err != nil {
+	if err := closeRoomJoined(t, service, artifactID, true); err != nil {
 		t.Fatalf("close the room: %v", err)
 	}
 	waitForNoLiveDocument(t, service, artifactID)

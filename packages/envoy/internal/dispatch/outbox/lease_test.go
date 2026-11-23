@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -113,7 +114,7 @@ func startProcessWith(t *testing.T, name string, database *store.Store, url stri
 	if err != nil {
 		t.Fatalf("connect %s's NATS client: %v", name, err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	pool, err := database.Pool.Outbox()
 	if err != nil {
 		t.Fatalf("open %s's outbox pool: %v", name, err)
@@ -779,7 +780,7 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the standby's NATS client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	tracer := &statementTracer{}
 	standby := New(Deps{
 		Store:     tracedStore(t, storetest.SecondProcess(t, database), tracer),

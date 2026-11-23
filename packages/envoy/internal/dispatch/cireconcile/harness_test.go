@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
@@ -130,7 +131,7 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 	if err != nil {
 		t.Fatalf("bus connect: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 
 	logs := &syncBuffer{}
 	limits := ratelimit.New(database.Pool)

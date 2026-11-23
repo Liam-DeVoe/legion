@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -38,7 +39,7 @@ func secondProcess(t *testing.T, database *store.Store) (http.Handler, *server) 
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
 	t.Cleanup(func() {
-		if err := shutdownDocuments(t, context.Background(), documentService); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 			t.Errorf("shutdown the second process's document service: %v", err)
 		}
 	})

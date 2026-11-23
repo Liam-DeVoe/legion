@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -19,7 +20,7 @@ func lockOrderServiceFor(t *testing.T, database *store.Store) *Service {
 	service := New(Deps{Store: database, Settle: time.Hour})
 	// Taken before the cleanup below is registered, so the context is cancelled after it runs.
 	stop := testwait.Context(t)
-	t.Cleanup(func() { _ = service.Shutdown(stop) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, stop, service) })
 	return service
 }
 

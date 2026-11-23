@@ -30,6 +30,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
@@ -423,10 +424,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		t.Helper()
 		return loadEnvoyConfig(envGetter(values), config.LoadOptions{CWD: t.TempDir(), HomeDir: envoyJSONHome(t)})
 	}
-	natsConnect := func(values map[string]string, url string) error {
+	natsConnect := func(t *testing.T, values map[string]string, url string) error {
 		client, err := bus.Connect([]string{url}, bus.WithEnvironment(envGetter(values).lookup))
 		if err == nil {
-			client.Close()
+			bustest.Close(t, client)
 		}
 		return err
 	}
@@ -832,11 +833,11 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"ENVOY_ALLOW_REMOTE_NATS": func(t *testing.T) {
 			const remote = "nats://nats.example:4222"
-			if err := natsConnect(nil, remote); !errors.Is(err, bus.ErrRemoteNATS) {
+			if err := natsConnect(t, nil, remote); !errors.Is(err, bus.ErrRemoteNATS) {
 				t.Errorf("unset: connect %s = %v, want a refusal", remote, err)
 			}
 			// Allowed, the connect goes on to the credential, which here fails before any dial.
-			if err := natsConnect(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "NATS_NKEY_SEED": "not a seed"}, remote); err == nil || errors.Is(err, bus.ErrRemoteNATS) || !strings.Contains(err.Error(), "NATS_NKEY_SEED") {
+			if err := natsConnect(t, map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "NATS_NKEY_SEED": "not a seed"}, remote); err == nil || errors.Is(err, bus.ErrRemoteNATS) || !strings.Contains(err.Error(), "NATS_NKEY_SEED") {
 				t.Errorf("ENVOY_ALLOW_REMOTE_NATS=1: connect %s = %v, want it past the refusal", remote, err)
 			}
 			if _, err := resolveBootConfig(devSignInEnvironment(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1"})); err == nil || !strings.Contains(err.Error(), "ENVOY_ALLOW_REMOTE_NATS") {
@@ -845,14 +846,14 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"ENVOY_NATS_SOCKS5_PROXY": func(t *testing.T) {
 			// With the reach opted in, the refusal is the address check's: a URL is not host:port.
-			if err := natsConnect(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": "socks5://127.0.0.1:1055"}, localNATS); err == nil || errors.Is(err, bus.ErrRemoteNATS) || !strings.Contains(err.Error(), "ENVOY_NATS_SOCKS5_PROXY") || !strings.Contains(err.Error(), "is a URL") {
+			if err := natsConnect(t, map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": "socks5://127.0.0.1:1055"}, localNATS); err == nil || errors.Is(err, bus.ErrRemoteNATS) || !strings.Contains(err.Error(), "ENVOY_NATS_SOCKS5_PROXY") || !strings.Contains(err.Error(), "is a URL") {
 				t.Errorf("ENVOY_NATS_SOCKS5_PROXY=socks5://127.0.0.1:1055: err = %v, want the address refused as a URL, naming the setting", err)
 			}
 			// The connect dials the proxy and hands it localNATS's address. This proxy refuses
 			// every request (connection refused), so the connect makes the bus's ten attempts a
 			// second apart, about ten seconds, and fails.
 			proxy := testsocks5.StartRefusing(t, 0x05)
-			if err := natsConnect(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": proxy.Addr}, localNATS); err == nil {
+			if err := natsConnect(t, map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": proxy.Addr}, localNATS); err == nil {
 				t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: a connect through a proxy that refuses it succeeded", proxy.Addr)
 			}
 			got := proxy.Requests()
@@ -886,7 +887,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			three := map[string]string{"ENVOY_NATS_REPLICAS": "3"}
 			refused := connectDispatchStream(t, []string{url}, three)
 			refusal := refused.awaitHookFailure(t)
-			refused.client.Close()
+			bustest.Close(t, refused.client)
 			if !strings.Contains(refusal.Error, "ENVOY_NATS_REPLICAS=3: ") {
 				t.Errorf("the stream at ENVOY_NATS_REPLICAS=3 on one server: logged %q, want the server's refusal naming the setting", refusal.Error)
 			}
@@ -949,29 +950,29 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"NATS_NKEY_SEED": func(t *testing.T) {
-			if err := natsConnect(map[string]string{"NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED does not hold a valid nkey seed") {
+			if err := natsConnect(t, map[string]string{"NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED does not hold a valid nkey seed") {
 				t.Errorf("NATS_NKEY_SEED: err = %v, want the seed refused", err)
 			}
 			file := writeFile(t, "seed", "  not a seed either\n")
-			if err := natsConnect(map[string]string{"NATS_NKEY_SEED_FILE": file, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED_FILE ("+file+")") {
+			if err := natsConnect(t, map[string]string{"NATS_NKEY_SEED_FILE": file, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED_FILE ("+file+")") {
 				t.Errorf("both set: err = %v, want the file to win", err)
 			}
-			if err := natsConnect(map[string]string{"NATS_NKEY_SEED_FILE": ""}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED_FILE is set but empty") {
+			if err := natsConnect(t, map[string]string{"NATS_NKEY_SEED_FILE": ""}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_NKEY_SEED_FILE is set but empty") {
 				t.Errorf("NATS_NKEY_SEED_FILE set but empty: err = %v, want it refused", err)
 			}
 		},
 		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
 			missing := filepath.Join(t.TempDir(), "missing")
-			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
+			if err := natsConnect(t, map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
 				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
 			}
 			token := writeFile(t, "token", "a.b.c\n")
-			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
+			if err := natsConnect(t, map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
 				t.Errorf("beside a seed: err = %v, want both named", err)
 			}
 		},
 		"NATS_SERVICE_GOOGLE_AUDIENCE": func(t *testing.T) {
-			if err := natsConnect(map[string]string{"NATS_SERVICE_GOOGLE_AUDIENCE": " "}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_GOOGLE_AUDIENCE is set but empty") {
+			if err := natsConnect(t, map[string]string{"NATS_SERVICE_GOOGLE_AUDIENCE": " "}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_GOOGLE_AUDIENCE is set but empty") {
 				t.Errorf("NATS_SERVICE_GOOGLE_AUDIENCE: err = %v, want the empty audience refused", err)
 			}
 		},

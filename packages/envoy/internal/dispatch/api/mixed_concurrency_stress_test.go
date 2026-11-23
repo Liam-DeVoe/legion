@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -46,7 +47,7 @@ func pooledDocumentHandlerWith(
 		})
 		service = docs.New(docs.Deps{Store: database, Settle: settle})
 		t.Cleanup(func() {
-			if err := service.Shutdown(testwait.Context(t)); err != nil {
+			if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})

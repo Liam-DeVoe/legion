@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
@@ -34,7 +35,7 @@ func TestApprovalRequestFollowsDocumentVersions(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-		t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+		t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 		return documentService
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Moving approval", "A spec")
@@ -163,7 +164,7 @@ func TestApprovalHandBackWaitsOnTheHuman(t *testing.T) {
 			var documentService *docs.Service
 			handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-				t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				return documentService
 			})
 			issue := createInteractionIssue(t, handler, "TEST", "Hand-back turn", "A spec")
@@ -328,7 +329,7 @@ func TestARewordlessHandBackKeepsTheQuestionsRevision(t *testing.T) {
 			var documentService *docs.Service
 			handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-				t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				return documentService
 			})
 			issue := createInteractionIssue(t, handler, "TEST", "Rewordless hand-back", "A spec")
@@ -520,7 +521,7 @@ func TestHeaderReviewAnswersMovedApprovalAskBeforeTheAgentHandsItBack(t *testing
 			var documentService *docs.Service
 			handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 				documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
-				t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+				t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 				return documentService
 			})
 			issue := createInteractionIssue(t, handler, "TEST", "Header review", "A spec")
@@ -608,7 +609,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 				Store: database, Events: doc.broker, Settle: settle,
 				Identity: headerIdentity(database),
 			})
-			t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), doc.documentService) })
+			t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), doc.documentService) })
 			return doc.documentService
 		})
 		issue := createInteractionIssue(t, doc.handler, "TEST", "Moving approval", "A spec")

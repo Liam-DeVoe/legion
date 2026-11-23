@@ -49,7 +49,9 @@ func TestAForcedCloseKeepsTheBrowserThatJoinedWhileItRan(t *testing.T) {
 				errors.New("the document's stored history was replaced under its room"))
 		}},
 		{"the catch-up's close of a replaced history", true, func(t *testing.T, service *Service, artifactID string, live *crdt.Doc) {
-			closed, err := service.closeRoomBehindHead(context.Background(), artifactID, live)
+			closed, err := closeInstanceJoined(t, func() (bool, error) {
+				return service.closeRoomBehindHead(context.Background(), artifactID, live)
+			})
 			if err != nil {
 				t.Fatalf("close the room the catch-up found on a replaced history: %v", err)
 			}
@@ -90,6 +92,9 @@ func TestAForcedCloseKeepsTheBrowserThatJoinedWhileItRan(t *testing.T) {
 			}
 
 			var joined atomic.Bool
+			// The close runs the hook on its own goroutine - the shared wait's, for the catch-up's
+			// close (closeInstanceJoined), and a failed room's eviction's - so the hook reports
+			// through t.Errorf and fails nothing itself.
 			service.afterRoomClosed = func(room string) {
 				if room != artifactID || !joined.CompareAndSwap(false, true) {
 					return
@@ -102,7 +107,9 @@ func TestAForcedCloseKeepsTheBrowserThatJoinedWhileItRan(t *testing.T) {
 					t.Errorf("load the room that replaces the closed one: %v", err)
 					return
 				}
-				editAsPeer(t, service, artifactID, replaceRun("before", "before, typed by bob"))
+				if _, err := editAsPeerOf(service, artifactID, replaceRun("before", "before, typed by bob")); err != nil {
+					t.Errorf("type as bob in the room that replaces the closed one: %v", err)
+				}
 			}
 			closer.force(t, service, artifactID, live)
 			if !joined.Load() {
@@ -397,7 +404,9 @@ func TestAForcedCloseKeepsTheFailuresOfTheRoomThatReplacedIt(t *testing.T) {
 		force func(t *testing.T, service *Service, artifactID string, live *crdt.Doc)
 	}{
 		{"the catch-up's close of a replaced history", func(t *testing.T, service *Service, artifactID string, live *crdt.Doc) {
-			if _, err := service.closeRoomBehindHead(context.Background(), artifactID, live); err != nil {
+			if _, err := closeInstanceJoined(t, func() (bool, error) {
+				return service.closeRoomBehindHead(context.Background(), artifactID, live)
+			}); err != nil {
 				t.Fatalf("close the room the catch-up found on a replaced history: %v", err)
 			}
 		}},

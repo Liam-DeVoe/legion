@@ -13,13 +13,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -51,7 +51,7 @@ func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
-	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documents) })
 	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	ctx, err := BuildAppContext(AppContextOptions{
 		SigningKey:        testSigningKey,
@@ -590,12 +590,12 @@ func TestWhoamiDoesNotSendAPageToReplayTheWholeLogWhileAWriteFromBeforeBootIsOpe
 	if _, err := writer.Exec(ctx, `select pg_current_xact_id()`); err != nil {
 		t.Fatalf("take the write's transaction id: %v", err)
 	}
-	// The write took its id before the server below takes its boot mark, and ends three seconds
-	// later, as a write holding its id for seconds does.
+	// The write took its id before the server below takes its boot mark, and stays open until the
+	// test ends, as a write holding its id for seconds does past whoami's answer: a whoami that
+	// waited on it would never answer, and the wait for its answer is what says it answered while
+	// the write was open.
 	handler := storeRouter(t, database)
-	ended := time.AfterFunc(3*time.Second, end)
-	t.Cleanup(func() { ended.Stop() })
-	if head := eventHeadID(t, askWhoami(t, handler)); head < final {
+	if head := eventHeadID(t, awaitWhoami(t, handler, "whoami's answer while a write from before boot is open")); head < final {
 		t.Fatalf("whoami answered event_head %d while a write from before boot was open, want at least %d, the newest of the events that committed before it: the page would be replayed the whole log", head, final)
 	}
 }

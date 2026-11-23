@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -883,7 +884,7 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 		Store: database, Events: broker, ServerURL: "https://dispatch.example",
 	})
 	t.Cleanup(func() {
-		if err := shutdownDocuments(t, context.Background(), documentService); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

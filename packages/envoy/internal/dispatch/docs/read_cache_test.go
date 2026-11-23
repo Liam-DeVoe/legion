@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -276,7 +277,7 @@ func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
 		t.Fatalf("load an over-cap history: %v, want ErrDocumentUnloadable", err)
 	}
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("read an over-cap history: %v, want ErrDocumentUnloadable and not ErrServiceUnavailable", err)
 	}
@@ -360,7 +361,7 @@ func newReadCacheServiceOn(t *testing.T, database *store.Store, persistence Vers
 		Clock:       serviceClock,
 	})
 	t.Cleanup(func() {
-		if err := service.Shutdown(testwait.Context(t)); err != nil {
+		if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 			t.Errorf("shutdown read-cache service: %v", err)
 		}
 	})

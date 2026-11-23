@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -63,7 +64,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 		Store: secondStore, Identity: headerIdentity(secondStore), Settle: 20 * time.Millisecond, Clock: holdingClock,
 	})
 	t.Cleanup(func() {
-		if err := holding.Shutdown(testwait.Context(t)); err != nil {
+		if err := docstest.Shutdown(t, testwait.Context(t), holding); err != nil {
 			t.Errorf("shutdown the second process's document service: %v", err)
 		}
 	})
@@ -177,7 +178,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	untouched := emptyDocument(t, handler, issue.Key, "Notes a third process holds")
 	thirdStore := storetest.SecondProcess(t, database)
 	third := docs.New(docs.Deps{Store: thirdStore, Identity: headerIdentity(thirdStore), Settle: time.Hour})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), third) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), third) })
 	// The hub's first dial fails and every later one waits on through, so this process hears
 	// nothing until the test lets it dial: the shape
 	// docs.TestAnIssueClosedWhileTheListenerWasDownClosesItsRoomsOnTheReconnect drives the

@@ -17,6 +17,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -43,7 +44,7 @@ func grantedNATS(t *testing.T, allow ...string) (*bus.Client, *natsgo.Conn, *tes
 	if err != nil {
 		t.Fatalf("connect as the granted user: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 
 	subscriber, err := bus.Dial("test-subscriber", []string{grant.URL}, os.LookupEnv)
 	if err != nil {

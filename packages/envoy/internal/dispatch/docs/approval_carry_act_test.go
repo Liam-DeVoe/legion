@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -44,7 +45,7 @@ func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, actAnswerSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), service) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
 	service.SettleNow(artifactID)
 	waitFor(t, "settlement to index both blocks", func() bool {

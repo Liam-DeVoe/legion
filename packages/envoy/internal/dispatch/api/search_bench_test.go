@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -80,7 +81,7 @@ func newCorpusSearchHandler(t *testing.T, databaseURL string) http.Handler {
 		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: time.Hour,
 	})
 	t.Cleanup(func() {
-		if err := shutdownDocuments(t, context.Background(), documentService); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), documentService); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

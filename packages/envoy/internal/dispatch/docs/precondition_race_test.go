@@ -12,6 +12,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -47,7 +48,7 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 			artifactID := createDocument(t, database, "")
 			service := New(Deps{Store: database, Settle: time.Hour})
 			t.Cleanup(func() {
-				if err := service.Shutdown(testwait.Context(t)); err != nil {
+				if err := docstest.Shutdown(t, testwait.Context(t), service); err != nil {
 					t.Errorf("shutdown service: %v", err)
 				}
 			})

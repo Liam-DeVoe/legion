@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -295,9 +296,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	})
 	// The shutdown's drain budget runs on the service's clock, so on a fake no one moves past it
 	// nothing but the context ends a shutdown that waits: the shared wait's ends it, and the error
-	// it then answers names what it waited on.
+	// it then answers names what it waited on. The call runs through the shared wait as well
+	// (docstest.Shutdown): Shutdown's last steps wait on no context.
 	t.Cleanup(func() {
-		if err := documentService.Shutdown(testwait.Context(t)); err != nil {
+		if err := docstest.Shutdown(t, testwait.Context(t), documentService); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -428,18 +430,6 @@ func registerJoined(t testing.TB, mux RouteMux, deps Deps) {
 		t.Helper()
 		waitBackgroundOf(t, served)
 	})
-}
-
-// shutdownDocuments shuts service down on ctx, as a test's cleanup does once the test is over, and
-// answers Shutdown's error. Shutdown joins the service's room workers, its settlements, its
-// evictions, its compaction worker and its awareness relay's sends, and the last of these waits on
-// no context, so the call runs through the shared wait: a join that never returns fails the test
-// naming the shutdown rather than hanging the binary to its timeout.
-func shutdownDocuments(t testing.TB, ctx context.Context, service *docs.Service) error {
-	t.Helper()
-	var err error
-	testwait.Returns(t, "the document service's shutdown to return", func() { err = service.Shutdown(ctx) })
-	return err
 }
 
 // directServer is a server a test calls a handler or a delivery step on directly, without the
@@ -911,7 +901,7 @@ func TestDocumentTextReportsUnavailableService(t *testing.T) {
 		Persistence: failingLoadStore{VersionedStore: docs.NewPgVersioned(database)},
 		Events:      broker,
 	})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 	deps, err := NewDeps(DepsInput{
 		Store:    database,
 		Identity: headerIdentity(database),
@@ -2168,7 +2158,7 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	documentService := docs.New(docs.Deps{
 		Store: database, Events: broker, Identity: cookieIdentity, Settle: time.Hour,
 	})
-	t.Cleanup(func() { _ = shutdownDocuments(t, context.Background(), documentService) })
+	t.Cleanup(func() { _ = docstest.Shutdown(t, context.Background(), documentService) })
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: cookieIdentity, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs: documentService, Events: broker, StreamHeartbeat: heartbeat,

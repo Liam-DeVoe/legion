@@ -15,6 +15,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -359,7 +360,7 @@ func TestBackfillStoresNothingForAStampTheDocumentNoLongerNeeds(t *testing.T) {
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := docstest.Shutdown(t, context.Background(), service); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -813,38 +814,66 @@ func requireNoSuppressedSlots(t *testing.T, service *Service, room, when string)
 
 // editAsPeer writes a tree change as a browser's edit reaches the room: made in a document of its
 // own, with a client id of its own, synced from the room and applied to it as a peer's update. It
-// returns that browser's document.
+// returns that browser's document, and fails t when the change cannot be made (editAsPeerOf).
 func editAsPeer(t *testing.T, service *Service, artifactID string, edit func(*pmdoc.Node) *pmdoc.Node) *crdt.Doc {
 	t.Helper()
-	room := service.srv.GetDoc(artifactID)
-	if room == nil {
-		t.Fatal("document room is not resident")
-	}
-	peer, update := peerEdit(t, room, edit)
-	if err := crdt.ApplyUpdateV1(room, update, "peer"); err != nil {
-		t.Fatalf("apply the peer's edit to the room: %v", err)
+	peer, err := editAsPeerOf(service, artifactID, edit)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return peer
 }
 
+// editAsPeerOf is editAsPeer answering its failure rather than failing a test, for a caller off the
+// test goroutine (a hook a close runs on the shared wait's goroutine) that reports it with t.Error.
+func editAsPeerOf(service *Service, artifactID string, edit func(*pmdoc.Node) *pmdoc.Node) (*crdt.Doc, error) {
+	room := service.srv.GetDoc(artifactID)
+	if room == nil {
+		return nil, errors.New("document room is not resident")
+	}
+	peer, update, err := peerEditOf(room, edit)
+	if err != nil {
+		return nil, err
+	}
+	if err := crdt.ApplyUpdateV1(room, update, "peer"); err != nil {
+		return nil, fmt.Errorf("apply the peer's edit to the room: %w", err)
+	}
+	return peer, nil
+}
+
 // peerEdit makes a tree change in a browser's own document, with a client id of its own, synced
-// from room, and returns that document with the update the browser sends room for the change.
+// from room, and returns that document with the update the browser sends room for the change. It
+// fails t when the change cannot be made (peerEditOf).
 func peerEdit(t *testing.T, room *crdt.Doc, edit func(*pmdoc.Node) *pmdoc.Node) (*crdt.Doc, []byte) {
 	t.Helper()
+	peer, update, err := peerEditOf(room, edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return peer, update
+}
+
+// peerEditOf is peerEdit answering its failure: the browser's document could not be synced from
+// room or read, or the change could not be written into it.
+func peerEditOf(room *crdt.Doc, edit func(*pmdoc.Node) *pmdoc.Node) (*crdt.Doc, []byte, error) {
 	peer := crdt.New()
 	if err := crdt.ApplyUpdateV1(peer, crdt.EncodeStateAsUpdateV1(room, nil), nil); err != nil {
-		t.Fatalf("sync peer from the room: %v", err)
+		return nil, nil, fmt.Errorf("sync peer from the room: %w", err)
 	}
 	synced := peer.StateVector()
 	tree, err := treeOf(peer)
 	if err != nil {
-		t.Fatalf("read peer document: %v", err)
+		return nil, nil, fmt.Errorf("read peer document: %w", err)
 	}
 	fragment := peer.GetXmlFragment(fragmentName)
+	var editErr error
 	peer.Transact(func(txn *crdt.Transaction) {
 		if err := pmdoc.Update(txn, fragment, edit(tree)); err != nil {
-			t.Errorf("edit peer document: %v", err)
+			editErr = fmt.Errorf("edit peer document: %w", err)
 		}
 	})
-	return peer, crdt.EncodeStateAsUpdateV1(peer, synced)
+	if editErr != nil {
+		return nil, nil, editErr
+	}
+	return peer, crdt.EncodeStateAsUpdateV1(peer, synced), nil
 }
