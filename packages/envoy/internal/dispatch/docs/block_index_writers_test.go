@@ -332,7 +332,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 			}
 			close(ticked)
 		}()
-		if waiters := storetest.WaitForLockWaiters(t, holder, 1, fenceWait); waiters < 1 {
+		if waiters := storetest.WaitForLockWaiters(t, holder, 1); waiters < 1 {
 			holder.Rollback(ctx)
 			t.Fatalf("the tick never queued behind %s", step.name)
 		}
