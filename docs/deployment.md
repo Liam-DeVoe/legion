@@ -894,6 +894,15 @@ held only while the clone or its fetch reads the shared clone, and the checkout 
 places. The clone is removed with the issue's workspace. It costs the disk one more copy of the
 repository's objects and one checkout.
 
+A reviewer's pane outlives its round, and nothing moves its clone while the pane runs. So before
+the daemon sends a reviewer a task, or publishes it a merge forward's review or the ask of its
+verdict past review, it reads the pull request's head again. Where that head is not the one the
+pane's launch was given, or the daemon restarted since that launch, the pane is started again on
+its session first (`supervise.ReviewHeadMoved`), and that launch brings the clone to the head as
+above. The task or message goes to the new pane once it is ready, and the old pane is sent
+nothing. A relaunch whose launch still gives the reviewer another head is not raised a second
+time for that head: the task waits, with one error line, until the record holds another head.
+
 The reviewer's pane PATH has `<state_dir>/review-git/bin` after the launcher's `bin/`. That
 directory's `git` is a shim the daemon writes again at every reviewer launch. It runs the next git
 on PATH with `-c core.fsmonitor=false -c core.hooksPath=/dev/null` in front of the subcommand. It

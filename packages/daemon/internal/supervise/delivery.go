@@ -951,6 +951,18 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		}
 		return nil
 	}
+	// Nor is a reviewer handed anything by a process launched at another head than the one its
+	// record holds now: its clone stands where that launch made it, and a reviewer would read the
+	// old head's files and miss the new head's objects (reviewHeadHolds). The task waits, unsent
+	// and charged nothing, while the process is replaced at the record's head, and goes to the
+	// process that replacement starts once it is ready. A record that does not answer holds the
+	// task too, and the next decision asks again.
+	if holds, err := m.reviewHeadHolds(ctx); err != nil {
+		m.log.Warn("supervise: the record did not answer which head the reviewer's task is for; the task waits", "delivery", p.ID, "error", err)
+		return nil
+	} else if !holds {
+		return nil
+	}
 	// A root architect's task of a run (asksRoot) is one of the two deliveries the question a
 	// restart left never answers (the other is below): such a task may be one nobody has ever
 	// sent — it is held on the claim while its root has no architect to hear it, across restarts —

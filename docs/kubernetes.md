@@ -5391,6 +5391,9 @@ At each later start of the reviewer the clone is brought to the head that start 
 Two clones are made again instead, each with a log line:
 one that holds an `objects/info/alternates` file, which is removed first, and one whose head the shared clone does not hold, which a new clone fetching that head from GitHub replaces once whole.
 Each start refuses to start the reviewer, naming both commits, when neither the shared clone nor GitHub gives that head, leaving the clone there as it was, or when the clone's checked-out `HEAD` is not that head afterwards.
+A reviewer's process outlives its round, and nothing moves its clone while it runs.
+So before the daemon sends a reviewer a task, or publishes it a merge forward's review or the ask of its verdict past review, it reads the pull request's head again; where that head is not the one the process's generation was given as `LEGION_REVIEW_HEAD`, or the daemon restarted since that launch, the reviewer is started again on its session in the same pod first (`supervise.ReviewHeadMoved`), and the next generation's role-init brings the clone to the head as above.
+The task or message goes to that generation once it is ready.
 Only the worker image of this release makes that clone, so a reviewer starts only in an issue pod on the configured image, and a pod on another image is replaced by its update round before the reviewer starts there ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 Every git of that work reads no global or system configuration and runs no fsmonitor or hook.
 Every other role's role-init covers `/legion/reviews` with an empty memory filesystem of its own, so no other role sees the clone or writes it, and what such a role writes there never reaches the volume.

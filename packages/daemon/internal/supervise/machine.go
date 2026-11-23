@@ -985,6 +985,14 @@ type Deps struct {
 	// replaces it (internal/daemon's reviewerPods). The task stays pending and charged nothing,
 	// and the next decision asks again (sendPending). nil holds no delivery back.
 	DeliveryWaits func(c Claim) bool
+	// ReviewHead is the head of issue's pull request as the daemon's record holds it now, ""
+	// where it records none (internal/daemon's workflowRuntime.reviewHead): the head a reviewer's
+	// task is for. A reviewer works only in a clone of its own made at the head its launch's spec
+	// gave it (runtime.SpawnSpec.ReviewHead), which nothing moves while its process runs, so a
+	// reviewer's task is sent only to a process launched at the head this answers, and a process
+	// launched at another is replaced first (reviewHeadHolds, ReviewHeadMoved). It is asked only
+	// of a reviewer's send. nil asks nothing and holds nothing back.
+	ReviewHead func(ctx context.Context, issue string) (string, error)
 	// PhaseHolds says whether issue is still in phase p on run generation: the workflow enqueues a
 	// task for the phase and run its issue was in, and the outbox refuses to start a role for a
 	// phase the issue has left (daemon/outbox.go), so a delivery queued before the phase or the run
@@ -1408,6 +1416,20 @@ type Machine struct {
 	// it, and the reason the claim stores with the abandoned session (Claim.Abandoned) still tells
 	// the fresh agent at its first task.
 	lostCause SessionLoss
+	// reviewLaunched is the head a reviewer's launch gave it, at the generation of that launch
+	// (spawnSpec): where the clone its process works in stands, since nothing moves that clone
+	// while the process runs. It is memory only: a machine a restart rebuilt knows no launch's
+	// head, and its reviewer's next task goes to a process launched at the record's
+	// (reviewHeadHolds). reviewRaising is whether a relaunch this machine raised for the head
+	// (raiseReviewRelaunch, ReviewHeadMoved) is still to be decided, so a send that finds the
+	// heads apart again meanwhile raises none of its own; the fence clears it. reviewRaisedFor is
+	// the record's head the last relaunch was raised for, at the generation it was raised over,
+	// so a launch since that still gave another head raises none again (reviewHeadHolds), and
+	// reviewRefused the head that refusal was last logged for.
+	reviewLaunched  reviewAt
+	reviewRaising   bool
+	reviewRaisedFor reviewAt
+	reviewRefused   string
 	// refusedEarlierRelease is the generation at which the fence refused the registration of a
 	// process an earlier release started, for a claim that records a session and no file
 	// (markRollEdge), and 0 where no such refusal is outstanding. Such a process is a fresh agent
@@ -2624,6 +2646,10 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 			return false, nil
 		}
 		delete(m.timers, ev.Kind)
+	case ReviewHeadMoved:
+		// The relaunch the machine raised is decided now, whatever the table makes of it, so the
+		// next send that finds the heads apart raises one again (raiseReviewRelaunch).
+		m.reviewRaising = false
 	case RequestRegister:
 		// A registration as another session than the claim records is refused (fenceRequest),
 		// and stays refused: its process is not the claim's agent. Where that process is one an
@@ -3312,6 +3338,10 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.Tree, m.claim.Issue, m.claim.Role
 	spec.Generation, spec.BootToken = m.claim.Generation, token
 	spec.ResumeSessionFile, spec.ResumeSession, spec.ResumeByAgent = "", "", false
+	// The head this launch's process will work at, which a build at a later generation replaces:
+	// the generation is the try's own, so a try that never starts leaves the record of a
+	// generation no process runs at, which no send reads (reviewHeadHolds).
+	m.reviewLaunched = reviewAt{generation: m.claim.Generation, head: spec.ReviewHead, known: true}
 	return spec, nil
 }
 
@@ -4464,6 +4494,8 @@ func claimOf(ev Event) claim.Token {
 	case StalePlugin:
 		return ev.Claim
 	case StallBackstop:
+		return ev.Claim
+	case ReviewHeadMoved:
 		return ev.Claim
 	case PodUpdateOpen:
 		return ev.Claim

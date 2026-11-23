@@ -873,8 +873,9 @@ type plan struct {
 	// (workflowRuntime.ensureReviewClone); nil without a workflow.
 	ensureReviewClone func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch, head string) error
 	// reviewHead is the head of an issue's pull request the store records, which a reviewer's
-	// launch is given to review (workflowRuntime.reviewHead, specs.reviewHead); nil without a
-	// workflow.
+	// launch is given to review (workflowRuntime.reviewHead, specs.reviewHead), and which every
+	// send to a live reviewer, and every message held for one, is held to (supervise's
+	// Deps.ReviewHead); nil without a workflow.
 	reviewHead func(ctx context.Context, issue string) (string, error)
 	// owner is the architect that owns a claim on an issue that is not its tree's root, read from
 	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
@@ -1827,6 +1828,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
 		DeliveryWaits:           reviewerPods.holdsTask,
+		ReviewHead:              p.reviewHead,
 		Secrets:                 p.secretsEnroller,
 		Registrar:               p.secretsRegistrar,
 		PhaseHolds:              p.phaseHolds,
