@@ -92,17 +92,27 @@ func TestAMergeForwardAsksTheReviewerOnlyOfATaskWithAReviewerStep(t *testing.T) 
 				}
 			})
 
-			t.Run("a merger entering merging after the landing", func(t *testing.T) {
+			// In retro the conflict waits for the merger and asks nothing (cybermonklabs/legion#4979),
+			// so a head the implementer pushes there is a push past review like any other: the agent of
+			// each review step that has passed is asked for its verdict on it (askVerdict), and the
+			// merger that enters merging at it waits for legion-verdict there, since the reviewer's
+			// last verdict names the head before the push (owedVerdict).
+			t.Run("a merger entering merging after a push in retro", func(t *testing.T) {
 				pool := plannedConflictIssue(t, phase.Retro, tc.steps...)
 				confirmsConflict(t, pool, requiresCI)
-				asked := len(mergeForwardMessages(t, pool))
+				if asked := mergeForwardMessages(t, pool); len(asked) != 0 {
+					t.Fatalf("the conflict confirmed in retro queued %v, want nothing: it waits for the merger", toldWho(asked))
+				}
+				if tc.review {
+					applyRefusingNothing(t, pool, readsAfter(2*time.Minute), pastReviewVerdict("approve", conflictHead))
+				}
 				landsMergeForward(t, pool)
 				want := []string{}
 				if tc.review {
 					want = append(want, "reviewer review")
 				}
-				if got := toldWho(mergeForwardMessages(t, pool)[asked:]); !reflect.DeepEqual(got, want) {
-					t.Fatalf("the landing in retro queued %v, want %v", got, want)
+				if got := toldWho(mergeForwardMessages(t, pool)); !reflect.DeepEqual(got, want) {
+					t.Fatalf("the push in retro queued %v, want %v", got, want)
 				}
 
 				applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",

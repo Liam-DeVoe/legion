@@ -472,10 +472,16 @@ func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 		}
 	}
 
-	apply(2*time.Minute, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: conflictHead,
-		HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it", SubmittedAt: firstConflictRead.Add(2 * time.Minute)})
+	// Under one App no GitHub review decides a round: the reviewer's completion with its verdict
+	// does (reviewRound), and its approve of the conflicting head ends the round.
+	apply(2*time.Minute, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim,
+		Summary: "ship it", Verdict: "approve", Commit: conflictHead, HandoffRecord: "review-1", HandoffVersion: 1})
 	nothingAskedIn(phase.Accepting)
-	apply(3*time.Minute, intake.SignOff{Issue: "LEGION-208"})
+	// The owner signs off as the agent its acceptance's start names (stepCallerRefusal), at the
+	// head it read.
+	seedStepAgent(t, pool, acceptanceStep, architectClaim, false)
+	apply(3*time.Minute, intake.SignOff{Issue: "LEGION-208", By: architectClaim, Generation: 1,
+		Entry: openStepOf(t, pool, readsAfter(3*time.Minute), "LEGION-208"), Commit: conflictHead})
 	nothingAskedIn(phase.Retro)
 	// A base push in retro reads the head again, and a read that finds it still conflicting asks
 	// nothing either.
