@@ -204,8 +204,10 @@ export function RefPickerList({
   picker: RefPicker;
 }): ReactNode {
   const headingPrefix = useId();
-  // A row's detail is cut to one line; a surface with no tooltips (the issue page) draws it as it
-  // is cut, and carries no `title` for it (`useTooltips`).
+  // A row's detail is cut to one line, and its `title` gives the whole detail back. A surface
+  // with no tooltips (the issue page) carries no `title` for it (`useTooltips`), so there the
+  // detail wraps whole and breaks anywhere: nothing on that surface could give back what an
+  // ellipsis cut.
   const tooltips = useTooltips();
   if (!picker.open) return null;
   const take = (id: string) => {
@@ -269,7 +271,11 @@ export function RefPickerList({
           // The stronger muted role, which clears AA over the sky fill a highlighted row wears
           // as well as over the list's own surface.
           <TruncatedText
-            className={`text-xs ${textOptionDescription}`}
+            className={
+              tooltips
+                ? `text-xs ${textOptionDescription}`
+                : `text-xs whitespace-normal! [overflow-wrap:anywhere] ${textOptionDescription}`
+            }
             title={tooltips ? one.detail : undefined}
           >
             <RefRowDetail row={one} />
