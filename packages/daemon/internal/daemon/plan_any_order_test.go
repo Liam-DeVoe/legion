@@ -215,6 +215,9 @@ func TestAnIssueOfTheReleaseBeforeGoesOn(t *testing.T) {
 	}
 	r.retro()
 	r.merge()
+	if len(walked.sessions) != 2 {
+		t.Fatalf("%s holds %d sessions the release before recorded, want its architect's and its reviewer's: the check of the sessions would read nothing", walked.key, len(walked.sessions))
+	}
 	for role, kept := range walked.sessions {
 		if got := r.d.claim(r.tokenOf(walked.key, role)).Session; got != kept.id {
 			t.Fatalf("%s's %s holds the session %q at done, want %q, the one the release before recorded", walked.key, role, got, kept.id)

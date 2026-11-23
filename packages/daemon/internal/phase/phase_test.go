@@ -114,11 +114,14 @@ func TestMovePairsHoldsEveryPairOfTwoDifferentPhases(t *testing.T) {
 	if !slices.Equal(pairs[:21], BackwardPairs()) {
 		t.Fatalf("MovePairs begins %q, want BackwardPairs %q in their order", pairs[:21], BackwardPairs())
 	}
-	var forward []string
-	for at, from := range Order {
-		for _, to := range Order[at+1:] {
-			forward = append(forward, Pair(from, to))
-		}
+	// Written out here, not built by the loop under test.
+	forward := []string{
+		"planning-implementing", "planning-testing", "planning-reviewing", "planning-accepting", "planning-retro", "planning-merging",
+		"implementing-testing", "implementing-reviewing", "implementing-accepting", "implementing-retro", "implementing-merging",
+		"testing-reviewing", "testing-accepting", "testing-retro", "testing-merging",
+		"reviewing-accepting", "reviewing-retro", "reviewing-merging",
+		"accepting-retro", "accepting-merging",
+		"retro-merging",
 	}
 	if !slices.Equal(pairs[21:], forward) {
 		t.Fatalf("MovePairs ends %q, want the forward pairs %q", pairs[21:], forward)
