@@ -37,14 +37,17 @@ type podRefusalRig struct {
 }
 
 // newPodRefusalRig builds the rig. answers builds the workflow runtime the refusals are told to,
-// over the rig's pool and records; deps changes the machines' deps before the claim is created,
-// since a machine takes its deps where it is built.
+// over the rig's pool and records, whose handlers the outbox runner applies its own facts with, as
+// the daemon's runner does; deps changes the machines' deps before the claim is created, since a
+// machine takes its deps where it is built.
 func newPodRefusalRig(t *testing.T, answers func(pool *store.Pool, records record.Store) *workflowRuntime, deps func(*supervise.Deps)) *podRefusalRig {
 	t.Helper()
 	runner, sup, pool := runnerIn(t, phase.Testing, "testing", &outboxPublisher{}, quietLogger())
 	clock := &heldClock{}
 	sup.deps.Clock = clock
-	sup.deps.PodRefused = answers(pool, runner.records).podRefused
+	told := answers(pool, runner.records)
+	sup.deps.PodRefused = told.podRefused
+	runner.handlers = told.handlers
 	if deps != nil {
 		deps(&sup.deps)
 	}
@@ -248,5 +251,58 @@ func TestARefusalsFactTheWorkflowCannotApplyStopsTheWorkflow(t *testing.T) {
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("the refusal's fact failed and the workflow went on: a lost fact leaves the claim suspended with nothing to start it")
+	}
+}
+
+// The turn of a resume the wake pacing held can come, and its launch be refused, while the start
+// row that the pacing parked it for is still finishing: the row has delivered its task and returned,
+// and its finish has not yet deleted it. The refusal's fact then reads that row as a start of the
+// claim and queues none, and the row's finish leaves the claim suspended with nothing to start it.
+// So the finish of a start row whose claim's last launch its pod refused asks the workflow again,
+// once the row is gone, and the workflow queues the claim's start where none stands (the tester's
+// owed entry). The interleaving is driven here: the row's attempt runs (execute) and its finish
+// (settle) waits until the wake's turn has been refused and its fact has committed.
+func TestARefusalWhileItsParkedStartRowIsStillFinishingQueuesAStartOnceTheRowEnds(t *testing.T) {
+	r := newPodRefusalRig(t, engineAnswers, func(d *supervise.Deps) {
+		d.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+	})
+	r.queueTheTestersStart()
+	var id int64
+	if err := r.pool.QueryRow(context.Background(), `select id from outbox where kind = 'supervise'`).Scan(&id); err != nil {
+		t.Fatalf("read the start row's id: %v", err)
+	}
+	row := mustOutboxRow(t, "LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Phase: phase.Testing,
+		Entry: 2, Task: "Test it.", Generation: 1}, time.Now().Add(-time.Minute))
+	row.ID = id
+	if err := r.runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("the start row's attempt: %v", err)
+	}
+	if held := r.machine.View(); held.State != supervise.StateLaunching || held.WakeWaiting == nil {
+		t.Fatalf("after the start row's attempt the tester is %s with wake %+v, want it launching under the resume the pacing parked", held.State, held.WakeWaiting)
+	}
+
+	r.refuseOnPod1()
+	if fired := r.clock.fire(parkedTurn); fired != 1 {
+		t.Fatalf("fired %d timers for the wake's turn, want the one the pacing armed", fired)
+	}
+	r.toldTheController()
+	if got := r.starts(); len(got) != 1 {
+		t.Fatalf("while the row still stands the outbox holds the starts %+v, want the row's own alone: the refusal read it as the claim's start", got)
+	}
+
+	r.runner.settle(context.Background(), row, nil)
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		got := r.starts()
+		if len(got) == 1 && got[0].ResendEntry {
+			if s := got[0]; s.Role != claim.RoleTester || s.Phase != phase.Testing || s.Entry != 2 || !strings.HasPrefix(s.Task, "Test it.") {
+				t.Fatalf("the queued start is %+v, want the tester's owed entry 2 of testing, its stored task, marked as a resend of that entry", s)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("20 s after the row's finish the outbox holds the starts %+v, want the tester's owed entry queued: nothing else brings it back", got)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
