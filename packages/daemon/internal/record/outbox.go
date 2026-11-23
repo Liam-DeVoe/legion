@@ -2755,8 +2755,11 @@ const VolumeNearFullNotice NoticeKind = "volume-near-full"
 // delete a disk only after a read shows it clean. It names the state of each claim of the issue
 // and what the read found, and it is sent once for each pod kept so (store's recordDecline). It is
 // the architect's because no live role of the issue is there to push the work, and the architect
-// is who can bring one back. No earlier release decodes it, so a rollback deletes its unsent rows
-// first (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+// is who can bring one back. Where the owning architect will not hold its role again, the notice
+// reaches the project's controller instead, as a ControllerNotice of the same kind and words
+// (internal/daemon's tellControllerOfKeptPod), since the pod counts as told once its notice is
+// queued. No earlier release decodes it, so a rollback deletes its unsent rows, the controller's
+// among them, first (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
 const WorkspaceKeptNotice NoticeKind = "workspace-kept"
 
 // validNoticeKind says whether kind is a notice an architect is told.
