@@ -583,8 +583,10 @@ var readScopeRoutes = []string{
 // less two: the mint and the change of a personal token, since a token they made or widened would
 // be an approve credential written to the box the session runs on, which is what the proxy exists
 // to keep off it. The revoke of a personal token stays. Beside them is the answer of an ask, which
-// checks approve in its handler for an approval request (ask_transitions.go). register refuses to
-// mount a table whose list names a row it does not mount (routesNotMounted).
+// checks approve in its handler for an approval request and refuses an approve-only token the
+// answer of every other ask, 403 APPROVE_ONLY_TOKEN, once the ask's kind is read
+// (ask_transitions.go). register refuses to mount a table whose list names a row it does not mount
+// (routesNotMounted).
 var approveScopeRoutes = []string{
 	"POST /api/v1/artifacts/{id}/reviews",
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews",

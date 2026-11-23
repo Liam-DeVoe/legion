@@ -1528,13 +1528,21 @@ func (s *server) refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http
 		panic("api: refuseApproveOnlyToken wraps a route of a server register did not build, which holds no approve-only refusal to answer")
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided && caller.err == nil &&
-			caller.actor.Credential != nil && caller.actor.Credential.ApproveOnly {
+		if approveOnlyRequest(r) {
 			writeError(w, codeApproveOnlyToken, http.StatusForbidden, refusal)
 			return
 		}
 		next(w, r)
 	}
+}
+
+// approveOnlyRequest reports whether decideBrokerToken resolved r's caller to an approve-only
+// credential (model.Credential.ApproveOnly). The person actor a handler acts as (actingPerson)
+// carries no credential, so a handler that holds such a token to less than its route reads it
+// here: answerAsk, which answers an approval request alone for it.
+func approveOnlyRequest(r *http.Request) bool {
+	caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+	return decided && caller.err == nil && caller.actor.Credential != nil && caller.actor.Credential.ApproveOnly
 }
 
 // actingPerson answers the person a request acts for, on a route gateRouteScopes has already
