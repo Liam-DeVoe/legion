@@ -196,6 +196,20 @@ var reviewedTriggers = []reviewedTrigger{
 		bounded: "it runs, after a delete of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
 }
 
+// ReviewedTriggerNames is the names of the enabled triggers of table that reviewedTriggers holds,
+// in its order: the triggers a store's own test holds to the definitions their entries reviewed
+// (dispatch store's TestTheReviewedTriggersAreTheOnesTheStoreHolds), since this list names a
+// trigger and not its body.
+func ReviewedTriggerNames(table string) []string {
+	var names []string
+	for _, reviewed := range reviewedTriggers {
+		if reviewed.table == table {
+			names = append(names, reviewed.trigger)
+		}
+	}
+	return names
+}
+
 // unreviewedTriggers says why table, whose enabled triggers are triggers, is refused for the
 // triggers that are not on reviewedTriggers, in words that follow "and"; "" where every one is.
 func unreviewedTriggers(table string, triggers []string) string {
