@@ -52,8 +52,9 @@ with a WAITING line naming the defect and the answer you wait on.
    learnings, and `wait` for its answer. Drop a point that cites no file, symbol, quoted text or
    commit of this pull request.
 3. **Record the learnings** as one `dispatch comment` on the issue, per
-   `skill://legion-retro/references/learnings.md`. When no point qualifies, write no comment and
-   say so in step 5's message.
+   `skill://legion-retro/references/learnings.md`, which says what a point must carry for the
+   skill librarian to use it. When no point qualifies, write no comment and say so in step 5's
+   message.
 4. **Update the PR body**, per `skill://legion-retro/references/pr-body-content.md`, when the
    repository derives body lines from changed paths.
 5. **Post one Dispatch message on the issue**, at most 32,000 characters (never a `gh issue`
