@@ -353,12 +353,12 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 // again (record.PhaseRow.Completed), a merger sent back has no summary until its next one, and no
 // round inherits an earlier decision. The architect reports no handoff, so it has none to clear:
 // its phases row holds only the entry it was handed work on (EnterArchitect), which no move
-// between phases clears.
-func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
+// between phases clears. w is the walk of issue's run as the caller holds it (phaseRowOn).
+func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue, role)
+	row, err := e.phaseRowOn(ctx, tx, issue, w, role)
 	if err != nil {
 		return err
 	}
@@ -570,7 +570,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	row, err := e.phaseRow(ctx, tx, issue, role)
+	row, err := e.phaseRowOn(ctx, tx, issue, w, role)
 	if err != nil {
 		return err
 	}
