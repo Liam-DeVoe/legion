@@ -462,10 +462,11 @@ func (r totalRow) Scan(dest ...any) error {
 
 // DeployForCommit is the deploy row, of any project, whose commits hold sha: the earliest to
 // reach production, which is the deploy that first shipped the commit (a check made at a commit
-// blames the deploy that shipped it, R7). ok is false where no deploy holds it yet.
+// blames the deploy that shipped it, R7). ok is false where no deploy holds it yet. A dropped
+// GitHub deploy (StatusDropped) holds none.
 func DeployForCommit(ctx context.Context, q delivery.Querier, sha string) (Event, bool, error) {
 	event, err := scan(q.QueryRow(ctx, `select `+columns+` from production_events
-		where kind = 'deploy' and $1 = any(commits)
+		where kind = 'deploy' and $1 = any(commits) and not `+droppedDeploy+`
 		order by finished_at, id limit 1`, strings.ToLower(sha)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, false, nil
@@ -476,10 +477,12 @@ func DeployForCommit(ctx context.Context, q delivery.Querier, sha string) (Event
 	return event, true, nil
 }
 
-// DeployForRun is the deploy row the GitHub adapter wrote for run runID of repo, of any project.
+// DeployForRun is the deploy row the GitHub adapter wrote for run runID of repo, of any project,
+// and false where it wrote none or dropped it (StatusDropped).
 func DeployForRun(ctx context.Context, q delivery.Querier, repo string, runID int64) (Event, bool, error) {
 	event, err := scan(q.QueryRow(ctx, `select `+columns+` from production_events
 		where kind = 'deploy' and source = 'github' and lower(repo) = lower($1) and source_ref = $2
+		  and not `+droppedDeploy+`
 		order by id limit 1`, repo, GitHubSourceRef(runID)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, false, nil
@@ -488,6 +491,53 @@ func DeployForRun(ctx context.Context, q delivery.Querier, repo string, runID in
 		return Event{}, false, fmt.Errorf("read the deploy of %s run %d: %w", repo, runID, err)
 	}
 	return event, true, nil
+}
+
+// DeploysFrom reads the deploy rows of projects that finished at or after from, oldest finish
+// first (ties by id): one range of production_events_window for each project. The failure
+// measures read the deploys a project's rows can count from the project's first day on with it
+// (evals' failure_days.go).
+func DeploysFrom(ctx context.Context, q delivery.Querier, projects []string, from time.Time) ([]Event, error) {
+	rows, err := q.Query(ctx, `select `+columns+` from production_events
+		where project_key = any($1) and kind = 'deploy' and finished_at >= $2
+		order by finished_at, id`, projects, from)
+	if err != nil {
+		return nil, fmt.Errorf("read the deploys of %d projects from %s on: %w", len(projects), from.Format(time.RFC3339), err)
+	}
+	return scanAll(rows, "a deploy")
+}
+
+// FailuresOf reads the failure rows, of any project and in any state, that blame one of deploys
+// (deploy row ids), oldest detection first (ties by id): one probe of
+// production_events_failures_of for each deploy.
+func FailuresOf(ctx context.Context, q delivery.Querier, deploys []string) ([]Event, error) {
+	if len(deploys) == 0 {
+		return []Event{}, nil
+	}
+	rows, err := q.Query(ctx, `select `+columns+` from production_events
+		where kind = 'failure' and deploy_id = any($1::uuid[])
+		order by detected_at, id`, deploys)
+	if err != nil {
+		return nil, fmt.Errorf("read the failures of %d deploys: %w", len(deploys), err)
+	}
+	return scanAll(rows, "a failure")
+}
+
+// scanAll reads every row of rows (columns), what naming the rows in an error.
+func scanAll(rows pgx.Rows, what string) ([]Event, error) {
+	defer rows.Close()
+	events := []Event{}
+	for rows.Next() {
+		event, err := scan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read %s of the record: %w", what, err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read %s of the record: %w", what, err)
+	}
+	return events, nil
 }
 
 // GitHubSourceRef is the source_ref of the GitHub adapter's deploy row of run runID.

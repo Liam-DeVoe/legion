@@ -429,7 +429,9 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // failed and one soon after a pass whose safe horizon held an event back), the eval day rows
 // (evals.RefresherLease, eval-days, a pass on each of its two feeds' wakes, at each new UTC day
 // and one each RefresherGap while a walk of the days has days left, whose first pass in a process
-// also seeds every project's evals), one per delivery durable for the intake's take-over
+// also seeds every project's evals), the production signals (signals.Lease, production-signals, a
+// pass on each of its four wakes, one PassRetry after a pass that failed and one soon after a pass
+// whose safe horizon held an event back), one per delivery durable for the intake's take-over
 // (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the server
 // process registry's prune (processes.RunPrune), the embeddings project_key fill
 // (api.RunEmbeddingProjectKeyFill) and the display tree fill (texttreefill.fillLease) - one caller
@@ -464,13 +466,13 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // through. The document compaction holds only its lease here: each document it compacts reads and
 // writes on the compaction pool (Pool.Compaction).
 //
-// The Legion sampler, the per-issue Legion facts and the eval day rows are three of those callers
-// and the keyword fill's hold two more, and that is what they cost the instance: a serving process
-// opens at most 117 (ConnectionsPerProcess), where it opened 112 without them, and the default
-// tier's 500 connections less PostgreSQL's 3 reserved slots still admit four app pods holding
-// connections at once (468 of 497) and still refuse five (585), exactly as they did at 112 (448
-// and 560), so none of them moves a replica boundary. A deployment on another tier reads SHOW
-// max_connections against its own roll, as sharedPoolSize's note says.
+// The Legion sampler, the per-issue Legion facts, the eval day rows and the production signals are
+// four of those callers and the keyword fill's hold two more, and that is what they cost the
+// instance: a serving process opens at most 118 (ConnectionsPerProcess), where it opened 112
+// without them, and the default tier's 500 connections less PostgreSQL's 3 reserved slots still
+// admit four app pods holding connections at once (472 of 497) and still refuse five (590),
+// exactly as they did at 112 (448 and 560), so none of them moves a replica boundary. A deployment
+// on another tier reads SHOW max_connections against its own roll, as sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
@@ -484,7 +486,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 26
+const LeasePoolSize = 27
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass

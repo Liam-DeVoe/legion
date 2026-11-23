@@ -52,6 +52,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -704,14 +705,17 @@ func main() {
 	//     whose due time is evals.RefresherGap after the last pass that began a batch of the walks
 	//     while a walk has days left, else the earlier of the next UTC midnight and the next prune
 	//     of the change log, and one soon after a pass whose safe horizon held an event back,
-	//     evals.RefresherGap after one that failed).
-	//     Neither of those two holds a pass a change woke: it starts as soon as the pass running
+	//     evals.RefresherGap after one that failed), and the production signals (signals.Run, woken
+	//     by api.EventsChannel, delivery.ChangesChannel, delivery.SettingsChannel and
+	//     signals.RevertsChannel, whose due times are a pass signals.PassRetry after one that
+	//     failed and one soon after one whose safe horizon held an event back).
+	//     None of those three holds a pass a change woke: it starts as soon as the pass running
 	//     when the change came ends.
-	//     The four leased ones, reference-excerpts, edit-notices, legion-facts and eval-days, take
-	//     their lease with no period (duty.RunWoken): a process that finds it held retries until a
-	//     pass of its own runs, since the other process's pass may have read before the change
-	//     that woke this one. The suggestion-outcome loop takes none: each of its pages
-	//     runs in a transaction holding the suggestion_outcome_cursor row for update, which
+	//     The five leased ones, reference-excerpts, edit-notices, legion-facts, eval-days and
+	//     production-signals, take their lease with no period (duty.RunWoken): a process that finds
+	//     it held retries until a pass of its own runs, since the other process's pass may have read
+	//     before the change that woke this one. The suggestion-outcome loop takes none: each of its
+	//     pages runs in a transaction holding the suggestion_outcome_cursor row for update, which
 	//     serialises two processes woken by one commit, the first pass on a database included
 	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
@@ -845,6 +849,9 @@ func main() {
 	// process's count is the same whatever work they find.
 	legionFactsLeases := reserve("Legion facts")
 	evalDaysLeases := reserve("eval days")
+	// The production signals (signals.Run): a leased loop like the rest, reserved here so that this
+	// process's count is the same whatever work it finds.
+	productionSignalsLeases := reserve("production signals")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -969,6 +976,15 @@ func main() {
 	// (evals.Store.RunRefresher).
 	daysEventsWake := listenerHub.Wake(api.EventsChannel)
 	daysChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	// The production signals' loop reads three feeds and a revert's record, each with a wake of its
+	// own (signals.Run): the events (a check result, a retraction, an incident's labels and links,
+	// and a project.updated whose default repository moved a deploy source), the delivery changes (a
+	// run, a job or a pull request write that can make a deploy), a save of a project's delivery
+	// settings, and a recorded revert.
+	signalsEventsWake := listenerHub.Wake(api.EventsChannel)
+	signalsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	signalsSettingsWake := listenerHub.Wake(delivery.SettingsChannel)
+	signalsRevertsWake := listenerHub.Wake(signals.RevertsChannel)
 	// The delivery settings cache both intakes route by reads two feeds, each with a wake of its
 	// own: a save of a project's delivery settings (delivery.SettingsChannel), and the events, among
 	// which a project.updated whose default repository moved moves the repository of each deploy
@@ -1225,12 +1241,14 @@ func main() {
 	// once ctx is cancelled, a fill still waiting for serving returns at once, having taken
 	// nothing, and a serving fill commits or rolls back its batch in flight and releases its hold
 	// through the pool, before the pool closes. DISPATCH_SEARCH_FILL=off starts no fill at all:
-	// the process says so once, and fillStopped is closed from the start, so nothing waits for it.
+	// the process says so once, with whether each table the fill writes holds a row
+	// (searchFillTableRows), and fillStopped is closed from the start, so nothing waits for it.
 	serving := make(chan struct{})
 	fillStopped := make(chan struct{})
 	if boot.SearchFillOff {
 		close(fillStopped)
-		slog.Info(searchFillDeferredLine, "setting", "DISPATCH_SEARCH_FILL", "value", "off")
+		slog.Info(searchFillDeferredLine, append([]any{"setting", "DISPATCH_SEARCH_FILL", "value", "off"},
+			searchFillTableRows(ctx, database.Pool)...)...)
 	} else {
 		go func() {
 			defer close(fillStopped)
@@ -1303,6 +1321,22 @@ func main() {
 		Leases:     evalDaysLeases,
 		Events:     daysEventsWake,
 		Deliveries: daysChangesWake,
+	})
+	// dispatch://INFRA-978: the record's GitHub deploy rows and its three automatic failure signals
+	// (check_fail, revert, incident_issue). The loop writes the deploy row of each run of a deploy
+	// repository its owner's rule calls a deploy after the run write that made it one has committed,
+	// derives a repository's rows again when its rule moves, and writes each failure from the event
+	// log and the recorded reverts, each feed from a cursor of its own. It takes the
+	// production-signals lease, so two processes woken by one commit write each row once, and reads
+	// the event log up to the safe horizon of the same events.Horizon the facts consumer reads.
+	go signals.Run(ctx, signals.Deps{
+		Pool:       database.Pool,
+		Horizon:    background.EventHorizon(),
+		Leases:     productionSignalsLeases,
+		Events:     signalsEventsWake,
+		Deliveries: signalsChangesWake,
+		Settings:   signalsSettingsWake,
+		Reverts:    signalsRevertsWake,
 	})
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
@@ -2125,6 +2159,77 @@ func positiveSetting(env settingValues, name string) (int, error) {
 // searchFillDeferredLine is the line a process logs once at boot when DISPATCH_SEARCH_FILL=off
 // keeps it from starting the keyword fill.
 const searchFillDeferredLine = "dispatch: the keyword fill is deferred; this process fills no keyword table"
+
+// searchFillTables are the tables the keyword fill writes: search_text_versions, the keyword
+// table, and search_text_versions_fill, its cursor. searchFillTableHoldsRow writes their names into
+// SQL, so they are fixed here and never read from input.
+var searchFillTables = [...]string{"search_text_versions", "search_text_versions_fill"}
+
+// The three bounds of each read of searchFillTableRows. Each read sets lock_timeout and
+// statement_timeout in a transaction of its own, so Postgres itself ends a read that waits for a
+// lock on its table (55P03, after searchFillTableLockTimeout) or that runs on for any reason
+// (57014, after searchFillTableStatementTimeout), and no read is left running at the server once
+// the boot moves on. searchFillTableReadTimeout is the client's own deadline for each table, for a
+// server that answers nothing: pgx then closes the connection and asks the server to cancel the
+// statement. It also covers taking a connection from the pool, a dial or a wait for a free one
+// included, so it sits 4 s past the statement timeout: a slow dial still leaves the server's own
+// errors to end the read. The two reads run one after the other before the server listens, so
+// they delay the boot by at most twice searchFillTableReadTimeout in all; a lock on a table alone
+// delays it by about searchFillTableLockTimeout for that table.
+const (
+	searchFillTableLockTimeout      = 5 * time.Second
+	searchFillTableStatementTimeout = 6 * time.Second
+	searchFillTableReadTimeout      = 10 * time.Second
+)
+
+// searchFillTableRows answers the deferral line's fields that say whether each of
+// searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow. A read
+// that fails, a timeout included, gives <table>_rows=unknown and the error in <table>_rows_error,
+// and the boot goes on: the line reports the tables and never decides whether the process starts.
+// The line is how a deployment learns, from the boot log alone, that a process booted with the
+// fill off found both tables empty.
+func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
+	fields := make([]any, 0, 4*len(searchFillTables))
+	for _, table := range searchFillTables {
+		key := table + "_rows"
+		holdsRow, err := searchFillTableHoldsRow(ctx, pool, table)
+		switch {
+		case err != nil:
+			fields = append(fields, key, "unknown", key+"_error", err.Error())
+		case holdsRow:
+			fields = append(fields, key, "some")
+		default:
+			fields = append(fields, key, "none")
+		}
+	}
+	return fields
+}
+
+// searchFillTableHoldsRow reads whether table holds a row by
+// `select exists(select 1 from public.<table>)`, which reads no column and stops at the first
+// visible row; it may scan dead rows before that one, which searchFillTableStatementTimeout bounds.
+// It reads in a read-only transaction of its own that first sets the bounds above, local to that
+// transaction. The read takes ACCESS SHARE on the table and holds it until that transaction rolls
+// back (the deferred Rollback) or its connection ends, normally milliseconds after the read; no
+// statement timeout bounds how long it holds it. Row writes go on beside it, but a TRUNCATE or
+// another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
+func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, searchFillTableReadTimeout)
+	defer cancel()
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true)`,
+		fmt.Sprintf("%dms", searchFillTableLockTimeout.Milliseconds()),
+		fmt.Sprintf("%dms", searchFillTableStatementTimeout.Milliseconds())); err != nil {
+		return false, err
+	}
+	var holdsRow bool
+	err = tx.QueryRow(ctx, "select exists(select 1 from public."+table+")").Scan(&holdsRow)
+	return holdsRow, err
+}
 
 // searchFillOff reads DISPATCH_SEARCH_FILL: on, or unset, starts the keyword fill, and off defers
 // it. Any other value refuses the boot, naming the variable.

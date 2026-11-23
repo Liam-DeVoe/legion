@@ -1,8 +1,8 @@
 // Package evalfixture loads the histories the eval registry's checks read (dispatch://INFRA-2916,
-// k6, k12, k14, k15 and k17) into a database that already holds Dispatch's schema: the local
-// stack's, which migrates its database when it starts, or the base head's for k14. Each mode adds
-// to one project and writes that project's row only where it has none, so modes combine; cmd is
-// the command a checker types.
+// k6, k12, k14, k15 and k17, and dispatch://INFRA-978's checks of the record of deploys and failed
+// changes) into a database that already holds Dispatch's schema: the local stack's, which migrates
+// its database when it starts, or the base head's for k14. Each mode adds to one project and writes
+// that project's row only where it has none, so modes combine; cmd is the command a checker types.
 //
 // The modes:
 //
@@ -22,6 +22,8 @@
 //     120 days (deliverytest.DefaultDays) for a caller that names none.
 //   - MergePR (-merge-pr): one pull request of those rows merged at a given moment, k12's one
 //     change.
+//   - Failures (-failures): INFRA-978's two projects with their deploy sources, deploys and
+//     failed changes, each written through the writer production uses (WriteFailures).
 //
 // Every time is relative to the moment the caller names (-now), so two loads with one -now hold
 // the same history at the same times. The rows bypass the server's own writers (legiontest's
@@ -404,13 +406,8 @@ func deliverySettingsOf(deployRepo string) delivery.DeliverySettings {
 // reads that default and moves with it, and names settings.DeployRepo otherwise. The project's row
 // exists first.
 func PutDeliverySettings(ctx context.Context, pool *store.Pool, project string, settings delivery.DeliverySettings, by model.Actor) (delivery.ProjectSettings, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return delivery.ProjectSettings{}, fmt.Errorf("begin the delivery settings of %s: %w", project, err)
-	}
-	defer tx.Rollback(ctx)
 	var defaultRepo *string
-	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
+	if err := pool.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
 		return delivery.ProjectSettings{}, fmt.Errorf("read the default repository of %s: %w", project, err)
 	}
 	source := delivery.SourceInput{
@@ -422,15 +419,26 @@ func PutDeliverySettings(ctx context.Context, pool *store.Pool, project string, 
 	if defaultRepo == nil || !strings.EqualFold(*defaultRepo, settings.DeployRepo) {
 		source.Repo = new(settings.DeployRepo)
 	}
-	saved, err := delivery.PutProjectSettings(ctx, tx, delivery.ProjectSettingsInput{
+	return saveSettings(ctx, pool, delivery.ProjectSettingsInput{
 		Project: project, Delivery: true, Sources: []delivery.SourceInput{source},
 		PopulationAuthors: settings.PopulationAuthors, ExcludedRepos: settings.ExcludedRepos,
 	}, by)
+}
+
+// saveSettings saves input through delivery.PutProjectSettings in a transaction of its own, as the
+// settings route does, and drains the change rows it logged after the commit.
+func saveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectSettingsInput, by model.Actor) (delivery.ProjectSettings, error) {
+	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return delivery.ProjectSettings{}, fmt.Errorf("save the delivery settings of %s: %w", project, err)
+		return delivery.ProjectSettings{}, fmt.Errorf("begin the delivery settings of %s: %w", input.Project, err)
+	}
+	defer tx.Rollback(ctx)
+	saved, err := delivery.PutProjectSettings(ctx, tx, input, by)
+	if err != nil {
+		return delivery.ProjectSettings{}, fmt.Errorf("save the delivery settings of %s: %w", input.Project, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return delivery.ProjectSettings{}, fmt.Errorf("commit the delivery settings of %s: %w", project, err)
+		return delivery.ProjectSettings{}, fmt.Errorf("commit the delivery settings of %s: %w", input.Project, err)
 	}
 	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of the fixture's delivery settings")
 	return saved, nil

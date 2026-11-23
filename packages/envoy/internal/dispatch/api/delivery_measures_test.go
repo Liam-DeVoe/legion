@@ -73,8 +73,8 @@ type measuresFixture struct {
 
 const measuresFixtureWindow = "from=2026-08-30T00:00:00Z&to=2026-09-27T20:00:00Z"
 
-// noFailureMeasuresJSON is a measures answer's three failure measures while no builder writes
-// their evals' day rows: each null, "no data", which no target judges.
+// noFailureMeasuresJSON is a measures answer's three failure measures where no one delivery-on
+// project counts a failure source: each null, "no data", which no target judges.
 const noFailureMeasuresJSON = `"change_failure_rate":null,"time_to_restore":null,"deployment_rework_rate":null`
 
 // seedMeasuresFixture writes the fixture's settings, issues, pull requests, runs and jobs through

@@ -91,10 +91,13 @@ func deliveryMeasuresCompute(settings delivery.DeliverySettings, pop deliveryPop
 // day builders and folds them with the folds the delivery evals read stored parts with, one fold
 // per measure, and each KPI is judged by its eval's target as the population read it.
 //
-// The three failure measures fold their evals' stored day parts (measures.FailureParts). No
-// builder writes those parts yet, so the route hands Compute none: change fail rate, recovery time
-// and rework rate read null, "no data", each with no verdict, as their evals read a window with
-// no row.
+// The three failure measures fold their evals' stored day parts (measures.FailureParts), those of
+// the window's days (evalDaysOf, the days an eval read of the window folds) of the one delivery-on
+// project (evals.DeploymentFailures.Within): this route is deployment-wide, and a deploy that
+// counts for two projects would count twice in a sum of theirs, so with no delivery-on project or
+// several they read null, "no data", each with no verdict. So do they for a window that starts
+// before the project's failures_measured_since, as its evals read one; and otherwise they are the
+// values its evals' read of the same window answers (dispatch://INFRA-978, k11).
 func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopulation, derived deliveryDerived, from, to, now time.Time) deliveryMeasuresResponse {
 	applies := delivery.ProductionApplies(pop.windowRuns, pop.windowJobs, settings.Production()).Applies
 	reached := map[int64]bool{}
@@ -112,7 +115,8 @@ func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopula
 	if unowned == nil {
 		unowned = []delivery.UnownedIssue{}
 	}
-	result := measures.Compute(derived.measuresPRs(), runs, measures.FailureParts{}, measures.Window{From: from, To: to})
+	failures := pop.failures.Within(evalDaysOf(from, to))
+	result := measures.Compute(derived.measuresPRs(), runs, failures, measures.Window{From: from, To: to})
 	return deliveryMeasuresResponse{
 		Window:     delivery.DeliveryWindowView{From: from, To: to},
 		ComputedAt: now,

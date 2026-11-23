@@ -150,9 +150,10 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // configured — for each source repository a permission check (so a missing Actions or
 // Pull-requests grant is named, never confused with a transient failure), the population
 // pull-request search, each source repository's deploy and PR-checks workflows' runs and jobs under
-// its own rule, and any partial row left over from a completing fetch that failed earlier. Each
-// windowed step keeps its own progress (delivery_reconcile_progress), each run step per repository
-// (runsStep, backfillStep), so a step that fails part way through resumes where it stopped rather
+// its own rule and its merged reverts (reconcileReverts), and any partial row left over from a
+// completing fetch that failed earlier. Each windowed step keeps its own progress
+// (delivery_reconcile_progress), each run and revert step per repository (runsStep, backfillStep,
+// revertsStep), so a step that fails part way through resumes where it stopped rather
 // than restarting its whole window: a 28-day backfill of a busy deploy repository is tens of
 // thousands of GitHub requests, well past one installation's hourly rate limit, so no single pass
 // can finish one and a pass that forgets what it did could never converge.
@@ -298,6 +299,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 		if rule.PRChecksWorkflowPath != rule.DeployWorkflowPath {
 			recordRead(rule.DeployRepo, "reconcile PR-checks workflow runs", r.reconcileWorkflow(ctx, w.owner, w.name, rule.DeployRepo, rule.PRChecksWorkflowPath, DeliveryRunKindPRChecks, production, now))
 		}
+		recordRead(rule.DeployRepo, "reconcile merged reverts", r.reconcileReverts(ctx, w.owner, w.name, rule.DeployRepo, now))
 		// The runs backfills log and resume their own failures and never reach record(): a rate
 		// limit one meets must not hold last_reconcile_at or set last_error while every regular
 		// step succeeded. Each walks at most backfillWindowsPerPass hours a pass. The created_at
@@ -879,6 +881,62 @@ func completedRunIDs(runs []FetchedRun) []int64 {
 		}
 	}
 	return ids
+}
+
+// revertsStep names one deploy repository's progress of the search for its merged reverts
+// (reconcileReverts): reverts/<repo> (repoStep). A save that changes the repository's rule leaves
+// it, since ClearRepositoryProgress clears the run steps alone: which pull request reverts which is
+// no rule's to say.
+func revertsStep(repo string) string {
+	return repoStep("reverts", repo)
+}
+
+// reconcileReverts records the merged reverts of the deploy repository repoFull that the intake
+// missed (dispatch://INFRA-978, T12): it searches the pull requests merged since the step's own
+// recorded progress whose body holds the word Reverts, whoever authored them (SearchMergedReverts),
+// and records each whose body GitHub's revert-button line opens (ParseRevert) from GitHub's own
+// answer for it and for the pull request it reverts (recordRevertFromGitHub). A pull request whose
+// body only mentions the word costs no call. Each completed window records the step's progress
+// while every window before it in this pass succeeded, as reconcileWorkflow's do, so a revert this
+// pass could not read is searched again on a later pass; a rate limit stops the walk.
+func (r *Reconcile) reconcileReverts(ctx context.Context, owner, name, repoFull string, until time.Time) error {
+	step := revertsStep(repoFull)
+	since, err := r.stepSince(ctx, step, repoFull, until)
+	if err != nil {
+		return err
+	}
+	var failures []string
+	blocked := false
+	visit := func(windowUntil time.Time, prs []FetchedPullRequest) error {
+		for _, pr := range prs {
+			if _, _, says := ParseRevert(pr.Body); !says || pr.MergedAt == nil {
+				continue
+			}
+			if _, err := recordRevertFromGitHub(ctx, r.pool, r.github, repoFull, pr.Number); err != nil {
+				slog.Warn("dispatch delivery: reconcile a merged revert", "repo", repoFull, "number", pr.Number, "error", err)
+				failures = append(failures, fmt.Sprintf("#%d: %s", pr.Number, err))
+				blocked = true
+				if limited, ok := githubapp.AsRateLimit(err); ok {
+					return fmt.Errorf("a rate limit stopped the reverts' walk: %s: %w", strings.Join(failures, "; "), limited)
+				}
+			}
+		}
+		if blocked {
+			return nil
+		}
+		if err := RecordReconcileProgress(ctx, r.pool, step, repoFull, windowUntil); err != nil {
+			blocked = true
+			failures = append(failures, fmt.Sprintf("record the reverts' progress: %s", err))
+		}
+		return nil
+	}
+	if err := SearchMergedReverts(ctx, r.github, owner, name, since, until, visit); err != nil {
+		return fmt.Errorf("search merged reverts: %w", err)
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("%d merged reverts failed: %s", len(failures), strings.Join(failures, "; "))
+	}
+	return nil
 }
 
 // reconcileWorkflow walks kind's workflow runs created since this step's own recorded progress,

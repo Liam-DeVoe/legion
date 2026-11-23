@@ -350,7 +350,12 @@ type deliveryPopulation struct {
 	// as the deploy repository's project holds them (evals.Store.DeployRepoEvals),
 	// read with the window's rows, so a narrowed population judges by the targets it was read with.
 	targetEvals map[string]evals.Entry
-	groups      []delivery.SessionGroup
+	// failures is the three failure measures' stored parts of the window's days, with their first
+	// day, of the one delivery-on project (evals.Store.DeploymentFailures), none where there is not
+	// exactly one: the measures fold the parts of the days they answer (deliveryMeasuresOver), so a
+	// narrowed population keeps them.
+	failures evals.DeploymentFailures
+	groups   []delivery.SessionGroup
 	// titles, issues and components are the session titles, the facts of the issues the pull
 	// requests name and the components of those issues' projects, read where the population is
 	// labeled and nil elsewhere.
@@ -408,8 +413,8 @@ type deliveryWaitingRow struct {
 // readDeliveryPopulation is every read the timeline's and the measures' answers for one window and
 // query make (the population pull requests, the deploy runs on main GitHub created at or after
 // `from` with their jobs, the measures' runs started in the window with their jobs, the unowned
-// P0 list and the evals whose targets judge the measures); nothing that computes from it reads
-// again. With withWaiting it also reads the
+// P0 list, the evals whose targets judge the measures and the failure measures' stored parts);
+// nothing that computes from it reads again. With withWaiting it also reads the
 // deploy repository's pull requests still waiting at `from` (ListPullRequestsWaitingAt), resolved
 // through the same issue and session lookups so the timeline's waiting line filters them alike;
 // the measures read none. withWaiting is the timeline's read, the one that lists the deploy runs,
@@ -477,6 +482,10 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 			},
 			func(ctx context.Context) (err error) {
 				pop.targetEvals, err = s.registry().DeployRepoEvals(ctx, settings.DeployRepo, evals.DeliveryTargetSlugs)
+				return err
+			},
+			func(ctx context.Context) (err error) {
+				pop.failures, err = s.registry().DeploymentFailures(ctx, evalDaysOf(from, to))
 				return err
 			})
 	}

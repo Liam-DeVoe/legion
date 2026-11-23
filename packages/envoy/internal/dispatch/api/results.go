@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -179,12 +180,29 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	s.readThroughPullRequests(r.Context(), request.check.IssueKey, written.result.CommitSHA, readThrough)
 	s.publish(r.Context(), written.event)
 	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
+	s.recordCheckFailure(r.Context(), written)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
 		// The check as the transaction that wrote the row saw it, which after a redo is not the
 		// one resolveCheck read: the line names the `when` the result was judged by.
 		Line:   checkResultLine(written.check, written.result, request.words),
 		Result: written.result,
 	})
+}
+
+// recordCheckFailure writes the check_fail signal of a fail of an after_merge check once its result
+// has committed (dispatch://INFRA-978, T12): a failure of the deploy that first shipped the result's
+// commit, in a transaction of its own (signals.RecordCheckFailure). A failure of the write is
+// logged and fails nothing: the production signals' loop reads the result.recorded event after
+// it and writes the same row, and a result whose commit no deploy row holds yet makes its row when
+// one lands.
+func (s *server) recordCheckFailure(ctx context.Context, written recordedCheckResult) {
+	if written.result.Verdict != "fail" || written.check.Attributes.When != checkWhenAfterMerge {
+		return
+	}
+	if _, err := signals.RecordCheckFailure(ctx, s.deps.Store.Pool, written.result.ID); err != nil {
+		slog.Warn("dispatch: write the check_fail of a result; the production signals' loop writes it later",
+			"result", written.result.ID, "error", err)
+	}
 }
 
 // POST /api/v1/issues/{key}/results/dry-run  (any authenticated actor)

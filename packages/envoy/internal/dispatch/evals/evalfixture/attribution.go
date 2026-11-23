@@ -295,14 +295,15 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 	return result, nil
 }
 
-// writeRun stores one run and its one job, listed after the run ended.
+// writeRun stores one run and its one job, listed after the run ended, as the intake and the
+// reconcile store them (delivery.UpsertRun, delivery.UpsertRunJobs).
 func writeRun(ctx context.Context, pool *store.Pool, run delivery.DeliveryRun, job delivery.DeliveryRunJob) error {
 	if err := delivery.UpsertRun(ctx, pool, run); err != nil {
-		return fmt.Errorf("write the run %s/%d of k15's case: %w", run.Repo, run.RunID, err)
+		return fmt.Errorf("write the run %s/%d: %w", run.Repo, run.RunID, err)
 	}
 	job.Repo, job.RunID = run.Repo, run.RunID
 	if err := delivery.UpsertRunJobs(ctx, pool, run.Repo, run.RunID, []delivery.DeliveryRunJob{job}, true); err != nil {
-		return fmt.Errorf("write the job of the run %s/%d of k15's case: %w", run.Repo, run.RunID, err)
+		return fmt.Errorf("write the job of the run %s/%d: %w", run.Repo, run.RunID, err)
 	}
 	return nil
 }

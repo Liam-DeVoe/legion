@@ -441,7 +441,7 @@ func (s *Store) newRefresh(build string, now time.Time, batch int) *refresh {
 		clock:  func() time.Time { return now },
 		report: refreshed{days: map[builtDay]bool{}},
 		first:  map[walkKey]map[evalKey]time.Time{}, since: map[string]LegionSince{},
-		batched: &gapBatch{},
+		batched: &gapBatch{}, failuresWritten: map[string]time.Time{},
 	}
 }
 

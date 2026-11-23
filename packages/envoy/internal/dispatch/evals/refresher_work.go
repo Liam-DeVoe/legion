@@ -52,11 +52,16 @@ import (
 //     one the rows stand built under, so one that moves no eval rewrites nothing); a source that
 //     reads another repository builds that repository's days and deletes the old one's in the
 //     page's commit (syncKept), as a move of a project's default repository does for a source
-//     naming none, which the pass reads with the settings.
+//     naming none, which the pass reads with the settings. The project's failure rows are written
+//     whole, and every failure row of each project whose failure measures are on where the kept
+//     repositories moved (applyFailures, failure_days.go).
 //   - production_events: a posted deploy of a project whose events repository is read, its
 //     finished day before the change and after it (t_old and t_new), the merge days of the pull
 //     requests it names now and the days eval_day_members holds it and the pull requests it
-//     shipped under, in its project alone (applyPosted).
+//     shipped under, in its project alone (applyPosted); and in every project whose failure
+//     measures are on, the days the row counts on before and after the change (a deploy's
+//     finish, its failures' deploy's finish, a restore's time) and the finish day of the deploy
+//     that restored a failure it names (applyFailures).
 //   - issue_facts: the issue's Legion close day before the change and after it, which the change
 //     names itself (t_old and t_new, migration 20261117100002) and no read is made to find: a
 //     Legion day counts an issue on its close day alone, so an issue closed again on another day
@@ -132,6 +137,12 @@ type refresh struct {
 	// the delivery and CI rows unwritten, since no production rule judges a run and no deploy card
 	// follows a job.
 	rules map[string]delivery.DeliverySettings
+	// failures is each project whose failure measures are on, by key (failureProjectOf), read
+	// with rules; failuresWritten the loop's UTC day on which a whole write of this process last
+	// wrote each project's failure rows (writeFailures), which the walk writes once a day
+	// (walkFailures).
+	failures        map[string]failureProject
+	failuresWritten map[string]time.Time
 	// builtUnder is the rule each repository's stored delivery and CI rows stand built under
 	// (eval_days_rules, by ruleKey), read by the pass's first page (builtRead) and moved by each of
 	// its pages that brings the rows to the rules it reads (syncSettings, syncKept); empty where
@@ -244,12 +255,17 @@ func (r *refresh) load(ctx context.Context, seeds *seeding) error {
 		}
 	}
 	seeds.everyProject = true
+	if seeds.failuresWritten == nil {
+		seeds.failuresWritten = map[string]time.Time{}
+	}
+	r.failuresWritten = seeds.failuresWritten
 	return r.loadSettings(ctx)
 }
 
 // loadSettings reads every project's delivery settings (delivery.ListProjectSettings) as the rule
 // of each deploy source repository of a delivery-on project (delivery.DeployRules) and of each such
-// project's events repository where it holds an events source (eventsRule), by ruleKey.
+// project's events repository where it holds an events source (eventsRule), by ruleKey, and as each
+// project whose failure measures are on (failureProjectOf).
 func (r *refresh) loadSettings(ctx context.Context) error {
 	projects, err := delivery.ListProjectSettings(ctx, r.store.database.Pool)
 	if err != nil {
@@ -259,12 +275,16 @@ func (r *refresh) loadSettings(ctx context.Context) error {
 	for _, rule := range delivery.DeployRules(projects) {
 		r.rules[ruleKey(rule.DeployRepo)] = rule
 	}
+	r.failures = map[string]failureProject{}
 	for _, project := range projects {
 		if project.Delivery && slices.ContainsFunc(project.Sources, func(source delivery.DeploySource) bool {
 			return source.Kind == delivery.SourceKindEvents
 		}) {
 			rule := eventsRule(project.Project)
 			r.rules[ruleKey(rule.DeployRepo)] = rule
+		}
+		if failures, on := failureProjectOf(project); on {
+			r.failures[project.Project] = failures
 		}
 	}
 	return nil
@@ -306,7 +326,8 @@ type pageWork struct {
 	ran  map[string]time.Time
 	// posted is, for each project, the ids of the rows of its record (production_events) the
 	// page's changes name, each with the UTC midnights of the time it counts on before and after
-	// the change (a deploy's finished_at): a posted deploy's days (applyPosted).
+	// the change (a deploy's finished_at, a failure's deploy's, a restore's time): a posted
+	// deploy's days (applyPosted), and the failure measures' days (applyFailures).
 	posted     map[string]map[string][]time.Time
 	legion     map[string]map[time.Time]bool
 	reparented map[string]bool
@@ -325,6 +346,9 @@ type pageWork struct {
 	// commit then says that the day rows stand at the settings (markSettingsApplied), which is what
 	// an evals view is recomputed for.
 	settingsRow bool
+	// settingsOf is the projects whose delivery settings the page's changes name (a settings
+	// change's repo), whose failure rows the page writes whole (applyFailures).
+	settingsOf map[string]bool
 	// record is set where commitPage records refresh.builtUnder in eval_days_rules with the cursors
 	// and the rebuild the page begins (syncSettings, syncKept).
 	record bool
@@ -352,7 +376,7 @@ func newPageWork() *pageWork {
 	return &pageWork{
 		prs: map[string]pullRequestRef{}, runs: map[string]runRef{}, left: map[string][]time.Time{}, ran: map[string]time.Time{},
 		posted: map[string]map[string][]time.Time{}, legion: map[string]map[time.Time]bool{}, reparented: map[string]bool{},
-		unowned: map[string]bool{}, logged: map[string]map[string]bool{}, restart: map[string]bool{},
+		unowned: map[string]bool{}, logged: map[string]map[string]bool{}, restart: map[string]bool{}, settingsOf: map[string]bool{},
 	}
 }
 
@@ -389,12 +413,15 @@ func (w *pageWork) addChange(change delivery.Change) {
 			}
 		}
 	case delivery.ChangeKindSettings:
-		// The page reads the settings again and rewrites what they moved (syncSettings).
+		// The page reads the settings again and rewrites what they moved (syncSettings), and the
+		// project's failure rows whole (applyFailures).
 		w.settings, w.settingsRow = true, true
+		w.settingsOf[change.Repo] = true
 	case delivery.ChangeKindProductionEvents:
 		// A row of a project's record (repo the project, ref the row's id), with the time it
 		// counts on before and after: a posted deploy's days are rewritten in its project
-		// (applyPosted).
+		// (applyPosted), and those days of every project whose failure measures are on
+		// (applyFailures).
 		if w.posted[change.Repo] == nil {
 			w.posted[change.Repo] = map[string][]time.Time{}
 		}
@@ -578,8 +605,9 @@ func walkOf(family, project string) walkKey {
 // page's commit, as the rebuilds it answers, which the caller commits with the page's cursors
 // (commitPage). The days a write left owed before this page (owedDays) are named with the page's
 // own: a pass that failed after a moving write and before the day's own left them so. The
-// unowned-p0 rows and the logged evals' zero rows are written before it answers, so every write
-// the page's cursors pass is made, or is in the commit that moves them.
+// failure rows (applyFailures), the unowned-p0 rows and the logged evals' zero rows are written
+// before it answers, so every write the page's cursors pass is made, or is in the commit that
+// moves them.
 func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*rebuild, error) {
 	owed, err := r.store.owedDays(ctx, r.owners)
 	if err != nil {
@@ -598,6 +626,9 @@ func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*rebuild, error) {
 		return nil, err
 	}
 	rebuilds = append(rebuilds, legion...)
+	if err := r.applyFailures(ctx, w); err != nil {
+		return nil, err
+	}
 	for _, project := range slices.Sorted(maps.Keys(w.unowned)) {
 		if r.known[project] {
 			if err := r.writeUnowned(ctx, project); err != nil {
@@ -1464,8 +1495,9 @@ func (r *refresh) noteBuilt(family, project string, day time.Time, built []DayRo
 // walk builds what the pass's batch (gapBatch) has left of each walk: the delivery walk (where
 // delivery settings exist) and each project's Legion walk, whose days it writes in the open (a
 // family's first walk among them, whose serving record follows it, recordWalkIn); the walks of the
-// rebuild that is building (rebuildDays), which stage theirs; and each project's logged zero fill
-// and unowned-p0 row of today; and then folds the stored figures of the days it wrote (foldWalked).
+// rebuild that is building (rebuildDays), which stage theirs; each project's logged zero fill and
+// unowned-p0 row of today; and once a UTC day every project's failure rows whole (walkFailures);
+// and then folds the stored figures of the days it wrote (foldWalked).
 // It answers whether a walk in the open has days left, after the batch or because the walks stopped
 // for an owed wake (yields), and whether a rebuild's walk has, each of which asks for the pass that
 // builds them. It computes every day it reaches, so the days the pass's pages wrote are written
@@ -1515,6 +1547,9 @@ func (r *refresh) walk(ctx context.Context) (bool, bool, error) {
 			func(ctx context.Context) error { return r.writeUnowned(ctx, project) }); err != nil {
 			return false, false, err
 		}
+	}
+	if err := r.walkFailures(ctx); err != nil {
+		return false, false, err
 	}
 	return live || r.report.yielded, rebuilding, r.foldWalked(ctx)
 }

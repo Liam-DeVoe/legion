@@ -20,7 +20,7 @@ import (
 //
 // The fields are the lines of repoRenameLines, read from the schema, and the pass writes them in
 // that order. Each line is one transaction, so a line that fails leaves the lines before it
-// written and does not stop the lines after it. A field matches by one of four rules:
+// written and does not stop the lines after it. A field matches by one of five rules:
 //
 //   - a name matches when its lower case is the pair's old name, and the pass writes the new
 //     name;
@@ -29,9 +29,14 @@ import (
 //   - a token of delivery_reconcile_progress.scope matches the old name, in any case, after the
 //     start, a space, `=` or `,` and before the end, a space or `,`. That is how delivery's
 //     searchProgressScope and runsProgressScope write a repository into a scope;
-//   - a run step's name in delivery_reconcile_progress.step matches when it begins `runs/` or
-//     `backfill/` and ends with `/` and the old name, in any case, and the pass writes the new name
-//     in place of that end. That is how delivery's repoStep names one repository's run step.
+//   - a run step's name in delivery_reconcile_progress.step matches when it begins `runs/`,
+//     `backfill/` or `reverts/` and ends with `/` and the old name, in any case, and the pass
+//     writes the new name in place of that end. That is how delivery's repoStep names one
+//     repository's run step and its reverts' search step;
+//   - a pull request's name, owner/repo#n, matches when the part before `#` is the old name, in
+//     any case, and the pass writes the new name in place of that part and keeps the number. That
+//     is how the record of production events names each pull request a row ships or blames
+//     (production_events.pull_requests), and, after `revert:`, a revert row's source_ref.
 //
 // The pass writes no other column, updated_at included, and appends no event. It never writes
 // repo_projects, the event log, the text of documents, comments, asks and messages, the reference
@@ -480,16 +485,44 @@ func excludedWrite(r repoRename, table string) repoRenameStep {
 		where ` + where}
 }
 
-// stepNamed is true where column, a step of delivery_reconcile_progress, is a run step of the old
-// name (delivery's repoStep): it begins `runs/` or `backfill/` and ends with `/` and the old name.
+// stepNamed is true where column, a step of delivery_reconcile_progress, is a run step or a
+// reverts' search step of the old name (delivery's repoStep): it begins `runs/`, `backfill/` or
+// `reverts/` and ends with `/` and the old name.
 func stepNamed(r repoRename, column string) string {
 	end := QuoteLiteral("/" + r.From)
-	return `((starts_with(` + column + `, 'runs/') or starts_with(` + column + `, 'backfill/')) and right(lower(` + column + `), length(` + end + `)) = ` + end + `)`
+	return `((starts_with(` + column + `, 'runs/') or starts_with(` + column + `, 'backfill/') or starts_with(` + column + `, 'reverts/'))` +
+		` and right(lower(` + column + `), length(` + end + `)) = ` + end + `)`
 }
 
 // renamedStep is column, a run step of the old name, with the new name in place of its end.
 func renamedStep(r repoRename, column string) string {
 	return `left(` + column + `, length(` + column + `) - length(` + r.from() + `)) || ` + r.to()
+}
+
+// pullRequestNamed is true where entry, a pull request named owner/repo#n, names the old name.
+func pullRequestNamed(r repoRename, entry string) string {
+	return `lower(split_part(` + entry + `, '#', 1)) = ` + r.from()
+}
+
+// renamedPullRequest is entry, a pull request of the old name, under the new name with its number.
+func renamedPullRequest(r repoRename, entry string) string {
+	return r.to() + ` || '#' || split_part(` + entry + `, '#', 2)`
+}
+
+// revertRefNamed is true where column, a source_ref of production_events, is a revert row's
+// (revert:owner/repo#n, signals' revertSourceRef) of the old name.
+func revertRefNamed(r repoRename, column string) string {
+	return `(starts_with(` + column + `, 'revert:') and ` + pullRequestNamed(r, `substr(`+column+`, 8)`) + `)`
+}
+
+// renamedRevertRef is column, a revert row's source_ref of the old name, under the new name.
+func renamedRevertRef(r repoRename, column string) string {
+	return `'revert:' || ` + renamedPullRequest(r, column)
+}
+
+// pullRequestsNamed is true where the pull requests of a production_events row name the old name.
+func pullRequestsNamed(r repoRename) string {
+	return `exists (select 1 from unnest(pull_requests) e(pr) where ` + pullRequestNamed(r, "e.pr") + `)`
 }
 
 // repoRenameLines are the stored repository fields of Dispatch, in the order the pass writes them,
@@ -690,6 +723,66 @@ var repoRenameLines = []repoRenameLine{
 					update delivery_reconcile_progress
 					set scope = regexp_replace(scope, ` + r.token() + `, ` + r.tokenReplacement() + `, 'gi')
 					where ` + scoped},
+			}
+		},
+	},
+	{
+		// A merged revert of a deploy repository (delivery_reverts) is keyed by its own repository
+		// and number, so a revert under the old name whose twin the new name holds is deleted and
+		// the twin stays. The repository of the pull request it reverts is no key, and is rewritten
+		// in its place.
+		fields: "delivery_reverts.repo, .reverts_repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				collisions(r, "delivery_reverts", "number"),
+				nameWrite(r, "delivery_reverts", "repo"),
+				nameWrite(r, "delivery_reverts", "reverts_repo"),
+			}
+		},
+	},
+	{
+		// The record of production events names a repository in three fields: a row's repo, each
+		// pull request a row ships or blames, and a revert row's source_ref, which names the revert
+		// as delivery_reverts names it and which the revert's signal reads its row back by, so it
+		// moves with delivery_reverts.repo and the signal writes no second row. source_ref is a key
+		// with project_key, so a revert row under the old name whose twin the new name holds is
+		// deleted, and the twin stays. Each pull request is rewritten in its place.
+		fields: "production_events.source_ref, .repo, .pull_requests",
+		steps: func(r repoRename) []repoRenameStep {
+			named, pulls := revertRefNamed(r, "source_ref"), pullRequestsNamed(r)
+			return []repoRenameStep{
+				{table: "production_events", where: named, deletes: true, sql: `
+					delete from production_events d
+					where ` + revertRefNamed(r, "d.source_ref") + `
+					  and exists (
+						select 1 from production_events t
+						where t.project_key = d.project_key and t.id <> d.id
+						  and (t.source_ref = ` + renamedRevertRef(r, "d.source_ref") + `
+						    or (` + revertRefNamed(r, "t.source_ref") + ` and t.source_ref < d.source_ref
+						        and split_part(t.source_ref, '#', 2) = split_part(d.source_ref, '#', 2))))
+					returning jsonb_build_object('project_key', d.project_key, 'source_ref', d.source_ref)::text`},
+				{table: "production_events", where: named, write: "source_ref", sql: `
+					update production_events set source_ref = ` + renamedRevertRef(r, "source_ref") + ` where ` + named},
+				nameWrite(r, "production_events", "repo"),
+				{table: "production_events", where: pulls, write: "pull_requests", sql: `
+					update production_events set pull_requests = array(
+						select case when ` + pullRequestNamed(r, "e.pr") + ` then ` + renamedPullRequest(r, "e.pr") + ` else e.pr end
+						from unnest(pull_requests) with ordinality e(pr, n) order by e.n)
+					where ` + pulls},
+			}
+		},
+	},
+	{
+		// The rule each deploy repository's deploy rows stand derived under, keyed by the
+		// repository in lower case: a row under the old name whose twin the new name holds is
+		// deleted, and the twin stays.
+		fields: "production_deploy_rules.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			where := r.named("repo")
+			return []repoRenameStep{
+				collisions(r, "production_deploy_rules"),
+				{table: "production_deploy_rules", where: where, write: "repo", sql: `
+					update production_deploy_rules set repo = lower(` + r.to() + `) where ` + where},
 			}
 		},
 	},
