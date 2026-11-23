@@ -329,7 +329,9 @@ export interface ControlRowProps {
  * a page's own control that removes itself, as the Inbox's **Mark all read** does once nothing
  * is left unread - hands the focus the same way: to the control now at its place in that slot,
  * else to the nearest one before it, passing over every control that takes typed text, else to
- * the trigger, else to the search box (`useFocusPlace`).
+ * the trigger, else to the search box, each only while the reader can see it, else to the own
+ * stop of the region the row is in - the search bar's dialog, else the main content - with no
+ * scroll (`useFocusPlace`).
  * **Clear filters**' own rule, the trigger, comes first wherever it sits. A control of a dialog, a
  * panel or a selection bar a page draws in a slot - the Delivery page's Session groups dialog - is
  * that region's and none of the row's, so the row hands its focus nowhere. In a dialog or a

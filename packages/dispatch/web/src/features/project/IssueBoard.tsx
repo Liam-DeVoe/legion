@@ -725,7 +725,7 @@ export function IssueBoard({
   ]);
   // One row holds the Board's search and filtering, above whatever the board itself is showing
   // - its cards, the skeleton or a refusal - so a reader who has narrowed the list keeps the
-  // controls that did it (INFRA-3135, R1). Nothing they can press here makes the header taller:
+  // controls that did it. Nothing they can press here makes the header taller:
   // the filter panel is portalled over the page (`AnchoredPanel`), and the chips are the one
   // part of the row that may take a second line.
   const controls = (

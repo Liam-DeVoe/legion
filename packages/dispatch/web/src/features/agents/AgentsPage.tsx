@@ -978,8 +978,8 @@ const GROUP_FILTER_LABELS: ReadonlyMap<string, string> = new Map(
 /**
  * The one row the page's controls sit in: the search box, the one trigger over the three
  * narrowings that are no column of a table here - group, machine and role - and the chips of
- * the values that are on (INFRA-3135, R1 and R3). Each narrowing is still a multi-select whose
- * panel holds a text box that narrows its own options (R7: never a dropdown), because forty
+ * the values that are on. Each narrowing is still a multi-select whose panel holds a text box
+ * that narrows its own options, because forty
  * machines cannot be read in a list that does not search; all three now sit behind one trigger
  * rather than three of their own.
  */
@@ -1096,7 +1096,8 @@ function AgentFilterBar({
  * session missing from a list that is not `current` is counted as of unknown state, not as gone,
  * as the composer's chip names it. Clear selection goes with the selection it empties, and the
  * focus it held goes to the select-all checkbox before it, else, while no row matches and that
- * checkbox is disabled, to the search box (`useFocusPlace`).
+ * checkbox is disabled, to the search box, each only while the reader can see it, else to the
+ * main content's own stop with no scroll (`useFocusPlace`).
  */
 function SelectionHeader({
   current,

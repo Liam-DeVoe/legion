@@ -5,6 +5,7 @@ import { type ReactNode, useContext, useId, useRef, useState } from "react";
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type { Ask, AskRead } from "../../api/types";
+import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -56,7 +57,10 @@ export function declineRefusal(error: Error): string {
  * It follows the document's **Request changes** dialog (`doc/ApprovalChip.tsx`) and adds the
  * count of what they may still write, in the UTF-16 units the server counts
  * (`DISPATCH_EVENT_BODY_MAX`). The field stops at that bound, which is where the count reaches
- * zero, so a long note meets the bound here rather than as a refusal from the server.
+ * zero, so a long note meets the bound here rather than as a refusal from the server. While the
+ * decline is out the note and both controls are held (`held-press.ts`), never disabled: the one
+ * the reader pressed keeps the focus, the dialog's Tab cycle keeps all three, so a Tab never
+ * leaves the open dialog, and a press of either control does nothing.
  */
 function DeclineDialog({
   error,
@@ -79,9 +83,9 @@ function DeclineDialog({
   const countId = `${noteId}-left`;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Every way out of the dialog is this one: Cancel, Escape (`useDialog`) and the backdrop. While
-  // the decline is out it closes nothing, as the disabled Cancel button already refused to: the
-  // dialog shows the refusal that may follow over the note it keeps, and outside an Inbox it is
-  // the one surface that refusal is shown on.
+  // the decline is out it closes nothing, as the held Cancel button refuses to: the dialog shows
+  // the refusal that may follow over the note it keeps, and outside an Inbox it is the one
+  // surface that refusal is shown on.
   const close = () => {
     if (!saving) onClose();
   };
@@ -113,7 +117,7 @@ function DeclineDialog({
             <textarea
               aria-describedby={countId}
               className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
-              disabled={saving}
+              {...heldField(saving)}
               id={noteId}
               maxLength={DISPATCH_EVENT_BODY_MAX}
               onChange={(event) => setNote(event.target.value)}
@@ -139,16 +143,14 @@ function DeclineDialog({
           <div className="flex items-center justify-end gap-2">
             <button
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-              disabled={saving}
-              onClick={close}
+              {...heldPress(saving, close)}
               type="button"
             >
               Cancel
             </button>
             <button
               className={`rounded-lg px-3 py-1.5 text-sm font-medium ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={saving}
-              onClick={() => onSubmit(note.trim())}
+              {...heldPress(saving, () => onSubmit(note.trim()))}
               type="button"
             >
               {saving ? "Declining…" : "Decline to answer"}
@@ -249,7 +251,8 @@ function OwnDeclineControl({
 }
 
 /** **Decline to answer**, the refusal under it and the dialog it opens, drawn from `write`: the
- *  Inbox's decline of the ask, or the control's own. */
+ *  Inbox's decline of the ask, or the control's own. The button is held while the decline is out
+ *  (`heldPress`), never disabled, so the dialog that closes hands the focus back to it. */
 function DeclineButton({
   ask,
   open,
@@ -261,8 +264,7 @@ function DeclineButton({
     <div className="mt-3">
       <button
         className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${textSecondaryOnSurface} ${cardHoverBorder}`}
-        disabled={write.isPending}
-        onClick={() => setOpen(true)}
+        {...heldPress(write.isPending, () => setOpen(true))}
         type="button"
       >
         {write.isPending ? "Declining…" : "Decline to answer"}

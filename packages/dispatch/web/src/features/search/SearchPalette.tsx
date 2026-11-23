@@ -930,7 +930,7 @@ function PaletteDialog({
           {/* What the words themselves can do, between the controls and the hits: the three
               operator forms. The line saying that meaning search did not run is NOT here: it
               arrives with an answer, so a narrowing that degraded the search would push every
-              hit down the dialog, which R1 of dispatch://INFRA-3135 forbids. It is drawn with
+              hit down the dialog, and a search's answer moves no hit. It is drawn with
               the other notes about the answer, under the hits. */}
           <div className={`shrink-0 border-b ${borderDefault}`}>
             <SearchOperators inUse={operators} />

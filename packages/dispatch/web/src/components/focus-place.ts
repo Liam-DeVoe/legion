@@ -689,12 +689,14 @@ function noteWrites(): void {
 /**
  * Notes a hold on a control that is part of what answers a write: the control held while the
  * write is out and through the commit after its answer (`useHeldThroughAnswer`), through the
- * re-read that draws what the write changed (`useReadBound`), or until the update that carries
- * the write is drawn (`useHoldUntilDrawn`). A hold begun while the reader's press is live
+ * re-read that draws what the write changed (`useReadBound`), until the update that carries the
+ * write is drawn (`useHoldUntilDrawn`), or through the whole run of a project List action, its
+ * later writes and the read of the list after them included, until its controls are let go
+ * (`issues-table-actions.ts`'s `perform`). A hold begun while the reader's press is live
  * (`recentPress`) is part of that press's action, which keeps the press live while the hold is
- * on, up to `ACTION_BOUND_MS` from its release (`keepLive`): the row or the form that update
- * takes away is still the press's doing (`causedByReader`). A hold begun while no press is live
- * is no press's. Answers what ends the hold; ending it again does nothing.
+ * on, up to `ACTION_BOUND_MS` from its release (`keepLive`): the row or the form that what
+ * answers the write takes away is still the press's doing (`causedByReader`). A hold begun while
+ * no press is live is no press's. Answers what ends the hold; ending it again does nothing.
  */
 export function beginAnswerHold(): () => void {
   const press = recentPress();
