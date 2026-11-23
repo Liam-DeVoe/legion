@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // TestAnApproveOnlyTokenAnswersAnApprovalAskAndNoOtherAsk: the approve use reaches "the answer of
@@ -37,8 +39,8 @@ func TestAnApproveOnlyTokenAnswersAnApprovalAskAndNoOtherAsk(t *testing.T) {
 	answered := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+question.ID+"/answer", approveOnly, map[string]any{
 		"selected": []string{"Yes"}, "text": written, "expected_edited_at": nil,
 	}))
-	if refusal := decodeBody[refusalAnswer](t, answered); answered.Code != http.StatusForbidden || refusal.Code != codeApproveOnlyToken {
-		t.Errorf("the approve-only token's answer of a question ask = %d %s; want 403 %s", answered.Code, answered.Body.String(), codeApproveOnlyToken)
+	if refusal := decodeBody[refusalAnswer](t, answered); answered.Code != http.StatusForbidden || refusal.Code != contracts.DispatchApproveOnlyToken {
+		t.Errorf("the approve-only token's answer of a question ask = %d %s; want 403 %s", answered.Code, answered.Body.String(), contracts.DispatchApproveOnlyToken)
 	}
 	read := sessionRequest(t, rig.handler, http.MethodGet, "/api/v1/asks/"+question.ID, nil)
 	if read.Code != http.StatusOK || strings.Contains(read.Body.String(), written) {

@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -67,8 +68,8 @@ func TestAnApproveOnlyTokenApprovesAsItsPersonAndNothingElse(t *testing.T) {
 		{http.MethodPatch, "/api/v1/me/agent-tokens/00000000-0000-4000-8000-000000000001", map[string]any{"scopes": []string{model.ScopePerson, model.ScopeApprove}}},
 	} {
 		response := rig.serve(caller.presenting(t, write.method, write.path, approveOnly, write.body))
-		if refusal := decodeBody[refusalAnswer](t, response); response.Code != http.StatusForbidden || refusal.Code != codeApproveOnlyToken {
-			t.Errorf("%s %s under the approve-only token = %d %s; want 403 %s", write.method, write.path, response.Code, response.Body.String(), codeApproveOnlyToken)
+		if refusal := decodeBody[refusalAnswer](t, response); response.Code != http.StatusForbidden || refusal.Code != contracts.DispatchApproveOnlyToken {
+			t.Errorf("%s %s under the approve-only token = %d %s; want 403 %s", write.method, write.path, response.Code, response.Body.String(), contracts.DispatchApproveOnlyToken)
 		}
 	}
 	var comments, tokens int
@@ -127,12 +128,12 @@ func TestEveryRowTheApproveListDoesNotNameRefusesAnApproveOnlyTokenBeforeItsHand
 		name := route.Method + " " + route.Pattern
 		response := rig.serve(caller.presentingProbe(t, route, token))
 		refusal := decodeBody[refusalAnswer](t, response)
-		refusedAsApproveOnly := response.Code == http.StatusForbidden && refusal.Code == codeApproveOnlyToken
+		refusedAsApproveOnly := response.Code == http.StatusForbidden && refusal.Code == contracts.DispatchApproveOnlyToken
 		switch {
 		case route.ApproveOnly && refusedAsApproveOnly:
 			t.Errorf("%s is on the approve list and refused the approve-only token %s", name, response.Body.String())
 		case !route.ApproveOnly && !refusedAsApproveOnly:
-			t.Errorf("%s is not on the approve list and answered the approve-only token %d %s; want 403 %s", name, response.Code, response.Body.String(), codeApproveOnlyToken)
+			t.Errorf("%s is not on the approve list and answered the approve-only token %d %s; want 403 %s", name, response.Code, response.Body.String(), contracts.DispatchApproveOnlyToken)
 		}
 		if route.ApproveOnly {
 			listed++
@@ -140,8 +141,8 @@ func TestEveryRowTheApproveListDoesNotNameRefusesAnApproveOnlyTokenBeforeItsHand
 		walked++
 	}
 	live := rig.serve(caller.presenting(t, http.MethodGet, liveSocketPattern, token, nil))
-	if refusal := decodeBody[refusalAnswer](t, live); live.Code != http.StatusForbidden || refusal.Code != codeApproveOnlyToken {
-		t.Errorf("GET %s under the approve-only token = %d %s; want 403 %s", liveSocketPattern, live.Code, live.Body.String(), codeApproveOnlyToken)
+	if refusal := decodeBody[refusalAnswer](t, live); live.Code != http.StatusForbidden || refusal.Code != contracts.DispatchApproveOnlyToken {
+		t.Errorf("GET %s under the approve-only token = %d %s; want 403 %s", liveSocketPattern, live.Code, live.Body.String(), contracts.DispatchApproveOnlyToken)
 	}
 	if walked == 0 || listed == 0 {
 		t.Fatalf("walked %d rows, %d of them on the approve list; want both above zero", walked, listed)

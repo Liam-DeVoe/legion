@@ -280,7 +280,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 	recordAnswer := transition.Apply
 	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
 		if ask.Kind != "approval" && approveOnly {
-			return model.Ask{}, errorf(http.StatusForbidden, codeApproveOnlyToken,
+			return model.Ask{}, errorf(http.StatusForbidden, contracts.DispatchApproveOnlyToken,
 				"this request's credential is an approve-only token, which answers an approval request and no other ask, and this ask is a %s: nothing was recorded", ask.Kind)
 		}
 		if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {

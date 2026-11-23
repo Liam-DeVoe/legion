@@ -221,6 +221,15 @@ export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
  */
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
+/**
+ * The code of the `403` for a request by an approve-only token - the token the secrets broker
+ * mints for a person's approve grant and spends through Cipher's proxy, of the OAuth scope
+ * `approve` alone - to a route Dispatch's approve list (`approveScopeRoutes`) does not name, and
+ * for its answer of an ask that is not an approval request. The route ran nothing and nothing was
+ * recorded. No sign-in and no other scope makes the request possible for that token.
+ */
+export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
+
 /** The codes of a write Dispatch made and has no answer to give for: `409 KEY_COMMITTED`, or a
  *  replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats either as landed. */
 export type IdempotencyLandedCode =

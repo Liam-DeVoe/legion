@@ -1417,11 +1417,6 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 // needs. What each credential holds is said once, above routeScopes.
 const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
-// codeApproveOnlyToken is the code of the 403 for a request by an approve-only token - the token
-// the secrets broker mints for a person's approve grant and spends through its proxy - to a route
-// Dispatch's approve list does not name (refuseApproveOnlyToken): the route ran nothing.
-const codeApproveOnlyToken = "APPROVE_ONLY_TOKEN"
-
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
 // for a scope the credential does not hold. Both ways of writing that refusal go through it, so
 // a caller cannot tell them apart by the challenge.
@@ -1530,7 +1525,7 @@ func (s *server) refuseApproveOnlyToken(listed bool, next http.HandlerFunc) http
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if approveOnlyRequest(r) {
-			writeError(w, codeApproveOnlyToken, http.StatusForbidden, refusal)
+			writeError(w, contracts.DispatchApproveOnlyToken, http.StatusForbidden, refusal)
 			return
 		}
 		next(w, r)
