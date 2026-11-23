@@ -6,15 +6,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// The agents of two steps in the identities a start names them by (plan.Agent.ID): the agent of
+// The agents of two steps in the identities a start names them by (plan.AgentID): the agent of
 // step 1 of task a, which has no key, and the agent of the key b.
 const (
-	stepAgentA = "step:1:a"
-	keyAgentB  = "key:b"
+	stepAgentA plan.AgentID = "step:1:a"
+	keyAgentB  plan.AgentID = "key:b"
 )
 
 // The claim records the agent whose session it holds (Claim.SessionAgent), set by the decision
@@ -46,7 +47,7 @@ func TestAStartForAnotherAgentLeavesTheClaimsSessionBehind(t *testing.T) {
 	for _, bring := range []struct {
 		name  string
 		stop  func(h *harness)
-		start func(agent string) Event
+		start func(agent plan.AgentID) Event
 	}{
 		{
 			name: "the rule's resume of a suspended claim",
@@ -54,7 +55,7 @@ func TestAStartForAnotherAgentLeavesTheClaimsSessionBehind(t *testing.T) {
 				h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon, Reason: "its task was stopped"})
 				h.wantState(StateSuspended)
 			},
-			start: func(agent string) Event {
+			start: func(agent plan.AgentID) Event {
 				return RequestRuleResume{Claim: testToken, Reason: "start row 9", Start: StartWork{Agent: agent}}
 			},
 		},
@@ -64,14 +65,14 @@ func TestAStartForAnotherAgentLeavesTheClaimsSessionBehind(t *testing.T) {
 				h.must(RequestStop{Claim: h.token})
 				h.wantState(StateRetired)
 			},
-			start: func(agent string) Event { return RequestRetry{Claim: testToken, Start: StartWork{Agent: agent}} },
+			start: func(agent plan.AgentID) Event { return RequestRetry{Claim: testToken, Start: StartWork{Agent: agent}} },
 		},
 	} {
 		for _, tc := range []struct {
 			name             string
-			recorded, agent  string
+			recorded, agent  plan.AgentID
 			fresh            bool
-			recordsAfterward string
+			recordsAfterward plan.AgentID
 		}{
 			{name: "a start for another agent", recorded: stepAgentA, agent: keyAgentB, fresh: true, recordsAfterward: keyAgentB},
 			{name: "control: a start for the agent of the session", recorded: keyAgentB, agent: keyAgentB, recordsAfterward: keyAgentB},
@@ -301,7 +302,7 @@ func TestARefusedAdmissionLeavesTheClaimsSessionWhereItWas(t *testing.T) {
 func TestReviveLeavesAnotherAgentsSessionWhoeverCallsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		agent string
+		agent plan.AgentID
 		fresh bool
 	}{
 		{name: "a start for another agent", agent: keyAgentB, fresh: true},

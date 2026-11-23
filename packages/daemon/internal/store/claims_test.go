@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -473,7 +474,7 @@ func TestAClaimsSessionAgentRoundTrips(t *testing.T) {
 	}
 	sameClaim(t, onlyClaim(t, store), want)
 
-	for _, agent := range []string{"step:1:a", "key:b"} {
+	for _, agent := range []plan.AgentID{"step:1:a", "key:b"} {
 		want.SessionAgent = agent
 		if err := store.PutClaim(ctx, want); err != nil {
 			t.Fatalf("put claim of agent %s: %v", agent, err)

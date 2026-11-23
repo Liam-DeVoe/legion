@@ -90,7 +90,7 @@ func TestAStartNamesTheAgentOfItsStepWhateverThePlanInForceHeldBefore(t *testing
 		ranStep2 bool
 		// ran is the agent of the last step of version 1 that ran on the claim, and agent the agent
 		// of version 2's step 1.
-		ran, agent string
+		ran, agent plan.AgentID
 		// named is the name version 2's step 1 takes, where it is not implementer.
 		named claim.Agent
 	}{
@@ -171,7 +171,7 @@ func TestAKeyLeftOutOfOneVersionFindsItsClaimWhenALaterVersionGivesItAgain(t *te
 		steps []string
 		// name is the name of the claim the version's step 1 starts on, agent the agent it names.
 		name  claim.Agent
-		agent string
+		agent plan.AgentID
 	}{
 		{steps: []string{"implementer:k", "reviewer"}, name: "implementer", agent: "key:k"},
 		{steps: []string{"implementer", "reviewer"}, name: "implementer-2", agent: "step:1:a"},

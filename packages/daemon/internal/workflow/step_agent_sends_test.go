@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -34,7 +35,7 @@ func TestARetryAndAnOwedEntryNameTheAgentOfTheStepWhereTheIssueStands(t *testing
 		resend bool
 		// claim and agent are the claim the start names and the agent it runs.
 		claim claim.Agent
-		agent string
+		agent plan.AgentID
 	}{
 		{name: "the retry of the phase", resend: true, claim: "implementer-2", agent: "step:3:a", send: func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, _ record.PhaseRow) {
 			applyRefusingNothing(t, pool, engine, intake.RestartPhase{Issue: key, Role: claim.RoleImplementer})

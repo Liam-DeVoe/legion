@@ -31,6 +31,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -182,7 +183,7 @@ type Claim struct {
 	// yet — the claim of an issue with no plan rows, of a role no step names, or one the release
 	// before last ran — whose session the next such start takes. The store keeps it in
 	// claims.session_agent.
-	SessionAgent string
+	SessionAgent plan.AgentID
 	// Abandoned is the session this claim stopped resuming when it last forgot one
 	// (forgetSession), and why. The session itself stays in its store — nothing of it is deleted
 	// — so this is the one record of where it went, for the operator who may want to read it and
@@ -3550,7 +3551,7 @@ type AbandonedSession struct {
 	// its own behind: the session before is the earlier agent's then, lost before that start. So
 	// whether it was the told agent's own is read at the telling (OfAnotherAgent, abandonedTask),
 	// not decided where it was left.
-	Agent string `json:"agent,omitempty"`
+	Agent plan.AgentID `json:"agent,omitempty"`
 	// Told is whether the agent that replaced the session has been told of it, so it is told in
 	// the first task it actually takes and in no later one, and ToldBy is the delivery whose
 	// confirmation told it, as confirm states. A sentence told twice is the harmless way round,
@@ -3573,7 +3574,7 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // agent is new on its step and is told so (abandonedTask), not that a session of its own was
 // lost. A claim that recorded no agent then, or records none now, tells the session as its
 // agent's own, as it did before agents were recorded.
-func (a AbandonedSession) OfAnotherAgent(agent string) bool {
+func (a AbandonedSession) OfAnotherAgent(agent plan.AgentID) bool {
 	return agent != "" && a.Agent != "" && a.Agent != agent
 }
 

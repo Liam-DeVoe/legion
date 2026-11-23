@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -788,7 +789,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // acts on and the session it runs in. claim is the claim the start was queued for
 // (record.SuperviseRequest.Claim): the outbox acts on it, and judges whether the start still stands
 // on it alone (record.StartLeft), before it runs and again under the claim's lock. agent is the
-// agent the start runs on that claim (record.SuperviseRequest.Agent, plan.Agent.ID), always an
+// agent the start runs on that claim (record.SuperviseRequest.Agent, plan.AgentID), always an
 // agent whose claim is claim, or "": it decides only which session a start that stands runs in, a
 // new one where the claim records another agent's session (supervise.Claim.SessionAgent), and the
 // one the claim holds where agent is "" or the claim records none (supervise.Machine.TakeSessionFor).
@@ -796,7 +797,7 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // step's agent.
 type reach struct {
 	claim claim.Token
-	agent string
+	agent plan.AgentID
 }
 
 // stepReach is whom a start of role on issue reaches, read on w, issue's walk, from the one step

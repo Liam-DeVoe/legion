@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -3447,11 +3448,11 @@ func (s *Postgres) RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseTo
 
 // IssueClaim is one stored claim of an issue: its token, which names its agent, its stored role,
 // the role of the step its agent runs or ran last, and the agent whose session it holds
-// (supervise.Claim.SessionAgent, plan.Agent.ID), "" where it records none.
+// (supervise.Claim.SessionAgent, plan.AgentID), "" where it records none.
 type IssueClaim struct {
 	Token        claim.Token
 	Role         claim.Role
-	SessionAgent string
+	SessionAgent plan.AgentID
 }
 
 // IssueClaims is every stored claim of issue in project, the claims' project token as
@@ -3471,7 +3472,7 @@ func (s *Postgres) IssueClaims(ctx context.Context, tx pgx.Tx, project, issue st
 		if err := rows.Scan(&token, &role, &sessionAgent); err != nil {
 			return nil, fmt.Errorf("read the claims of %s: %w", issue, err)
 		}
-		claims = append(claims, IssueClaim{Token: claim.Token(token), Role: claim.Role(role), SessionAgent: sessionAgent})
+		claims = append(claims, IssueClaim{Token: claim.Token(token), Role: claim.Role(role), SessionAgent: plan.AgentID(sessionAgent)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the claims of %s: %w", issue, err)

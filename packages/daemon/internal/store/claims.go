@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -508,7 +509,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.Budgets.LaunchFailures, c.Budgets.Deaths, c.Budgets.PromptFailures, c.Budgets.PromptRetires,
 		c.BootTokenHash, c.CapabilityHash, c.UncertainStreak, c.LastStartRow, int64(c.ServingGeneration), c.GivenEntry, c.ServedEntry,
 		enrollmentID, enrollmentIncarnation, string(c.SuspendedBy),
-		c.PluginContract, c.PluginRelaunchFor, int64(c.AgentResumeGeneration), c.SessionAgent, delivered,
+		c.PluginContract, c.PluginRelaunchFor, int64(c.AgentResumeGeneration), string(c.SessionAgent), delivered,
 		instant(c.LastTurnStart), instant(c.LastTurnEnd),
 		c.LastDeathCause, c.LastStartFailure, instant(c.LastReady), outcomes, abandoned,
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
@@ -854,6 +855,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	var (
 		c                           supervise.Claim
 		token, role, state, by      string
+		sessionAgent                string
 		cause, pendingCause         string
 		failedAt                    *time.Time
 		generation, treeEpoch       int64
@@ -904,7 +906,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.Handshake.Entry, &handshakeGeneration, &handshakeQueued, &handshakeConfirmed,
 		&servingCheckLook, &servingCheckOpened,
 		&enrollmentID, &enrollmentIC, &by,
-		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.SessionAgent, &c.DeliveredRows,
+		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &sessionAgent, &c.DeliveredRows,
 		&turnStart, &turnEnd,
 		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
@@ -931,7 +933,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.FailureCause, c.PendingCause = supervise.FailureCause(cause), supervise.FailureCause(pendingCause)
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
-	c.AgentResumeGeneration = uint64(agentResumeGeneration)
+	c.AgentResumeGeneration, c.SessionAgent = uint64(agentResumeGeneration), plan.AgentID(sessionAgent)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
 	// The handshake's two moments are nullable (20261114020537_claim_entry_handshake): a claim queued
 	// no task carrying an entry has neither, and one whose task of its entry no turn has confirmed

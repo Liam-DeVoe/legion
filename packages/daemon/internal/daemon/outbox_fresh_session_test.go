@@ -8,18 +8,19 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The agents of two steps in the identities a start names them by (plan.Agent.ID): the agent of
+// The agents of two steps in the identities a start names them by (plan.AgentID): the agent of
 // step 1 of task a, which has no key, whose session the claim holds, and the agent of the key b,
 // which a later version gives the same name.
 const (
-	earlierAgent = "step:1:a"
-	laterAgent   = "key:b"
+	earlierAgent stepplan.AgentID = "step:1:a"
+	laterAgent   stepplan.AgentID = "key:b"
 )
 
 // agentStartRig is one claim of LEGION-208's implementer whose session, ses-earlier, is the
@@ -44,7 +45,7 @@ func newAgentStartRig(t *testing.T, suspended bool) *agentStartRig {
 
 // newAgentStartRigOf is newAgentStartRig with the claim spawned for agent, "" for a claim that
 // records no agent, as every claim a release before the record ran does.
-func newAgentStartRigOf(t *testing.T, suspended bool, agent string) *agentStartRig {
+func newAgentStartRigOf(t *testing.T, suspended bool, agent stepplan.AgentID) *agentStartRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -97,7 +98,7 @@ func (r *agentStartRig) comesUp(session string) {
 
 // start is the start row id of step 1 of the plan in force, for agent, at generation, as the
 // workflow's entry queues it.
-func (r *agentStartRig) start(id int64, agent string, generation uint64) record.OutboxRow {
+func (r *agentStartRig) start(id int64, agent stepplan.AgentID, generation uint64) record.OutboxRow {
 	r.t.Helper()
 	row := mustOutboxRow(r.t, r.issue.Key, record.SuperviseRequest{Op: "start", Tree: r.issue.Tree, Role: claim.RoleImplementer, Phase: phase.Implementing,
 		Entry: 3, Task: "Build the manual.", Generation: generation, Agent: agent}, time.Now())
@@ -120,7 +121,7 @@ func (r *agentStartRig) launches() (spawns, resumes int) {
 func TestAStartForAnotherAgentStartsTheClaimInANewSession(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
-		agent     string
+		agent     stepplan.AgentID
 		suspended bool
 		fresh     bool
 	}{
@@ -227,7 +228,7 @@ func TestAFreshStartThatFinishedWithoutActingLeavesTheNextStartFresh(t *testing.
 func TestAClaimThatRecordsNoAgentTakesTheFirstStartsAgent(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		agent string
+		agent stepplan.AgentID
 		task  string
 		fresh bool
 	}{

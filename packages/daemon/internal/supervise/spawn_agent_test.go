@@ -1,6 +1,10 @@
 package supervise
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/plan"
+)
 
 // A claim queued again after a launch (ReleasedLaunch) still records the session it ran, and the
 // agent of that session (Claim.SessionAgent). A spawn of it for another step's agent leaves that
@@ -11,7 +15,7 @@ import "testing"
 func TestASpawnOfAReleasedLaunchForAnotherAgentLeavesItsSessionBehind(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		agent string
+		agent plan.AgentID
 		fresh bool
 	}{
 		{name: "a spawn for another agent", agent: keyAgentB, fresh: true},

@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -40,7 +41,7 @@ import (
 type StartWork struct {
 	Phase      phase.Phase
 	Generation uint64
-	Agent      string
+	Agent      plan.AgentID
 }
 
 // ErrStartLeft is a start the machine judged no longer the work of its claim's issue
@@ -126,7 +127,7 @@ func (m *Machine) revive(ctx context.Context, request string, exempt bool, start
 // SessionOfAnotherAgent is whether the claim's session is the session of another agent than agent,
 // the agent of the step a start is a run of (StartWork.Agent): both are recorded and they differ.
 // A start that names no agent, and a claim that records none, take the session the claim holds.
-func (c Claim) SessionOfAnotherAgent(agent string) bool {
+func (c Claim) SessionOfAnotherAgent(agent plan.AgentID) bool {
 	return agent != "" && c.SessionAgent != "" && c.SessionAgent != agent
 }
 
@@ -146,7 +147,7 @@ func (c Claim) SessionOfAnotherAgent(agent string) bool {
 // since, by a move or a later entry, is ErrStepLeft, and the claim records no agent. Recorded for a
 // stale start, the agent would hold the session though its task is never delivered, and the next
 // start, of the agent whose session it is, would find another agent's and start a new session.
-func (m *Machine) TakeSessionFor(ctx context.Context, agent string) error {
+func (m *Machine) TakeSessionFor(ctx context.Context, agent plan.AgentID) error {
 	m.mu.Lock()
 	defer m.unlock()
 	if agent == "" || m.claim.SessionAgent != "" || m.claim.RunsNothing() {

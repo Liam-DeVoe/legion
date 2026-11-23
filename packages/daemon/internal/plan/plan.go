@@ -65,22 +65,28 @@ func AgentOf(task string, place int, s Step) Agent {
 // Owner says whether a is the owner of its task.
 func (a Agent) Owner() bool { return a.Key == "owner" }
 
-// ID is a in one string: `key:<key>` for the agent of a key, and `step:<place>:<task>` for the agent
-// of a step with no key, its place first, so no task id can make two agents one string. Two agents
-// are one exactly when their IDs are equal. A claim records the ID of the agent whose session it
-// holds (supervise.Claim.SessionAgent), and every start of a step names its step's
+// AgentID is an agent in one string, the identity a start names it by and a claim records the
+// agent of its session by: `key:<key>` for the agent of a key, and `step:<place>:<task>` for the
+// agent of a step with no key, its place first, so no task id can make two agents one string. Two
+// agents are one exactly when their AgentIDs are equal. "" names no agent. It is not the agent's
+// name (claim.Agent), which is the last part of its claim's token and which two agents of an issue
+// can hold in turn.
+type AgentID string
+
+// ID is the identity of a (AgentID). A claim records the ID of the agent whose session it holds
+// (supervise.Claim.SessionAgent), and every start of a step names its step's
 // (record.SuperviseRequest.Agent), so the claim starts in a new session exactly where the two differ.
-func (a Agent) ID() string {
+func (a Agent) ID() AgentID {
 	if a.Key != "" {
-		return "key:" + a.Key
+		return AgentID("key:" + a.Key)
 	}
-	return "step:" + strconv.Itoa(a.Place) + ":" + a.Task
+	return AgentID("step:" + strconv.Itoa(a.Place) + ":" + a.Task)
 }
 
-// KeyOfID is the key of the agent whose identity is id (ID), and false for the agent of a step
-// with no key and for "", which names no agent.
-func KeyOfID(id string) (string, bool) {
-	key, ok := strings.CutPrefix(id, "key:")
+// Key is the key of the agent id names, and false for the agent of a step with no key and for "",
+// which names no agent.
+func (id AgentID) Key() (string, bool) {
+	key, ok := strings.CutPrefix(string(id), "key:")
 	return key, ok && key != ""
 }
 

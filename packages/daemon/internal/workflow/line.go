@@ -126,7 +126,7 @@ func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 // key owner and for a place the task does not hold. A start of the work of place names it
 // (record.SuperviseRequest.Agent), and the claim it reaches starts in a new session where its
 // session is another agent's (supervise.Claim.SessionAgent).
-func (w Walk) agentIDAt(place record.TaskPlace) string {
+func (w Walk) agentIDAt(place record.TaskPlace) plan.AgentID {
 	at := w.stepOfWork(place)
 	if at == 0 {
 		return ""

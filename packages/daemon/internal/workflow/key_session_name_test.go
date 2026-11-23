@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -45,7 +46,7 @@ func TestAKeyKeepsTheNameWhoseClaimHoldsItsSessionAfterItsRowsAreGone(t *testing
 		names []claim.Agent
 		role  claim.Role
 		place int
-		agent string
+		agent plan.AgentID
 	}{
 		{steps: []string{"implementer:k", "reviewer"}, names: []claim.Agent{"implementer", "reviewer"},
 			role: claim.RoleImplementer, place: 1, agent: "key:k"},
@@ -80,7 +81,8 @@ func TestAKeyKeepsTheNameWhoseClaimHoldsItsSessionAfterItsRowsAreGone(t *testing
 		if row := roleRowNow(t, pool, engine, key, v.role); row.Claim != reached {
 			t.Fatalf("version %d: step %d runs on the claim %q, want %q", version, v.place, row.Claim, reached)
 		}
-		if held := sessionAgentOf(t, pool, reached); held != start.Agent && strings.HasPrefix(held, "key:") {
+		held := sessionAgentOf(t, pool, reached)
+		if _, keyed := held.Key(); keyed && held != start.Agent {
 			t.Fatalf("version %d: the start for %s reaches %s, whose session is %s's", version, start.Agent, reached, held)
 		} else if version == 4 && held != "key:k" {
 			t.Fatalf("version 4: the claim %s records the agent %q of its session, want key:k's, which the start resumes", reached, held)
@@ -96,24 +98,24 @@ func TestAKeyKeepsTheNameWhoseClaimHoldsItsSessionAfterItsRowsAreGone(t *testing
 
 // sessionAgentOf is the agent whose session the stored claim token holds (claims.session_agent),
 // "" for no such claim or a claim that records none.
-func sessionAgentOf(t *testing.T, pool *pgxpool.Pool, token claim.Token) string {
+func sessionAgentOf(t *testing.T, pool *pgxpool.Pool, token claim.Token) plan.AgentID {
 	t.Helper()
 	var agent string
 	err := pool.QueryRow(context.Background(), `select session_agent from claims where token = $1`, string(token)).Scan(&agent)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("read the agent of %s's session: %v", token, err)
 	}
-	return agent
+	return plan.AgentID(agent)
 }
 
 // recordSessionAgent stores the claim token of LEGION-208's role as holding the session of agent, as
 // the runner records the agent of a start that brings the claim back (supervise.Claim.SessionAgent).
-func recordSessionAgent(t *testing.T, pool *pgxpool.Pool, token claim.Token, role claim.Role, agent string) {
+func recordSessionAgent(t *testing.T, pool *pgxpool.Pool, token claim.Token, role claim.Role, agent plan.AgentID) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, session_agent)
 		values ($1, 'legion', 'LEGION-208', 'LEGION-208', $2, 1, '', '', 'suspended', 0, 0, 0, 0, $3)
-		on conflict (token) do update set session_agent = excluded.session_agent`, string(token), string(role), agent); err != nil {
+		on conflict (token) do update set session_agent = excluded.session_agent`, string(token), string(role), string(agent)); err != nil {
 		t.Fatalf("record %s as the agent of %s's session: %v", agent, token, err)
 	}
 }

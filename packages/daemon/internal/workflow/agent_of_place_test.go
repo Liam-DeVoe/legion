@@ -23,7 +23,7 @@ func TestTheAgentOfAPlaceIsOneAgentByItsNameAndByItsIdentity(t *testing.T) {
 		words string
 		// named and id are the name and the identity of the retro's agent.
 		named claim.Agent
-		id    string
+		id    plan.AgentID
 	}{
 		{words: "implementer reviewer implementer", named: "implementer-2", id: "step:3:a"},
 		{words: "implementer:a reviewer implementer:b", named: "implementer-2", id: "key:b"},

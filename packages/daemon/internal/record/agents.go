@@ -25,7 +25,7 @@ type KeySessions map[claim.Agent]string
 func KeySessionsOf(claims []IssueClaim) KeySessions {
 	sessions := KeySessions{}
 	for _, c := range claims {
-		key, keyed := plan.KeyOfID(c.SessionAgent)
+		key, keyed := c.SessionAgent.Key()
 		_, name, ok := c.Token.Cut()
 		if keyed && ok && !(plan.Agent{Key: key}).Owner() {
 			sessions[name] = key
