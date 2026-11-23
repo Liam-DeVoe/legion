@@ -28,6 +28,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 )
 
 // replayIDsDDL is the logged-to-local id map a seed writes as it goes and a resumed seed reads,
@@ -332,9 +334,10 @@ type seedWrite struct {
 	ok       []int
 }
 
-// write sends one write, retrying a transport error, 429 or 5xx with backoff, and records it in the
-// counts and the ops log. A 2xx or a status in ok returns the body; any other status is a
-// *seedError. A write the seed's context ended returns that context's error alone: its cause is
+// write sends one write, retrying a transport error or an outage status (a 408, a 429, a 5xx) with
+// backoff, and records it in the counts and the ops log. A 2xx or a status in ok returns the body;
+// any other status is a *seedError. A write the seed's context ended returns that context's error
+// alone: its cause is
 // the error another issue's write failed with (errgroup), and wrapped here it would read as this
 // write's own refusal (anchored would take another write's 413 for its quote's).
 func (s *replaySeeder) write(ctx context.Context, sw seedWrite) ([]byte, error) {
@@ -1284,8 +1287,8 @@ func (s *replaySeeder) anchored(ctx context.Context, kind, key string, d *issueD
 				s.addMark(d.local, 1)
 				return local, s.ids.put(ctx, rowKind, logged, local)
 			}
-			var se *seedError
-			if !errors.As(err, &se) || se.status/100 != 4 {
+			se, refused := quoteRefusal(err)
+			if !refused {
 				return "", err
 			}
 			s.lg.Printf("%s %s: quote refused (branch %s, status %d code %q)", kind, logged, choice.Branch, se.status, se.code)
@@ -1300,6 +1303,17 @@ func (s *replaySeeder) anchored(ctx context.Context, kind, key string, d *issueD
 		return "", fmt.Errorf("%s %s cannot be anchored: document %s has no usable sentence", kind, logged, d.a.ID)
 	}
 	return "", fmt.Errorf("%s %s cannot be anchored: every candidate was refused, the last with %w", kind, logged, last)
+}
+
+// quoteRefusal is the *seedError of err when Dispatch refused the anchored write for its quote: a
+// 4xx that is no outage. An outage status (a 408 or a 429, past write's retries) says nothing of
+// the quote, so the seed stops on it rather than anchoring the item on another sentence.
+func quoteRefusal(err error) (*seedError, bool) {
+	var se *seedError
+	if !errors.As(err, &se) || se.status/100 != 4 || oauthrefusal.Outage(se.status) {
+		return nil, false
+	}
+	return se, true
 }
 
 func (s *replaySeeder) resolve(ctx context.Context, key string, docs map[string]*issueDoc, c replayComment) error {
