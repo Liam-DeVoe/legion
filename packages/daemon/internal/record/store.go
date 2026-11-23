@@ -771,9 +771,11 @@ const pullRequestColumns = `issue, ` + pullRequestPlan + `, repo, number, branch
 	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward`
 
 // pullRequestPlan is the tasks of the plan of a pull_requests row's issue at the issue's
-// generation, each as its id, its branch and its state, in task id order, as one JSON array: the
-// facts StoredPlan.TaskOfBranch reads a row's task from. An issue with no plan rows there reads [].
-const pullRequestPlan = `(select coalesce(json_agg(json_build_object('task', t.task, 'branch', t.branch, 'state', t.state) order by t.task), '[]')
+// generation, each as its id, its branch, its state and its place, in task id order, as one JSON
+// array: the facts StoredPlan.TaskOfBranch reads a row's task from. An issue with no plan rows
+// there reads [].
+const pullRequestPlan = `(select coalesce(json_agg(json_build_object('task', t.task, 'branch', t.branch, 'state', t.state,
+	'place', json_build_object('kind', t.running_kind, 'position', t.position)) order by t.task), '[]')
 	from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation where t.issue = pull_requests.issue)`
 
 func (s *Postgres) PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error) {

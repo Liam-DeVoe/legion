@@ -158,7 +158,9 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // in place of the row of that branch (replacedPullRequest), so the pull request of one task of an
 // issue never takes the place of another's, and it is the pull request of the task whose branch it
 // is on (viewOfPullRequest): the merge it waits on is the task's, and it moves the task where its
-// implementer's completion waits for it.
+// implementer's completion waits for it. It is recorded only on a branch a task of its issue holds
+// (issueForBranch): one on any other branch of an issue's shape, a reopen or a redelivered open of
+// a pull request whose row the record deleted among them, is none of the issue's.
 func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.PullRequestOpened) (intake.Result, error) {
 	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || issue == nil {
@@ -452,13 +454,24 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 // (record.TaskPullRequestsClose), each with the comment `Merged in #<n>.`, where merged, the pull
 // request the fact just recorded merged, is the pull request of the task that merges
 // (record.Store.MergePullRequest): its merge put the work of every task on the default branch, and
-// GitHub leaves the pull request of each other task open. The merge of any other task's pull request
-// closes nothing, and neither does the merge of an issue whose other pull requests are closed or
-// that has none, as an issue of one task has none. It is written in the merge's own transaction, so
-// the row is queued once, as GitHub sends the merge once.
+// GitHub leaves the pull request of each other task open. It closes only the pull request of a
+// task of the issue's plan, on a branch a task holds (record.StoredPlan.HoldsBranch, the rule the
+// recorder reads, issueForBranch): a row on any other branch is no task's, and the implement App
+// closes no pull request Legion did not open. The merge of any other task's pull request closes
+// nothing, and neither does the merge of an issue whose other pull requests are closed or that has
+// none, as an issue of one task has none. It is written in the merge's own transaction, so the row
+// is queued once, as GitHub sends the merge once.
 func (e *Engine) closeOtherTaskPullRequests(ctx context.Context, tx pgx.Tx, merged record.PullRequest) error {
 	sink, err := e.store.MergePullRequest(ctx, tx, merged.Issue)
 	if err != nil || sink == nil || sink.Number != merged.Number || !e.sameRepository(sink.Repo, merged.Repo) {
+		return err
+	}
+	issue, err := e.store.Issue(ctx, tx, merged.Issue)
+	if err != nil || issue == nil {
+		return err
+	}
+	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
 		return err
 	}
 	prs, err := e.store.TaskPullRequests(ctx, tx, merged.Issue)
@@ -467,16 +480,12 @@ func (e *Engine) closeOtherTaskPullRequests(ctx context.Context, tx pgx.Tx, merg
 	}
 	var open []int
 	for _, pr := range prs {
-		if pr.State == record.PullRequestOpen && pr.Number != merged.Number {
+		if pr.State == record.PullRequestOpen && pr.Number != merged.Number && stored.HoldsBranch(issue.Key, pr.Branch) {
 			open = append(open, pr.Number)
 		}
 	}
 	if len(open) == 0 {
 		return nil
-	}
-	issue, err := e.store.Issue(ctx, tx, merged.Issue)
-	if err != nil || issue == nil {
-		return err
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.TaskPullRequestsClose{Generation: issue.Generation, Numbers: open,
 		Comment: fmt.Sprintf("Merged in #%d.", merged.Number)})
