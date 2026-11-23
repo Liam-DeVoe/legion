@@ -300,18 +300,19 @@ func TestTheReadingAndTheStatementAnswerAlikeInEveryLocale(t *testing.T) {
 // spells under the pull request's repository in ASCII lower case, beside the link of an issue to
 // that GitHub issue and the answer every database gives. The link of #21 is the cited URL's own
 // spelling, İ kept; the link of #22 folds İ to i, which the reading's fold does not; #70 is a
-// pair in ASCII alone.
+// pair in ASCII alone. Each issue names the pull request's repository as its own, in the pull
+// request's letters (issues.repo), so the citation is held to it: a project's default repository
+// is held to lower case (projects_default_repo_check), which İ is in no locale but C.
 var citedPairs = []struct {
-	repo         string
-	number       int
-	body         string
-	issue, link  string
-	answer       string
-	projectRepos [2]string
+	repo        string
+	number      int
+	body        string
+	issue, link string
+	answer      string
 }{
-	{"İstanbul/x", 21, "Fixes #12.", "IST-12", "https://github.com/İstanbul/x/issues/12", "IST-12 from github_issue_link", [2]string{"IST", "İstanbul/x"}},
-	{"İstanbul/x", 22, "Fixes #13.", "IST-13", "https://github.com/istanbul/x/issues/13", "nobody from none", [2]string{"IST", "İstanbul/x"}},
-	{"acme/widgets", 70, "Fixes #77.", "ASC-77", "https://github.com/Acme/Widgets/issues/77", "ASC-77 from github_issue_link", [2]string{"ASC", "acme/widgets"}},
+	{"İstanbul/x", 21, "Fixes #12.", "IST-12", "https://github.com/İstanbul/x/issues/12", "IST-12 from github_issue_link"},
+	{"İstanbul/x", 22, "Fixes #13.", "IST-13", "https://github.com/istanbul/x/issues/13", "nobody from none"},
+	{"acme/widgets", 70, "Fixes #77.", "ASC-77", "https://github.com/Acme/Widgets/issues/77", "ASC-77 from github_issue_link"},
 }
 
 // linkReaders are what one statement text of each reader answers for citedPairs: each pull
@@ -411,10 +412,12 @@ func TestALinkAndACitationMatchByKeyAndByIssueAlikeInEveryLocale(t *testing.T) {
 				}
 				schema := readingSchema(t, ctx, pool)
 				for _, pair := range citedPairs {
-					seedProjectRepository(t, ctx, pool, pair.projectRepos[0], pair.projectRepos[0], pair.projectRepos[1])
 					project, number, _ := strings.Cut(pair.issue, "-")
-					if _, err := pool.Exec(ctx, `insert into issues (key, project_key, number, title, status, created_by, rank)
-						values ($1, $2, $3::int, $1, 'todo', '{"kind":"system","id":"test"}', $1)`, pair.issue, project, number); err != nil {
+					if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict do nothing`, project); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := pool.Exec(ctx, `insert into issues (key, project_key, number, title, status, created_by, rank, repo)
+						values ($1, $2, $3::int, $1, 'todo', '{"kind":"system","id":"test"}', $1, $4)`, pair.issue, project, number, pair.repo); err != nil {
 						t.Fatal(err)
 					}
 					if _, err := pool.Exec(ctx, `insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github')`, pair.issue, pair.link); err != nil {

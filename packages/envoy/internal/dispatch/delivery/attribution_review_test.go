@@ -160,7 +160,8 @@ func TestAttributingAStoredPullRequestUnderAnOldNameOfTwoRenamePairsTakesTheGrea
 // request on the new name whose body cites an issue under the old name, in any case, credits the
 // Dispatch issue that links it under the new name. A bare #N in a pull request stored under the
 // old name cites the issue of that name, which the same comparison finds under the new name. The
-// titles name nothing.
+// read by the issue lists both, as the read by key answers them: its arm of a cited URL compares
+// every spelling of each link of the issue (citedSpellings). The titles name nothing.
 func TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
@@ -176,15 +177,18 @@ func TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName
 		title: "Work that names no issue", texts: readTexts("Fixes https://github.com/OldCo/Gadgets/issues/600.")})
 	storeStatementRow(t, ctx, pool, statementRow{repo: gadgetsOldRepo, number: 243, branch: "main",
 		title: "Work that names no issue", texts: readTexts("Fixes #601.")})
-	wantAnswers(t, NewAttributor(renamesOf(t, ctx, pool)), pool, map[PullRequestKey]string{
+	renamed := NewAttributor(renamesOf(t, ctx, pool))
+	wantAnswers(t, renamed, pool, map[PullRequestKey]string{
 		{Repo: gadgetsRepo, Number: 242}:    own + " from github_issue_link",
 		{Repo: gadgetsOldRepo, Number: 243}: own + " from github_issue_link",
 	})
+	wantListed(t, renamed, ctx, pool, own, "#242", "#243")
 	// The control: with no pairs, neither citation names a URL the issue links.
 	wantAnswers(t, unrenamed(), pool, map[PullRequestKey]string{
 		{Repo: gadgetsRepo, Number: 242}:    "nobody from none",
 		{Repo: gadgetsOldRepo, Number: 243}: "nobody from none",
 	})
+	wantListed(t, unrenamed(), ctx, pool, own)
 }
 
 // TestAttributingABatchPicksEachRowsOwnRepositorysIssue: the statement resolves every candidate
