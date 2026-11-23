@@ -8148,6 +8148,7 @@ each issue's pod (every role of it alike) and the image probe's.
   Every architect is told them after Legion's roles and the deployment's.
   `legion config check` prints them on one line right after the project lines (`models: <m1>, <m2>`, or `models: none` where none is named).
   The served settings carry them as `settings.models`, absent where none is named.
+  The daemon reads them when it boots, so a change to `models` takes effect when the daemon restarts.
   The loader refuses a value that is not a list (`models must be a list of model names, e.g. [anthropic/claude-sonnet-4]`), an entry that is not a string (`models[<i>] must be a model's name`), an empty entry (`models[<i>] is empty`), an entry that holds white space (`models[<i>] is "<m>", which holds white space: a model's name is one word`, a missing comma among them: `[m-a m-b]` is one entry) and a model named twice (`models names <m> twice`), each index counted from 0, at boot and at `legion config check` alike.
   No such value is taken with a warning first: the release before refuses the key itself, and a load that left a bad entry out would list fewer models, so its boot would stop the tasks below.
   `register_plan` refuses a plan that defines a role whose `model` is not listed (`… the deployment does not list; it lists <m1>, <m2>.`, or `… it lists none.`).
