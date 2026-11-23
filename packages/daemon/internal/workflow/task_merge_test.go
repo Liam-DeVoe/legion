@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -231,5 +232,83 @@ func TestOnlyTheLastTasksRetroIsHeldForTheIssuesBeneath(t *testing.T) {
 	held := noticesOfKind(t, pool, root.Key, "retro-held")
 	if want := retroHeldNotice(root.Key, []string{heldParentChild}).Reason; len(held) != 1 || held[0].Reason != want {
 		t.Fatalf("the retro-held notices of %s = %+v, want one: %q", root.Key, held, want)
+	}
+}
+
+// productionChecksOf is the merge commit of each production_checks row of key, oldest first.
+func productionChecksOf(t *testing.T, pool *pgxpool.Pool, key string) []string {
+	t.Helper()
+	rows, err := pool.Query(t.Context(), `select merge_sha from production_checks where issue = $1 order by opened_at`, key)
+	if err != nil {
+		t.Fatalf("read the production checks of %s: %v", key, err)
+	}
+	merges, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the production checks of %s: %v", key, err)
+	}
+	return merges
+}
+
+// A version that removes the last task that is not done ends the issue. Of a (merges) and b (no
+// needs), a merged and is done, and b, stopped, holds the issue (task_stopped); version 2 removes
+// b. The issue stands done, its Dispatch status done is queued, and it leaves the workflow: a root
+// lingers its tree (a linger_close row), a child tells the architect above it child-closed. The
+// issue holds one production check, of a's merge: the version opens no check of its own.
+//
+// The fault it catches is an issue whose tasks are all done that never leaves the workflow, so its
+// root never lingers and its claims are never retired (its control: planGiven with no leave, which
+// leaves the issue held for the stopped task it no longer has, with no linger and no
+// child-closed).
+func TestAVersionThatRemovesTheLastUndoneTaskEndsTheIssue(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		child bool
+	}{
+		{"a root", false},
+		{"a child", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Implementing)
+			issue, number := root, 42
+			if tc.child {
+				issue = stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+				seedChildPR(t, pool, record.PullRequestOpen)
+				number = 43
+			}
+			seedAAndB(t, pool, engine, issue.Key, issue.Generation, atMerge, atStep(1), 45)
+			apply := applyFacts(t, pool, engine)
+			mustSpend(t, "the merge of a's pull request", apply("merged-a", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: number, MergeSHA: "merge-a"}))
+			if result := apply("stop-b", ownersStop(t, issue, "b")); result.Refusal != nil {
+				t.Fatalf("the owner's stop of b was refused: %+v", result.Refusal)
+			}
+			if held := issueOf(t, pool, engine, issue.Key); !record.HeldFor(held, record.HoldTaskStopped) {
+				t.Fatalf("premise: %s with a done and b stopped stands in %s (hold %+v), want held for the stopped task", issue.Key, held.Phase, held.Hold)
+			}
+			aBlock := keyed(t, "a", "", []string{"implementer"})
+			aBlock.Merges = true
+
+			mustTake(t, "version 2, which removes the stopped b", apply("version-2", laterVersion(t, issue.Key, issue.Generation, 2, aBlock)))
+
+			ended := issueOf(t, pool, engine, issue.Key)
+			if ended.Phase != phase.Done || ended.Hold != nil {
+				t.Fatalf("%s after version 2 stands in %s (hold %+v), want done: each of its tasks is done", issue.Key, ended.Phase, ended.Hold)
+			}
+			if writes := statusWrites(t, pool, issue.Key); len(writes) == 0 || writes[len(writes)-1].Status != "done" {
+				t.Fatalf("the status writes of %s = %+v, want the last of done", issue.Key, writes)
+			}
+			if tc.child {
+				if notices := noticesOfKind(t, pool, issue.Key, "child-closed"); len(notices) != 1 {
+					t.Fatalf("the child-closed notices of %s = %+v, want one: the child left the workflow", issue.Key, notices)
+				}
+			} else if !ended.Lingers() || len(issueOutboxOf(t, pool, issue.Key, string(record.OutboxKindLingerClose))) != 1 {
+				t.Fatalf("%s after version 2 lingers %t with %d linger_close rows, want its tree lingering with one", issue.Key, ended.Lingers(),
+					len(issueOutboxOf(t, pool, issue.Key, string(record.OutboxKindLingerClose))))
+			}
+			if checks := productionChecksOf(t, pool, issue.Key); !reflect.DeepEqual(checks, []string{"merge-a"}) {
+				t.Fatalf("the production checks of %s are of the merges %v, want one, of a's merge-a", issue.Key, checks)
+			}
+		})
 	}
 }
