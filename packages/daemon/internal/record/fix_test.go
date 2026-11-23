@@ -402,6 +402,45 @@ func TestACarriedPlanKeepsFixesCI(t *testing.T) {
 	})
 }
 
+// Whether a run takes a fix is marked on every task of the run at once (MarkRunFixesCI), and read
+// as the run's (RunFixesCI): true where a task of the generation holds it. The issue's other
+// generation is another run, which the mark leaves as it was; that is the control. A run with no
+// plan rows has no task to mark, and takes none.
+func TestMarkRunFixesCIMarksEveryTaskOfItsRun(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := NewStore()
+	v, tasks, steps := ownersPlan(planIssue, 1, 2, planOwner, planGivenAt)
+	tasks[0].FixesCI = false
+	second := tasks[0]
+	second.Task, second.Needs = "b", nil
+	other, otherTasks, otherSteps := ownersPlan(planIssue, 2, 2, planOwner, planGivenAt)
+	otherTasks[0].FixesCI = false
+	inTx(t, st, func(tx pgx.Tx) {
+		putPlan(t, tx, v, []PlanTask{tasks[0], second}, steps)
+		putPlan(t, tx, other, otherTasks, otherSteps)
+		if takes, err := records.RunFixesCI(ctx, tx, planIssue, 1); err != nil || takes {
+			t.Fatalf("RunFixesCI of a run none of whose tasks takes a fix = %t, %v; want false", takes, err)
+		}
+		must(t, records.MarkRunFixesCI(ctx, tx, planIssue, 1))
+		if takes, err := records.RunFixesCI(ctx, tx, planIssue, 1); err != nil || !takes {
+			t.Fatalf("RunFixesCI of the marked run = %t, %v; want true", takes, err)
+		}
+		if takes, err := records.RunFixesCI(ctx, tx, planIssue, 2); err != nil || takes {
+			t.Fatalf("RunFixesCI of the issue's other run = %t, %v; want false", takes, err)
+		}
+		for _, task := range readPlan(t, tx, planIssue, 1).Tasks {
+			if !task.FixesCI {
+				t.Errorf("task %s of the marked run reads fixes_ci false, want every task marked", task.Task)
+			}
+		}
+		must(t, records.MarkRunFixesCI(ctx, tx, "LEGION-OLD", 1))
+		if takes, err := records.RunFixesCI(ctx, tx, "LEGION-OLD", 1); err != nil || takes {
+			t.Fatalf("RunFixesCI of a run with no plan rows = %t, %v; want false", takes, err)
+		}
+	})
+}
+
 // A later version of a plan keeps whether each task it gives again takes a fix, since the run
 // decided that at its start: PutPlan's update of a task the generation holds names no fixes_ci. A
 // new task of the later version is written with the value the version gives it, which is the
