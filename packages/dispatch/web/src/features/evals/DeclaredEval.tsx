@@ -70,7 +70,9 @@ function pagesOf(results: UseQueryResult<EvalItemsResponse>[]) {
  * The readings `reads` name of eval `slug` over the header's window and compare range (plan D9,
  * D10): one items view per read, each a page of EVALS_VIEW_LIMIT rows (the items route's most, as
  * the eval list's), and one view more at each next offset where its first page counts more. Every
- * component that reads one view shares its one subscription, through its query key.
+ * component that reads one view shares its one subscription, through its query key. No view names
+ * the header's repositories: a logged eval's readings belong to no repository, and the items route
+ * keeps only the readings whose `attributes.repo` a `repo` names, so one would drop them all.
  */
 function useReadings(scope: EvalsScope, slug: string, reads: readonly ChartRead[]) {
   const client = useQueryClient();
@@ -80,7 +82,7 @@ function useReadings(scope: EvalsScope, slug: string, reads: readonly ChartRead[
       limit: EVALS_VIEW_LIMIT,
       offset,
       project: scope.project,
-      repos: scope.repos,
+      repos: [],
       rowKind: read.rowKind,
       series: read.series,
       slug,
