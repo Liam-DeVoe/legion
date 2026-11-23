@@ -118,7 +118,8 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"},
 			role:  claim.RoleArchitect, wantPhase: phase.Implementing,
 			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Implementing,
-				Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start"}},
+				Reason: "LEGION-209's own architect failed, and its notices come to you until it runs again. The daemon starts it again at LEGION-209's next phase start. " +
+					"At an acceptance that architect does, no phase start comes until LEGION-209 moves: sign_off for LEGION-209, or move it back with request_backward_move"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -726,7 +727,8 @@ func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) 
 		{
 			name: "a child's sub-architect while the child is in accepting", key: "LEGION-209", at: phase.Accepting, child: true,
 			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Accepting,
-				Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start"}},
+				Reason: "LEGION-209's own architect failed, and its notices come to you until it runs again. The daemon starts it again at LEGION-209's next phase start. " +
+					"At an acceptance that architect does, no phase start comes until LEGION-209 moves: sign_off for LEGION-209, or move it back with request_backward_move"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

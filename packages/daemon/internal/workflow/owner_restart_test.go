@@ -112,8 +112,9 @@ func TestAChildsOwnArchitectThatFailsAtItsOwnStepIsStartedAgainAndToldTheStep(t 
 		if got := architectStartsOf(t, pool, child.Key); len(got) != 0 {
 			t.Fatalf("the child's architect starts after its failure at the reviewer's step = %#v, want none: the next phase start brings it back", got)
 		}
-		if got, want := lastWorkerDied(t, pool, child.Key), "LEGION-209's own architect failed; its notices come to you until it runs again, "+
-			"and the daemon starts it again at LEGION-209's next phase start"; got != want {
+		if got, want := lastWorkerDied(t, pool, child.Key), "LEGION-209's own architect failed, and its notices come to you until it runs again. "+
+			"The daemon starts it again at LEGION-209's next phase start. "+
+			"At an acceptance that architect does, no phase start comes until LEGION-209 moves: sign_off for LEGION-209, or move it back with request_backward_move"; got != want {
 			t.Fatalf("the worker-died's reason = %q, want %q", got, want)
 		}
 	})
@@ -134,7 +135,7 @@ func TestAFailedOwnersRestartsAtOneStepAreBoundedAndTheOperatorsRetryResetsThem(
 	var logged bytes.Buffer
 	engine.log = slog.New(slog.NewTextHandler(&logged, nil))
 	child := ownerAtItsStep(t, pool, engine)
-	const spentLine = "workflow: a failed owner's restarts at its step are spent; it waits for the operator's retry"
+	const spentLine = "workflow: a failed owner's restarts at its step are spent, and it waits for the operator's retry or the controller's fresh_session"
 
 	started := 0
 	for n := 1; n <= OwnerRestarts+2; n++ {

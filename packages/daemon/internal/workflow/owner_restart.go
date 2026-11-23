@@ -41,10 +41,14 @@ func ownerAlone(issue record.Issue) bool {
 // So the controller is told too, as it is of a tree architect's failure, the daemon warns, and the
 // reason names the two moves that start the claim again: the operator's retry and the controller's
 // fresh_session, which the stranded list offers too. Anywhere else the child's next phase start
-// brings the claim back (reviveArchitect), as the reason says.
+// brings the claim back (reviveArchitect), as the reason says. At an acceptance the owner does,
+// that start comes only once the child moves, and the daemon does nothing else there: it queues no
+// start, the stranded list does not name the claim, and the controller is not told. So the reason
+// asks the architect above to sign_off for the child or to move it back.
 func (e *Engine) restartFailedOwner(ctx context.Context, tx pgx.Tx, issue record.Issue) (reason string, tellController bool, err error) {
-	next := fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start",
-		issue.Key, issue.Key)
+	next := fmt.Sprintf("%s's own architect failed, and its notices come to you until it runs again. The daemon starts it again at %s's next phase start. "+
+		"At an acceptance that architect does, no phase start comes until %s moves: sign_off for %s, or move it back with request_backward_move",
+		issue.Key, issue.Key, issue.Key, issue.Key)
 	if !ownerAlone(issue) {
 		return next, false, nil
 	}
@@ -77,7 +81,7 @@ func (e *Engine) restartFailedOwner(ctx context.Context, tx pgx.Tx, issue record
 		if err != nil {
 			return "", false, err
 		}
-		e.warnOnCommit(ctx, "workflow: a failed owner's restarts at its step are spent; it waits for the operator's retry",
+		e.warnOnCommit(ctx, "workflow: a failed owner's restarts at its step are spent, and it waits for the operator's retry or the controller's fresh_session",
 			"issue", issue.Key, "claim", owner, "task", step.place.Task, "kind", step.place.Kind, "place", step.place.Place, "restarts", OwnerRestarts)
 		return fmt.Sprintf("%s's own architect failed at %s, which only it reports, and the daemon has started it again %d times at this step: "+
 			"it stays failed, and the stranded list names it, until the operator's retry (legion claims retry %s) or the controller's fresh_session starts it again; "+

@@ -7179,9 +7179,11 @@ The wakes are these:
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 
-- the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for the claim of the pod that works the issue's place: the worker of the issue's open phase, or, at a place the architect works itself (a step or a retro of its own, and accepting on an issue with no plan rows), the issue's own architect (`BackstopClaim`, `internal/workflow/wake.go`).
+- the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for the claim of the pod that works the issue's place: the worker of the issue's open phase, or, at a step or a retro of the architect's own other than its acceptance, the issue's own architect (`BackstopClaim`, `internal/workflow/wake.go`).
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
   An architect gets no backstop at any other place, since every wake of an architect there is a daemon task or notice or a message.
+  Its acceptance gets none either, at a step `acceptance:owner` or in `accepting` on an issue with no plan rows.
+  A parent can wait there while its children run, and their notices wake it, so a backstop would wake it for nothing at each release.
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.

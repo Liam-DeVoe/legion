@@ -673,15 +673,17 @@ and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root'
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
 restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park
-it when the cause stays. A child's own architect that failed holds nothing and wakes no controller:
-the architect above it is told with a `worker-died` and takes the child's notices, all but an
-`owner-step`, which goes to the child's own architect alone, and the child's next phase start
-starts it again. Where the child stands at a step or the retro its own architect does itself,
-other than its acceptance, no phase start comes until that architect reports it, so the daemon
-starts the architect again at once, at most three times in that step's run, and the `worker-died`
-says which start it is. Once those three are spent it stays failed, the `worker-died` says so, and
-`legion state` names it under `failed, retry` on its `claims nothing will wake` line; the retry
-relaunches it, tells it its step again and gives it three restarts again. At its own acceptance
+it when the cause stays. A child's own architect that failed holds nothing. The controller hears
+of it only once the daemon's restarts of it, below, are spent. The architect above it is told with
+a `worker-died` and takes the child's notices, all but an `owner-step`, which goes to the child's
+own architect alone, and the child's next phase start starts it again. Where the child stands at
+a step or the retro its own architect does itself, other than its acceptance, no phase start comes
+until that architect reports it, so the daemon starts the architect again at once, at most three
+times in that step's run, and the `worker-died` says which start it is. Once those three are spent
+it stays failed, the `worker-died` says so, and the controller is told too. `legion state` names
+it under `failed, retry` on its `claims nothing will wake` line. The operator's retry or the
+controller's `fresh_session` relaunches it, tells it its step again and gives it three restarts
+again. At its own acceptance
 a failed child's architect is not started again at once: an architect above it can end that
 acceptance with `sign_off`, and the phase start after it starts the child's architect again. What
 brings a root's architect back
