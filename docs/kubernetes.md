@@ -6925,7 +6925,8 @@ These ends of a pod keep the Sandbox, so the issue's next pod mounts the same cl
 - A launch that replaces the pod, a launch that fails after it set the Sandbox `Running`, and the end of an update round (`ReplacePod`).
 
 - An idle release, and the release of a pod that no claim owns ([Idle release](#idle-release)).
-  Each one sets the Sandbox `Suspended`, waits until its pod is gone, and deletes seven of the Secrets that the Sandbox owns: the provisioning Secret and the role Secrets of Legion's six roles (`deleteIssueSecrets`).
+  Each one sets the Sandbox `Suspended`, waits until its pod is gone, and deletes seven of the Secrets that the Sandbox owns: the provisioning Secret and the role Secrets of Legion's six claim roles (`claim.Roles`, `deleteIssueSecrets`).
+  The role Secret of each other slot stays, such as the fresh agent of acceptance's or that of a role a deployment or a plan defines.
   The Sandbox stays with the same uid, and the next launch writes each Secret again.
   After every delete succeeds, the release records on the Sandbox that it deleted the Secrets: the annotation `legion.dev/secrets-released`, whose value is the Sandbox's uid.
   A release that stops before that record writes no record, and the next release deletes the Secrets again and then writes the record.
@@ -7147,11 +7148,11 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   A copy on the session's agent subject (a person's answer, comment or message that a Dispatch claim routes there, or the targeted message Dispatch published there) stays in the stream: the listener gives up its delivery after its retry window (`ENVOY_UNPLACEABLE_RETRY_WINDOW`, 60 seconds) with the wake, and the woken session reads the copy;
 
 - the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the role Secrets it owns are deleted (`ReleaseIssue`, `internal/runtime/sandbox/issue_suspend.go`), as an issue's stop deletes them ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
-  A Sandbox that owns a kept volume is the exception: it stays, `Suspended` and with the same uid, and the release deletes seven of the Secrets it owns, the provisioning Secret and the role Secrets of Legion's six roles ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+  A Sandbox that owns a kept volume is the exception: it stays, `Suspended` and with the same uid, and the release deletes seven of the Secrets it owns, the provisioning Secret and the role Secrets of Legion's six claim roles ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
   The release then logs `sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again`.
 
 The pod's disk goes with the pod, as at every other end of a pod, and a released issue leaves nothing in the namespace: no Sandbox, no pod and no volume claim.
-A kept volume is the exception: a released issue whose Sandbox owns one leaves that Sandbox, `Suspended`, and the claim of its volume, and no pod and no Secret.
+A kept volume is the exception: a released issue whose Sandbox owns one leaves that Sandbox, `Suspended`, the claim of its volume and the role Secret of each slot outside Legion's six claim roles, and no pod.
 Each role's session stays where it was, a row in the session database ([Selecting the store](#selecting-the-store)), and the wake resumes each role in its own session.
 A release moves no issue and ends no phase.
 
