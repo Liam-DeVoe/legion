@@ -666,7 +666,31 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 		return fragment
 	}
 	return fragment + " " + fmt.Sprintf("Your issue's repository is %s (default branch %s); %s",
-		repo.String(), defaultBranch, RepositoriesClause(owners))
+		repo.String(), defaultBranch, workerRepositoriesClause(owners))
+}
+
+// workerRepositoriesClause is a worker's RepositoriesClause, exact for each owner it names in an
+// issue pod as on a tmux pane: the owners are its role's App's that appOwners kept, and its token
+// reaches every repository of those whose directory its gh holds. A pane holds its own role's
+// whole bundle, so there that is each of them. An issue pod holds the directories every role's
+// bundle held when the pod was created (the sandbox runtime's ghDirsShared), and appOwners keeps
+// only the owners every App of the pod's roles is installed on now (appauth.AddressingDirs), so
+// the one owner it names that the pod lacks is one those Apps were installed on after the pod was
+// created, which the update round the install opens closes by replacing the pod
+// (docs/kubernetes.md, the owners a pod projects). The clause says so in words rather than
+// naming the pod's own directories: the runtime fixes those when it makes the pod, after this
+// text is composed and on a path that hands the composition nothing, so naming them would need a
+// read of the pod this launch does not have. A role App installed on no owner is told so, as
+// RepositoriesClause tells it.
+func workerRepositoriesClause(owners []string) string {
+	const pod = ": in an issue pod, an owner the Apps of your pod's roles were installed on after the pod was created has none until the update round that install opens replaces the pod."
+	switch len(owners) {
+	case 0:
+		return RepositoriesClause(owners)
+	case 1:
+		return "your role's GitHub App is installed on the owner " + owners[0] + ", and its token reaches every repository of that owner once your gh holds its directory" + pod
+	}
+	return "your role's GitHub App is installed on the owners " + strings.Join(owners, ", ") + ", and its token reaches every repository of those owners whose directory your gh holds" + pod
 }
 
 // RepositoriesClause tells an agent how far its GitHub token reaches, as a clause that ends in a

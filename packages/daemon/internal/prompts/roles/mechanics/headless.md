@@ -22,10 +22,10 @@ Your issue's own repository, its default branch, and the owners your role's GitH
 installed on are in the sentence of the `Legion addressing` line of your system prompt that
 starts `Your issue's repository is` (`Your issue's repository is <owner>/<name> (default branch
 <branch>); your role's GitHub App is installed on the owners <owner>, <owner>, and its token
-reaches every repository of those owners.`); that sentence is missing only when your issue
-carries no repository at all.
+reaches every repository of those owners whose directory your gh holds: in an issue pod, …`);
+that sentence is missing only when your issue carries no repository at all.
 Use plain `gh` for GitHub operations.
-`LEGION_GH_OWNERS_DIR` holds one directory for each GitHub owner your role's App is installed on, one more for each owner a configured rename moved a repository away from while the project serves the name it moved to, and one for your issue's own owner; in an issue pod it holds only the directories every role's bundle held when the pod was created, so an owner only one of Legion's two role Apps is installed on, or one an App was installed on since, has no directory there, and your `gh` reaches none of its repositories, whatever your `Legion addressing` line names.
+`LEGION_GH_OWNERS_DIR` holds one directory for each GitHub owner your role's App is installed on, one more for each owner a configured rename moved a repository away from while the project serves the name it moved to, and one for your issue's own owner; in an issue pod it holds only the directories every role's bundle held when the pod was created: an owner only one of the Apps of your pod's roles is installed on has none there, and your `Legion addressing` line does not name it, and one those Apps were installed on after the pod was created has none until the update round that install opens replaces the pod, as that line says. Your `gh` reaches no repository of an owner it holds no directory for.
 Each directory holds one token of your role's own App, the implement App for the implementer and the merger and the review App for every other role, minted on that owner's installation.
 A token reaches every repository that installation holds, and the daemon makes it reach no less.
 The account that installs the App decides that set.
