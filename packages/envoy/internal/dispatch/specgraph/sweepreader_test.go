@@ -159,11 +159,14 @@ type readerFile struct {
 }
 
 // readerAnswer is the line that the reader answers one scenario with: the states of the scenario
-// (sweepreader's sweepStates), or its refusal.
+// (sweepreader's sweepStates), or its refusal. Its members are those of sweepreader's answer, with their
+// names and options, so a readerAnswer marshalled as the reader marshals its answer
+// (json.Deterministic) is the line that the reader writes (replyOf): with no member that is empty, and
+// the places of the states in the order of their names.
 type readerAnswer struct {
-	States  map[string]string `json:"states"`
-	Refused bool              `json:"refused"`
-	Refusal string            `json:"refusal"`
+	States  map[string]string `json:"states,omitempty"`
+	Refused bool              `json:"refused,omitempty"`
+	Refusal string            `json:"refusal,omitempty"`
 }
 
 // readerLine is the line of the reader's input that names the scenario fsys: each file, in the order
@@ -227,16 +230,26 @@ func (r readerReply) states() (map[string]string, error) {
 	return a.States, nil
 }
 
-// replyOf is the reply of the reader's form whose states are states, with no key, since it answers no
-// line of the reader's input, as the domain test of the judgment writes the answers that it hands
-// judgeAnswer (TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain).
+// replyOf is the reply of the reader's form whose states are states: readerAnswer's line, marshalled as
+// the reader marshals its answer, with a line end, under a key (replyText). The domain test of the
+// judgment writes the answers that it hands judgeAnswer by it
+// (TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain), and holds it to the reader's reply
+// at each base, byte for byte (decodedBase).
 func replyOf(t *testing.T, states map[string]string) readerReply {
 	t.Helper()
-	data, err := json.Marshal(readerAnswer{States: states})
+	data, err := json.Marshal(readerAnswer{States: states}, json.Deterministic(true))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return readerReply{text: string(append(data, '\n'))}
+	return replyText(string(data) + "\n")
+}
+
+// replyText is the reply whose text is text, with a key, the sha256 of text: it answers no line of the
+// reader's input, and has a key as each reply that ask returns has one, so a judgment that tells the
+// replies that it reads apart by whether they have a key reads the domain test's replies as it reads
+// the reader's.
+func replyText(text string) readerReply {
+	return readerReply{line: sha256.Sum256([]byte(text)), text: text}
 }
 
 // ask writes line, a line of readerLine, to the process and reads its answer (answer): the reply as the
