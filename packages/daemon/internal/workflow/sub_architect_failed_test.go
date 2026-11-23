@@ -16,12 +16,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A child's own architect's claim failing holds nothing, even at accepting, its own phase. While
-// that claim no longer holds its role the child's notices go on up to the architect above it,
-// which must hear why: the failure is one worker-died on the child, naming the architect, the
-// child's phase and the failure the fact carries, whose reason names the child and says its
-// notices come to the reader until the daemon starts the child's architect again. The owner walk
-// sends it above the child (record.OwningArchitect). The controller hears nothing of it, since an
+// A child's own architect's claim failing holds nothing, even at accepting where its acceptance is
+// its own. While that claim no longer holds its role the child's notices go on up to the architect
+// above it, an owner-step aside, which waits for the child's own architect (noticeArchitect), and
+// the architect above must hear why: the failure is one worker-died on the child, naming the
+// architect, the child's phase and the failure the fact carries, whose reason names the child and,
+// for a child at a step no owner does, as here, says its notices come to the reader until the
+// daemon starts the child's architect again. The owner walk sends it above the child
+// (record.OwningArchitect). The controller hears nothing of it, since an
 // architect inside the tree is left to act. A done child, a child that left the workflow and a
 // child of a lingering tree tell nobody: a done child's claims were closed (retired, sessions
 // kept), a parked child's were suspended, and a lingering tree holds its members where they stood.
