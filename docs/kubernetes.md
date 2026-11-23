@@ -362,7 +362,7 @@ Each item below names an option and its measurement, then the verdict on it.
   that is the withheld `operator-setup` capability (`packages/daemon/internal/capabilities/capabilities.go`, decision dispatch://LEGION-200) under the test in `skills/legion-worker/references/withheld-capability.md`, "What the withheld capability is, and what it is not", and it is fragile for exactly the client this change exists for.
   The same unpacking inside a test harness's own environment passes that test and is a different verdict — and it would not have got a role `psql` either way
 
-- `runtime.kubernetes.setup`, the operator-set command run before each role's agent starts — it runs on every start of every role, six times per issue
+- `runtime.kubernetes.setup`, the operator-set command run before each role's agent starts — it runs on every start of every claim, a resumed and a re-roled claim's start included
 
   **rejected**: it buys nothing the image does not, since it is still an unprivileged container
 
@@ -1538,7 +1538,8 @@ legion claims compact --claim <token> --operator-token-file <file>
 It has the claim's Oh My Pi session write a summary of itself and then sends the claim whatever task it owes again, however much of the provider-error ladder's wait was left: the claim keeps its session, its workspace and everything it knows of its issue, and what goes is the length of the transcript the provider is asked to read.
 The summary is text, because the daemon asks with instructions of its own: Oh My Pi runs its image-based snapcompact method only for a compaction that carries none, and a worker resumed on those images would need a vision model to read its own past (`compactInstructions`, `packages/daemon/internal/api/compact.go`).
 The answer says whether the session was compacted and, when it was not, why — Oh My Pi's own words for a compaction it refused or skipped, `Already compacted` or `Nothing to compact (session too small)`, and the daemon's for a wait that ran out or a transport that failed — and whatever task the claim owed has gone again either way.
-The command carries no deadline of its own, as no `legion claims` command does, and the daemon bounds that model call over the whole transcript at ten minutes (`runtime.CompactTimeout`).
+The command's `--wait` bounds the whole call, one minute by default, as it bounds every `legion claims` command's, and the daemon bounds that model call over the whole transcript at ten minutes (`runtime.CompactTimeout`).
+A call the `--wait` ends is refused with a line saying the daemon goes on with it, and the compaction goes on, so give the command `--wait 10m` to read its answer.
 While it runs the claim reads `working`, the daemon's one word for a busy agent, so the ladder's re-send and any newer task wait for its end, a second compaction is refused in its own words, and a fresh session is refused `CLAIM_IN_A_TURN`, since a claim whose session is being compacted is read before its process and the compaction in flight owns what becomes of its agent.
 
 A session the compaction left refused is the fresh session's, and so is a claim stored working that no process stands behind, which the compaction refuses by name:
@@ -4981,7 +4982,7 @@ A login GitHub lists that is no such name is left out the same way: no lease is 
 Every directory's token is the role's own App's: the implement App's for the implementer and the merger, the review App's for every other role.
 Each one is the installation lease of the owner its directory is named for, minted at the role's own permissions — the implement App's write set, the review App's review set.
 No directory holds a reading lease of another owner, and each token reaches every repository its own installation holds.
-A role therefore pushes to, opens a pull request in and reviews a pull request of every repository its App reaches, whichever owner's it is.
+A role's bundle therefore reaches every repository its App reaches, whichever owner's it is, and a role in an issue pod pushes to, opens a pull request in and reviews a pull request of each such repository whose owner its pod projects a directory for (below).
 `GH_CONFIG_DIR` names the directory the issue's repository routes to: its recorded owner's, or, for a repository a configured rename moved, the directory of the owner it moved to.
 Which repository the issue names decides that default and nothing else.
 The one directory minted on another owner's installation is the one a configured rename adds: it holds the lease of the owner whose installation serves the moved repository.
@@ -5202,7 +5203,7 @@ written` with the sandbox, role, App, `expiresAt` and directories, and a refresh
 github credential refreshed`, the same fields); the kubelet rewrites the projection in place, so the next `gh` runs with the new token.
 The `appauth` lease re-mints 20 minutes before its token expires, so a new token lands at least 15 minutes before the old one lapses, and GitHub keeps the old token valid until its own expiry.
 `gh config set`, `gh alias set` and `gh auth login` cannot write the read-only directory, and `gh auth status` reports the account as `x-access-token`.
-A `task` subagent inherits the container's environment, so its `gh` acts as the same App.
+A `task` subagent inherits the environment of the agent that starts it, `GH_CONFIG_DIR` among it, so its `gh` acts as the same App.
 
 Every role is told where to put what it writes without being told where, and every one of those values names a path on the issue's volume.
 Four of them are the issue's, one directory each that every role of it is told the same, under the issue's scratch `/legion/scratch` (`scratchRoot`, `manifest.go`):
@@ -7605,13 +7606,13 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
 - the API read failed → **alive** if the pod's stream is registered (live proof), else **unknown**.
 
 `unknown` never marks anything dead by itself.
-A graceful stop sends the RPC `shutdown` frame over the registered stream, waits up to the stop timeout, then deletes the pod with that many seconds of grace (0 when the caller skips the graceful step) and the recorded uid as precondition, then deletes the per-pod Secret.
-Before a replacement generation is created, the previous generation's pod is deleted the same way and awaited until it is gone (force-deleted at grace 0 if it outlives the stop timeout):
-two generations never share a working copy.
+A graceful stop ends the claim's process alone: the launcher of the claim's slot is asked to stop the recorded generation's child within the stop grace (`Suspend`, `internal/runtime/sandbox/sandbox.go`).
+It never deletes an issue's Sandbox, pod or disk, which are the tree cleanup's alone, while a release of the project controller's claim deletes the controller's Sandbox (`Release`).
+A claim's next generation starts in the issue's pod that is still there, beside the issue's other agents, and only a pod that is gone, or that cannot run it as a pod created now would, is replaced first (`relaunch`, `internal/runtime/sandbox/relaunch.go`).
 
-A phase worker or architect pod that dies mid-task
-— its container crashed, or the pod was deleted
-— is relaunched by the daemon itself, as the same agent one generation later (`legion-<issue>-<role>-g<n+1>`, its command carrying `--resume=<the recorded session>`): a phase worker is sent the task its dead turn held again, behind the sentence that says what the relaunch ended, or its phase's task when it held none, and an architect, a root's or a child's, is sent its catch-up at its ready (LEGION-179).
+A phase worker or architect whose process dies mid-task
+— its process exited, the `roles` container crashed, or the pod was deleted
+— is relaunched by the daemon itself, as the same agent one generation later, in the issue's pod or, where that pod is gone, in a new one, its command carrying `--resume=<the recorded session>`: a phase worker is sent the task its dead turn held again, behind the sentence that says what the relaunch ended, or its phase's task when it held none, and an architect, a root's or a child's, is sent its catch-up at its ready (LEGION-179).
 The death is seen twice over: at once, when the pod's worker stream closes and the daemon's one reconnect (`connect` awaiting a fresh registration for `worker_rpc_timeout_seconds`) finds none;
 and, for a death the stream never reported, on the next resync tick, which probes every located, ready-confirmed worker claim with the rules above.
 Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon reads that session's registration from the Envoy listener (`GET /v1/registry/<the session the claim registered>?include=unresponsive&view=registration`) and then sends `DELETE /v1/sessions/<that session>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>&client_instance_id=<the client instance that read named>`.

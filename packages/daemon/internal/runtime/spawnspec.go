@@ -53,8 +53,9 @@ func GHConfigDirName(token claim.Token) string { return string(token) + "-gh" }
 // holds and the daemon asks GitHub to narrow it no further (INFRA-2543). The bundle's default,
 // which GH_CONFIG_DIR names, is the directory repo routes to (ghconfig.RouteDir): its recorded
 // owner's, or, for a repository a configured rename moved, the directory of the owner it moved
-// to. That is the whole of what repo decides: a role writes in every repository its App
-// reaches, whichever owner's it is.
+// to. That is the whole of what repo decides: a role's bundle reaches every repository its App
+// reaches, whichever owner's it is, though an issue pod shows its roles only the directories every
+// role's bundle holds (the sandbox runtime's ghDirsShared).
 // The runtime writes the bundle under the agent's bundle root (LEGION_GH_OWNERS_DIR) and
 // rewrites it from the same function, asked for the same repository, as the leases near their
 // expiry. A call that names no repository takes the first owner the mint answered for, sorted,
