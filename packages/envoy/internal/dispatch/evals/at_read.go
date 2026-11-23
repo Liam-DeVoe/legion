@@ -22,7 +22,9 @@ import (
 // the owner keys of its published default repository, eval_project_owners), under the rules the
 // refresher keeps a series' first input day and its zero rows by (dropUnshipped, zerosFrom,
 // ProjectDay.WithZeros), so the fold of them the stored rows are folded with (SeriesValuesOf)
-// answers what the stored rows answer. A read takes it where it is narrowed by what no stored row
+// answers what the stored rows answer. The three failure measures' rows are built from the record
+// of deploys and failures (production_events) by the builder the refresher writes them with
+// (failureRecord.day, failure_days.go). A read takes it where it is narrowed by what no stored row
 // is kept by: the delivery timeline's facets and its search, which select pull requests
 // (Narrowing), so such a read builds the evals that count pull requests this way
 // (CountsPullRequests) and states every other eval from its stored rows.
@@ -47,12 +49,9 @@ const (
 	// atReadPushes is the day's deploy push runs on main, with the jobs the deploy cards follow,
 	// each counted for the projects of the deploy it is (atReadDeploys).
 	atReadPushes
-	// atReadFailures is the record of deploys and failures (production_events), whose builders
-	// (measures.ChangeFailRateDay, RecoveryDay, ReworkRateDay) no delivery day runs: the refresher
-	// writes no row of change-fail-rate, failed-deploy-recovery or deployment-rework-rate, and the
-	// day builders this path runs build none either, so both read "no data".
-	// TestANarrowedReadWithNoFacetEqualsTheStoredNumber fails the day the refresher writes a row
-	// of one of them that this path does not build.
+	// atReadFailures is the record of deploys and failures (production_events) of the project, from
+	// its first day on (readFailureRecord), whose rows the refresher's builder builds
+	// (failureRecord.day: measures.ChangeFailRateDay, RecoveryDay and ReworkRateDay).
 	atReadFailures
 )
 
@@ -108,6 +107,9 @@ type AtRead struct {
 	// Narrow, where set, narrows the pull requests the rows count (Narrowing); nil counts every
 	// one.
 	Narrow Narrowing
+	// Now is the read's moment: a failure measure's rows stand through its UTC day and no later,
+	// as the refresher writes them through its own (refresh.writeFailures).
+	Now time.Time
 }
 
 // NarrowInput is what a Narrowing selects from: every pull request merged on a day a read-time
@@ -151,7 +153,8 @@ type Narrowing func(ctx context.Context, q delivery.Querier, input NarrowInput) 
 // (firstDaysIn). Each row kept is of an eval read names, under the project's eval id of its slug
 // (asReader), of a deploy repository its stored read reads (DeployRepoOf), listed, and of one of
 // read.Repos (each project's own row where it names none), answered once for each range whose days
-// hold it.
+// hold it. The failure measures' rows are built apart (failureRowsAtRead), whatever rules the
+// refresher records.
 //
 // With read.Narrow set, the pull requests are narrowed to those it keeps before anything is built,
 // and only the evals that count pull requests are built: a deploy counts what it ships whatever a
@@ -164,6 +167,7 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 	}
 	families := map[atReadFamily]bool{}
 	keyed := false
+	var delivered, failures []Entry
 	for _, entry := range read.Entries {
 		family, held := atReadFamilies[entry.Definition.Slug]
 		switch {
@@ -171,13 +175,13 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 			return nil, fmt.Errorf("evals: %s has no read-time path", entry.Definition.EvalID)
 		case read.Narrow != nil && family != atReadPullRequests:
 			return nil, fmt.Errorf("evals: %s counts no pull request, and a narrowed read builds only the evals that do", entry.Definition.EvalID)
+		case family == atReadFailures:
+			failures = append(failures, entry)
+			continue
 		}
+		delivered = append(delivered, entry)
 		families[family] = true
 		keyed = keyed || KeyedByDeployRepo(entry.Definition)
-	}
-	recorded, err := builtUnderIn(ctx, q)
-	if err != nil || len(recorded) == 0 {
-		return nil, err
 	}
 	ranges := []Range{read.Window}
 	if read.Compare != nil {
@@ -186,6 +190,18 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 	days := atReadDays(ranges)
 	if len(days) == 0 {
 		return nil, nil
+	}
+	repos := read.Repos
+	if len(repos) == 0 {
+		repos = []string{""}
+	}
+	rows, err := failureRowsAtRead(ctx, q, failures, repos, ranges, days, read.Now)
+	if err != nil || len(delivered) == 0 {
+		return rows, err
+	}
+	recorded, err := builtUnderIn(ctx, q)
+	if err != nil || len(recorded) == 0 {
+		return rows, err
 	}
 	prs, err := atReadPullRequestsOf(ctx, q, days)
 	if err != nil {
@@ -221,12 +237,12 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 		if read.Narrow == nil && !shipping {
 			continue
 		}
-		rows, err := delivery.ReadApplyRows(ctx, q, repo.rule, days[0])
+		applied, err := delivery.ReadApplyRows(ctx, q, repo.rule, days[0])
 		if err != nil {
 			return nil, fmt.Errorf("read the deploy runs of %s from %s on: %w", repo.name, days[0].Format(time.DateOnly), err)
 		}
-		applies[repo.name] = rows
-		sources = append(sources, NarrowSource{Settings: repo.rule, ApplyRuns: rows.Runs, ApplyJobs: rows.Jobs})
+		applies[repo.name] = applied
+		sources = append(sources, NarrowSource{Settings: repo.rule, ApplyRuns: applied.Runs, ApplyJobs: applied.Jobs})
 	}
 	if read.Narrow != nil {
 		if prs, err = narrowedPullRequests(ctx, q, read.Narrow, sources, days, prs); err != nil {
@@ -289,9 +305,9 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 		return nil, err
 	}
 
-	definitions := make(map[string]Definition, len(read.Entries))
+	definitions := make(map[string]Definition, len(delivered))
 	var projects []string
-	for _, entry := range read.Entries {
+	for _, entry := range delivered {
 		definitions[entry.Definition.EvalID] = entry.Definition
 		if !slices.Contains(projects, entry.Definition.ProjectKey) {
 			projects = append(projects, entry.Definition.ProjectKey)
@@ -317,11 +333,6 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 	for id, definition := range definitions {
 		deployRepoOf[id] = DeployRepoOf(definition, read.DeployRepos)
 	}
-	repos := read.Repos
-	if len(repos) == 0 {
-		repos = []string{""}
-	}
-	rows := []WindowRow{}
 	for i, day := range days {
 		built := deliveryReadOf(day, kept, prs[i], reads[i], attribute)
 		for _, project := range projects {
@@ -337,16 +348,76 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 					if deployRepos, held := deployRepoOf[id]; !held || !slices.Contains(deployRepos, row.DeployRepo) || !row.Listed || !slices.Contains(repos, row.Repo) {
 						continue
 					}
-					for r, of := range ranges {
-						if day.Before(of.From) || !day.Before(of.To) {
-							continue
-						}
-						in := RangeWindow
-						if r > 0 {
-							in = RangeCompare
-						}
-						rows = append(rows, WindowRow{Range: in, EvalID: id, Part: row.DayPart, owner: owner})
-					}
+					rows = inRanges(rows, ranges, day, WindowRow{EvalID: id, Part: row.DayPart, owner: owner})
+				}
+			}
+		}
+	}
+	return rows, nil
+}
+
+// inRanges is rows with row, a row of day, once for each of ranges (the window, then the compare
+// range) that holds day, under that range's name.
+func inRanges(rows []WindowRow, ranges []Range, day time.Time, row WindowRow) []WindowRow {
+	for r, of := range ranges {
+		if day.Before(of.From) || !day.Before(of.To) {
+			continue
+		}
+		row.Range = RangeWindow
+		if r > 0 {
+			row.Range = RangeCompare
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// failureRowsAtRead builds, reading in q, the rows of entries' failure measures on each of days
+// that ranges hold, as the refresher's whole write of a project builds them
+// (refresh.writeFailures): each project's failure measures as its delivery settings turn them on
+// (failureProjectOf), none where they are off; its record read once, over the deploys of every
+// project (readFailureRecord); and each day from its first day through the UTC day of now built
+// (failureRecord.day). They are the project's own rows, which no owner key holds and no deploy
+// repository keys. Each row kept is of an eval entries names and of one of repos ("" for the
+// project's own row).
+func failureRowsAtRead(ctx context.Context, q delivery.Querier, entries []Entry, repos []string, ranges []Range, days []time.Time, now time.Time) ([]WindowRow, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	named := map[string]bool{}
+	var projects []string
+	for _, entry := range entries {
+		named[entry.Definition.EvalID] = true
+		if !slices.Contains(projects, entry.Definition.ProjectKey) {
+			projects = append(projects, entry.Definition.ProjectKey)
+		}
+	}
+	settings, err := delivery.ListProjectSettings(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	every, err := ProjectsIn(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	today := measures.Midnight(now)
+	var rows []WindowRow
+	for _, one := range settings {
+		project, on := failureProjectOf(one)
+		if !on || !slices.Contains(projects, project.project) {
+			continue
+		}
+		record, err := readFailureRecord(ctx, q, project, every)
+		if err != nil {
+			return nil, err
+		}
+		for _, day := range days {
+			if day.After(today) {
+				break
+			}
+			for _, row := range record.day(day).Rows {
+				if named[row.EvalID] && row.Listed && slices.Contains(repos, row.Repo) {
+					rows = inRanges(rows, ranges, day, WindowRow{EvalID: row.EvalID, Part: row.DayPart, owner: project.project})
 				}
 			}
 		}

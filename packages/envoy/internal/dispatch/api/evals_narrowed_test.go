@@ -19,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -107,7 +109,7 @@ func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window ev
 	if err != nil {
 		t.Fatalf("read the first days: %v", err)
 	}
-	rows, err := evals.ComputeAtRead(ctx, tx, evals.AtRead{Entries: entries, DeployRepos: deployRepos, Window: window, Compare: compare})
+	rows, err := evals.ComputeAtRead(ctx, tx, evals.AtRead{Entries: entries, DeployRepos: deployRepos, Window: window, Compare: compare, Now: r.now})
 	if err != nil {
 		t.Fatalf("build the rows at read time: %v", err)
 	}
@@ -121,6 +123,86 @@ func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window ev
 		values[id] = evals.SeriesValuesOf(entry, byEval[id], firsts[id], window, compare)
 	}
 	return values
+}
+
+// seedFailures turns on the failure measures of the rig's delivery project from 20 days before
+// today, its settings saved again as the fixture saved them (deliverytest.SaveRules) with every
+// failure source, and writes its record: a GitHub deploy row of each production apply of the
+// deploy repository that completed from that day on, shipping the pull requests it ships first
+// (delivery.ContainingRun), and on every third of them a failure of each signal in turn, every
+// other one restored by the next deploy and the fourth rejected. Then it refreshes the day rows
+// again, as of the rig's moment. It answers how many failures it wrote.
+func (r *narrowedEvalsRig) seedFailures(t *testing.T) int {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	project, rule := r.fixture.Project, r.fixture.Settings
+	since := r.today.AddDate(0, 0, -20)
+	saveProjectDelivery(t, pool, delivery.ProjectSettingsInput{
+		Project: project, Delivery: true,
+		Sources: []delivery.SourceInput{{
+			Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new(rule.DeployWorkflowPath),
+			ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
+			StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
+			PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
+		}},
+		PopulationAuthors: rule.PopulationAuthors, ExcludedRepos: rule.ExcludedRepos,
+		FailureSources: delivery.FailureSources, FailuresMeasuredSince: &since,
+	})
+	shipped := map[int64][]string{}
+	for _, pr := range r.fixture.PullRequests {
+		if apply := delivery.ContainingRun(pr, r.fixture.DeployRepo, r.fixture.Applies); apply != nil {
+			shipped[apply.RunID] = append(shipped[apply.RunID], fmt.Sprintf("%s#%d", pr.Repo, pr.Number))
+		}
+	}
+	var deploys []prodevents.Event
+	for _, apply := range r.fixture.Applies {
+		if apply.CompletedAt.Before(since) || !apply.CompletedAt.Before(r.now) {
+			continue
+		}
+		deploy, _, err := prodevents.UpsertGitHubDeploy(ctx, pool, prodevents.Event{
+			ProjectKey: project, Kind: prodevents.KindDeploy, Source: prodevents.SourceGitHub, Status: prodevents.StatusSucceeded,
+			SourceRef: prodevents.GitHubSourceRef(apply.RunID), Repo: r.fixture.DeployRepo,
+			StartedAt: new(apply.CreatedAt), FinishedAt: new(apply.CompletedAt), PullRequests: shipped[apply.RunID],
+			Actor: model.Actor{Kind: "system", ID: "github"},
+		})
+		if err != nil {
+			t.Fatalf("write the deploy row of run %d: %v", apply.RunID, err)
+		}
+		deploys = append(deploys, deploy)
+	}
+	slices.SortStableFunc(deploys, func(a, b prodevents.Event) int { return a.FinishedAt.Compare(*b.FinishedAt) })
+	signals := []struct{ signal, source string }{
+		{prodevents.SignalCheckFail, prodevents.SourceCheckResults}, {prodevents.SignalRevert, prodevents.SourceReverts},
+		{prodevents.SignalIncidentIssue, prodevents.SourceIncidentLabel}, {prodevents.SignalAPI, prodevents.SourceAPI},
+		{prodevents.SignalPerson, prodevents.SourcePerson},
+	}
+	failures := 0
+	for i := 0; i+1 < len(deploys); i += 3 {
+		blamed, next := deploys[i], deploys[i+1]
+		kind := signals[failures%len(signals)]
+		failure := prodevents.Event{
+			ProjectKey: project, Kind: prodevents.KindFailure, Source: kind.source, SourceRef: fmt.Sprintf("failure-%d", failures),
+			DeployID: new(blamed.ID), Signal: new(kind.signal), DetectedAt: new(blamed.FinishedAt.Add(10 * time.Minute)),
+		}
+		if failures%2 == 0 {
+			failure.RestoredAt, failure.RestoredBy, failure.RestoredByDeploy = next.FinishedAt, &model.Actor{Kind: "agent", ID: "release-bot"}, new(next.ID)
+		}
+		written := writeProductionEvent(t, pool, failure)
+		if failures == 3 {
+			if _, err := prodevents.SetState(ctx, pool, project, written.ID, prodevents.StateChange{
+				State: prodevents.StateRejected, Reason: "not a failure of the deploy", Actor: model.Actor{Kind: "agent", ID: "release-bot"}, At: r.now,
+			}); err != nil {
+				t.Fatalf("reject failure %s: %v", written.SourceRef, err)
+			}
+		}
+		failures++
+	}
+	if failures < len(signals) {
+		t.Fatalf("the rig holds %d deploys from %s on, which carry %d failures, fewer than one of each of the %d signals",
+			len(deploys), since.Format(time.DateOnly), failures, len(signals))
+	}
+	refreshEvalDays(t, r.registry, r.database, r.now)
+	return failures
 }
 
 // list is the body of the list route target, decoded.
@@ -157,14 +239,17 @@ func stated(series []evals.SeriesValues) int {
 
 // TestANarrowedReadWithNoFacetEqualsTheStoredNumber: every delivery and CI eval of the catalogue
 // but unowned-p0 has a read-time path (evals.ComputedAtRead), and unowned-p0, a count taken at
-// refresh time, is the one that has none. Over INFRA-2916's seeded history with the refresher
-// caught up, at 7, 14, 28 and 84 days, each with and without the compare range before it, and one
-// custom range with a custom compare range, every statistic of every series the read-time path
-// builds with no narrowing (its window, compare range, change, first day, via-repository count
-// and per-day arrays) is the stored answer of the list read, which reads the stored figures for
-// the presets and the stored day rows for the custom range.
+// refresh time, is the one that has none. Over INFRA-2916's seeded history, with the failure
+// measures on from 20 days before today over a record of its deploys and their failures
+// (seedFailures), and the refresher caught up, at 7, 14, 28 and 84 days, each with and without the
+// compare range before it, and one custom range with a custom compare range, every statistic of
+// every series the read-time path builds with no narrowing (its window, compare range, change,
+// first day, via-repository count and per-day arrays) is the stored answer of the list read, which
+// reads the stored figures for the presets and the stored day rows for the custom range; and the
+// three failure measures hold a statistic in some shape.
 func TestANarrowedReadWithNoFacetEqualsTheStoredNumber(t *testing.T) {
 	r := newNarrowedEvalsRig(t, testServerOptions{})
+	failures := r.seedFailures(t)
 	project := r.fixture.Project
 	var built []evals.Entry
 	held := map[string]bool{}
@@ -200,7 +285,7 @@ func TestANarrowedReadWithNoFacetEqualsTheStoredNumber(t *testing.T) {
 	custom, customCompare := evalDaysEnding(10, r.today.AddDate(0, 0, -3)), evalDaysEnding(9, r.today.AddDate(0, 0, -15))
 	shapes = append(shapes, evalShape{name: "a custom range of 10 days with a custom compare range of 9", window: custom, compare: &customCompare})
 
-	statistics, compared := 0, 0
+	statistics, compared, failureStatistics := 0, 0, 0
 	for _, shape := range shapes {
 		stored, _ := readEvalShape(t, r.served, []string{project}, r.now, shape)
 		atRead := r.atRead(t, built, shape.window, shape.compare)
@@ -213,14 +298,20 @@ func TestANarrowedReadWithNoFacetEqualsTheStoredNumber(t *testing.T) {
 				continue
 			}
 			statistics += stated(got)
+			if definition.Slug == evals.SlugChangeFailRate || definition.Slug == evals.SlugFailedDeployRecovery || definition.Slug == evals.SlugDeploymentReworkRate {
+				failureStatistics += stated(got)
+			}
 			compared++
 		}
 	}
 	if statistics == 0 {
 		t.Fatal("no series of any shape holds a statistic over its window, so the two paths were compared over nothing")
 	}
-	t.Logf("%d shapes, %d series of %d evals compared, %d window statistics with a value: the read-time path answers the stored rows' answer for each",
-		len(shapes), compared, len(built), statistics)
+	if failureStatistics == 0 {
+		t.Fatalf("no series of the three failure measures holds a statistic over its window in any shape, over %d failures", failures)
+	}
+	t.Logf("%d shapes, %d series of %d evals compared, %d window statistics with a value (%d of the failure measures, over %d failures): the read-time path answers the stored rows' answer for each",
+		len(shapes), compared, len(built), statistics, failureStatistics, failures)
 }
 
 // authorWhoseMedianDiffers is the population author whose merge-to-production median over window
