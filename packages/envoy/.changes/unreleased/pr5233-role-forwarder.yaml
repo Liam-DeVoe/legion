@@ -7,6 +7,8 @@ body: |-
     made under the old one finish. A grant a person or the judge decided, and one that lasts until its
     session ends, is handed back for as long as it lives, as before. `scripts/proxy-role-check.sh`
     drives a Legion role's gh and git through its forwarder and the broker's proxy on the local stack.
+    Concurrent asks for the same names from one session get one grant between them: under the names'
+    locks, an ask finds the grant another ask wrote while it waited and is handed that grant.
 time: 2026-11-23T13:04:50Z
 custom:
     Issue: pr5233

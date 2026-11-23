@@ -3,9 +3,132 @@ package requests
 import (
 	"context"
 	"crypto/ecdsa"
+	"sync"
 	"testing"
 	"time"
 )
+
+// concurrentAsks has n asks for names for an hour from one enrollment go to Create at once, each
+// signed beforehand, and answers the grant id of each, failing on an error or an ask granted no
+// grant. Each ask is held after its first reuse read until all n have read (testBeforeCreateTx),
+// so every run opens the window where two asks both find nothing to reuse, rather than a run the
+// scheduler happens to order.
+func concurrentAsks(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, n int, names ...string) []string {
+	t.Helper()
+	objects := make([]string, n)
+	for i := range objects {
+		objects[i] = signRequestFor(t, m, key, 3600, names...)
+	}
+	var arrived sync.WaitGroup
+	arrived.Add(n)
+	released := make(chan struct{})
+	go func() {
+		arrived.Wait()
+		close(released)
+	}()
+	m.testBeforeCreateTx = func() {
+		arrived.Done()
+		select {
+		case <-released:
+		case <-time.After(10 * time.Second):
+		}
+	}
+	defer func() { m.testBeforeCreateTx = nil }()
+	grants := make([]string, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range objects {
+		wg.Go(func() {
+			<-start
+			request, err := m.Create(context.Background(), enrollmentID, objects[i], "")
+			switch {
+			case err != nil:
+				errs[i] = err
+			case request.GrantID == nil:
+				errs[i] = errNoGrant
+			default:
+				grants[i] = *request.GrantID
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent ask %d of %d: %v", i+1, n, err)
+		}
+	}
+	return grants
+}
+
+var errNoGrant = errorString("the ask was granted no grant")
+
+type errorString string
+
+func (e errorString) Error() string { return string(e) }
+
+// grantRows is how many grants rows enrollmentID holds.
+func grantRows(t *testing.T, m *Machine, enrollmentID string) int {
+	t.Helper()
+	var n int
+	if err := m.Store.Pool.QueryRow(context.Background(), `select count(*) from grants where enrollment_id=$1`, enrollmentID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// concurrentRounds and concurrentAskers size the concurrency tests: each round is a fresh session
+// whose asks are all held past their first reuse read (concurrentAsks), so each round opens the
+// race, and a second grant in any round fails the test.
+const (
+	concurrentRounds = 3
+	concurrentAskers = 8
+)
+
+// TestConcurrentAsksInTheSecondHalfGetOneNewGrant: eight asks for the same names at once, 31
+// minutes into an automatic grant of an hour, get one new grant between them, in each of five
+// rounds: Create reads the reuse again under the names' locks (reuseUnderLock), so each ask that
+// waited on them finds the grant the first one wrote.
+//
+// The named revert: drop reuseUnderLock's call from Create, and a round writes more than one new
+// grant.
+func TestConcurrentAsksInTheSecondHalfGetOneNewGrant(t *testing.T) {
+	for round := range concurrentRounds {
+		m, enr, key, _ := newFixture(t)
+		first := grantOfAnHour(t, m, enr, key, "AUTO_TOKEN")
+		age(t, m, *first.GrantID, 31*time.Minute)
+
+		grants := concurrentAsks(t, m, enr, key, concurrentAskers, "AUTO_TOKEN")
+		for _, id := range grants {
+			if id != grants[0] || id == *first.GrantID {
+				t.Fatalf("round %d: %d concurrent asks in the second half got grants %v; want one new grant, not %s, for all of them", round+1, concurrentAskers, grants, *first.GrantID)
+			}
+		}
+		if rows := grantRows(t, m, enr); rows != 2 {
+			t.Fatalf("round %d: the session holds %d grants; want 2, the first and the one new grant", round+1, rows)
+		}
+	}
+}
+
+// TestConcurrentFirstAsksGetOneGrant: eight first asks for the same names at once, with no live
+// grant, get one grant between them, in each of five rounds.
+//
+// The named revert: drop reuseUnderLock's call from Create, and a round writes more than one grant.
+func TestConcurrentFirstAsksGetOneGrant(t *testing.T) {
+	for round := range concurrentRounds {
+		m, enr, key, _ := newFixture(t)
+		grants := concurrentAsks(t, m, enr, key, concurrentAskers, "AUTO_TOKEN")
+		for _, id := range grants {
+			if id != grants[0] {
+				t.Fatalf("round %d: %d concurrent first asks got grants %v; want one grant for all of them", round+1, concurrentAskers, grants)
+			}
+		}
+		if rows := grantRows(t, m, enr); rows != 1 {
+			t.Fatalf("round %d: the session holds %d grants; want 1", round+1, rows)
+		}
+	}
+}
 
 // grantOfAnHour asks for names for 3600 seconds and answers the request, which must be granted
 // at once.

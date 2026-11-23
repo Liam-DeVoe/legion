@@ -446,6 +446,11 @@ type Machine struct {
 	testCommitCut  func() error
 	testHoldCommit func(backend uint32) error
 	testLandedRead func(backend uint32) error
+	// testBeforeCreateTx, when set, runs in Create after its first reuse read found no grant to
+	// hand back and before its transaction begins, once per ask (not on reuseUnderLock's second
+	// pass). It exists only so a test can hold concurrent asks there until each has read, the
+	// window two asks for the same names both write a grant in; no production caller sets it.
+	testBeforeCreateTx func()
 }
 
 // missRereadLimiter is the per-enrollment buckets MissRereads names, built on the first miss.
@@ -836,7 +841,11 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 		}
 	}
 	sorted := sortedCopy(names)
-	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set, target, facts); err != nil {
+	seen, err := reuseCandidates(ctx, m.Store.Pool, enrollmentID, lifetime, sorted)
+	if err != nil {
+		return Request{}, err
+	}
+	if existing, ok, err := m.reuseLiveGrant(ctx, enr, seen, lifetime, set, target, facts); err != nil {
 		return Request{}, err
 	} else if ok {
 		if err := m.endBesideReusedGrant(ctx, enrollmentID, sorted, existing.ID); err != nil {
@@ -851,6 +860,9 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 		return Request{}, err
 	}
 	assignee := m.claimAssignee(ctx, enr, set, names, obj.Reason, facts)
+	if m.testBeforeCreateTx != nil && ctx.Value(reuseRetried{}) == nil {
+		m.testBeforeCreateTx()
+	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return Request{}, err
@@ -861,6 +873,17 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 	}
 	if err := lockLiveEnrollment(ctx, tx, enrollmentID); err != nil {
 		return Request{}, err
+	}
+	// Under the names' locks, a grant a concurrent ask wrote since the reuse read above sends this
+	// ask back to that read, which hands the grant over, so concurrent asks for the same names get
+	// one grant (reuseUnderLock).
+	if again, err := reuseUnderLock(ctx, tx, enrollmentID, sorted, lifetime, seen); err != nil {
+		return Request{}, err
+	} else if again {
+		if err := tx.Rollback(ctx); err != nil {
+			return Request{}, err
+		}
+		return m.createChecked(context.WithValue(ctx, reuseRetried{}, true), enr, enrollmentID, sessionID, obj, names)
 	}
 	requester, err := m.requester(ctx, tx, enr, facts)
 	if err != nil {

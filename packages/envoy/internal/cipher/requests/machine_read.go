@@ -1353,17 +1353,9 @@ func inReuseWindow(g, r string) string {
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
-func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set, target record.Target, facts projectFacts) (Request, bool, error) {
-	matches, err := matchingRequests(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
-		join request_secrets s on s.request_id=r.id
-		join grants g on g.request_id=r.id
-		where r.enrollment_id=$1 and (
-			r.lifetime_seconds is not distinct from $2 or ($2::int is null and `+writtenBeforeMigration13("r")+`)
-		) and r.state='granted' and g.revoked_at is null and `+grantUnexpired("g")+` and `+inReuseWindow("g", "r")+`
-		group by r.id, g.id order by g.created_at desc`, enr.ID, lifetime, sorted)
-	if err != nil {
-		return Request{}, false, err
-	}
+// matches are the candidates, the caller's reuseCandidates read on the pool, which it keeps so the
+// read under the names' locks counts only grants this one did not see (reuseUnderLock).
+func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, matches []liveMatch, lifetime *int, set *policy.Set, target record.Target, facts projectFacts) (Request, bool, error) {
 candidates:
 	for _, match := range matches {
 		if enr.Restricted {
@@ -1438,6 +1430,50 @@ candidates:
 		return r, true, nil
 	}
 	return Request{}, false, nil
+}
+
+// reuseCandidates is every request of enrollmentID for exactly sorted at lifetime whose live grant
+// is inside its reuse window (inReuseWindow), newest grant first: the rows reuseLiveGrant checks,
+// read on q, the pool or a transaction.
+func reuseCandidates(ctx context.Context, q querier, enrollmentID string, lifetime *int, sorted []string) ([]liveMatch, error) {
+	return matchingRequests(ctx, q, `select r.id, g.id::text, array_agg(s.name) from requests r
+		join request_secrets s on s.request_id=r.id
+		join grants g on g.request_id=r.id
+		where r.enrollment_id=$1 and (
+			r.lifetime_seconds is not distinct from $2 or ($2::int is null and `+writtenBeforeMigration13("r")+`)
+		) and r.state='granted' and g.revoked_at is null and `+grantUnexpired("g")+` and `+inReuseWindow("g", "r")+`
+		group by r.id, g.id order by g.created_at desc`, enrollmentID, lifetime, sorted)
+}
+
+// reuseRetried marks a createChecked call that reuseUnderLock sent back to the reuse read, so an
+// ask takes that way at most once.
+type reuseRetried struct{}
+
+// reuseUnderLock makes the choice between a reused grant and a new one atomic for an enrollment and
+// its names. Create's first reuse read is on the pool, with no lock, so concurrent asks for the
+// same names could each find no grant to reuse and each write one: every first ask, and every ask
+// in an automatic grant's second half (inReuseWindow). Create's transaction then takes one advisory
+// lock per name of the enrollment (lockPendingNames), and this reads the reuse candidates again on
+// that transaction, against seen, the candidates the first read found: a candidate that read did
+// not see is a grant another ask wrote while this one waited on the locks, and it reports true, so
+// Create rolls back and goes through reuseLiveGrant again, which hands that grant over after every
+// check a reuse makes. A candidate the first read saw and reuseLiveGrant passed over for its own
+// checks (its chain, its target, a policy that changed) sends nothing back, so it is logged once.
+// A call that already went back once (reuseRetried) reports false, so no ask loops.
+func reuseUnderLock(ctx context.Context, tx pgx.Tx, enrollmentID string, sorted []string, lifetime *int, seen []liveMatch) (bool, error) {
+	if ctx.Value(reuseRetried{}) != nil {
+		return false, nil
+	}
+	matches, err := reuseCandidates(ctx, tx, enrollmentID, lifetime, sorted)
+	if err != nil {
+		return false, err
+	}
+	for _, match := range matches {
+		if !slices.ContainsFunc(seen, func(s liveMatch) bool { return s.grantID == match.grantID }) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // RecordKind reads a credential-request record's own kind ("agent_secret" or
