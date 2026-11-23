@@ -53,9 +53,12 @@ type Source struct {
 	Token func(context.Context) (string, error)
 	// API is GitHub's REST root; empty is https://api.github.com.
 	API string
-	// Client makes the read; nil is http.DefaultClient. Its redirect policy is Go's own, which
-	// follows GitHub's redirect to the tarball's host and drops the Authorization header on the
-	// way to another host.
+	// Client makes the read; nil is http.DefaultClient. Unlike the daemon's other clients
+	// (redirects.Refused), it follows redirects, Go's own policy: GitHub answers the tarball
+	// route with a redirect to its download host, whose URL carries the download's own token, and
+	// Go drops the Authorization header on the way to that other host. A read that got no answer
+	// names its failure through redact.Unanswered, which prints none of net/http's own words for
+	// it, nor any part of a redirect's target on another host.
 	Client *http.Client
 	// ReadBound is how long one read has; zero is leakCheckReadBound.
 	ReadBound time.Duration
@@ -158,7 +161,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	target := githubrest.RepositoryAPI(s.API, s.Repository) + "/tarball/" + tag
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), err))
+		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), redact.Unanswered(err, nil, "")))
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/vnd.github+json")
@@ -169,7 +172,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return Served{}, s.readFailure(ctx, tag, bound, err)
+		return Served{}, s.readFailure(ctx, tag, bound, redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {

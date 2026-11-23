@@ -595,6 +595,7 @@
         "files": [
           "packages/daemon/internal/launcher/metadata_redact_test.go",
           "packages/daemon/internal/launcher/metadata_test.go",
+          "packages/daemon/internal/redirects/redirects.go",
           "packages/daemon/internal/launcher/metadata_launcher_test.go"
         ],
         "capture": "launcher.exchange-failed"
@@ -1780,6 +1781,7 @@
         "files": [
           "packages/daemon/internal/launcher/metadata_redact_test.go",
           "packages/daemon/internal/launcher/metadata_test.go",
+          "packages/daemon/internal/redirects/redirects.go",
           "packages/daemon/internal/launcher/metadata_launcher_test.go"
         ],
         "capture": "launcher.exchange-echo"
@@ -2104,6 +2106,159 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "mcpbridge.endpoint-url/unreachable"
+      },
+      {
+        "row": "githubrest-redirect-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/githubrest/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "githubrest.redirect/unparsed"
+      },
+      {
+        "row": "githubrest-redirect-unparsed-unnamed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/githubrest/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "githubrest.redirect/unparsed-unnamed"
+      },
+      {
+        "row": "githubrest-redirect-unanswered",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/githubrest/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "githubrest.redirect/unanswered"
+      },
+      {
+        "row": "dispatch-redirect-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/dispatch/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "dispatch.redirect/unparsed"
+      },
+      {
+        "row": "dispatch-redirect-unanswered",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/dispatch/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "dispatch.redirect/unanswered"
+      },
+      {
+        "row": "notify-redirect-publish-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/notify/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "notify.redirect/publish-unparsed"
+      },
+      {
+        "row": "notify-redirect-registration-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/notify/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "notify.redirect/registration-unparsed"
+      },
+      {
+        "row": "notify-redirect-role-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/notify/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "notify.redirect/role-unparsed"
+      },
+      {
+        "row": "notify-redirect-delete-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/notify/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "notify.redirect/delete-unparsed"
+      },
+      {
+        "row": "legion-redirect-operator-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/cmd/legion/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "legion.redirect/operator-unparsed"
+      },
+      {
+        "row": "legion-redirect-state-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/cmd/legion/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "legion.redirect/state-unparsed"
+      },
+      {
+        "row": "workspace-redirect-tar-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/workspace/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "workspace.redirect/tar-unparsed"
+      },
+      {
+        "row": "appauth-redirect-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/appauth/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "appauth.redirect/unparsed"
+      },
+      {
+        "row": "appauth-redirect-elsewhere",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/appauth/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "appauth.redirect/elsewhere"
+      },
+      {
+        "row": "cipher-redirect-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/cipher/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "cipher.redirect/unparsed"
+      },
+      {
+        "row": "cipher-redirect-elsewhere",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/cipher/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "cipher.redirect/elsewhere"
+      },
+      {
+        "row": "controller-redirect-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": [
+          "packages/daemon/internal/controller/redirect_location_test.go",
+          "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
+        ],
+        "capture": "controller.redirect/unparsed"
       }
     ],
     "boundary_fields": {
@@ -4829,13 +4984,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/unanswered",
-      "production": "githubrest call and getPages: a later page's read that got no answer names the page by its number after the read's name (url.Error.URL, Unanswered), never the URL GitHub's Link header wrote",
-      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.Unanswered",
+      "production": "githubrest call and getPages: a later page's read that got no answer names the page by its number after the read's name (redact.Unanswered), never the URL GitHub's Link header wrote",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
       "capture": "githubrest.answer-words/next-page-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
-        "preimage": "failed.URL = shown",
-        "replacement": "_ = shown"
+        "preimage": "redact.Unanswered(err, request, shown)",
+        "replacement": "err"
       }
     },
     {
@@ -7524,12 +7679,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/app-unanswered",
-      "production": "appauth Manager.checkAppID: a GET /apps/<slug> that got no answer is named by the shown slug (githubrest.Unanswered, url.Error.URL), never by the URL it asked, which holds the slug as it came",
+      "production": "appauth Manager.checkAppID: a GET /apps/<slug> that got no answer is named by the shown slug (redact.Unanswered), never by the URL it asked, which holds the slug as it came",
       "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).checkAppID",
       "capture": "appauth.answer-words/viewer-app-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/appauth/tokencommand.go",
-        "preimage": "githubrest.Unanswered(err, \"/apps/\"+shown)",
+        "preimage": "redact.Unanswered(err, request, \"/apps/\"+shown)",
         "replacement": "err"
       }
     },
@@ -7580,12 +7735,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/user-unanswered",
-      "production": "appauth Manager.botIdentity: a GET /users/<login> that got no answer is named by the shown login (githubrest.Unanswered, url.Error.URL), never by the URL it asked, which holds the login as it came",
+      "production": "appauth Manager.botIdentity: a GET /users/<login> that got no answer is named by the shown login (redact.Unanswered), never by the URL it asked, which holds the login as it came",
       "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).botIdentity",
       "capture": "appauth.answer-words/viewer-user-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/appauth/appauth.go",
-        "preimage": "githubrest.Unanswered(err, shown)",
+        "preimage": "redact.Unanswered(err, request, shown)",
         "replacement": "err"
       }
     },
@@ -8064,6 +8219,405 @@
       "package": "./cmd/redact-gate",
       "test": "TestAGuardedReadReadsAnotherPackagesEmbeddedStructFromItsExportData",
       "production": "cmd/redact-gate reflection census (structural.go, fieldsNamed and sourceChecked): another package's struct a guarded package embeds is read with its unexported fields from that package's export data, as the gate lists a module, and an interface field of it is refused"
+    },
+    {
+      "id": "daemon-redact-unanswered",
+      "requirement": "r1-fail-closed",
+      "package": "github.com/sjawhar/legion/daemon/internal/redact",
+      "test": "TestUnansweredNamesTheCallAndTheFailuresClassAndNoneOfNetHTTPsWords",
+      "production": "daemon redact.Unanswered: a request that got no answer prints net/http's operation, the call's name or its URL through the URL rule, and the failure's class: a Location or a status line net/http quotes, and the target of a redirect followed to another host, print as their class; a transport failure on the request's own host prints its own text; errors.Is and errors.As find what they found"
+    },
+    {
+      "id": "daemon-redirects-refused",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/redirects",
+      "test": "TestARefusedClientAnswersTheRedirectAndLeavesTheCallersClientAsItWas",
+      "production": "daemon redirects.Refused: a copy of the caller's client that answers a 3xx itself and asks its target nothing, the caller's client unchanged and the transport shared"
+    },
+    {
+      "id": "daemon-redirects-same-origin",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/redirects",
+      "test": "TestASameOriginClientFollowsARedirectOnlyOnItsOwnOrigin",
+      "production": "daemon redirects.SameOrigin: a copy of the caller's client that follows a redirect on the origin its request was sent to and answers one naming another host itself, asking that host nothing"
+    },
+    {
+      "id": "githubrest-redirect-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/twin",
+      "production": "the stand-in of the githubrest redirect rows: its Location's echo of the installation token reaches net/http's own error, so the rows can see a leak"
+    },
+    {
+      "id": "githubrest-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/unparsed",
+      "production": "githubrest Client.call: a redirect whose Location does not parse, which net/http's error quotes whatever the client's redirect policy, names the read shown and the failure by its class (redact.Unanswered)",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
+      "capture": "githubrest.redirect/unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/githubrest/githubrest.go",
+        "preimage": "redact.Unanswered(err, request, shown)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "githubrest-redirect-unparsed-unnamed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/unparsed-unnamed",
+      "production": "githubrest Client.call: a read given no name, whose Location does not parse, names the URL it asked through the URL rule and the failure by its class (redact.Unanswered)"
+    },
+    {
+      "id": "githubrest-redirect-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/unanswered",
+      "production": "githubrest client: follows a redirect only on the read's own origin (redirects.SameOrigin), so a Location to an address on another host nothing listens at is GitHub's answer refused by its status (an *Answer), never net/http's error naming the Location"
+    },
+    {
+      "id": "githubrest-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/followed",
+      "production": "githubrest client: follows a redirect only on the read's own origin (redirects.SameOrigin), so the stand-in a Location names on another host is asked nothing"
+    },
+    {
+      "id": "githubrest-redirect-plain",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/plain",
+      "production": "githubrest client: a plain 200 still reads"
+    },
+    {
+      "id": "githubrest-redirect-renamed",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestARedirectIsGitHubsAnswerAndNoLocationReachesTheError/renamed",
+      "production": "githubrest client: a 301 on the read's own origin, GitHub's answer for a renamed repository, is still followed with the installation token and read"
+    },
+    {
+      "id": "dispatch-redirect-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError/twin",
+      "production": "the stand-in of the daemon's Dispatch redirect rows: its Location's echo of the bearer reaches net/http's own error, so the rows can see a leak"
+    },
+    {
+      "id": "dispatch-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError/unparsed",
+      "production": "daemon dispatch HTTPClient.answer: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).answer",
+      "capture": "dispatch.redirect/unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/dispatch/client.go",
+        "preimage": "transportFailure(redact.Unanswered(err, request, \"\"))",
+        "replacement": "transportFailure(err)"
+      }
+    },
+    {
+      "id": "dispatch-redirect-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError/unanswered",
+      "production": "daemon dispatch client: follows no redirect (redirects.Refused), so a Location to an address nothing listens at is Dispatch's refusal by its status, never net/http's error naming the Location"
+    },
+    {
+      "id": "dispatch-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError/followed",
+      "production": "daemon dispatch client: follows no redirect (redirects.Refused), so the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "dispatch-redirect-plain",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestARedirectIsDispatchsRefusalAndNoLocationReachesTheError/plain",
+      "production": "daemon dispatch client: a plain 200 still reads"
+    },
+    {
+      "id": "notify-redirect-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/twin",
+      "production": "the stand-in of the publisher's redirect rows: its Location's echo of the bearer reaches net/http's own error, so the rows can see a leak"
+    },
+    {
+      "id": "notify-redirect-publish-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/publish-unparsed",
+      "production": "notify HTTPPublisher.publish: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).publish",
+      "capture": "notify.redirect/publish-unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "redact.Unanswered(err, request, \"\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "notify-redirect-registration-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/registration-unparsed",
+      "production": "notify HTTPPublisher.ReadSessionRegistration: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).ReadSessionRegistration",
+      "capture": "notify.redirect/registration-unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "redact.Unanswered(err, request, \"\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "notify-redirect-role-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/role-unparsed",
+      "production": "notify HTTPPublisher.RoleHolder: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).RoleHolder",
+      "capture": "notify.redirect/role-unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "redact.Unanswered(err, request, \"\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "notify-redirect-delete-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/delete-unparsed",
+      "production": "notify HTTPPublisher.DeleteSession: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/notify.HTTPPublisher).DeleteSession",
+      "capture": "notify.redirect/delete-unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/notify/notify.go",
+        "preimage": "redact.Unanswered(err, request, \"\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "notify-redirect-publish-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/publish-followed",
+      "production": "notify publisher: follows no redirect (redirects.Refused), so a publish's 3xx is the listener's answer by its status and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "notify-redirect-registration-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/registration-followed",
+      "production": "notify publisher: follows no redirect (redirects.Refused), so a registration read's 3xx is the listener's answer by its status and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "notify-redirect-role-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/role-followed",
+      "production": "notify publisher: follows no redirect (redirects.Refused), so a role lookup's 3xx is the listener's refusal by its status and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "notify-redirect-delete-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/delete-followed",
+      "production": "notify publisher: follows no redirect (redirects.Refused), so a session delete's 3xx is the listener's answer by its status and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "notify-redirect-plain",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestARedirectIsTheListenersAnswerAndNoLocationReachesTheError/plain",
+      "production": "notify publisher: a plain 200 still publishes"
+    },
+    {
+      "id": "legion-redirect-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation/twin",
+      "production": "the stand-in of the CLI's redirect rows: its Location's echo of the operator bearer reaches net/http's own error, so the rows can see a leak"
+    },
+    {
+      "id": "legion-redirect-operator-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation/operator-unparsed",
+      "production": "legion operator.do: an operator request whose redirect's Location does not parse names the request's URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location",
+      "function": "(github.com/sjawhar/legion/daemon/cmd/legion.operator).do",
+      "capture": "legion.redirect/operator-unparsed",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/operator.go",
+        "preimage": "redact.Unanswered(err, request, \"\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "legion-redirect-operator-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation/operator-followed",
+      "production": "legion daemonClient: follows no redirect (redirects.Refused), so an operator request's 3xx is the daemon's answer by its status and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "legion-redirect-state-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation/state-unparsed",
+      "production": "legion get: a read whose redirect's Location does not parse names the URL through the URL rule and the failure by its class (redact.Unanswered)",
+      "function": "github.com/sjawhar/legion/daemon/cmd/legion.get",
+      "capture": "legion.redirect/state-unparsed",
+      "mutation": {
+        "file": "packages/daemon/cmd/legion/main.go",
+        "preimage": "refuse(redact.Unanswered(err, request, \"\"))",
+        "replacement": "refuse(err)"
+      }
+    },
+    {
+      "id": "legion-redirect-state-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation/state-followed",
+      "production": "legion daemonClient: follows no redirect (redirects.Refused), so a state read's 3xx is the daemon's answer by its status and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "legion-redirect-plain",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/cmd/legion",
+      "test": "TestACLIReadOfTheDaemonFollowsNoRedirectAndNamesNoLocation/plain",
+      "production": "legion daemonClient: a plain 200 still answers an operator request and a state read"
+    },
+    {
+      "id": "workspace-redirect-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheLocationThatDoesNotParseNamesNoRunOfTheCacheToken/twin",
+      "production": "the stand-in of the cache redirect row: its Location's echo of the cache token reaches net/http's own error, so the row can see a leak"
+    },
+    {
+      "id": "workspace-redirect-tar-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheLocationThatDoesNotParseNamesNoRunOfTheCacheToken/tar-unparsed",
+      "production": "workspace askCache: the tar's ask, which carries the cache token, answered with a redirect whose Location does not parse names the ask's URL through the URL rule and the failure by its class (redact.Unanswered) in unpackCache's error, never net/http's text, which quotes the Location",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.askCache",
+      "capture": "workspace.redirect/tar-unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "redact.Unanswered(err, ask, \"\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "workspace-redirect-plain",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheLocationThatDoesNotParseNamesNoRunOfTheCacheToken/plain",
+      "production": "workspace askCache: a plain 200 naming the cache's repository is still taken"
+    },
+    {
+      "id": "appauth-redirect-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokenExchangeRedirectNamesNoRunOfTheAppsJWT/twin",
+      "production": "the stand-in of the token exchange's redirect rows: its Location's echo of the App's JWT reaches net/http's own error, so the rows can see a leak"
+    },
+    {
+      "id": "appauth-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokenExchangeRedirectNamesNoRunOfTheAppsJWT/unparsed",
+      "production": "appauth Manager.exchange: a redirect whose Location does not parse names the exchange's URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).exchange",
+      "capture": "appauth.redirect/unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/exchange.go",
+        "preimage": "redact.Unanswered(err, request, \"\")",
+        "replacement": "func() error { _ = redact.Unanswered; return err }()"
+      }
+    },
+    {
+      "id": "appauth-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokenExchangeRedirectNamesNoRunOfTheAppsJWT/elsewhere",
+      "production": "appauth Manager.exchange: a redirect naming another host is not followed (the Manager's client follows one only on its own origin, redirects.SameOrigin): the exchange is refused by its status, and its error holds no run of the JWT and no word of the Location"
+    },
+    {
+      "id": "appauth-same-origin-moved",
+      "requirement": "r4-unchanged",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestTheManagersClientFollowsARedirectOnlyOnItsOwnOrigin/moved",
+      "production": "appauth Manager.InstalledOn: GitHub's 301 for a moved repository, on its own host, is still followed (redirects.SameOrigin)"
+    },
+    {
+      "id": "appauth-same-origin-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestTheManagersClientFollowsARedirectOnlyOnItsOwnOrigin/elsewhere",
+      "production": "appauth Manager's client: a redirect naming another host is refused by its status, and the stand-in it names is asked nothing (redirects.SameOrigin)"
+    },
+    {
+      "id": "cipher-redirect-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerRedirectNamesNoRunOfTheDaemonsBearer/twin",
+      "production": "the stand-in of the broker client's redirect rows: its Location's echo of the daemon's bearer reaches net/http's own error, so the rows can see a leak"
+    },
+    {
+      "id": "cipher-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerRedirectNamesNoRunOfTheDaemonsBearer/unparsed",
+      "production": "daemon cipher Client.do: a redirect whose Location does not parse names the call's URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/cipher.Client).do",
+      "capture": "cipher.redirect/unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/cipher/client.go",
+        "preimage": "redact.Unanswered(err, req, \"\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "cipher-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/cipher",
+      "test": "TestABrokerRedirectNamesNoRunOfTheDaemonsBearer/elsewhere",
+      "production": "daemon cipher Client.do: a redirect a following client takes to another host that does not answer is named by its class (redact.Unanswered), never by the Location net/http's error names"
+    },
+    {
+      "id": "controller-redirect-twin",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestALivenessRedirectIsUnknownAndItsLogNamesNoRunOfTheBearer/twin",
+      "production": "the stand-in of the liveness redirect rows: its Location's echo of the listener's bearer reaches net/http's own error, so the rows can see a leak"
+    },
+    {
+      "id": "controller-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestALivenessRedirectIsUnknownAndItsLogNamesNoRunOfTheBearer/unparsed",
+      "production": "controller Prober.Probe: a lookup whose redirect's Location does not parse logs the URL through the URL rule and the failure by its class (redact.Unanswered), never net/http's text, which quotes the Location",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/controller.Prober).Probe",
+      "capture": "controller.redirect/unparsed",
+      "mutation": {
+        "file": "packages/daemon/internal/controller/liveness.go",
+        "preimage": "redact.Unanswered(err, request, \"\")",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "controller-redirect-followed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/controller",
+      "test": "TestALivenessRedirectIsUnknownAndItsLogNamesNoRunOfTheBearer/followed",
+      "production": "controller Prober: follows no redirect (redirects.Refused), so a lookup's 3xx is the listener's refusal, Unknown, and the stand-in a Location names is asked nothing"
     }
   ],
   "bun": [
@@ -10289,6 +10843,51 @@
       "site": "appauth sayShortfalls: a grant shortfall's warn record printed the access GitHub's installation read named as it came, in its message (granting) and its granted field, since narrowToGranted carried an access accessOrder does not rank into the shortfall raw",
       "source": "the code-quality review of #4368 at df9ce51fa0",
       "guard": "appauth-answer-words-granted"
+    },
+    {
+      "site": "githubrest Client.call: http.DefaultClient followed a redirect, and Unanswered kept net/http's url.Error.Err, so a Location that did not parse (net/http quotes it before CheckRedirect is asked) or a followed one to an address that did not answer put the installation token into the read's error, which the daemon logs",
+      "source": "the red team of #4368 at df9ce51fa0, round 7's third must-fix",
+      "guard": "githubrest-redirect-unparsed"
+    },
+    {
+      "site": "daemon dispatch HTTPClient: &http.Client{} followed a redirect, and answer wrapped net/http's error as it came, so a Location that did not parse or a followed one to an address that did not answer put the Dispatch bearer into the call's error",
+      "source": "the red team of #4368 at df9ce51fa0, round 7's third must-fix",
+      "guard": "dispatch-redirect-unparsed"
+    },
+    {
+      "site": "notify HTTPPublisher: its client followed a redirect, and publish, ReadSessionRegistration, RoleHolder and DeleteSession wrapped net/http's error as it came, so a Location that did not parse put the listener's bearer into the call's error",
+      "source": "the red team of #4368 at df9ce51fa0, round 7's third must-fix (the same shape, not probed)",
+      "guard": "notify-redirect-publish-unparsed"
+    },
+    {
+      "site": "legion operator.do and get: http.DefaultClient followed a redirect, and each returned net/http's error as it came, so a Location that did not parse put the operator bearer into the CLI's error",
+      "source": "the red team of #4368 at df9ce51fa0, round 7's third must-fix (the same shape, not probed)",
+      "guard": "legion-redirect-operator-unparsed"
+    },
+    {
+      "site": "workspace askCache: cacheClient follows no redirect, but net/http parses a Location before CheckRedirect is asked, and askCache returned its error as it came, so a Location of the tar's answer that did not parse put the cache token into unpackCache's error",
+      "source": "the class search of round 7's third must-fix",
+      "guard": "workspace-redirect-tar-unparsed"
+    },
+    {
+      "site": "appauth: the installation discovery, permissions read, token exchange, installation read, App and identity reads and token mode's reads returned net/http's error as it came, so a Location that did not parse, or one the Manager's client followed to another host, put the App's JWT or an installation token into the mint's error",
+      "source": "the class search of round 7's third must-fix",
+      "guard": "appauth-redirect-unparsed"
+    },
+    {
+      "site": "daemon cipher Client.do: returned net/http's error as it came, so a Location that did not parse put the daemon's bearer or its Proof into the broker call's error",
+      "source": "the class search of round 7's third must-fix",
+      "guard": "cipher-redirect-unparsed"
+    },
+    {
+      "site": "controller Prober.Probe: its client followed a redirect, and the probe logged net/http's error as it came, so a Location that did not parse put the listener's bearer into the liveness log",
+      "source": "the class search of round 7's third must-fix",
+      "guard": "controller-redirect-unparsed"
+    },
+    {
+      "site": "leakguard Source.read: it follows GitHub's tarball redirect by design, and Cause printed net/http's error through the URL rule alone, which leaves a Location with no scheme and a followed target's host as they came",
+      "source": "the class search of round 7's third must-fix",
+      "guard": "daemon-redact-unanswered"
     }
   ]
 }

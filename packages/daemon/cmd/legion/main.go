@@ -1735,25 +1735,29 @@ func findLegion(team string) (registry.Entry, bool, error) {
 // route, how long it took and the budget it passed — rather than in the transport's own
 // `context deadline exceeded`, which names none of the three and leaves the reader to guess
 // whether the daemon is slow, the body is large or the command gave up early. The caller's own
-// cancellation is not that case and keeps the error it has.
+// cancellation is not that case and keeps the error it has. The read follows no redirect
+// (daemonClient), so a 3xx is the daemon's answer, refused by its status; a read that got no
+// answer names its failure through redact.Unanswered; and every error names url through the URL
+// rule.
 func get(ctx context.Context, url string) (oauth2call.Answer, error) {
 	timed, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	began := time.Now()
+	shown := redact.URLCredentials(url)
 	refuse := func(err error) error {
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 			return fmt.Errorf("read %s: no answer in %s, past the %s this command allows one read of a daemon's API",
-				url, time.Since(began).Round(time.Millisecond), requestTimeout)
+				shown, time.Since(began).Round(time.Millisecond), requestTimeout)
 		}
-		return fmt.Errorf("read %s: %w", url, err)
+		return fmt.Errorf("read %s: %w", shown, err)
 	}
 	request, err := http.NewRequestWithContext(timed, http.MethodGet, url, nil)
 	if err != nil {
-		return oauth2call.Answer{}, refuse(err)
+		return oauth2call.Answer{}, refuse(redact.Unanswered(err, nil, ""))
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := daemonClient.Do(request)
 	if err != nil {
-		return oauth2call.Answer{}, refuse(err)
+		return oauth2call.Answer{}, refuse(redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	answer, err := oauth2call.ReadAnswer(response, 64<<20)
@@ -1761,7 +1765,7 @@ func get(ctx context.Context, url string) (oauth2call.Answer, error) {
 		return oauth2call.Answer{}, refuse(err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return oauth2call.Answer{}, fmt.Errorf("%s answered %d: %s", url, response.StatusCode, answer.Words())
+		return oauth2call.Answer{}, fmt.Errorf("%s answered %d: %s", shown, response.StatusCode, answer.Words())
 	}
 	return answer, nil
 }

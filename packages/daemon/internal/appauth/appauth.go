@@ -23,6 +23,8 @@ import (
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -332,8 +334,11 @@ func New(apps config.GitHubApps, options Options) *Manager {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	noRedirect := *client
-	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	// The Manager's reads follow a redirect only on the origin they were sent to: GitHub's move of
+	// a repository answers a 301 on its own host (InstalledOn), and a Location naming any other
+	// host is the answering party's own words, refused by its status (redirects.SameOrigin).
+	client = redirects.SameOrigin(client)
+	noRedirect := redirects.Refused(client)
 	now := options.Now
 	if now == nil {
 		now = time.Now
@@ -353,7 +358,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		apps:                 apps,
 		baseURL:              baseURL,
 		client:               client,
-		noRedirect:           &noRedirect,
+		noRedirect:           noRedirect,
 		now:                  now,
 		stderr:               stderr,
 		log:                  log,
@@ -876,7 +881,7 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 		m.appHeaders(request, jwt)
 		response, err := m.client.Do(request)
 		if err != nil {
-			return nil, &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", err)}
+			return nil, &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", redact.Unanswered(err, request, ""))}
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			return nil, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
@@ -975,7 +980,7 @@ func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken stri
 // those of whatever answers in its place, which can echo the token the read carried. The read asks
 // for login as it came, path-escaped, which keeps a token's letters, so its failure names the read
 // by the login as a message may print it (githubrest.ShownLogin): in GitHub's answer
-// (transientAs) and in net/http's error for a read that got no answer (githubrest.Unanswered).
+// (transientAs) and in the error of a read that got no answer (redact.Unanswered).
 func (m *Manager) botIdentity(ctx context.Context, login, installationToken string) (GitIdentity, error) {
 	shown := "/users/" + githubrest.ShownLogin(login)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/users/"+url.PathEscape(login), nil)
@@ -987,7 +992,7 @@ func (m *Manager) botIdentity(ctx context.Context, login, installationToken stri
 	request.Header.Set("User-Agent", "legion-daemon")
 	response, err := m.client.Do(request)
 	if err != nil {
-		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", githubrest.Unanswered(err, shown))}
+		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", redact.Unanswered(err, request, shown))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return GitIdentity{}, m.transientAs(response, refusalBody(response), shown, fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
@@ -1022,7 +1027,7 @@ func (m *Manager) appSlug(ctx context.Context, jwt string) (string, error) {
 	m.appHeaders(request, jwt)
 	response, err := m.client.Do(request)
 	if err != nil {
-		return "", &TransientError{Err: fmt.Errorf("GitHub App identity lookup: %w", err)}
+		return "", &TransientError{Err: fmt.Errorf("GitHub App identity lookup: %w", redact.Unanswered(err, request, ""))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return "", m.transient(response, refusalBody(response), fmt.Errorf("GitHub App identity lookup failed (%d)", response.StatusCode))

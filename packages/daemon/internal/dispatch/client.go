@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/oauth2call"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
@@ -27,13 +29,15 @@ type HTTPClient struct {
 	httpClient *http.Client
 }
 
-// New creates a client for one Dispatch server. The token is sent only as a bearer header.
+// New creates a client for one Dispatch server. The token is sent only as a bearer header, and
+// the client follows no redirect (redirects.Refused): Dispatch answers none, and a followed one
+// would hand the bearer to the host the Location names. A 3xx is Dispatch's refusal by its status.
 func New(baseURL, token string) *HTTPClient {
 	return &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		token:      token,
 		timeout:    requestTimeout,
-		httpClient: &http.Client{},
+		httpClient: redirects.Refused(&http.Client{}),
 	}
 }
 
@@ -668,9 +672,11 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 
 // answer sends one request to Dispatch with the daemon's bearer, body as its JSON where body is not
 // nil, bounded by the client's timeout, and answers Dispatch's 2xx answer, read whole
-// (oauth2call.ReadAnswer). A request that got no answer, or whose answer could not be read, is its
-// transport's failure (transportFailure), and an answer that is not a 2xx is Dispatch's refusal
-// (dispatchError), its status named by its code and the standard phrase.
+// (oauth2call.ReadAnswer). A request that could not be made, or that got no answer, names its
+// failure through redact.Unanswered, which prints none of net/http's own words for it. One that
+// got no answer, or whose answer could not be read, is its transport's failure
+// (transportFailure), and an answer that is not a 2xx is Dispatch's refusal (dispatchError), its
+// status named by its code and the standard phrase.
 func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -685,7 +691,7 @@ func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) 
 	}
 	request, err := http.NewRequestWithContext(bounded, method, c.baseURL+path, bytes.NewReader(encoded))
 	if err != nil {
-		return oauth2call.Answer{}, fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
+		return oauth2call.Answer{}, fmt.Errorf("create Dispatch %s %s: %w", method, path, redact.Unanswered(err, nil, ""))
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+c.token)
@@ -695,7 +701,7 @@ func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) 
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return oauth2call.Answer{}, fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(err))
+		return oauth2call.Answer{}, fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(redact.Unanswered(err, request, "")))
 	}
 	defer response.Body.Close()
 	answer, err := oauth2call.ReadAnswer(response, 64<<20)

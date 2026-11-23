@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
@@ -575,14 +576,13 @@ func objectsSize(gitDir string) (int64, error) {
 
 // cacheClient reaches the repository cache directly, at the address it is given, the cache's
 // Service: no proxy the container's environment names stands between an issue pod and a pod of its
-// own namespace. It follows no redirect: the cache answers none, and a Location is the answering
-// party's own words, which a followed redirect makes the URL of the answer and of net/http's
-// error, user information and query included. A redirect is the answer itself, which askCache
-// refuses by its status.
-var cacheClient = &http.Client{
-	Transport:     &http.Transport{Proxy: nil, ForceAttemptHTTP2: false},
-	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-}
+// own namespace. It follows no redirect (redirects.Refused): the cache answers none, and a
+// Location is the answering party's own words, which a followed redirect makes the URL of the
+// answer and of net/http's error, user information and query included. A redirect is the answer
+// itself, which askCache refuses by its status.
+var cacheClient = redirects.Refused(&http.Client{
+	Transport: &http.Transport{Proxy: nil, ForceAttemptHTTP2: false},
+})
 
 // CachePoll is how long Fetch waits between two asks of a repository cache that is not ready.
 const CachePoll = 10 * time.Second
@@ -704,7 +704,7 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 	}
 	response, err := cacheClient.Do(ask)
 	if err != nil {
-		return nil, err
+		return nil, redact.Unanswered(err, ask, "")
 	}
 	if withToken && response.StatusCode == http.StatusUnauthorized {
 		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))
@@ -712,7 +712,7 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 	// cacheClient follows no redirect, so a 3xx is the answer itself: refused by its status, and
 	// its Location, the answering party's own words, is neither asked nor printed. The cache
 	// answers no redirect, whatever repository the answer names.
-	if response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest {
+	if redirects.Status(response.StatusCode) {
 		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s, a redirect, which this pod never follows", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))
 	}
 	// The repository the answer names is its own words, so it is compared as it came and printed

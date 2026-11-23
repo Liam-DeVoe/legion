@@ -19,6 +19,8 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // RepositoryAPI is repository's REST base under endpoint, GitHub's API root; empty is
@@ -32,13 +34,13 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 
 // Client calls GitHub with an installation token. Its API is a repository's REST base
 // (RepositoryAPI), which Get, Post and GetPages take paths under; an empty endpoint is
-// api.github.com.
+// api.github.com. Its calls follow a redirect only on the origin they were sent to (client).
 //
 // Each of them also takes shown, the name a failure of the call prints for it (call): a path
 // that holds another party's words - an account GitHub named, a branch GitHub answered - holds
-// them as they came, and GitHub's answer to it, or net/http's error for a request that got no
-// answer, would print them so; its caller passes the path as a message may print it instead.
-// "" names the call by its path, as a path the daemon wrote is named.
+// them as they came, and GitHub's answer to it, or the error of a request that got no answer,
+// would print them so; its caller passes the path as a message may print it instead. "" names
+// the call by its path, as a path the daemon wrote is named.
 type Client struct {
 	Token string
 	API   string
@@ -164,6 +166,14 @@ func GetPages[T any](ctx context.Context, c Client, path, shown string) ([]T, er
 	return all, nil
 }
 
+// client is the one Client's calls are made on: http.DefaultClient's, following a redirect only to
+// the scheme and host the call was sent to (redirects.SameOrigin). GitHub answers a renamed
+// repository's path with a 301 to /repositories/<id> on its own host, which a read follows to the
+// repository's name now; a Location naming any other host is the answering party's own words,
+// which a followed redirect would make the next URL asked with the installation token, so it is
+// the answer, refused by its status (an *Answer).
+var client = redirects.SameOrigin(http.DefaultClient)
+
 // call sends method to target, with body as JSON when it is not nil, reads a 2xx answer into into
 // when into is not nil, and returns the next page's URL its Link header names ("" for none) and
 // GitHub's response headers. The answer is read through oauth2call.ReadAnswer: an answer other
@@ -172,8 +182,9 @@ func GetPages[T any](ctx context.Context, c Client, path, shown string) ([]T, er
 // names the budget spent, the REST API's core budget when GitHub names no other.
 //
 // A failure names the call shown, its caller's name for it (Client), wherever it would name
-// target: GitHub's answer's path (refusal) and net/http's error for a request that got no answer
-// (Unanswered). With shown "" each names target as it is.
+// target: GitHub's answer's path (refusal) and the error of a request that got no answer
+// (redact.Unanswered, which prints none of net/http's own words for it). With shown "" each names
+// target as it is, the latter through the URL rule.
 func (c Client) call(ctx context.Context, method, target, shown string, body []byte, into any) (string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
@@ -181,16 +192,16 @@ func (c Client) call(ctx context.Context, method, target, shown string, body []b
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		return "", nil, Unanswered(err, shown)
+		return "", nil, redact.Unanswered(err, nil, shown)
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	request.Header.Set("Accept", "application/vnd.github+json")
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
-		return "", nil, Unanswered(err, shown)
+		return "", nil, redact.Unanswered(err, request, shown)
 	}
 	defer response.Body.Close()
 	read, err := oauth2call.ReadAnswer(response, 64<<20)
@@ -204,18 +215,6 @@ func (c Client) call(ctx context.Context, method, target, shown string, body []b
 		return nextPage(response.Header.Get("Link")), response.Header, nil
 	}
 	return nextPage(response.Header.Get("Link")), response.Header, read.Decode(into)
-}
-
-// Unanswered is err, the failure of a call that got no answer, naming the call shown in place of
-// the URL net/http's error names (url.Error.URL), which is the target as it came, and err as it
-// came when shown is "". call returns its failures so, and appauth, which calls GitHub with a
-// client of its own, names its reads so where their path holds GitHub's words.
-func Unanswered(err error, shown string) error {
-	var failed *url.Error
-	if shown != "" && errors.As(err, &failed) {
-		failed.URL = shown
-	}
-	return err
 }
 
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its

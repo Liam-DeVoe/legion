@@ -16,6 +16,8 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 // operatorCall is one command that reaches the daemon over the operator's bearer — each `legion
@@ -174,11 +176,18 @@ type operator struct {
 	bearer string
 }
 
+// daemonClient is the client every request of the CLI to a daemon's API is made on (do, get):
+// http.DefaultClient's, following no redirect (redirects.Refused). An operator request carries the
+// operator bearer, which a followed redirect would hand the host the Location names, and the
+// daemon answers none: a 3xx is its answer, refused by its status.
+var daemonClient = redirects.Refused(http.DefaultClient)
+
 // do is one request to the daemon: body as JSON when it is not nil, the bearer as its
 // Authorization when op carries one. It answers the daemon's answer, read through
 // oauth2call.ReadAnswer with the record of the request, so a refusal prints with the bearer and any
 // credential the request carried redacted (Answer.Words, refusal), and a caller decodes what it
-// decides on as it came (Answer.Decode). Only a request that got no answer is an error.
+// decides on as it came (Answer.Decode). Only a request that got no answer is an error, naming its
+// failure through redact.Unanswered and the URL it asked through the URL rule.
 func (op operator) do(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
 	var reader io.Reader
 	if body != nil {
@@ -190,7 +199,7 @@ func (op operator) do(ctx context.Context, method, path string, body any) (oauth
 	}
 	request, err := http.NewRequestWithContext(ctx, method, op.base+path, reader)
 	if err != nil {
-		return oauth2call.Answer{}, err
+		return oauth2call.Answer{}, redact.Unanswered(err, nil, "")
 	}
 	if op.bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+op.bearer)
@@ -198,14 +207,14 @@ func (op operator) do(ctx context.Context, method, path string, body any) (oauth
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	response, err := http.DefaultClient.Do(request)
+	response, err := daemonClient.Do(request)
 	if err != nil {
-		return oauth2call.Answer{}, err
+		return oauth2call.Answer{}, redact.Unanswered(err, request, "")
 	}
 	defer response.Body.Close()
 	answer, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
-		return oauth2call.Answer{}, fmt.Errorf("read the answer to %s %s: %w", method, request.URL, err)
+		return oauth2call.Answer{}, fmt.Errorf("read the answer to %s %s: %w", method, redact.URLCredentials(request.URL.String()), err)
 	}
 	return answer, nil
 }

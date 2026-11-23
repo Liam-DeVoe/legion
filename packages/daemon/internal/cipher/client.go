@@ -34,6 +34,7 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
@@ -64,11 +65,16 @@ var (
 	unavailableRetryMax     = 10 * time.Second
 )
 
+// defaultHTTP is the client a Client with no HTTP of its own calls the broker through:
+// http.DefaultClient's, following no redirect (redirects.Refused), since every call carries the
+// daemon's bearer or its Proof.
+var defaultHTTP = redirects.Refused(http.DefaultClient)
+
 // Client speaks the broker's token-login and enrollment routes. URL is the broker's base URL with
 // no path (also the request object's audience); HTTP is the client every call goes through, nil
-// for http.DefaultClient; TokenFile is the path of the daemon's projected ServiceAccount token,
-// read at every login so the kubelet's rotation is always picked up; Log is where each login's
-// outcome is reported, nil for slog's default.
+// for defaultHTTP; TokenFile is the path of the daemon's projected ServiceAccount token, read at
+// every login so the kubelet's rotation is always picked up; Log is where each login's outcome is
+// reported, nil for slog's default.
 //
 // state is the login as one snapshot (loginState), so a reader never sees the credential from one
 // moment and the failure from another. Its credential is the one the latest login won, cleared
@@ -908,7 +914,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, payload)
 	if err != nil {
-		return 0, oauth2call.Answer{}, false, err
+		return 0, oauth2call.Answer{}, false, redact.Unanswered(err, nil, "")
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -918,11 +924,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 	}
 	client := c.HTTP
 	if client == nil {
-		client = http.DefaultClient
+		client = defaultHTTP
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: %w", method, path, err)
+		return 0, oauth2call.Answer{}, false, fmt.Errorf("broker %s %s: %w", method, path, redact.Unanswered(err, req, ""))
 	}
 	defer resp.Body.Close()
 	answer, err := oauth2call.ReadAnswer(resp, int64(limit))

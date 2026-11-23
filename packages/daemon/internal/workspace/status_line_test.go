@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redirects/redirectstest"
 )
 
 // initOnly is a Runner whose every command succeeds and prints nothing: unpackCache's git init,
@@ -26,7 +27,7 @@ func (initOnly) Run(context.Context, Command) (Result, error) { return Result{},
 // credential's URL: its health not ready (not-ready), the token refused (token-refused), the tar
 // refused (tar-refused), an answer whose repository header itself quotes that URL (repository),
 // and a redirect whose Location carries made-up credentials in its user information and its
-// query (movedTo): of the tar, naming no repository, to a stand-in that answers 500
+// query (redirectstest.MovedTo): of the tar, naming no repository, to a stand-in that answers 500
 // (tar-redirected, the reviewer's probe); of the health, naming the cache's repository, to that
 // stand-in (health-redirected); and of the health to an address nothing listens at
 // (health-redirect-unanswered), whose transport failure net/http names by the Location. Each
@@ -77,13 +78,13 @@ func TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T)
 			return askedError(t, r, false)
 		}},
 		{"tar-refused", named, "/tar answered 500 Internal Server Error", http.StatusInternalServerError, unpackedError},
-		{"tar-redirected", movedTo(moved.Listener.Addr().String()), "/tar answered 302 Found", http.StatusFound, func(t *testing.T, r FetchRequest) string {
+		{"tar-redirected", redirectstest.MovedTo(moved.Listener.Addr().String()), "/tar answered 302 Found", http.StatusFound, func(t *testing.T, r FetchRequest) string {
 			return unfollowed(t, unpackedError(t, r))
 		}},
-		{"health-redirected", named + movedTo(moved.Listener.Addr().String()), "/healthz answered 302 Found", http.StatusFound, func(t *testing.T, r FetchRequest) string {
+		{"health-redirected", named + redirectstest.MovedTo(moved.Listener.Addr().String()), "/healthz answered 302 Found", http.StatusFound, func(t *testing.T, r FetchRequest) string {
 			return unfollowed(t, healthRefusal(t, r))
 		}},
-		{"health-redirect-unanswered", movedTo(unanswered.Listener.Addr().String()), "/healthz answered 302 Found", http.StatusFound, healthRefusal},
+		{"health-redirect-unanswered", redirectstest.MovedTo(unanswered.Listener.Addr().String()), "/healthz answered 302 Found", http.StatusFound, healthRefusal},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			said := c.call(t, request(oauth2calltest.StatusLineServer(t, c.status, c.header, "")))
@@ -93,12 +94,6 @@ func TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem(t *testing.T)
 			}
 		})
 	}
-}
-
-// movedTo is a Location header line sending the pod to host, carrying the made-up credentials of
-// oauth2calltest's probe in its user information and its query.
-func movedTo(host string) string {
-	return "Location: http://not-a-secret-user:not-a-secret-password@" + host + "/moved?access_token=not-a-secret-token\r\n"
 }
 
 // unpackedError is unpackCache's error for the tar.
