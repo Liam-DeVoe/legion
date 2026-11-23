@@ -439,8 +439,11 @@ func TestABurstableIssuePodCarriesNoSafeToEvictAnnotation(t *testing.T) {
 						t.Errorf("the issue pod of the %s's launch carries %v, want exactly %v", role, got, want)
 					}
 				}
-				controller := stopEvictionAnnotations(r, podShape(r, controllerPod{}, nil), true)
-				if got := podAnnotations(t, r, controllerSpec(t)); !maps.Equal(got, controller) {
+				// The controller's pod runs where the project's sandbox puts it, a microVM one's in a
+				// microVM, so its shape is its own launch's.
+				cl := launchOf(t, r, controllerSpec(t))
+				controller := stopEvictionAnnotations(r, podShape(r, cl.kind, cl.microVM), true)
+				if got := r.podTemplate(cl).Metadata.Annotations; !maps.Equal(got, controller) {
 					t.Errorf("the controller's pod carries %v, want exactly %v", got, controller)
 				}
 			})

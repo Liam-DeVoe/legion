@@ -1,7 +1,7 @@
 # A copy of the regions of docs/kubernetes.md that this package's workspace_copy_doc_test.go
 # holds to the runtime's annotations, pod-end reasons and restore record, each in the guide's own
 # bytes and none of the prose around it, in the guide's order: the stop-eviction annotations of a
-# microVM issue pod in "Issue pods in microVMs", the extended-run-time annotation's bullet of
+# microVM issue pod in "Pods in microVMs", the extended-run-time annotation's bullet of
 # "Anatomy of a Sandbox pod", the annotation's sentences of the burst paragraph in "Issue sizing:
 # one reservation per pod", the paragraphs under **An end from outside the pod.** in "The disk dies
 # with its pod", the two-kinds paragraphs and the AWS paragraph of "The copy of a running pod's
@@ -30,9 +30,9 @@
 # since a region ends on the line holding its end marker.
 
 from: A microVM issue pod carries the annotations a gVisor issue pod carries
-to: as a `Burstable` gVisor pod carries none
+to: as a `Burstable` gVisor issue pod carries none
 A microVM issue pod carries the annotations a gVisor issue pod carries, by the same rule: `karpenter.sh/do-not-disrupt: "true"` and `legion.dev/pod-shape` always, and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while its reservation is `Guaranteed` (`podKind.asksExtendedRunTime`, `podkind.go`); a microVM controller's pod carries the three a gVisor controller's pod carries, its safe-to-evict annotation whatever its reservation.
-The rule reads the pod's reservation and never its runtime, so a `Burstable` microVM issue pod carries no safe-to-evict annotation, as a `Burstable` gVisor pod carries none ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+The rule reads the pod's reservation and never its runtime, so a `Burstable` microVM issue pod carries no safe-to-evict annotation, as a `Burstable` gVisor issue pod carries none ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 
 from: the project controller's pod additionally carries
 to: with no death charged

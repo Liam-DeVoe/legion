@@ -55,7 +55,7 @@ const (
 	workspaceCopyDocExtract = "workspace_copy_doc_extract.txt"
 
 	microVMAnnotationsStart = "A microVM issue pod carries the annotations a gVisor issue pod carries"
-	microVMAnnotationsEnd   = "as a `Burstable` gVisor pod carries none"
+	microVMAnnotationsEnd   = "as a `Burstable` gVisor issue pod carries none"
 
 	annotationRuleStart = "the project controller's pod additionally carries"
 	annotationRuleEnd   = "with no death charged"
@@ -119,7 +119,7 @@ func TestKubernetesDocStatesTheSafeToEvictRuleWhereverElseItNamesIt(t *testing.T
 		facts      []testdoc.Fact
 	}{
 		{
-			name: "the microVM issue pod", what: `docs/kubernetes.md's stop-eviction annotations of "Issue pods in microVMs"`,
+			name: "the microVM issue pod", what: `docs/kubernetes.md's stop-eviction annotations of "Pods in microVMs"`,
 			start: microVMAnnotationsStart, end: microVMAnnotationsEnd,
 			facts: []testdoc.Fact{
 				{Fact: "that a microVM issue pod takes a gVisor issue pod's rule", Phrase: "by the same rule"},
@@ -127,7 +127,7 @@ func TestKubernetesDocStatesTheSafeToEvictRuleWhereverElseItNamesIt(t *testing.T
 					Phrase: "`" + doNotDisruptAnnotation + `: "true"` + "` and `" + podShapeAnnotation + "` always"},
 				{Fact: "the rule for the annotation the paragraph is about", Phrase: safeToEvict + " " + rule},
 				{Fact: "that the rule reads the reservation and not the runtime", Phrase: "reads the pod's reservation and never its runtime"},
-				{Fact: "that a Burstable microVM pod carries none", Phrase: "a `Burstable` microVM pod carries no safe-to-evict annotation"},
+				{Fact: "that a Burstable microVM issue pod carries none", Phrase: "a `Burstable` microVM issue pod carries no safe-to-evict annotation"},
 			},
 		},
 		{

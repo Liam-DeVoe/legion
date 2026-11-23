@@ -134,8 +134,9 @@ const PodUpdateContract = 46
 // claim's waiting, which is where every credit of this lane goes back (refreshCredit,
 // endRefreshLane). Every return below that raises no relaunch is such an end, because the lane
 // gave up nothing by it and the next sweep will decide this claim again: the contract already
-// current, a wake already held, no process to replace, and the turn this relaunch waits out,
-// whose own end runs the relaunch back through here.
+// current, a wake already held, no process to replace, the turn this relaunch waits out, whose own
+// end runs the relaunch back through here, and a stop held over the copy of the turn's end
+// (turnCopyHolds), whose let-go takes the process.
 //
 // A post that arrives carrying a credit over a machine that already holds one gives the new
 // credit straight back to the gate, keeping the one held for the wake it was taken for. The pass

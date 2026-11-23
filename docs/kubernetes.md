@@ -4468,7 +4468,7 @@ So the boot's image probe runs the image under gVisor, and never in a microVM.
 
 **The stop-eviction annotations.**
 A microVM issue pod carries the annotations a gVisor issue pod carries, by the same rule: `karpenter.sh/do-not-disrupt: "true"` and `legion.dev/pod-shape` always, and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while its reservation is `Guaranteed` (`podKind.asksExtendedRunTime`, `podkind.go`); a microVM controller's pod carries the three a gVisor controller's pod carries, its safe-to-evict annotation whatever its reservation.
-The rule reads the pod's reservation and never its runtime, so a `Burstable` microVM issue pod carries no safe-to-evict annotation, as a `Burstable` gVisor pod carries none ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+The rule reads the pod's reservation and never its runtime, so a `Burstable` microVM issue pod carries no safe-to-evict annotation, as a `Burstable` gVisor issue pod carries none ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 On the nodes of a custom ComputeClass neither stop-eviction annotation holds a node upgrade off the way GKE Autopilot's extended duration does ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
 The cluster's maintenance window decides when such a node is upgraded, and a pod the upgrade evicts ends as a pod whose node goes does ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 A kept volume stays through that end, and the issue's next pod mounts it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
