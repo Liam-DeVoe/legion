@@ -431,9 +431,9 @@ func finish(t *testing.T, pool *store.Pool, records record.Store, key string) {
 		if err != nil {
 			return err
 		}
-		// Its work is over, which on this release is the phase the merge leaves: merging is the
-		// merger's own phase, which holds no slot, since it is past the issue's review
-		// (record.PhaseKeepsSlot), and the merge's close is what ends the issue.
+		// Its work is over, which this helper writes as done, the phase the merge leaves, or the end
+		// of the retro of an issue with no pull request: neither merging nor the retro holds a slot
+		// (record.PhaseKeepsSlot), and the close that writes done is what ends the issue.
 		issue.Phase, issue.Status, issue.DispatchStatus = phase.Done, "done", "done"
 		return records.PutIssue(ctx, tx, *issue)
 	}); err != nil {
