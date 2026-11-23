@@ -8,7 +8,7 @@ tags:
   - ce-simplify-code
   - equivalence
 date: 2026-10-22
-status: superseded by CONTRIBUTING.md "Deploys come only from main" — no deployment renders from a long-lived branch, so no fix is mirrored onto one; the jj mechanics (duplicate keeps author and message, describe stales the printed id) stand
+status: superseded by AGENTS.md "Deploys come only from main" — no deployment renders from a long-lived branch, so no fix is mirrored onto one; the jj mechanics (duplicate keeps author and message, describe stales the printed id) stand
 module: legion-worker
 related_issues:
   - "INFRA-117"
@@ -19,7 +19,7 @@ related_issues:
 # A fix mirrored onto a long-lived branch is adopted byte for byte, and every simplification found on it is re-filed against the main line
 
 When a deployment rendered from a long-lived branch rather than the default branch (it no longer
-may: `CONTRIBUTING.md`, "Deploys come only from main"), the same fix had to exist on both lines. On the
+may: `AGENTS.md`, "Deploys come only from main"), the same fix had to exist on both lines. On the
 mirroring branch:
 
 - **Adopt the existing commit; never retype the change.** `jj -R "$LEGION_WORKSPACE" duplicate
