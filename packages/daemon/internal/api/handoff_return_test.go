@@ -15,7 +15,7 @@ import (
 
 // returnToNeedsFail is the refusal of a returnTo on what names it, as returnToRefusal writes it.
 func returnToNeedsFail(what string) string {
-	return what + " names returnTo, and only the completion of a step that failed, with the verdict fail, names the step its task returns to: send it again without returnTo; nothing was recorded"
+	return what + " names returnTo, and only a tester's completion names the step its task returns to when the check states fail the testing step: send it again without returnTo; nothing was recorded"
 }
 
 // completionKeys is the key of each completion of key the intake processed, in order.
@@ -91,6 +91,37 @@ func TestAFailedStepNamesTheStepItReturnsTo(t *testing.T) {
 	today := "handoff:LEGION-208:1:1:1:tester:testing:0:" + written + ":"
 	if got, want := completionKeys(t, h, "LEGION-208"), []string{today, today + ":1", today + ":2"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the completion keys = %q, want %q", got, want)
+	}
+}
+
+// A tester's completion names returnTo with no verdict, and a verdict is refused on it as on every
+// phase completion: one naming fail or pass beside returnTo is refused VERDICT_NOT_TAKEN before
+// anything is recorded, not taken as a fail that names its step, and the same completion sent
+// again with no verdict is taken, the step it names on the fact.
+func TestATestersVerdictIsRefusedAndItsReturnToTakenWithNone(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	written := tester.writeHandoff("test", 1)
+	report := func(verdict string) *httptest.ResponseRecorder {
+		t.Helper()
+		return h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests ran", Verdict: verdict, Commit: headSHA,
+			HandoffID: written, HandoffVersion: 1, ReturnTo: new(1)})
+	}
+	for _, verdict := range []string{"fail", "pass"} {
+		refused(t, report(verdict), http.StatusBadRequest, "VERDICT_NOT_TAKEN")
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refusals = %#v, want none", got)
+	}
+
+	completion(t, report(""))
+	recorded := facts.recorded()
+	if len(recorded) != 1 {
+		t.Fatalf("facts after the completion with no verdict = %#v, want one", recorded)
+	}
+	if completed, ok := recorded[0].(intake.HandoffComplete); !ok || completed.Role != claim.RoleTester || completed.ReturnTo != 1 {
+		t.Fatalf("the fact recorded = %#v, want the tester's completion naming returnTo 1", recorded[0])
 	}
 }
 

@@ -90,6 +90,7 @@ function finished(
     ended_at: start === null ? null : at(end),
     duration_seconds: seconds,
     failed_steps: failed,
+    fixes: 0,
   };
 }
 

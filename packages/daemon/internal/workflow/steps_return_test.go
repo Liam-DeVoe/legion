@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"reflect"
 	"strings"
@@ -469,9 +470,9 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		want     string
 	}{
 		{"returnTo naming the failed step itself is not earlier", 3,
-			"returnTo is 3, and step 3 (tester) of task a of LEGION-208 is not before step 3 (tester), the step that failed; send the fail again naming an earlier step, or without returnTo; nothing was recorded"},
+			"returnTo is 3, and step 3 (tester) of task a of LEGION-208 is not before step 3 (tester), the step this completion ends; send the completion again naming an earlier step, or without returnTo; nothing was recorded"},
 		{"returnTo naming a place no step of the task holds names another task's", 4,
-			"returnTo is 4, and task a of LEGION-208 has steps 1 to 3, so it names no step of the task whose step 3 (tester) failed; send the fail again naming an earlier step of that task, or without returnTo; nothing was recorded"},
+			"returnTo is 4, and task a of LEGION-208 has steps 1 to 3, so it names no step of the task whose step 3 (tester) this completion ends; send the completion again naming an earlier step of that task, or without returnTo; nothing was recorded"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, engine, root := planned(t)
@@ -499,7 +500,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		apply := applyFacts(t, pool, engine)
 
 		assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, 1, "test-1")),
-			"returnTo is 1, and LEGION-208 has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded", before)
+			"returnTo is 1, and LEGION-208 has no plan of tasks in Legion's record, so it has no step to name; send the completion again without returnTo; nothing was recorded", before)
 
 		if result := apply("fail-again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail sent again without returnTo was refused: %+v", result.Refusal)
@@ -509,6 +510,119 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		}
 		if pass := implementerPass(t, pool); pass != 1 {
 			t.Fatalf("the implementer's pass is %d, want 1: an issue with no plan rows counts its returns on the implementer's row as today", pass)
+		}
+	})
+}
+
+// returnNotUsed is the line the daemon logs when the check states pass a testing step whose
+// tester's completion named a step to return to: the step is not used, and the log says so once.
+const returnNotUsed = "workflow: the testing step passed, so the step the tester's completion named is not used"
+
+// A tester's completion carries no verdict and can name the step its task returns to (returnTo)
+// while the check states at the head it tested are still to come: the daemon keeps the step with
+// the completion, and the state event that decides the move reads it. A fail returns the task to
+// the step named; a pass goes on to the task's next step, uses no step named, and the log says so
+// once; a completion naming none returns a fail to the first implementation step before the
+// tester, the walk's default. The step named is that completion's alone: the task's next testing
+// step, completed naming none, returns a fail to the default. The subtest naming none is the
+// control of the one naming step 1: the same issue, the same states, and another step.
+func TestTheStepATestersCompletionNamesIsTakenOnlyOnAFail(t *testing.T) {
+	// waiting is LEGION-208 walking the steps planner implementer tester reviewer, standing in
+	// testing at step 3, after the tester's completion naming returnTo, which waits: no state is
+	// held at headOne, the head it tested.
+	waiting := func(t *testing.T, returnTo int) (*pgxpool.Pool, *Engine, *bytes.Buffer, record.Issue) {
+		t.Helper()
+		pool := migratedPool(t)
+		engine, logged := loggedEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "planner", "implementer", "tester", "reviewer")
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		if result := applyFacts(t, pool, engine)("test-1", failedTest(root.Key, returnTo, "test-1")); result.Refusal != nil {
+			t.Fatalf("the tester's completion naming returnTo %d was refused: %+v", returnTo, result.Refusal)
+		}
+		assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+		return pool, engine, logged, root
+	}
+	notUsed := func(logged *bytes.Buffer) int { return strings.Count(logged.String(), returnNotUsed) }
+
+	t.Run("returnTo 1, the states fail: the task goes back to the planner", func(t *testing.T) {
+		pool, engine, logged, root := waiting(t, 1)
+		planners, implementers := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner)), len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
+
+		testedAs(t, pool, engine, root.Key, headOne, false)
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+		starts := roleStartsOf(t, pool, root.Key, claim.RolePlanner)
+		if len(starts) != planners+1 {
+			t.Fatalf("the return wrote %d starts of the planner, want one", len(starts)-planners)
+		}
+		report := "Handoff: test version 1 (dispatch handoff-read --issue LEGION-208 --phase test --version 1). Handoff commit: " + headOne + "."
+		if start := starts[len(starts)-1]; start.Phase != phase.Planning || !strings.Contains(start.Task, report) || !strings.Contains(start.Task, "k1: no (fail)") {
+			t.Fatalf("the planner's start = %+v, want a start of planning whose task holds the tester's report %q and the check that failed, k1: no (fail)", start, report)
+		}
+		if got := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer)); got != implementers {
+			t.Fatalf("the return wrote %d starts of the implementer, want none: the completion named the planner", got-implementers)
+		}
+		var testEnd *record.StepRecord
+		for _, write := range stepWrites(t, pool, root.Key) {
+			if isEnd(write) && write.Role == "tester" {
+				testEnd = &write
+			}
+		}
+		if testEnd == nil || resultOf(*testEnd) != "failed" || testEnd.ReturnedTo == nil || *testEnd.ReturnedTo != 1 {
+			t.Fatalf("the tester's step end = %+v, want failed and returned to step 1", testEnd)
+		}
+		if n := notUsed(logged); n != 0 {
+			t.Fatalf("the log says %d times that the step named is not used, want never on a fail:\n%s", n, logged)
+		}
+
+		// The step named went with that testing step: the task walks to testing again, and the
+		// tester's next completion names none, so the fail the states at headOne still decide
+		// returns the task to the implementer.
+		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+		if result := applyFacts(t, pool, engine)("test-2", failedTest(root.Key, 0, "test-2")); result.Refusal != nil {
+			t.Fatalf("the tester's next completion, naming none, was refused: %+v", result.Refusal)
+		}
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+	})
+
+	t.Run("returnTo 1, the states pass: the task goes on, and the log says once that the step is not used", func(t *testing.T) {
+		pool, engine, logged, root := waiting(t, 1)
+		planners := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner))
+
+		testedAs(t, pool, engine, root.Key, headOne, true)
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 4})
+		if got := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner)); got != planners {
+			t.Fatalf("the pass wrote %d starts of the planner, want none", got-planners)
+		}
+		if n := notUsed(logged); n != 1 || !strings.Contains(logged.String(), "returnTo=1") {
+			t.Fatalf("the log says %d times that the step named is not used, want once, naming returnTo=1:\n%s", n, logged)
+		}
+		// A later state of the head decides nothing, since the issue left testing, and says nothing
+		// again.
+		testedAs(t, pool, engine, root.Key, headOne, true)
+		if n := notUsed(logged); n != 1 {
+			t.Fatalf("after a later state the log says %d times that the step named is not used, want once:\n%s", n, logged)
+		}
+	})
+
+	t.Run("no step named, the states fail: the task goes back to the implementer", func(t *testing.T) {
+		pool, engine, logged, root := waiting(t, 0)
+		planners := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner))
+
+		testedAs(t, pool, engine, root.Key, headOne, false)
+
+		assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+		if got := len(roleStartsOf(t, pool, root.Key, claim.RolePlanner)); got != planners {
+			t.Fatalf("the return wrote %d starts of the planner, want none: the completion named no step", got-planners)
+		}
+		if n := notUsed(logged); n != 0 {
+			t.Fatalf("the log says %d times that the step named is not used, want never:\n%s", n, logged)
 		}
 	})
 }
@@ -549,7 +663,7 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 	before := standingOf(t, pool, engine, root.Key, true)
 
 	assertRefusedReturnTo(t, pool, engine, root.Key, apply("late fail", failedTest(root.Key, 1, "test-1")),
-		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this fail names no step of the task to return to; send the fail again without returnTo; nothing was recorded",
+		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this completion names no step of the task to return to; send the completion again without returnTo; nothing was recorded",
 		before)
 
 	if result := apply("late fail again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {

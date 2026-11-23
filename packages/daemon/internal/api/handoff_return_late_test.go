@@ -56,7 +56,7 @@ func TestALateFailNamingAStepOffItsTasksLineIsRefusedNotFailed(t *testing.T) {
 	}
 
 	refusedSaying(t, h.complete(fail(new(1))), http.StatusConflict, "RETURN_REFUSED",
-		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this fail names no step of the task to return to; send the fail again without returnTo; nothing was recorded")
+		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this completion names no step of the task to return to; send the completion again without returnTo; nothing was recorded")
 	if got := recordedChild(t, h, root); got == nil || got.Phase != phase.Implementing {
 		t.Fatalf("%s once the fail was refused = %#v, want it still in implementing", root, got)
 	}

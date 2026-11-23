@@ -85,8 +85,9 @@ func compareRuns(left, right Step) int {
 // closed_at is set, newest close first, its close within window ([Since, Until), each nil for no
 // bound, each rounded up to the microsecond). Each issue carries its plan (the node of its newest
 // generation, nil where it has none), the rating of each retro in the order the retros ran, the
-// earliest start and the latest end its runs hold (nil where none holds one), and its count of
-// runs of kind step that failed. A finished issue Legion never ran is listed with none of these.
+// earliest start and the latest end its runs hold (nil where none holds one), its count of runs of
+// kind step that failed, and its count of fixes, the runs that name a fix_check, which only a run
+// of kind step does. A finished issue Legion never ran is listed with none of these.
 //
 // It is one statement for the whole project, whatever the number of issues: the project's
 // finished issues, each left-joined through the `part_of` tuples into it (workflow_tuples_inbound,
@@ -168,6 +169,9 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, window Window)
 			}
 			if step.Kind == StepKindStep && step.Result == ResultFailed {
 				issue.FailedSteps++
+			}
+			if step.FixCheck != "" {
+				issue.Fixes++
 			}
 			if step.Rating != nil {
 				issue.Ratings = append(issue.Ratings, Rating{Rating: step.Rating.Rating, Reason: step.Rating.Reason, StepID: step.ID, EndedAt: step.EndedAt})
