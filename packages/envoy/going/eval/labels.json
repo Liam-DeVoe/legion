@@ -121,12 +121,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It lists five open issues and leaves out DEMO-13, so the six open issues assigned to Femi are not stated."
+          "why": "The fact gives six open issues for femi@example.com, but the answer says five and leaves out DEMO-13."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "The answer gives five open issues assigned to Femi instead of six and omits DEMO-13."
+          "why": "The answer lists five open issues rather than six and omits DEMO-13."
         }
       ],
       "label": "fail"
@@ -223,12 +223,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It only narrates lookups and states neither Dana's six-emoji suggestion nor DEMO-21's backlog, P3, no-assignee state."
+          "why": "The answer only describes failed lookups: it states neither dana@example.com's suggestion of six emoji nor DEMO-21's state (backlog, P3, no assignee)."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "The answer omits both Dana's suggestion to start with six emoji and DEMO-21's backlog, P3 and unassigned state."
+          "why": "The answer only describes attempted reads and states neither dana@example.com's suggestion nor DEMO-21's title, backlog state, P3 priority and lack of an assignee."
         }
       ],
       "label": "fail"
@@ -240,12 +240,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It says one of five children (DEMO-13) is done, which contradicts 'none of them is done', and it omits Chen's proposal to split the epic, which Femi agrees with."
+          "why": "The answer says one of the five child issues is done (DEMO-13), which contradicts 'none of them is done'; it never says chen@example.com wants to split DEMO-12 in two with femi@example.com agreeing; and it names the assignee 'Chen', not chen@example.com."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "The answer incorrectly says one of the five sub-issues is done and omits Chen's proposed CSV/PDF split and Femi's agreement."
+          "why": "The answer incorrectly says one child is done, omits chen@example.com's proposed split and femi@example.com's agreement, and identifies the assignee only as Chen."
         }
       ],
       "label": "fail"
@@ -257,12 +257,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "Its final answer states that Ana answered the ask on DEMO-3 with the back-link first, above the summary, because a reader looks for it at the top."
+          "why": "Its rendered text, through the leaked reasoning, says the ask on DEMO-3 was answered by ana@example.com: selected \"First, above the summary\", text \"First. A reader looks for it at the top.\", which states both facts; the closing part names her only as 'Ana'."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "The answer states that Ana answered the DEMO-3 ask with the back-link first above the summary because a reader looks for it at the top."
+          "why": "The rendered answer explicitly identifies ana@example.com as answering DEMO-3's ask, selects first above the summary, and gives the reason that a reader looks for it at the top."
         }
       ],
       "label": "pass"
@@ -274,12 +274,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states that DEMO-31 is blocked by DEMO-30, API: rate limit headers, which is in progress and assigned to ben@example.com."
+          "why": "It says DEMO-31 is blocked by DEMO-30, 'API: rate limit headers', and that DEMO-30 is in progress and assigned to ben@example.com."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "The answer states that DEMO-31 is blocked by DEMO-30, API: rate limit headers, which is in progress and assigned to Ben."
+          "why": "The answer states that DEMO-31 is blocked by DEMO-30, API: rate limit headers, and that DEMO-30 is in progress and assigned to ben@example.com."
         }
       ],
       "label": "pass"
@@ -342,15 +342,16 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It states that DEMO-14 is in progress with Femi, DEMO-17 is in backlog with no assignee, and DEMO-18 is in testing, claimed by the tester session."
+          "why": "It states DEMO-14 (page breaks split table rows) is in progress with femi@example.com, DEMO-17 (fonts missing on mobile) is in backlog with no assignee, and DEMO-18 (landscape page option) is in testing, claimed by the tester session session-tester-01."
         },
         {
           "by": "gpt",
-          "label": "pass",
-          "why": "The answer states that DEMO-14 is in progress with Femi, DEMO-17 is in backlog without an assignee and DEMO-18 is in testing with its claim held by the tester session."
+          "label": "fail",
+          "why": "The answer gives the required issue states and assignee information but identifies DEMO-18's claimant as session-tester-01 without stating the required session name, Tester of DEMO-18."
         }
       ],
-      "label": "pass"
+      "label": "fail",
+      "discussion": "Both labellers fail index 20: the answer says DEMO-18 is claimed by 'the tester session session-tester-01' but never gives the name the fact uses, Tester of DEMO-18; that the seed maps the id to that title is outside the answer, and the rule that a name must be the fact's own applies here as it does to 'Ana' for ana@example.com."
     },
     {
       "task": "find-01",
@@ -376,12 +377,12 @@
         {
           "by": "claude",
           "label": "fail",
-          "why": "It states Dana's six-emoji suggestion and DEMO-21's backlog and priority 3, but it never says DEMO-21 has no assignee."
+          "why": "It gives DEMO-21's backlog state and priority 3 but never says it has no assignee, and it credits the six-emoji suggestion to 'Dana', not dana@example.com."
         },
         {
           "by": "gpt",
           "label": "fail",
-          "why": "The answer gives Dana's six-emoji suggestion and DEMO-21's backlog and P3 state but omits that DEMO-21 has no assignee."
+          "why": "The answer omits DEMO-21's lack of an assignee and attributes the six-emoji suggestion only to Dana rather than dana@example.com."
         }
       ],
       "label": "fail"
@@ -494,16 +495,16 @@
       "labels": [
         {
           "by": "claude",
-          "label": "pass",
-          "why": "It states the ask on DEMO-3, whether the back-link comes first above the summary or stays at the end, and that Ana chose First, above the summary."
+          "label": "fail",
+          "why": "It states the ask's question in full, but says 'Ana chose First, above the summary'; 'Ana' is not the fact's own name, ana@example.com, so the second fact is not stated."
         },
         {
           "by": "gpt",
-          "label": "pass",
-          "why": "The answer states the DEMO-3 ask's first-above-summary versus end alternatives and Ana's answer choosing first above the summary."
+          "label": "fail",
+          "why": "The answer states the ask's question and selected option but identifies the respondent only as Ana rather than ana@example.com."
         }
       ],
-      "label": "pass"
+      "label": "fail"
     },
     {
       "task": "find-07",
@@ -512,12 +513,12 @@
         {
           "by": "claude",
           "label": "pass",
-          "why": "It gives the ask on DEMO-3 by its title and its two choices ('First, above the summary' or 'At the end, as now'), and states that Ana answered First, above the summary."
+          "why": "The ask's chip and its two choices ('First, above the summary' and 'At the end, as now') state the question, and 'Ana (ana@example.com) answered on 2026-11-16: First, above the summary' states the answer by her login."
         },
         {
           "by": "gpt",
           "label": "pass",
-          "why": "The answer identifies the DEMO-3 back-link-order ask, gives its first-above-summary and end alternatives and states that Ana chose first above the summary."
+          "why": "The DEMO-3 ask chip and the two stated choices convey the full question, and the answer explicitly says ana@example.com answered First, above the summary."
         }
       ],
       "label": "pass"
