@@ -625,9 +625,8 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (repositories.serving, the repository state's own, so a configured rename's mint follows the
 // owner whose installation holds the repository now), with the repositories the project works as
 // the ones its repository caches follow (cached: those of its live issue records and of the
-// launches since their last read, workflowRuntime.cacheRepositories), with the store's own
-// workspace bundles as what a replacement pod's launcher is sent and what its restore drops, and
-// registers its launcher acceptor on the stream listener. A daemon with no GitHub Apps hands it no
+// launches since their last read, workflowRuntime.cacheRepositories), and registers its launcher
+// acceptor on the stream listener. A daemon with no GitHub Apps hands it no
 // tokens, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
 // one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST

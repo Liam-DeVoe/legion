@@ -349,8 +349,8 @@ func protectTrees(t *memoryguard.Table, roots []int, protected map[int]bool) {
 // (an `omp` copy or a helper's argument under another executable below the agent, a `worker-shim`
 // that is not the manager's generation) is not spared for it.
 //
-// It spares the launcher itself; each process the launcher holds (pidGuard: the restore's jj and
-// git) with its descendants; the shim, the manager's running generation, only while that process
+// It spares the launcher itself; each process the launcher holds (pidGuard) with its descendants;
+// the shim, the manager's running generation, only while that process
 // is this binary run as `worker-shim`, since the manager keeps its generation's pid until its wait
 // is done with it, and once the shim is reaped the kernel may give that pid to another process;
 // and every direct child of the shim with what is the agent's own under it (protectAgent): the
