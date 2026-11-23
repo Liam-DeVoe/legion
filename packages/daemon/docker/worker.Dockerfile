@@ -106,7 +106,7 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 # jj-vcs/jj#10100 and keeps, in a merge of two commits with several merge bases, what both sides
 # hold (jj-vcs/jj#6369). A later pin must carry both patches, or one jj command on a large pack
 # fills an issue pod again, or a role's merge silently reverts work.
-ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261123-030350
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261123-130747
 ARG GH_TOOL=gh@2.98.0
 # The SHA-256 of the release archive the tools stage fetches for each of its three tools, which it
 # checks before it unpacks anything, as the toolchain stage does its downloads: the linux-x64
@@ -117,7 +117,7 @@ ARG GH_TOOL=gh@2.98.0
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
 # Oh My Pi's and gh's were read on 2026-11-22 (Oh My Pi's at its 18.18.6-sami.20261122-091943 pin,
-# gh's at 2.98.0) and jj's on 2026-11-23 (at its 0.46.0-sami.20261123-030350 pin), each as the
+# gh's at 2.98.0) and jj's on 2026-11-23 (at its 0.46.0-sami.20261123-130747 pin), each as the
 # `digest` GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag>
 # --jq '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the
 # tools stage reads. gh's is also its line
@@ -126,7 +126,7 @@ ARG GH_TOOL=gh@2.98.0
 # releases carry no attestation (the same command answers 404 for both). A bump repeats those
 # reads.
 ARG OMP_SHA256=aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
-ARG JJ_SHA256=d930c90934a8f54a715c45cea600d92e4246bbd2b65e6e11917a7e9cae5c8b06
+ARG JJ_SHA256=1412b31055fdf997743bdf73a969285ebb1a7f77e15573bcf0d2016be21e22e3
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The pin of the shared public leak check: the tag of the repository a deployment names in its
 # leak check setting (legion.yaml's leak_check, or LEGION_LEAK_CHECK_REPOSITORY), whose leak-check

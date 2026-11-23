@@ -258,9 +258,9 @@ tools:
   # to one literal; `mirror_from` is the asset mise reads, and `mirror_member` is the binary inside
   # it, which is what the copy holds.
   - name: jj
-    version: 0.46.0-sami.20261123-030350
-    digest: b1db1433b4e14f11eb3d0b3565ca1e205f52418c06a3b4d5f93b692baed9d7a4
-    digest_of: the jj binary itself, the 25444608-byte `./jj` member of the release tarball
+    version: 0.46.0-sami.20261123-130747
+    digest: b87cf31cc9297fd8e6c5b383516efcd310a1a3bcafb5309bd29bcdf822eba511
+    digest_of: the jj binary itself, the 25528192-byte `./jj` member of the release tarball
     primary_source: github-release
     primary: ""
     primary_digest: ""
@@ -268,7 +268,7 @@ tools:
     primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
-    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261123-030350/jj-v0.46.0-sami.20261123-030350-x86_64-unknown-linux-musl.tar.gz
+    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261123-130747/jj-v0.46.0-sami.20261123-130747-x86_64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
   # jj for an arm64 runner: the same fork release, the aarch64 musl build mise installs there. As
@@ -276,9 +276,9 @@ tools:
   # of the binary mise installs; the release's own asset digest answers for the tarball
   # `mirror_from` names, and this one was read out of it.
   - name: jj-aarch64
-    version: 0.46.0-sami.20261123-030350
-    digest: 19971dfd08f34a2f6d4c9a0a3f0a9e5b83faf85b4a378fffa938913d0ec05e20
-    digest_of: the jj binary itself, the 21726688-byte `./jj` member of the release tarball
+    version: 0.46.0-sami.20261123-130747
+    digest: f4de880f13c3424c7caa042223a3b99b4b12f682ba601897477278725fc7c982
+    digest_of: the jj binary itself, the 21805280-byte `./jj` member of the release tarball
     primary_source: github-release
     primary: ""
     primary_digest: ""
@@ -286,7 +286,7 @@ tools:
     primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
-    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261123-030350/jj-v0.46.0-sami.20261123-030350-aarch64-unknown-linux-musl.tar.gz
+    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261123-130747/jj-v0.46.0-sami.20261123-130747-aarch64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
   # Bun for an x64 runner, the version .bun-version pins. `primary` is empty on every bun row:
