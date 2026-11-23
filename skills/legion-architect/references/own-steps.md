@@ -31,10 +31,12 @@ Read it also when a retro reports to you.
   Its phase is the phase the issue stands in, and its reason the task a worker of that step would get.
 
 - The notice comes only while that step runs, once your slot's gh files hold the GitHub App of the step's role.
-  That includes your own App (the review App, for the retro, a planner, tester or reviewer step and acceptance).
+  That includes your own App, the review App: for a planner, tester or reviewer step, acceptance, and a retro with no implementation step.
+  Where the task's last implementation step is yours, its retro waits for that step's App, the implement App, as the step did.
   Legion writes the slot first only for another App.
   While you do the step, your slot acts on GitHub as that App, so an implementer step opens its pull request as the implement App.
-  At the step's end Legion writes your own App back to your slot, unless your next step, of another App, already runs.
+  At the end of the step or of such a retro, Legion writes your own App back to your slot.
+  It does not where your next step, of another App, already runs.
   A notice that comes after the end waits for that write.
 
 - While the step runs, Legion tells it to you again in the same words when you stay idle past the silence bound.

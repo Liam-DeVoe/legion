@@ -750,7 +750,7 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
     ]),
     ...lacks("legion-worker/references/review-threads.md", [
       /no reviewer step[^.;]*implementation step lists unresolved bot threads[^.;]*retro's agent does at retro/,
-      /`gh` acts as the implement App only while it does an implementation step, not at its retro/,
+      /its `gh` acts as the implement App while it does that step\. It does so at its retro too, where the task's last implementation step is its own/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
       /no reviewer step[^.;]*no Legion approval/,
@@ -997,6 +997,16 @@ test("the skills say how the owner's retro and review read an issue, and when a 
     ]),
     ...lacks("legion-worker/SKILL.md", [
       /not a retry loop: complete again once its cause is fixed, or as its code below says\./,
+    ]),
+  ]).toEqual([]);
+});
+
+test("the owner's retro of its own implementation step acts as the implement App", () => {
+  expect([
+    ...lacks("legion-architect/references/own-steps.md", [
+      /That includes your own App, the review App: for a planner, tester or reviewer step, acceptance, and a retro with no implementation step\./,
+      /Where the task's last implementation step is yours, its retro waits for that step's App, the implement App, as the step did\./,
+      /At the end of the step or of such a retro, Legion writes your own App back to your slot\./,
     ]),
   ]).toEqual([]);
 });
