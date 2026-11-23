@@ -571,10 +571,13 @@ export const linkToken = "owner-made-token";
  *  then, unless state/no-window says it skips its step `The delisting window`, waits up to 30 s for
  *  the owner's removal (state/removed), writes outside-edge-t5.tsv with T5-cookie's and
  *  T5-passkey's `at=` the given seconds after it, and ends the step. It exits with the worst exit
- *  it recorded. Returns the run's script and the leg's environment beside it. */
+ *  it recorded. Returns the run's script and the leg's environment beside it. Each script sets
+ *  `state` once, quoted for its shell, and sits in `words`, a directory whose path holds no blank:
+ *  the leg splits each OUTSIDE_OWNER_*_COMMAND and OUTSIDE_PUBLIC_COMMAND that names one on
+ *  blanks, by design. */
 function browserStandIn(
   state: string,
-  inputs: string,
+  words: string,
   standIns: StandIns,
   browser: BrowserStandIns
 ): { readonly run: string; readonly env: Record<string, string> } {
@@ -586,41 +589,44 @@ function browserStandIn(
     browser.unlistedListed === true ? `${unlistedPerson}\n` : ""
   );
   const add = script(
-    join(inputs, "owner-add.sh"),
+    join(words, "owner-add.sh"),
     `#!/usr/bin/env bash
-while IFS= read -r each; do [ "$each" != "$1" ] || exit 0; done <'${state}/listed'
-printf '%s\\n' "$1" >>'${state}/listed'
+state=${shellQuote(state)}
+while IFS= read -r each; do [ "$each" != "$1" ] || exit 0; done <"$state/listed"
+printf '%s\\n' "$1" >>"$state/listed"
 `
   );
   const list = script(
-    join(inputs, "owner-list.sh"),
-    `#!/usr/bin/env bash\ncat '${state}/listed'\n`
+    join(words, "owner-list.sh"),
+    `#!/usr/bin/env bash\nstate=${shellQuote(state)}\ncat "$state/listed"\n`
   );
   const remove = script(
-    join(inputs, "owner-remove.sh"),
+    join(words, "owner-remove.sh"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 ${
   browser.removeNothing === true
     ? ""
     : `kept=''
-while IFS= read -r each; do [ "$each" = "$1" ] || kept="$kept$each"$'\\n'; done <'${state}/listed'
-printf '%s' "$kept" >'${state}/listed'`
+while IFS= read -r each; do [ "$each" = "$1" ] || kept="$kept$each"$'\\n'; done <"$state/listed"
+printf '%s' "$kept" >"$state/listed"`
 }
-: >'${state}/removed'
+: >"$state/removed"
 `
   );
   const invite = script(
-    join(inputs, "owner-invite.sh"),
+    join(words, "owner-invite.sh"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 ${browser.invite === "browser-session" ? "echo '403 BROWSER_SESSION_REQUIRED'\nexit 1" : ""}
 while IFS= read -r each; do
   if [ "$each" = "$1" ]; then
     link="https://dispatch.edge.example/enroll#${linkToken}-$RANDOM$RANDOM"
-    printf '%s\\n' "$link" >>'${state}/links'
+    printf '%s\\n' "$link" >>"$state/links"
     printf '%s\\n' "$link"
     exit 0
   fi
-done <'${state}/listed'
+done <"$state/listed"
 echo '409 PERSON_NOT_LISTED'
 exit 1
 `
@@ -634,8 +640,9 @@ exit 1
     )
     .join("\n");
   const run = script(
-    join(inputs, "browser-run.sh"),
+    join(words, "browser-run.sh"),
     `#!/usr/bin/env bash
+state=${shellQuote(state)}
 out=$OUTSIDE_PUBLIC_RESULTS
 worst=0
 # check NAME CODE LINE: the check's output, and its exit unless CODE is none.
@@ -655,27 +662,27 @@ ${
 check outside-edge-grants ${code("outside-edge-grants")} 'the grants probe wrote its rows'
 printf 'row\\twant\\tgot\\tverdict\\nsign-in\\tthe sign-in\\tsigned in at https://dispatch.edge.example as the invited person\\tPASS\\nprojects\\tthe projects\\t[EXAMPLE]\\tPASS\\n' >"$out/outside-edge.tsv"
 ${limits}
-{ printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat '${state}/sweep-verdict'; } >"$out/restricted-sweep.log"
+{ printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat "$state/sweep-verdict"; } >"$out/restricted-sweep.log"
 echo ${standIns.sweep?.exit ?? 0} >"$out/restricted-sweep.exit"
 case ${standIns.sweep?.exit ?? 0} in 0) ;; 1) worst=1 ;; *) [ "$worst" = 1 ] || worst=2 ;; esac
-if [ -f '${state}/no-window' ]; then
-  echo completed >'${state}/window'
+if [ -f "$state/no-window" ]; then
+  echo completed >"$state/window"
   exit "$worst"
 fi
 waited=0
-while [ ! -f '${state}/removed' ] && [ "$waited" -lt 300 ]; do
+while [ ! -f "$state/removed" ] && [ "$waited" -lt 300 ]; do
   sleep 0.1
   waited=$((waited + 1))
 done
 now=$(date -u +%s)
-if [ -f '${state}/removed' ]; then
+if [ -f "$state/removed" ]; then
   printf 'T5-cookie\\tthe cookie\\t401 at=%s\\tPASS\\nT5-passkey\\tthe passkey\\trefused at=%s: 403\\tPASS\\n' "$((now + ${browser.cookieAfter ?? 1}))" "$((now + ${browser.passkeyAfter ?? 2}))" >"$out/outside-edge-t5.tsv"
   check outside-edge-t5 ${code("outside-edge-t5")} 'the window ended'
 else
   printf 'T5-cookie\\tthe cookie\\tstill 200 at the deadline\\tUNKNOWN\\nT5-passkey\\tthe passkey\\tnot tried\\tUNKNOWN\\n' >"$out/outside-edge-t5.tsv"
   check outside-edge-t5 2 'the window ended with no 401'
 fi
-echo completed >'${state}/window'
+echo completed >"$state/window"
 exit "$worst"
 `
   );
@@ -811,16 +818,16 @@ case $SWEEP_MODE in
     # With no cookie the fills' proxy reads are the token's, which a build whose proxy reads a
     # browser's person alone refuses: those fills hold no can_fail line.
     if [ -n "\${SWEEP_FULL_COOKIE:-}" ]; then
-      : >'${state}/fills-read-the-cookie'
-      cat '${state}/fills' >"$SWEEP_FILLS_FILE"
-    elif [ ! -f '${state}/proxy-refuses-token' ]; then
-      : >'${state}/fills-read-the-token'
-      cat '${state}/fills' >"$SWEEP_FILLS_FILE"
+      : >"$state/fills-read-the-cookie"
+      cat "$state/fills" >"$SWEEP_FILLS_FILE"
+    elif [ ! -f "$state/proxy-refuses-token" ]; then
+      : >"$state/fills-read-the-token"
+      cat "$state/fills" >"$SWEEP_FILLS_FILE"
     else
-      : >'${state}/fills-without-cookie'
+      : >"$state/fills-without-cookie"
       while IFS= read -r line; do
         case $line in can_fail$'\\t'*) ;; *) printf '%s\\n' "$line" ;; esac
-      done <'${state}/fills' >"$SWEEP_FILLS_FILE"
+      done <"$state/fills" >"$SWEEP_FILLS_FILE"
     fi
     ;;
   writer)
@@ -885,7 +892,7 @@ exit ${standIns.publicExit ?? 0}
   const browserRun =
     standIns.browser === undefined
       ? undefined
-      : browserStandIn(state, inputs, standIns, standIns.browser);
+      : browserStandIn(state, words, standIns, standIns.browser);
   const revision = script(join(words, "revision.sh"), `#!/bin/sh\necho ${repo.built}\n`);
   writeFileSync(join(inputs, "cookie"), "session=full\n");
   writeFileSync(join(inputs, "token"), `${fullToken}\n`);
