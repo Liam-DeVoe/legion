@@ -9,7 +9,10 @@ body: |-
   except where that App is the owner's own; every end of the step writes the owner's own App back,
   and the next notice to the owner waits for that write. A notice of a run that has ended is not
   delivered. An owner's step that started and has not ended is told to the owner again when the
-  owner is idle past the silence bound, and at each launch of the owner. A step `acceptance` with
+  owner is idle past the silence bound, and at each launch of the owner. A child's own architect
+  that fails at a step of its own or its retro is started again at once, at most three times in
+  the step's run, and then the stranded list names it; `legion claims retry` of the owner at its
+  own step relaunches it and tells it the step again. A step `acceptance` with
   no key gets a fresh agent of the role `acceptance`, and `sign_off` of an acceptance another agent
   works is refused `SIGNOFF_NOT_THE_OWNERS`. The default steps end with `acceptance:owner`. A task
   with no pull request is done when its retro ends, and the retro runs as the role of its agent.
