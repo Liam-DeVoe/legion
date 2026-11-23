@@ -89,8 +89,10 @@ func migrateWithThisTree(databaseURL string) error {
 // ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is
 // unset, and opens the admin pool, once. It makes no template: each is made by the first test that
 // asks for it (OpenFrom). Every connect it, clone and Empty make waits until the test binary's
-// deadline (testdb.WithConnectDeadline), not pgx's two minutes, so a Postgres that a loaded
-// machine slows only slows a test.
+// deadline less testwait's margin (testdb.WithConnectDeadline), not pgx's two minutes, so a
+// Postgres that a loaded machine slows only slows a test. The admin URL is read before the Once,
+// so a URL that cannot be read fails each test that asks, and never leaves the Once done with no
+// admin pool for a later test to call.
 func ready(t testing.TB) {
 	t.Helper()
 	if !shared.main {
@@ -100,7 +102,8 @@ func ready(t testing.TB) {
 	if raw == "" {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
-	shared.once.Do(func() { shared.err = openAdmin(testdb.WithConnectDeadline(t, raw)) })
+	admin := testdb.WithConnectDeadline(t, raw)
+	shared.once.Do(func() { shared.err = openAdmin(admin) })
 	if shared.err != nil {
 		t.Fatalf("open the admin pool: %v", shared.err)
 	}
