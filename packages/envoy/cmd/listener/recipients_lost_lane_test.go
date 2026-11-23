@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -154,7 +155,7 @@ func receivedNotice(t *testing.T, rig *relayRig, standIn *sessionStandIn, sessio
 
 // A publish on a Legion controller's notice lane counts a session as a recipient only while its
 // consumer would deliver the message: while the claim of the lane's controller role names it, the
-// rule its consumer filter is built by (store.Registry.FollowableTopics). Two stores can still name
+// rule its consumer filter is built by (storedTopicFiltered). Two stores can still name
 // the lane for a session whose role was lost, and each was counted: an interest row an earlier
 // build stored with the lane and no claim naming the session, and the known-session record of a
 // session that registered the lane while it held the role and lost it to another session's claim.
@@ -257,10 +258,11 @@ func TestAStoppedFormerHolderIsNoRecipientOfItsLostLane(t *testing.T) {
 }
 
 // A hard claim that takes a controller role from a live session narrows that session's consumer
-// filter before the claim is answered: the takeover filters the former holder's consumer on its
-// stored row again, which the claim cleaned and whose lane the claim it no longer holds drops
-// (refollow), and rewrites its known-session record from that row (recordFollowedTopics), as an
-// unsubscribe does. So a notice published once the claim is answered reaches the new holder alone.
+// filter before the claim is answered (narrowFormerHolder): the takeover filters the former
+// holder's consumer on its stored row again, which the claim cleaned and whose lane the claim it no
+// longer holds drops (storedFilterWrite), and rewrites its known-session record from that row
+// (recordFollowedTopics), as an unsubscribe does. So a notice published once the claim is answered
+// reaches the new holder alone.
 // Before, the former holder's consumer kept filtering on the lane until its next registration, up
 // to a heartbeat (90 s) later, or until its relay restarted, and received the new holder's notices
 // in that window. Control: with no takeover the holder receives the notice.
@@ -309,6 +311,63 @@ func TestATakeoverNarrowsTheFormerHoldersFilterAtOnce(t *testing.T) {
 			if receivedNotice(t, rig, formerStandIn, former, notice.eventID) {
 				t.Errorf("the former holder %s received the notice published after %s took the role", former, next)
 			}
+		})
+	}
+}
+
+// A takeover that cannot narrow the former holder says so: a WARN line naming the role, its lane,
+// the former holder and the claimant, since the lane then stays on the former holder's consumer
+// until its next registration or relay restart. Here a registration of the former holder holds its
+// session lock across the claim, as a registration does across its consumer call and its writes,
+// so the narrowing's wait for that lock runs out with the claim route's budget, and the claim is
+// still answered inside that budget. Before, the narrowing waited on the lock with no bound, and a
+// failed narrowing said nothing that named the role or the lane. Control: with the lock free the
+// same takeover narrows the filter and logs no such line.
+func TestATakeoverThatLeavesTheFormerHoldersFilterSaysSo(t *testing.T) {
+	const message = "listener role takeover left the former holder's consumer filter unnarrowed; the role's notice lane may reach that session until its next registration or relay restart"
+	for _, held := range []bool{false, true} {
+		name := "control: the former holder's lock is free"
+		if held {
+			name = "a registration holds the former holder's lock through the claim"
+		}
+		t.Run(name, func(t *testing.T) {
+			rig := newLostLaneRig(t)
+			const former, next = "ses_takeover_said_former", "ses_takeover_said_next"
+			rig.subscribe(t, consumerRegistration(former, "epoch-1"))
+			claimThroughRoute(t, rig, former, lostLaneRole)
+			rig.subscribe(t, consumerRegistration(former, "epoch-1", lostLane))
+			requireFilters(t, rig.sessionConsumerRig, former, lostLane)
+			rig.subscribe(t, consumerRegistration(next, "epoch-1"))
+			if !held {
+				claimThroughRoute(t, rig, next, lostLaneRole)
+				if lines := rig.logLines(t, message, former); len(lines) != 0 {
+					t.Fatalf("a takeover that narrowed the former holder logged %v", lines)
+				}
+				requireFilters(t, rig.sessionConsumerRig, former)
+				return
+			}
+			// The lock is let go 2 s past the route's budget whatever the claim does, so a
+			// narrowing that waits on it with no bound answers late rather than never.
+			var once sync.Once
+			unlock := rig.deps.consumers.locks.lock(former)
+			release := func() { once.Do(unlock) }
+			timer := time.AfterFunc(sendRequestBudget+2*time.Second, release)
+			defer timer.Stop()
+			started := time.Now()
+			claimThroughRoute(t, rig, next, lostLaneRole)
+			took := time.Since(started)
+			filters := rig.filters(t, former)
+			release()
+			if took > sendRequestBudget+time.Second {
+				t.Errorf("the claim was answered %s after it was sent, past the route's budget of %s: the narrowing's wait for the former holder's lock is not bounded by it", took, sendRequestBudget)
+			} else if !slices.Contains(filters, lostLane) {
+				t.Fatalf("UNKNOWN: with the former holder's lock held through the claim, its consumer filters on %v, not on %s, so nothing was left to log", filters, lostLane)
+			}
+			rig.requireOneLogLine(t, "WARN", message, former, map[string]any{
+				"role":                lostLaneRole,
+				"lane":                lostLane,
+				"claimant_session_id": next,
+			})
 		})
 	}
 }

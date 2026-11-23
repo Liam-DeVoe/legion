@@ -21,14 +21,15 @@ func countRecipientsOf(t *testing.T, d *listenerDeps, subject string) *int {
 // the consumer filter built from the same topics, as a relay restart builds it from a stored row
 // (sessionDelivery.storedRowFilter), holds a subject the message matches, whichever store names
 // the topics: the session's interest row or its known-session record. Each kind of topic that
-// rule drops (store.Registry.FollowableTopics) is a row, in each store: a controller notice lane
-// whose role the session does not hold, another session's inbox in either form, a failed-delivery
-// exception lane, and a wildcard reaching a private stream subject. Each was counted, one
-// recipient whose consumer delivered nothing; now each is counted as none. Two rows the rule keeps
-// are the controls, each counted once: the lane of the role the session holds, which shows the
-// rule reads the role's claim rather than dropping every lane, and a team topic. Each row first
-// checks its own want against the filter, so a row whose want the filter contradicts tests nothing
-// and fails as UNKNOWN.
+// judgment drops (storedTopicFiltered) is a row, in each store: a controller notice lane whose
+// role the session does not hold, another session's inbox in either form, a failed-delivery
+// exception lane, a wildcard reaching a private stream subject, and a topic the deployed stream
+// does not store, which no row's rule drops and the filter cannot take. Each was counted, one
+// recipient whose consumer delivered nothing; now each is counted as none. Two rows the judgment
+// keeps are the controls, each counted once: the lane of the role the session holds, which shows
+// the rule reads the role's claim rather than dropping every lane, and a team topic. Each row
+// first checks its own want against the filter, so a row whose want the filter contradicts tests
+// nothing and fails as UNKNOWN.
 func TestTheCountAndTheFilterJudgeAStoredTopicByOneRule(t *testing.T) {
 	const sessionID = "ses_judged_topics"
 	victimOld := contracts.LegacyAgentSubject("ses_judged_victim")
@@ -47,6 +48,7 @@ func TestTheCountAndTheFilterJudgeAStoredTopicByOneRule(t *testing.T) {
 		{"another session's inbox in the new form", victimNew, victimNew, false, 0},
 		{"a failed-delivery exception lane", exception, exception, false, 0},
 		{"a wildcard reaching a private stream subject", "notifications.>", team, false, 0},
+		{"a topic the deployed stream does not store", "*.team.>", team, false, 0},
 		{"control: the lane of the role the session holds", lostLane, lostLane, true, 1},
 		{"control: a team topic", team, team, false, 1},
 	} {

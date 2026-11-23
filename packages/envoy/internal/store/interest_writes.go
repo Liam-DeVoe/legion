@@ -507,18 +507,22 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 
 // LaneHolders is what the claim records of Legion controller roles say about their notice lanes
 // (bus.ControllerNoticeRole): for each role a read weighed, the session its record names, or the
-// empty string for a role whose lane is nobody's. Registry.ReadLaneHolders reads it, and Keeps and
-// Followable judge a session's stored topics by it.
+// empty string for a role whose lane is nobody's. Registry.ReadLaneHolders reads it, and Keeps
+// judges a session's stored topics by it.
 type LaneHolders map[string]string
 
 // ReadLaneHolders reads the claim record of the controller role of each controller notice lane
-// the topic sets name, once each however many of the sets name its lane, waiting no longer than ctx
-// (RoleClaim, bus.Bounded), and never the role claim copy (RolesHeldBy); it reads nothing and
-// answers nil when the sets name no lane (bus.NamesControllerNoticeLane). What it answers decides a
-// session's consumer filter, so a copy that lost the controller's claim would drop the lane from
-// its holder's filter, and a copy that still names a session the claim has left would hand that
-// session another controller's notices, each until the copy's next read repaired it. A record that
-// names a holder gives the lane to that session. A record this build cannot decode
+// the topic sets name, once each however many of the sets name its lane, from the role bucket
+// stream's leader and waiting no longer than ctx (roleClaimFromLeader), and never the role claim
+// copy (RolesHeldBy); it reads nothing and answers nil when the sets name no lane
+// (bus.NamesControllerNoticeLane). What it answers decides a session's consumer filter, so a copy
+// that lost the controller's claim would drop the lane from its holder's filter, and a copy that
+// still names a session the claim has left would hand that session another controller's notices,
+// each until the copy's next read repaired it. A direct get is no better: on a replicated bucket
+// any copy near enough to current answers one, and a copy one write behind a takeover names the
+// former holder, which kept the lane on that holder's row and filter at the very takeover that
+// should drop it, and counted it as a recipient of the lane (cmd/listener's recipientCounts). A
+// record that names a holder gives the lane to that session. A record this build cannot decode
 // (ErrMalformedRoleClaim) names no holder, as the copy reads it, and a key NATS refuses
 // (bus.ErrRefused) is one no read can tell the holder of, which the role claim reaper removes; each
 // gives the lane to nobody and is no error, so a registration naming it stores the rest of its row
@@ -535,13 +539,13 @@ func (r *Registry) ReadLaneHolders(ctx context.Context, topics ...[]string) (Lan
 			if _, weighed := holders[role]; !lane || weighed {
 				continue
 			}
-			claim, err := r.RoleClaim(ctx, role)
+			claim, err := r.roleClaimFromLeader(ctx, role)
 			switch {
 			case errors.Is(err, ErrMalformedRoleClaim), errors.Is(err, bus.ErrRefused):
 				// A claim no read can name a holder of: the lane is nobody's.
 				holders[role] = ""
 			case err != nil:
-				return nil, fmt.Errorf("read %s's claim: %w", role, err)
+				return nil, err
 			case claim.Revision == 0:
 				holders[role] = ""
 			default:
@@ -550,6 +554,28 @@ func (r *Registry) ReadLaneHolders(ctx context.Context, topics ...[]string) (Lan
 		}
 	}
 	return holders, nil
+}
+
+// roleClaimFromLeader is RoleClaim with the leader of the role bucket's stream answering the read
+// (bus.KeyValue.GetFromLeader) instead of whichever copy of the bucket a direct get reaches, so it
+// answers the newest claim the bucket took, also one written a moment ago. ctx bounds the whole
+// read. It answers as RoleClaim answers: a zero claim for a role no record claims (a marker
+// included), the record's revision on the claim, ErrMalformedRoleClaim for a record that is not a
+// claim, and the refusal of a key NATS refuses (bus.ErrRefused).
+func (r *Registry) roleClaimFromLeader(ctx context.Context, role string) (RoleClaim, error) {
+	entry, err := r.roles().GetFromLeader(ctx, role)
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return RoleClaim{}, nil
+	}
+	if err != nil {
+		return RoleClaim{}, fmt.Errorf("read role %s's claim from the bucket's stream leader: %w", role, err)
+	}
+	claim, err := DecodeRoleClaim(entry.Value())
+	if err != nil {
+		return RoleClaim{}, err
+	}
+	claim.Revision = entry.Revision()
+	return claim, nil
 }
 
 // heldBy is the controller roles h gives sessionID, sorted.
@@ -564,25 +590,18 @@ func (h LaneHolders) heldBy(sessionID string) []string {
 	return held
 }
 
-// Keeps reports whether sessionID's consumer filter keeps topic, one its stored row or its
-// known-session record names: whether topic reaches no private stream subject that is not the
-// session's own (bus.ReachesPrivateStreamSubject), the session holding the controller roles h
-// names it the holder of. It is the one judgment of a stored topic: a filter built from a stored
-// row keeps exactly the topics it keeps (Followable, FollowableTopics, which cmd/listener's
-// storedRowFilter builds every such filter through), and a publish's recipient count counts a
-// session only through a topic it keeps (cmd/listener's recipientCounts). A controller notice lane
-// whose role h weighed no claim of is held by nobody here, so a caller reads the holders of every
-// lane its answer turns on: FollowableTopics those of every lane the row names, and the recipient
-// count that of the lane it publishes on, the one lane that can match its subject, since a lane is
-// a literal.
+// Keeps reports whether a row of sessionID keeps topic, one its stored row or its known-session
+// record names: whether topic reaches no private stream subject that is not the session's own
+// (bus.ReachesPrivateStreamSubject), the session holding the controller roles h names it the
+// holder of. It is the store's half of the one judgment of a stored topic (cmd/listener's
+// storedTopicFiltered, which every filter built from a stored row and a publish's recipient count
+// make), whose other half is whether the consumer filter can take the topic at all. A controller
+// notice lane whose role h weighed no claim of is held by nobody here, so a caller reads the
+// holders of every lane its answer turns on: a filter build those of every lane the row names, and
+// the recipient count that of the lane it publishes on, the one lane that can match its subject,
+// since a lane is a literal.
 func (h LaneHolders) Keeps(sessionID, topic string) bool {
 	return !bus.ReachesPrivateStreamSubject(sessionID, topic, h.heldBy(sessionID))
-}
-
-// Followable is topics without each one sessionID's consumer filter does not keep (Keeps). topics
-// is not changed.
-func (h LaneHolders) Followable(sessionID string, topics []string) []string {
-	return slices.DeleteFunc(slices.Clone(topics), func(topic string) bool { return !h.Keeps(sessionID, topic) })
 }
 
 // Remove releases the role claims of sessionID that release authorises (RoleReleaseAuthority)

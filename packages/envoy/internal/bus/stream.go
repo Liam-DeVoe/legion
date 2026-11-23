@@ -392,6 +392,26 @@ func ControllerNoticeRole(topic string) (string, bool) {
 	return contracts.ControllerRoleToken(project), true
 }
 
+// ControllerNoticeLane is ControllerNoticeRole read backwards: the notice lane whose holder role
+// is, and whether role is a Legion project's controller role at all. The project is read out of
+// role by the shape contracts.ControllerRoleToken gives it, taken from that func itself, and the
+// lane built from it must name role again, so a role token of any other shape names no lane.
+func ControllerNoticeLane(role string) (string, bool) {
+	prefix, suffix, _ := strings.Cut(contracts.ControllerRoleToken("\x00"), "\x00")
+	project, found := strings.CutPrefix(role, prefix)
+	if !found {
+		return "", false
+	}
+	if project, found = strings.CutSuffix(project, suffix); !found {
+		return "", false
+	}
+	lane := contracts.LegionNoticeTopicPrefix + project + contracts.ControllerNoticeSuffix
+	if named, isLane := ControllerNoticeRole(lane); !isLane || named != role {
+		return "", false
+	}
+	return lane, true
+}
+
 // NamesControllerNoticeLane reports whether any of topics is a controller notice lane
 // (ControllerNoticeRole). It is the one question a caller asks before reading a controller role's
 // claim: that lane is the only private stream subject whose owner ReachesPrivateStreamSubject

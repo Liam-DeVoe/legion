@@ -1990,17 +1990,22 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // none of it. A try whose takeover record did not store writes no claim and answers 503
 // (errTakeoverUnrecorded).
 //
-// A claim that landed over another session's claim narrows that session before it is answered,
-// as an unsubscribe does (recordFollowedTopics, refollow): its known-session record is written
-// from its stored row, which the claim took the role's topic off, and its consumer is filtered on
-// that row again, which drops the role's controller notice lane now that the claim names the
-// claimant (storedRowFilter). A notice published once the claim is answered reaches the new holder
-// alone. What stays open: a notice published between the claim's write and that filter write
-// (a bucket read, a claim read and one consumer call, under the former holder's session lock and
-// within sessionConsumerCallTimeout) still reaches the former holder, and a filter write that
-// failed, which refollow logs, leaves the lane on its consumer until its next registration or
-// relay restart. A stopped former holder has no entry, so its record keeps the lane, which the
-// publish count judges by the claim (recipientCounts).
+// A claim that landed over another session's claim of a Legion controller role narrows that
+// session before it is answered (narrowFormerHolder), as an unsubscribe does: its known-session
+// record is written from its stored row, which the claim took the role's topic off, and its
+// consumer is filtered on that row again, which drops the role's controller notice lane now that
+// the claim, read from the role bucket stream's leader, names the claimant (storedRowFilter). A
+// notice published once the claim is answered reaches the new holder alone. What stays open: a
+// notice published between the claim's write and that filter write still reaches the former
+// holder. Everything after the claim's write - the claimant's topic merged again, the old holder's
+// topic taken off its row, the record write, the wait for the former holder's session lock (which
+// a registration holds across its consumer call and its writes) and the fenced filter write - runs
+// inside this route's budget (sendRequestBudget), so that window ends, at the latest, 3.5 s after
+// the request arrived. A narrowing that did not land by then is logged at WARN naming the role,
+// the lane and both sessions, and the lane stays on the former holder's consumer until its next
+// registration (a heartbeat, at most 90 s) or its relay's restart. A stopped former holder has no
+// entry, so its record keeps the lane, which the publish count judges by the claim
+// (recipientCounts).
 //
 // The refresh of the claimant's registration can make its session live again, as a registration
 // that returns a session does (subscribeHandler): a process that resumed a session claims its role
@@ -2466,19 +2471,11 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			}
 			landed = true
 			go runTakenRoleDrain(*d.delivery, body.Role)
-			// The session the claim took the role from follows what its stored row now holds, as
-			// after an unsubscribe: its known-session record is written from that row, and its
-			// consumer, when the relay serves it one, is filtered on it again (refollow). The
-			// claim took the role's topic off that row, and the filter built from the row drops
-			// the role's controller notice lane, whose claim names this claimant now
-			// (storedRowFilter), so a notice published once this claim is answered reaches the new
-			// holder alone, where the former holder's filter would otherwise keep the lane until
-			// its next registration. Both run before the answer, the record within this route's
-			// budget and the consumer call within a budget of its own, as the unsubscribe route
-			// runs them.
+			// A claim that took a controller role from another session narrows that session
+			// before it is answered, within this route's budget (narrowFormerHolder), so a notice
+			// published once this claim is answered reaches the new holder alone.
 			if tries.replaced != "" {
-				recordFollowedTopics(ctx, d, tries.replaced, logger)
-				d.consumers.refollow(r.Context(), d, tries.replaced)
+				narrowFormerHolder(ctx, d, logger, body.Role, body.SessionID, tries.replaced)
 			}
 			answer := roleSetResponse{Interest: item}
 			if roleWarning != "" {
