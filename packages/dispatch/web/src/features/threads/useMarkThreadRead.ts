@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { threadReadRequest } from "../../api/client";
 import { meInboxKey, meInboxOwnerQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
-import { useIsHuman } from "../../hooks/useIsHuman";
+import { type EventFreshness, useIsHuman } from "../../hooks/useIsHuman";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { unreadWrites } from "./thread-layout";
@@ -39,6 +39,8 @@ export interface MarkThreadReadOptions {
   /** The thread's writes, as the surface holds them, for the unread set below; none while the
    *  thread is still loading, and none at all from a surface that wants no set. */
   readonly writes?: readonly { readonly id: string; readonly created_at: string }[];
+  /** How long the sign-in read and unread set stay fresh, and whether a focus reads them again. */
+  readonly freshness?: EventFreshness;
 }
 
 /** What a thread's read mark answers: where the watch goes, and what the thread still holds
@@ -72,6 +74,7 @@ export interface ThreadRead {
  */
 export function useMarkThreadRead({
   enabled,
+  freshness,
   newestShownAt,
   owner,
   threadId,
@@ -80,9 +83,10 @@ export function useMarkThreadRead({
   const queryClient = useQueryClient();
   // The routes need the `person` scope, which a signed-in browser holds; any other principal
   // never asks, so never cycles on a 403.
-  const human = useIsHuman();
+  const human = useIsHuman(freshness);
   const watching = enabled && human && owner !== undefined && newestShownAt !== undefined;
-  const unreadSet = useQuery({ ...meInboxOwnerQuery(owner ?? NO_OWNER), enabled: watching });
+  const unreadSetQuery = { ...meInboxOwnerQuery(owner ?? NO_OWNER), ...freshness };
+  const unreadSet = useQuery({ ...unreadSetQuery, enabled: watching });
   const answer = unreadSet.data;
   const threads = useMemo(() => meInboxThreads(answer), [answer]);
   // This thread's own row of that set, which says both that it is unread and what in it is.
