@@ -74,8 +74,10 @@ func lastWorkerDied(t *testing.T, pool *pgxpool.Pool, key string) string {
 // architect reports (complete_step takes the report from the child's own architect alone), is
 // started again at once: no phase start comes while the child stands there, and the start the
 // child's next phase start would queue (reviveArchitect) would never come. The start is the plain
-// one a phase start queues (childArchitectStart), the worker-died tells the architect above that
-// it runs again, and the launch's ready tells the owner its step again (the catch-up's owed step).
+// one a phase start queues (childArchitectStart), and the worker-died tells the architect above
+// that it runs again. The launch's ready tells the owner its step again (the catch-up's owed step)
+// where its session has not had the step's owner-step, as here: that notice never reached a
+// session.
 //
 // The control is a child at a step its owner does not do: its architect's failure queues no start
 // and says the next phase start brings it back, as before.
@@ -121,14 +123,16 @@ func TestAChildsOwnArchitectThatFailsAtItsOwnStepIsStartedAgainAndToldTheStep(t 
 }
 
 // The daemon starts a failed owner again at most OwnerRestarts times in one run of its step: a
-// launch that always fails is started that many times, and then left failed, where the stranded
-// list names it for the operator's retry, as the last worker-died says. Only the controller and the
-// operator can start it then — the architect above cannot report the step, and has no retry of a
-// claim — so that worker-died goes to the controller as well, and the daemon warns; a failure the
-// daemon starts again tells neither. A start already queued is the start, and counts nothing. The
-// operator's retry of the owner's claim (intake.RestartPhase of the architect, what `legion claims
-// retry` and the controller's fresh_session apply) tells the owner its step again with one more
-// owner-step, and gives the daemon its restarts again: the next failure is started again.
+// launch that always fails is started that many times, and then left failed. The stranded list then
+// names it for the operator's retry or the controller's fresh_session, as the last worker-died says.
+// Only the controller and the operator can start it then — the architect above cannot report the
+// step, and has no retry of a claim — so each worker-died past the restarts goes to the controller
+// as well, and the daemon warns. A failure the daemon starts again tells neither. A start already
+// queued is the start, and counts nothing. The operator's retry of the owner's claim
+// (intake.RestartPhase of the architect, what `legion claims retry` and the controller's
+// fresh_session apply) gives the daemon its restarts again: the next failure is started again. It
+// also tells the owner its step again with one more owner-step, since no owner-step of the step's
+// open run is still queued here.
 func TestAFailedOwnersRestartsAtOneStepAreBoundedAndTheOperatorsRetryResetsThem(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()

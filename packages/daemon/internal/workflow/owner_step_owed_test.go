@@ -135,9 +135,10 @@ func TestAnOwnersStepNoTurnHeardIsToldAgainByThePeriodicPass(t *testing.T) {
 	})
 }
 
-// The owner's catch-up at each launch tells again the owner's step that started and has not ended:
-// the launch's ready queues the catch-up, which names the step, then the step's owner-step, once
-// for the launch. A child's step goes to the child's own architect: its owner-step is on the
+// The owner's catch-up at a launch tells again the owner's step that started and has not ended,
+// where no owner-step of its run is still queued and the launch's session has not had one. The
+// launch's ready queues the catch-up, which names the step, then the step's owner-step, once for
+// the launch. A child's step goes to the child's own architect: its owner-step is on the
 // child's key (record.OwnerStepNotice goes by OwnerClaim), and the child's architect's silence
 // tells it there, where the root architect's silence tells nothing of the child.
 //
