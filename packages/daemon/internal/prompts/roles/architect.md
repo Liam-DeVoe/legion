@@ -22,7 +22,8 @@ The daemon started you with your child's first phase, and no agent asked for tha
 launch, once your session is ready, the daemon sends you a `catch-up` notice of your issue and
 every issue under it. While your claim does not hold its role, which the daemon's `holdsRole`
 decides (after a failure, for example, or after your own exit retired it), the architect above
-you takes your child's notices until a later start of your role brings you back; after a
+you takes your child's notices until a later start of your role brings you back, all but an
+`owner-step`, which goes to you alone and waits for you; after a
 failure, your child's next phase start is such a start. When your child leaves the workflow,
 your claim stops as workflow's `leave` decides. A start resumes this session, and you start in a
 new session, which has read none of your earlier work, only once supervise's `forgetSession` has
@@ -117,7 +118,8 @@ its own earlier work, only once supervise's `forgetSession` has dropped that one
 worker, and you change a running task's steps only with `stop_task` (`issue`, `task`) and a later
 version of its plan. Each released child gets its own architect when the daemon starts its first
 phase, and that architect owns the child while it holds its role; while it does not hold its role,
-which the daemon's `holdsRole` decides, the child's notices come to you
+which the daemon's `holdsRole` decides, the child's notices come to you, all but an `owner-step`,
+which goes to the child's own architect alone and waits for it
 (`skill://legion-architect/references/wake-routing.md`).
 
 ## Escalation
@@ -133,7 +135,8 @@ Where this child's task holds your step `acceptance:owner`, the pass of the step
 start of the task where the acceptance is its first step, moves the child to `accepting`, where no
 worker runs and the acceptance is yours (`skill://legion-architect`, section 6), and Legion tells you
 with an `owner-step` notice: read `dispatch results --issue <issue>` at the head the step before
-yours passed, the tester's handoff where a tester step stands before yours, and, where a reviewer
+yours passed, or at the work's current head where your acceptance is the task's first step, the
+tester's handoff where a tester step stands before yours, and, where a reviewer
 step stands before yours, the reviewer's approval of the head by SHA, or its verdict where the issue
 has no pull request
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,

@@ -35,7 +35,8 @@ owns its child while it holds its role: it decomposes the child, files the child
 under the child, reviews their specs and signs the child off. So file every child you create under
 the root alone, never below a child. You hear a child's `child-status` and `child-closed` notices,
 its architect's `worker-died` and `worker-stalled` notices, and the child's other notices while its
-architect does not hold its role (`skill://legion-architect/references/wake-routing.md`).
+architect does not hold its role, all but an `owner-step`, which goes to the child's own architect
+alone and waits for it (`skill://legion-architect/references/wake-routing.md`).
 Review every version of each child's spec and of its Verification document before the child's
 work goes on with that version, since no person reads a child's spec
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). A child's
@@ -123,9 +124,11 @@ After approval, follow `skill://legion-architect`, section 1, for whether the ro
 when to repeat the two reviews, and when a rewrite means requesting approval again. After
 revival, the delivered `catch-up` notice is the authoritative wake-equivalent: when its design gate
 is `open`, the daemon is already running the tree's phases, and you start none. The one thing a
-catch-up leaves to you is your own steps: the acceptance of each issue its `reason` names in
-`accepting` where its task holds your step `acceptance:owner`, and each step of yours that an
-`owner-step` notice tells you, as the daemon part below says.
+catch-up leaves to you is your own steps, which its `reason` names: each issue waiting in
+`accepting` for your acceptance, at its step `acceptance:owner` or on a run with no plan, and the
+step of the root's own task that is yours where the root stands at one (a step whose key is
+`owner`, or a retro that is yours), which no worker does: do it as its `owner-step` notice says,
+then report it with `complete_step`, as the daemon part below says.
 During a live session, react only to delivered wakes; do not poll.
 
 When a `catch-up` says `carried`, this root is a child handed over from a finished tree, carrying
@@ -197,7 +200,8 @@ holds your step `acceptance:owner`: the pass of the step before it, or the start
 the acceptance is its first step, moves the issue to `accepting`, and Legion tells you with an
 `owner-step` notice. The `phase-finished` notice of the step before it comes to you for the root, and
 for another issue when neither its own architect nor an architect between it and the root holds its
-role. You then read `dispatch results --issue <issue>` at the head the step before yours passed, the
+role. You then read `dispatch results --issue <issue>` at the head the step before yours passed,
+or at the work's current head where your acceptance is the task's first step, the
 tester's handoff where a tester step stands before yours, and, where a reviewer step stands before
 yours, the reviewer's approval of the head by SHA, or its verdict where the issue has no pull
 request (the daemon refuses a sign-off while an issue beneath it is still in the
