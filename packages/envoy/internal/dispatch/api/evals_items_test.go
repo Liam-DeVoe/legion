@@ -100,7 +100,7 @@ func mustString(t *testing.T, raw json.RawMessage) string {
 // GET /api/v1/delivery/pipeline answers in pr_checks.failing_jobs for that at, one list and two
 // readers (measures.FailingJobs over the runs of those days): for an at whose 24 hours hold a
 // run of the deliverytest history that started before them and failed a job inside them, and for
-// an at on a midnight.
+// an at on a midnight. Each row is keyed `<repo>/<name>`, which a row filter finds alone.
 func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
@@ -143,6 +143,9 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 			if err := json.Unmarshal([]byte(mustJSON(t, row.Cols)), &job); err != nil {
 				t.Fatalf("decode the failing job row %s: %v", row.RowKey, err)
 			}
+			if repo, _ := row.Cols["repo"].(string); row.RowKey != repo+"/"+job.Name {
+				t.Errorf("the failing job %s of %s is keyed %q, want %q", job.Name, repo, row.RowKey, repo+"/"+job.Name)
+			}
 			answered = append(answered, job)
 		}
 		if len(pipeline) == 0 {
@@ -153,6 +156,11 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 			continue
 		}
 		t.Logf("%s (%s, %s): the items and the Pipeline answer the same %d failing jobs, the first %+v", pinned.name, at, query, len(pipeline), pipeline[0])
+		first := items.Items[0].RowKey
+		filtered := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/"+fixture.Project+"/evals/pr-ci/items?sort=failures&limit=200&"+query+"&"+url.Values{"row": {first}}.Encode())
+		if len(filtered.Items) != 1 || filtered.Items[0].RowKey != first {
+			t.Errorf("%s: the row filter %q answers %d rows, want the one row it keys", pinned.name, first, len(filtered.Items))
+		}
 	}
 	t.Logf("the straddling run %d started %s, completed %s; its at is %s", straddling.RunID,
 		straddling.StartedAt.Format(time.RFC3339), straddling.CompletedAt.Format(time.RFC3339), straddleTo.Format(time.RFC3339))

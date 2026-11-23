@@ -519,7 +519,7 @@ func searchPullRequests(ctx context.Context, client *githubapp.Client, token fun
 	return walkWindowed(since, until, scope, searchMergedPullRequestsWindow, newFetcher, visit)
 }
 
-// SearchMergedReverts finds every pull request merged in [since, until) into owner/repo whose body
+// SearchMergedReverts finds every pull request merged in [since, until] into owner/repo whose body
 // holds the word Reverts, whoever authored it, with its body (searchRevertsQuery): the candidates of
 // the line GitHub's revert button writes (ParseRevert), which the reconcile reads a deploy
 // repository's merged reverts from (reconcileReverts). A search does not match a line, so a

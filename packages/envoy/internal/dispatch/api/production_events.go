@@ -68,12 +68,12 @@ type productionEventList struct {
 	Offset int                `json:"offset"`
 }
 
-// productionEventInput is the body POST /api/v1/projects/{key}/production-events takes: one
-// event. Where OpenTelemetry names a field (the deployment and CI/CD semantic conventions), the
-// body may carry that name instead of the plain one, or both alike.
 // productionEventNoteBytes is the most a note may hold: a paragraph, not a log.
 const productionEventNoteBytes = 4096
 
+// productionEventInput is the body POST /api/v1/projects/{key}/production-events takes: one
+// event. Where OpenTelemetry names a field (the deployment and CI/CD semantic conventions), the
+// body may carry that name instead of the plain one, or both alike.
 type productionEventInput struct {
 	// Kind is deploy or failure.
 	Kind string `json:"kind" required:"true" enum:"deploy,failure"`
@@ -339,9 +339,11 @@ func otelField(plainName, plain, otelName, otel string) (string, error) {
 	return otel, nil
 }
 
-// blamedDeploy is the id of the deploy a failure blames, named exactly one way: its row's id,
-// which the store holds to a deploy row as it writes (409 PRODUCTION_EVENT_NO_DEPLOY otherwise);
-// the GitHub run it was (prodevents.DeployForRun); or a commit it shipped
+// blamedDeploy is the id of the deploy a failure blames, named exactly one way: its row's id, in
+// its canonical spelling where it is a uuid, so a person's flag keys one deploy one way
+// (person:<deploy id>:<login>) however the body spells it, and which the store holds to a deploy
+// row as it writes (409 PRODUCTION_EVENT_NO_DEPLOY otherwise, a body's id that is no uuid
+// included); the GitHub run it was (prodevents.DeployForRun); or a commit it shipped
 // (prodevents.DeployForCommit). A run or a commit no deploy row holds is 409
 // PRODUCTION_EVENT_NO_DEPLOY, and the deploy may be another project's.
 func (s *server) blamedDeploy(ctx context.Context, input productionEventInput) (string, error) {
@@ -357,6 +359,9 @@ func (s *server) blamedDeploy(ctx context.Context, input productionEventInput) (
 	case named > 1:
 		return "", productionEventInputError("a failure names the deploy it blames one way: deploy_id, cicd.pipeline.run.id or commit_sha, not two of them")
 	case input.DeployID != nil:
+		if id, err := uuid.Parse(*input.DeployID); err == nil {
+			return id.String(), nil
+		}
 		return *input.DeployID, nil
 	case input.PipelineRunID != "":
 		run, err := strconv.ParseInt(input.PipelineRunID, 10, 64)

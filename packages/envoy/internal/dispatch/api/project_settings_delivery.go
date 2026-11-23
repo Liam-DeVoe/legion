@@ -144,11 +144,14 @@ func (s *server) readProjectDeliverySettings(ctx context.Context, project string
 		answer.FailuresMeasuredSince = new(settings.FailuresMeasuredSince.Format(time.DateOnly))
 	}
 	// The rules the reconcile walks: none of a project with delivery off, whose repositories it
-	// does not walk, so their sources say nothing of how far they are reconciled.
+	// does not walk, so their sources say nothing of how far they are reconciled. Every project's
+	// rules, whose search scope each source's reconcile is read under, are read once, for the
+	// first source the reconcile walks.
 	rules := map[string]delivery.DeliverySettings{}
 	for _, rule := range settings.Rules() {
-		rules[deliveryRuleKey(rule.DeployRepo)] = rule
+		rules[delivery.RuleKey(rule.DeployRepo)] = rule
 	}
+	var walkedRules *delivery.SourceRules
 	for i, source := range settings.Sources {
 		answer.Sources[i] = projectDeploySource{DeploySource: source}
 		repo, reads := delivery.SourceRepoOf(source, settings.DefaultRepo)
@@ -156,10 +159,17 @@ func (s *server) readProjectDeliverySettings(ctx context.Context, project string
 			continue
 		}
 		answer.Sources[i].ResolvedRepo = &repo
-		if rule, walked := rules[deliveryRuleKey(repo)]; walked {
-			if answer.Sources[i].ReconciledThrough, err = delivery.ReconciledThrough(ctx, pool, rule); err != nil {
+		rule, walked := rules[delivery.RuleKey(repo)]
+		if !walked {
+			continue
+		}
+		if walkedRules == nil {
+			if walkedRules, err = delivery.ReadSourceRules(ctx, pool); err != nil {
 				return projectDeliverySettings{}, err
 			}
+		}
+		if answer.Sources[i].ReconciledThrough, err = delivery.ReconciledThrough(ctx, pool, rule, walkedRules); err != nil {
+			return projectDeliverySettings{}, err
 		}
 	}
 	entries, err := s.registry().ProjectEvals(ctx, project, deliverySettingsTargetSlugs)
@@ -269,8 +279,13 @@ func (s *server) putProjectDeliverySettings(w http.ResponseWriter, r *http.Reque
 // projectSettingsSave is the save input names, its repositories canonical: each source's
 // repository trimmed and lower-cased as GitHub could hold it (refs.ParseGitHubRepo), and each
 // repository, a source's or an excluded one, under its new name where a rename pair renames it
-// away (refs.Renames.Canonical), so no write stores an old name. A source's repository GitHub could
-// hold no repository of, or a first day that is no YYYY-MM-DD day, is refused, named.
+// away (refs.Renames.Canonical), so no write stores an old name. A github_workflow source's job
+// names are stored as the singleton's save stores them, since every reader matches a job by its
+// exact name: each production job name trimmed (trimmedProductionJobNames, which refuses a blank
+// name and a name given twice once trimmed; a source naming none is ValidateProjectSettings' to
+// refuse), and each optional job and step name trimmed, or null where it is blank
+// (optionalJobName). A source's repository GitHub could hold no repository of, or a first day that
+// is no YYYY-MM-DD day, is refused, named.
 func (s *server) projectSettingsSave(project string, input projectDeliverySettingsInput) (delivery.ProjectSettingsInput, error) {
 	save := delivery.ProjectSettingsInput{
 		Project: project, Delivery: input.Delivery, Sources: make([]delivery.SourceInput, len(input.Sources)),
@@ -281,31 +296,39 @@ func (s *server) projectSettingsSave(project string, input projectDeliverySettin
 		save.ExcludedRepos[i] = s.deps.Renames.Canonical(excluded)
 	}
 	for i, source := range input.Sources {
-		save.Sources[i] = delivery.SourceInput{
-			Kind: source.Kind, DeployWorkflowPath: source.DeployWorkflowPath, ProductionJobNames: source.ProductionJobNames,
-			ProductionApplyStepName: source.ProductionApplyStepName, StagingE2EJobName: source.StagingE2EJobName,
-			StagingApplyJobName: source.StagingApplyJobName, PRChecksWorkflowPath: source.PRChecksWorkflowPath,
-			PRChecksRollupJobName: source.PRChecksRollupJobName,
+		save.Sources[i] = delivery.SourceInput(source)
+		if source.Repo != nil {
+			owner, name, err := refs.ParseGitHubRepo(strings.TrimSpace(*source.Repo))
+			if err != nil {
+				return delivery.ProjectSettingsInput{}, delivery.InputRefusal(new(i), "repo",
+					"source %d names %q, which is no GitHub repository owner/name", i, *source.Repo)
+			}
+			save.Sources[i].Repo = new(s.deps.Renames.Canonical(owner + "/" + name))
 		}
-		if source.Repo == nil {
+		if source.Kind != delivery.SourceKindGitHubWorkflow {
 			continue
 		}
-		owner, name, err := refs.ParseGitHubRepo(strings.TrimSpace(*source.Repo))
-		if err != nil {
-			return delivery.ProjectSettingsInput{}, &delivery.SettingsError{
-				Code: delivery.CodeDeliverySettingsInput, Field: "repo", Source: new(i),
-				Message: fmt.Sprintf("repo: source %d names %q, which is no GitHub repository owner/name", i, *source.Repo),
+		if len(source.ProductionJobNames) > 0 {
+			names, refusal := trimmedProductionJobNames(source.ProductionJobNames)
+			if refusal != "" {
+				return delivery.ProjectSettingsInput{}, &delivery.SettingsError{
+					Code: delivery.CodeDeliverySettingsInput, Field: "production_job_names", Source: new(i), Message: refusal,
+				}
 			}
+			save.Sources[i].ProductionJobNames = names
 		}
-		save.Sources[i].Repo = new(s.deps.Renames.Canonical(owner + "/" + name))
+		for _, name := range []**string{
+			&save.Sources[i].ProductionApplyStepName, &save.Sources[i].StagingE2EJobName,
+			&save.Sources[i].StagingApplyJobName, &save.Sources[i].PRChecksRollupJobName,
+		} {
+			*name = optionalJobName(*name)
+		}
 	}
 	if input.FailuresMeasuredSince != nil {
 		day, err := time.Parse(time.DateOnly, strings.TrimSpace(*input.FailuresMeasuredSince))
 		if err != nil {
-			return delivery.ProjectSettingsInput{}, &delivery.SettingsError{
-				Code: delivery.CodeDeliverySettingsInput, Field: "failures_measured_since",
-				Message: fmt.Sprintf("failures_measured_since: %q is no day YYYY-MM-DD", *input.FailuresMeasuredSince),
-			}
+			return delivery.ProjectSettingsInput{}, delivery.InputRefusal(nil, "failures_measured_since",
+				"%q is no day YYYY-MM-DD", *input.FailuresMeasuredSince)
 		}
 		save.FailuresMeasuredSince = &day
 	}
@@ -314,7 +337,7 @@ func (s *server) projectSettingsSave(project string, input projectDeliverySettin
 
 // parseDeliveryTargets reads a save's targets: each slug of deliverySettingsTargetSlugs it names,
 // with the target it sets (nil for "off"). Another slug, or a value that is neither a number nor
-// "off", is refused, named.
+// "off", null included, is refused, named.
 func parseDeliveryTargets(raw json.RawMessage) (map[string]*float64, error) {
 	targets := map[string]*float64{}
 	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "null" {
@@ -322,22 +345,17 @@ func parseDeliveryTargets(raw json.RawMessage) (map[string]*float64, error) {
 	}
 	var values map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &values); err != nil {
-		return nil, &delivery.SettingsError{
-			Code: delivery.CodeDeliverySettingsInput, Field: "targets",
-			Message: "targets: an object of each eval's slug and its target, a number or \"off\"",
-		}
+		return nil, delivery.InputRefusal(nil, "targets", "an object of each eval's slug and its target, a number or \"off\"")
 	}
 	for slug, value := range values {
 		field := "targets." + slug
 		if !slices.Contains(deliverySettingsTargetSlugs, slug) {
-			return nil, &delivery.SettingsError{
-				Code: delivery.CodeDeliverySettingsInput, Field: field,
-				Message: fmt.Sprintf("%s: the settings set the targets of %s alone", field, strings.Join(deliverySettingsTargetSlugs, ", ")),
-			}
+			return nil, delivery.InputRefusal(nil, field, "the settings set the targets of %s alone", strings.Join(deliverySettingsTargetSlugs, ", "))
 		}
-		var number float64
-		if err := json.Unmarshal(value, &number); err == nil {
-			targets[slug] = &number
+		// A null decodes into a pointer as nil, with no error, where it would leave a number at 0.
+		var number *float64
+		if err := json.Unmarshal(value, &number); err == nil && number != nil {
+			targets[slug] = number
 			continue
 		}
 		var text string
@@ -345,10 +363,7 @@ func parseDeliveryTargets(raw json.RawMessage) (map[string]*float64, error) {
 			targets[slug] = nil
 			continue
 		}
-		return nil, &delivery.SettingsError{
-			Code: delivery.CodeDeliverySettingsInput, Field: field,
-			Message: fmt.Sprintf("%s: a target is a number or \"off\", and %s is neither", field, value),
-		}
+		return nil, delivery.InputRefusal(nil, field, "a target is a number or \"off\", and %s is neither", value)
 	}
 	return targets, nil
 }
@@ -398,13 +413,9 @@ func (s *server) deliveryTargetChanges(ctx context.Context, project string, targ
 		}
 		entry, held := entries[slug]
 		if !held {
-			return nil, &delivery.SettingsError{
-				Code: delivery.CodeDeliverySettingsInput, Field: "targets." + slug,
-				Message: fmt.Sprintf("targets.%s: project %s holds no %s eval to set the target of", slug, project, slug),
-			}, nil
+			return nil, delivery.InputRefusal(nil, "targets."+slug, "project %s holds no %s eval to set the target of", project, slug), nil
 		}
-		current := entry.Definition.Target
-		if (current == nil && target == nil) || (current != nil && target != nil && *current == *target) {
+		if equalPointers(entry.Definition.Target, target) {
 			continue
 		}
 		changes = append(changes, evals.Registration{Project: project, Slug: slug, Caller: actor, Target: evals.Set(target)})

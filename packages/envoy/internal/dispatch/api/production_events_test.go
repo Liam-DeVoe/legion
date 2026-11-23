@@ -33,16 +33,6 @@ func productionEventStatePath(project, id string) string {
 	return productionEventsPath(project) + "/" + id + "/state"
 }
 
-// productionEventRows counts every row of the record.
-func productionEventRows(t *testing.T, database *store.Store) int {
-	t.Helper()
-	var rows int
-	if err := database.Pool.QueryRow(context.Background(), `select count(*) from production_events`).Scan(&rows); err != nil {
-		t.Fatalf("count the production events: %v", err)
-	}
-	return rows
-}
-
 // writeProductionDeploy stores a deploy of project through the store, as the GitHub adapter does:
 // source github, source_ref github:<run>, finished at finished.
 func writeProductionDeploy(t *testing.T, database *store.Store, project string, run int64, finished time.Time, commits ...string) prodevents.Event {
@@ -80,21 +70,6 @@ func readProductionEvent(t *testing.T, database *store.Store, project, id string
 		t.Fatalf("read production event %s of %s: %v", id, project, err)
 	}
 	return event
-}
-
-// requireProductionEventRefusal fails unless response is status with code, its message holding
-// each of names.
-func requireProductionEventRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, status int, code string, names ...string) {
-	t.Helper()
-	refusal := decodeBody[refusalAnswer](t, response)
-	if response.Code != status || refusal.Code != code {
-		t.Fatalf("%s: status=%d body=%s, want %d %s", what, response.Code, response.Body.String(), status, code)
-	}
-	for _, name := range names {
-		if !strings.Contains(refusal.Error, name) {
-			t.Fatalf("%s: the refusal %q does not name %s", what, refusal.Error, name)
-		}
-	}
 }
 
 // TestASystemPostsDeploysAndFailuresAndReadsThemBack: an agent token posts a deploy under
@@ -143,7 +118,7 @@ func TestASystemPostsDeploysAndFailuresAndReadsThemBack(t *testing.T) {
 	if again := decodeBody[prodevents.Event](t, repeat); again.ID != deploy.ID || again.Status != "succeeded" || !again.FinishedAt.Equal(finished) {
 		t.Fatalf("the repeat answered row %s with status %q, finished %v; want the first row %s as it was stored", again.ID, again.Status, again.FinishedAt, deploy.ID)
 	}
-	if rows := productionEventRows(t, database); rows != 2 {
+	if rows := countRows(t, database, `select count(*) from production_events`); rows != 2 {
 		t.Fatalf("the record holds %d rows after the repeat, want the adapter's deploy and the posted one", rows)
 	}
 
@@ -178,15 +153,15 @@ func TestASystemPostsDeploysAndFailuresAndReadsThemBack(t *testing.T) {
 			t.Fatalf("the failure by run id stored status %q, environment %q, url %q; want what its OTel names carried", failure.Status, failure.Environment, failure.URL)
 		}
 	}
-	if rows := productionEventRows(t, database); rows != 5 {
+	if rows := countRows(t, database, `select count(*) from production_events`); rows != 5 {
 		t.Fatalf("the record holds %d rows, want two deploys and three failures", rows)
 	}
 
 	conflict := bearerRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
 		"kind": "deploy", "source_ref": "ci:deploy-18", "finished_at": now, "status": "succeeded", "deployment.status": "failed", "actor": agent,
 	})
-	requireProductionEventRefusal(t, "a status named two ways", conflict, http.StatusBadRequest, prodevents.CodeInput, "status", "deployment.status")
-	if rows := productionEventRows(t, database); rows != 5 {
+	expectRefusal(t, "a status named two ways", conflict, http.StatusBadRequest, prodevents.CodeInput, "status", "deployment.status")
+	if rows := countRows(t, database, `select count(*) from production_events`); rows != 5 {
 		t.Fatalf("a refused post left %d rows, want 5", rows)
 	}
 
@@ -244,9 +219,9 @@ func TestASystemPostsDeploysAndFailuresAndReadsThemBack(t *testing.T) {
 		{"kind=deploy&kind=failure", "kind"},
 	} {
 		response := dispatchRequest(t, handler, http.MethodGet, productionEventsPath("PRD")+"?"+refused.query, nil, "alice")
-		requireProductionEventRefusal(t, "the read of ?"+refused.query, response, http.StatusBadRequest, "INVALID_QUERY", refused.names)
+		expectRefusal(t, "the read of ?"+refused.query, response, http.StatusBadRequest, "INVALID_QUERY", refused.names)
 	}
-	requireProductionEventRefusal(t, "the read of an unknown project",
+	expectRefusal(t, "the read of an unknown project",
 		dispatchRequest(t, handler, http.MethodGet, productionEventsPath("NOPE"), nil, "alice"), http.StatusNotFound, "PROJECT_NOT_FOUND")
 	if anonymous := dispatchRequest(t, handler, http.MethodGet, productionEventsPath("PRD"), nil, ""); anonymous.Code != http.StatusUnauthorized {
 		t.Fatalf("an anonymous read: status=%d body=%s, want 401", anonymous.Code, anonymous.Body.String())
@@ -255,8 +230,9 @@ func TestASystemPostsDeploysAndFailuresAndReadsThemBack(t *testing.T) {
 
 // TestAPersonFlagsAFailureAndPostsNoDeploy: a person's credential posts a failure, the drill-down's
 // flag, as the signal person with the person as actor and the server's source_ref, so a second flag
-// of the deploy answers the first row and writes nothing; a source_ref other than the server's is
-// refused; and a deploy from a person's credential is refused.
+// of the deploy, its id spelled in capitals included, answers the first row and writes nothing; a
+// source_ref other than the server's is refused; and a deploy from a person's credential is
+// refused.
 func TestAPersonFlagsAFailureAndPostsNoDeploy(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "PRD")
@@ -280,20 +256,26 @@ func TestAPersonFlagsAFailureAndPostsNoDeploy(t *testing.T) {
 	long := dispatchRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
 		"kind": "failure", "deploy_id": deploy.ID, "note": strings.Repeat("x", productionEventNoteBytes+1),
 	}, "bob")
-	requireProductionEventRefusal(t, "a note past its bound", long, http.StatusBadRequest, prodevents.CodeInput, "note")
+	expectRefusal(t, "a note past its bound", long, http.StatusBadRequest, prodevents.CodeInput, "note")
 	again := dispatchRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), flag, "alice")
 	if again.Code != http.StatusOK || decodeBody[prodevents.Event](t, again).ID != failure.ID {
 		t.Fatalf("a second flag: status=%d body=%s, want 200 and the first flag", again.Code, again.Body.String())
 	}
+	capitals := dispatchRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
+		"kind": "failure", "deploy_id": strings.ToUpper(deploy.ID), "note": note,
+	}, "alice")
+	if capitals.Code != http.StatusOK || decodeBody[prodevents.Event](t, capitals).ID != failure.ID {
+		t.Fatalf("a second flag naming the deploy in capitals: status=%d body=%s, want 200 and the first flag", capitals.Code, capitals.Body.String())
+	}
 	other := dispatchRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
 		"kind": "failure", "deploy_id": deploy.ID, "source_ref": "mine",
 	}, "alice")
-	requireProductionEventRefusal(t, "a person's flag under its own source_ref", other, http.StatusBadRequest, prodevents.CodeInput, "person:"+deploy.ID+":alice")
+	expectRefusal(t, "a person's flag under its own source_ref", other, http.StatusBadRequest, prodevents.CodeInput, "person:"+deploy.ID+":alice")
 	deployed := dispatchRequest(t, handler, http.MethodPost, productionEventsPath("PRD"), map[string]any{
 		"kind": "deploy", "source_ref": "by-hand", "finished_at": time.Now().UTC(),
 	}, "alice")
-	requireProductionEventRefusal(t, "a person's deploy", deployed, http.StatusForbidden, codeProductionEventDeployForbidden)
-	if rows := productionEventRows(t, database); rows != 2 {
+	expectRefusal(t, "a person's deploy", deployed, http.StatusForbidden, codeProductionEventDeployForbidden)
+	if rows := countRows(t, database, `select count(*) from production_events`); rows != 2 {
 		t.Fatalf("the record holds %d rows, want the deploy and the one flag", rows)
 	}
 }
@@ -318,7 +300,7 @@ func TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing(t *testing.T) {
 	now := time.Now().UTC()
 	deploy := writeProductionDeploy(t, rig.database, "OTHER", 1, now.Add(-time.Hour), "2222222222222222222222222222222222222222")
 	failure := writeProductionFailure(t, rig.database, "OTHER", "alerts:1", deploy.ID, now.Add(-time.Minute))
-	rows := productionEventRows(t, rig.database)
+	rows := countRows(t, rig.database, `select count(*) from production_events`)
 
 	post := map[string]any{"kind": "failure", "source_ref": "alerts:2", "deploy_id": deploy.ID}
 	state := map[string]any{"state": "rejected", "reason": "Not a failure."}
@@ -342,8 +324,8 @@ func TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing(t *testing.T) {
 			return rig.serve(caller.presenting(t, method, path, readOnly, body))
 		}, http.StatusForbidden, contracts.DispatchReadOnlyToken},
 	} {
-		requireProductionEventRefusal(t, refused.name+" posting", refused.send(http.MethodPost, postPath, post), refused.status, refused.code)
-		requireProductionEventRefusal(t, refused.name+" writing a state", refused.send(http.MethodPut, statePath, state), refused.status, refused.code)
+		expectRefusal(t, refused.name+" posting", refused.send(http.MethodPost, postPath, post), refused.status, refused.code)
+		expectRefusal(t, refused.name+" writing a state", refused.send(http.MethodPut, statePath, state), refused.status, refused.code)
 	}
 
 	shared := func(method, path string, body map[string]any) *httptest.ResponseRecorder {
@@ -353,10 +335,10 @@ func TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing(t *testing.T) {
 		}
 		return rig.serve(brokerRequest(t, method, path, withActor, "Bearer agent-token", ""))
 	}
-	requireProductionEventRefusal(t, "a post to an unknown project", shared(http.MethodPost, productionEventsPath("NOPE"), post), http.StatusNotFound, "PROJECT_NOT_FOUND")
-	requireProductionEventRefusal(t, "a state write in an unknown project", rig.asPerson(t, http.MethodPut, productionEventStatePath("NOPE", failure.ID), state),
+	expectRefusal(t, "a post to an unknown project", shared(http.MethodPost, productionEventsPath("NOPE"), post), http.StatusNotFound, "PROJECT_NOT_FOUND")
+	expectRefusal(t, "a state write in an unknown project", rig.asPerson(t, http.MethodPut, productionEventStatePath("NOPE", failure.ID), state),
 		http.StatusNotFound, "PROJECT_NOT_FOUND")
-	requireProductionEventRefusal(t, "a system's post without source_ref", shared(http.MethodPost, postPath, map[string]any{"kind": "failure", "deploy_id": deploy.ID}),
+	expectRefusal(t, "a system's post without source_ref", shared(http.MethodPost, postPath, map[string]any{"kind": "failure", "deploy_id": deploy.ID}),
 		http.StatusBadRequest, prodevents.CodeInput, "source_ref")
 	for name, names := range map[string]map[string]any{
 		"a commit no deploy shipped": {"commit_sha": "3333333333333333333333333333333333333333"},
@@ -367,10 +349,10 @@ func TestEveryOtherCallerOfTheWritesIsRefusedAndWritesNothing(t *testing.T) {
 		for key, value := range names {
 			body[key] = value
 		}
-		requireProductionEventRefusal(t, "a failure blaming "+name, shared(http.MethodPost, postPath, body), http.StatusConflict, prodevents.CodeNoDeploy)
+		expectRefusal(t, "a failure blaming "+name, shared(http.MethodPost, postPath, body), http.StatusConflict, prodevents.CodeNoDeploy)
 	}
 
-	if after := productionEventRows(t, rig.database); after != rows {
+	if after := countRows(t, rig.database, `select count(*) from production_events`); after != rows {
 		t.Fatalf("the refused writes left %d rows, want the %d there were", after, rows)
 	}
 	if stored := readProductionEvent(t, rig.database, "OTHER", failure.ID); stored.State != prodevents.StateCounted || stored.StateReason != nil {
@@ -431,7 +413,7 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	}
 
 	// Before any read names it, the controller's session is no controller.
-	requireProductionEventRefusal(t, "a session no read names", rig.serve(caller.presenting(t, http.MethodPut, path, controller, map[string]any{
+	expectRefusal(t, "a session no read names", rig.serve(caller.presenting(t, http.MethodPut, path, controller, map[string]any{
 		"state": "counted", "reason": "It was real.",
 	})), http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)
 	readDaemon(now.Add(-2*time.Minute), brokerTestSession)
@@ -443,17 +425,17 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 		row.StateBy.Kind != "session" || row.StateBy.ID != brokerTestSession || row.StateReason == nil || *row.StateReason != "It was real." {
 		t.Fatalf("the re-count answered state %s by %v for %v; want counted by the session %s with its reason", row.State, row.StateBy, row.StateReason, brokerTestSession)
 	}
-	requireProductionEventRefusal(t, "the controller's restore", rig.serve(caller.presenting(t, http.MethodPut, path, controller, map[string]any{"state": "restored"})),
+	expectRefusal(t, "the controller's restore", rig.serve(caller.presenting(t, http.MethodPut, path, controller, map[string]any{"state": "restored"})),
 		http.StatusForbidden, codeProductionEventStateForbidden)
-	requireProductionEventRefusal(t, "a session that is neither", rig.serve(caller.presenting(t, http.MethodPut, path, neither, map[string]any{
+	expectRefusal(t, "a session that is neither", rig.serve(caller.presenting(t, http.MethodPut, path, neither, map[string]any{
 		"state": "rejected", "reason": "Says another session.",
 	})), http.StatusForbidden, codeProductionEventStateForbidden, "ses_neither")
-	requireProductionEventRefusal(t, "the shared token", rig.serve(brokerRequest(t, http.MethodPut, path, map[string]any{
+	expectRefusal(t, "the shared token", rig.serve(brokerRequest(t, http.MethodPut, path, map[string]any{
 		"state": "rejected", "reason": "Says the shared token.",
 	}, "Bearer agent-token", "")), http.StatusForbidden, codeProductionEventStateForbidden)
 
 	readDaemon(now.Add(-time.Minute), "ses_successor")
-	requireProductionEventRefusal(t, "the controller after a read names another session", rig.serve(caller.presenting(t, http.MethodPut, path, controller, map[string]any{
+	expectRefusal(t, "the controller after a read names another session", rig.serve(caller.presenting(t, http.MethodPut, path, controller, map[string]any{
 		"state": "rejected", "reason": "Too late.",
 	})), http.StatusForbidden, codeProductionEventStateForbidden, brokerTestSession)
 	if row := stateOf(); row.State != prodevents.StateCounted || row.StateBy == nil || row.StateBy.ID != brokerTestSession {
@@ -462,7 +444,7 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 
 	otherDeploy := writeProductionDeploy(t, rig.database, "OTHER", 2, now.Add(-time.Hour))
 	otherFailure := writeProductionFailure(t, rig.database, "OTHER", "alerts:2", otherDeploy.ID, now.Add(-time.Minute))
-	requireProductionEventRefusal(t, "a row of another project", rig.asPerson(t, http.MethodPut, productionEventStatePath(brokerTestProject, otherFailure.ID),
+	expectRefusal(t, "a row of another project", rig.asPerson(t, http.MethodPut, productionEventStatePath(brokerTestProject, otherFailure.ID),
 		map[string]any{"state": "rejected", "reason": "Not this project's."}), http.StatusNotFound, codeProductionEventNotFound)
 	if row := readProductionEvent(t, rig.database, "OTHER", otherFailure.ID); row.State != prodevents.StateCounted {
 		t.Fatalf("the refused write moved OTHER's failure to %s, want counted", row.State)

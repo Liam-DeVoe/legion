@@ -292,7 +292,7 @@ func TestAJobOfAnotherRepositoryIsIgnored(t *testing.T) {
 	}
 }
 
-// Each job event is routed by its own repository's rule (dispatch://INFRA-978, T7): with three
+// Each job event is routed by its own repository's rule (dispatch://INFRA-978, D1): with three
 // sources in three repositories, two of one project, a job of a tracked run of each source
 // repository has that run's jobs read once, under the repository's name as its rule holds it
 // whatever case the event writes it in, and the run's production job judged by that repository's

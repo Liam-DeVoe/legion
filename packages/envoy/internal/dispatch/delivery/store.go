@@ -1045,8 +1045,9 @@ func namedAndFailedJobs(runs []DeliveryRun, named, failed map[int64][]DeliveryRu
 
 // listEveryRunJobForRuns lists every job of every run in runIDs on repo, as ListRunJobsForRuns
 // lists the named ones, for the callers that read every job a run ran: the Pipeline's PR checks
-// time every job of every run and tally every job that failed (measures.PRChecks), and the jobs
-// they report are whichever the runs hold, so no list of names can stand in for them.
+// time every job of every run and tally every job that failed (measures.PRChecksTimings and
+// FailingJobs), and the jobs they report are whichever the runs hold, so no list of names can
+// stand in for them.
 func listEveryRunJobForRuns(ctx context.Context, q Querier, repo string, runIDs []int64) (map[int64][]DeliveryRunJob, error) {
 	return runJobsByRun(ctx, q, runIDs, everyRunJobForRunsQuery, repo, runIDs)
 }

@@ -799,13 +799,8 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 // The project must exist. Two projects saved with a rule each give two repositories two rules (a
 // repository is the source of one delivery-on project at most, delivery.PutProjectSettings).
 func SaveRules(ctx context.Context, pool *store.Pool, project string, rules ...delivery.DeliverySettings) (delivery.ProjectSettings, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return delivery.ProjectSettings{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	var defaultRepo *string
-	if err := tx.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
+	if err := pool.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
 		return delivery.ProjectSettings{}, fmt.Errorf("read the default repository of %s: %w", project, err)
 	}
 	input := delivery.ProjectSettingsInput{Project: project, Delivery: true}
@@ -813,18 +808,35 @@ func SaveRules(ctx context.Context, pool *store.Pool, project string, rules ...d
 		input.PopulationAuthors, input.ExcludedRepos = rules[0].PopulationAuthors, rules[0].ExcludedRepos
 	}
 	for _, rule := range rules {
-		source := delivery.SourceInput{
-			Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new(rule.DeployWorkflowPath),
-			ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
-			StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
-			PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
-		}
+		var repo *string
 		if defaultRepo == nil || !strings.EqualFold(*defaultRepo, rule.DeployRepo) {
-			source.Repo = new(rule.DeployRepo)
+			repo = new(rule.DeployRepo)
 		}
-		input.Sources = append(input.Sources, source)
+		input.Sources = append(input.Sources, SourceOf(rule, repo))
 	}
-	saved, err := delivery.PutProjectSettings(ctx, tx, input, system)
+	return SaveSettings(ctx, pool, input, system)
+}
+
+// SourceOf is a github_workflow source holding rule's workflow, its production jobs, its apply
+// step and its staging and roll-up jobs, naming repo (nil: the project's default repository).
+func SourceOf(rule delivery.DeliverySettings, repo *string) delivery.SourceInput {
+	return delivery.SourceInput{
+		Kind: delivery.SourceKindGitHubWorkflow, Repo: repo, DeployWorkflowPath: new(rule.DeployWorkflowPath),
+		ProductionJobNames: rule.ProductionJobNames, ProductionApplyStepName: rule.ProductionApplyStepName,
+		StagingE2EJobName: rule.StagingE2EJobName, StagingApplyJobName: rule.StagingApplyJobName,
+		PRChecksWorkflowPath: new(rule.PRChecksWorkflowPath), PRChecksRollupJobName: rule.PRChecksRollupJobName,
+	}
+}
+
+// SaveSettings saves input as its project's delivery settings, as actor, through
+// delivery.PutProjectSettings in a transaction of its own, and answers what it stored.
+func SaveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectSettingsInput, actor model.Actor) (delivery.ProjectSettings, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return delivery.ProjectSettings{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	saved, err := delivery.PutProjectSettings(ctx, tx, input, actor)
 	if err != nil {
 		return delivery.ProjectSettings{}, err
 	}

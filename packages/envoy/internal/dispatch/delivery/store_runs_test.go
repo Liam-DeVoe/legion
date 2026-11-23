@@ -13,7 +13,7 @@ import (
 // PUT /api/v1/settings/delivery still make, clears the progress of the run steps named without a
 // repository alone, the names that release reads and writes: each source repository's progress
 // under its own step names (repoStep) stays, and so does every installation's merged-pull-request
-// search (dispatch://INFRA-978, T9 of its plan).
+// search (dispatch://INFRA-978, D10).
 func TestASingletonSaveLeavesEachSourcesProgress(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	through := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)

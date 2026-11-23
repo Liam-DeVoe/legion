@@ -285,7 +285,7 @@ type Current struct {
 // state keeps its `phase` row, written `null` when it left: it stays a Legion issue, so a child of
 // it climbs through it to the tree above, while it carries no card and no tree, since its `tree`
 // was written `null` with the rest. The rows under AdmissionKey belong to no issue — the admission
-// block and the daemon's settings — so they report nothing.
+// block, the daemon's settings and its controller session — so they report nothing.
 func ReadCurrent(ctx context.Context, db Queryer, project string) (Current, error) {
 	rows, err := db.Query(ctx, `
 		select issue_key, field, nullif(value, 'null'::jsonb), observed_at

@@ -251,8 +251,9 @@ func leadSpread(parts []measures.DayPart) measures.Spread {
 
 // foldedMeasures is the measures route's measures folded from parts, one cut's day rows of a
 // window, by the folds the route answers through, the three failure measures' over their own day
-// rows, of which no builder writes any yet; ok false, with what is missing, where the parts hold no
-// deploy-frequency or deploy-run-success part, which read "no data".
+// rows, which the history's project, counting no failure source, holds none of; ok false, with
+// what is missing, where the parts hold no deploy-frequency or deploy-run-success part, which read
+// "no data".
 func foldedMeasures(parts map[string][]measures.DayPart, window measures.Window) (measures.Result, string) {
 	frequency := measures.FoldDeployFrequency(parts[evals.SlugDeployFrequency], window)
 	success := measures.FoldDeployRunSuccess(parts[evals.SlugDeployRunSuccess])

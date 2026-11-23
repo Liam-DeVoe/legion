@@ -158,7 +158,7 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // thousands of GitHub requests, well past one installation's hourly rate limit, so no single pass
 // can finish one and a pass that forgets what it did could never converge.
 //
-// The outcome is recorded on each source repository's own source (dispatch://INFRA-978, T7): its
+// The outcome is recorded on each source repository's own source (dispatch://INFRA-978, D1): its
 // last_reconcile_at advances ONLY when every step that ran for it succeeded -- its own steps and
 // the steps every repository's numbers read (the merged pull-request search, the partial rows,
 // the head pass, the attribution); any failure (a missing permission, a rate limit, any other
@@ -892,9 +892,9 @@ func revertsStep(repo string) string {
 }
 
 // reconcileReverts records the merged reverts of the deploy repository repoFull that the intake
-// missed (dispatch://INFRA-978, T12): it searches the pull requests merged since the step's own
+// missed (dispatch://INFRA-978, R7): it searches the pull requests merged since the step's own
 // recorded progress whose body holds the word Reverts, whoever authored them (SearchMergedReverts),
-// and records each whose body GitHub's revert-button line opens (ParseRevert) from GitHub's own
+// and records each whose body holds GitHub's revert-button line (ParseRevert) from GitHub's own
 // answer for it and for the pull request it reverts (recordRevertFromGitHub). A pull request whose
 // body only mentions the word costs no call. Each completed window records the step's progress
 // while every window before it in this pass succeeded, as reconcileWorkflow's do, so a revert this

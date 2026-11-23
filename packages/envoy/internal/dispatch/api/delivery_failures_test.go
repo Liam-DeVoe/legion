@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
@@ -28,19 +29,12 @@ func failuresAt(day, hour int) time.Time {
 	return failuresDay.AddDate(0, 0, day).Add(time.Duration(hour) * time.Hour)
 }
 
-// saveProjectDelivery saves input through delivery.PutProjectSettings, in a transaction of its own.
+// saveProjectDelivery saves input through delivery.PutProjectSettings, in a transaction of its own
+// (deliverytest.SaveSettings).
 func saveProjectDelivery(t *testing.T, pool *store.Pool, input delivery.ProjectSettingsInput) {
 	t.Helper()
-	tx, err := pool.Begin(t.Context())
-	if err != nil {
-		t.Fatalf("begin the delivery settings of %s: %v", input.Project, err)
-	}
-	defer tx.Rollback(t.Context())
-	if _, err := delivery.PutProjectSettings(t.Context(), tx, input, model.Actor{Kind: "system", ID: "test"}); err != nil {
+	if _, err := deliverytest.SaveSettings(t.Context(), pool, input, model.Actor{Kind: "system", ID: "test"}); err != nil {
 		t.Fatalf("save the delivery settings of %s: %v", input.Project, err)
-	}
-	if err := tx.Commit(t.Context()); err != nil {
-		t.Fatalf("commit the delivery settings of %s: %v", input.Project, err)
 	}
 }
 

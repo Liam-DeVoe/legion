@@ -631,7 +631,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, rules *SourceRu
 // recordRevert records the merge of a deploy repository's pull request whose body says it reverts
 // one (delivery_reverts, RecordRevert), whoever authored it: the person who pressed GitHub's revert
 // button is often outside every population, so the population check after it would drop the merge
-// (dispatch://INFRA-978, T12). The envelope's body decides only whether GitHub is asked, and a body
+// (dispatch://INFRA-978, R7). The envelope's body decides only whether GitHub is asked, and a body
 // the envelope cut short asks too; what is stored is GitHub's own answer
 // (recordRevertFromGitHub). A merge of any other repository costs nothing. A failure is logged and
 // the envelope goes on: the reconcile's search of the repository records the revert later

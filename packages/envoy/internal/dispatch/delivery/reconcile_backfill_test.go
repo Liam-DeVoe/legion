@@ -266,7 +266,7 @@ func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 
 	settings, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings: %v", err)
+		t.Fatalf("getTestRule: %v", err)
 	}
 	if settings.LastError != nil {
 		t.Fatalf("last_error = %q, want nil: a backfill failure stays out of the health state", *settings.LastError)
@@ -613,7 +613,7 @@ func TestCreatedAtBackfillFillsDeployRunsAfterTheRunsBackfillFinished(t *testing
 }
 
 // Each source repository's runs backfill keeps its own progress and finishes on its own
-// (dispatch://INFRA-978, T7): of two repositories under one backfill kind, the one with two hours
+// (dispatch://INFRA-978, D1): of two repositories under one backfill kind, the one with two hours
 // left to walk finishes in the first pass and lists nothing after, while the one with thirty hours
 // left walks backfillWindowsPerPass of them in the first pass and the rest in the second, each from
 // its own row, which neither pass replaces with the other's.

@@ -196,8 +196,9 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 // repository is mapped to, which no view holds. So a new version of a delivery target's eval (a
 // register write of its target, a project's seed) in any project marks every timeline, measures
 // and pipeline view, and one of pr-ci every pipeline view alone; their readings and day rows mark
-// none, and neither does a version of an eval no delivery view reads or of a slug that only ends
-// like one.
+// none (but the failure measures' day rows, which the timeline and the measures fold:
+// TestAFailureMeasuresDayRowsMarkTheTimelineAndTheMeasures), and neither does a version of an eval
+// no delivery view reads or of a slug that only ends like one.
 func TestAVersionOfAnEvalADeliveryViewReadsMarksIt(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 	today := measures.Midnight(now)
@@ -225,6 +226,43 @@ func TestAVersionOfAnEvalADeliveryViewReadsMarksIt(t *testing.T) {
 			change delivery.Change
 			marks  []string
 		}{evalsChange("eval_versions", "OTHER", slug, nil, nil), every})
+	}
+	for _, c := range cases {
+		for _, kind := range every {
+			if got, want := views[kind].touchedBy(c.change, now), slices.Contains(c.marks, kind); got != want {
+				t.Errorf("%s of %s: touchedBy(a %s view) = %t, want %t", c.change.Kind, c.change.Ref, kind, got, want)
+			}
+		}
+	}
+	t.Logf("%d changes checked against the timeline, measures and pipeline views", len(cases))
+}
+
+// TestAFailureMeasuresDayRowsMarkTheTimelineAndTheMeasures: the timeline's and the measures'
+// failure measures are the folds of the three failure evals' day rows of the delivery-on project
+// (evals.Store.DeploymentFailures), which no view holds. So a write of one's day rows in any
+// project, as the refresher writes them after a failure, a reject or a restore, marks every
+// timeline and measures view and no pipeline view, which folds none; their readings mark none,
+// and neither do the day rows of a slug that only ends like one.
+func TestAFailureMeasuresDayRowsMarkTheTimelineAndTheMeasures(t *testing.T) {
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	today := measures.Midnight(now)
+	views := map[string]*deliveryView{
+		deliveryLiveTimeline: deliveryViewShowing(deliveryLiveTimeline), deliveryLiveMeasures: deliveryViewShowing(deliveryLiveMeasures),
+		deliveryLivePipeline: deliveryViewShowing(deliveryLivePipeline),
+	}
+	every := []string{deliveryLiveTimeline, deliveryLiveMeasures, deliveryLivePipeline}
+	folding := []string{deliveryLiveTimeline, deliveryLiveMeasures}
+	type markCase struct {
+		change delivery.Change
+		marks  []string
+	}
+	var cases []markCase
+	for _, slug := range []string{evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery, evals.SlugDeploymentReworkRate} {
+		cases = append(cases,
+			markCase{evalsChange("eval_days", "INFRA", slug, &today, &today), folding},
+			markCase{evalsChange("eval_days", "OTHER", slug, &today, &today), folding},
+			markCase{evalsChange("eval_readings", "INFRA", slug, &today, &today), nil},
+			markCase{evalsChange("eval_days", "INFRA", "x-"+slug, &today, &today), nil})
 	}
 	for _, c := range cases {
 		for _, kind := range every {
@@ -1401,9 +1439,7 @@ func (p *refreshedEvalsPage) moveDeployRepoAndRule(t *testing.T, other string) {
 	t.Helper()
 	settings := p.fixture.Settings
 	settings.DeployRepo, settings.ProductionJobNames = other, []string{"release / a job no run holds"}
-	if _, err := deliverytest.SaveRules(t.Context(), p.rig.database.Pool, p.fixture.Project, settings); err != nil {
-		t.Fatalf("save the delivery settings of %s: %v", p.fixture.Project, err)
-	}
+	saveProjectRules(t, p.rig.database, p.fixture.Project, settings)
 }
 
 // withoutFreshness is a JSON body decoded, without its top-level freshness, which states the

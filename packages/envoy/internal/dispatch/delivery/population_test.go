@@ -137,7 +137,7 @@ func TestIsPopulationPR(t *testing.T) {
 }
 
 // A pull request is judged a task pull request by the rule of its own source repository
-// (dispatch://INFRA-978, T7): with two sources in two repositories, a task-labelled merge of
+// (dispatch://INFRA-978, D1): with two sources in two repositories, a task-labelled merge of
 // either is a task pull request and an unlabelled merge of either is unclassified, while a merge
 // of a repository no source reads is neither, whatever its labels.
 func TestATaskPullRequestIsJudgedAgainstItsOwnDeployRepository(t *testing.T) {

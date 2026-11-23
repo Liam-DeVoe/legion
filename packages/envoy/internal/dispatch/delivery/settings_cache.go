@@ -138,14 +138,10 @@ func (c *SettingsCache) reload(ctx context.Context) bool {
 }
 
 // reloadIfDefaultsMoved reads the settings again when a default repository a source of the held
-// rules reads has moved since they were read (defaultsMoved), and reads them whole while the cache
-// holds none. It reports false only for a read that failed.
+// rules reads has moved since they were read (defaultsMoved). Run calls it only once a read has
+// stored rules. It reports false only for a read that failed.
 func (c *SettingsCache) reloadIfDefaultsMoved(ctx context.Context) bool {
-	held := c.Load()
-	if held == nil {
-		return c.reload(ctx)
-	}
-	moved, err := defaultsMoved(ctx, c.pool, held.defaults)
+	moved, err := defaultsMoved(ctx, c.pool, c.Load().defaults)
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Error("dispatch delivery: read the default repositories the deploy sources read", "error", err)

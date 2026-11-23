@@ -421,9 +421,11 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // answered by its own arm, and every other kind is a delivery row, which moves only a view that
 // reads the delivery rows (touchedByDeliveryRow, behind that test).
 //
-// The rows the named kinds write are rows no delivery view reads, but for one: the timeline, the
+// The rows the named kinds write are rows no delivery view reads, but for two: the timeline, the
 // measures and the Pipeline read the current versions of the evals that judge or rank their
-// figures (deliveryLiveClasses.evalVersions), so a version of one of those marks them here.
+// figures (deliveryLiveClasses.evalVersions), and the timeline and the measures fold the failure
+// measures' day rows (deliveryLiveClasses.evalDays), so a version of one of those evals, or a
+// write of those rows, marks them here.
 //
 // A change of the delivery settings row marks no evals view. Such a view reads the settings and
 // the day rows together: the deploy repository chooses the rows of the evals that read it
@@ -462,25 +464,33 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// settings (delivery.SettingsApplied), which every evals view reads, whatever its project.
 		//
 		// A new version of an eval a delivery view reads (its definition or one of its series)
-		// marks every view of that kind too, and readings and day rows mark none: the timeline's
-		// and the measures' KPIs and the Pipeline's lead-time cards are judged by the targets of
-		// the delivery evals, and the Pipeline ranks its slowest jobs by the min_n of pr-ci's job
+		// marks every view of that kind too, and readings mark none: the timeline's and the
+		// measures' KPIs and the Pipeline's lead-time cards are judged by the targets of the
+		// delivery evals, and the Pipeline ranks its slowest jobs by the min_n of pr-ci's job
 		// series, each of the project whose deploy source reads the deploy repository, a source
 		// that names no repository reading its project's published default
 		// (evals.Store.DeployRepoEvals), which a register write sets and a project's seed first
 		// writes. Which project that is, no view holds, so the version in any project marks it,
 		// and a recompute that reads the same evals sends nothing. The refresher's commit that
 		// moves that project (delivery.JudgingMoved) marks every such view too; a person's write
-		// of a default repository marks none until it does.
+		// of a default repository marks none until it does. Day rows mark a delivery view only
+		// where its answer folds them: the timeline's and the measures' failure measures are the
+		// three failure evals' day rows of the delivery-on project (evals.Store.DeploymentFailures),
+		// which no view names either, so a write of them in any project marks those views.
 		if view.spec.kind == evalsView {
 			return view.spec.project == change.Repo || delivery.SettingsApplied(change)
 		}
 		if delivery.JudgingMoved(change) {
 			return len(view.spec.classes().evalVersions) > 0
 		}
-		return change.Kind == delivery.ChangeKindEvalVersions && slices.ContainsFunc(view.spec.classes().evalVersions, func(slug string) bool {
-			return change.Ref == evals.EvalID(change.Repo, slug)
-		})
+		named := func(slug string) bool { return change.Ref == evals.EvalID(change.Repo, slug) }
+		switch change.Kind {
+		case delivery.ChangeKindEvalVersions:
+			return slices.ContainsFunc(view.spec.classes().evalVersions, named)
+		case delivery.ChangeKindEvalDays:
+			return slices.ContainsFunc(view.spec.classes().evalDays, named)
+		}
+		return false
 	case delivery.ChangeKindIssueFilings:
 		// One filing of a Legion session. No view reads a filing: the refresher does, and
 		// rewrites the day's Legion rows, whose eval_days change marks the evals view; the
@@ -490,8 +500,8 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	case delivery.ChangeKindProductionEvents:
 		// One write of the record of deploys and failed changes (dispatch://INFRA-978). No view
 		// reads the record: the refresher does, and rewrites the three failure evals' day rows of
-		// each project the row counts for, whose eval_days change marks that project's evals view;
-		// the delivery views read the delivery rows alone.
+		// each project the row counts for, whose eval_days change marks that project's evals view
+		// and every view that folds those rows: the timeline and the measures (above).
 		return false
 	default:
 		// A delivery row. A view that reads none moves by other things: a Legion board by a read

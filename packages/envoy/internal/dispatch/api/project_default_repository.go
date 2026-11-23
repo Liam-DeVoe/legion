@@ -158,7 +158,7 @@ func defaultRepositoryMove(ctx context.Context, tx pgx.Tx, project string, next 
 		}
 		return nil, fmt.Errorf("read the default repository of %s: %w", project, err)
 	}
-	if (current == nil && next == nil) || (current != nil && next != nil && *current == *next) {
+	if equalPointers(current, next) {
 		return nil, nil
 	}
 	if err := delivery.LockProject(ctx, tx, project); err != nil {

@@ -472,7 +472,7 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	}
 }
 
-// Each workflow run is routed by its own repository's rule (dispatch://INFRA-978, T7): with three
+// Each workflow run is routed by its own repository's rule (dispatch://INFRA-978, D1): with three
 // sources in three repositories, two of one project, a run of a file a repository's rule names is
 // fetched and stored as the kind that rule gives the file, under the repository's name as the rule
 // holds it whatever case the envelope writes it in; a run of a file only another repository's rule

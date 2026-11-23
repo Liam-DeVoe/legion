@@ -6,9 +6,9 @@ import "time"
 // builder (the functions named <Measure>Day) turns the rows of one UTC day into that day's parts,
 // and one exported fold (the functions named Fold<Measure>) turns any set of parts into the
 // answer. The delivery routes build the parts of their window's days from the rows they read and
-// fold them (Compute, PRChecks, DeployJobs, LeadTimes); the eval routes fold the parts stored in
-// eval_days through the same folds, so each rule has one statement and a read that both families
-// serve has one answer.
+// fold them (Compute, PRChecksTimings, DeployJobs, LeadTimes); the eval routes fold the parts
+// stored in eval_days through the same folds, so each rule has one statement and a read that both
+// families serve has one answer.
 //
 // A fold reads the parts of its own series and passes over the rest, so it can be handed every
 // part of its eval. A count or a sum adds Sum; a share is the summed Num over the summed Den, never

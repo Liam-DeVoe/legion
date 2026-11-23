@@ -27,7 +27,7 @@ type timelineJobsRun struct {
 }
 
 // TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers: the timeline reads each deploy run's
-// production jobs and the jobs of it that failed (delivery.ReadWindowRows with failedJobs), never
+// production jobs and the jobs of it that failed (delivery.ReadWindowRuns with failedJobs), never
 // every job the run holds, and answers what it answers from every job, byte for byte. Over a
 // deliverytest history, beside which deploy runs are added whose failed jobs are two with a guard
 // among them, the production job and another, guards alone, and one in a run that succeeded, the

@@ -28,9 +28,9 @@ const deliveryRuleProject = "DELIVERY"
 // saveDeliveryRule saves rule as the delivery settings the delivery routes read
 // (readDeliveryRules): deliveryRuleProject's, with delivery on and one github_workflow source naming
 // rule's repository under rule (deliverytest.SaveRules), the project made where it does not exist.
-// A second save replaces the source. It answers the rule as the routes read it, its bookkeeping
-// included.
-func saveDeliveryRule(t testing.TB, pool *store.Pool, rule delivery.DeliverySettings) delivery.DeliverySettings {
+// A second save replaces the source. It fails the test unless the routes then read a rule of
+// rule's repository.
+func saveDeliveryRule(t testing.TB, pool *store.Pool, rule delivery.DeliverySettings) {
 	t.Helper()
 	if _, err := pool.Exec(t.Context(), `insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict (key) do nothing`, deliveryRuleProject); err != nil {
 		t.Fatalf("make the project %s: %v", deliveryRuleProject, err)
@@ -38,11 +38,9 @@ func saveDeliveryRule(t testing.TB, pool *store.Pool, rule delivery.DeliverySett
 	if _, err := deliverytest.SaveRules(t.Context(), pool, deliveryRuleProject, rule); err != nil {
 		t.Fatalf("save the delivery settings of %s: %v", deliveryRuleProject, err)
 	}
-	saved, read := seededDeliveryRules(t, pool).For(rule.DeployRepo)
-	if !read {
+	if _, read := seededDeliveryRules(t, pool).For(rule.DeployRepo); !read {
 		t.Fatalf("no deploy source reads %s once saved", rule.DeployRepo)
 	}
-	return saved
 }
 
 // seededDeliveryRules is the rules the delivery routes read now (readDeliveryRules).

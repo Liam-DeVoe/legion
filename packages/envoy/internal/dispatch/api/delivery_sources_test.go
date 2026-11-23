@@ -131,3 +131,22 @@ func TestTheDeliveryTargetsAreTheOneOwningProjects(t *testing.T) {
 		t.Fatalf("with ALPHA and BETA each reading a repository the target is %v, want the catalogue's %+v", got, catalogue.DeploysPerDay)
 	}
 }
+
+// A run read where the one delivery-on project's one source is an events source, which reads no
+// repository, is 404 NOT_FOUND saying that no source reads a repository, rather than naming an
+// empty list of them.
+func TestARunReadWhereNoSourceReadsARepositorySaysSo(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "POSTED")
+	saveProjectDelivery(t, database.Pool, delivery.ProjectSettingsInput{
+		Project: "POSTED", Delivery: true, Sources: []delivery.SourceInput{{Kind: delivery.SourceKindEvents}},
+		PopulationAuthors: []string{"octocat"}, ExcludedRepos: []string{},
+	})
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/runs/7", nil, "alice")
+	refusal := decodeBody[refusalAnswer](t, response)
+	if response.Code != http.StatusNotFound || refusal.Code != "NOT_FOUND" ||
+		refusal.Error != "no run 7: no deploy source of a delivery-on project reads a repository" {
+		t.Fatalf("a run read with no source repository: status=%d body=%s, want 404 NOT_FOUND saying no source reads a repository",
+			response.Code, response.Body.String())
+	}
+}

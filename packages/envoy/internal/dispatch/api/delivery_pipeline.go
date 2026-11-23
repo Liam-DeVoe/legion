@@ -131,11 +131,11 @@ type pipelinePopulation struct {
 // ending on at's UTC day, and the evals it judges and ranks by. Each source repository's runs are
 // read by start over the whole of the shown days, today included past at, by delivery.ReadCIRows
 // under that repository's rule, the read the CI evals' day rows make: the PR-checks runs with every
-// job, which their job timings and failing jobs tally whatever their names (measures.PRChecks), and
-// the deploy runs with the jobs the repository's deploy cards follow and no other
-// (measures.DeployJobsOf reads none else). The reads depend on none of each other, and are read
-// side by side; the repositories' runs are held together, each in start order as one repository's
-// are.
+// job, which their job timings and failing jobs tally whatever their names
+// (measures.PRChecksTimings and FailingJobs), and the deploy runs with the jobs the repository's
+// deploy cards follow and no other (measures.DeployJobsOf reads none else). The reads depend on
+// none of each other, and are read side by side; the repositories' runs are held together, each in
+// start order as one repository's are.
 func (s *server) readPipelinePopulation(ctx context.Context, rules *delivery.SourceRules, at time.Time) (pipelinePopulation, error) {
 	from := measures.WindowStart(at)
 	to := from.AddDate(0, 0, measures.ShownDayCount)
@@ -184,24 +184,25 @@ func pipelineDeploys(rules *delivery.SourceRules, deploys delivery.RunsWithJobs)
 	index := make(map[string]int, len(sources))
 	for i, rule := range sources {
 		bySource[i] = measures.SourceDeployRuns{Jobs: deploys.Jobs, Cards: measures.DeployCards(rule)}
-		index[deliveryRuleKey(rule.DeployRepo)] = i
+		index[delivery.RuleKey(rule.DeployRepo)] = i
 	}
 	for _, run := range deploys.Runs {
-		if i, ok := index[deliveryRuleKey(run.Repo)]; ok {
+		if i, ok := index[delivery.RuleKey(run.Repo)]; ok {
 			bySource[i].Runs = append(bySource[i].Runs, run)
 		}
 	}
 	return bySource
 }
 
-// pipelineJobsBesideRollups is each PR-checks run's jobs but the roll-up job its repository's rule
-// names (PRChecksRollupJobName), which the failing-jobs table leaves out (measures.FailingJobs):
-// every repository names its own.
-func pipelineJobsBesideRollups(rules *delivery.SourceRules, checks delivery.RunsWithJobs) map[int64][]delivery.DeliveryRunJob {
-	jobs := make(map[int64][]delivery.DeliveryRunJob, len(checks.Jobs))
+// pipelineJobsBesideRollups is the jobs of each PR-checks run that completed in the failing jobs'
+// window up to at (measures.InFailingWindow, the runs whose jobs measures.FailingJobs reads) but
+// the roll-up job its repository's rule names (PRChecksRollupJobName), which the failing-jobs table
+// leaves out: every repository names its own.
+func pipelineJobsBesideRollups(rules *delivery.SourceRules, checks delivery.RunsWithJobs, at time.Time) map[int64][]delivery.DeliveryRunJob {
+	jobs := map[int64][]delivery.DeliveryRunJob{}
 	for _, run := range checks.Runs {
 		runJobs, held := checks.Jobs[run.RunID]
-		if !held {
+		if !held || !measures.InFailingWindow(run, at) {
 			continue
 		}
 		if rule, ok := rules.For(run.Repo); ok && rule.PRChecksRollupJobName != nil {
@@ -228,7 +229,7 @@ func deliveryPipelineCompute(rules *delivery.SourceRules, pop pipelinePopulation
 	days := measures.ShownDays(at)
 	minN := evals.PipelineMinN(pop.deployRepoEvals[evals.SlugPRCI])
 	run, slowest := measures.PRChecksTimings(pop.checks.Runs, pop.checks.Jobs, days, minN)
-	failing := measures.FailingJobs(pop.checks.Runs, pipelineJobsBesideRollups(rules, pop.checks), at, "")
+	failing := measures.FailingJobs(pop.checks.Runs, pipelineJobsBesideRollups(rules, pop.checks, at), at, "")
 	timings := measures.DeployJobsOf(pipelineDeploys(rules, pop.deploys), days)
 	production, named := timings[measures.CardProductionApply]
 	if !named {

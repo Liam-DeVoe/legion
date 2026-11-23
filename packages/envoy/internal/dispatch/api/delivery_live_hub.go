@@ -369,7 +369,7 @@ type deliveryLiveSpec struct {
 
 // deliveryFreshnessHeard is the freshness of the delivery reads' sources as the hub last heard it,
 // and the population's unfetchable count as the last recompute computed it. sources is each source
-// repository's rule with its bookkeeping as last heard, by deliveryRuleKey: seeded from a read's
+// repository's rule with its bookkeeping as last heard, by delivery.RuleKey: seeded from a read's
 // rules, and moved by each delivery_freshness notification of a source the rules hold; rules is the
 // last read's, by which a notification of a source that names no repository is found under its
 // project's default repository. lastEventAt, lastReconcileAt and lastError are the sources' together
@@ -389,7 +389,7 @@ type deliveryFreshnessHeard struct {
 func (f *deliveryFreshnessHeard) heardRules(rules *delivery.SourceRules) {
 	held := make(map[string]delivery.DeliverySettings, len(rules.All()))
 	for _, rule := range rules.All() {
-		key := deliveryRuleKey(rule.DeployRepo)
+		key := delivery.RuleKey(rule.DeployRepo)
 		if heard, ok := f.sources[key]; ok {
 			rule.LastEventAt, rule.LastReconcileAt, rule.LastError = heard.LastEventAt, heard.LastReconcileAt, heard.LastError
 		}
@@ -597,6 +597,7 @@ func timeOrZero(t *time.Time) time.Time {
 	return *t
 }
 
-func equalStringPointers(a, b *string) bool {
+// equalPointers is whether a and b are both nil, or point at equal values.
+func equalPointers[T comparable](a, b *T) bool {
 	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }

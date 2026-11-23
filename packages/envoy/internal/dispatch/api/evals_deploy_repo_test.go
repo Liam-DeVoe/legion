@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -38,9 +37,6 @@ type deployRepoRig struct {
 	today    time.Time
 	other    string
 }
-
-// deployRepoAlice is who saves the settings of the checks.
-var deployRepoAlice = model.Actor{Kind: "user", ID: "alice"}
 
 // newDeployRepoRig seeds the rig, other's runs copied from the twelfth day of the history on where
 // copied is set, runs before (where it is not nil) and then refreshes the day rows and their stored
@@ -113,9 +109,7 @@ func (r *deployRepoRig) saveSource(t *testing.T, repo string) {
 	t.Helper()
 	settings := r.fixture.Settings
 	settings.DeployRepo = repo
-	if _, err := deliverytest.SaveRules(t.Context(), r.database.Pool, r.fixture.Project, settings); err != nil {
-		t.Fatalf("save the delivery settings of %s: %v", r.fixture.Project, err)
-	}
+	saveProjectRules(t, r.database, r.fixture.Project, settings)
 }
 
 // read is the list read of every eval of the rig's projects in shape at the rig's moment

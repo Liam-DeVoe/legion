@@ -324,6 +324,11 @@ type deliveryLiveClasses struct {
 	// project. A new version of one in any project marks the view (touchedBy), and so does a
 	// project write (applyEventLocked), which can move which project that is.
 	evalVersions []string
+	// evalDays are the evals whose day rows the view's answer folds, by slug: the three failure
+	// measures the timeline's and the measures' answers read of the delivery-on project
+	// (evals.Store.DeploymentFailures), which no view names. A write of their day rows in any
+	// project marks the view (touchedBy).
+	evalDays []string
 	// parse reads a subscribed view's own fields into its spec, or refuses it: what the matching
 	// GET route reads of a query, including the key one view of this kind is held under.
 	parse func(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError
@@ -331,6 +336,10 @@ type deliveryLiveClasses struct {
 	// read its kind holds and answers the body, which the caller encodes by these classes.
 	read func(h *deliveryHub, ctx context.Context, spec deliveryLiveSpec, now time.Time, into *deliveryViewRead) (any, error)
 }
+
+// deliveryFailureSlugs are the failure measures whose stored day parts the delivery measures fold
+// (measures.FailureParts, read by evals.Store.DeploymentFailures).
+var deliveryFailureSlugs = []string{evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery, evals.SlugDeploymentReworkRate}
 
 // deliveryLiveKinds is each view kind's classes. The timeline's waiting entries have no id, and
 // are few, so they are sent whole; its measures are sent whole on a change of anything but their
@@ -349,6 +358,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		reads:        viewReadsDelivery,
 		unownedP0:    true,
 		evalVersions: evals.DeliveryTargetSlugs,
+		evalDays:     deliveryFailureSlugs,
 		parse:        parseDeliveryWindowView,
 		read:         (*deliveryHub).readDeliveryView,
 	},
@@ -360,6 +370,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		reads:        viewReadsDelivery,
 		unownedP0:    true,
 		evalVersions: evals.DeliveryTargetSlugs,
+		evalDays:     deliveryFailureSlugs,
 		parse:        parseDeliveryWindowView,
 		read:         (*deliveryHub).readDeliveryView,
 	},

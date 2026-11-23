@@ -353,3 +353,64 @@ func TestTheProjectDeliverySettingsAreTheDeploymentsWrite(t *testing.T) {
 		t.Fatalf("a save with delivery off answered %+v, want it off", off)
 	}
 }
+
+// A null target is neither a number nor "off": the save is refused naming the target, and writes
+// neither the settings nor a version of the eval, where read as a number it would set a target of 0.
+func TestANullTargetIsRefused(t *testing.T) {
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+	version, target := evalVersion(t, rig, "ALPHA/deploy-frequency")
+	refused := refusedSettings(t, putProjectDelivery(t, rig.handler, "ALPHA", map[string]any{
+		"delivery": true, "sources": []any{workflowSource("acme/alpha-deploy", ".github/workflows/deploy.yml", "release")},
+		"population_authors": []string{"octocat"}, "targets": map[string]any{"deploy-frequency": nil},
+	}), http.StatusBadRequest, delivery.CodeDeliverySettingsInput)
+	if refused.Field != "targets.deploy-frequency" {
+		t.Errorf("a null target is refused naming %q, want targets.deploy-frequency", refused.Field)
+	}
+	if after, held := evalVersion(t, rig, "ALPHA/deploy-frequency"); after != version || !equalPointers(held, target) {
+		t.Errorf("after the refused save deploy-frequency holds version %d target %v, want version %d target %v", after, held, version, target)
+	}
+	if raw := readProjectDelivery(t, rig.handler, "ALPHA"); strings.TrimSpace(string(raw)) != "null" {
+		t.Errorf("the refused save left settings %s, want none", raw)
+	}
+}
+
+// A save's job names are stored as the singleton's save stores them, since every reader matches a
+// job by its exact name: each production job name trimmed, and each optional job and step name
+// trimmed, a blank one stored as null. A production job name that is blank or named twice once
+// trimmed, and a workflow path of white space alone, are refused, naming the field and the source.
+func TestASavesJobNamesAreStoredAsTheSingletonsSaveStoresThem(t *testing.T) {
+	rig := newDeliverySettingsRig(t, readableRepos())
+	createTestProject(t, rig.handler, "ALPHA")
+	source := workflowSource("acme/alpha-deploy", ".github/workflows/deploy.yml", "release")
+	source["production_job_names"] = []string{" release / release ", "deploy\t"}
+	source["production_apply_step_name"] = "  Apply  "
+	source["staging_e2e_job_name"] = ""
+	source["staging_apply_job_name"] = "   "
+	source["pr_checks_rollup_job_name"] = " checks-complete"
+	body := func(sources ...any) map[string]any {
+		return map[string]any{"delivery": true, "sources": sources, "population_authors": []string{"octocat"}}
+	}
+	saved := savedProjectDelivery(t, rig.handler, "ALPHA", body(source)).Sources[0]
+	if !slices.Equal(saved.ProductionJobNames, []string{"release / release", "deploy"}) || deref(saved.ProductionApplyStepName) != "Apply" ||
+		saved.StagingE2EJobName != nil || saved.StagingApplyJobName != nil || deref(saved.PRChecksRollupJobName) != "checks-complete" {
+		t.Fatalf("the source is stored with production jobs %q, apply step %v, staging jobs %v and %v, roll-up %v; want each trimmed and the blank ones null",
+			saved.ProductionJobNames, saved.ProductionApplyStepName, saved.StagingE2EJobName, saved.StagingApplyJobName, saved.PRChecksRollupJobName)
+	}
+	for _, bad := range []struct {
+		what, field, key string
+		value            any
+	}{
+		{"a production job named twice once trimmed", "production_job_names", "production_job_names", []string{"ship", " ship"}},
+		{"a blank production job", "production_job_names", "production_job_names", []string{"ship", "  "}},
+		{"a deploy workflow of white space", "deploy_workflow_path", "deploy_workflow_path", "  "},
+		{"a pull-request checks workflow of white space", "pr_checks_workflow_path", "pr_checks_workflow_path", "\t"},
+	} {
+		second := workflowSource("acme/alpha", ".github/workflows/ship.yml", "ship")
+		second[bad.key] = bad.value
+		refusal := refusedSettings(t, putProjectDelivery(t, rig.handler, "ALPHA", body(source, second)), http.StatusBadRequest, delivery.CodeDeliverySettingsInput)
+		if refusal.Field != bad.field || refusal.Source == nil || *refusal.Source != 1 {
+			t.Errorf("%s is refused %+v, want source 1's %s named", bad.what, refusal, bad.field)
+		}
+	}
+}

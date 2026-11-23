@@ -15,8 +15,7 @@ import (
 // TestAProjectWithNoSourceListsThePullRequestsItsDayRowsCount: over deliverytest's history, the
 // second project (DELIVX) holds no deploy source of its own, and its merges count for it through
 // their issues (INFRA-978 R27). Its pr-open-to-merge items list exactly the pull requests its day
-// rows count, as a number and the rows behind it are one set: before the items route read each
-// pull request under its own repository's rule, it answered none for a project with no source.
+// rows count, as a number and the rows behind it are one set.
 func TestAProjectWithNoSourceListsThePullRequestsItsDayRowsCount(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Days: 5})

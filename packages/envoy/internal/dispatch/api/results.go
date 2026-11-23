@@ -190,11 +190,11 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordCheckFailure writes the check_fail signal of a fail of an after_merge check once its result
-// has committed (dispatch://INFRA-978, T12): a failure of the deploy that first shipped the result's
-// commit, in a transaction of its own (signals.RecordCheckFailure). A failure of the write is
-// logged and fails nothing: the production signals' loop reads the result.recorded event after
-// it and writes the same row, and a result whose commit no deploy row holds yet makes its row when
-// one lands.
+// has committed (dispatch://INFRA-978, R7 and D5): a failure of the deploy that first shipped the
+// result's commit, in a transaction of its own (signals.RecordCheckFailure). A failure of the
+// write is logged and fails nothing: the production signals' loop reads the result.recorded event
+// after it and writes the same row, and a result whose commit no deploy row holds yet makes its
+// row when one lands.
 func (s *server) recordCheckFailure(ctx context.Context, written recordedCheckResult) {
 	if written.result.Verdict != "fail" || written.check.Attributes.When != checkWhenAfterMerge {
 		return

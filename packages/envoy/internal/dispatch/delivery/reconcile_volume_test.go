@@ -368,7 +368,7 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 
 	settings, err := getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings after the failed pass: %v", err)
+		t.Fatalf("getTestRule after the failed pass: %v", err)
 	}
 	if settings.LastError == nil || !strings.Contains(*settings.LastError, "deploy workflow runs") {
 		t.Fatalf("settings.LastError = %v, want the failed deploy-run step named", settings.LastError)
@@ -389,7 +389,7 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 
 	settings, err = getTestRule(ctx, pool)
 	if err != nil {
-		t.Fatalf("GetSettings after the resumed pass: %v", err)
+		t.Fatalf("getTestRule after the resumed pass: %v", err)
 	}
 	if settings.LastError != nil {
 		t.Fatalf("settings.LastError = %q, want nil once the pass succeeded", *settings.LastError)

@@ -212,19 +212,13 @@ func (s *server) deliveryRules(w http.ResponseWriter, r *http.Request) (*deliver
 	return rules, true
 }
 
-// deliveryRuleKey is the key a repository's rule and its deploys are found by: its name in lower
-// case, as delivery.SourceRules.For finds one.
-func deliveryRuleKey(repo string) string {
-	return strings.ToLower(repo)
-}
-
 // deliveryApplies is the deploys among runs, every source repository's runs judged by that
-// repository's own rule (delivery.ProductionApplies), by the repository's deliveryRuleKey. A run of a
-// repository no rule reads is judged by none: the reads read no such run.
+// repository's own rule (delivery.ProductionApplies), by the repository's delivery.RuleKey. A run
+// of a repository no rule reads is judged by none: the reads read no such run.
 func deliveryApplies(rules *delivery.SourceRules, runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob) map[string][]delivery.Apply {
 	byRepo := map[string][]delivery.DeliveryRun{}
 	for _, run := range runs {
-		key := deliveryRuleKey(run.Repo)
+		key := delivery.RuleKey(run.Repo)
 		byRepo[key] = append(byRepo[key], run)
 	}
 	applies := make(map[string][]delivery.Apply, len(byRepo))
@@ -244,7 +238,7 @@ func deliveryContainingRun(rules *delivery.SourceRules, pr delivery.DeliveryPull
 	if _, tracked := rules.For(pr.Repo); !tracked {
 		return nil, ""
 	}
-	return delivery.ContainingRun(pr, pr.Repo, applies[deliveryRuleKey(pr.Repo)]), pr.Repo
+	return delivery.ContainingRun(pr, pr.Repo, applies[delivery.RuleKey(pr.Repo)]), pr.Repo
 }
 
 // deliveryFreshness is the freshness of the delivery reads' sources: one source's own intake and
@@ -548,10 +542,10 @@ func (s *server) readDeliveryRows(ctx context.Context, rules *delivery.SourceRul
 	// (store.ForConcurrentRead): on the request's shared mark one read's open cursor would refuse
 	// the rest. The run jobs depend on the runs, so they follow the runs within the runs' own read.
 	//
-	// A timeline request of one source repository therefore holds up to eight of the shared pool's
-	// connections (store.sharedPoolSize), and two more for each further source repository, for the
-	// length of its longest read, where it held one at a time (the window's pull requests beside
-	// its runs, and its runs' two reads of jobs, run side by side within their own read). That is
+	// A timeline request of one source repository therefore holds up to nine of the shared pool's
+	// connections (store.sharedPoolSize), and three more for each further source repository, for the
+	// length of its longest read (each repository's runs read their two lists of jobs side by side,
+	// and its earlier rows their pull requests beside their runs, within their own read). That is
 	// fine because none of them holds a lock or opens a transaction, so none waits on another
 	// caller or makes another caller wait on it: the deadlock the pool's guard exists to prevent
 	// needs a caller already holding a connection, which ForConcurrentRead refuses. A read past
@@ -790,7 +784,7 @@ func (p deliveryPopulation) derive(rules *delivery.SourceRules) deliveryDerived 
 		issueTitles:     issueTitles,
 		sessionTitles:   sessionTitles,
 		sessionPRCounts: sessionPRCounts,
-		freshness: deliveryFreshness(rules, p.unfetchable),
+		freshness:       deliveryFreshness(rules, p.unfetchable),
 	}
 }
 
@@ -907,7 +901,8 @@ func nextUTCMidnight(t time.Time) time.Time {
 // getDeliveryRun answers GET /api/v1/delivery/runs/{id}: one run of a source repository of a
 // delivery-on project (readDeliveryRules) with every job it ran, in ListRunJobs' order (by when
 // each started, a job that never started last, then by name), for the drill-down's job lists. A run
-// of a repository no such source reads is no run of it, as the timeline lists none.
+// of a repository no such source reads is no run of it, as the timeline lists none; its 404 names
+// the repositories the sources read, or says they read none, where every source is an events one.
 func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -930,7 +925,11 @@ func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	run, err := delivery.ScanRun(pool.QueryRow(ctx, `select `+delivery.RunColumns+` from delivery_runs where repo = any($1) and run_id = $2 order by repo limit 1`, repos, runID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "NOT_FOUND", http.StatusNotFound, "no run "+strconv.FormatInt(runID, 10)+" of "+strings.Join(repos, " or "))
+			of := " of " + strings.Join(repos, " or ")
+			if len(repos) == 0 {
+				of = ": no deploy source of a delivery-on project reads a repository"
+			}
+			writeError(w, "NOT_FOUND", http.StatusNotFound, "no run "+strconv.FormatInt(runID, 10)+of)
 			return
 		}
 		s.writeHandlerError(w, err)

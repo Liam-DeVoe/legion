@@ -16,19 +16,18 @@ import (
 )
 
 // TestAWindowsReadAnswersWhatItsTwoReadsAnswer: a delivery route's read of a window's runs
-// (ReadWindowRuns, beside the window's pull requests) answers what the two reads it stands for
-// answer (ReadMergedRows and ReadDeploys, which read every apply run to the present and the
-// window's deploys apart), over
+// (ReadWindowRuns) answers what the two reads it stands for answer (ReadMergedRows and
+// ReadDeploys, which read every apply run to the present and the window's deploys apart), over
 // generated histories of deploy runs on main and off it, re-runs, rows stored before created_at,
 // production jobs that succeeded, failed, were cancelled or stood down, failed guards beside them,
 // and pull requests merged anywhere among them, for windows that end inside the history and one
-// that ends past it: the same pull requests and the same Deploys, earlier rows included; apply
-// runs that are the first of every apply run, the rest created after the window ends; each apply
-// run's production jobs, with failedJobs its failed jobs too, as every job it holds says; and every
-// pull request of the window and of the earlier rows shipping first with the run it ships first
-// with over every apply run, and each deploy shipping the same pull requests. The comparison fails
-// where no window's apply runs stopped short of every apply run, since the bound was then never
-// tested. Each round's seed is in its failure.
+// that ends past it: the same Deploys, earlier rows included; apply runs that are the first of
+// every apply run, the rest created after the window ends; each apply run's production jobs, with
+// failedJobs its failed jobs too, as every job it holds says; and every pull request of the window
+// and of the earlier rows shipping first with the run it ships first with over every apply run,
+// and each deploy shipping the same pull requests. The comparison fails where no window's apply
+// runs stopped short of every apply run, since the bound was then never tested. Each round's seed
+// is in its failure.
 func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	base := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)

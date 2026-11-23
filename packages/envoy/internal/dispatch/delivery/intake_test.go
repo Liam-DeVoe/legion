@@ -103,7 +103,7 @@ func seedDeliverySettings(t *testing.T, ctx context.Context, pool *store.Pool) D
 
 // putTestRule saves rule as deliveryProject's one deploy source (saveProjectRules), making the
 // project with deliveryRepo its default repository where it has no row, and answers the rule as
-// the tables hold it: what PutSettings answered of the singleton row.
+// the tables hold it.
 func putTestRule(ctx context.Context, pool *store.Pool, rule DeliverySettings, actor model.Actor) (DeliverySettings, error) {
 	if _, err := pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee, default_repo) values ($1, 'Delivery', 'alice', $2)
@@ -159,8 +159,7 @@ func saveProjectRules(ctx context.Context, pool *store.Pool, project string, act
 }
 
 // getTestRule is deliveryProject's rule of its first source as the tables hold it now, its
-// source's bookkeeping included, or ErrNoSettings with none: what GetSettings answered of the
-// singleton row.
+// source's bookkeeping included, or ErrNoSettings with none.
 func getTestRule(ctx context.Context, q Querier) (DeliverySettings, error) {
 	settings, err := GetProjectSettings(ctx, q, deliveryProject)
 	if err != nil {
@@ -512,7 +511,7 @@ func deleteProbeConsumer(t *testing.T, natsClient *bus.Client, name string) {
 	}
 }
 
-// The three deploy sources the per-repository tests read (dispatch://INFRA-978, T7): deliveryProject
+// The three deploy sources the per-repository tests read (dispatch://INFRA-978, D1): deliveryProject
 // reads its default repository, acme/widgets, through a source that names none, and acme/gadgets
 // through a second source, and toolsProject reads its default, acme/tools. Each repository's rule
 // names workflows and production jobs of its own, and each project a population of its own.
@@ -562,7 +561,7 @@ func sourcesByRepo(t *testing.T, ctx context.Context, q Querier) map[string]Deli
 }
 
 // An event the intake handles records its time on the source that reads the event's repository,
-// and on no other (dispatch://INFRA-978, T6): with three sources in three repositories, two of one
+// and on no other (dispatch://INFRA-978, D1): with three sources in three repositories, two of one
 // project, an event of a repository no source reads stamps no source, a pull request of acme/gadgets
 // stamps the second source of its project alone, and a run of acme/tools the other project's source.
 func TestAnEventRecordsItsTimeOnItsRepositorysOwner(t *testing.T) {
@@ -607,7 +606,7 @@ func TestAnEventRecordsItsTimeOnItsRepositorysOwner(t *testing.T) {
 }
 
 // A merged pull request is admitted by the union of the delivery-on projects' populations
-// (dispatch://INFRA-978, T7): an author of either project's population merging into any repository
+// (dispatch://INFRA-978, D1): an author of either project's population merging into any repository
 // is stored, whichever project's source reads the repository, or none; a repository either project
 // excludes is excluded for every author; and a merge outside the union costs no GitHub call.
 func TestAPullRequestIsAdmittedByTheUnionOfThePopulations(t *testing.T) {
