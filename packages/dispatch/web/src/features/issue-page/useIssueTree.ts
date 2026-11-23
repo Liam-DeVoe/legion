@@ -270,17 +270,16 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const who = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const viewer = who.data?.login;
   // Each filter's view read, watched by an observer that is never enabled, so it sends nothing
-  // and holds whatever `ViewReadProvider` read for the load. Each answer is read by its filter, at
-  // that filter's place in the list the reads were made from, so the order of `TREE_FILTERS`
-  // hands no view another's answer.
+  // and holds whatever `ViewReadProvider` read for the load. Each answer is keyed by its filter,
+  // from that filter's place in the list the reads were made from, so the order of
+  // `TREE_FILTERS` hands no view another's answer; the record holds every filter, since a filter
+  // is a member of that list by its type (`TreeFilter`).
   const viewReads = useQueries({
     queries: TREE_FILTERS.map((filter) => ({ ...viewQuery(key, filter), enabled: false })),
   });
-  const viewOf = (filter: TreeFilter): TreeAnswer | undefined =>
-    viewReads[TREE_FILTERS.indexOf(filter)]?.data;
-  const spec = viewOf("spec");
-  const verification = viewOf("verification");
-  const plan = viewOf("plan");
+  const { plan, spec, verification } = Object.fromEntries(
+    TREE_FILTERS.map((filter, at) => [filter, viewReads[at].data])
+  ) as Record<TreeFilter, TreeAnswer | undefined>;
   const views = useMemo((): TreeViews | undefined => {
     const held: TreeViews = {
       ...(decisions.data === undefined ? {} : { decisions: decisions.data }),

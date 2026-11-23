@@ -5,6 +5,7 @@ import {
   type Group,
   groupsOf,
   type Leg,
+  legLine,
   recordedTimes,
   type Table,
   tableText,
@@ -103,6 +104,20 @@ describe.each([2, 4])("dealt to %d legs", (legs) => {
     const seconds = dealt.map((leg) => leg.seconds);
     expect(Math.max(...seconds)).toBeLessThanOrEqual(Math.min(...seconds) + heaviestGroup);
   });
+});
+
+test("a leg's line of the log ends in its test count, where the shard job's script reads it", () => {
+  const leg: Leg = {
+    groups: [
+      { ...group("a.e2e.ts", 3), recorded: true, seconds: 8.2 },
+      { ...group("b.e2e.ts", 4, "iphone"), recorded: false, seconds: 4.4 },
+    ],
+    seconds: 12.6,
+  };
+  const line = legLine(leg, 2, 4);
+  expect(line).toBe("  leg 2 of 4: 13 s planned, 2 groups, 7 tests");
+  // `.github/scripts/dispatch-browser-shard-suite.sh`'s `planned`, its `sed` as a JS pattern.
+  expect(/^ {2}leg 2 of 4: .*, ([0-9][0-9]*) tests$/.exec(line)?.[1]).toBe("7");
 });
 
 test("a listing's rows group by project and file, named as the table and as --test-list read them", () => {

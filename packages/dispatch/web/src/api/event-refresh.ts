@@ -401,7 +401,8 @@ const ISSUE_NODE_MOVERS: Readonly<Record<keyof IssueTreeNode, readonly string[]>
  *  each named by the field an issue write names in `changed` when it moves one: its parent
  *  (`child_of`, and the `part_of` a parent move retracts), its waits (`needs`, which a Dispatch
  *  of the release before names `blocked_by`), the issue it repeats, the item it was filed out of
- *  and its components (`affects`). */
+ *  and its components (`affects`). `changesReferenceGraph` holds the same fields, with the title,
+ *  in a list of its own, so an edit to one list finds the other. */
 const ISSUE_EDGE_FIELDS: readonly string[] = [
   "parent",
   "needs",
@@ -1271,7 +1272,8 @@ function movesInboxThreads(event: DispatchEvent, viewer: string | undefined): bo
 
 /** Whether the event is an issue write: `issue.created`, `issue.updated` or `issue.closed`, the
  *  events whose payload is the issue row with what the write moved (`changed`) and the issue's
- *  parent chain after it (`ancestors`). */
+ *  parent chain after it (`ancestors`). `ownerTargets` makes the same test inline, so an edit to
+ *  one finds the other. */
 function isIssueWrite(
   event: DispatchEvent
 ): event is Extract<DispatchEvent, { type: "issue.created" | "issue.updated" | "issue.closed" }> {

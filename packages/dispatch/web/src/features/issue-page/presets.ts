@@ -116,8 +116,8 @@ export interface PresetView {
    *  not hide it. */
   readonly filtering: boolean;
   /** The decisions and constraints of the view read each row carries as a line of its own, by
-   *  the row's id: a decision or a constraint is a line of a row and never a row itself. Empty
-   *  where the view is read off the tree. */
+   *  the row's id: in the view read of Spec, Verification or Plan, a decision or a constraint is
+   *  a line of a row and never a row itself. Empty where the view is read off the tree. */
   readonly lines: ReadonlyMap<string, readonly PresetLine[]>;
   /** How many distinct nodes of the view's main kind it draws: a check drawn under two
    *  requirements is one node, so this is what the control's own count says. */
@@ -129,10 +129,11 @@ export interface PresetView {
   readonly rootRow: boolean;
 }
 
-/** A node of a view read drawn as a line of a row, never as a row itself, which is how a
- *  decision and a constraint are always drawn: a decision whose `shaped` tuple names the row's
- *  node, or a constraint the row's node's `constrained_by` tuple names. Later parts of the page
- *  draw them. */
+/** A node of a view read drawn as a line of a row, never as a row itself, which is how the view
+ *  read of Spec, Verification or Plan draws a decision and a constraint: a decision whose
+ *  `shaped` tuple names the row's node, or a constraint the row's node's `constrained_by` tuple
+ *  names. Later parts of the page draw these lines. The Decisions filter and the outline draw a
+ *  decision as a row of its own. */
 export interface PresetLine {
   /** The node's id: a decision's block id (`block_id`), and the view read's id of any other. */
   readonly id: string;

@@ -219,7 +219,7 @@ function landingReadKey(route: ItemRoute): QueryKey {
 interface Following {
   /** Whether the following draws the line that the tree holds no node of the block or the
    *  children its address names (`absent`), as last stored here. The children come with the
-   *  issue's own read, each child's row (`tree-read/tree-nodes.ts`), so the children's line, once
+   *  tree read, each child's row (`tree-nodes.ts`' `draftChild`), so the children's line, once
    *  drawn, stays while the tree's reads are out again; a block's line goes then, since a
    *  document added to the issue may hold the block. */
   readonly absent: boolean;
@@ -278,8 +278,8 @@ interface Following {
  * such turn the server stores - which the conversation's reads still tell while the blocks are
  * read: dropped then, the tree had no address to land on, and once the reads answered the
  * landing's key came back as a new landing's would, which left a zoom the reader had made after
- * the landing; and the line that the issue has no children, which come with the issue's own read
- * alone (`Following.absent`). A block's line goes while the reads are out, as a document added
+ * the landing; and the line that the issue has no children, which come with the tree read
+ * (`Following.absent`). A block's line goes while the reads are out, as a document added
  * to the issue may hold the block. Each goes as before where the tree draws the address's node
  * (`found`), and with the following.
  */
