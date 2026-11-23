@@ -3480,9 +3480,9 @@ package api
 // 2026-11-22 that brought main in at c4196c824b7d, main carried 213 (dispatch://INFRA-4036, 213's
 // entry above), and this change kept 214, which a REST raw read of each of the 444 open heads'
 // file at main 83b91235c5, between 2026-11-22T11:29:49Z and 11:33:32Z, found #4918 declaring too,
-// because this change was merging and lands first, and
-// `.github/scripts/check-daemon-api-contract.sh` then refuses #4918's 214 against a base that
-// carries 214 and names it a free number. At the forward merge of 2026-11-23 that brought main in
+// because this change was then merging and was expected to land first, and
+// `.github/scripts/check-daemon-api-contract.sh` would then have refused #4918's 214 against a base
+// carrying 214 and named it a free number. At the forward merge of 2026-11-23 that brought main in
 // at 8f3326828659, main carried 217 (cybermonklabs/legion#4273's, dispatch://INFRA-3531 and
 // dispatch://INFRA-4567, the entry above), and a REST raw read of each of the 525 open heads' file
 // between 2026-11-23T01:12:49Z and 01:16:31Z found 218 to 231 declared by other heads, so this
