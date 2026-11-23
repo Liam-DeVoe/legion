@@ -19,12 +19,13 @@ const notYet = " This release of Legion does not carry it out yet."
 
 // Validate is what Legion cannot carry out in any release: a plan with no task; for each task,
 // each `needs` word that names no task of the plan, in the block's order (Task.Unresolved, which
-// FromBlocks fills), and each step that names a role neither d nor the plan's own role blocks
-// define, refused once for each role at the first step that names it; then each cycle of needs
-// (cycles), named by its first task in id order with the chain from that task. It refuses no plan
-// for a step the plan lacks. The other refusals of a plan no release carries out need an attribute
-// or a block that Supported refuses in this release, so the release that lifts that refusal adds
-// them here.
+// FromBlocks fills), then each `needs` word that is a reference into another issue, in the block's
+// order (Task.IntoOtherIssue), naming that issue, and each step that names a role neither d nor the
+// plan's own role blocks define, refused once for each role at the first step that names it; then
+// each cycle of needs (cycles), named by its first task in id order with the chain from that task.
+// It refuses no plan for a step the plan lacks. The other refusals of a plan no release carries out
+// need an attribute or a block that Supported refuses in this release, so the release that lifts
+// that refusal adds them here.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
@@ -37,6 +38,10 @@ func Validate(p Plan, d Deployment) []Refusal {
 	for _, task := range p.Tasks {
 		for _, word := range task.Unresolved {
 			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf("task %s needs %s, which names no task of this plan.", task.ID, word)})
+		}
+		for _, word := range task.IntoOtherIssue {
+			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf("task %s needs %s, which names another issue, %s: "+
+				"a task can need only a task of this plan, and an issue waits for another issue by a blocked_by link between the two.", task.ID, word, issueOf(word))})
 		}
 		refused := map[string]bool{}
 		for i, step := range task.Steps {

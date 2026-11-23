@@ -76,11 +76,17 @@ type Task struct {
 	ID string
 	// Needs are the tasks this task needs, each by its id, in the order the block writes them:
 	// FromBlocks reads each `needs` word, a reference to a block or a word, as the id of the task
-	// it names, and keeps a word that names no task in Unresolved.
+	// it names, keeps a word that names no task in Unresolved, and keeps a reference into another
+	// issue in IntoOtherIssue.
 	Needs []string
 	// Unresolved are the `needs` words that name no task of the plan, in the block's order, as
 	// FromBlocks leaves them; Validate refuses each one.
 	Unresolved []string
+	// IntoOtherIssue are the `needs` words that are references into an issue other than the
+	// plan's, in the block's order, as FromBlocks leaves them: a task needs only tasks of its own
+	// plan, and an issue waits for another issue by a link between the two issues. Validate
+	// refuses each one.
+	IntoOtherIssue []string
 	// PartOf is `part_of` and Owner is `owner`, each as the block writes it, "" when unset.
 	PartOf, Owner string
 	// Merges is `merges`: true unless the block leaves the attribute out or writes `false`.
