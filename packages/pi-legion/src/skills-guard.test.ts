@@ -910,12 +910,7 @@ test("each duty a role skill routes to a reference stands in that reference", ()
       /wait on a sibling or on an issue outside this tree[^.;]*`skill:\/\/dispatch`, "Choosing what to work on"/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
-      /references\/default-branch-check\.md`[^.]*trailers the pane writes for you/,
-    ]),
-    ...lacks("legion-worker/references/default-branch-check.md", [
-      /Write no trailer yourself, except the `Dispatch:` line[^.;]*next item allows/,
-      /unpushed commit that lacks one of those lines: describe it again/,
-      /pushed commit[^.;]*conflicts-and-rewrites\.md`, "A wrong pushed commit"/,
+      /Cure an unpushed commit that lacks a line by describing it again/,
       /`LEGION_ISSUE_TRAILER` is set[^.;]*`Dispatch: \$LEGION_ISSUE_TRAILER`/,
       /clone under `\$LEGION_WORKSPACE`[^.;]*clone one you will push elsewhere outside it/,
     ]),
@@ -945,4 +940,34 @@ test("every file of the Legion role skills fits the skill budget", () => {
       : [];
   });
   expect(over).toEqual([]);
+});
+
+// INFRA-4673 R3: the code, a command's output and its `--help` win over a skill, and the sentence
+// that says so is said once per kind of session: in the role prompts, which the daemon's
+// prompts/code_precedence_test.go reads composed, and in the two agent definitions that load
+// skills into an agent no role prompt reaches. Each file that carries it carries it once.
+test("the code precedence sentence is once in each prompt part and agent definition that carries it", () => {
+  countedOncePerFile(
+    "If a skill disagrees with the code, a command's output or its `--help`, follow those and say which line of the skill is wrong.",
+    [
+      "packages/daemon/internal/prompts/go/worker-common.md",
+      "packages/daemon/internal/prompts/go/architect-common.md",
+      "packages/daemon/internal/prompts/go/controller-headless.md",
+      "packages/daemon/internal/prompts/go/controller-interactive.md",
+      "packages/pi-legion/agents/thermonuclear-code-quality.md",
+      "packages/pi-legion/agents/thermonuclear-deep-review.md",
+    ]
+  );
+});
+
+// INFRA-4673 R3: the role prompts and the two agent definitions carry the code precedence, so no
+// skill holds it, in those words or in others: a skill's copy would be a second one in every
+// session that loads the skill. Every Markdown file of the repository's skills/ is read, both
+// plugins' partitions, and the files that still hold one are listed by path.
+test("no skill holds a code precedence sentence; the role prompts and agent definitions carry it", () => {
+  const holding = files(repoSkillsRoot)
+    .filter((file) => file.endsWith(".md") && /disagrees? with the code/i.test(collapsed(file)))
+    .map((file) => path.relative(REPO_ROOT, file))
+    .sort();
+  expect(holding).toEqual([]);
 });
