@@ -17,10 +17,14 @@ import (
 // mergeForward is the daemon's act on a confirmed conflict that R0 found a reason to act on, why
 // (dispatch://INFRA-4374 R0, R1; classify.ConflictNeedsMerge): the issue keeps the phase it stands
 // in (record.StandsAt), no phase entry starts and no supervise row is written, so an issue past
-// its review takes no admission slot for the merge, and the agent of the task's last step of the
-// type implementation before the place the issue stands at (the owner, where that step's key is
-// owner; the implementer, for a run with no plan rows) is asked, on its own topic, to merge the
-// base forward onto the head and push (record.MergeForwardAsk). Outside implementing it also tells
+// its review takes no admission slot for the merge, and the implementer is asked, on its own
+// topic, to merge the base forward onto the head and push (record.MergeForwardAsk). The ask is
+// addressed as every role message is (addressRoles), to the claim of the role implementer
+// (record.WorkerClaim): the claim the implementer's phases row names while that row runs a step of
+// the issue's plan, the owner's where that step's key is owner, and otherwise the implementer's own
+// token, also for a run with no plan rows. It is the role implementer's agent alone: a role of the
+// deployment or of the plan whose step is the task's last of the type implementation is not
+// asked. Outside implementing it also tells
 // the worker of that phase, when that is the tester, the reviewer or
 // the merger, to stop writing the workspace the roles share while the merge runs
 // (record.MergeForwardHold), and the architect that owns the issue one checks-red notice whose

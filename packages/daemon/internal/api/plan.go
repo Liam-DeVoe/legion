@@ -161,9 +161,10 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 
 // planOwner authorizes register_plan for an architect of the issue's tree, and answers the
 // generation the plan is given at. A recorded issue is its tree's architects', the root's or a
-// sub-architect's (architectOfRecord, by record.ArchitectOfTree, the rule every architect
-// operation holds it to first; complete_step then takes the issue's own architect alone,
-// NOT_THE_OWNER), and its plan is given at its generation. One the daemon has not
+// sub-architect's (architectOfRecord, by record.ArchitectOfTree, the rule each architect operation
+// that calls it holds it to), and its plan is given at its generation; complete_step does not call
+// it, and takes an architect's grant (architectGrant), then the issue's own architect alone
+// (record.OwnerClaim, NOT_THE_OWNER). One the daemon has not
 // recorded — a child before release_children records it — is the tree's when Dispatch's parent
 // chain reaches the tree (treeChain) and it has not entered the workflow, triage, backlog, icebox
 // or todo, and its plan is given at generation 0, where it waits for the issue's first step. These

@@ -1754,7 +1754,9 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). An
 // owner-step is published only while the run it tells is open, and finishes undelivered once that
 // run has ended (ownerStepRuns). It waits besides until its architect's slot's gh files hold the
-// App of its step, the owner's own App among them, under either runtime. The slot is written first
+// App of its step, the owner's own App among them, under either runtime: the review App, which the
+// steps of the planner, the tester, the reviewer and acceptance, a role of the deployment or of the
+// plan that acts as that App, and the owner's retro act as (ownApp). The slot is written first
 // only for a step of another role's App, and the runtime judges the App it writes as it writes it
 // (WriteSlotCredential); a pod whose launcher cannot say what its gh files hold holds back no step
 // of the owner's own App (ownerSlotHolds). The end of a step the owner did queues the write of
