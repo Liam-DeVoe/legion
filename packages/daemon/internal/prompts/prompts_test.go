@@ -147,6 +147,17 @@ func TestTheOwnerIsToldTheRolesOfItsDeployment(t *testing.T) {
 	}
 }
 
+// An architect owns the issues the owner walk ends at it for (record.OwningIssue): the root's
+// architect the root too, and a child's architect its own issue too. The children an architect
+// ends with a status write are those issues but its own, since the daemon sets back a status on
+// the tree root and a child's architect's status on its own issue. The part that says so agrees
+// with the walk. This shows the text is loaded, never that an owner follows it.
+func TestTheOwnerIsToldWhichIssuesItOwns(t *testing.T) {
+	holdsAndRetires(t, "go/architect-common.md", goPart(t, "architect-common.md"), []string{
+		"As the root's architect, you own every issue of the tree, the root among them. As a child's architect, you own your own issue and each issue under it. The children you own are all of those issues but your own.",
+	}, []string{"you own every issue of the tree except the root", "you own each issue under your own issue"})
+}
+
 // The owner's move back from accepting to `step` works only where it says which earlier step of
 // the task runs as `step`: the daemon refuses a move to `step` with two such steps and no
 // `return_to`. So each part that tells the owner of request_backward_move also tells it that
