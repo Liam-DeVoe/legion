@@ -26,6 +26,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -103,6 +104,11 @@ type Deps struct {
 	// update after a close it never hears of gives a margin past any run, so whether the update is
 	// stored is not decided by how long a loaded machine takes between the close and the update.
 	CloseMargin time.Duration
+	// Clock is the time the service reads and waits on for the timers a test asserts (package
+	// clock); nil, which every deployment leaves it, is clock.Real. A test hands a clocktest.Fake
+	// and moves it, so a verdict about one of those timers is not decided by how long a loaded
+	// machine takes between two of the test's steps.
+	Clock clock.Clock
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -412,7 +418,9 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
-	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks).
+	// clock is Deps.Clock, or clock.Real: the time the service's asserted timers read and wait on.
+	clock clock.Clock
+	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks): clock.Now.
 	now      func() time.Time
 	settleWG sync.WaitGroup
 	// evictWG counts the forced evictions failRoomLocked spawns. They flush the room through
@@ -874,6 +882,10 @@ func New(deps Deps) *Service {
 		pg.closeMargin = cmp.Or(deps.CloseMargin, closeMargin)
 		persist = pg
 	}
+	clk := deps.Clock
+	if clk == nil {
+		clk = clock.Real()
+	}
 	service := &Service{
 		store:             deps.Store,
 		persistence:       persist,
@@ -883,7 +895,8 @@ func New(deps Deps) *Service {
 		serverURL:         strings.TrimSuffix(deps.ServerURL, "/"),
 		settle:            settle,
 		markWait:          markWait,
-		now:               time.Now,
+		clock:             clk,
+		now:               clk.Now,
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
