@@ -535,7 +535,7 @@ func TestRepositoryCorrectionReadsTheDefaultBranchForARecordedIssueTheBootsListi
 		HandedOver: true, LastSeq: 1, ResolvedRepo: "acme/tools"}}
 	w.dispatch.(*repositoryDispatch).listed = listing
 	follows := w.followRequested.Load()
-	if err := w.reconcileListing(ctx, listing, nil, true); err != nil {
+	if _, err := w.reconcileListing(ctx, listing, nil, true); err != nil {
 		t.Fatalf("the boot's listing that moves %s to acme/tools: %v", correctionKey, err)
 	}
 	r.uncorrected()

@@ -108,15 +108,17 @@ type Config struct {
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
 	// FollowIssue is asked, on the commit of a fact whose correction ApplyRepositoryChange did not
-	// write because the record's repository moved after the fact was prepared
-	// (intake.DispatchIssue.PreparedAgainst), for a follow of that issue: the daemon reads
-	// Dispatch's resolution of it and GitHub again (workflowRuntime.requestFollowOf), so the record
-	// still ends on what Dispatch resolves. Asked from that transaction's commit hook, it is asked
-	// exactly when the skip is committed, and a transaction rolled back asks nothing. A process
-	// that stops between that commit and the hook loses only the ask: its next boot's listing has
-	// every recorded issue Dispatch resolves to another repository than its record names followed
-	// (the daemon's prepareRecorded, requestFollow). Nil asks for none, which is a test that drives
-	// its follows itself.
+	// write, for a follow of that issue where nothing else asked one: the record's repository
+	// moved after the fact was prepared (intake.DispatchIssue.PreparedAgainst), or the fact was
+	// prepared while the issue had no record and so carries no read of GitHub for the repository
+	// Dispatch moves it onto. The daemon reads Dispatch's resolution of it and GitHub again
+	// (workflowRuntime.requestFollowOf), so the record still ends on what Dispatch resolves.
+	// Asked from that transaction's commit hook, it is asked exactly when the skip is committed,
+	// and a transaction rolled back asks nothing. A process that stops between that commit and
+	// the hook loses only the ask: its next boot's listing has every recorded issue Dispatch
+	// resolves to another repository than its record names followed (the daemon's
+	// prepareRecorded, requestFollow). Nil asks for none, which is a test that drives its follows
+	// itself.
 	FollowIssue func(key string)
 	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
 	// (askMergeState, basePush, through askMergeStateFor), to read it for the pull request's head:
@@ -839,8 +841,9 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 // starts it (gateOpened) when the line reaches it. The gate and the blockers are therefore read
 // where the line is read, once for the whole project, rather than here once per child.
 //
-// A child entering beneath an ancestor the daemon has already accepted waits for that ancestor
-// to close before anything starts it (record.AcceptedAncestor, which the waiting line reads),
+// A child entering beneath an ancestor the daemon has already accepted waits while that ancestor
+// stands in retro or merging before anything starts it (record.AcceptedAncestor, which the
+// waiting line reads),
 // and the architect above the child is told so here. The two doors an agent uses refuse such a
 // child outright (api's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own move
 // to todo, which the daemon records rather than undoes: the record is the honest one, and the
