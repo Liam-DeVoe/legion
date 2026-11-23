@@ -450,7 +450,7 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		// titled after the issue, which its title attributes; and 62, whose title, body and
 		// branch name no issue, so its commit messages are read, and GitHub refuses that read
 		// for a rate limit. The read-through answers 61's row with the refusal
-		// (delivery.ReadCommitPulls), and the writer's read stores that row.
+		// (delivery.Attributor.ReadCommitPulls), and the writer's read stores that row.
 		pair.github.answersPulls(func(string) string {
 			return "[" + parityOpenPullTitled(61, headCommit, issue+" the work") + "," +
 				parityOpenPullTitled(62, newHeadCommit, "Tidy the build") + "]"

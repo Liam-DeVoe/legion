@@ -242,10 +242,11 @@ type packageSource struct {
 	values map[string]bool
 	// types is every package-level type, by name.
 	types map[string]*ast.TypeSpec
-	// refers is the names each function, method, constant and variable refers to, by its key.
+	// refers is the names each function, method, constant, variable and headsStatement field a
+	// literal sets (declare) refers to, by its key.
 	refers map[string]map[string]bool
 	// declared is the keys a name may refer to: a function, a constant or a variable of that
-	// name, and every method of that name.
+	// name, every method of that name, and every headsStatement field of that name a literal sets.
 	declared map[string][]string
 }
 
@@ -257,7 +258,8 @@ type packageFunction struct {
 }
 
 // parsePackageSource parses the non-test files go build selects for the package in the test's
-// own directory.
+// own directory. It reads every file's types before any function or value, so declare finds the
+// struct type of a literal whichever file declares it.
 func parsePackageSource(t *testing.T) *packageSource {
 	t.Helper()
 	listed, err := build.ImportDir(".", 0)
@@ -271,11 +273,24 @@ func parsePackageSource(t *testing.T) *packageSource {
 		refers:    map[string]map[string]bool{},
 		declared:  map[string][]string{},
 	}
+	var files []*ast.File
 	for _, name := range listed.GoFiles {
 		file, err := parser.ParseFile(source.positions, name, nil, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
+		files = append(files, file)
+		for _, decl := range file.Decls {
+			if decl, isGeneral := decl.(*ast.GenDecl); isGeneral {
+				for _, spec := range decl.Specs {
+					if spec, isType := spec.(*ast.TypeSpec); isType {
+						source.types[spec.Name.Name] = spec
+					}
+				}
+			}
+		}
+	}
+	for _, file := range files {
 		for _, decl := range file.Decls {
 			switch decl := decl.(type) {
 			case *ast.FuncDecl:
@@ -287,17 +302,16 @@ func parsePackageSource(t *testing.T) *packageSource {
 				source.declare(decl.Name.Name, key, decl.Body)
 			case *ast.GenDecl:
 				for _, spec := range decl.Specs {
-					switch spec := spec.(type) {
-					case *ast.TypeSpec:
-						source.types[spec.Name.Name] = spec
-					case *ast.ValueSpec:
-						for _, name := range spec.Names {
-							if name.Name == "_" {
-								continue
-							}
-							source.values[name.Name] = true
-							source.declare(name.Name, name.Name, spec)
+					spec, isValue := spec.(*ast.ValueSpec)
+					if !isValue {
+						continue
+					}
+					for _, name := range spec.Names {
+						if name.Name == "_" {
+							continue
 						}
+						source.values[name.Name] = true
+						source.declare(name.Name, name.Name, spec)
 					}
 				}
 			}
@@ -306,51 +320,66 @@ func parsePackageSource(t *testing.T) *packageSource {
 	return source
 }
 
-// declare records key, which name refers to, and the names node refers to as key's. A field that
-// a composite literal of a package type sets is a declaration of its own, keyed Type.field under
-// the field's name, which refers to the names of every value a literal sets it to, and the
-// declaration holding the literal refers to none of them: storing a value runs nothing, and a
-// selector of the field's name, such as a method's read of its receiver's field, reaches what was
-// stored. So the statement of a read that a constructor builds once into its type, as
-// NewAttributor builds the Attributor's from the rename pairs, is reached from the method that
-// reads the field it is held in, and not from the constructor.
+// declare records key, which name refers to, and the names node refers to as key's: every
+// identifier in it, but the field and the value of a headsStatement field a literal sets. A keyed
+// field of a composite literal of a package struct type, where that type declares the field a
+// headsStatement, is a declaration of its own, keyed Type.field under the field's name, which
+// refers to the names in the value the literal sets it to. A constructor that builds a read's
+// statement once into its type, as NewAttributor builds the Attributor's from the rename pairs,
+// stores the statement and runs nothing, and the method that reads the field runs it: so the
+// statement is reached from that method, and not from the constructor. Every other literal,
+// field and value is read as the declaration holding it.
 func (s *packageSource) declare(name, key string, node ast.Node) {
-	if !slices.Contains(s.declared[name], key) {
-		s.declared[name] = append(s.declared[name], key)
-	}
-	refers := s.refers[key]
-	if refers == nil {
-		refers = map[string]bool{}
-		s.refers[key] = refers
-	}
-	if node == nil {
-		return
-	}
-	var visit func(ast.Node) bool
-	visit = func(node ast.Node) bool {
-		switch node := node.(type) {
-		case *ast.Ident:
-			refers[node.Name] = true
-		case *ast.CompositeLit:
-			typeName, ofPackageType := node.Type.(*ast.Ident)
-			if !ofPackageType {
-				return true
-			}
-			refers[typeName.Name] = true
-			for _, element := range node.Elts {
-				if field, keyed := element.(*ast.KeyValueExpr); keyed {
-					if fieldName, named := field.Key.(*ast.Ident); named {
-						s.declare(fieldName.Name, typeName.Name+"."+fieldName.Name, field.Value)
-						continue
-					}
+	s.declared[name] = append(s.declared[name], key)
+	refers := map[string]bool{}
+	if node != nil {
+		var visit func(ast.Node) bool
+		visit = func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.Ident:
+				refers[node.Name] = true
+			case *ast.CompositeLit:
+				typeName, named := node.Type.(*ast.Ident)
+				if !named {
+					return true
 				}
-				ast.Inspect(element, visit)
+				refers[typeName.Name] = true
+				for _, element := range node.Elts {
+					if field, keyed := element.(*ast.KeyValueExpr); keyed {
+						if fieldName, isIdent := field.Key.(*ast.Ident); isIdent && s.holdsHeadsStatement(typeName.Name, fieldName.Name) {
+							s.declare(fieldName.Name, typeName.Name+"."+fieldName.Name, field.Value)
+							continue
+						}
+					}
+					ast.Inspect(element, visit)
+				}
+				return false
 			}
-			return false
+			return true
 		}
-		return true
+		ast.Inspect(node, visit)
 	}
-	ast.Inspect(node, visit)
+	s.refers[key] = refers
+}
+
+// holdsHeadsStatement is whether typeName is a struct type of the package that declares field a
+// headsStatement.
+func (s *packageSource) holdsHeadsStatement(typeName, field string) bool {
+	spec, declared := s.types[typeName]
+	if !declared {
+		return false
+	}
+	structure, isStruct := spec.Type.(*ast.StructType)
+	if !isStruct {
+		return false
+	}
+	for _, declaredField := range structure.Fields.List {
+		fieldType, named := declaredField.Type.(*ast.Ident)
+		if named && fieldType.Name == "headsStatement" && slices.Contains(fieldNames(declaredField), field) {
+			return true
+		}
+	}
+	return false
 }
 
 // declaresFunction is whether key is a function or method of the package.
@@ -364,11 +393,11 @@ func (s *packageSource) declaresFunction(key string) bool {
 }
 
 // reaches is whether from refers to target, directly or through the package's functions,
-// methods, constants, variables and the fields its literals set (declare), never through the
-// declaration keyed avoid ("" avoids none). A name is read as every declaration of the package it
-// could refer to, so a method call reaches every method of that name and a field's read every
-// value a literal sets a field of that name to: the test asks whether the statement is run at all,
-// not by which path.
+// methods, constants, variables and the headsStatement fields its literals set (declare), never
+// through the declaration keyed avoid ("" avoids none). A name is read as every declaration of the
+// package it could refer to, so a method call reaches every method of that name and a field's
+// read every value a literal sets a headsStatement field of that name to: the test asks whether
+// the statement is run at all, not by which path.
 func (s *packageSource) reaches(from, target, avoid string) bool {
 	seen := map[string]bool{from: true, avoid: true}
 	next := []string{from}
