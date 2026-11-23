@@ -7,6 +7,11 @@ import {
   chartGroupOther,
   chartNotStartedGrey,
   chartState,
+  chartStateAttentionText,
+  chartStateContextText,
+  chartStateNotStartedText,
+  chartStatePartialText,
+  chartStateProvedText,
 } from "../../../theme/classes";
 import type { ChartModel, ChartRenderer, EvalRange } from "../chart-model";
 import type { DeclaredReading } from "./readings";
@@ -169,3 +174,13 @@ export function toneClasses(
   }
   return chartState[tone];
 }
+
+/** The colour of the text that states a mark's state (a grid's cell, a lane's end text, a
+ *  number's tile), as the eval platform colours the text rather than drawing a swatch beside it. */
+export const STATE_TEXT: Readonly<Record<MarkState, string>> = {
+  attention: chartStateAttentionText,
+  context: chartStateContextText,
+  "not-started": chartStateNotStartedText,
+  partial: chartStatePartialText,
+  proved: chartStateProvedText,
+};

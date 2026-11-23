@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { createElement } from "react";
 
 import type { EvalItemRow } from "../../../api/types";
+import { chartStateAttentionText } from "../../../theme/classes";
 import type { EvalRange } from "../chart-model";
 import { EvalChart } from "../EvalChart";
 import fixture from "./__fixtures__/number-readings.json";
@@ -462,14 +463,21 @@ test.each([
   );
 });
 
-test("the drawing: a tile's state bar, a count's dot in its row's colour, each section after its chart, the compare beside each value", () => {
+test("the drawing: a tile's value in its state's colour, a count's dot in its row's colour, each section after its chart, the compare beside each value", () => {
   render(createElement(EvalChart, { model: model(TILES), renderer: numberKind.renderer }));
   const figure = screen.getByRole("figure", { name: "Where the proofs stand" });
   const wait = figure.querySelector('[data-number-place="wait-hours"]');
   expect(wait?.getAttribute("data-state")).toBe("attention");
-  expect(wait?.querySelector('[title="attention"]')?.getAttribute("class")).toContain(
-    "bg-orange-700"
-  );
+  // The platform colours the text that states the state, with no swatch beside it.
+  expect(
+    wait?.querySelector('[data-statistic="value"][data-range="window"]')?.getAttribute("class")
+  ).toContain(chartStateAttentionText);
+  expect(wait?.querySelector('[class*="bg-orange"]')).toBeNull();
+  expect(
+    figure
+      .querySelector('[data-number-place="proved"] [data-statistic="value"][data-range="window"]')
+      ?.getAttribute("class")
+  ).not.toContain("text-orange");
   expect(wait?.textContent).toContain("from 90 tasks");
   expect(wait?.textContent).toContain("[30.0 h, 52.0 h] (lowest to highest task)");
   expect(figure.querySelector('[data-number-place="proved"]')?.textContent).toContain(

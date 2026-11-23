@@ -1,6 +1,6 @@
 // The renderer of a `grid` (dispatch://INFRA-2918/artifact/plan-md, D10): the readings matrix as
 // a table of cells, each printing what its reading supplies on its own lines, shaded by its value
-// or its share of its total or marked with its state, under a key of the shade or the states; a
+// or its share of its total or coloured by its state, under a key of the shade or the states; a
 // grid of more than 1,000 cells as an SVG of 18 px squares with each cell in its hover text, and
 // one of more than 10,000 as a line that says so. While the compare range is shown, each cell the
 // compare range holds prints its compare value and change as a muted ghost under its own (on a
@@ -20,7 +20,7 @@ import {
 } from "../../../theme/classes";
 import type { ChartModel, ChartRendererProps } from "../chart-model";
 import type { GridKeyEntry, GridLine, GridModel, GridPoint, GridSeries } from "./grid";
-import { type Tone, toneClasses } from "./kind";
+import { STATE_TEXT, type Tone, toneClasses } from "./kind";
 
 /** A shade's opacity at its lowest and its highest (from about #eff5fb to #9cbcdf on white). */
 const SHADE_LOW = 0.07;
@@ -179,11 +179,14 @@ function Cell({
   point: GridPoint;
   series: GridSeries;
 }): ReactNode {
-  const { grid } = model;
   return (
     <td
       className={`relative border ${borderDefault} px-2 py-1 align-top ${
-        point.held ? textPrimaryOnSurface : textMutedOnSurface
+        point.state !== null
+          ? STATE_TEXT[point.state]
+          : point.held
+            ? textPrimaryOnSurface
+            : textMutedOnSurface
       }`}
       data-cell-shade={point.shade === null ? undefined : point.shade.toFixed(3)}
       data-cell-state={point.state ?? undefined}
@@ -198,11 +201,6 @@ function Cell({
         />
       )}
       <span className="relative flex items-start gap-1">
-        {point.state === null ? null : (
-          <span className="pt-0.5">
-            <Swatch notStartedGrey={grid.notStartedGrey} tone={point.state} />
-          </span>
-        )}
         <span className="flex flex-col">
           {point.lines.map((line, index) => (
             <Line

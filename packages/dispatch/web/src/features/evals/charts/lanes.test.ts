@@ -7,7 +7,7 @@ import type { EvalItemRow } from "../../../api/types";
 import type { EvalRange } from "../chart-model";
 import { EvalChart } from "../EvalChart";
 import fixture from "./__fixtures__/lanes-readings.json";
-import type { DeclaredInput, DeclaredSpec } from "./kind";
+import { type DeclaredInput, type DeclaredSpec, type MarkState, STATE_TEXT } from "./kind";
 import { type LanesModel, lanesKind } from "./lanes";
 import { readingsOf } from "./readings";
 
@@ -550,6 +550,14 @@ test("the chart draws each lane's states, marks, end and cells, the dated rules,
     "Waits on us",
     "",
   ]);
+  // Each end text is written in its state's colour, with no swatch beside it (ledger 38).
+  const ends = [...figure.querySelectorAll("[data-lane-end][data-state]")];
+  expect(ends.length).toBe(4);
+  for (const end of ends) {
+    const state = end.getAttribute("data-state") as MarkState;
+    expect(end.getAttribute("class")).toContain(STATE_TEXT[state]);
+    expect(end.querySelector("svg")).toBeNull();
+  }
   expect(figure.querySelector("[data-lane-rules]")?.textContent).toBe("Launchfirst wave");
   expect(within(figure).getByText("Project")).toBeTruthy();
   expect(within(figure).getByText("Where it stands")).toBeTruthy();

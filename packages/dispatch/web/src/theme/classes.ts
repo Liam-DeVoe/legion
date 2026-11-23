@@ -1348,6 +1348,26 @@ export const chartState = {
 /** A `not-started` mark's outline where its chart sets `not_started_outline: "grey"`. */
 export const chartNotStartedGrey = "stroke-slate-400 dark:stroke-slate-500";
 
+/** A declared chart's state as the colour of the text that states it, as the eval platform
+ *  colours it: a grid's cell, a lane's end text and a number's tile (the marks draw in
+ *  `chartState`). Text that a chart draws on the surface, so each is registered against it;
+ *  `not-started` is the muted text of a number not yet begun. */
+export const CHART_STATE_PROVED_TEXT = pair(P.BLUE_700, P.BLUE_400);
+export const CHART_STATE_PARTIAL_TEXT = pair(P.BLUE_600, P.BLUE_300);
+export const CHART_STATE_ATTENTION_TEXT = pair(P.ORANGE_700, P.ORANGE_400);
+export const CHART_STATE_CONTEXT_TEXT = pair(P.SLATE_600, P.SLATE_400);
+export const CHART_STATE_NOT_STARTED_TEXT = TEXT_MUTED;
+export const chartStateProvedText = "text-blue-700 dark:text-blue-400";
+export const chartStatePartialText = "text-blue-600 dark:text-blue-300";
+export const chartStateAttentionText = "text-orange-700 dark:text-orange-400";
+export const chartStateContextText = "text-slate-600 dark:text-slate-400";
+export const chartStateNotStartedText = "text-slate-500 dark:text-slate-400";
+registerText("proved chart state text on surface", CHART_STATE_PROVED_TEXT, SURFACE);
+registerText("partial chart state text on surface", CHART_STATE_PARTIAL_TEXT, SURFACE);
+registerText("attention chart state text on surface", CHART_STATE_ATTENTION_TEXT, SURFACE);
+registerText("context chart state text on surface", CHART_STATE_CONTEXT_TEXT, SURFACE);
+registerText("not-started chart state text on surface", CHART_STATE_NOT_STARTED_TEXT, SURFACE);
+
 /** A declared chart's plot: its axes' ticks and titles, its gridlines, its reference rules and
  *  bands, an annotation's span, a mock-up's hatching and the brush that zooms it. */
 export const chartPlot = {

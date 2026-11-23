@@ -2,7 +2,7 @@
 // its headline with the numbers beside it, then each of its sections, a title over a row of tiles
 // and a line of counts. A small number draws its value large, its total after "of", its date where
 // the model gives one, its label, and a grey line of its count ("from 90 tasks"), its interval and
-// its reading's note; a tile's state is a bar in the state's colour beside it, and a count's dot
+// its reading's note; a tile's value is written in its state's colour, and a count's dot
 // takes its row's colour. While the compare range is shown, each value prints its compare value
 // and its change beside it. Each figure names itself as the chart's table names it (`FigureText`).
 import type { ReactNode } from "react";
@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 import { textMutedOnSurface, textPrimaryOnSurface } from "../../../theme/classes";
 import type { ChartRendererProps } from "../chart-model";
 import { ComparedText, type FigurePlace, FigureText } from "./FigureText";
-import { toneClasses } from "./kind";
+import { STATE_TEXT, toneClasses } from "./kind";
 import { isNumberModel, type NumberModel, type NumberPoint } from "./number-model";
 
 function placeOf(model: NumberModel, point: NumberPoint): FigurePlace {
@@ -77,17 +77,14 @@ function SmallNumber(props: {
       data-number-part={point.part}
       data-number-place={point.x}
       data-state={point.state ?? undefined}
+      title={point.state ?? undefined}
     >
-      {point.state === null ? null : (
-        <span
-          className={`w-1 shrink-0 rounded-sm ${toneClasses(point.state, false).swatch}`}
-          title={point.state}
-        />
-      )}
       <div className="flex min-w-0 flex-col">
         <span className={`flex flex-wrap items-baseline gap-x-1 ${textPrimaryOnSurface}`}>
           <Valued
-            className={`${point.part === "headline" ? "text-[22px]" : "text-[15px]"} font-semibold`}
+            className={`${point.part === "headline" ? "text-[22px]" : "text-[15px]"} font-semibold ${
+              point.state === null ? "" : STATE_TEXT[point.state]
+            }`}
             place={place}
           />
           {point.date === null ? null : (

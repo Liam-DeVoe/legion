@@ -8,7 +8,7 @@ import type { EvalRange } from "../chart-model";
 import { EvalChart } from "../EvalChart";
 import fixture from "./__fixtures__/grid-readings.json";
 import { type GridModel, type GridSeries, gridKind } from "./grid";
-import type { DeclaredInput, DeclaredSpec } from "./kind";
+import { type DeclaredInput, type DeclaredSpec, type MarkState, STATE_TEXT } from "./kind";
 import { readingsOf } from "./readings";
 
 // The grid kind (dispatch://INFRA-2918/artifact/plan-md, D10, T20): its model's values, states,
@@ -304,6 +304,36 @@ test("value_states: each cell takes the state of the last entry its value reache
       ],
     }).grid.notStartedGrey
   ).toBe(true);
+});
+
+// Ledger 38: the platform colours a cell's text by its state, with no swatch beside it.
+test("value_states: a cell's text is written in its state's colour, with no swatch beside it", () => {
+  const drawn = model({
+    ...AUDIT,
+    value_states: [
+      { label: "Fails", state: "attention" },
+      { from: 1, label: "Passes", state: "proved" },
+    ],
+  });
+  render(createElement(EvalChart, { model: drawn, renderer: gridKind.renderer }));
+  const cells = [...document.querySelectorAll("td[data-grid-cell]")];
+  const stated = cells.filter((cell) => cell.hasAttribute("data-cell-state"));
+  expect(stated.map((cell) => cell.getAttribute("data-cell-state")).sort()).toEqual([
+    "attention",
+    "proved",
+    "proved",
+    "proved",
+  ]);
+  for (const cell of stated) {
+    const state = cell.getAttribute("data-cell-state") as MarkState;
+    expect(cell.getAttribute("class")).toContain(STATE_TEXT[state]);
+    expect(cell.querySelector("svg")).toBeNull();
+  }
+  // A cell with no state keeps the plain text colours: none of this grid's states' colours.
+  for (const cell of cells.filter((one) => !one.hasAttribute("data-cell-state"))) {
+    expect(cell.getAttribute("class")).not.toContain(STATE_TEXT.proved);
+    expect(cell.getAttribute("class")).not.toContain(STATE_TEXT.attention);
+  }
 });
 
 test("the compare range: each cell's newest compare reading and its change, and none with no compare range", () => {

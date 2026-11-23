@@ -20,9 +20,8 @@ import {
   textSecondaryOnCanvas,
 } from "../../../theme/classes";
 import type { ChartModel, ChartPoint, ChartRendererProps } from "../chart-model";
-import { Swatch } from "./GridRenderer";
 import { timeLabel } from "./grid";
-import { toneClasses } from "./kind";
+import { STATE_TEXT, toneClasses } from "./kind";
 import type { Lane, LaneRange, LaneSpan, LanesModel } from "./lanes";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -478,13 +477,12 @@ export function LanesRenderer({ compare, model }: ChartRendererProps): ReactNode
                       place={place}
                     />
                   </span>
-                  <span className={`${row} gap-1 ${textPrimaryOnSurface}`} data-lane-end>
-                    {lane.end === null ? null : (
-                      <>
-                        <Swatch notStartedGrey={plot.notStartedGrey} tone={lane.end.state} />
-                        {lane.end.text}
-                      </>
-                    )}
+                  <span
+                    className={`${row} gap-1 ${lane.end === null ? textPrimaryOnSurface : STATE_TEXT[lane.end.state]}`}
+                    data-lane-end
+                    data-state={lane.end?.state}
+                  >
+                    {lane.end?.text}
                   </span>
                 </div>
               );
