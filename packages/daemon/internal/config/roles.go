@@ -60,7 +60,7 @@ var builtinTypes = []plan.Type{plan.TypeDesign, plan.TypePlanning, plan.TypeImpl
 // owner, and the name of no role, claim, token or slot.
 func legionName(name string) bool {
 	role := claim.Role(name)
-	if slices.Contains(claim.Roles, role) || role == claim.RoleController {
+	if slices.Contains(claim.Roles, role) || role == claim.RoleController || role == claim.RoleSubOwner {
 		return true
 	}
 	_, builtin := plan.BuiltinRoles()[name]

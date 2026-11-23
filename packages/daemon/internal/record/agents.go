@@ -24,7 +24,7 @@ const subOwnerPrefix = string(claim.RoleSubOwner) + "-"
 // bytes. So one task has one sub-owner, in one session, for every version and generation of its
 // issue. The name is derived, never stored. No step's agent has such a name (IsSubOwnerAgent).
 func SubOwnerAgent(task string) claim.Agent {
-	if name := subOwnerPrefix + plan.TaskSlug(task); len(name) <= 1<<10 {
+	if name := subOwnerPrefix + plan.TaskSlug(task); len(name) <= maxAgentName {
 		return claim.Agent(name)
 	}
 	sum := sha256.Sum256([]byte(task))
