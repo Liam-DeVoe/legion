@@ -307,16 +307,18 @@ func implementerAsked(at phase.Phase, why record.ConflictWhy) record.MergeForwar
 // last step is the implementer's is held before its retro while an issue beneath it is still in
 // the workflow (holdBeforeRetro), and the hold is that next phase: it asks again, as the move into
 // the retro does, the implementer being the retro's worker too, with one checks-red notice naming
-// retro. The control is the same parent with nothing beneath it, which moves into its retro.
+// retro, whose sentence says the issue stays held from retro, since it stands in held. The control
+// is the same parent with nothing beneath it, which moves into its retro and stays in it.
 func TestAParentHeldBeforeItsRetroIsAskedAgainWhatImplementingAsked(t *testing.T) {
 	unread := &record.BaseRules{Unread: "HTTP 502"}
 	for _, tc := range []struct {
 		name  string
 		child bool
 		at    phase.Phase
+		stays string
 	}{
-		{name: "held before its retro for an issue beneath it", child: true, at: phase.Held},
-		{name: "control: nothing beneath it, into its retro", at: phase.Retro},
+		{name: "held before its retro for an issue beneath it", child: true, at: phase.Held, stays: "the issue stays held from retro"},
+		{name: "control: nothing beneath it, into its retro", at: phase.Retro, stays: "the issue stays in retro"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := plannedConflictIssue(t, phase.Implementing, settledGreen("lint"), "implementer")
@@ -336,8 +338,12 @@ func TestAParentHeldBeforeItsRetroIsAskedAgainWhatImplementingAsked(t *testing.T
 			if told := capNotices(t, pool, "checks-red"); told != 1 {
 				t.Fatalf("%d checks-red notices, want one", told)
 			}
-			if _, stays := checksRedNotice(t, pool); stays != phase.Retro {
+			reason, stays := checksRedNotice(t, pool)
+			if stays != phase.Retro {
 				t.Fatalf("the checks-red notice names %s, want retro", stays)
+			}
+			if !strings.HasSuffix(reason, tc.stays) {
+				t.Fatalf("the checks-red notice says %q, want it to end %q", reason, tc.stays)
 			}
 		})
 	}

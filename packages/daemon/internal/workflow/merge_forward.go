@@ -81,8 +81,14 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		}
 	}
 	if at != phase.Implementing {
-		reason := fmt.Sprintf("the head %s conflicts with %s (%s): the %s is asked to merge %s forward, and the issue stays in %s",
-			pr.HeadSHA, pr.Base, why, asker, pr.Base, at)
+		// A held issue stands in held, not in the phase its hold came from (StandsAt), such as a
+		// parent held before its retro for the issues beneath it (holdBeforeRetro).
+		stays := "stays in " + string(at)
+		if issue.Phase == phase.Held {
+			stays = "stays held from " + string(at)
+		}
+		reason := fmt.Sprintf("the head %s conflicts with %s (%s): the %s is asked to merge %s forward, and the issue %s",
+			pr.HeadSHA, pr.Base, why, asker, pr.Base, stays)
 		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: at, Reason: reason}); err != nil {
 			return err
 		}
