@@ -86,7 +86,7 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 			{Name: "standard", Kind: "string"}, {Name: "reference", Kind: "string"}, {Name: "measurement", Kind: "string"},
 			{Name: "value", Kind: "string"}, {Name: "taken_where", Kind: "string"},
 		},
-		graphstore.KindInteraction: {{Name: "words", Kind: "string"}, {Name: "ends_at", Kind: "timestamp"}, {Name: "frame", Kind: "string"}},
+		graphstore.KindInteraction: {{Name: "words", Kind: "string"}, {Name: "ends_at", Kind: "timestamp"}, {Name: "frame", Kind: "string"}, {Name: "source", Kind: "string"}},
 		graphstore.KindComment:     {},
 	} {
 		held, listed := types[name]
