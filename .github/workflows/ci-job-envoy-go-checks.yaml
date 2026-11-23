@@ -133,6 +133,12 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The cluster suite's render of nats.yaml runs this helm, the version render-nats.sh pins,
+      # instead of building helm with `go run`, which downloads and compiles it first: the render
+      # took 40.6 s that way in job 137308591036, 60.0 s in job 137294623668 and 52.1 s in job
+      # 137388344183. It is a step before the pool's first start, since a harness started in the
+      # background takes the PATH the steps before it left.
+      - uses: ./.github/actions/install-helm
       # The script harnesses of the module, each a bash script of fakes that mostly waits on its
       # fakes' answers, polls and deadlines rather than computing. As one step after another they
       # were 944 s of this job's 1,292 s median (n=724 green pull-request jobs, 2026-11-22) while the
