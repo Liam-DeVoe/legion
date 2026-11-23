@@ -109,6 +109,7 @@ func priorityIDCutProblem(slug, id string) string {
 // a word within priorityIDMax; a hashed id is the rule's hash of the title, for a title with no
 // ASCII letter or digit or one whose cut is none or any.
 func TestPriorityIDFromTitle(t *testing.T) {
+	t.Parallel()
 	for _, priorityCase := range readPriorityIDCases(t) {
 		title := priorityCase.Title
 		id := priorityIDFromTitle(title)
@@ -138,6 +139,7 @@ func TestPriorityIDFromTitle(t *testing.T) {
 // keyword. The refused writes leave the store as it was: it holds the cases' priorities and
 // nothing else.
 func TestPriorityIDFromTitleThroughTheRoute(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	var accepted []string
 	for _, priorityCase := range readPriorityIDCases(t) {

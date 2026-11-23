@@ -25,6 +25,7 @@ import (
 )
 
 func TestPriorityPatchExpected(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	const id = "ship-the-daemon"

@@ -18,6 +18,7 @@ import (
 // draws as inline HTML, and emphasis nested 4,000 deep, which the reading holds as its own
 // characters. A read without `Dispatch-Trees: 1` carries neither field.
 func TestAPriorityDescriptionTreeSaysWhetherItIsExact(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	cases := []struct {
 		id, description string
