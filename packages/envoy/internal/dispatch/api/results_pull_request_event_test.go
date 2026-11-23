@@ -2,11 +2,7 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,11 +11,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -93,32 +87,7 @@ func requireTheEventsHeadWithinTheBound(t *testing.T, poisonBefore int) {
 		t.Fatal("the deployment holds delivery settings, want none: the case is a deployment that never configured the delivery timeline")
 	}
 
-	_, natsURL := testnats.Start(t)
-	publisher, err := bus.ConnectOwningStream([]string{natsURL})
-	if err != nil {
-		t.Fatalf("connect the publisher: %v", err)
-	}
-	t.Cleanup(publisher.Close)
-	callers, err := database.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the lease pool: %v", err)
-	}
-	leases, err := delivery.ReserveIntakeLeases(callers)
-	if err != nil {
-		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
-		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, leases, served.deps.GitHub, served.deps.Events, nil, nil, served.deps.Attributor)
-	if err != nil {
-		cancel()
-		t.Fatalf("start the intakes: %v", err)
-	}
-	t.Cleanup(func() {
-		cancel()
-		stopIntakes()
-	})
+	publisher := startNoSettingsIntakes(t, database, served)
 
 	updated := time.Now().UTC().Format(time.RFC3339)
 	fake.pullAnswers(func(repo, number string) string {
@@ -204,9 +173,9 @@ func requireTheEventsHeadWithinTheBound(t *testing.T, poisonBefore int) {
 	}
 }
 
-// durableState says what the NATS server holds of the delivery intake's durable, for the
-// failure above: absent, unbound or bound, so a red run names whether the intake ever took the
-// event at all.
+// durableState says what the NATS server holds of the delivery intake's durable, for a failure of
+// the tests that start the intakes: absent, unbound or bound, so a red run names whether the intake
+// ever took the event at all.
 func durableState(client *bus.Client) string {
 	info, err := client.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 	if err != nil {
@@ -214,6 +183,42 @@ func durableState(client *bus.Client) string {
 	}
 	return fmt.Sprintf("bound=%v, delivered through stream sequence %d, acknowledged through %d",
 		info.PushBound, info.Delivered.Stream, info.AckFloor.Stream)
+}
+
+// startNoSettingsIntakes starts the delivery intakes of served as the process starts them
+// (delivery.StartIntakes), on a NATS server of the test's own, with database's pool, the intakes'
+// callers of its lease pool and no delivery settings, and answers a publisher that owns the
+// stream: what it publishes is the intakes' input. The intakes stop, and then the publisher
+// closes, when the test ends.
+func startNoSettingsIntakes(t *testing.T, database *store.Store, served *server) *bus.Client {
+	t.Helper()
+	_, natsURL := testnats.Start(t)
+	publisher, err := bus.ConnectOwningStream([]string{natsURL})
+	if err != nil {
+		t.Fatalf("connect the publisher: %v", err)
+	}
+	t.Cleanup(publisher.Close)
+	callers, err := database.Pool.Leases()
+	if err != nil {
+		t.Fatalf("open the lease pool: %v", err)
+	}
+	leases, err := delivery.ReserveIntakeLeases(callers)
+	if err != nil {
+		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
+		return bus.Connect([]string{natsURL}, bus.WithName(name))
+	}, database.Pool, leases, served.deps.GitHub, served.deps.Events, nil, nil, served.deps.Attributor)
+	if err != nil {
+		cancel()
+		t.Fatalf("start the intakes: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		stopIntakes()
+	})
+	return publisher
 }
 
 // A pull request GitHub closed stops being the head a check CI proves is read at, within the same
@@ -246,7 +251,7 @@ func TestAPullRequestClosedEventMovesTheCIReadToTheOpenHeadWithNoDeliverySetting
 	// GitHub's answers name the issue and the moment GitHub closed #9: both are set below, before
 	// anything reads a pull request from GitHub.
 	var issueKey, branch, closedAt string
-	handler, database, served := closedNegativeControlGitHub(t, runs, func(number string) string {
+	handler, database, served := oneRepositoryGitHub(t, "acme/widgets", runs, func(number string) string {
 		switch number {
 		case "5":
 			return fmt.Sprintf(`{"number":5,"title":%q,"body":"","state":"open","merged":false,"merged_at":null,
@@ -293,32 +298,7 @@ func TestAPullRequestClosedEventMovesTheCIReadToTheOpenHeadWithNoDeliverySetting
 		t.Fatalf("before #9's closed event, c1 holds %+v, want no result: run 42 was cancelled", before.Results)
 	}
 
-	_, natsURL := testnats.Start(t)
-	publisher, err := bus.ConnectOwningStream([]string{natsURL})
-	if err != nil {
-		t.Fatalf("connect the publisher: %v", err)
-	}
-	t.Cleanup(publisher.Close)
-	callers, err := database.Pool.Leases()
-	if err != nil {
-		t.Fatalf("open the lease pool: %v", err)
-	}
-	leases, err := delivery.ReserveIntakeLeases(callers)
-	if err != nil {
-		t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
-		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, leases, served.deps.GitHub, served.deps.Events, nil, nil, served.deps.Attributor)
-	if err != nil {
-		cancel()
-		t.Fatalf("start the intakes: %v", err)
-	}
-	t.Cleanup(func() {
-		cancel()
-		stopIntakes()
-	})
+	publisher := startNoSettingsIntakes(t, database, served)
 
 	closedAt = time.Now().UTC().Format(time.RFC3339)
 	payload, err := json.Marshal(map[string]string{
@@ -374,61 +354,4 @@ func TestAPullRequestClosedEventMovesTheCIReadToTheOpenHeadWithNoDeliverySetting
 	if stood := check.PassStands; stood.Answer != model.PassStandsYes {
 		t.Fatalf("c1 answers pass_stands %+v, want yes", stood)
 	}
-}
-
-// closedNegativeControlGitHub is a Dispatch with no delivery settings whose GitHub serves
-// acme/widgets: the App is installed there and nowhere else, GitHub names no pull request for any
-// commit (so no read-through writes a head row), each pull request's commits are an empty page,
-// runs lists each commit's check runs, and pull answers GET /repos/{owner}/{repo}/pulls/{number}
-// of acme/widgets, "" being GitHub's 404. The case above needs the check runs and the read of one
-// pull request both: readThroughGitHub serves no check runs, and resultsGitHubCheckRuns no read of
-// a pull request and no server for the intakes.
-func closedNegativeControlGitHub(t *testing.T, runs *checkRunsFake, pull func(number string) string) (http.Handler, *store.Store, *server) {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate fixture key: %v", err)
-	}
-	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("owner")+"/"+r.PathValue("repo") != "acme/widgets" {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, `{"message":"Not Found"}`)
-			return
-		}
-		fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read","checks":"read"}}`)
-	})
-	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
-	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
-	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `[]`)
-	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
-		body := ""
-		if r.PathValue("owner")+"/"+r.PathValue("repo") == "acme/widgets" {
-			body = pull(r.PathValue("number"))
-		}
-		if body == "" {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, `{"message":"Not Found"}`)
-			return
-		}
-		fmt.Fprint(w, body)
-	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `[]`)
-	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", runs.serve)
-	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: upstream,
-	})
-	return handler, database, served
 }

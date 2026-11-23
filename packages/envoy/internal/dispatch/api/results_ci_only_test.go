@@ -21,13 +21,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
-	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // ciOnlyBound is how long a case waits for the results read to compare its check with the pull
@@ -50,17 +48,50 @@ type ciOnlyWorld struct {
 
 func newCIOnlyWorld(t *testing.T, project string, pull func(issue string) (branch, body string)) ciOnlyWorld {
 	t.Helper()
+	runs := newCheckRunsFake()
+	runs.set(headCommit, completedRun(31, ciCheckRun, "success"))
+	var issueKey string
+	handler, database, served := oneRepositoryGitHub(t, "acme/tools", runs, func(number string) string {
+		if number != "12" {
+			return ""
+		}
+		branch, body := pull(issueKey)
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Errorf("encode the body of #12: %v", err)
+		}
+		return fmt.Sprintf(`{"number":12,"title":"A change","body":%s,"html_url":"https://github.com/acme/tools/pull/12",
+			"state":"open","merged":false,"merged_at":null,"updated_at":"2026-11-22T06:31:03Z",
+			"head":{"ref":%q,"sha":%q,"repo":{"full_name":"acme/tools"}},"base":{"ref":"main"}}`,
+			encoded, branch, headCommit)
+	})
+	issue := issueInRepository(t, handler, project, "acme/tools", "CI proves it")
+	issueKey = issue.Key
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		":::check{#c1 "+ciCheckKept+"}\nThe tests pass at the head.\n:::\n")
+	if _, err := delivery.GetSettings(context.Background(), database.Pool); err == nil {
+		t.Fatal("the deployment holds delivery settings, want none: production held none")
+	}
+	return ciOnlyWorld{t: t, handler: handler, database: database, served: served, issue: issue.Key}
+}
+
+// oneRepositoryGitHub is a Dispatch with no delivery settings whose GitHub serves repo alone: the
+// App is installed there and nowhere else, GitHub names no pull request for any commit (so no
+// read-through writes a head row), each pull request's commits are an empty page, runs lists each
+// commit's check runs, and pull answers GET /repos/{owner}/{repo}/pulls/{number} of repo, ""
+// being GitHub's 404. A case that reads a check CI proves and a pull request the intake or the
+// reconcile reads needs both: readThroughGitHub serves no check runs, and resultsGitHubCheckRuns
+// no read of a pull request and no server for the intakes.
+func oneRepositoryGitHub(t *testing.T, repo string, runs *checkRunsFake, pull func(number string) string) (http.Handler, *store.Store, *server) {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	runs := newCheckRunsFake()
-	runs.set(headCommit, completedRun(31, ciCheckRun, "success"))
-	var issueKey string
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("owner")+"/"+r.PathValue("repo") != "acme/tools" {
+		if r.PathValue("owner")+"/"+r.PathValue("repo") != repo {
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Not Found"}`)
 			return
@@ -78,20 +109,16 @@ func newCIOnlyWorld(t *testing.T, project string, pull func(issue string) (branc
 		fmt.Fprint(w, `[]`)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("owner")+"/"+r.PathValue("repo") != "acme/tools" || r.PathValue("number") != "12" {
+		body := ""
+		if r.PathValue("owner")+"/"+r.PathValue("repo") == repo {
+			body = pull(r.PathValue("number"))
+		}
+		if body == "" {
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Not Found"}`)
 			return
 		}
-		branch, body := pull(issueKey)
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			t.Errorf("encode the body of #12: %v", err)
-		}
-		fmt.Fprintf(w, `{"number":12,"title":"A change","body":%s,"html_url":"https://github.com/acme/tools/pull/12",
-			"state":"open","merged":false,"merged_at":null,"updated_at":"2026-11-22T06:31:03Z",
-			"head":{"ref":%q,"sha":%q,"repo":{"full_name":"acme/tools"}},"base":{"ref":"main"}}`,
-			encoded, branch, headCommit)
+		fmt.Fprint(w, body)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
@@ -102,14 +129,7 @@ func newCIOnlyWorld(t *testing.T, project string, pull func(issue string) (branc
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream,
 	})
-	issue := issueInRepository(t, handler, project, "acme/tools", "CI proves it")
-	issueKey = issue.Key
-	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
-		":::check{#c1 "+ciCheckKept+"}\nThe tests pass at the head.\n:::\n")
-	if _, err := delivery.GetSettings(context.Background(), database.Pool); err == nil {
-		t.Fatal("the deployment holds delivery settings, want none: production held none")
-	}
-	return ciOnlyWorld{t: t, handler: handler, database: database, served: served, issue: issue.Key}
+	return handler, database, served
 }
 
 // ci is c1's CI reading: its case, its state and its line.
@@ -191,32 +211,7 @@ func TestACheckOnlyCIProvesComparesWithTheHeadOfItsPullRequestWithNoResultRecord
 			return "legion/" + issue, "Dispatch: " + issue + "\n\nThe change."
 		})
 		world.requireNoHead("the event")
-		_, natsURL := testnats.Start(t)
-		publisher, err := bus.ConnectOwningStream([]string{natsURL})
-		if err != nil {
-			t.Fatalf("connect the publisher: %v", err)
-		}
-		t.Cleanup(publisher.Close)
-		callers, err := world.database.Pool.Leases()
-		if err != nil {
-			t.Fatalf("open the lease pool: %v", err)
-		}
-		leases, err := delivery.ReserveIntakeLeases(callers)
-		if err != nil {
-			t.Fatalf("reserve the intakes' callers of the lease pool: %v", err)
-		}
-		ctx, cancel := context.WithCancel(t.Context())
-		stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
-			return bus.Connect([]string{natsURL}, bus.WithName(name))
-		}, world.database.Pool, leases, world.served.deps.GitHub, world.served.deps.Events, nil, nil, world.served.deps.Attributor)
-		if err != nil {
-			cancel()
-			t.Fatalf("start the intakes: %v", err)
-		}
-		t.Cleanup(func() {
-			cancel()
-			stopIntakes()
-		})
+		publisher := startNoSettingsIntakes(t, world.database, world.served)
 		payload, err := json.Marshal(map[string]string{
 			"kind": "pr", "action": "opened", "repo": "acme/tools", "number": "12",
 			"title": "A change", "body": "Dispatch: " + world.issue + "\n\nThe change.",
