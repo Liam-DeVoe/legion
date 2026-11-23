@@ -334,39 +334,54 @@ func awaitHeldCopy(t *testing.T, database *store.Store, commentID, destination s
 // pending delay (2 s), next_attempt_at that short a time ahead on the database's clock, where a
 // pass still deciding it holds it a claim (fallbackClaim, a minute) out and the row's due moment
 // is behind. A row a pass settled instead is published or settled with nothing sent, and fails the
-// test at once.
+// test at once. A try that finds the row not released reads its next_attempt_at and the database's
+// clock beside it.
 func awaitFallbackReleased(t *testing.T, database *store.Store, commentID, destination string) {
 	t.Helper()
 	testwait.Until(t, "a fallback pass to release the copy at "+destination+" to wait", func() (string, bool) {
 		var settled, published, released bool
+		var next *time.Time
+		var now time.Time
 		if err := database.Pool.QueryRow(context.Background(), `
 			select settled_at is not null, published,
-				next_attempt_at > now() and next_attempt_at < now() + interval '30 seconds'
+				next_attempt_at > now() and next_attempt_at < now() + interval '30 seconds',
+				next_attempt_at, now()
 			from comment_fallback_copies where comment_id = $1 and destination = $2
-		`, commentID, destination).Scan(&settled, &published, &released); err != nil {
+		`, commentID, destination).Scan(&settled, &published, &released, &next, &now); err != nil {
 			t.Fatalf("read the copy of %s at %s: %v", commentID, destination, err)
 		}
 		if settled {
 			t.Fatalf("the copy of %s at %s was settled (published %v) while the event it waits behind was owed", commentID, destination, published)
 		}
-		return fmt.Sprintf("released for the pending delay: %v", released), released
+		due := "none"
+		if next != nil {
+			due = next.Format(time.RFC3339Nano)
+		}
+		return fmt.Sprintf("next attempt at %s, the database's clock at %s: released for the pending delay: %v",
+			due, now.Format(time.RFC3339Nano), released), released
 	})
 }
 
 // awaitHeldBehind waits until sender holds the send of commentID on a held lane, behind the
-// earlier event eventID.
+// earlier event eventID. A try that finds the send on no held lane reads every held lane, the event
+// it waits behind and the comments queued on it.
 func awaitHeldBehind(t *testing.T, sender *mentionSender, commentID string, eventID int64) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("the send of comment %s held behind event %d", commentID, eventID), func() (string, bool) {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
+		lanes := make([]string, 0, len(sender.waits))
 		for lane, wait := range sender.waits {
+			comments := make([]string, 0, len(sender.lanes[lane]))
 			for _, send := range sender.lanes[lane] {
 				if send.comment.ID == commentID {
 					return fmt.Sprintf("held behind event %d", wait.by.EventID), wait.by.EventID == eventID
 				}
+				comments = append(comments, send.comment.ID)
 			}
+			lanes = append(lanes, fmt.Sprintf("%+v behind event %d holds %v", lane, wait.by.EventID, comments))
 		}
-		return "on no held lane", false
+		slices.Sort(lanes)
+		return fmt.Sprintf("on no held lane; the held lanes: %v", lanes), false
 	})
 }

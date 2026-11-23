@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -312,16 +313,18 @@ func (r *relay) hold(t testing.TB) (func(), error) {
 	if frozen {
 		return release, errors.New("the relay is frozen or holds the server's replies, so the server's answer to the relay's PING could not reach it")
 	}
-	return release, r.await(t, "every client's bytes to the server to stop at the end of an operation", func() (bool, error) {
+	return release, r.await(t, "every client's bytes to the server to stop at the end of an operation", func() (string, bool, error) {
+		var partway []string
 		for j := range r.joins {
 			if j.sent.broken != nil {
-				return false, fmt.Errorf("the relay cannot read what the client on port %d sends as NATS protocol: %w", j.port(), j.sent.broken)
+				return "", false, fmt.Errorf("the relay cannot read what the client on port %d sends as NATS protocol: %w", j.port(), j.sent.broken)
 			}
 			if j.writing || !j.sent.atBoundary() {
-				return false, nil
+				partway = append(partway, fmt.Sprintf("port %d (writing %t, at the end of an operation %t)", j.port(), j.writing, j.sent.atBoundary()))
 			}
 		}
-		return true, nil
+		slices.Sort(partway)
+		return fmt.Sprintf("%d of %d connections part-way through an operation: %v", len(partway), len(r.joins), partway), len(partway) == 0, nil
 	})
 }
 
@@ -379,27 +382,38 @@ func (r *relay) barrier(t testing.TB) error {
 		// A write that fails is a connection the server has closed, which the wait below sees.
 		_, _ = p.j.upstream.Write([]byte("PING\r\n"))
 	}
-	return r.await(t, "the server's answer to the relay's PING on every connection", func() (bool, error) {
+	return r.await(t, "the server's answer to the relay's PING on every connection", func() (string, bool, error) {
+		var unanswered []string
 		for _, p := range pings {
 			if _, open := r.joins[p.j]; open && p.j.pongs < p.number {
-				return false, nil
+				unanswered = append(unanswered, fmt.Sprintf("port %d (%d PONGs of the %d that answer it)", p.j.port(), p.j.pongs, p.number))
 			}
 		}
-		return true, nil
+		return fmt.Sprintf("%d of %d PINGs unanswered on open connections: %v", len(unanswered), len(pings), unanswered), len(unanswered) == 0, nil
 	})
 }
 
 // await waits through the shared wait (testwait.Until) for settled, called under the relay's mu, to
 // say the relay's connections are where it wants them, or to answer an error, and returns that
-// error. A relay that has closed has nothing to wait for.
-func (r *relay) await(t testing.TB, what string, settled func() (bool, error)) error {
+// error. A relay that has closed has nothing to wait for. A try that finds the connections not yet
+// there reads what settled names of them.
+func (r *relay) await(t testing.TB, what string, settled func() (reading string, done bool, err error)) error {
 	t.Helper()
-	return testwait.Until(t, what, func() (error, bool) {
+	var failed error
+	testwait.Until(t, what, func() (string, bool) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		done, err := settled()
-		return err, done || r.closed || err != nil
+		reading, done, err := settled()
+		switch {
+		case err != nil:
+			failed = err
+			return err.Error(), true
+		case r.closed:
+			return "the relay has closed", true
+		}
+		return reading, done
 	})
+	return failed
 }
 
 // Close frees the port the relay held and releases every copy a freeze or a hold holds, which then

@@ -531,20 +531,31 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			sender.unpark(item.lane())
 			joined := false
 			// Each park's timer is fired once the fake is past the threshold; the run ends when the
-			// sender holds no send.
+			// sender holds no send. A try that finds neither reads the sends the sender holds.
 			for {
-				next := testwait.Until(t, "a park's timer, or the sender holding no send", func() (parkOrDone, bool) {
+				var next parkOrDone
+				testwait.Until(t, "a park's timer, or the sender holding no send", func() (string, bool) {
 					for len(tried) > 0 {
 						<-tried
 					}
 					select {
 					case fire := <-timers:
-						return parkOrDone{fire: fire}, true
+						next = parkOrDone{fire: fire}
+						return "a park's timer", true
 					default:
 					}
 					sender.mu.Lock()
 					defer sender.mu.Unlock()
-					return parkOrDone{done: len(sender.held) == 0}, len(sender.held) == 0
+					if len(sender.held) == 0 {
+						next = parkOrDone{done: true}
+						return "the sender holds no send", true
+					}
+					keys := make([]string, 0, len(sender.held))
+					for key := range sender.held {
+						keys = append(keys, fmt.Sprintf("%+v", key))
+					}
+					slices.Sort(keys)
+					return fmt.Sprintf("no park's timer; the sender holds %d sends: %v", len(sender.held), keys), false
 				})
 				if next.done {
 					break

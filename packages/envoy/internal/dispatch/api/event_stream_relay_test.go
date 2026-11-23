@@ -443,12 +443,19 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 	before := acquires(deps.Store)
 	const gapRereads = 3
 	for n := range gapRereads {
-		testwait.Until(t, fmt.Sprintf("the relay's gap re-read %d of %d while the lower id stays open", n+1, gapRereads), func() (relayRead, bool) {
+		// A try that takes no re-read with a gap reads how many reads this wait took, the last of
+		// them, and how far the relay has published.
+		taken := 0
+		var last relayRead
+		testwait.Until(t, fmt.Sprintf("the relay's gap re-read %d of %d while the lower id stays open", n+1, gapRereads), func() (string, bool) {
 			select {
 			case read := <-held:
-				return read, read.gap != events.GapNone
+				taken++
+				last = read
+				return fmt.Sprintf("read %+v", read), read.gap != events.GapNone
 			default:
-				return relayRead{}, false
+				return fmt.Sprintf("no read reported; %d reads taken, none with a gap, the last %+v; the relay published through event %d",
+					taken, last, relayPublished(relay)), false
 			}
 		})
 	}

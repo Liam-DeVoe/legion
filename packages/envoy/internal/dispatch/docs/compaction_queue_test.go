@@ -758,22 +758,39 @@ func newClockedTestService(t *testing.T, c *clocktest.Fake) (*Service, string) {
 // stepWhenDue moves fake to the time the service's compaction queue has scheduled room's next step
 // for, once no step is in flight and the queue's worker waits on its timer for the earliest step,
 // and returns that time: the step, and any step due before it, then runs as that time coming runs
-// it. A move made before the worker armed its timer would leave the timer armed past the time.
+// it. A move made before the worker armed its timer would leave the timer armed past the time. A
+// try that finds no step to move to reads the room in flight, the rooms due and when, and the
+// timers the fake holds armed.
 func stepWhenDue(t *testing.T, fake *clocktest.Fake, service *Service, room string) time.Time {
 	t.Helper()
 	q := service.compactions
-	at := testwait.Until(t, "the compaction queue to schedule a step of "+room+" and its worker to arm its timer for the earliest step", func() (time.Time, bool) {
+	var at time.Time
+	testwait.Until(t, "the compaction queue to schedule a step of "+room+" and its worker to arm its timer for the earliest step", func() (string, bool) {
 		q.mu.Lock()
 		defer q.mu.Unlock()
+		armed := fake.Armed()
+		inFlight := "no room"
+		if q.current != nil {
+			inFlight = q.current.room
+		}
+		due := make([]string, 0, len(q.due))
+		for _, entry := range q.due {
+			due = append(due, entry.room+" at "+entry.at.Format(time.RFC3339Nano))
+		}
+		reading := fmt.Sprintf("%s in flight; due: %v; the fake at %s holds %v armed", inFlight, due, fake.Now().Format(time.RFC3339Nano), armed)
 		if q.current != nil || len(q.due) == 0 {
-			return time.Time{}, false
+			return reading, false
 		}
 		for _, entry := range q.due {
 			if entry.room == room {
-				return entry.at, slices.ContainsFunc(fake.Armed(), q.due[0].at.Equal)
+				if !slices.ContainsFunc(armed, q.due[0].at.Equal) {
+					return reading, false
+				}
+				at = entry.at
+				return reading, true
 			}
 		}
-		return time.Time{}, false
+		return reading, false
 	})
 	fake.Set(at)
 	return at

@@ -71,17 +71,26 @@ func TestSearchAskBlockOptionDescription(t *testing.T) {
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write ask block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	ask := testwait.Until(t, "the typed ask block to settle into the inbox", func() (model.Ask, bool) {
+	// A try that does not find the ask reads the blocks the inbox's asks name.
+	var ask model.Ask
+	testwait.Until(t, "the typed ask block to settle into the inbox", func() (string, bool) {
 		inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox", nil, "alice")
 		if inbox.Code != http.StatusOK {
 			t.Fatalf("read inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
 		}
-		for _, ask := range decodeBody[[]model.Ask](t, inbox) {
-			if ask.BlockID != nil && *ask.BlockID == "agent-ask" {
-				return ask, true
+		var blocks []string
+		for _, read := range decodeBody[[]model.Ask](t, inbox) {
+			if read.BlockID == nil {
+				blocks = append(blocks, "<none>")
+				continue
 			}
+			if *read.BlockID == "agent-ask" {
+				ask = read
+				return "ask " + read.ID, true
+			}
+			blocks = append(blocks, *read.BlockID)
 		}
-		return model.Ask{}, false
+		return fmt.Sprintf("the inbox holds %d asks, naming blocks %v", len(blocks), blocks), false
 	})
 	if ask.Question != "Should we ship?" || ask.State != "open" || ask.Urgency != "high" ||
 		ask.BlockArtifact == nil || ask.BlockArtifact.ID != issue.PrimaryArtifactID || !ask.BlockArtifact.Primary {

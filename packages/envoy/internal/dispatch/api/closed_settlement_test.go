@@ -255,13 +255,33 @@ func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
-	opened := testwait.Until(t, "the reopened issue's settlement to open the block's ask", func() (model.Ask, bool) {
-		id := findBlockAsk(t, handler, issue.Key, spec, "closed-decision")
-		if id == "" {
-			return model.Ask{}, false
+	// A try that finds no ask for the block reads the blocks the issue's asks name, each with the
+	// document it is in; one that finds it reads its state.
+	var opened model.Ask
+	testwait.Until(t, "the reopened issue's settlement to open the block's ask", func() (string, bool) {
+		listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks?state=all", nil, "alice")
+		if listed.Code != http.StatusOK {
+			t.Fatalf("list asks: status=%d body=%s", listed.Code, listed.Body.String())
 		}
-		ask := readBlockAsk(t, handler, id)
-		return ask, ask.State == "open"
+		var blocks []string
+		for _, listedAsk := range decodeBody[[]model.Ask](t, listed) {
+			switch {
+			case listedAsk.BlockID == nil:
+				blocks = append(blocks, "<none>")
+			case listedAsk.BlockArtifact == nil:
+				blocks = append(blocks, *listedAsk.BlockID+" in <no document>")
+			case *listedAsk.BlockID == "closed-decision" && listedAsk.BlockArtifact.ID == spec:
+				ask := readBlockAsk(t, handler, listedAsk.ID)
+				if ask.State != "open" {
+					return fmt.Sprintf("the block's ask %s is %s", ask.ID, ask.State), false
+				}
+				opened = ask
+				return "the block's ask " + ask.ID + " is open", true
+			default:
+				blocks = append(blocks, *listedAsk.BlockID+" in "+listedAsk.BlockArtifact.ID)
+			}
+		}
+		return fmt.Sprintf("the issue holds %d asks, none for the block; they name blocks %v", len(blocks), blocks), false
 	})
 	if !opened.Author.SameAs(author) {
 		t.Fatalf("the block's ask is credited to %+v, want %+v, its recorded author", opened.Author, author)

@@ -6161,15 +6161,29 @@ func waitForDocumentText(t *testing.T, service *Service, artifactID, want string
 	})
 }
 
+// waitForDocumentVersion waits for version number of the document and returns it. A try that finds
+// no such version reads the numbers of the versions the document has.
 func waitForDocumentVersion(t *testing.T, database *store.Store, artifactID string, number int) model.Version {
 	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("version %d of the document to settle", number), func() (model.Version, bool) {
+	var settled model.Version
+	testwait.Until(t, fmt.Sprintf("version %d of the document to settle", number), func() (string, bool) {
 		version, ok, err := loadDocumentVersion(context.Background(), database, artifactID, number)
 		if err != nil {
 			t.Fatalf("load document version: %v", err)
 		}
-		return version, ok
+		if ok {
+			settled = version
+			return fmt.Sprintf("version %d", version.Number), true
+		}
+		var numbers []int64
+		if err := database.Pool.QueryRow(context.Background(), `
+			select coalesce(array_agg(number order by number), '{}') from artifact_versions where artifact_id = $1
+		`, artifactID).Scan(&numbers); err != nil {
+			t.Fatalf("read the document's version numbers: %v", err)
+		}
+		return fmt.Sprintf("no version %d; the document has versions %v", number, numbers), false
 	})
+	return settled
 }
 
 func loadDocumentVersion(ctx context.Context, database *store.Store, artifactID string, number int) (model.Version, bool, error) {

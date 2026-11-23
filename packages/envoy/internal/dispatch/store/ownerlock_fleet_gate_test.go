@@ -438,14 +438,25 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 					Err      error
 					Gate     string
 				}
-				got := testwait.Until(t, writer.name+" to answer, or to wait for the gate", func() (lockReading, bool) {
+				// A try that finds the lock neither answered nor waiting for the gate reads the
+				// writer's hold of the gate: none, or granted.
+				var got lockReading
+				testwait.Until(t, writer.name+" to answer, or to wait for the gate", func() (string, bool) {
 					select {
 					case err := <-locked:
-						return lockReading{Answered: true, Err: err}, true
+						got = lockReading{Answered: true, Err: err}
+						return fmt.Sprintf("answered: %v", err), true
 					default:
 					}
 					gate, granted := gateLock(t, s, writerPID)
-					return lockReading{Gate: gate}, gate != "" && !granted
+					if gate != "" && !granted {
+						got = lockReading{Gate: gate}
+						return "waits for the gate as " + gate, true
+					}
+					if gate == "" {
+						return fmt.Sprintf("not answered; backend %d holds no lock of the gate", writerPID), false
+					}
+					return fmt.Sprintf("not answered; backend %d holds the gate as %s, granted", writerPID, gate), false
 				})
 				if !got.Answered {
 					t.Errorf("%s waits for the gate (%s) while %s waits for it; want it to try the gate, not queue behind the arrival", writer.name, got.Gate, arrival.name)

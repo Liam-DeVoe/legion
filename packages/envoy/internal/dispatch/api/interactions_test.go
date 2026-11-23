@@ -2443,15 +2443,32 @@ func TestGetCommentReturnsNotFound(t *testing.T) {
 // A document's updates do not all reach Postgres inside the request that caused them: the API
 // answers once the live document carries the mark, and a server-side mark written outside a
 // transaction persists on the document service's own queue. Reading the instant a request
-// returns is therefore a race with that queue, not a statement about the write.
+// returns is therefore a race with that queue, not a statement about the write. A try that finds no
+// record of the mark reads the marks the persisted document records.
 func loadMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) map[string]any {
 	t.Helper()
-	return testwait.Until(t, "the persisted record of mark "+markID, func() (map[string]any, bool) {
-		return findMarkProjection(t, database, artifactID, markID)
+	var projection map[string]any
+	testwait.Until(t, "the persisted record of mark "+markID, func() (string, bool) {
+		marks := persistedMarks(t, database, artifactID)
+		found, ok := markProjection(t, marks, markID)
+		if !ok {
+			recorded := marks.Keys()
+			slices.Sort(recorded)
+			return fmt.Sprintf("the persisted document records %d marks: %v", len(recorded), recorded), false
+		}
+		projection = found
+		return "recorded", true
 	})
+	return projection
 }
 
 func findMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) (map[string]any, bool) {
+	t.Helper()
+	return markProjection(t, persistedMarks(t, database, artifactID), markID)
+}
+
+// persistedMarks is the marks map of the document's persisted state.
+func persistedMarks(t *testing.T, database *store.Store, artifactID string) *crdt.YMap {
 	t.Helper()
 	loaded, err := docs.NewPgVersioned(database).Load(context.Background(), artifactID)
 	if err != nil {
@@ -2461,7 +2478,13 @@ func findMarkProjection(t *testing.T, database *store.Store, artifactID, markID 
 	if err := crdt.ApplyUpdateV1(document, loaded.Update, nil); err != nil {
 		t.Fatalf("decode persisted document: %v", err)
 	}
-	value, found := document.GetMap("marks").Get(markID)
+	return document.GetMap("marks")
+}
+
+// markProjection is the record marks holds for markID, and whether it holds one.
+func markProjection(t *testing.T, marks *crdt.YMap, markID string) (map[string]any, bool) {
+	t.Helper()
+	value, found := marks.Get(markID)
 	if !found {
 		return nil, false
 	}

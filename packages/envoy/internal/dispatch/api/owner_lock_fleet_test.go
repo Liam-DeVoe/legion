@@ -325,17 +325,26 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 				Err     error
 				Waited  bool
 			}
-			got := testwait.Until(t, arrival.name+" to go through or to wait for the PATCH", func() (arrivalReading, bool) {
+			// A try that finds the arrival neither through nor waiting for the PATCH reads the
+			// backends that block it.
+			var got arrivalReading
+			testwait.Until(t, arrival.name+" to go through or to wait for the PATCH", func() (string, bool) {
 				select {
 				case err := <-arrived:
-					return arrivalReading{Arrived: true, Err: err}, true
+					got = arrivalReading{Arrived: true, Err: err}
+					return fmt.Sprintf("went through: %v", err), true
 				default:
 				}
+				var blocking []int64
 				var waiting bool
-				if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&waiting); err != nil {
+				if err := fixture.database.Pool.QueryRow(ctx, `select blocking, $2::integer = any(blocking) from pg_blocking_pids($1) as blocking`, arrivalPID, pid).Scan(&blocking, &waiting); err != nil {
 					t.Fatal(err)
 				}
-				return arrivalReading{Waited: waiting}, waiting
+				reading := fmt.Sprintf("backend %d is blocked by backends %v; the PATCH's is %d", arrivalPID, blocking, pid)
+				if waiting {
+					got = arrivalReading{Waited: true}
+				}
+				return reading, waiting
 			})
 			waited := got.Waited
 			if got.Arrived {

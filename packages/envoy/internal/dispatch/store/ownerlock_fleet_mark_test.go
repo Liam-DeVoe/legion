@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -106,19 +107,43 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 				Err    error
 				Queued bool
 			}
-			got := testwait.Until(t, "the earlier build's write to go through or to queue behind this build's write", func() (earlierWrite, bool) {
+			// A try that finds the earlier write neither ended nor queued reads every backend of the
+			// database: what it is doing, what it waits on, and the backends that block it.
+			var got earlierWrite
+			testwait.Until(t, "the earlier build's write to go through or to queue behind this build's write", func() (string, bool) {
 				select {
 				case err := <-wrote:
-					return earlierWrite{Ended: true, Err: err}, true
+					got = earlierWrite{Ended: true, Err: err}
+					return fmt.Sprintf("ended: %v", err), true
 				default:
 				}
-				var queued bool
-				if err := s.Pool.QueryRow(ctx, `
-					select exists (select from pg_stat_activity where datname = current_database() and $1::integer = any(pg_blocking_pids(pid)))`,
-					writerPID).Scan(&queued); err != nil {
+				rows, err := s.Pool.Query(ctx, `
+					select pid, coalesce(state, ''), coalesce(wait_event_type || '/' || wait_event, ''), pg_blocking_pids(pid)
+					from pg_stat_activity where datname = current_database() order by pid`)
+				if err != nil {
 					t.Fatal(err)
 				}
-				return earlierWrite{Queued: queued}, queued
+				defer rows.Close()
+				queued := false
+				var backends []string
+				for rows.Next() {
+					var pid int64
+					var state, waits string
+					var blocking []int64
+					if err := rows.Scan(&pid, &state, &waits, &blocking); err != nil {
+						t.Fatal(err)
+					}
+					queued = queued || slices.Contains(blocking, int64(writerPID))
+					backends = append(backends, fmt.Sprintf("%d %s %s blocked by %v", pid, state, waits, blocking))
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				reading := fmt.Sprintf("this build's writer is backend %d; the database's backends: %v", writerPID, backends)
+				if queued {
+					got = earlierWrite{Queued: true}
+				}
+				return reading, queued
 			})
 			if got.Ended {
 				if got.Err != nil {

@@ -7492,16 +7492,25 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 		// records (resumptionsByPeriod), which the resumption records as it arms the settlement,
 		// so the first is waited for.
 		period := docs.SettlementResumeInterval
-		first := testwait.Until(t, "a resumption of the document's owed settlement, placed in the period of the pass that armed it",
-			func() (time.Time, bool) {
-				byPeriod, _ := pair.resumptionsByPeriod(t, artifactID)
-				var earliest time.Time
-				for served := range byPeriod {
-					if earliest.IsZero() || served.Before(earliest) {
-						earliest = served
-					}
+		// A try reads how many armings resumptionsByPeriod placed, the periods it placed them in,
+		// and how many no logged pass places yet; the earliest of those periods is the first.
+		var first time.Time
+		testwait.Until(t, "a resumption of the document's owed settlement, placed in the period of the pass that armed it",
+			func() (string, bool) {
+				byPeriod, unplaced := pair.resumptionsByPeriod(t, artifactID)
+				placed := 0
+				periods := make([]time.Time, 0, len(byPeriod))
+				for served, armings := range byPeriod {
+					placed += len(armings)
+					periods = append(periods, served)
 				}
-				return earliest, !earliest.IsZero()
+				slices.SortFunc(periods, time.Time.Compare)
+				reading := fmt.Sprintf("%d armings placed in periods %v, and %d that no logged pass places yet", placed, periods, unplaced)
+				if len(periods) == 0 {
+					return reading, false
+				}
+				first = periods[0]
+				return reading, true
 			})
 		end := first.Add(period)
 		t.Logf("counting the resumptions of the document in the period from %s to %s", first.Format(time.TimeOnly), end.Format(time.TimeOnly))

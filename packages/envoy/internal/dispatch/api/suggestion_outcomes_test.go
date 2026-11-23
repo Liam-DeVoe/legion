@@ -394,23 +394,29 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	}
 
 	postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
-	held := testwait.Until(t, "a pass held for the comment's settle", func() (time.Time, bool) {
+	// A try that finds no held pass reads the timers the loop's clock holds armed and where it
+	// stands.
+	var held time.Time
+	testwait.Until(t, "a pass held for the comment's settle", func() (string, bool) {
 		if row := outcome(); row.Outcome != "ignored" {
 			t.Fatalf("outcome = %+v after a pass while the comment was younger than settle; want ignored, nothing judged yet", row)
 		}
 		armed := sweep.clock.Armed()
+		now := sweep.clock.Now()
+		reading := fmt.Sprintf("the loop's clock at %s holds %v armed", now.Format(time.RFC3339Nano), armed)
 		if len(armed) == 0 {
-			return time.Time{}, false
+			return reading, false
 		}
-		if armed[0].After(sweep.clock.Now().Add(sweep.schedule.minGap)) {
-			return armed[0], true
+		if armed[0].After(now.Add(sweep.schedule.minGap)) {
+			held = armed[0]
+			return reading, true
 		}
 		// The wake's pass, held to the gap, or a horizon's re-ask a gap later: run it once the horizon
 		// has passed every event committed so far, so the move does not age the comment for a pass
 		// that cannot read it.
 		sweep.awaitSafeHorizon(t, "the horizon to pass every event committed before the row runs the pass its loop holds")
 		sweep.clock.Set(armed[0])
-		return armed[0], false
+		return reading + ", the first within the gap; moved it there", false
 	})
 	// What the held pass waits for is the earliest write it held back, the seeded suggestion, settle
 	// old at its stamp plus settle on the fake: a write the comment's request recorded after it

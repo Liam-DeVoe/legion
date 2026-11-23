@@ -167,10 +167,20 @@ func (c *socketClient) sendText(t *testing.T, data []byte) {
 	}
 }
 
-// take is the next message, failing the test when the socket ends before one comes.
+// take is the next message, failing the test when the socket ends before one comes. A try that
+// finds none read both of the socket's channels empty: its messages, and its end.
 func (c *socketClient) take(t *testing.T, what string) []byte {
 	t.Helper()
-	return testwait.Until(t, what, func() ([]byte, bool) { return c.poll(t, what) })
+	var message []byte
+	testwait.Until(t, what, func() (string, bool) {
+		data, arrived := c.poll(t, what)
+		if !arrived {
+			return "no message queued, and the socket has not ended", false
+		}
+		message = data
+		return fmt.Sprintf("a message of %d bytes", len(data)), true
+	})
+	return message
 }
 
 // poll is the next message if the socket has been sent one, without waiting, and fails the test

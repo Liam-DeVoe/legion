@@ -136,15 +136,27 @@ func (l *drainListener) Accept() (net.Conn, error) {
 	return held, nil
 }
 
-// of is the server's end of the connection whose client end is at local, once it is accepted.
+// of is the server's end of the connection whose client end is at local, once it is accepted. A
+// try that finds it not yet accepted reads the client ends of the connections the server has
+// accepted.
 func (l *drainListener) of(t *testing.T, local net.Addr) *drainConn {
 	t.Helper()
-	return testwait.Until(t, "the server to accept the connection from "+local.String(), func() (*drainConn, bool) {
+	var conn *drainConn
+	testwait.Until(t, "the server to accept the connection from "+local.String(), func() (string, bool) {
 		l.mu.Lock()
 		defer l.mu.Unlock()
-		conn, accepted := l.conns[local.String()]
-		return conn, accepted
+		if accepted, ok := l.conns[local.String()]; ok {
+			conn = accepted
+			return "accepted", true
+		}
+		clients := make([]string, 0, len(l.conns))
+		for client := range l.conns {
+			clients = append(clients, client)
+		}
+		slices.Sort(clients)
+		return fmt.Sprintf("the server has accepted %d connections, from %v", len(clients), clients), false
 	})
+	return conn
 }
 
 // drainConn is a server connection that records the read deadlines the server sets, and keeps each

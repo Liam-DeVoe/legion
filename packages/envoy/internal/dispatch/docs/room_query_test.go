@@ -436,14 +436,21 @@ func TestAFlushIsNeverSentUnderTheDocumentsAdvisoryLock(t *testing.T) {
 		result   *roomQueryResult
 		deadline []time.Time
 	}
-	ended := testwait.Until(t, "the flush under the lock to return, or to arm a wait for its answers", func() (outcome, bool) {
+	// A try that finds neither reads where the fake stands and every timer it holds armed.
+	var ended outcome
+	testwait.Until(t, "the flush under the lock to return, or to arm a wait for its answers", func() (string, bool) {
 		select {
 		case result := <-done:
-			return outcome{result: &result}, true
+			ended = outcome{result: &result}
+			return fmt.Sprintf("the flush returned %+v", result), true
 		default:
 		}
-		armed := queryArms(clock)
-		return outcome{deadline: armed}, len(armed) > 0
+		if armed := queryArms(clock); len(armed) > 0 {
+			ended = outcome{deadline: armed}
+			return fmt.Sprintf("the room queries' timers armed at %v", armed), true
+		}
+		return fmt.Sprintf("the flush has not returned, and no room query's timer is armed; the fake at %s holds %v armed",
+			clock.Now().Format(time.RFC3339Nano), clock.Armed()), false
 	})
 	if ended.result == nil {
 		t.Fatalf("a flush under the lock armed a wait for its answers, until %v; want it skipped at once", ended.deadline)
