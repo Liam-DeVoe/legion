@@ -430,6 +430,69 @@ func TestTakeAcceptedAgainAfterTheCompactionGaveItBackAsACutTurnIsInNoTurnCutOff
 	}
 }
 
+// Rows 35 and 37: a take-back that keeps the process sends a take awaiting its turn back as a cut
+// turn — the operator's compaction while a hello's ask waited for its answer, or R5's second wait
+// over a take marked as one whose turn may have run unseen. The daemon then restarts before any
+// let-go, and a let-go of the process comes before the task's next take: the restored claim's
+// reconnect deadline, or a death. The let-go's record says the task's turn was cut off
+// (EndedWork.TaskTurn), as it says with no restart between, so the next process takes the task
+// told its turn on it may have run. The claim ran a turn first, so the let-go writes its record.
+// The negative control is the head 4ce1b85d80, where the cut-turn mark (Machine.cutTurnOf) is
+// memory only: the restored machine records no cut turn, the record says the agent was in no
+// turn, and the next take carries no note.
+func TestTakeTheCutTurnMarkSurvivesADaemonRestartBeforeALaterLetGo(t *testing.T) {
+	takeBacks := []struct {
+		name     string
+		takeBack func(t *testing.T, h *harness, number uint64)
+	}{
+		{"the compaction", func(t *testing.T, h *harness, number uint64) {
+			h.reconnectLater()
+			h.helloOf(true, false)
+			compactedByTheOperator(t, h)
+		}},
+		{"the second wait", func(t *testing.T, h *harness, number uint64) {
+			h.reconnectLater()
+			h.helloOf(true, false)
+			h.mustQuiet(StreamTurnEnd{Claim: h.token})
+			h.answerAsk(false)
+			h.wantAwaitingItsTurn(number, "after the answer")
+			h.advance(turnStartBound)
+			h.wantCharges(WaitTurnStart)
+		}},
+	}
+	letGos := []struct {
+		name  string
+		letGo func(h *harness)
+	}{
+		{"the reconnect deadline of the restored claim", func(h *harness) { h.advance(deadline) }},
+		{"a death", func(h *harness) { h.observe(runtime.Gone) }},
+	}
+	for _, back := range takeBacks {
+		t.Run(back.name, func(t *testing.T) {
+			for _, tc := range letGos {
+				t.Run(tc.name, func(t *testing.T) {
+					h := boundsHarness(t)
+					h.takeRunsItsOwnTurn("the first task", 1, false)
+					number := h.takeOf("implement the plan")
+					back.takeBack(t, h, number)
+					if p := h.pending(); p.Number != number || p.taken() || !p.Interrupted {
+						t.Fatalf("%s left %+v, want task %d taken back with the note of a cut turn", back.name, p, number)
+					}
+					h.restart()
+
+					tc.letGo(h)
+
+					h.wantState(StateLaunching)
+					if ended := h.claim().EndedWork; !ended.TaskTurn {
+						t.Fatalf("the let-go recorded %+v, want the task's turn recorded as cut off", ended)
+					}
+					h.wantTakenOnceMore(number, relaunchedAndTaken)
+				})
+			}
+		})
+	}
+}
+
 // Row 28: a take awaiting its turn, its turn's start frame lost in the socket's send buffer as the
 // connection broke. The shim keeps only a frame whose write failed, so its hello says the backlog
 // is whole, and the replay carries that turn's end alone, a turn this daemon never saw begin
