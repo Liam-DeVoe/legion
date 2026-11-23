@@ -173,7 +173,14 @@ func workRows(race bool) []workRow {
 // walk, written into holding, first passed the bound at 1,024 (33.5; 24.8 at 512), so its n is
 // 1,448, where the smaller window lasts about 10 s unbroken, the longest of the table. At 1,448
 // that walk failed the row in 5 of 5 runs, 37.0 times or more, and the row grows 16.4 times
-// unbroken.
+// unbroken. A copy of a sentence kept in a field of the judge, read again later, is read outside
+// the charge, and no type can stop a new field from keeping one (charge), so the walk of such a
+// copy for each finding has a row: many findings of one claim whose words one sentence after them
+// holds in code font, the shape of the charge's second row as a claim. Its n was found in the same
+// way, on the machine of 288 cores at a load average of about 150: that walk, the sentences where a
+// finding's words stand and it does not each read for its Spread from a copy of the sentences kept
+// in a field of wholeText, once for each finding, first passed the bound at 45 (34.1; 27.1 at 32),
+// so its n is 90, where the smaller window lasts about 500 ms unbroken and the row grows 15.5 times.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -413,6 +420,10 @@ func workTable() []workRow {
 		{"many findings, each beside ten sentences that hold none", ruleStopNoSpace, 1_448,
 			built(KindClaim, func(n int) string {
 				return strings.TrimSpace(units("", "It reads a%d.B now."+strings.Repeat(" It.", 10)+" ", "")(n))
+			})},
+		{"many findings of one claim whose words one sentence after them holds in code font", ruleStopNoSpace, 90,
+			built(KindClaim, func(n int) string {
+				return units("", "It reads N%d.Cfg at boot. ", "It logs")(n) + units("", " `N%d.Cfg`", " today.")(n)
 			})},
 	}
 }

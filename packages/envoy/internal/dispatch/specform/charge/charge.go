@@ -14,7 +14,10 @@
 //
 // What Read gives can be kept in a variable of the code that read it, as any value of Go can; a
 // copy of a text in a field of the judge's own, read again later, would be read outside the charge.
-// The judge keeps no such copy, and a review of a new field reads that.
+// The judge keeps no such copy. No type can stop a new field from keeping one, as the judge's code
+// is handed the judged text whole, so a review of a new field reads that, and the work table of
+// package specform catches a walk of such a copy for each finding (its row of many findings of one
+// claim whose words one sentence after them holds in code font).
 package charge
 
 import "fmt"
