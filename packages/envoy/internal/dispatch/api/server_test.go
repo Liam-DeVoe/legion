@@ -384,9 +384,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
-		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
-		// warning must arrive inside that wait's patience rather than at the production five and
-		// thirty seconds.
+		// The horizon warns of a stall at horizontest.StallWarning rather than at the production
+		// five and thirty seconds, as a cmd/dispatch test process's does, so a row's output names
+		// whoever holds the horizon while it waits; the wait itself reads no warning
+		// (horizontest.WaitInProcess).
 		HorizonStallAfter:     horizontest.StallWarning,
 		HorizonWarnEvery:      horizontest.StallWarning,
 		OIDC:                  options.oidc,

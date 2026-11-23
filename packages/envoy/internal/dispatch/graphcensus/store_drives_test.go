@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // StoredKind is one kind of tuple a writer of the store appends: the kind of the node the tuple is
@@ -271,17 +272,18 @@ func seedRunDrives(t *testing.T) []StoreDrive {
 	// any statement but one that starts as statement does.
 	queuedAt := func(t *testing.T, holder pgx.Tx, table, statement string) {
 		t.Helper()
-		deadline := time.Now().Add(seedWait)
-		for storetest.WaitForLockWaiters(t, holder, 1, 100*time.Millisecond) < 1 {
+		testwait.UntilPolling(t, 10*time.Millisecond, "the seed to queue behind the hold on "+table, func() (bool, bool) {
 			select {
 			case <-process.Exited:
 				t.Fatalf("the seed exited before it queued behind the hold on %s; it wrote:\n%s", table, process.Output.String())
 			default:
 			}
-			if time.Now().After(deadline) {
-				t.Fatalf("the seed never queued behind the hold on %s within %s; it wrote:\n%s", table, seedWait, process.Output.String())
+			waiters, err := storetest.LockWaiters(ctx, holder)
+			if err != nil {
+				t.Fatalf("count the backends queued behind the hold on %s: %v", table, err)
 			}
-		}
+			return waiters >= 1, waiters >= 1
+		})
 		var waited string
 		if err := database.Pool.QueryRow(ctx, `
 			select query from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'

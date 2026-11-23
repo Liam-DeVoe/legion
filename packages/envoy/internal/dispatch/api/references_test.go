@@ -1160,16 +1160,16 @@ func awaitSinceRead(
 // own "create database … template …" and "drop database … with (force)" transactions
 // (storetest.Open and storetest's dropDatabase), and on CI's one Postgres every other package's.
 // Such a read waits out referencesSinceWait and then answers at the horizon it was left with,
-// which may be short of what committed before it, so it is read again for as long as the horizon
-// says it is held back (horizontest.Watch), however long that is; database is the one the server
-// reads. A read that answered within referencesSinceWait was not held back: what it answered is
-// what it owed, so holds failing on it is a product failure and fails the test at once. what names
-// the read and show its answer in either failure.
+// which may be short of what committed before it, so it is read again until the answer is whole,
+// however long that is: the watch reads no warning, and only a hold of database past
+// horizontest.OwnHoldBound or the drain before the run's deadline ends it
+// (horizontest.NewWatchInProcess); database is the one the server reads. A read that answered
+// within referencesSinceWait was not held back: what it answered is what it owed, so holds failing
+// on it is a product failure and fails the test at once. what names the read and show its answer
+// in either failure.
 func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, read func() T, holds func(T) bool, show func(T) string) T {
 	t.Helper()
-	warnings, stop := horizontest.Listen(t)
-	defer stop()
-	watch := horizontest.NewWatch(t, warnings, database.Pool.Config().ConnConfig.Database, database.Pool)
+	watch := horizontest.NewWatchInProcess(t, database)
 	for {
 		started := time.Now()
 		answer := read()

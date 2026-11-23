@@ -166,10 +166,10 @@ func expectNoEventAbove(t *testing.T, client *socketClient, sub string, floor in
 // expectEventsInOrder reads sub's events until every id in want has arrived, in want's order, and
 // fails on an id at or below one already sent (a repeat, or ids out of order), on an id above the
 // next wanted one before it (the wanted one skipped), and on a subscription that ends first or
-// whose next event does not come before the horizon wait ends (eventFeedFrame: for every caller
-// here, which calls horizontest.UntilTheDeadline, that is the drain before the run's deadline or a
-// hold of this database past OwnHoldBound). Ids want does not name are let through: a document
-// settling beside the test's own writes appends events of its own.
+// whose next event does not come before the horizon wait ends (eventFeedFrame, which waits in the
+// test's own process: the drain before the run's deadline, or a hold of this database past
+// horizontest.OwnHoldBound). Ids want does not name are let through: a document settling beside
+// the test's own writes appends events of its own.
 func expectEventsInOrder(t *testing.T, client *socketClient, sub string, want ...int64) {
 	t.Helper()
 	var last int64
@@ -195,7 +195,6 @@ func expectEventsInOrder(t *testing.T, client *socketClient, sub string, want ..
 // relay's published cursor, which never passes an id still open, it is sent a and then b.
 func TestAColdSubscriptionIsSentAnIdStillOpenWhenItSubscribed(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	first := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	second := createInteractionIssue(t, rig.handler, "OTHER", "Other issue", "A spec")
@@ -225,7 +224,6 @@ func TestAColdSubscriptionIsSentAnIdStillOpenWhenItSubscribed(t *testing.T) {
 // replay is complete for a since of the log as it stands, and the event committed during the hold.
 func TestAnEventsSubscriptionStaysAliveWhileTheHorizonIsHeld(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	since := eventHead(t, rig.database)
@@ -270,7 +268,6 @@ func TestAnEventsSubscriptionStaysAliveWhileTheHorizonIsHeld(t *testing.T) {
 // subscribing again on the same socket. It waits for that reset too.
 func TestAnEventsSubscriptionOnARelayStillOnAReplacedLogWaitsForItsReset(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	for _, subscription := range []struct {
 		name      string
 		since     *int64
@@ -354,7 +351,6 @@ func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 // it instead.
 func TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	// A since read answers a mention only once the horizon is proven past its event, so the
@@ -395,7 +391,6 @@ func TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts(
 // transaction open elsewhere on the instance must still reach it, or the page never shows it.
 func TestTheFirstColdSubscriptionOfAFreshProcessIsSentAnEventCommittedWhileTheRelayStarts(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 
@@ -420,7 +415,6 @@ func TestTheFirstColdSubscriptionOfAFreshProcessIsSentAnEventCommittedWhileTheRe
 // the subscription.
 func TestTheFirstColdSubscriptionIsSentAnEventCommittedWhileAWriteFromBeforeBootHoldsTheStart(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	var release func()
 	// persistence runs on the test's database before register takes the boot mark.
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat, persistence: func(database *store.Store) docs.VersionedStore {
@@ -476,7 +470,6 @@ func eventsTuplesRead(t *testing.T, database *store.Store) int64 {
 // sequential scan or through the primary key, while the first cold subscription starts.
 func TestTheRelaysFirstStartDoesNotReadTheWholeEventLog(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	const logSize = 200_000
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
@@ -510,7 +503,6 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLog(t *testing.T) {
 // 6.0 s after a restart, against 3.1 s when the boot mark held.
 func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBootIsOpen(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	const logSize = 200_000
 	var release func()
 	// persistence runs on the test's database before register takes the boot mark: the writer's
@@ -552,7 +544,6 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 // final starts below the lowest one that has filled, so that event reaches the subscription, first.
 func TestTheFirstColdSubscriptionIsSentAnEventThatDrewItsIdBeforeIt(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, rig.handler, "OTHER", "Other issue", "A spec")
@@ -584,7 +575,6 @@ func TestTheFirstColdSubscriptionIsSentAnEventThatDrewItsIdBeforeIt(t *testing.T
 // id can still be open, the floor stands at the newest id and the start reads no gap at all.
 func TestTheFirstColdSubscriptionSkipsAnIdThatRolledBack(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	// An id drawn and never written, as a rolled-back write leaves one, then an event above it.
@@ -678,7 +668,6 @@ func holdEventInsert(t *testing.T, database *store.Store) (id int64, release fun
 // order. Here the log holds 200,000 events and the start may read at most a tenth of them.
 func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(t *testing.T) {
 	t.Parallel()
-	horizontest.UntilTheDeadline(t)
 	const logSize = 200_000
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
@@ -693,7 +682,7 @@ func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromB
 		t.Fatalf("analyze events: %v", err)
 	}
 	// The process before proves and persists a horizon past the fill, as its relay or hub does. The
-	// proof is instance-wide, so the wait for it keys on the horizon's own account of itself.
+	// proof is instance-wide, so no clock bounds the wait for it (horizontest.AwaitPersisted).
 	before := events.NewHorizon(database.Pool)
 	before.PersistProven()
 	horizontest.AwaitPersisted(t, before, eventHead(t, database), database)

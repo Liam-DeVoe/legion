@@ -122,7 +122,7 @@ func TestCausedTakesTheStoreLockOrder(t *testing.T) {
 		holder, release := beginCausedHolder(t, database)
 		insertCausedTuple(t, holder, tuple)
 		done := pass.causeInBackground(ctx)
-		if answer, early := storetest.WaitForQueuedBehind(t, holder, pass.pid, done, causedLockWait); early {
+		if answer, early := storetest.WaitForQueuedBehind(t, holder, pass.pid, done); early {
 			t.Fatalf("Caused finished without waiting on the held copy of its %s tuple of %s: %v", tuple.Kind, tuple.FromID, answer)
 		}
 		running := causedStatement(t, database, pass.pid)
