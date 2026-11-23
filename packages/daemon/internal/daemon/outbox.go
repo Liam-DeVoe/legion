@@ -443,7 +443,52 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 	}
 	if err := r.finish(ctx, row); err != nil {
 		r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
+		return
 	}
+	r.startRowEnded(row)
+}
+
+// startRowEnded asks the workflow to read a claim's queued starts again (intake.RefusedStartEnded)
+// once a start row of that claim has finished while the claim's last launch stands refused by its
+// issue's pod (supervise's Machine.RefusedPod). The refusal's own report (workflow's
+// podRefusedLaunch) reads the outbox in its transaction and queues the claim's start where none
+// stands, and a row whose launch the wake pacing parked, or whose launch's write failed and is
+// retried, has delivered its task and returned when that launch is refused on its timer: the report
+// can read such a row while its finish has not committed, take it for the claim's start and queue
+// none. Read after the finish has committed, the machine holds the refusal if it was made before:
+// then this fact reads the outbox with the row gone, and the two facts, applied one at a time
+// (intake.ApplyFact), leave one start whichever runs second. A refusal made after the read is one
+// whose report reads the outbox after the finish. It runs on a goroutine of its own, since the
+// read waits out the decision in flight on the claim's machine, which can hold a Sandbox relaunch
+// for minutes, and the lane goes on meanwhile; a fact it cannot apply is logged at ERROR.
+func (r *outbox) startRowEnded(row record.OutboxRow) {
+	if row.Kind != record.OutboxKindSupervise || r.supervisor == nil || len(r.handlers) == 0 {
+		return
+	}
+	payload, err := record.DecodeOutboxPayload(row)
+	request, ok := payload.(record.SuperviseRequest)
+	if err != nil || !ok || request.Op != "start" {
+		return
+	}
+	go func() {
+		// This goroutine runs beside every lane, so it takes a hold mark of its own
+		// (store.ForConcurrentWorker).
+		ctx := store.ForConcurrentWorker(context.Background())
+		token, err := r.workerToken(ctx, row.Issue, request.Role, request.Claim)
+		if err != nil {
+			r.log.Error("read the claim of a finished start row for its pod's refusal", "row", row.ID, "issue", row.Issue, "error", err)
+			return
+		}
+		machine, found := r.supervisor.Machine(token)
+		if !found || machine.RefusedPod() == "" {
+			return
+		}
+		held := machine.Claim()
+		fact := intake.RefusedStartEnded{Issue: held.Issue, Role: held.Role, Claim: token}
+		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("refused-start-ended:%s:%d", token, row.ID), fact, r.handlers...); err != nil {
+			r.log.Error("apply the end of a start row of a claim its pod refused", "row", row.ID, "claim", token, "error", err)
+		}
+	}()
 }
 
 // deferral is the GitHub rate limit a row of kind would meet at now, if one stands (standingLimit),

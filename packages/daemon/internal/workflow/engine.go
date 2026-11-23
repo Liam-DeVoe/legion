@@ -319,6 +319,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.sessionStoreFault(ctx, tx, fact)
 	case intake.PodRefusedLaunch:
 		return e.podRefusedLaunch(ctx, tx, fact)
+	case intake.RefusedStartEnded:
+		return e.refusedStartEnded(ctx, tx, fact)
 	case intake.MemoryGuardKill:
 		return e.memoryGuardKill(ctx, tx, fact)
 	case intake.RetryOrEscalate:
@@ -1924,11 +1926,35 @@ func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.Po
 		Kind: record.PodWaitHeldNotice, Role: fact.Role, Phase: issue.Phase, Reason: told})); err != nil {
 		return intake.Result{}, err
 	}
-	run, err := e.store.RoleRun(ctx, tx, fact.Claim, issue.Key, fact.Role, issue.Generation)
-	if err != nil || startBringsBack(run) {
+	return intake.Result{}, e.startRefusedClaim(ctx, tx, *issue, fact)
+}
+
+// refusedStartEnded reads the claim's queued starts again once a start row of a claim whose last
+// launch its pod refused has ended (intake.RefusedStartEnded), and queues the claim's start where
+// none stands (startRefusedClaim). The refusal's own fact reads the outbox in its transaction, and a
+// start row the wake pacing parked a launch for has delivered its task and returned when that
+// launch's turn comes, so the refusal can read the row as the claim's start while its finish has not
+// committed yet, and queue none. The outbox applies this once the row's finish has committed and it
+// has read the refusal on the claim's machine (internal/daemon's startRowEnded); facts are applied
+// one at a time (intake.ApplyFact), so whichever of the two comes second reads what the first left,
+// and the claim has one start whichever order they run in. It tells nobody.
+func (e *Engine) refusedStartEnded(ctx context.Context, tx pgx.Tx, fact intake.RefusedStartEnded) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.queueRefusedStart(ctx, tx, *issue, fact)
+	return intake.Result{}, e.startRefusedClaim(ctx, tx, *issue, intake.PodRefusedLaunch{Issue: fact.Issue, Role: fact.Role, Claim: fact.Claim})
+}
+
+// startRefusedClaim queues the start of a claim whose launch its issue's pod refused
+// (queueRefusedStart) unless a queued start of the claim brings it back (startBringsBack), read
+// from the role's run in the caller's transaction.
+func (e *Engine) startRefusedClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.PodRefusedLaunch) error {
+	run, err := e.store.RoleRun(ctx, tx, fact.Claim, issue.Key, fact.Role, issue.Generation)
+	if err != nil || startBringsBack(run) {
+		return err
+	}
+	return e.queueRefusedStart(ctx, tx, issue, fact)
 }
 
 // queueRefusedStart queues the start of a claim whose launch its issue's pod refused where the

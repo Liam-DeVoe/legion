@@ -385,6 +385,11 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		"PodRefusedLaunch": {{name: "a launch its pod refused is told and its start queued, and keeps the step", arrange: none, source: "supervise",
 			fact: intake.PodRefusedLaunch{Issue: inRetro, Role: claim.RoleImplementer, Pod: "pod-1",
 				Detail: "the pod pod-1 was built without checker, the role of its step"}, keeps: inRetro}},
+		// The end of a start row of a claim whose launch its pod refused reads the claim's starts
+		// again and queues one where none stands (workflow's refusedStartEnded): it moves no issue,
+		// so the step's run stays open.
+		"RefusedStartEnded": {{name: "a refused claim's ended start row queues its start, and keeps the step", arrange: none, source: "outbox",
+			fact: intake.RefusedStartEnded{Issue: inRetro, Role: claim.RoleImplementer}, keeps: inRetro}},
 	}
 	kinds := appliedFactKinds(t)
 	for _, kind := range kinds {

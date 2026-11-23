@@ -1465,6 +1465,19 @@ type PodRefusedLaunch struct {
 
 func (f PodRefusedLaunch) namedIssue() (string, bool) { return f.Issue, true }
 
+// RefusedStartEnded is a start row of a claim that the outbox finished while the claim's last
+// launch stands refused by its issue's pod (supervise's Machine.RefusedPod): the row ended after
+// the refusal's own fact (PodRefusedLaunch) may have read it as the start that brings the claim
+// back, so the workflow reads the claim's queued starts again, now the row is gone, and queues its
+// start wherever none stands (workflow's refusedStartEnded). It tells nobody: the refusal did.
+type RefusedStartEnded struct {
+	Issue string
+	Role  claim.Role
+	Claim claim.Token
+}
+
+func (f RefusedStartEnded) namedIssue() (string, bool) { return f.Issue, true }
+
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
 // the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or

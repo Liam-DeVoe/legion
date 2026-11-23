@@ -2254,6 +2254,18 @@ func (m *Machine) Claim() Claim {
 	return m.current()
 }
 
+// RefusedPod is the uid of the issue pod the claim's last launch was refused on, for want of that
+// pod's update round or its release (podRefused), and "" where no launch was refused since the one
+// tried last (podStillRefuses drops it once another pod stands). It waits for the decision in
+// flight, as Claim does, so a refusal is read either whole or not yet made: the outbox reads it once
+// a start row of the claim has finished (internal/daemon's startRowEnded), and a refusal it does not
+// read then is one whose own report reads the outbox after that finish.
+func (m *Machine) RefusedPod() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.refusedPod
+}
+
 // View is a copy of the claim as the machine last published it: as its latest decision left it, or
 // as the decision in flight last tried to write it to the store. It never waits, where Claim waits
 // out a decision that holds the machine through its runtime call — a Sandbox relaunch waits minutes
