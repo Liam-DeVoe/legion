@@ -29,6 +29,10 @@ import pg
 from corpus import read_json, read_jsonl, say
 
 ACTOR = json.dumps({"kind": "session", "id": "search-measure-fixture"})
+# Every project names a default assignee (projects.default_assignee is not null since migration
+# 20261111210103), which the read API does not answer; one constant login stands in for it, as
+# ACTOR does for authors. No search leg reads it.
+DEFAULT_ASSIGNEE = "search-measure-fixture@example.invalid"
 # Work the schema's AFTER triggers queue for Dispatch's background passes. None of it is a search
 # vector: emptying it keeps a measurement's server from spending the run rebuilding block indexes
 # and embedding queues for a corpus nobody will edit.
@@ -83,8 +87,8 @@ def main():
     asks = read_jsonl(corpus, "asks.jsonl")
     messages = read_jsonl(corpus, "messages.jsonl")
 
-    copy(target, "projects", ("key", "name", "next_number"),
-         ([project["key"], project["name"], 1] for project in projects), len(projects))
+    copy(target, "projects", ("key", "name", "next_number", "default_assignee"),
+         ([project["key"], project["name"], 1, DEFAULT_ASSIGNEE] for project in projects), len(projects))
 
     loaded_issues = {issue["key"] for issue in issues}
     copy(target, "issues",
