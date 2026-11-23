@@ -726,7 +726,7 @@ test("an implementer and reviewer task has the implementer prove the surface and
   expect([
     ...lacks("legion-worker/SKILL.md", [
       /no tester step[^.;]*an implementation step's evidence serves/,
-      /implementation step's agent opens the pull request[^.]*an issue none of whose steps opened one has none/,
+      /implementation step's agent opens the pull request[^.]*\. Later steps push[^.]*\. An issue none of whose steps opened one has none/,
     ]),
     ...lacks("legion-worker/references/ci-checks.md", [
       /with no tester step the implementation step's agent[^.;]*real surface/,
@@ -754,7 +754,7 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
     ]),
     ...lacks("legion-worker/SKILL.md", [
       /no reviewer step[^.;]*no Legion approval/,
-      /no Legion approval is awaited; the last step's pass starts retro/,
+      /no Legion approval is awaited\. The last step's pass starts retro/,
     ]),
   ]).toEqual([]);
   const merger = collapsed(
