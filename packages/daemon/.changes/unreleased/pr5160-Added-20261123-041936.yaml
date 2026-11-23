@@ -7,7 +7,10 @@ body: |-
   version of the plan that changes the role's type, model or prompt relaunches a live agent of the
   role on its own session at its next step, with the new definition. The claim keeps the
   definition its agent was launched with, so a version given while that agent came up, or before a
-  restart of the daemon, relaunches it too, and an unchanged role relaunches nothing.
+  restart of the daemon, relaunches it too, and an unchanged role relaunches nothing. A claim whose
+  launch failed and waits to be tried again runs no agent to relaunch: the next try builds from the
+  plan in force. The claim keeps the generation of that launch with it, so an agent an earlier
+  release launched in between, after a rollback that skipped the way back, is relaunched as well.
   `register_plan` refuses a role whose name Legion or the deployment already holds,
   a model the deployment does not list, and a key whose steps name roles of two models or two
   harnesses.
@@ -30,7 +33,8 @@ body: |-
 
   One migration adds the table of the roles a plan defines, another marks each ask to merge
   forward that an earlier release recorded in implementing as made at that step, and a third adds
-  the column in which a claim keeps the definition its agent was launched with. A rollback runs
+  the columns in which a claim keeps the definition its agent was launched with and the generation
+  of that launch. A rollback runs
   the way back of each, and removes `models` from `legion.yaml` first, since an earlier daemon
   refuses the key.
 time: 2026-11-23T04:19:36Z

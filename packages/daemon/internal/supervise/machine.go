@@ -352,11 +352,16 @@ type Claim struct {
 	LastReady        time.Time
 	// LaunchedDefinition is the definition of a plan's role that the launch of the process the
 	// claim records was built for (runtime.SpawnSpec.RoleDefinition), "" for a launch of a role no
-	// plan defines. The write that records that process writes it (launchNow), and the store keeps
-	// it, so the start of a later step compares it with the definition of the plan in force after
-	// a restart as well as before one (internal/daemon's roleDefinitionChanged). A claim a release
-	// before this one launched holds "": no such release launched a role of a plan.
+	// plan defines, and LaunchedGeneration is the generation that launch ran at. The write that
+	// records that process writes both (launchNow), letGo clears both with the process it lets go,
+	// and the store keeps them, so the start of a later step compares the definition with the
+	// definition of the plan in force after a restart as well as before one (internal/daemon's
+	// roleDefinitionChanged). The definition is the process's only while the claim's generation is
+	// LaunchedGeneration: a release that keeps neither, run in between after a rollback that skipped
+	// the way back, launches at a later generation and leaves both as they stood. A claim a release
+	// before this one launched holds "" and 0: no such release launched a role of a plan.
 	LaunchedDefinition string
+	LaunchedGeneration uint64
 	// BootTokenHash is the hash of the current launch's boot token, which the shim's hello and the
 	// agent's registration are resolved by. CapabilityHash is the hash of the secret the agent's
 	// registration was issued.
@@ -1363,8 +1368,9 @@ type Machine struct {
 	lostCause SessionLoss
 	// builtDefinition is the definition of a plan's role the newest spec this machine built was
 	// for (runtime.SpawnSpec.RoleDefinition, spawnSpec). The write that records that launch's
-	// process copies it onto the claim (Claim.LaunchedDefinition, launchNow), so a launch that
-	// started nothing leaves the claim's definition that of the process it records.
+	// process copies it onto the claim (Claim.LaunchedDefinition, launchNow). A launch that started
+	// nothing copies nothing: the claim it leaves records no process, and letGo cleared the
+	// definition of the one it let go.
 	builtDefinition string
 	// refusedEarlierRelease is the generation at which the fence refused the registration of a
 	// process an earlier release started, for a claim that records a session and no file
@@ -2878,10 +2884,11 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			m.stopUnconfirmed = false
 			// The mark of a start that had Oh My Pi resume the session by its id, which start set
 			// (Claim.AgentResumeGeneration), and the definition of a plan's role its spec was built
-			// for (Claim.LaunchedDefinition) reach the store in this one write with the process they
-			// name, so a claim that records that process always records both with it.
+			// for with the generation it ran at (Claim.LaunchedDefinition, LaunchedGeneration)
+			// reach the store in this one write with the process they name, so a claim that records
+			// that process always records them with it.
 			m.claim.Locator = &loc
-			m.claim.LaunchedDefinition = m.builtDefinition
+			m.claim.LaunchedDefinition, m.claim.LaunchedGeneration = m.builtDefinition, m.claim.Generation
 			m.leftPodRoundAt(loc)
 			m.armBoot()
 			m.log.Info("supervise: launched", "generation", m.claim.Generation, "incarnation", loc.Incarnation,
@@ -3869,10 +3876,13 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // next process is sent the task anew. What the runtime last reported of that process goes with it
 // too, and what was charged for its death with that (processGone, Claim.DeathCharged): the claim
 // records no process for a report to be about, and the one the next launch starts has been
-// reported nothing and charged nothing. The clear of the charge reaches the store with the write
-// every caller of this makes of the claim it leaves — the launch that records the new process,
-// the suspension, the retirement, the failure — so no stored charge ever outlives the process it
-// was made for.
+// reported nothing and charged nothing. So does the definition of a plan's role that process was
+// launched with, and the generation it ran at (Claim.LaunchedDefinition, LaunchedGeneration): a
+// claim that records no process records no definition, and the start of a step compares none. The
+// clear of the charge and of the definition reaches the store with the write every caller of this
+// makes of the claim it leaves — the launch that records the new process, the suspension, the
+// retirement, the failure — so no stored charge or definition ever outlives the process it was
+// made for.
 //
 // Before any of that, what the process ended is recorded for cause, the caller's reading of why
 // it lets the process go (recordEnd): the turn it was in, whether that turn was the pending
@@ -3902,6 +3912,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	if m.claim.Locator != nil {
 		m.previous, m.claim.Locator = m.claim.Locator, nil
 	}
+	m.claim.LaunchedDefinition, m.claim.LaunchedGeneration = "", 0
 }
 
 // judge acts on what a probe or the sweep says about the claim's process. alive is what a live

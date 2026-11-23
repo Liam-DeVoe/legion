@@ -3281,19 +3281,40 @@ func (r *outbox) suspendForStep(ctx context.Context, machine *supervise.Machine,
 // from the plan in force (roleDefinition), both "" for a role no plan defines. So a version of the
 // plan taken at any moment after the launch was built — before its agent came up, after, or
 // before a restart of this daemon — relaunches the process at the role's next step, and a block no
-// version changed relaunches nothing. A claim that runs nothing has no process to compare, and an
-// outbox with no reader of the definition (a test's) changes nothing.
+// version changed relaunches nothing.
+//
+// The claim's definition is the process's only while the claim's generation is the one that
+// launch wrote (supervise.Claim.LaunchedGeneration). A release that keeps no definition, run in
+// between after a rollback that skipped both ways back, launched the process the claim records
+// at a later generation and left the definition as this release wrote it, so that process is read
+// as running no plan's definition, as the release before's launches are, and relaunched where the
+// plan in force defines its role.
+//
+// A claim that records no process has none to compare: one whose launch failed or was cut short
+// after it let its process go, waiting to be tried again or for a suspension, or whose paced launch
+// has not run. No start of it is in flight while Claim answers, since a launch holds the machine
+// through its start, and the try that starts its next process builds its spec then, from the plan
+// in force (supervise's spawnSpec). Neither has a claim that runs nothing, and an outbox with no
+// reader of the definition (a test's) changes nothing.
 func (r *outbox) roleDefinitionChanged(ctx context.Context, machine *supervise.Machine) (string, error) {
 	held := machine.Claim()
-	if r.roleDefinition == nil || held.RunsNothing() {
+	if r.roleDefinition == nil || held.RunsNothing() || held.Locator == nil {
 		return "", nil
 	}
 	current, err := r.roleDefinition(ctx, held)
 	if err != nil {
 		return "", err
 	}
-	if held.LaunchedDefinition == current {
+	recorded := held.LaunchedGeneration == held.Generation
+	launched := held.LaunchedDefinition
+	if !recorded {
+		launched = ""
+	}
+	switch {
+	case launched == current:
 		return "", nil
+	case !recorded:
+		return fmt.Sprintf("a release that records no definition of its role %s launched its process on %s", held.Role, held.Issue), nil
 	}
 	return fmt.Sprintf("the definition of its role %s on %s changed since its process launched", held.Role, held.Issue), nil
 }

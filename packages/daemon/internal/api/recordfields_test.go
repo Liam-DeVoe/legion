@@ -134,8 +134,9 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		LastReady:        at.Add(-3 * time.Minute),
 		LastDeathCause:   "the pod was evicted",
 		LastStartFailure: "the launcher refused the start",
-		// A hash no surface carries (ColumnWithheld).
+		// A hash, and the generation it was written at, which no surface carries (ColumnWithheld).
 		LaunchedDefinition: "c0ffee",
+		LaunchedGeneration: 3,
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},
