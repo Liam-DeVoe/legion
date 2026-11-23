@@ -149,22 +149,35 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         // nats.js abandons a dial after its dial timeout; the socket it opened must go with it, so
         // the client holds no socket to a redial it gave up on. The proxy never closes a stalled
         // connection, so its close is the client's. Real nats.js dial timers: the wait polls the
-        // real clock, and fails by name once natsd or the listener has exited.
+        // real clock, and fails by name once natsd or the listener has exited. It has no deadline
+        // of its own: if the client never closes the socket, the wait ends at the row's limit,
+        // which names the row. The wait of a row its limit abandoned ends once the describe's
+        // `afterAll` stops the stack: its next `throwIfExited` throws.
         for (const hung of redials.slice(0, stalledRedials)) {
-          while (hung.closedAt === undefined && Date.now() - hung.acceptedAt < 30_000) {
+          let closedAt = hung.closedAt;
+          while (closedAt === undefined) {
             throwIfExited(stack, "waiting for the client to close a hung redial");
             await Bun.sleep(250);
+            closedAt = hung.closedAt;
           }
           console.log(
-            `nats-stall row ${slug.toUpperCase()} hung redial: accepted ${((hung.acceptedAt - frozenAt) / 1000).toFixed(1)} s after the freeze, ${hung.closedAt === undefined ? "still open" : `closed ${((hung.closedAt - hung.acceptedAt) / 1000).toFixed(1)} s after it was accepted`}`
+            `nats-stall row ${slug.toUpperCase()} hung redial: accepted ${((hung.acceptedAt - frozenAt) / 1000).toFixed(1)} s after the freeze, closed ${((closedAt - hung.acceptedAt) / 1000).toFixed(1)} s after it was accepted`
           );
-          expect(hung.closedAt).toBeDefined();
         }
       } finally {
         await client.close();
         await publisher.close();
         await proxy.close();
       }
-    }, 120_000);
+      // A hang guard, not a bound on work: what can hang is a wait for the freeze's recovery or
+      // for the client's close of a hung redial. Worst measured cost of each row, bun's time for
+      // it, in the twelve green runs of the `envoy-session-stall` job on this branch from
+      // d62604fd to a467c066, on the job's own GitHub Actions runner: A 30 428.16 ms,
+      // B 40 463.93 ms and C 30 439.10 ms, all three in the run at f3ff8793. Six times the worst
+      // is 242.8 s, and 250_000 is 6.2 times the worst. A row that hangs to this limit fits the
+      // room the `beforeAll` above names: the stack's worst start (249 s), this row's 250 s, the
+      // other two rows at their worst (30.4 s each) and the 30 s kept for the `afterAll` come to
+      // 589.8 s, inside 1 130 s.
+    }, 250_000);
   }
 });
