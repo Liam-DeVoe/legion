@@ -29,40 +29,93 @@ func (kv *delayingKV) watching(inner jetstream.KeyValue) jetstream.KeyValue {
 	return &delayingJS{KeyValue: inner, kv: kv}
 }
 
-// delayingJS is delayingKV's jetstream twin: a put of a key it was asked to delay passes its gate
-// once the put has answered.
+// delayingJS is delayingKV's jetstream twin: a write of a key it was asked to delay passes its
+// gate once the write has answered, a Put and the Create and Update an entry write sends alike.
 type delayingJS struct {
 	jetstream.KeyValue
 	kv *delayingKV
 }
 
 func (j *delayingJS) Put(ctx context.Context, key string, value []byte) (uint64, error) {
-	revision, err := j.KeyValue.Put(ctx, key, value)
-	if g := j.kv.take(j.kv.puts, key); g != nil {
-		g.pass(func() {})
-	}
-	return revision, err
+	return j.kv.wrote(key)(j.KeyValue.Put(ctx, key, value))
+}
+
+func (j *delayingJS) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+	return j.kv.wrote(key)(j.KeyValue.Create(ctx, key, value, opts...))
+}
+
+func (j *delayingJS) Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error) {
+	return j.kv.wrote(key)(j.KeyValue.Update(ctx, key, value, revision))
 }
 
 func (kv *interleavingSessionPutKeyValue) watching(inner jetstream.KeyValue) jetstream.KeyValue {
 	return &interleavingSessionPutJS{KeyValue: inner, kv: kv}
 }
 
-// interleavingSessionPutJS is interleavingSessionPutKeyValue's jetstream twin: its puts count with
-// the wrapper's, and the first that lands runs afterFirstPut.
+// interleavingSessionPutJS is interleavingSessionPutKeyValue's jetstream twin: the entry writes
+// that land through it count with the wrapper's, and the first runs afterFirstPut.
 type interleavingSessionPutJS struct {
 	jetstream.KeyValue
 	kv *interleavingSessionPutKeyValue
 }
 
 func (j *interleavingSessionPutJS) Put(ctx context.Context, key string, value []byte) (uint64, error) {
-	j.kv.puts++
-	revision, err := j.KeyValue.Put(ctx, key, value)
-	if err != nil {
-		return 0, err
+	return j.kv.wrote(j.KeyValue.Put(ctx, key, value))
+}
+
+func (j *interleavingSessionPutJS) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+	return j.kv.wrote(j.KeyValue.Create(ctx, key, value, opts...))
+}
+
+func (j *interleavingSessionPutJS) Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error) {
+	return j.kv.wrote(j.KeyValue.Update(ctx, key, value, revision))
+}
+
+func (kv losingUpdateKV) watching(inner jetstream.KeyValue) jetstream.KeyValue {
+	return losingUpdateJS{KeyValue: inner, kv: kv}
+}
+
+// losingUpdateJS is losingUpdateKV's jetstream twin: every conditional update loses, counted
+// with the wrapper's.
+type losingUpdateJS struct {
+	jetstream.KeyValue
+	kv losingUpdateKV
+}
+
+func (j losingUpdateJS) Update(_ context.Context, key string, value []byte, revision uint64) (uint64, error) {
+	return j.kv.Update(key, value, revision)
+}
+
+func (kv *faultyDeleteKeyValue) watching(inner jetstream.KeyValue) jetstream.KeyValue {
+	return &faultyDeleteJS{KeyValue: inner, kv: kv}
+}
+
+// faultyDeleteJS is faultyDeleteKeyValue's jetstream twin: its deletes count with the wrapper's
+// and take the fault armed on it.
+type faultyDeleteJS struct {
+	jetstream.KeyValue
+	kv *faultyDeleteKeyValue
+}
+
+func (j *faultyDeleteJS) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	if err := j.kv.faulted(); err != nil {
+		return err
 	}
-	if j.kv.puts == 1 {
-		j.kv.afterFirstPut()
-	}
-	return revision, nil
+	return j.KeyValue.Delete(ctx, key, opts...)
+}
+
+func (kv *raceOnFirstUpdate) watching(inner jetstream.KeyValue) jetstream.KeyValue {
+	return &raceOnFirstUpdateJS{KeyValue: inner, kv: kv}
+}
+
+// raceOnFirstUpdateJS is raceOnFirstUpdate's jetstream twin: its updates count with the
+// wrapper's, and before runs ahead of the first.
+type raceOnFirstUpdateJS struct {
+	jetstream.KeyValue
+	kv *raceOnFirstUpdate
+}
+
+func (j *raceOnFirstUpdateJS) Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error) {
+	j.kv.beforeUpdate()
+	return j.KeyValue.Update(ctx, key, value, revision)
 }

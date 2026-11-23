@@ -8,7 +8,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -71,13 +71,43 @@ func (kv refusingEntryKV) watching(inner jetstream.KeyValue) jetstream.KeyValue 
 	return refusingEntryJS{KeyValue: inner, kv: kv}
 }
 
-// refusingEntryJS is refusingEntryKV's jetstream twin: every put fails after before has run.
+// refusingEntryJS is refusingEntryKV's jetstream twin: every write of an entry fails after before
+// has run, a Put and the Create and Update the entry write sends alike.
 type refusingEntryJS struct {
 	jetstream.KeyValue
 	kv refusingEntryKV
 }
 
-func (j refusingEntryJS) Put(context.Context, string, []byte) (uint64, error) {
-	j.kv.before()
-	return 0, fmt.Errorf("injected session entry write failure")
+func (j refusingEntryJS) Put(context.Context, string, []byte) (uint64, error) { return j.kv.refuse() }
+
+func (j refusingEntryJS) Create(context.Context, string, []byte, ...jetstream.KVCreateOpt) (uint64, error) {
+	return j.kv.refuse()
+}
+
+func (j refusingEntryJS) Update(context.Context, string, []byte, uint64) (uint64, error) {
+	return j.kv.refuse()
+}
+
+func (kv stalledSessionEntryKV) watching(inner jetstream.KeyValue) jetstream.KeyValue {
+	return stalledSessionEntryJS{KeyValue: inner, kv: kv}
+}
+
+// stalledSessionEntryJS is stalledSessionEntryKV's jetstream twin: its conditional write of the
+// wrapper's key does not answer until released is closed or the write's context ends, as a
+// jetstream request to a bucket that stopped answering ends with its context.
+type stalledSessionEntryJS struct {
+	jetstream.KeyValue
+	kv stalledSessionEntryKV
+}
+
+func (j stalledSessionEntryJS) Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error) {
+	if key != j.kv.key {
+		return j.KeyValue.Update(ctx, key, value, revision)
+	}
+	select {
+	case <-j.kv.released:
+		return 0, errors.New("the session bucket's write of the entry never answered")
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }
