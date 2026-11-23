@@ -3435,9 +3435,14 @@ test("a priority's page offers no versions and no delete, and carries no line ab
 //   1. No write of hers replaces a text the server holds that is not one of the field's own - its
 //      start, her landed texts, her texts whose end is unknown - except Use my text, naming it.
 //   2. Her text is never lost: it is on the server, in the field, or kept with the notice, after
-//      a reload as before it.
+//      a reload as before it. A later edit of hers lets a stopped one go only where it was made
+//      on the stopped one's text; one made on the server's text, the field drawn again or
+//      another person's text taken in, carries none of it.
 //   3. When nobody else wrote, every edit of hers lands, with no 409 and no notice, whatever her
-//      earlier writes ended as.
+//      earlier writes ended as - but for one limit: a write pressed while an earlier one is out,
+//      where the earlier one is then stopped or refused for its body and never lands, may be
+//      refused 409 and offered as another person's change, with nothing lost and Use my text
+//      landing it.
 //   4. One conflict gives one notice, and Use my text lands or meets a newer conflict.
 //   5. Nothing is written from a reading of the server's that is not exact.
 // A key that expired is no cell here: the page cannot make the server forget a write's key inside
@@ -3666,6 +3671,44 @@ async function checkLetGo(cell: TableCell, newer: string): Promise<void> {
   await soft(tableNotice(cell), "after a reload no notice of another person's text").toHaveCount(0);
 }
 
+/** `text` with each character a regular expression reads as syntax escaped. */
+function escapedForRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Her suffix typed at the end of `editor`, which she then leaves. */
+async function typeInto(cell: TableCell, editor: Locator, suffix: string): Promise<void> {
+  await editor.click();
+  await cell.page.keyboard.press("ControlOrMeta+End");
+  await cell.page.keyboard.type(suffix);
+  await editor.blur();
+}
+
+/** Rules 1 and 2 for a stopped write her landed edit carries none of: unless the server holds her
+ *  stopped text, it stays on the shell's line, and its Retry, naming the text it went over, is
+ *  refused 409 into the notice that holds her text. */
+async function checkStoppedKept(cell: TableCell, suffix: string): Promise<void> {
+  checkWrites(cell);
+  if ((await tableStored(cell)).includes(suffix)) return;
+  const retry = pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" });
+  await expect(retry.first(), "her stopped write is still on the shell's line").toBeVisible();
+  await retry.first().click();
+  await expect
+    .poll(
+      () =>
+        cell.writes.some((write) => write.status === 409 && (write.text ?? "").includes(suffix)),
+      { message: "her stopped write's Retry was sent and refused 409", timeout: 15_000 }
+    )
+    .toBe(true);
+  await expect(
+    cell.page
+      .getByRole("alert", { name: /changed by another person$/ })
+      .filter({ hasText: suffix.trim() }),
+    "one notice holds her stopped text"
+  ).toHaveCount(1, { timeout: 15_000 });
+  checkWrites(cell);
+}
+
 /** Rules 1, 2 and 4 after another person's text met hers: one notice holds her text, the server
  *  holds his, and after a reload her text is still kept with the notice. */
 async function checkKept(cell: TableCell, suffix: string, theirs: string): Promise<void> {
@@ -3696,13 +3739,14 @@ async function checkNotLost(cell: TableCell, suffix: string): Promise<void> {
     .toBe(true);
   if (!(await tableStored(cell)).includes(suffix)) await retry.first().click();
   // The Retry lands her text, or, where another person's text came meanwhile, is refused and
-  // her text is kept beside it on the page.
+  // her text is kept beside the field, in its notice: the shell's line names her text too, so a
+  // match of the page's text alone would pass on the line.
   await expect
     .poll(
       async () =>
         (await tableStored(cell)).includes(suffix) ||
-        (await cell.page.getByText(suffix.trim(), { exact: false }).count()) > 0,
-      { message: "her text landed, or is kept on the page", timeout: 15_000 }
+        (await tableNotice(cell).filter({ hasText: suffix.trim() }).count()) > 0,
+      { message: "her text landed, or is kept in the field's notice", timeout: 15_000 }
     )
     .toBe(true);
 }
@@ -4159,6 +4203,119 @@ const tableCells: {
       await expect(retry.first()).toBeVisible();
       await retry.first().click();
       await checkClean(cell, " eight-x");
+    },
+  },
+  // The field drawn again while her stopped write stands on the shell's line: her next edit is
+  // made on the server's text, not on hers, so it carries none of it (rule 2).
+  {
+    field: "description",
+    name: "a write stopped in a row of the list, the row closed and opened again, she edits and it lands: her stopped text is kept",
+    slow: true,
+    run: async (cell) => {
+      await cell.page.goto(PRIORITIES_PATH);
+      const title = (await listPriorities()).priorities?.find((one) => one.id === cell.id)?.title;
+      const named = (verb: string) =>
+        cell.page.getByRole("button", {
+          name: new RegExp(`^${verb} #\\d+ ${escapedForRegExp(title ?? "")}$`),
+        });
+      const editor = cell.page.getByRole("textbox", { name: /^Description of #\d+$/ });
+      await named("Open").click();
+      await expect(editor).toBeVisible();
+      const busy = await refuseTableWrites(cell, false);
+      await typeInto(cell, editor, " ten-a");
+      await busy.stop();
+      await named("Close").click();
+      await expect(editor).toHaveCount(0);
+      await named("Open").click();
+      await expect(editor).toBeVisible();
+      await typeInto(cell, editor, " ten-b");
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" ten-b");
+      await checkStoppedKept(cell, " ten-a");
+    },
+  },
+  {
+    field: "description",
+    name: "a write stopped, the page reloaded, she edits and it lands: her stopped text is kept",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " ten-c");
+      await busy.stop();
+      await cell.page.reload();
+      await expect(cell.page.getByText("second host").first()).toBeVisible();
+      await typeAndLeave(cell, " ten-d");
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" ten-d");
+      await checkStoppedKept(cell, " ten-c");
+    },
+  },
+  {
+    field: "title",
+    name: "a title write stopped, the page reloaded, she edits the title and it lands: her stopped title is kept",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " ten-t");
+      await busy.stop();
+      await cell.page.reload();
+      await expect(titleHeading(cell.page)).toBeVisible();
+      await typeAndLeave(cell, " ten-u");
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" ten-u");
+      await checkStoppedKept(cell, " ten-t");
+    },
+  },
+  {
+    field: "title",
+    name: "a title write stopped, she goes to the list and back, edits the title and it lands: her stopped title is kept",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " ten-v");
+      await busy.stop();
+      await cell.page.getByRole("link", { name: "‹ Priorities" }).click();
+      await expect(cell.page.getByRole("table", { name: "Priorities table" })).toBeVisible();
+      await cell.page.goBack();
+      await expect(titleHeading(cell.page)).toBeVisible();
+      await typeAndLeave(cell, " ten-w");
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" ten-w");
+      await checkStoppedKept(cell, " ten-v");
+    },
+  },
+  // Another person writes, then writes back exactly the text her stopped write went over: her
+  // next edit names that text as hers did, but is made on his, so it carries none of hers.
+  {
+    field: "description",
+    name: "a write stopped, another person writes and then writes back the text it went over, she edits and it lands: her stopped text is kept",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " ten-e");
+      await busy.stop();
+      await otherWrites(cell, BOB_EXACT);
+      await expect(cell.page.getByText("third host").first()).toBeVisible();
+      await otherWrites(cell, TABLE_START);
+      await expect(cell.page.getByText("third host")).toHaveCount(0);
+      cell.taken.push(BOB_EXACT, TABLE_START);
+      await typeAndLeave(cell, " ten-f");
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" ten-f");
+      await checkStoppedKept(cell, " ten-e");
+    },
+  },
+  {
+    field: "title",
+    name: "a title write stopped, another person renames and then renames back, she edits the title and it lands: her stopped title is kept",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " ten-g");
+      await busy.stop();
+      await otherWrites(cell, BOB_TITLE);
+      await expect(titleHeading(cell.page)).toHaveText(BOB_TITLE);
+      await otherWrites(cell, TITLE_START);
+      await expect(titleHeading(cell.page)).toHaveText(TITLE_START);
+      cell.taken.push(BOB_TITLE, TITLE_START);
+      await typeAndLeave(cell, " ten-h");
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" ten-h");
+      await checkStoppedKept(cell, " ten-g");
     },
   },
   {
