@@ -1036,6 +1036,7 @@ func TestSessionConsumerUnsubscribeWritesTheTopicsStoredWhenItHoldsTheLock(t *te
 // answers 200 and plans no further pass, the session entry's ConsumerHoldsStored reads the mark
 // alone, and the session's next heartbeat puts the topic back but not the messages.
 func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing.T) {
+	t.Parallel()
 	// Unowned: this task relays nothing, so the restart below is the session's only one and the
 	// filter it leaves is the filter this case reads.
 	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
@@ -1360,6 +1361,7 @@ func awaitSkipped(t *testing.T, harness listenerDeliveryHarness, want int) {
 // bus.ConnectSessionConsumers's own row; what this row is about is the listener handing it its
 // own windows.
 func TestTheListenerDerivesItsInactiveThresholdFromItsOwnWindows(t *testing.T) {
+	t.Parallel()
 	// A bucket that keeps a record for well past the horizon, as a deployment that raised
 	// ENVOY_SESSION_MAX_AGE has.
 	const (

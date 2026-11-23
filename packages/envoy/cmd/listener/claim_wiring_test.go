@@ -28,6 +28,7 @@ func TestSessionEntryFromSubscribe_CarriesHost(t *testing.T) {
 }
 
 func TestSessionEntryFromSubscribe_DefaultsHostEmpty(t *testing.T) {
+	t.Parallel()
 	// An older plugin's registration has no "host" key; sessionEntryFromSubscribe must not
 	// invent one: an empty Host is what sends the session list's display to MachineID
 	// (HostOrMachine).
@@ -114,6 +115,7 @@ func TestSessionEntryFromSubscribe_CarriesThePluginAndItsVersionTrimmed(t *testi
 }
 
 func TestSessionEntryFromSubscribe_DefaultsThePluginAndItsVersionEmpty(t *testing.T) {
+	t.Parallel()
 	// A plugin predating the fields sends neither key; the entry invents neither.
 	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{SessionID: "ses_old"}, "example-listener", sessionDeliveryOutcome{}, nil)
 
@@ -151,6 +153,7 @@ func TestSessionEntryFromSubscribe_TrimsTheClientInstanceID(t *testing.T) {
 }
 
 func TestSessionEntryFromSubscribe_DefaultsTheClientInstanceIDEmpty(t *testing.T) {
+	t.Parallel()
 	// A client predating the field sends no key; the entry invents none, and the empty id is
 	// what keeps the old soft-claim rule for it (session.InstanceMatches). The same empty id is
 	// written over any id a previous registration stored, since the entry is built fresh from
@@ -163,6 +166,7 @@ func TestSessionEntryFromSubscribe_DefaultsTheClientInstanceIDEmpty(t *testing.T
 }
 
 func TestSessionEntryFromSubscribe_CarriesSelfSubscribedFlag(t *testing.T) {
+	t.Parallel()
 	// Given
 	var body listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{"session_id":"ses_omp","self_subscribed":true}`), &body); err != nil {

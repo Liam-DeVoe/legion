@@ -275,6 +275,7 @@ func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 // neither an attempt nor a dedupe key for it -- records that would have the next copy of the same
 // event skipped as one the session already has (INFRA-594).
 func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
+	t.Parallel()
 	// Unowned, so no relay runs until the fan-out has read the message: the test orders the two
 	// paths by construction rather than by timing.
 	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
@@ -318,6 +319,7 @@ func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 // only the two consumers' interests the durable would acknowledge the message before it decoded
 // it (durableNeedsDelivery), and the fan-out would never judge it.
 func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublishedIt(t *testing.T) {
+	t.Parallel()
 	// Unowned, so no relay runs until the fan-out has read the message: the test orders the two
 	// paths by construction rather than by timing.
 	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)

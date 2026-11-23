@@ -150,6 +150,7 @@ func TestDeregistrationOfAnotherInstanceKeepsTheSessionConsumer(t *testing.T) {
 // session is live again and must be delivered to. What must not happen is the listener's own
 // retry bringing back the consumer of a session that registered no more.
 func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) {
+	t.Parallel()
 	// The relay's windows are shortened to a tenth of production's, so the row spends its own
 	// wait over several of the relay's retries rather than seconds of the clock.
 	const window = 100 * time.Millisecond

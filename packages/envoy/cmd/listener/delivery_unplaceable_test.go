@@ -14,6 +14,7 @@ import (
 // would report: a message simply stops arriving, or the durable's pending budget stops being
 // bounded, with no failure and no record anywhere.
 func TestUnplaceableRetryWindowFitsTheBoundsItDependsOn(t *testing.T) {
+	t.Parallel()
 	// The window is spent as whole deferrals of unplaceableRetryDelay each, counted from the
 	// first delivery, so a message's deliveries are the deferrals the window buys plus the
 	// first delivery that asked for the first of them.
