@@ -98,8 +98,8 @@ func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect strin
 	// the root it made against that path and takes a shorter base where the machine's own
 	// temporary directory leaves too little room. The root is made here, on the test's own
 	// goroutine, because testtmp.Dir ends in t.Fatalf when neither base takes a directory, and
-	// privateDir runs on the fake Kubernetes server's goroutine, where a t.Fatalf would stop
-	// that goroutine alone and leave the test to run to its deadline.
+	// privateDir runs on the pod's own goroutine (idleRigPodProcesses.run), where a t.Fatalf
+	// would stop that goroutine alone and leave the test to run to its deadline.
 	root := testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName))
 	p := &idleRigPods{t: t, launch: launch, session: session, dial: dial,
 		running: map[string]*idleRigPodProcesses{}, logs: &syncBuffer{}, started: map[string]int{},

@@ -114,7 +114,7 @@ func TestANatsServiceIsAdmittedFromTheIssuersItsEntryNames(t *testing.T) {
 		notListed   = `kind="service",outcome="refused",reason="service_not_listed"`
 		notVerified = `kind="service",outcome="refused",reason="service_token_not_verified"`
 	)
-	decisions := testwait.Until(t, fmt.Sprintf("broker_nats_callout_decisions_total to count %d refusals %s", refused, notListed), func() (map[string]float64, bool) {
+	decisions := testwait.UntilPolling(t, 100*time.Millisecond, fmt.Sprintf("broker_nats_callout_decisions_total to count %d refusals %s", refused, notListed), func() (map[string]float64, bool) {
 		decisions := scrapeMetric(t, broker.MetricsAddr(t), "broker_nats_callout_decisions_total")
 		return decisions, decisions[notListed] >= float64(refused)
 	})

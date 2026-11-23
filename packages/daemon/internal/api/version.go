@@ -3349,7 +3349,7 @@ package api
 // and then 8f332682 left main at 213 and then at 217 (#4273's, the entry right above), and a
 // reading of every open head made between 2026-11-23T01:01:55Z and 01:06:00Z found #3993, #4392,
 // #4432, #4771 and #4940 declaring 221 as well, so this entry kept 221 again. A
-// pod at main's 213, or at a number another open pull request declares below 221, runs a plugin
+// pod at main's 217, or at a number another open pull request declares below 221, runs a plugin
 // that does not know this release's shapes, so it is served the state without `projectRelease`.
 // Read the base's own number and every open head again at the next merge rather than from this
 // entry, as

@@ -1000,7 +1000,8 @@ const repositoriesLiveContract = 202
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the word arrived at stays where it is. It moves only with
 // dispatch://INFRA-4036's own number, which is why answers.go's SupportedContracts names it
-// rather than its number, as it names projectReleaseContract, the entry after it:
+// rather than its number, as it names projectReleaseContract, two entries after it, with 217
+// (#4273's, written as a number) between them:
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that list to version.go's
 // entry headers, so a renumber that moves dispatch://INFRA-4036's entry and leaves this
 // constant behind names a contract no entry declares and fails there.
@@ -1019,17 +1020,19 @@ const cachesSourceContract = 213
 // asked to push and end their turn on that same body. repositoriesLiveContract stands below it
 // with no row of stateNarrowings between the two, so a caller at or above
 // repositoriesLiveContract and below this contract, 202 to 220, is served the `live` block and
-// not `projectRelease`; cachesSourceContract, between the two, added a value and no key, so it
-// writes no band there. The release's six enumerated fields (answers.go's releaseOutcomes and the
-// rows beside it) arrived with the key at this contract and ride its band, so no value strip is
-// owed. The release's own two routes answer the `legion` command, which is built from the
-// daemon's own commit, so their bodies are no row of answers.go's Answers.
+// not `projectRelease`; cachesSourceContract, between the two, added a value and no key, and 217,
+// between them too, added no key to an answer a plugin parses, so neither writes a band there.
+// The release's six enumerated fields (answers.go's releaseOutcomes and the rows beside it)
+// arrived with the key at this contract and ride its band, so no value strip is owed. The
+// release's own two routes answer the `legion` command, which is built from the daemon's own
+// commit, so their bodies are no row of answers.go's Answers.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys arrived at stays where it is. It moves only with
 // the number version.go's dispatch://INFRA-3583 entry declares, and it is the last number of
 // answers.go's SupportedContracts, which names the constant rather than its number for that
-// reason, as it names cachesSourceContract, the entry before it.
+// reason, as it names cachesSourceContract, two entries before it, with 217, written as a
+// number, between them.
 const projectReleaseContract = 221
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
