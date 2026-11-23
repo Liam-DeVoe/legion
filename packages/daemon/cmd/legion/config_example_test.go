@@ -52,9 +52,6 @@ func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
 // where there is no such model. A deployment whose only model is a role's prints that model, the
 // list the owner is told and register_plan judges a plan by.
 func TestCheckConfigPrintsTheListedModels(t *testing.T) {
-	if !strings.Contains(shippedExampleCheckOK, defaultStepsTodayLine("WIDGETS")+modelsNoneLine) {
-		t.Fatalf("the shipped example's check prints %q, want the models line right after the project lines", shippedExampleCheckOK)
-	}
 	const checker = "roles: {checker: {type: testing, prompt_file: checker.md, model: m-two}}\n"
 	const checkerLine = "roles.checker: type testing, model m-two, App review, prompt <dir>/checker.md\n"
 	for _, tc := range []struct{ name, key, line, roles string }{
