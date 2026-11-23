@@ -29,7 +29,8 @@ import (
 
 // The kinds of a step (contracts.ToolLabel.Kind), which the bar counts and folds steps by: a
 // read, a search, a look for a tool, a chart drawn, a plan proposed, the review of a plan, and a
-// change an approved plan makes, which the bar shows only as its row's tick.
+// write, which the bar draws no line of: a change an approved plan makes, which the bar shows only
+// as its row's tick, and a question to the person, which is the run's answer.
 const (
 	kindRead   = "read"
 	kindSearch = "search"
@@ -51,13 +52,15 @@ const (
 )
 
 // The labels of the run's own tools that no spec of Dispatch states: find_tools; propose_plan,
-// which names how many changes its plan holds; the review of a plan; the test hooks; and a tool
-// no label names, which a model made up or call_tool names wrongly: a slip (slipWords), which the
-// model mends itself. search and read are dispatch_search and dispatch_read, and their labels are
-// those tools' own.
+// which names how many changes its plan holds; ask_person, whose kind draws no line, since the
+// reply that calls it is the run's answer and sends no frame of the call (saveReply); the review
+// of a plan; the test hooks; and a tool no label names, which a model made up or call_tool names
+// wrongly: a slip (slipWords), which the model mends itself. search and read are dispatch_search
+// and dispatch_read, and their labels are those tools' own.
 var (
 	findToolsLabel   = contracts.ToolLabel{Kind: kindLook, Verb: "look", Present: "Looking for a way to {need}", Past: "Looked for a way to {need}"}
 	proposePlanLabel = contracts.ToolLabel{Kind: kindPlan, Verb: "propose", Present: "Proposing a plan of {changes}", Past: "Proposed a plan of {changes}"}
+	askPersonLabel   = contracts.ToolLabel{Kind: kindWrite, Verb: "ask", Present: "Asking you a question", Past: "Asked you a question"}
 	reviewPlanLabel  = contracts.ToolLabel{Kind: kindReview, Verb: "review", Present: "Reviewing the plan", Past: "Reviewed the plan"}
 	hookLabel        = contracts.ToolLabel{Kind: kindRead, Verb: "run", Present: "Running a test hook", Past: "Ran a test hook"}
 	unknownToolLabel = contracts.ToolLabel{Kind: kindRead, Verb: "try", Present: "Trying a step Dispatch does not have", Past: "Tried a step Dispatch does not have"}
@@ -89,6 +92,8 @@ func stepLabel(tool string, input json.RawMessage) (contracts.ToolLabel, map[str
 		return findToolsLabel, needInWords(arguments)
 	case toolProposePlan:
 		return proposePlanLabel, arguments
+	case toolAskPerson:
+		return askPersonLabel, arguments
 	case toolCallTool:
 		named, _ := arguments["tool"].(string)
 		inner, _ := arguments["arguments"].(map[string]any)

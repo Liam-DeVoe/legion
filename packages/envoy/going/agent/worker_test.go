@@ -756,7 +756,7 @@ func TestThePagesIssueIsReadBeforeTheFirstModelCall(t *testing.T) {
 			if len(request.ToolResults()) == 0 {
 				return agenttest.Reply{Calls: []agenttest.Call{{Name: toolRead, Arguments: map[string]any{"ref": "dispatch://DEMO-1/comments"}}}}
 			}
-			return agenttest.Reply{Text: `{"answer":"[DEMO-1](dispatch://DEMO-1) is in progress.","waits_for_person":false}`}
+			return agenttest.Reply{Text: "[DEMO-1](dispatch://DEMO-1) is in progress."}
 		})
 		server, client := newFakeServer(t, func(call agentwire.CallRequest) agentwire.CallAnswer {
 			if strings.Contains(string(call.Arguments), "/comments") {
@@ -820,69 +820,104 @@ func TestThePagesIssueIsReadBeforeTheFirstModelCall(t *testing.T) {
 	})
 }
 
-// TestAnAnswerSaysWhetherItWaitsForThePerson: each model call asks for the object of finalSchema
-// as its structured output - the answer, and waits_for_person - in the strict subset: one object,
-// each property required, no other, the answer first. The reply that ends the turn is saved and
-// shown as its answer alone, and its reply frame carries waits_for_person from the object, never
-// guessed from the words (R8): true for an answer that asks the person which changes to make, false
-// for one that asks nothing. A reply that is no object, as a model that writes prose writes it, is
-// its prose and waits for nobody; an object the output token bound cut off is its answer as far as
-// it goes.
-func TestAnAnswerSaysWhetherItWaitsForThePerson(t *testing.T) {
-	var schema struct {
-		Type       string `json:"type"`
-		Properties map[string]struct {
-			Type        string `json:"type"`
-			Description string `json:"description"`
-		} `json:"properties"`
-		Required             []string `json:"required"`
-		AdditionalProperties *bool    `json:"additionalProperties"`
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(finalSchema)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&schema); err != nil || schema.Type != "object" || schema.AdditionalProperties == nil || *schema.AdditionalProperties ||
-		!slices.Equal(schema.Required, []string{"answer", "waits_for_person"}) || len(schema.Properties) != 2 ||
-		schema.Properties["answer"].Type != "string" || schema.Properties["waits_for_person"].Type != "boolean" {
-		t.Fatalf("finalSchema is %s (%v), want one object of answer, a string, and waits_for_person, a boolean, both required and no other", finalSchema, err)
-	}
-	if strings.Index(string(finalSchema), `"answer"`) > strings.Index(string(finalSchema), `"waits_for_person"`) {
-		t.Errorf("finalSchema names waits_for_person before the answer: %s", finalSchema)
-	}
-
-	const asks = "Which of [DEMO-7](dispatch://DEMO-7) and [DEMO-8](dispatch://DEMO-8) should move to done?"
+// TestAQuestionToThePersonEndsTheTurn: the preview's model, offered on every model call beside its
+// tools a structured reply that ends the turn, ended two of six requests for a change with an
+// answer that said the change was made, and proposed no plan. No model call of a run carries a
+// final schema now (agentloop.Request.Final nil, which sends no response_format), and the model
+// asks the person with a tool: a reply that calls ask_person ends the turn done, and its reply
+// frame carries the question as its text, names no call, so the bar draws no line of the ask, and
+// waits for the person. No tool step is saved for the ask, and no frame of a call names it; the
+// question is the saved reply's text and its note, which the run's later history and a later
+// turn of the conversation give the model as the answer of that turn. A read beside the ask ran,
+// and keeps its own step. An answer in prose waits for nobody.
+func TestAQuestionToThePersonEndsTheTurn(t *testing.T) {
+	const question = "Which of [DEMO-7](dispatch://DEMO-7) and [DEMO-8](dispatch://DEMO-8) should move to done?"
+	const prose = "[DEMO-7](dispatch://DEMO-7) is done."
+	ask := agenttest.Call{Name: toolAskPerson, Arguments: map[string]any{"question": question}}
+	read := agenttest.Call{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-1"}}
 	for _, c := range []struct {
-		name, text, prose string
-		finish, state     string
-		waits             bool
+		name  string
+		reply agenttest.Reply
+		text  string
+		waits bool
+		// reads is the tools of the tool steps the run saves.
+		reads []string
 	}{
-		{name: "an answer that asks which changes to make", text: `{"answer":` + strconv.Quote(asks) + `,"waits_for_person":true}`, prose: asks, state: agentwire.StateDone, waits: true},
-		{name: "an answer that asks nothing", text: `{"answer":"[DEMO-7](dispatch://DEMO-7) is done.","waits_for_person":false}`, prose: "[DEMO-7](dispatch://DEMO-7) is done.", state: agentwire.StateDone},
-		{name: "prose", text: "DEMO-7 is done. Shall I close it?", prose: "DEMO-7 is done. Shall I close it?", state: agentwire.StateDone},
-		{name: "an object cut at the output tokens", text: `{"answer":"DEMO-7 is in progress, and \"its tests \u`, finish: "length",
-			prose: `DEMO-7 is in progress, and "its tests `, state: agentwire.StateStopped},
+		{name: "a question", reply: agenttest.Reply{Calls: []agenttest.Call{ask}}, text: question, waits: true},
+		{name: "a question beside a read", reply: agenttest.Reply{Text: "Checking DEMO-1.", Calls: []agenttest.Call{read, ask}}, text: question, waits: true, reads: []string{toolRead}},
+		{name: "an answer in prose", reply: agenttest.Reply{Text: prose}, text: prose},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return agenttest.Reply{Text: c.text, Finish: c.finish} })
-			server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer { return agentwire.CallAnswer{} })
+			fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return c.reply })
+			server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+				return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"key":"DEMO-1","status":"in_progress"}`)}
+			})
 			workRun(t, fake.Model(), client, "close the done children of DEMO-1")
 			end, replies := server.end(t)
-			if end.State != c.state || len(replies) != 1 || replies[0].Text != c.prose {
-				t.Fatalf("the run ended %s with %q, saving the replies %+v, want %s with the one reply %q", end.State, end.Reason, replies, c.state, c.prose)
+			if end.State != agentwire.StateDone || len(replies) != 1 || replies[0].Text != c.text || len(replies[0].Calls) != len(c.reads) {
+				t.Fatalf("the run ended %s with %q, saving the replies %+v, want done with the one reply %q calling %d tools", end.State, end.Reason, replies, c.text, len(c.reads))
 			}
-			if frame := server.lastReply(t); frame.Text != c.prose || frame.WaitsForPerson != c.waits {
-				t.Errorf("the reply frame carries %q waiting for the person %t, want %q and %t", frame.Text, frame.WaitsForPerson, c.prose, c.waits)
+			if frame := server.lastReply(t); frame.Text != c.text || frame.WaitsForPerson != c.waits || len(frame.Tools) != 0 || len(frame.Labels) != 0 {
+				t.Errorf("the reply frame carries %q waiting for the person %t, with the calls %q labelled %q; want %q and %t, with no call",
+					frame.Text, frame.WaitsForPerson, frame.Tools, frame.Labels, c.text, c.waits)
 			}
-			var format struct {
-				Type       string `json:"type"`
-				JSONSchema struct {
-					Schema struct {
-						Required []string `json:"required"`
-					} `json:"schema"`
-				} `json:"json_schema"`
+			requests := fake.Requests()
+			if len(requests) != 1 {
+				t.Fatalf("the run made %d model calls, want 1", len(requests))
 			}
-			encoded, _ := json.Marshal(fake.Requests()[0].Field("response_format"))
-			if err := json.Unmarshal(encoded, &format); err != nil || format.Type != "json_schema" || !slices.Equal(format.JSONSchema.Schema.Required, []string{"answer", "waits_for_person"}) {
-				t.Errorf("the model call asks for the response format %s (%v), want finalSchema as its json_schema", encoded, err)
+			if format := requests[0].Field("response_format"); format != nil {
+				t.Errorf("the model call carries the response format %v, want none: no call of a run carries a final schema", format)
+			}
+			offered, _ := json.Marshal(requests[0].Field("tools"))
+			if !strings.Contains(string(offered), `"name":"`+toolAskPerson+`"`) {
+				t.Errorf("the model call is offered the tools %s, want %s among them", offered, toolAskPerson)
+			}
+
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			var reads []string
+			var history []agentwire.SavedStep
+			for _, step := range server.steps {
+				history = append(history, agentwire.SavedStep{Step: step.Step, Kind: step.Kind, Body: step.Body, Note: step.Note})
+				switch step.Kind {
+				case agentwire.StepTool:
+					var body toolBody
+					_ = json.Unmarshal(step.Body, &body)
+					reads = append(reads, body.Call.Tool)
+				case agentwire.StepModel:
+					if !strings.HasPrefix(step.Note, c.text) {
+						t.Errorf("the reply's note is %q, want the answer %q", step.Note, c.text)
+					}
+				}
+			}
+			if !slices.Equal(reads, c.reads) {
+				t.Errorf("the run saved the tool steps %q, want %q: no step of the ask", reads, c.reads)
+			}
+			for _, frame := range server.events {
+				var named struct {
+					Tool string `json:"tool"`
+				}
+				if (frame.Name == frameCall || frame.Name == frameTool) && json.Unmarshal(frame.Data, &named) == nil && named.Tool == toolAskPerson {
+					t.Errorf("the run's events hold the %s frame %s, want none of the ask", frame.Name, frame.Data)
+				}
+			}
+			for _, call := range server.calls {
+				if call.Tool != dispatchRead {
+					t.Errorf("the run made the call %+v of the server, want reads alone", call)
+				}
+			}
+			// The run's history, in the order of its steps' numbers, gives the model the question
+			// as the reply it wrote, and the note a later turn of the conversation is given holds it.
+			slices.SortFunc(history, func(a, b agentwire.SavedStep) int { return a.Step - b.Step })
+			messages, err := conversation(&agentwire.ClaimedRun{ID: "run-1", Words: "close the done children of DEMO-1"}, history, nil, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			answered := slices.ContainsFunc(messages, func(message agentloop.Message) bool {
+				return message.Role == agentloop.Assistant && len(message.Blocks) > 0 && message.Blocks[0].Kind == agentloop.TextBlock && message.Blocks[0].Text == c.text
+			})
+			if !answered {
+				t.Errorf("the run's history gives the model %+v, want the reply %q as its own", messages, c.text)
 			}
 		})
 	}
@@ -953,7 +988,7 @@ func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 		"never as a result writes it, such as 2026-11-12T09:00:00Z",
 		"Name an agent session by its title or its role",
 		"never in backticks",
-		"waits_for_person true only where the answer asks the person something",
+		"call ask_person with the question in place of an answer: the question is all the person reads",
 	} {
 		if !strings.Contains(systemPrompt, said) {
 			t.Errorf("the system prompt does not say %q", said)
@@ -1002,6 +1037,27 @@ func TestAPlanAddsALabelAndKeepsTheOthers(t *testing.T) {
 	}
 	if replace := schema.Properties["labels"].Description; !strings.Contains(replace, "To add labels and keep the others, use labels_add") {
 		t.Errorf("%s's labels says %q, which does not point at labels_add", dispatchIssueUpdate, replace)
+	}
+}
+
+// TestARequestForAChangeEndsWithAPlan: asked "add the label accessibility to DEMO-10 and set its
+// priority to P2", the preview's model ended two of six runs done with "Adding the accessibility
+// label to DEMO-10 and setting its priority to P2." and proposed no plan, so nothing changed. The
+// system prompt says words that ask for a change end the turn with propose_plan, that no answer
+// says a change is made, is being made or will be made, and that an answer says what stops a
+// change no plan can be proposed for; a hand-off whose words name no change asks which changes to
+// make with ask_person, which the prompt names among the tools.
+func TestARequestForAChangeEndsWithAPlan(t *testing.T) {
+	for _, said := range []string{
+		"Words that ask for a change end your turn with propose_plan.",
+		"Never write that a change is made, is being made or will be made: nothing changes until the person approves a plan.",
+		"Where the words ask for a change and you can propose no plan for it, say what stops it.",
+		"ask the person which changes to make with ask_person, and propose no plan",
+		"- ask_person: ask the person something you need before you can go on",
+	} {
+		if !strings.Contains(systemPrompt, said) {
+			t.Errorf("the system prompt does not say %q", said)
+		}
 	}
 }
 
@@ -1075,72 +1131,6 @@ func TestFindToolsAnswersWhatACallNeedsWithinTheBound(t *testing.T) {
 	}
 }
 
-// TestARefusedStructuredReplyIsMadeAgainInProse: a chat endpoint that refuses the structured reply
-// - a 400 to a call that sends finalSchema as its response format, as a service with no structured
-// outputs answers - has the step made again with no response format and a system prompt that asks
-// for prose; the refused call spends no call of the run's level, and each later step of the run
-// asks for prose too. Its prose is the answer, which waits for nobody. A reply that ends the turn
-// and is no object is that refusal too: it stands as the answer, and the run's later calls ask for
-// prose.
-func TestARefusedStructuredReplyIsMadeAgainInProse(t *testing.T) {
-	const prose = "DEMO-7 is done. Shall I close it?"
-	t.Run("a 400 to the response format", func(t *testing.T) {
-		fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
-			switch {
-			case request.Field("response_format") != nil:
-				return agenttest.Reply{Status: http.StatusBadRequest,
-					Error: `{"error":{"message":"Invalid parameter: 'response_format' of type 'json_schema' is not supported with this model.","type":"invalid_request_error","param":"response_format"}}`}
-			case len(request.ToolResults()) == 0:
-				return agenttest.Reply{Calls: []agenttest.Call{{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-7"}}}}
-			}
-			return agenttest.Reply{Text: prose}
-		})
-		server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
-			return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"key":"DEMO-7","status":"done"}`)}
-		})
-		workRun(t, fake.Model(), client, "is DEMO-7 done")
-		end, replies := server.end(t)
-		requests := fake.Requests()
-		if end.State != agentwire.StateDone || len(requests) != 3 || len(replies) != 2 {
-			t.Fatalf("the run ended %s with %q after %d model calls and %d replies, want done after the refused call, the read and the answer", end.State, end.Reason, len(requests), len(replies))
-		}
-		if requests[0].Field("response_format") == nil || !strings.Contains(requests[0].Text(), finalRule) {
-			t.Errorf("the first call asked for no structured reply")
-		}
-		for at, request := range requests[1:] {
-			if request.Field("response_format") != nil || strings.Contains(request.Text(), finalRule) || !strings.Contains(request.Text(), proseRule) {
-				t.Errorf("call %d after the refusal sent the response format %v or the rule of the object, want prose asked for", at+2, request.Field("response_format"))
-			}
-		}
-		if frame := server.lastReply(t); frame.Text != prose || frame.WaitsForPerson {
-			t.Errorf("the answer's frame carries %q waiting for the person %t, want the prose and false", frame.Text, frame.WaitsForPerson)
-		}
-		if end.Used.Calls != 2 {
-			t.Errorf("the turn spent %d calls, want 2: the refused call spends none", end.Used.Calls)
-		}
-	})
-
-	t.Run("a reply that is no object", func(t *testing.T) {
-		fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return agenttest.Reply{Text: prose} })
-		server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer { return agentwire.CallAnswer{} })
-		a := &agent{client: client, config: Config{Model: fake.Model()}, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
-		w := newWorker(t.Context(), a, &agentwire.ClaimedRun{ID: "run-1", Words: "is DEMO-7 done", Level: "fast", Mode: "ask", LeaseToken: "lease-1"}, func() {})
-		// Each step is made here, as work makes them, at the run's level.
-		w.level = Levels["fast"]
-		if outcome := w.step(); outcome.state != agentwire.StateDone {
-			t.Fatalf("the step ended %+v, want the answer", outcome)
-		}
-		if frame := server.lastReply(t); frame.Text != prose || frame.WaitsForPerson {
-			t.Errorf("the answer's frame carries %q waiting for the person %t, want the prose and false", frame.Text, frame.WaitsForPerson)
-		}
-		w.step()
-		if requests := fake.Requests(); len(requests) != 2 || requests[0].Field("response_format") == nil || requests[1].Field("response_format") != nil ||
-			!strings.Contains(requests[1].Text(), proseRule) {
-			t.Errorf("the run's calls sent the response formats %v, want the first alone, and the later one to ask for prose", []any{requests[0].Field("response_format"), requests[1].Field("response_format")})
-		}
-	})
-}
-
 // TestACallOfANameNoToolHasNamesTheNearest: the preview, asked on DEMO-7 who works on it and what
 // it waits on, made a call_tool of a name no tool has, which the server refused. call_tool now
 // refuses a name no findable tool has before any call, and tells the model the nearest names - the
@@ -1178,7 +1168,7 @@ func TestACallOfANameNoToolHasNamesTheNearest(t *testing.T) {
 func TestASlipIsNoFailureOfThePersons(t *testing.T) {
 	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
 		if len(request.ToolResults()) > 0 {
-			return agenttest.Reply{Text: `{"answer":"[DEMO-7](dispatch://DEMO-7) waits on its review.","waits_for_person":false}`}
+			return agenttest.Reply{Text: "[DEMO-7](dispatch://DEMO-7) waits on its review."}
 		}
 		return agenttest.Reply{Calls: []agenttest.Call{
 			{Name: toolCallTool, Arguments: map[string]any{"tool": "dispatch_issue_messages", "arguments": map[string]any{"issue": "DEMO-7"}}},

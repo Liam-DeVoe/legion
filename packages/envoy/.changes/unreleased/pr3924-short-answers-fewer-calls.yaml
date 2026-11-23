@@ -21,10 +21,13 @@ body: |-
   change `call_tool` does not run, arguments the tool or its route refuses - carries `slip` true
   and `error` false, with words for what it tried, such as "Tried a step Dispatch does not have";
   a call its person can act on, such as one with no access, keeps `error` and its failure words.
-  Each model call asks for the reply that ends the turn as one object of `answer` and
-  `waits_for_person`, and the `reply` frame carries `waits_for_person`, true where the answer
-  asks the person something the run needs before it can go on; its `text` is the answer alone, as
-  before. A chat endpoint that refuses that object with a 400 gets the step again in prose, and
-  a reply that is no object stands as prose; either waits for nobody, and every later step of the
-  run asks for prose. The refused call spends no call of the run's level. Every other frame and
-  field is unchanged.
+  The model has a sixth tool, `ask_person` with a `question`, to ask the person something it
+  needs before it can go on: which changes to make, a choice, or words only they can give. A
+  reply that calls it ends the turn `done`, saves no tool step and sends no `call` or `tool` frame
+  of the ask; its `reply` frame carries the question as its `text`, names no call, and carries
+  `waits_for_person` true, which every other reply carries false. The question is the answer of
+  that turn in the model's later history. No model call asks for a structured reply: a reply that
+  ends the turn is prose. The system prompt says that words that ask for a change end the turn
+  with `propose_plan`, that an answer never says a change is made, is being made or will be made,
+  since nothing changes until the person approves a plan, and that an answer says what stops a
+  change no plan can be proposed for. Every other frame and field is unchanged.

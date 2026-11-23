@@ -22,16 +22,18 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// The five tools a run's model is given (R12, the spec's Design): a search of Dispatch, a read of
-// one item, the tool specs that fit a need, a read by a tool's name, and the plan of changes the
-// person approves. A tool reads only through a call of agent/v1 to the server, which makes it as
-// the run's person: none reads a file or another process.
+// The six tools a run's model is given (R12, the spec's Design): a search of Dispatch, a read of
+// one item, the tool specs that fit a need, a read by a tool's name, the plan of changes the
+// person approves, and a question to the person. A tool reads only through a call of agent/v1 to
+// the server, which makes it as the run's person: none reads a file or another process. A
+// question reads nothing: the reply that asks it is the run's answer (saveReply).
 const (
 	toolSearch      = "search"
 	toolRead        = "read"
 	toolFindTools   = "find_tools"
 	toolCallTool    = "call_tool"
 	toolProposePlan = "propose_plan"
+	toolAskPerson   = "ask_person"
 )
 
 // The two reads outside Dispatch call_tool makes beside the tools of Dispatch, which the server
@@ -208,6 +210,14 @@ func (w *worker) tools(base int) []agentloop.Tool {
 				`"required":["tool","arguments"]}}},` +
 				`"required":["summary","changes"]}`),
 			Run: w.toolRun(base, toolProposePlan, w.proposePlan),
+		},
+		{
+			Name:        toolAskPerson,
+			Description: "Ask the person something you need before you can go on: which changes to make, a choice, or words only they can give. The run then waits for their answer.",
+			Schema: schemaOf([]contracts.ToolField{
+				{Name: "question", Kind: contracts.ToolFieldString, Required: true, Description: "The question, in markdown: all the person reads of this turn's answer, so it says what they need to answer it."},
+			}),
+			Run: askPerson,
 		},
 	}
 	if w.agent.config.Hooks {
@@ -704,6 +714,22 @@ func (w *worker) proposePlan(ctx context.Context, step int, input json.RawMessag
 		return fmt.Sprintf("The plan is saved as plan %d, and the person approved it already: its %d changes run now.", made.Plan, len(made.Run)), false
 	}
 	return fmt.Sprintf("The plan is saved as plan %d: its %d changes wait for the person's approval.", made.Plan, len(made.Rows)), false
+}
+
+// askPerson is ask_person's Run, which reads nothing, sends no frame and saves no step: the reply
+// that calls it ends the run's turn, and saveReply saves its question as the reply's answer, which
+// the model reads in its later history. No model call reads what it answers.
+func askPerson(context.Context, agentloop.ToolCall) (string, bool) {
+	return "The question is asked, and the run waits for the person's answer.", false
+}
+
+// askedQuestion is the question of an ask_person call's arguments, "" where they hold none.
+func askedQuestion(input json.RawMessage) string {
+	var ask struct {
+		Question string `json:"question"`
+	}
+	_ = json.Unmarshal(input, &ask)
+	return strings.TrimSpace(ask.Question)
 }
 
 // signInRetry is the first wait before a call the sign-in issuer could not confirm the person for

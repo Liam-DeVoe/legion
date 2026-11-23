@@ -100,8 +100,8 @@ type toolFrame struct {
 // present form of each call's label filled from its arguments, in the order of tools, which the
 // bar shows while the call runs, and, on a reply that ends the run's turn, how many tool results
 // the run withheld from the model (withhold), which the bar says under the answer, and whether its
-// answer asks the person something the run needs before it can go on (finalSchema's
-// waits_for_person), false on every other reply.
+// answer is a question the run needs the person to answer before it can go on (ask_person), false
+// on every other reply.
 type replyFrame struct {
 	Step           int      `json:"step"`
 	Text           string   `json:"text"`
@@ -173,11 +173,6 @@ type worker struct {
 	// model calls.
 	withheld      map[int]string
 	filterRefused bool
-	// finalRefused is set once the chat endpoint refused the run's structured reply
-	// (finalSchema): it answered a model call that asked for it 400 (finalRefusal), or a reply
-	// that ends the turn is no object (saveReply). Each later model call of the run asks for
-	// prose (proseSystemPrompt), with no Final.
-	finalRefused atomic.Bool
 }
 
 // newWorker is the worker of run, its context ctx's, its slot freed by release.
@@ -377,13 +372,12 @@ type stepOutcome struct {
 // step makes one step: one agentloop.Run of one model call, from the run's saved steps, with the
 // tools it calls; each tool call shows its call frame as it starts (callStarted), with the prose
 // the model call streamed so far (OnText) on the first, and is saved as it ends (toolRun); the
-// model call is saved once its tools ran (OnStep). A reply that calls no tool is the object of
-// finalSchema, which the call asks for and saveReply reads. A call the chat endpoint refused for
-// asking for that object (finalRefusal) saves nothing, and the step is made again in prose, as
-// is every later step of the run (finalRefused). The watchdog gives up the run when the step runs
-// past its model call's time and watchdogGrace. A call the chat model's content filter refused, or
-// whose reply it stopped, saves nothing, and the step is made again (withhold). The run's last
-// model call, which is offered no tool, is told so (lastCallNote).
+// model call is saved once its tools ran (OnStep). The call asks for no structured reply: a reply
+// that calls no tool is the answer in prose, and one that calls ask_person ends the turn with its
+// question (saveReply). The watchdog gives up the run when the step runs past its model call's
+// time and watchdogGrace. A call the chat model's content filter refused, or whose reply it
+// stopped, saves nothing, and the step is made again (withhold). The run's last model call, which
+// is offered no tool, is told so (lastCallNote).
 func (w *worker) step() stepOutcome {
 	messages, err := conversation(w.run, lastWhole(w.history), w.withheld, w.now)
 	if err != nil {
@@ -391,7 +385,7 @@ func (w *worker) step() stepOutcome {
 	}
 	base := w.next
 	var finish string
-	var calls []string
+	var ends bool
 	w.proposed.Store(false)
 	system := w.system()
 	prompt := len(system)
@@ -409,15 +403,12 @@ func (w *worker) step() stepOutcome {
 	}
 	request.Model = w.agent.pacer.paced(request.Model, func() int { return prompt/charsPerToken + w.level.OutputTokens })
 	request.System, request.Input, request.Tools = system, messages, w.tools(base)
-	if !w.finalRefused.Load() {
-		request.Final = finalSchema
-	}
 	request.OnStep = func(step agentloop.Step) error {
 		if step.Finish == finishContentFilter {
 			return errReplyFiltered
 		}
 		finish = step.Finish
-		calls = w.saveReply(base, step)
+		ends = w.saveReply(base, step)
 		return errStepTaken
 	}
 	prose := &stepProse{}
@@ -441,7 +432,7 @@ func (w *worker) step() stepOutcome {
 			return stepOutcome{state: agentwire.StateStopped, reason: w.level.cut(w.name), offers: []string{agentwire.OfferContinue}}
 		case w.proposed.Load():
 			return stepOutcome{state: agentwire.StateWaiting}
-		case len(calls) == 0:
+		case ends:
 			return stepOutcome{state: agentwire.StateDone}
 		}
 		return stepOutcome{}
@@ -451,21 +442,8 @@ func (w *worker) step() stepOutcome {
 		return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf("%s: %v", codeAgentFailed, err)}
 	case result.Fault == agentloop.FaultContentFilter:
 		return w.withhold(result.Detail)
-	case finalRefusal(request, result):
-		w.finalRefused.Store(true)
-		slog.Warn("agent: the chat endpoint refused a model call that asked for the structured reply; the run asks for prose from now on",
-			"run", w.run.ID, "detail", faultDetail(result.Detail))
-		return stepOutcome{}
 	}
 	return w.faulted(result)
-}
-
-// finalRefusal reports whether the chat endpoint refused request for the structured reply it
-// asked for (finalSchema): a 400, which comes before any of the reply, as the server's short
-// answers read one (going.Answerer.refused). Made again with no Final, a 400 for another cause
-// is refused again, and fails the run (faulted).
-func finalRefusal(request agentloop.Request, result agentloop.Result) bool {
-	return request.Final != nil && result.Fault == agentloop.FaultProviderError && result.Status == http.StatusBadRequest
 }
 
 // withhold is how a step goes on whose model call the chat model's content filter refused. The
@@ -530,8 +508,7 @@ func withLastCallNote(messages []agentloop.Message) []agentloop.Message {
 // the content filter refused, or whose reply it stopped, spends the run's time and tokens and no
 // call of its level, since it answered nothing: it is made again as withhold says, which ends the
 // run once a call is refused with every result withheld, and a refusal of a run's last call would
-// otherwise end the run with no answer. A call refused for the structured reply it asked for
-// (finalRefusal) answered nothing either, and is made again in prose.
+// otherwise end the run with no answer.
 func (w *worker) runModel(request agentloop.Request) (agentloop.Result, bool, error) {
 	stepCtx, cancel := context.WithCancel(w.ctx)
 	defer cancel()
@@ -548,7 +525,7 @@ func (w *worker) runModel(request agentloop.Request) (agentloop.Result, bool, er
 	w.used.WorkingMS += working.Milliseconds()
 	w.turn.Tokens += result.Usage.Output
 	w.used.Tokens += result.Usage.Output
-	if refused := result.Fault == agentloop.FaultContentFilter || errors.Is(err, errReplyFiltered) || finalRefusal(request, result); !refused && (len(result.Steps) > 0 || result.Fault != "") {
+	if refused := result.Fault == agentloop.FaultContentFilter || errors.Is(err, errReplyFiltered); !refused && (len(result.Steps) > 0 || result.Fault != "") {
 		w.turn.Calls++
 		w.used.Calls++
 	}
@@ -612,46 +589,52 @@ func faultDetail(detail string) string {
 }
 
 // saveReply saves step, the model call of the step numbered base, and answers the tools it
-// called. A call of a tool the run does not have is saved marked unknown (toolCall.Unknown): the
-// model made the name up, and a later step reads it as such rather than as a tool of a later build.
-// The reply's text is saved and shown as its prose (readReply): the answer of finalSchema's
-// object, whose waits_for_person the frame of a reply that calls no tool carries. A reply that
-// calls no tool and is no object is its prose, which waits for nobody: the chat endpoint refused
-// the structured reply (finalRefused), and the run's later calls ask for prose. The reply is
-// shown and saved already, so it stands, as the server's short answers keep a reply that does not
-// fit theirs. A reply that ends the run's turn where the run withheld tool results from the model
-// saves the notice of them (withheldTold) after its prose, which the model reads in its later
-// history; its frame carries the prose alone and how many results were withheld, which the bar
-// says in its own words.
-func (w *worker) saveReply(base int, step agentloop.Step) []string {
+// called, and reports whether the reply ends the run's turn: it calls no tool, or it asks the
+// person something (ask_person). A call of a tool the run does not have is saved marked unknown
+// (toolCall.Unknown): the model made the name up, and a later step reads it as such rather than
+// as a tool of a later build. An ask_person call is saved as no call, and its question as the
+// reply's text, which the model reads in its later history as the answer of its turn; a question
+// with no words leaves the reply's prose as its text. The frame of a reply that asks carries the
+// question as the answer, names no call, so the bar draws no line of the ask, and waits for the
+// person; the calls beside it ran, and their own frames drew their lines. A reply that proposed a
+// plan waits for the plan, not for a question. A reply that ends the run's turn where the run
+// withheld tool results from the model saves the notice of them (withheldTold) after its text,
+// which the model reads in its later history; its frame carries the text alone and how many
+// results were withheld, which the bar says in its own words.
+func (w *worker) saveReply(base int, step agentloop.Step) bool {
 	var body modelBody
-	var text strings.Builder
+	var questions []string
+	asked := false
 	tools, labels := []string{}, []string{}
 	known := w.knownTools()
 	for _, block := range step.Blocks {
 		switch block.Kind {
 		case agentloop.TextBlock:
-			text.WriteString(block.Text)
+			body.Text += block.Text
 		case agentloop.ToolCallBlock:
 			input := block.Input
 			if !json.Valid(input) {
 				input = json.RawMessage(`{}`)
+			}
+			if block.Name == toolAskPerson {
+				asked = true
+				if question := askedQuestion(input); question != "" {
+					questions = append(questions, question)
+				}
+				continue
 			}
 			body.Calls = append(body.Calls, toolCall{ID: block.ToolCallID, Tool: block.Name, Arguments: input, Unknown: !known[block.Name]})
 			tools = append(tools, block.Name)
 			labels = append(labels, presentLabel(stepLabel(block.Name, input)))
 		}
 	}
-	answer := text.String()
-	prose, waits := readReply(answer)
-	refused := w.finalRefused.Load()
-	if object := strings.TrimSpace(answer); len(tools) == 0 && object != "" && !strings.HasPrefix(object, "{") && !refused {
-		w.finalRefused.Store(true)
-		slog.Warn("agent: a reply that ends the turn is no object of the structured reply; the run asks for prose from now on", "run", w.run.ID)
+	if len(questions) > 0 {
+		body.Text = strings.Join(questions, "\n\n")
 	}
-	body.Text, waits = prose, waits && len(tools) == 0 && !refused
-	withheld := 0
-	if len(w.withheld) > 0 && (len(tools) == 0 || slices.Contains(tools, toolProposePlan)) {
+	ends := asked || len(tools) == 0
+	waits := asked && !w.proposed.Load()
+	prose, withheld := body.Text, 0
+	if len(w.withheld) > 0 && (ends || slices.Contains(tools, toolProposePlan)) {
 		body.Text = strings.TrimSpace(body.Text + withheldTold(w.withheld))
 		withheld = len(w.withheld)
 	}
@@ -660,66 +643,13 @@ func (w *worker) saveReply(base int, step agentloop.Step) []string {
 	if len(tools) > 0 {
 		line = note(fmt.Sprintf("%s [calls %s]", body.Text, strings.Join(tools, ", ")))
 	}
-	frame, _ := json.Marshal(replyFrame{Step: base, Text: prose, Tools: tools, Labels: labels, Withheld: withheld, WaitsForPerson: waits})
+	reply := replyFrame{Step: base, Text: prose, Tools: tools, Labels: labels, Withheld: withheld, WaitsForPerson: waits}
+	if waits {
+		reply.Tools, reply.Labels = []string{}, []string{}
+	}
+	frame, _ := json.Marshal(reply)
 	w.save(agentwire.StepRequest{Step: base, Kind: agentwire.StepModel, Note: line, Frames: []agentwire.Frame{{Name: frameReply, Data: frame}}}, body)
-	return tools
-}
-
-// readReply is the prose of a reply's text and whether it waits for the person: the answer and
-// waits_for_person of the object of finalSchema the text is; the answer as far as the text goes
-// of an object a bound cut off (cutAnswer), which waits for nobody; and text that is no object,
-// as a model that writes prose beside its tool calls writes it, as it is.
-func readReply(text string) (string, bool) {
-	object := strings.TrimSpace(text)
-	if !strings.HasPrefix(object, "{") {
-		return text, false
-	}
-	var final struct {
-		Answer         *string `json:"answer"`
-		WaitsForPerson bool    `json:"waits_for_person"`
-	}
-	if json.Unmarshal([]byte(object), &final) == nil && final.Answer != nil {
-		return *final.Answer, final.WaitsForPerson
-	}
-	return cutAnswer(object), false
-}
-
-// cutAnswer is the answer of an object of finalSchema that text holds the start of, as far as
-// text goes, "" where text names no answer: the reply of a call its output tokens cut off, or the
-// prose a call streamed so far (stepProse). A string cut inside an escape is read up to that
-// escape.
-func cutAnswer(text string) string {
-	_, after, found := strings.Cut(text, `"answer"`)
-	if !found {
-		return ""
-	}
-	after, found = strings.CutPrefix(strings.TrimLeft(after, " \t\r\n"), ":")
-	if !found {
-		return ""
-	}
-	after, found = strings.CutPrefix(strings.TrimLeft(after, " \t\r\n"), `"`)
-	if !found {
-		return ""
-	}
-	end := len(after)
-	for at := 0; at < len(after); at++ {
-		if after[at] == '\\' {
-			at++
-			continue
-		}
-		if after[at] == '"' {
-			end = at
-			break
-		}
-	}
-	// An escape cut off takes at most 6 bytes (\u and four hex digits): each try drops one more.
-	for drop := range min(7, end+1) {
-		var answer string
-		if json.Unmarshal([]byte(`"`+after[:end-drop]+`"`), &answer) == nil {
-			return answer
-		}
-	}
-	return ""
+	return ends
 }
 
 // withheldTold is what a reply that ends the run's turn - an answer, or a plan proposed - adds for
@@ -840,8 +770,8 @@ func (p *stepProse) add(delta string) {
 	p.text.WriteString(delta)
 }
 
-// first is the prose streamed so far as readReply reads it, "" for none, the first time a call
-// frame of the step asks for it, and nil each later time.
+// first is the prose streamed so far, "" for none, the first time a call frame of the step asks
+// for it, and nil each later time.
 func (p *stepProse) first() *string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -849,7 +779,7 @@ func (p *stepProse) first() *string {
 		return nil
 	}
 	p.told = true
-	text, _ := readReply(p.text.String())
+	text := p.text.String()
 	return &text
 }
 

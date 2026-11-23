@@ -2,9 +2,10 @@
 // says hello to the server under a new instance id, keeps one renew waiting at all times, which
 // carries the process's health and answers a stop at once, and claims ready runs, each worked on
 // a goroutine of its own, as many at once as its slots. A run is one agentloop.Run per step on
-// the chat model, each started afresh from the run's saved steps, with five tools whose every
+// the chat model, each started afresh from the run's saved steps, with six tools whose every
 // read of Dispatch, GitHub or the web is a call of agent/v1 (going/agentwire) to the server,
-// which makes it as the run's person.
+// which makes it as the run's person; the sixth, ask_person, reads nothing and ends the turn with
+// its question.
 //
 // The agent holds no Dispatch data and no Dispatch secret: its configuration is the chat model's
 // settings alone, and it reads nothing but its socket and the model's token file.
