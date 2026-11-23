@@ -145,8 +145,9 @@ import (
 // in implementing, on the column 20261119003157 added, which a database main migrated holds null on
 // every row (migration_20261123060645_test.go).
 // The definition a claim's process was launched with (20261123092755) is applied after all of
-// these and touches no outbox_kind_check: it adds claims.launched_definition at its default, the
-// empty string, on every row it finds (migration_20261123092755_test.go).
+// these and touches no outbox_kind_check: it adds claims.launched_definition and
+// claims.launched_generation at their defaults, the empty string and 0, on every row it finds
+// (migration_20261123092755_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

@@ -1174,7 +1174,8 @@ To hand the controller back to a person, set `controller: operator`, drop
 and restart the daemon: at boot it stops its own controller's claim and releases the pod, deleting
 the volume its Sandbox owned, and retires the claim with the session it recorded; you then start
 the controller on your machine as below.
-Switching to `controller: daemon` again starts a fresh controller, not the old session.
+Switching to `controller: daemon` again relaunches that claim on the session it recorded, after a
+one-minute wait, in a new pod whose `/legion` is empty.
 
 A daemon built before LEGION-592 cannot run against a database a `controller: daemon` daemon used:
 it lists the controller's claim as an issue keyed `""`, which every agent's plugin refuses. So to
