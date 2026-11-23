@@ -17,9 +17,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// architectSweepGeneration is the generation every root of this file stands at. A hand-over row
-// is written at that same generation for a carried root, which is what says the root stands in
-// the run a hand-over carried it into (record.Store.HandedOverRoot).
+// architectSweepGeneration is the generation every root of this file stands at. A carried root
+// carries that same generation (record.Issue.CarriedGeneration), which is what says the root
+// stands in the run a hand-over of the release before carried it into (workflow.ArchitectCarried).
 const architectSweepGeneration = 2
 
 // architectSweepFixture is one root the sweep is asked about. The base shape, which every case
@@ -560,12 +560,11 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 // A root a hand-over carried in is inside the reach in every phase of the run that carried it,
 // and the task the sweep sends it names the phase it stands in now and the run that hand-over
 // carried it into (dispatch://INFRA-2614 R3, R5). The record holds no fact that says the root
-// still stands in the phase that came with it — the hand-over row names no phase
+// still stands in the phase that came with it — the record names no phase
 // (workflow.ArchitectCarried) — so the task says what holds of a root in its carried phase and
 // of one that has moved on in that same run, and never that the phase it stands in is the one
-// the carry put it in. The gate clause is the hand-over row's own
-// (record.HandedOverRoot.GateCarried): a child handed over from a tree whose root was reopened in
-// its linger comes with no gate.
+// the carry put it in. The gate clause is the record's own (record.Issue.CarriedGate): a root
+// carried in without its old root's gate comes with no gate.
 func TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -770,7 +769,7 @@ func insertAtEnd(markdown string) map[string]string {
 // stopped before it has a child.
 func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	pause, held := &registrationPause{}, &outboxHold{}
-	r := newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t)}, 8)
+	r := newPersonHandoverRig(t, 8)
 	r.tune = func(o *overrides) {
 		o.gateRegistrationRead = pause.hook
 		o.holdOutbox = held.holds
@@ -1094,7 +1093,7 @@ func onBasis(issue string, version int, served ...string) func(record.DesignGate
 // approval, opening the step on it and recording no basis.
 func TestBasisGateRefusals(t *testing.T) {
 	drop := &consumerDrop{}
-	r := newPersonHandoverRigOn(t, scratchDispatchOptions{natsURL: testnats.URL(t)}, 3)
+	r := newPersonHandoverRig(t, 3)
 	r.tune = func(o *overrides) { o.dropConsumedEvent = drop.drops }
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}

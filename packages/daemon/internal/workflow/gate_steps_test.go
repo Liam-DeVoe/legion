@@ -191,7 +191,7 @@ func admissionPass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 // Engine.StartFirstPhase, so the pass queues that start) and resumes no returning issue, so an
 // issue that gave its row back for a wait stands in the line (record.LineWaitingOnIssue) and is
 // started by nothing here. It leaves out these steps of the real pass too: ReconcileAwaiting (run
-// first there), adoptQueuedRoots, finishFencedStarts, releaseUnslotted, tellChildrenFirst, the
+// first there), finishFencedStarts, releaseUnslotted, tellChildrenFirst, the
 // second loop of releaseSlots (which clears record.Issue.ReleasedForWaitAt) and the re-read
 // rounds, so it cannot prove what any of them does. internal/admit's own tests run the real pass
 // with its cap.

@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"encoding/json"
 	"net/http"
 	"slices"
 	"sync/atomic"
@@ -9,9 +8,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The controller's set_status of todo on an issue the daemon has not recorded, which carries the
@@ -43,15 +42,7 @@ func TestControllerSetStatusTodoAdmitsAnUnrecordedLabelledIssue(t *testing.T) {
 	issue := r.create(asPerson, title, nil)
 	r.addLabel(issue.Key, asPerson, "legion")
 
-	status, body := r.d.request(http.MethodPost, "/legion/v1/grants", map[string]any{}, true)
-	if status != http.StatusOK {
-		t.Fatalf("mint the controller's grant = %d %s, want 200", status, body)
-	}
-	var grant api.GrantResponse
-	if err := json.Unmarshal(body, &grant); err != nil {
-		t.Fatalf("decode the controller's grant %s: %v", body, err)
-	}
-	status, body = r.d.request(http.MethodPost, "/legion/v1/issues/status", api.IssueStatusRequest{GrantID: grant.GrantID, Issue: issue.Key, Status: "todo"}, false)
+	status, body := r.d.request(http.MethodPost, "/legion/v1/issues/status", api.IssueStatusRequest{GrantID: r.controllerGrant(), Issue: issue.Key, Status: "todo"}, false)
 	if status != http.StatusOK {
 		t.Fatalf("the controller's set_status todo of %s = %d %s, want 200", issue.Key, status, body)
 	}
@@ -60,25 +51,14 @@ func TestControllerSetStatusTodoAdmitsAnUnrecordedLabelledIssue(t *testing.T) {
 		_, recorded := s.Issues[issue.Key]
 		return recorded && slices.Contains(s.Admission.Active, issue.Key)
 	})
-	project, err := claim.ProjectToken(r.cfg.Project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	architect, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
-	if err != nil {
-		t.Fatal(err)
-	}
+	architect := r.architectToken(issue.Key)
 	launched := func() bool {
 		return slices.ContainsFunc(r.rt.CallsOf("Spawn"), func(call fake.Call) bool { return call.Spec.Claim == architect })
 	}
-	for deadline := time.Now().Add(60 * time.Second); !launched(); time.Sleep(100 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the runtime launched %+v in 60s, want %s's architect started; the daemon holds the claims %+v", r.rt.CallsOf("Spawn"), issue.Key, r.d.claims())
-		}
+	if !testwait.Holds(testwait.Bounded(t, 60*time.Second, time.Second), 100*time.Millisecond, launched) {
+		t.Fatalf("the runtime launched %+v in 60s, want %s's architect started; the daemon holds the claims %+v", r.rt.CallsOf("Spawn"), issue.Key, r.d.claims())
 	}
-	for deadline := time.Now().Add(30 * time.Second); droppedTodo.Load() == 0; time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("no todo event of %s reached the consumer in 30s (%d of its events dropped); this proves nothing of a record made before its event", issue.Key, dropped.Load())
-		}
+	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), 50*time.Millisecond, func() bool { return droppedTodo.Load() != 0 }) {
+		t.Fatalf("no todo event of %s reached the consumer in 30s (%d of its events dropped); this proves nothing of a record made before its event", issue.Key, dropped.Load())
 	}
 }

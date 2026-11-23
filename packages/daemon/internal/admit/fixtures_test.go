@@ -128,14 +128,6 @@ func seedOpenTree(t *testing.T, pool *pgxpool.Pool, root string) {
 	})
 }
 
-// queuedRoot is a root recorded waiting for its first start: its own tree, admitted at generation
-// 1, todo with the label, its parent recorded as parent ("" for none).
-func queuedRoot(key, parent, rank string, seq int64) record.Issue {
-	return record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: key, Tree: key,
-		Parent: record.ParentOf(parent), Phase: phase.Admitted, Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: rank, HandedOver: true, LastDispatchSeq: seq,
-		HoldsGate: true}
-}
-
 // issueOpen says whether key's own lifecycle stands open under the workflow's authority, which is
 // what the promotion that starts an issue writes.
 func issueOpen(t *testing.T, pool *pgxpool.Pool, key string) bool {

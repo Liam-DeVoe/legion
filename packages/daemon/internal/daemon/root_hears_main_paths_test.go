@@ -276,7 +276,7 @@ func (r *mainPathRig) runStarts() {
 	}
 }
 
-// runSuspend runs the architect's suspend row the park queued (the engine's beginLinger), as the
+// runSuspend runs the architect's suspend row the park queued (the engine's leave), as the
 // supervise lane runs it, and holds the claim to the suspension it writes.
 func (r *mainPathRig) runSuspend() {
 	r.t.Helper()

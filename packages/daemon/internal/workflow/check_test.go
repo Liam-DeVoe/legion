@@ -93,7 +93,7 @@ func rootCheckRig(t *testing.T) checkRig {
 
 // A report on the root's check after its close is recorded: the check after the close is the one
 // thing an issue out of Legion's work still does.
-func TestACheckReportWhileTheRootLingersIsRecorded(t *testing.T) {
+func TestACheckReportAfterTheRootsCloseIsRecorded(t *testing.T) {
 	rig := rootCheckRig(t)
 	if result := rig.apply("pass", intake.CheckReport{Issue: "LEGION-208", Claim: "tester", Look: 1, Verdict: "pass", Summary: "driven in production"}); result.Refusal != nil {
 		t.Fatalf("the report = %+v, want it recorded", result.Refusal)
@@ -536,7 +536,7 @@ func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
 
 // A done child set back to todo closes its open check as not run before its new run starts. The
 // tester's live claim stays live: the closed check rejects its old look's report.
-func TestReenterChildClosesItsOpenCheckAsNotRun(t *testing.T) {
+func TestADoneChildSetBackToTodoClosesItsOpenCheckAsNotRun(t *testing.T) {
 	rig := childCheckRig(t)
 	seedSlot(t, rig.pool, record.Slot{Issue: "LEGION-208", Index: 0})
 	rig.apply("todo", intake.DispatchIssue{Key: "LEGION-209", Seq: 3, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "V"})

@@ -349,6 +349,9 @@ func TestTheStatusChangeClientReadsEachAnswerOfTheRealDispatch(t *testing.T) {
 		return
 	}
 	t.Run("rule off", func(t *testing.T) { readEachStatusChangeAnswer(t, ruleOff, false) })
+	// The rule-off Dispatch has served its case, so its server stops before the next one starts
+	// (stop leaves a stopped server as it is, so the cleanup that registered it does nothing more).
+	ruleOff.stop()
 	t.Run("rule on", func(t *testing.T) {
 		ruleOn := startScratchDispatchOn(t, scratchDispatchOptions{env: []string{parentStatusRule + "=on"}})
 		readEachStatusChangeAnswer(t, ruleOn, true)
@@ -360,7 +363,7 @@ func TestTheStatusChangeClientReadsEachAnswerOfTheRealDispatch(t *testing.T) {
 const parentStatusRule = "DISPATCH_PARENT_STATUS_RULE"
 
 // readEachStatusChangeAnswer calls the status-change route of d, a Dispatch that serves it, once
-// for each answer the client reads, each call on issues of its own: a parent at work with a child
+// for each answer the client reads, each case on issues of its own: a parent at work with a child
 // at work under it, or a child under a parent on the backlog. ruleOn is d's parentStatusRule. A
 // dry run answers as the call would with the rule on, whatever the setting.
 func readEachStatusChangeAnswer(t *testing.T, d *scratchDispatch, ruleOn bool) {

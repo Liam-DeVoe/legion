@@ -18,7 +18,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -104,11 +103,9 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
 
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "child-todo", intake.DispatchIssue{
+	applyMirrored(t, pool, engine, "child-todo", intake.DispatchIssue{
 		Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 1, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "V",
-	}, blockers.NewMirror(record.NewStore(), "LEGION"), engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact: %v", err)
-	}
+	})
 	startUnblockedChildren(t, pool, engine)
 
 	var tree, gotPhase string
@@ -517,8 +514,8 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 
 // Every forward row short of the close applies through intake with its status, start and notice,
 // and none suspends the worker whose phase it ends: a role stays live from its first assignment
-// until its issue closes. (The merge's row is the close itself, which suspends the tree:
-// TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
+// until its issue closes. (The merge's row is the close itself, which closes the issue's own
+// claims: TestAnIssueOutOfWorkGetsNoWorkers.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 	cases := []struct {
 		name       string

@@ -2249,7 +2249,7 @@ func TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces(t *testin
 // a catch-up the architect would sit through the new generation untold. The start tells it, as a
 // ready would, for the launch that runs. A start that launches the claim tells nothing: its ready
 // will.
-func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
+func TestAStartThatFindsTheRootArchitectRunningTellsItItsIssue(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()

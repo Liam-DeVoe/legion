@@ -171,8 +171,8 @@ func TestAnIssueAlreadyRecordedIsNotDrawnForAnExperimentDeclaredAfterIt(t *testi
 	}
 }
 
-// applyChild records key as an unrecorded todo child of the held tree, the one door a child
-// enters its tree through (recordChildUnderLiveTree). The copy takes the event first, as the
+// applyChild records key as an unrecorded todo child of the held tree, through the one door a
+// child enters by (the engine's recordChild). The copy takes the event first, as the
 // daemon's handler order has it, so the engine reads the child's chain to its parent.
 func applyChild(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, eventID string) {
 	t.Helper()

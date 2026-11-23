@@ -202,7 +202,7 @@ func seedMirrorRow(t *testing.T, h *harness, key, status string) {
 // releaseWave posts one accepted release_children and keeps its body, which the answer's arrays
 // are read back from unparsed. The answer's queued writes are held to the outbox's rows
 // (assertQueuedRows) and left off the answer it returns, so a test reads them from the outbox
-// (queuedStatuses).
+// (queuedTodos).
 func releaseWave(t *testing.T, h *harness, architect liveClaim, issues ...string) (WaveReleaseResponse, string) {
 	t.Helper()
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": issues}, nil)
@@ -583,7 +583,7 @@ func TestWaveReleaseWritesAndRecordsTheWaveBeforeAStuckTodoChildAnswers(t *testi
 // own: its Dispatch chain reaches the root in Legion's work, so neither the call, which records a
 // child only under a recorded parent at work, nor admission takes it for a root (R15 of
 // dispatch://INFRA-3320).
-func TestWaveReleaseWritesNoChildUnderATodoChildItCannotRecord(t *testing.T) {
+func TestWaveReleaseQueuesAChildUnderATodoChildItCannotRecordAndRecordsNeither(t *testing.T) {
 	h, statuses := releaseHarness(t, true)
 	stuck, unrecordedParent, under := "LEGION-209", "LEGION-299", "LEGION-210"
 	parent := releaseRoot

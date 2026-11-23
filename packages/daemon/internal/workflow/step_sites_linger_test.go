@@ -1,7 +1,6 @@
-// The step sites of a merge and of each way an issue leaves its run: a merge that lands in a
-// lingering or a held tree, a root's close and its tree's linger, a leave, a person's move to done,
-// a reentry and an adoption. The helpers they share with the other step sites' tests are
-// step_sites_test.go's.
+// The step sites of a held merge and of the ways an issue leaves its run: a merge event on a held
+// merge step, a held issue's leave, a person's move to done and an operator's tree, which leaves
+// no step record. The helpers they share with the other step sites' tests are step_sites_test.go's.
 package workflow
 
 import (

@@ -57,26 +57,13 @@ func seededArchitectTask(root string) string {
 		Root: record.Issue{Key: root, Tree: root, Phase: phase.Admitted, Generation: 99}})
 }
 
-// architectStartsOf is every architect start the outbox holds for root, oldest first.
-func architectStartsOf(t *testing.T, pool *pgxpool.Pool, root string) []record.SuperviseRequest {
-	t.Helper()
-	var starts []record.SuperviseRequest
-	for _, effect := range effects(t, pool) {
-		if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == root &&
-			start.Op == "start" && start.Role == claim.RoleArchitect {
-			starts = append(starts, start)
-		}
-	}
-	return starts
-}
-
 // assertArchitectEntry holds the two writes of a root architect's start to each other: the
 // architect's phases row names entry, carries the work of that entry and the moment admission
 // raised it, and the one architect start of that root carries the same number and the same task.
 // It returns that start, for a case that reads what the task says.
 func assertArchitectEntry(t *testing.T, pool *pgxpool.Pool, root string, entry int64) record.SuperviseRequest {
 	t.Helper()
-	starts := architectStartsOf(t, pool, root)
+	starts := roleStarts(t, pool, root, claim.RoleArchitect)
 	if len(starts) != 1 {
 		t.Fatalf("%s holds %d architect starts, want the one its promotion wrote: %#v", root, len(starts), starts)
 	}
@@ -221,7 +208,7 @@ func TestAQueuedRootTheDerivationServesNoTaskRaisesNoArchitectEntry(t *testing.T
 
 	tick(t, pool, admission, "tick")
 
-	starts := architectStartsOf(t, pool, root)
+	starts := roleStarts(t, pool, root, claim.RoleArchitect)
 	if len(starts) != 1 || starts[0].Task != "" {
 		t.Fatalf("%s holds the architect starts %#v, want the one its promotion wrote, carrying no task", root, starts)
 	}

@@ -8,17 +8,12 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -27,20 +22,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
-	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// readyClaimOf drives token's launched claim through its shim's hello, its agent's registration and
-// its ready, at the claim's current generation, on the session the claim keeps under its role.
-func readyClaimOf(t *testing.T, sup *supervisor, token claim.Token, role claim.Role) {
-	t.Helper()
-	readyClaimAs(t, sup, token, role, "ses-"+string(role))
-}
-
-// readyClaimAs is readyClaimOf on session, whose file is named for it: the daemon holds a session's
-// id and its file's path and name to the first claim of the project that recorded them
-// (supervise's holdRecorded), so a test with two claims of one role names the second's session
-// itself, and so its file.
+// readyClaimAs drives token's launched claim through its shim's hello, its agent's registration
+// and its ready, at the claim's current generation, on session, whose file is named for it: the
+// daemon holds a session's id and its file's path and name to the first claim of the project that
+// recorded them (supervise's holdRecorded), so a test with two claims of one role names the
+// second's session itself, and so its file.
 func readyClaimAs(t *testing.T, sup *supervisor, token claim.Token, role claim.Role, session string) {
 	t.Helper()
 	machine, ok := sup.Machine(token)
@@ -284,71 +272,6 @@ func TestTheControllerKeeperResumesEveryControllerButOneTheOperatorSuspended(t *
 			}
 		})
 	}
-}
-
-// readmissionRig is a lingering tree, LEGION-208, whose child LEGION-209 was implementing when the
-// tree closed: the root's architect and the child's implementer each ran, and each was suspended,
-// suspend as the case says. The returned function re-admits the tree and runs what it queued.
-func readmissionRig(t *testing.T, suspend func(*supervisor, claim.Token)) (rt *fake.Runtime, sup *supervisor, architect, implementer claim.Token, readmit func(), tick func(time.Duration)) {
-	t.Helper()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	until := time.Now().Add(time.Hour)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 3, Status: "done", Rank: "U",
-		LingerUntil: &until, LastDispatchSeq: 5, HandedOver: true}
-	putOutboxIssue(t, pool, records, root)
-	parent := root.Key
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "Child",
-		Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
-	sup, rt = newOutboxSupervisor(t, "legion", t.TempDir())
-	architect = launchedClaim(t, sup, root.Key, root.Key, claim.RoleArchitect)
-	implementer = launchedClaim(t, sup, root.Key, "LEGION-209", claim.RoleImplementer)
-	suspend(sup, architect)
-	suspend(sup, implementer)
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	admission := admit.New(records, engine, 2, "LEGION", quietLogger())
-	var clock time.Time
-	runner := &outbox{
-		dispatchProject: "LEGION",
-		pool:            pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		githubAPI: newBranchGitHub(t, nil, branchExists).url,
-		dispatch:  &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "todo"}}, handlers: []intake.Handler{engine, admission},
-		now: func() time.Time { return clock }, log: quietLogger(),
-		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
-			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
-		},
-		remove: func(context.Context, workspace.Workspace, sync.Locker) error { return nil },
-	}
-	tick = func(by time.Duration) {
-		t.Helper()
-		clock = time.Now().Add(by)
-		if err := runner.RunOnce(ctx); err != nil {
-			t.Fatalf("run the outbox: %v", err)
-		}
-		for _, token := range []claim.Token{architect, implementer} {
-			machine, _ := sup.Machine(token)
-			machine.Wait()
-		}
-	}
-	readmit = func() {
-		t.Helper()
-		if _, err := intake.ApplyFact(ctx, pool, "dispatch", "todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "todo",
-			Title: root.Title, Rank: root.Rank, HandedOver: true}, engine, admission); err != nil {
-			t.Fatalf("apply the todo: %v", err)
-		}
-		// The re-admission writes the mid-phase child's start owing a slot (admit's
-		// promotion through workflow.StartOrOwe), and that row is written after this
-		// pass read its waiting line, so the slot it waits for is the next pass's to grant. Every
-		// fact and every tick makes such a pass; here the controller's tick is it.
-		if _, err := intake.ApplyFact(ctx, pool, "controller", "tick-after-the-readmission", intake.ControllerTick{}, engine, admission); err != nil {
-			t.Fatalf("apply the tick that gives the child its slot: %v", err)
-		}
-		// The first run creates the branches the starts wait for; the second runs the starts.
-		tick(0)
-		tick(0)
-	}
-	return rt, sup, architect, implementer, readmit, tick
 }
 
 // seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue and

@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -161,7 +160,7 @@ func TestTheReparentReadTellsEachDistinctArchitectOnce(t *testing.T) {
 	seed := reparentSeeds(t, pool, reparentMoved)[0]
 
 	applyMirrored(t, pool, engine, "read", intake.ReparentRead{Issue: reparentMoved, Seed: seed})
-	told := reparentedNotices(t, pool, reparentMoved)
+	told := noticesOfKind(t, pool, reparentMoved, "reparented")
 	if got := slices.Sorted(slices.Values(toldTo(told))); !slices.Equal(got, []string{reparentFirst, reparentSecond, reparentMoved}) {
 		t.Fatalf("the reparented notices go to %v, want one each to %s, %s and %s", got, reparentFirst, reparentSecond, reparentMoved)
 	}
@@ -184,7 +183,7 @@ func TestTheReparentReadTellsEachDistinctArchitectOnce(t *testing.T) {
 	stale := seed
 	stale.Parent = reparentFirst
 	applyMirrored(t, pool, engine, "stale-read", intake.ReparentRead{Issue: reparentMoved, Seed: stale})
-	if again := reparentedNotices(t, pool, reparentMoved); len(again) != 3 {
+	if again := noticesOfKind(t, pool, reparentMoved, "reparented"); len(again) != 3 {
 		t.Fatalf("the reparented notices after the same read and a stale one = %d, want the first three alone", len(again))
 	}
 }
@@ -205,7 +204,7 @@ func TestAMoveUnderTheSameArchitectTellsItOnce(t *testing.T) {
 	moveParent(t, pool, engine, "under-502", "LEGION-502", 6)
 	seeds := reparentSeeds(t, pool, reparentMoved)
 	applyMirrored(t, pool, engine, "read", intake.ReparentRead{Issue: reparentMoved, Seed: seeds[1]})
-	if got := slices.Sorted(slices.Values(toldTo(reparentedNotices(t, pool, reparentMoved)))); !slices.Equal(got, []string{reparentFirst, reparentMoved}) {
+	if got := slices.Sorted(slices.Values(toldTo(noticesOfKind(t, pool, reparentMoved, "reparented")))); !slices.Equal(got, []string{reparentFirst, reparentMoved}) {
 		t.Fatalf("the reparented notices of a move from LEGION-501 to LEGION-502 go to %v, want %s once and %s", got, reparentFirst, reparentMoved)
 	}
 }
@@ -297,7 +296,7 @@ func TestAReparentSeedOfTheReleaseBeforeIsToldAsR18Says(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	applyMirrored(t, pool, engine, "old-read", intake.ReparentRead{Issue: reparentMoved,
 		Seed: record.ReparentSeed{Parent: reparentSecond, Tree: reparentSecond, Ran: "it ran as a tree of its own"}})
-	told := reparentedNotices(t, pool, reparentMoved)
+	told := noticesOfKind(t, pool, reparentMoved, "reparented")
 	if got := slices.Sorted(slices.Values(toldTo(told))); !slices.Equal(got, []string{reparentFirst, reparentSecond, reparentMoved}) {
 		t.Fatalf("the reparented notices of the release before's seed go to %v, want %s, %s and %s", got, reparentFirst, reparentSecond, reparentMoved)
 	}
@@ -313,20 +312,6 @@ func seedLiveRoot(t *testing.T, pool *pgxpool.Pool, key string, slot int) {
 		Tree: key, Project: "LEGION", Title: key, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U", HoldsGate: true})
 	seedGate(t, pool, record.DesignGate{Issue: key, ArtifactID: "artifact-" + key, LatestVersion: 1, ApprovedVersion: new(1)})
 	seedSlot(t, pool, record.Slot{Issue: key, Index: slot, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
-}
-
-// reparentedNotices is every reparented notice the daemon has queued on issue, oldest first.
-func reparentedNotices(t *testing.T, pool *pgxpool.Pool, issue string) []record.Notice {
-	t.Helper()
-	var notices []record.Notice
-	for _, payload := range outboxStrings(t, pool, "select payload::text from outbox where kind = 'notice' and payload->>'kind' = 'reparented' and issue = $1 order by id", issue) {
-		var notice record.Notice
-		if err := json.Unmarshal([]byte(payload), &notice); err != nil {
-			t.Fatalf("decode a reparented notice of %s: %v", issue, err)
-		}
-		notices = append(notices, fencetest.Unfenced(notice).(record.Notice))
-	}
-	return notices
 }
 
 // toldTo is the issue each notice names as the architect it tells.

@@ -46,8 +46,8 @@ type architectWakeFixture struct {
 	status string
 	// awaiting is the wait of a root that stands in awaiting_person, nil for every other.
 	awaiting *record.Awaiting
-	// carried records a hand-over row at the root's generation, which is what says the root
-	// stands in the run a hand-over carried it into (record.Store.HandedOverRoot).
+	// carried records the root as carried in at its generation (record.Issue.CarriedGeneration),
+	// which is what says the root stands in the run a hand-over carried it into.
 	carried bool
 	// registered gives the root a design-gate row its architect registered, which is what the
 	// gate arm reads the absence of.
@@ -336,7 +336,7 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 				t.Fatalf("the wake of %s = %q, want it not to say %q: %s", root, reason, tc.never, tc.why)
 			}
 			if tc.says != "" {
-				if starts := architectStartsOf(t, pool, root); len(starts) != 1 {
+				if starts := roleStarts(t, pool, root, claim.RoleArchitect); len(starts) != 1 {
 					t.Fatalf("the architect starts of %s = %+v, want the one the first pass wrote: the reason says it wrote one", root, starts)
 				}
 			}
@@ -461,7 +461,7 @@ func TestATaskItsRowSupersededRaisesNoTookNothingWakeAndTheRowsEntryIsSent(t *te
 			applySweep(t, pool, admission, "superseded-2")
 			assertArchitectWakes(t, pool, root, tc.want, tc.why)
 
-			starts := architectStartsOf(t, pool, root)
+			starts := roleStarts(t, pool, root, claim.RoleArchitect)
 			if tc.sent == 0 {
 				if len(starts) != 0 {
 					t.Fatalf("the architect starts of %s = %+v, want none: %s", root, starts, tc.why)
@@ -666,7 +666,7 @@ func TestTheTookNothingArchitectWakeCountsFromTheEntrysFirstQueueing(t *testing.
 			applySweep(t, pool, admission, "first-queued-1")
 			applySweep(t, pool, admission, "first-queued-2")
 			assertArchitectWakes(t, pool, root, tc.want, tc.why)
-			if starts := architectStartsOf(t, pool, root); len(starts) != 0 {
+			if starts := roleStarts(t, pool, root, claim.RoleArchitect); len(starts) != 0 {
 				t.Fatalf("the architect starts of %s = %+v, want none: its claim was given the entry its row names", root, starts)
 			}
 			if len(tc.want) == 0 {

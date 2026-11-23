@@ -20,11 +20,6 @@ func crossings(t *testing.T, store *Store, token claim.Token) (published, unpubl
 	return published, unpublished
 }
 
-// sameTime says whether a and b are both unset or both the same moment.
-func sameTime(a, b *time.Time) bool {
-	return a == nil && b == nil || a != nil && b != nil && a.Equal(*b)
-}
-
 // Each crossing of the states in which the daemon publishes a claim's session as its role's holder
 // (registered, ready, working and idle: supervise.CapabilityStates) writes its own column, and a
 // move between two published states or between two unpublished ones writes neither, so the repair
@@ -50,20 +45,20 @@ func TestAClaimCrossingWritesItsPublicationTime(t *testing.T) {
 	if entered == nil || unpublished != nil {
 		t.Fatalf("an insert at idle left published %v, unpublished %v; want the insert's entry and no leave", entered, unpublished)
 	}
-	if published, unpublished := put(supervise.StateWorking); !sameTime(published, entered) || unpublished != nil {
+	if published, unpublished := put(supervise.StateWorking); !sameInstant(published, entered) || unpublished != nil {
 		t.Fatalf("idle to working left published %v, unpublished %v; want %v kept and no leave", published, unpublished, entered)
 	}
 	published, left := put(supervise.StateSuspended)
-	if !sameTime(published, entered) || left == nil || !left.After(*entered) {
+	if !sameInstant(published, entered) || left == nil || !left.After(*entered) {
 		t.Fatalf("the move out to suspended left published %v, unpublished %v; want %v kept and a leave stamped after it", published, left, entered)
 	}
 	for _, state := range []supervise.ClaimState{supervise.StateLaunching, supervise.StateFailed} {
-		if published, unpublished := put(state); !sameTime(published, entered) || !sameTime(unpublished, left) {
+		if published, unpublished := put(state); !sameInstant(published, entered) || !sameInstant(unpublished, left) {
 			t.Fatalf("the move to %s between unpublished states left published %v, unpublished %v; want %v and %v kept", state, published, unpublished, entered, left)
 		}
 	}
 	reentered, unpublished := put(supervise.StateRegistered)
-	if reentered == nil || !reentered.After(*left) || !sameTime(unpublished, left) {
+	if reentered == nil || !reentered.After(*left) || !sameInstant(unpublished, left) {
 		t.Fatalf("the move in to registered left published %v, unpublished %v; want an entry stamped after the leave %v, and the leave kept", reentered, unpublished, left)
 	}
 

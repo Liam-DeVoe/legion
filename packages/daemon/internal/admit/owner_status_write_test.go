@@ -127,9 +127,6 @@ type ownerRig struct {
 	pool      *pgxpool.Pool
 	admission *Admission
 	engine    *workflow.Engine
-	// mirrored applies each event through the blockers mirror first, as the daemon does, for a
-	// test whose outcome reads what Dispatch shows of a blocker.
-	mirrored bool
 	// settled is the number of outbox rows the tree's settle left (seedOwnerTree), and before the
 	// phase each issue stood in when a write of it was last applied (writeAt).
 	settled int
@@ -265,10 +262,6 @@ func (r *ownerRig) deliverStatusWrites(key string) {
 
 func (r *ownerRig) applyEvent(eventID string, fact intake.DispatchIssue) {
 	r.t.Helper()
-	if r.mirrored {
-		applyMirrored(r.t, r.pool, r.admission, eventID, fact, r.engine)
-		return
-	}
 	apply(r.t, r.pool, r.admission, eventID, fact, r.engine)
 }
 
@@ -307,14 +300,6 @@ func (r *ownerRig) check(key string) *record.ProductionCheck {
 		}
 	})
 	return check
-}
-
-// setClaimState moves the claim of role on issue to state.
-func (r *ownerRig) setClaimState(issue string, role claim.Role, state supervise.ClaimState) {
-	r.t.Helper()
-	if _, err := r.pool.Exec(context.Background(), `update claims set state = $3 where issue = $1 and role = $2`, issue, string(role), string(state)); err != nil {
-		r.t.Fatalf("set the %s claim of %s to %s: %v", role, issue, state, err)
-	}
 }
 
 // setClaimCrossings moves the claim of role on issue to state with the times it last entered and
@@ -721,7 +706,6 @@ func TestTheOwningArchitectsMoveEndsTheWaitOfAMergedAncestor(t *testing.T) {
 				child := issues[ownerChild]
 				child.Phase, child.Status, child.DispatchStatus = phase.Merging, "retro", "retro"
 			})
-			rig.mirrored = true
 			rig.pullRequest(ownerChild, 42, record.PullRequestMerged)
 			rig.write(ownerGrandchild, tc.status, rootArchitect)
 			rig.assertLeft(ownerGrandchild, tc.status)
@@ -857,7 +841,6 @@ func TestADoneChildStartsItsDependentsAndABacklogChildKeepsThemWaiting(t *testin
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			rig := seedOwnerTree(t, nil)
-			rig.mirrored = true
 			seedWaiting(t, rig.pool, dependent, "Z")
 			seedMirror(t, rig.pool, dependent, "todo", ownerChild)
 			seedMirror(t, rig.pool, ownerChild, "in_progress")
@@ -1018,7 +1001,6 @@ func TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain(t *testing.T) {
 		{state: supervise.StateReady, published: before(time.Hour), stands: true},
 		{state: supervise.StateWorking, published: before(time.Hour), stands: true},
 		{state: supervise.StateIdle, published: before(time.Hour), stands: true},
-		{state: supervise.StateSuspended, published: before(time.Hour), unpublished: before(5 * time.Minute)},
 		{state: supervise.StateFailed, published: before(time.Hour), unpublished: before(5 * time.Minute)},
 	} {
 		t.Run("the parent's architect, its claim "+string(tc.state), func(t *testing.T) {
@@ -1341,7 +1323,7 @@ func (r *ownerRig) judgeHeld(key string) {
 func (r *ownerRig) assertHeld(key string, want ...record.HeldSessionWrite) {
 	r.t.Helper()
 	got := issue(r.t, r.pool, key)
-	if !reflect.DeepEqual(got.HeldSessionWrites, slices.Clip(want)) && (len(want) > 0 || len(got.HeldSessionWrites) > 0) {
+	if !reflect.DeepEqual(got.HeldSessionWrites, want) && (len(want) > 0 || len(got.HeldSessionWrites) > 0) {
 		r.t.Fatalf("session writes %s holds = %+v, want %+v", key, got.HeldSessionWrites, want)
 	}
 	if len(want) == 0 {

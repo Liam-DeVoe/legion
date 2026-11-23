@@ -45,7 +45,9 @@ func TestCaptureStatusChangeAnswers(t *testing.T) {
 	}
 	createScratchDispatchIssue(t, d.base)
 	t.Run("midway refused", func(t *testing.T) { captureMidwayRefusal(t, d) })
-	t.Run("keyed repeat", func(t *testing.T) { captureKeyedRepeat(t, d) })
+	// The keyed repeat kills and starts d, whose helpers fail through the t that started it, so it
+	// runs in this test's own body rather than in a subtest.
+	captureKeyedRepeat(t, d)
 }
 
 // childrenPerCall is how many open children each captured call moves: enough steps that a write

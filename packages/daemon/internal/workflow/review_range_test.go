@@ -505,8 +505,8 @@ func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testin
 // task, so a claim behind its entry is sent the same text), the retry of a held phase, each start
 // of a worker level with its entry that builds the phase's resume task — a ready worker's
 // catch-up, the boot's resume, the silence repair, and the owed entry of a row that names no
-// task — and the promotion a carried hand-over makes, which keeps its rows (admit's readmit
-// returns before the clear for an orphan) and so keeps the commit.
+// task — and the promotion of a carried run, which keeps its rows (workflow's StartCarriedRun
+// clears nothing) and so keeps the commit.
 func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf(headOne)
 	t.Run("the architect's move back after an approval", func(t *testing.T) {
@@ -597,13 +597,12 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 			t.Fatalf("the silence repair's task = %q, want %q", task, want)
 		}
 	})
-	t.Run("a carried hand-over's promotion", func(t *testing.T) {
+	t.Run("a carried run's promotion", func(t *testing.T) {
 		pool, engine, _ := reviewRoundTwo(t)
 		before := reviewerRow(t, pool)
-		// The carried orphan's re-admission raises its generation and keeps its phase and its rows.
-		// This stands in for admission's re-admission, which this package cannot drive; admit's
-		// TestAHandedOverChildCarriesItsPhaseGateAndPullRequest drives the real hand-over, its
-		// reviewing case holding a reviewed commit.
+		// A root of its own that carries its run (record.Issue.CarriedGeneration) is promoted at a
+		// raised generation, keeping its phase and its rows. This stands in for admission's
+		// promotion, which this package cannot drive.
 		carried := issueRecord(t, pool, "LEGION-208")
 		carried.Generation++
 		seedIssue(t, pool, *carried)

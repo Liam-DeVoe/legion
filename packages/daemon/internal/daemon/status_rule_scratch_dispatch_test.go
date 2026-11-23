@@ -18,7 +18,7 @@ import (
 // Dispatch shows out of step with the phase (correctStatuses, an ordinary row) is
 // status_scratch_dispatch_test.go's, against the same rig's Dispatch with the rule on. The merge's
 // close is a close row as close_root's is. The writes of the architect's and the controller's
-// calls (park_child, rerun_child, set_status, release_children) are queued by the API's own
+// calls (rerun_child, set_status, release_children) are queued by the API's own
 // change of those routes, whose cases are written with it.
 func TestADaemonStatusWriteNeverBreaksTheRule(t *testing.T) {
 	for _, rule := range []string{"on", "off"} {

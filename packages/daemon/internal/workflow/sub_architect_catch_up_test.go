@@ -18,8 +18,8 @@ import (
 
 // seedSubArchitectTree records a live tree with root LEGION-1, its child LEGION-2 at generation
 // 2, LEGION-2's own child LEGION-3, and LEGION-2's sibling LEGION-4, each in the workflow. edit
-// changes LEGION-2's record and root the root's before they are written.
-func seedSubArchitectTree(t *testing.T, pool *pgxpool.Pool, root, edit func(*record.Issue)) {
+// changes LEGION-2's record before it is written.
+func seedSubArchitectTree(t *testing.T, pool *pgxpool.Pool, edit func(*record.Issue)) {
 	t.Helper()
 	issue := func(key, parent string, at phase.Phase, generation uint64, status, rank string) record.Issue {
 		recorded := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: key,
@@ -31,9 +31,6 @@ func seedSubArchitectTree(t *testing.T, pool *pgxpool.Pool, root, edit func(*rec
 	}
 	rootIssue := issue("LEGION-1", "", phase.Implementing, 1, "in_progress", "U")
 	child := issue("LEGION-2", "LEGION-1", phase.Planning, 2, "in_progress", "V")
-	if root != nil {
-		root(&rootIssue)
-	}
 	if edit != nil {
 		edit(&child)
 	}
@@ -87,7 +84,7 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 	t.Run("a live child", func(t *testing.T) {
 		ctx := context.Background()
 		pool := migratedPool(t)
-		seedSubArchitectTree(t, pool, nil, nil)
+		seedSubArchitectTree(t, pool, nil)
 		// A decision kept for the tree is the root architect's: the child's catch-up neither
 		// names it nor claims it.
 		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -131,16 +128,15 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 
 	for _, tc := range []struct {
 		name  string
-		root  func(*record.Issue)
 		child func(*record.Issue)
 	}{
-		{"a child out of the workflow", nil, func(child *record.Issue) { child.Status = "backlog" }},
-		{"a child done", nil, func(child *record.Issue) { child.Phase, child.Status = phase.Done, "done" }},
-		{"a child whose work is done before its status says so", nil, func(child *record.Issue) { child.Phase = phase.Done }},
+		{"a child out of the workflow", func(child *record.Issue) { child.Status = "backlog" }},
+		{"a child done", func(child *record.Issue) { child.Phase, child.Status = phase.Done, "done" }},
+		{"a child whose work is done before its status says so", func(child *record.Issue) { child.Phase = phase.Done }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			seedSubArchitectTree(t, pool, tc.root, tc.child)
+			seedSubArchitectTree(t, pool, tc.child)
 			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), "LEGION-2", claim.RoleArchitect, 1)
 			if got := catchUps(t, pool); len(got) != 0 {
 				t.Fatalf("catch-ups %v; want none", got)
@@ -150,7 +146,7 @@ func TestASubArchitectsReadyIsToldItsOwnSubtree(t *testing.T) {
 
 	t.Run("an issue the daemon has not recorded", func(t *testing.T) {
 		pool := migratedPool(t)
-		seedSubArchitectTree(t, pool, nil, nil)
+		seedSubArchitectTree(t, pool, nil)
 		claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), "LEGION-9", claim.RoleArchitect, 1)
 		if got := catchUps(t, pool); len(got) != 0 {
 			t.Fatalf("catch-ups %v; want none", got)
@@ -188,7 +184,7 @@ func TestARootsCatchUpNamesOnlyTheAcceptancesItsArchitectOwns(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			seedSubArchitectTree(t, pool, nil, accepting)
+			seedSubArchitectTree(t, pool, accepting)
 			seedArchitectClaimIn(t, pool, "LEGION-1", "LEGION-1", 1, supervise.StateWorking, "")
 			if tc.state != "" {
 				seedArchitectClaimIn(t, pool, "LEGION-1", "LEGION-2", 2, tc.state, tc.by)

@@ -377,13 +377,12 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 	})
 }
 
-// A re-admission leaves the role's entry where it stood and takes the work of it away: the task
-// is the ended generation's and goes with that generation's handoffs (record.ClearGeneration,
-// which workflow's Adopt and enterChild run for each member), while the number stays, because it
-// counts the entries the role has been handed on this issue and nothing of a re-admission unhands
-// one (record.PhaseRow.Entry and EntryTask).
+// A new run leaves the role's entry where it stood and takes the work of it away: the task is the
+// ended generation's and goes with that generation's handoffs (record.ClearGeneration, which
+// workflow's NewRun runs), while the number stays, because it counts the entries the role has been
+// handed on this issue and nothing of a new run unhands one (record.PhaseRow.Entry and EntryTask).
 //
-// What writes the work again is the promotion of the re-admitted tree's member
+// What writes the work again is the promotion of the issue
 // (workflow.Engine.StartPromotedWorker): it raises the entry, writes that entry's task beside the
 // number in the same transaction and writes the start that carries both, so the worker is started
 // under an entry above every entry a completion still in flight could name.
@@ -770,18 +769,18 @@ type lateEffect struct {
 	name    string
 	payload record.OutboxPayload
 	runOnly bool
-	acted   func(t *testing.T, rig oneStartRig, row record.OutboxRow, err error) bool
+	acted   func(t *testing.T, rig oneStartRig, err error) bool
 }
 
 // reachedItsEffect reads a run whose executor reached the write or the publish its runner has no
 // client for.
-func reachedItsEffect(_ *testing.T, _ oneStartRig, _ record.OutboxRow, err error) bool {
+func reachedItsEffect(_ *testing.T, _ oneStartRig, err error) bool {
 	return err != nil
 }
 
 // appliedAFact reads a production check's row that applied its fact: the outbox applies each under
 // the source outbox, and nothing else of the case does.
-func appliedAFact(t *testing.T, rig oneStartRig, _ record.OutboxRow, err error) bool {
+func appliedAFact(t *testing.T, rig oneStartRig, err error) bool {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("run the production check's row: %v", err)
@@ -794,7 +793,7 @@ func appliedAFact(t *testing.T, rig oneStartRig, _ record.OutboxRow, err error) 
 }
 
 // suspendedItsClaim reads a stop that suspended the implementer's claim the case made.
-func suspendedItsClaim(t *testing.T, rig oneStartRig, _ record.OutboxRow, err error) bool {
+func suspendedItsClaim(t *testing.T, rig oneStartRig, err error) bool {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("run the stop: %v", err)
@@ -865,6 +864,12 @@ func TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing(t *testing.T) {
 			putOutboxIssue(t, rig.pool, record.NewStore(), *issue)
 		}},
 	}
+	// GitHub refuses every write, so a branch's run errs once it reaches its create; the fake keeps
+	// nothing, so every case shares it.
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "refused", http.StatusForbidden)
+	}))
+	t.Cleanup(github.Close)
 	for _, effect := range effects {
 		for _, when := range later {
 			t.Run(effect.name+" "+when.name, func(t *testing.T) {
@@ -876,11 +881,6 @@ func TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing(t *testing.T) {
 				}); err != nil {
 					t.Fatalf("open the issue's production check: %v", err)
 				}
-				// GitHub refuses every write, so the branch's run errs once it reaches its create.
-				github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					http.Error(w, "refused", http.StatusForbidden)
-				}))
-				t.Cleanup(github.Close)
 				runner := &outbox{log: quietLogger(), pool: rig.pool, records: records, project: "legion", dispatchProject: "LEGION",
 					tokens: outboxTokens{}, githubAPI: github.URL}
 				if _, isStop := effect.payload.(record.SuperviseRequest); isStop {
@@ -911,7 +911,7 @@ func TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing(t *testing.T) {
 				// delivered at any (reports).
 				reports := map[string]bool{"notice": true, "controller_notice": true}
 				want := when.name == later[0].name || (effect.runOnly || reports[effect.name]) && when.name == later[1].name
-				if acted := effect.acted(t, rig, queued, err); acted != want {
+				if acted := effect.acted(t, rig, err); acted != want {
 					t.Fatalf("the %s row %s acted = %t (run error %v), want %t: an effect does nothing to a later phase entry or run than its own",
 						effect.name, when.name, acted, err, want)
 				}

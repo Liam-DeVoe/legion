@@ -306,7 +306,7 @@ func TestACarriedCopyOfAParkedRootsGateTakesTheApprovalWhileTheOwnerIsQueued(t *
 // nothing, since the pending row carries the same write, at either status a parked root holds. The
 // workflow's other status rows suppress nothing: a re-assertion row pending for the root leaves the
 // person's handover queued beside it.
-func TestAPendingPersonsHandoverSuppressesASecondAndAHandOverRowDoesNot(t *testing.T) {
+func TestAPendingPersonsHandoverSuppressesASecondAndAReassertionRowDoesNot(t *testing.T) {
 	for _, status := range []string{"backlog", "icebox"} {
 		t.Run("a pending marked row at "+status, func(t *testing.T) {
 			pool := migratedPool(t)

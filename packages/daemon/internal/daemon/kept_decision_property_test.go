@@ -2624,9 +2624,8 @@ func (r *keptRun) architectToHear(key string) bool {
 // tell records one telling and holds it to the invariants a telling can break on its own: no
 // architect is told one decision twice, a start task reaches a root that has an architect to hear
 // it, and a catch-up names the generation its root was at when the daemon decided to send it.
-// Which architect heard it is not one of them: a decision's issue can leave for a tree of its own
-// between the keeping and the telling, and a row composed before that can still tell the tree it
-// left, so where the debt stands is read once the run has quiesced (held).
+// Which architect heard it is not one of them: where the debt stands is read once the run has
+// quiesced (held).
 //
 // One second telling to one architect is accepted per cause, and only these: the task it was
 // already told is one the machine took back — a confirmation a refusal took back, or a turn its
@@ -2875,19 +2874,6 @@ func (r *keptRun) enqueue(issue string, payload record.OutboxPayload) {
 	}); err != nil {
 		r.fatalf("enqueue an outbox row: %v", err)
 	}
-}
-
-// issuedRows is the newest id the outbox has issued, whether or not that row still stands: a row
-// is deleted when its run finishes, so the newest row the outbox holds says nothing about which
-// rows were composed before a moment. It is the sequence's own last value, read before each step
-// to draw the line between the rows composed while an issue still stood in the tree it is about
-// to leave and those composed after (keptDeparture, leftBefore).
-func (r *keptRun) issuedRows() int64 {
-	var id int64
-	if err := r.pool.QueryRow(r.ctx, "select coalesce(pg_sequence_last_value('outbox_id_seq'), 0)").Scan(&id); err != nil {
-		r.fatalf("read the newest outbox row the run has issued: %v", err)
-	}
-	return id
 }
 
 // lastRow is the newest outbox row's id, which names in the trace the row an operation wrote.

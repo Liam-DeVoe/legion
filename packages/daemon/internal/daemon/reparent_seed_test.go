@@ -92,8 +92,8 @@ func newReparentRig(t *testing.T, client *reparentDispatch) *reparentRig {
 }
 
 // move applies Dispatch's event of the moved issue under parent through the handlers in the
-// daemon's order, the mirror first, and runs the outbox until nothing is due: the seed reads the
-// new parent and its fact queues the notices, which the runner publishes.
+// daemon's order, the mirror first, and runs four passes of the outbox: the seed reads the new
+// parent and its fact queues the notices, which the runner publishes.
 func (r *reparentRig) move(parent string) {
 	r.t.Helper()
 	r.seq++

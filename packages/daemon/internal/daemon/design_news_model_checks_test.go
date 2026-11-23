@@ -267,17 +267,17 @@ func (m *newsModel) checkRow(row *newsModelRow, stored map[claim.Token]*supervis
 	m.settleFinals(row, lagging)
 	links, opens := m.standing(row, stored)
 	credited := append(slices.Clone(row.final), links...)
-	if row.base != newsModelUnknown && !known {
+	if !known {
 		m.fail("exactly: the %s's row knows no version of the spec, but its run started from version %d: %+v", row.name, row.base, told)
 	}
-	if upper := m.truth(row, row.toldPrompts(lagging), true); known && row.base != newsModelUnknown && took > upper {
+	if upper := m.truth(row, row.toldPrompts(lagging), true); known && took > upper {
 		m.fail("never ahead of what it was told: the record says the %s took version %d, but it was told no further than %d", row.name, took, upper)
 	}
 	if want, wantKnown := newsModelClosure(row.base, credited); known != wantKnown || (known && took != want) {
 		m.fail("exactly: the record says the %s took %s, but what the claim store credits gives %s: from %s through the credits %v (final %v, standing %v)",
-			row.name, versionWords(took, known), versionWords(want, wantKnown), versionWords(row.base, row.base != newsModelUnknown), credited, row.final, links)
+			row.name, versionWords(took, known), versionWords(want, wantKnown), versionWords(row.base, true), credited, row.final, links)
 	}
-	if !lagging && row.base != newsModelUnknown {
+	if !lagging {
 		if lower := m.truth(row, row.creditedPrompts(), false); took < lower {
 			m.fail("level with what it read: the record says the %s took version %d, but it read the news up to %d", row.name, took, lower)
 		}

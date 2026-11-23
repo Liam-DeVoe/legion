@@ -26,8 +26,8 @@ const seededEntry = 3
 func seededEntryTask(issue string) string { return "Carry the work of " + issue + " on." }
 
 // putWorkerClaim records the claim of key's role on the tree root, in state and suspended by by,
-// in the columns every claim fixture of this package writes (owed_start_test.go's midPhaseChild).
-// It answers the claim's token, which the phases row and the claim's task are written against.
+// in the columns every claim fixture of this package writes. It answers the claim's token, which
+// the phases row and the claim's task are written against.
 func putWorkerClaim(t *testing.T, pool *pgxpool.Pool, root, key string, role claim.Role, generation uint64,
 	state supervise.ClaimState, by supervise.SuspendSource,
 ) claim.Token {
@@ -237,8 +237,8 @@ func seedSlotRepairRow(t *testing.T, pool *pgxpool.Pool, row slotRepairRow) {
 }
 
 // owedRepairRow is one row of the repair of a start that can no longer act. Every row is the same
-// fixture as parked_owed_start_test.go's — a running tree and a member of it, holding no slot,
-// owing its worker the start row the transition wrote — with the claim that start would reach.
+// fixture — a running tree and a member of it, holding no slot, owing its worker the start row
+// the transition wrote — with the claim that start would reach.
 type owedRepairRow struct {
 	name string
 	// root and key are the tree's root and the member owed the start.

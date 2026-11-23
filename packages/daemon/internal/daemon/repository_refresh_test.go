@@ -877,20 +877,6 @@ func TestASlowButAnsweringGitHubIsServedOnARefresh(t *testing.T) {
 	}
 }
 
-// applyTodo prepares and applies key's labelled todo event at seq on repo, as the Dispatch
-// consumer does.
-func applyTodo(t *testing.T, w *workflowRuntime, engine *workflow.Engine, admission *admit.Admission, key, repo string, seq int64) {
-	t.Helper()
-	fact := intake.DispatchIssue{Key: key, Seq: seq, Status: "todo", Title: key, Rank: "A", HandedOver: true, ResolvedRepo: repo}
-	prepared, err := prepareAsDelivered(t, w, fact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := intake.ApplyFact(context.Background(), w.pool, "test", fmt.Sprintf("%s-todo-%d", key, seq), prepared, rigCopy(w), engine, admission); err != nil {
-		t.Fatal(err)
-	}
-}
-
 // show makes Dispatch show each of issues as it is, in its issue detail and in the project's
 // listing, in place of what it showed of the same key.
 func (d *repositoryDispatch) show(issues ...dispatch.Issue) {

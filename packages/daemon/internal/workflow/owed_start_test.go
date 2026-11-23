@@ -234,9 +234,7 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // which starts a worker on an issue that held a slot before: a red head, the merge queue's
 // failed_checks removal, a push past READY, a backward move and a held worker's retry. A head that
 // conflicts with its base is no return: the issue keeps its phase and owes no start
-// (TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward). The last, a re-admitted tree's
-// mid-phase children, is admission's own start and is proven where it lives (internal/admit's
-// TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot). A sign-off's start into the
+// (TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward). A sign-off's start into the
 // retro waits for no slot, since the work is past its review there (record.KeepsSlot), and is
 // proven in internal/admit's TestAPhasePastReviewRunsWithNoSlot.
 //

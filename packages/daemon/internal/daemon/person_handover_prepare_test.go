@@ -50,18 +50,15 @@ func (d *chainDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue,
 	return issue, nil
 }
 
-// shownUnder is key as Dispatch shows it at status under parent ("" for none), on acme/widgets.
-func shownUnder(key, status, parent string, handed bool) dispatch.Issue {
-	issue := dispatch.Issue{Key: key, Status: status, Title: key, Rank: "B", HandedOver: handed, ResolvedRepo: "acme/widgets", LastSeq: 1}
-	if parent != "" {
-		issue.Parent = &parent
-	}
-	return issue
+// shownLabelled is key as Dispatch shows it at status with the legion label and no parent, on
+// acme/widgets.
+func shownLabelled(key, status string) dispatch.Issue {
+	return dispatch.Issue{Key: key, Status: status, Title: key, Rank: "B", HandedOver: true, ResolvedRepo: "acme/widgets", LastSeq: 1}
 }
 
-// recordedOn is a record of key in tree, on acme/widgets at main.
-func recordedOn(key, tree, status string) record.Issue {
-	return record.Issue{Key: key, Tree: tree, Project: "LEGION", Title: key, Phase: phase.Planning, Generation: 1, Status: status, Rank: "A",
+// recordedOn is a record of key as a root of its own, on acme/widgets at main.
+func recordedOn(key, status string) record.Issue {
+	return record.Issue{Key: key, Tree: key, Project: "LEGION", Title: key, Phase: phase.Planning, Generation: 1, Status: status, Rank: "A",
 		HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 }
 
@@ -150,7 +147,7 @@ func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
 			}
 			records := record.NewStore()
 			if tc.recorded {
-				putOutboxIssue(t, pool, records, recordedOn(key, key, "triage"))
+				putOutboxIssue(t, pool, records, recordedOn(key, "triage"))
 			}
 			// acme/widgets is served at main, so the labelled todo root is prepared for admission
 			// as today, from the read the repository state holds.
@@ -159,7 +156,7 @@ func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
 			branches := newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)
 			branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
 			client := &eventLogDispatch{logs: tc.logs, logErr: tc.logErr}
-			client.issues = map[string]dispatch.Issue{key: shownUnder(key, "todo", "", true)}
+			client.issues = map[string]dispatch.Issue{key: shownLabelled(key, "todo")}
 			w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos, defaultBranches: branches, log: quietLogger()}
 
 			got, err := w.prepareRepository(context.Background(), tc.event(triageRoot))
@@ -283,7 +280,7 @@ func TestBootReconcileReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) 
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 	records := record.NewStore()
-	back := recordedOn(recorded, recorded, "triage")
+	back := recordedOn(recorded, "triage")
 	back.Project, back.LastDispatchSeq = "CAPTURE", 5
 	putOutboxIssue(t, pool, records, back)
 	under := func(key string) *string { return &key }

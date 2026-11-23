@@ -103,8 +103,8 @@ func retroEndsAndRatings(t *testing.T, pool *pgxpool.Pool, issue string) (ends, 
 // own namespace, so a write sent again lands on the same plan and the next run gets a plan of its
 // own. No later move of the run writes another.
 //
-// The next run is the issue re-admitted, which stands it at admitted at the next generation
-// (admit's readmit), and its gate opened by a new engine over the same store, as after a restart,
+// The next run is the issue's new run, which stands it at admitted at the next generation
+// (workflow's NewRun), and its gate opened by a new engine over the same store, as after a restart,
 // through the admission's own start (StartFirstPhase). That run writes a plan of its own beside
 // the first, with run 2's generation and run 2's id, and the first stays as it was. A second
 // opening of that gate, by one more engine, writes no plan: the issue has left admitted.

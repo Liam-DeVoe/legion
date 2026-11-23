@@ -235,8 +235,9 @@ func issueSecrets(sandbox string) []string {
 // eviction, which deletes the pod while the Sandbox stays Running; the update round's ReplacePod; a
 // launch that fails once its Running patch is sent; the release of an idle pod, which keeps the
 // Sandbox Suspended and deletes the Secrets that its next launch writes again; and a launch under a
-// new tree, which relabels the Sandbox. The next pod after each of them mounts the same claim at
-// TreeRoot. The release records on the Sandbox that it deleted the Secrets
+// new gate root, which keeps the Sandbox and the tree label its creation wrote. The next pod after
+// each of them mounts the same claim at TreeRoot. The release records on the Sandbox that it
+// deleted the Secrets
 // (secretsReleasedAnnotation), and the released Sandbox runs no pod, so IssueSandbox answers it
 // absent: the release of a pod no claim owns has nothing of it to release. The next launch removes
 // that record before it writes the first Secret. The daemon makes no request on a

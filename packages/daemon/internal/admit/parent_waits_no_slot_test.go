@@ -1490,7 +1490,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		if got := issue(t, pool, parent); got.Phase != phase.Accepting || got.ChildrenWait != nil {
 			t.Fatalf("%s once its child is done = phase %s, held start %+v; want accepting, the start it held", parent, got.Phase, got.ChildrenWait)
 		}
-		revived := architectStartsOf(t, pool, parent)
+		revived := roleStarts(t, pool, parent, claim.RoleArchitect)
 		if want := []record.SuperviseRequest{{Op: "start", Tree: root, Role: claim.RoleArchitect, Generation: 1}}; !reflect.DeepEqual(revived, want) {
 			t.Fatalf("starts of %s's architect = %+v, want the one plain start of its failed claim %+v", parent, revived, want)
 		}

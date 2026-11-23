@@ -100,9 +100,6 @@ func (m *newsModel) enabled() []string {
 	if starts {
 		add("starts", 6)
 	}
-	if !reconciles && m.child.base == newsModelUnknown {
-		add("sweep", 2)
-	}
 	prompt := rev.turn
 	if prompt == "" {
 		prompt = rev.next
@@ -137,7 +134,7 @@ func (m *newsModel) enabled() []string {
 		case stale:
 			add("approve-changed", 6)
 			add("approve-decision-only", 6)
-		case architectOpening, prompt != "" && tells && m.child.base != newsModelUnknown, prompt == "" && !reconciles && !starts:
+		case architectOpening, prompt != "" && tells, prompt == "" && !reconciles && !starts:
 			add("approve-changed", 3)
 			add("approve-decision-only", 3)
 		default:
@@ -416,16 +413,12 @@ func (m *newsModel) reconcile() {
 	}
 }
 
-// settled is the model's side of what the reconcile settles for row: a row that knows no version
-// is filled from the review history, which names the version below the approved one
-// (newNewsModel), and a row owed only versions that changed decision blocks alone, and no opening,
-// is raised past them, by a credit counted from the version it took (record.Store.RaiseTold), so a
-// raise read off a version an unfinal credit gave reaches nothing once that credit is given back.
+// settled is the model's side of what the reconcile settles for row: a row owed only versions
+// that changed decision blocks alone, and no opening, is raised past them, by a credit counted
+// from the version it took (record.Store.RaiseTold), so a raise read off a version an unfinal
+// credit gave reaches nothing once that credit is given back.
 func (m *newsModel) settled(row *newsModelRow, stored map[claim.Token]*supervise.Delivery) {
 	m.t.Helper()
-	if row.base == newsModelUnknown {
-		row.base = m.latest - 1
-	}
 	links, opens := m.standing(row, stored)
 	took, known := newsModelClosure(row.base, append(slices.Clone(row.final), links...))
 	if !known || took >= m.latest || !m.workUnchanged(took, m.latest) || m.owesOpening(row, opens) {
@@ -593,7 +586,7 @@ func (m *newsModel) rootTask() {
 	if a.machine != nil {
 		m.handle(a, supervise.StreamTurnStart{Claim: a.token})
 	}
-	request := record.SuperviseRequest{Op: "start", Tree: pathRoot, Role: claim.RoleArchitect, Generation: m.rootGen, Entry: m.entry, Task: task,
+	request := record.SuperviseRequest{Op: "start", Tree: pathRoot, Role: claim.RoleArchitect, Generation: newsModelRootGen, Entry: m.entry, Task: task,
 		Kept: &record.KeptDecisions{Decisions: []record.DecisionMark{stays, replaced}}}
 	mark := m.r.lastRowID()
 	m.r.inTx(func(tx pgx.Tx) error {

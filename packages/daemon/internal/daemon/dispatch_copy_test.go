@@ -447,10 +447,9 @@ func recordedPhase(t *testing.T, w *workflowRuntime, key string) phase.Phase {
 	return recorded.Phase
 }
 
-// seedLiveTree records tree as a running root of this project in planning, as api's
-// adoptionHarness records its live tree: holding an admission slot, its tree lifecycle open under
-// the workflow and its spec's gate approved, so a todo child that joins it with a slot free
-// starts planning at once.
+// seedLiveTree records tree as a running root of this project in planning: holding an admission
+// slot, its tree lifecycle open under the workflow and its spec's gate approved, so a todo child
+// that joins it with a slot free starts planning at once.
 func seedLiveTree(t *testing.T, pool *store.Pool, tree string) {
 	t.Helper()
 	seedTickIssue(t, pool, record.Issue{Key: tree, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",

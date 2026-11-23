@@ -128,8 +128,8 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 					promotesTheReviewer(t, pool, engine, engine.now().Add(time.Hour))
 					return pool, "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work."
 				}
-				// A carried hand-over keeps its rows and the commit with them (admit's readmit
-				// returns before the clear), and its promotion raises the reviewer's entry.
+				// A carried run keeps its rows and the commit with them (its promotion clears
+				// nothing, workflow's StartCarriedRun), and its promotion raises the reviewer's entry.
 				pool, engine, _ := reviewRoundTwo(t)
 				outboxRan(t, pool)
 				carried := issueRecord(t, pool, "LEGION-208")

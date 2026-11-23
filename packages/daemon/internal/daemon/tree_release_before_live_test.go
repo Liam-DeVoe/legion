@@ -17,8 +17,8 @@
 // fake runtime, workflowConfig, startDaemonLogging, the scratch Dispatch's request helpers), the
 // API's request types, the store's tables in SQL, and no Go symbol either release added or
 // removed. This checkout compiles it too (`go vet -tags e2e ./...`), and the head drivers use its
-// helpers. Two reads of the fake runtime go through reflection, since only the release before's
-// fake records a tree's cleanup (fake.Call's Tree; treeCleanups).
+// helpers. One read of the fake runtime goes through reflection (treeCleanups), since only the
+// release before's fake records a tree's cleanup (fake.Call's Tree).
 //
 // What the release before cannot be made to leave in the minutes a run has, it is not asked to:
 // a tree that lingers with its deadline two days ahead, its reserved cleanup, the hand-over rows a
@@ -1012,7 +1012,7 @@ func TestTreeRollbackReleaseBeforeAfterTheStep(t *testing.T) {
 		t.Fatalf("the rollback step printed no held write of %s: %q", k, world.HeldPrinted)
 	}
 	awaitDispatchStatus(t, world.DispatchURL, k, "in_progress")
-	state, body := settled(t, r.d, "keep "+k+" at work", func(s api.State) bool {
+	settled(t, r.d, "keep "+k+" at work", func(s api.State) bool {
 		return s.Issues[k].Phase != phase.Done && slices.Contains(s.Admission.Active, k)
 	})
 
@@ -1038,7 +1038,7 @@ func TestTreeRollbackReleaseBeforeAfterTheStep(t *testing.T) {
 		t.Logf("the release before ran the queued %s row %d, %d attempts so far: %s", kind, id, row.Attempts, row.LastError)
 	}
 
-	state, body = settled(t, r.d, "hold "+n+" by its ancestry", func(s api.State) bool {
+	state, body := settled(t, r.d, "hold "+n+" by its ancestry", func(s api.State) bool {
 		return slices.ContainsFunc(s.Admission.Held, func(held api.HeldIssue) bool { return held.Issue == n && held.Reason == "ancestry" })
 	})
 	for issue, tree := range map[string]string{a2: a, u: a, l1: l1, f: f} {

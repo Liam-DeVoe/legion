@@ -60,21 +60,15 @@ func parsesWith(keys stateKeys, body []byte) []string {
 		return []string{"the body is no JSON: " + err.Error()}
 	}
 	var broken []string
-	join := func(path, key string) string {
-		if path == "" {
-			return key
-		}
-		return path + "." + key
-	}
 	var walk func(value any, path string)
 	walk = func(value any, path string) {
 		switch value := value.(type) {
 		case map[string]any:
 			object, described := keys.Objects[path]
 			if !described {
-				if _, record := keys.Objects[join(path, "*")]; record {
+				if _, record := keys.Objects[keyPathJoin(path, "*")]; record {
 					for _, member := range value {
-						walk(member, join(path, "*"))
+						walk(member, keyPathJoin(path, "*"))
 					}
 				}
 				return
@@ -83,7 +77,7 @@ func parsesWith(keys stateKeys, body []byte) []string {
 				if object.Strict && !slices.Contains(object.Keys, key) {
 					broken = append(broken, fmt.Sprintf("%s carries %q, which its strict schema does not know", path, key))
 				}
-				walk(member, join(path, key))
+				walk(member, keyPathJoin(path, key))
 			}
 			for _, key := range object.Required {
 				if _, carried := value[key]; !carried {
@@ -92,7 +86,7 @@ func parsesWith(keys stateKeys, body []byte) []string {
 			}
 		case []any:
 			for _, member := range value {
-				walk(member, join(path, "*"))
+				walk(member, keyPathJoin(path, "*"))
 			}
 		case string:
 			if accepted, enumerated := keys.Enums[path]; enumerated && !slices.Contains(accepted, value) {
@@ -161,34 +155,46 @@ func TestEachOlderContractKeepsItsNarrowing(t *testing.T) {
 // reasons does not hold it and would refuse the state, and as itself at and above that contract.
 func TestANewHeldReasonReadsUnclassifiedToAnOlderContract(t *testing.T) {
 	handler := stateServer(t, stateWithTheHoldsThisChangeAdds(t), nil)
-	for _, added := range []struct {
+	reasons := []struct {
 		issue  string
 		reason record.HeldReason
 	}{
 		{"LEGION-299", record.HeldChainUnknown},
 		{"LEGION-300", record.HeldAwaitingTodo},
+	}
+	// itself says whether the contract reads each added reason as itself; a contract the row
+	// before named already (DaemonAPIVersion while it is chainContract) is served once.
+	last := 0
+	for _, tc := range []struct {
+		contract int
+		itself   bool
+	}{
+		{144, false},
+		{152, false},
+		{chainContract - 1, false},
+		{chainContract, true},
+		{DaemonAPIVersion, true},
 	} {
-		for _, tc := range []struct {
-			contract int
-			want     record.HeldReason
-		}{
-			{144, record.HeldUnclassified},
-			{152, record.HeldUnclassified},
-			{chainContract - 1, record.HeldUnclassified},
-			{chainContract, added.reason},
-			{DaemonAPIVersion, added.reason},
-		} {
-			var served struct {
-				Admission struct {
-					Held []HeldIssue `json:"held"`
-				} `json:"admission"`
-			}
-			if err := json.Unmarshal(stateStating(t, handler, "192.0.2.77:41000", tc.contract), &served); err != nil {
-				t.Fatal(err)
+		if tc.contract == last {
+			continue
+		}
+		last = tc.contract
+		var served struct {
+			Admission struct {
+				Held []HeldIssue `json:"held"`
+			} `json:"admission"`
+		}
+		if err := json.Unmarshal(stateStating(t, handler, "192.0.2.77:41000", tc.contract), &served); err != nil {
+			t.Fatal(err)
+		}
+		for _, added := range reasons {
+			want := record.HeldUnclassified
+			if tc.itself {
+				want = added.reason
 			}
 			i := slices.IndexFunc(served.Admission.Held, func(held HeldIssue) bool { return held.Issue == added.issue })
-			if i < 0 || served.Admission.Held[i].Reason != tc.want {
-				t.Errorf("the state at contract %d holds %+v, want %s held %s", tc.contract, served.Admission.Held, added.issue, tc.want)
+			if i < 0 || served.Admission.Held[i].Reason != want {
+				t.Errorf("the state at contract %d holds %+v, want %s held %s", tc.contract, served.Admission.Held, added.issue, want)
 			}
 		}
 	}

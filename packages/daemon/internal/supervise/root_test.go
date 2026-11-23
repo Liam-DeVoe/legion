@@ -160,7 +160,7 @@ func TestARetryAfterAFailedRootExitAndRefusedResumesWaitsOutTheExitedProcess(t *
 
 // The issue's close is the one thing of the workflow's that releases its root: a root the daemon
 // already suspended has no process, so the release carries no locator.
-func TestTreeCloseReleasesASuspendedRootWithNoLocator(t *testing.T) {
+func TestIssueCloseReleasesASuspendedRootWithNoLocator(t *testing.T) {
 	h := newHarnessOf(t, rootClaim())
 	h.reach(StateIdle)
 	h.must(RequestExit{Claim: rootToken, Generation: h.generation(), Session: session, Reason: "tree waiting"})
@@ -173,7 +173,7 @@ func TestTreeCloseReleasesASuspendedRootWithNoLocator(t *testing.T) {
 }
 
 // Its close releases the root from any state: whatever runs is stopped, and the claim retires.
-func TestTreeCloseReleasesALiveRoot(t *testing.T) {
+func TestIssueCloseReleasesALiveRoot(t *testing.T) {
 	for _, state := range liveStates {
 		t.Run(string(state), func(t *testing.T) {
 			h := newHarnessOf(t, rootClaim())

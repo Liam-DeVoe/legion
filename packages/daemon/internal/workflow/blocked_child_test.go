@@ -26,6 +26,16 @@ func seedMirror(t *testing.T, pool *pgxpool.Pool, key, status string, waits ...s
 	})
 }
 
+// seedMirrorChild writes what Dispatch says of a child filed under parent: its status and the
+// parent that makes it one of parent's open children (record.ChildWaits reads the pair).
+func seedMirrorChild(t *testing.T, pool *pgxpool.Pool, key, status, parent string) {
+	t.Helper()
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry[[]string](nil)})
+	})
+}
+
 // applyMirrored applies fact through the daemon's own handler order (daemon/workflow.go): the
 // mirror first, so the engine behind it reads the row this very event writes.
 func applyMirrored(t *testing.T, pool *pgxpool.Pool, engine *Engine, eventID string, fact intake.Fact) {

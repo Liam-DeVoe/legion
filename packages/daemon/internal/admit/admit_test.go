@@ -290,7 +290,7 @@ func TestReconcileNeverReadmitsAChildAsARoot(t *testing.T) {
 
 // The boot read opens a new run of a root the daemon closed that a person set back to todo while
 // the daemon was down, exactly as the live event does: a new generation at admitted, promoted.
-func TestReconcileReadmitsALingeringRootSetBackToTodo(t *testing.T) {
+func TestTheBootReadOpensANewRunOfAClosedRootSetBackToTodo(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	putIssue(t, pool, record.Issue{Key: "LEGION-CLOSED", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "closed", Tree: "LEGION-CLOSED", Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", HoldsGate: true, LastDispatchSeq: 1})

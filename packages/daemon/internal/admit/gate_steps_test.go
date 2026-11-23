@@ -16,16 +16,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The documents of the steps these tests gate: artifact-root is the root's primary document,
-// which the spec step binds to, and these are its decisions and Verification documents.
-// register_gate carries no step of its own yet, so a registration writes the row the document it
-// names already holds and records the spec step for a document no row holds: a step other than
-// spec is given its row once with PutGate, to bind the document to the step, and every fact after
-// that is the engine's own.
-const (
-	decisionsDoc = "artifact-decisions"
-	criteriaDoc  = "artifact-criteria"
-)
+// The decisions document of the step these tests gate besides spec: artifact-root is the root's
+// primary document, which the spec step binds to. register_gate carries no step of its own yet, so
+// a registration writes the row the document it names already holds and records the spec step for
+// a document no row holds: a step other than spec is given its row once with PutGate, to bind the
+// document to the step, and every fact after that is the engine's own.
+const decisionsDoc = "artifact-decisions"
 
 // A step the deployment gates that nobody has registered holds the tree's work and asks nobody:
 // the root keeps its slot, no awaiting-person notice reaches the controller, and no phase starts,

@@ -671,9 +671,9 @@ func TestStoreRoundTripsEachIssuesOwnFacts(t *testing.T) {
 	})
 }
 
-// The tree a root left is what keeps it its own tree on every later pass of the admission sweep
-// and every release of children (workflow's RanAsRoot), so PutIssue stores it and every read
-// behind issueColumns gives it back.
+// The tree a root of the release before was handed over from (Issue.HandedOverFrom) is a column of
+// the record that release still reads, so PutIssue stores it and every read behind issueColumns
+// gives it back.
 func TestStoreRoundTripsTheTreeARootLeft(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

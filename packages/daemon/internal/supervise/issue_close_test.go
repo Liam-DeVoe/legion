@@ -1,7 +1,7 @@
 package supervise
 
 // A child issue closed as done releases its volume at once (workflow's leave), so its claims are
-// closed rather than suspended: each ends as a tree close ends it. The session each recorded is
+// closed rather than suspended: each claim is released and retires. The session each recorded is
 // kept whole — the id and the resume path both — because a done issue is reopened, a person moving
 // it back or a production check failing, and its roles are then started again on the same issue; a
 // session dropped here would start each as a fresh agent that has read none of the work it is
@@ -38,7 +38,7 @@ func closingHarness(t *testing.T) *harness {
 	return h
 }
 
-// The claim is released as a tree close releases it — with its process where one runs, with no
+// The claim is released — with its process where one runs, with no
 // locator where none does — and retires with the session it recorded, in memory and in the store.
 func TestAnIssueCloseRetiresTheClaimAndKeepsItsSessionForAReopen(t *testing.T) {
 	for _, state := range []ClaimState{StateRegistered, StateReady, StateWorking, StateIdle, StateSuspended} {
@@ -73,7 +73,7 @@ func TestAnIssueCloseRetiresTheClaimAndKeepsItsSessionForAReopen(t *testing.T) {
 }
 
 // A release the runtime refuses changes nothing — the claim keeps its state and its session — so
-// the close can be asked again, as a tree close can.
+// the close can be asked again.
 func TestAnIssueCloseWhoseReleaseFailsKeepsTheClaimForTheRetry(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)

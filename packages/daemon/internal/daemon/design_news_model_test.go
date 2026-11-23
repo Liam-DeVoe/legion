@@ -280,8 +280,9 @@ func (s *newsModelStore) RetireDelivery(ctx context.Context, c supervise.Claim, 
 	return nil
 }
 
-// newsModelUnknown is the version a run's holder started from where nothing has said it yet
-// (newsModelRow.base), and the version a closure reaches from it while no credit reaches it.
+// newsModelUnknown is a base version the record does not know, which a closure reaches only
+// through a credit told with no earlier version (design_news_known's own rule). Every row of the
+// model starts from a version it knows (newsModelRow.base).
 const newsModelUnknown = -1
 
 // newsModelAny is the earlier version of a credit told with none (record.DeliveryNewsItem.From
@@ -343,9 +344,8 @@ type newsModelRow struct {
 	audience record.DesignAudience
 	agents   []*newsModelAgent
 	// run counts the clears of a generation the row has been through, and base is the version the
-	// run's holder started from: the baseline its first phase took, the version the architect took
-	// at a registration, or newsModelUnknown where nothing has said it yet, until the reconcile has
-	// read it from the review history.
+	// run's holder started from: the baseline its first phase took, or the version the architect
+	// took at a registration.
 	run  int
 	base int
 	// final is every credit of this run the record folded into the row: each confirmed copy whose
@@ -547,10 +547,9 @@ type newsModel struct {
 	// decisionOnly says which versions changed only decision blocks of the one before.
 	latest       int
 	decisionOnly map[int]bool
-	// childGen and rootGen are the generations the child and the tree's root stand at: a re-entry
-	// raises the child's, and no step raises the root's. clears counts the re-entries, and
-	// handovers the hand-overs.
-	childGen, rootGen uint64
+	// childGen is the generation the child stands at: a re-entry raises it, and no step raises the
+	// root's (newsModelRootGen). clears counts the re-entries, and handovers the hand-overs.
+	childGen          uint64
 	clears, handovers int
 	// handoverClear counts the clear made under the second hand-over's tester credit, which no
 	// other clear uses up (handoverClearDue).
@@ -657,7 +656,7 @@ func newNewsModel(t *testing.T, seed int64) *newsModel {
 	child := newNewsModelRow("child's holder", pathChild, record.AudienceHolder)
 	root := newNewsModelRow("root's architect", pathRoot, record.AudienceArchitect)
 	m := &newsModel{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))), r: r, clock: &heldClock{},
-		latest: 4, decisionOnly: map[int]bool{}, childGen: 1, rootGen: 1, child: child, root: root, ran: map[string]int{}, kinds: map[string]bool{}}
+		latest: 4, decisionOnly: map[int]bool{}, childGen: 1, child: child, root: root, ran: map[string]int{}, kinds: map[string]bool{}}
 	m.reviewer = child.agent(t, "reviewer", claim.RoleReviewer)
 	m.tester = child.agent(t, "tester", claim.RoleTester)
 	m.architect = root.agent(t, "root's architect", claim.RoleArchitect)
@@ -697,12 +696,15 @@ func (m *newsModel) agentOf(token claim.Token) *newsModelAgent {
 	return nil
 }
 
+// newsModelRootGen is the generation the tree's root stands at throughout a run of the model.
+const newsModelRootGen uint64 = 1
+
 // gens is the run row's news is rendered for now: the generation of its issue and of its tree's root.
 func (m *newsModel) gens(row *newsModelRow) (uint64, uint64) {
 	if row.issue == pathChild {
-		return m.childGen, m.rootGen
+		return m.childGen, newsModelRootGen
 	}
-	return m.rootGen, m.rootGen
+	return newsModelRootGen, newsModelRootGen
 }
 
 // answer is Dispatch's change set of pair, by the model's versions: decision-only where every

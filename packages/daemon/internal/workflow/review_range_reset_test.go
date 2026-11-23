@@ -51,17 +51,6 @@ func promotesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine, at ti
 	})
 }
 
-// mergeStateUnknown records GitHub's answer `unknown` for headOne, LEGION-208's head, which GitHub
-// gives while it computes the merge state: an approval of that head waits on GitHub's next answer
-// rather than ending its round (classify.RoundWaitsOnMergeState), so the issue stays in reviewing.
-// A clear of the generation keeps it, as it keeps the pull request's mergeability beside it
-// (record.Store.ClearGeneration).
-func mergeStateUnknown(t *testing.T, apply func(string, intake.Fact) intake.Result) {
-	t.Helper()
-	apply("merge-state-unknown", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
-		Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateUnknown})
-}
-
 // A review with no submission time moves the commit when it names the entry that stands: no time
 // is compared, so nothing about it holds the commit back. It still decides the round, as an
 // untimed review always has. The same untimed review naming no entry decides the round and moves
@@ -93,7 +82,7 @@ func TestAReviewWithNoSubmissionTimeMovesTheCommitWhenItNamesItsEntry(t *testing
 	}
 }
 
-// A carried hand-over keeps its rows (admit's readmit returns before the clear), and its
+// A carried run keeps its rows (its promotion clears nothing, workflow's StartCarriedRun), and its
 // promotion raises the reviewer's entry in the middle of the round that stands. A review that
 // names the entry before the promotion moves no commit, whatever time GitHub gives it: the commit
 // stays where the round before left it, and the next round reads more, which is the safe side. A

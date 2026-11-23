@@ -352,7 +352,7 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 	if marks := architectWakeMarks(t, pool, root, 1); len(marks) != 2 {
 		t.Fatalf("the arms the run before is marked told for = %v, want the fill's two, left where they are", marks)
 	}
-	if starts := architectStartsOf(t, pool, root); len(starts) != 1 {
+	if starts := roleStarts(t, pool, root, claim.RoleArchitect); len(starts) != 1 {
 		t.Fatalf("%s holds %d architect starts after its passes, want the one its re-admission wrote: a start already on its way is "+
 			"not written again (workflow.ArchitectStartPending)", root, len(starts))
 	}

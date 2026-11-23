@@ -74,7 +74,6 @@ type statusWrite struct {
 }
 
 type statusRecorder struct {
-	err    error
 	writes []statusWrite
 	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
 	// project>`: a message, a document upload, a role-holder publication, and a write of the
@@ -160,9 +159,6 @@ func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue
 // by the one event every status write makes, the issue's own status included. The fake keeps the
 // written issue, so a later read sees the write.
 func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dispatch.Issue, error) {
-	if r.err != nil {
-		return dispatch.Issue{}, r.err
-	}
 	r.writes = append(r.writes, statusWrite{issue: issue, status: status})
 	written, ok := r.issues[issue]
 	if !ok {

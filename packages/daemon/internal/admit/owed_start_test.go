@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -56,72 +55,6 @@ func startsOf(t *testing.T, pool *pgxpool.Pool, issue string) []midPhaseStart {
 		}
 	})
 	return rows
-}
-
-// runBranchRows finishes the issue_branch row of each of issues, as that row's lane does once
-// GitHub holds the branch: the starts queued behind it are held by it until it is gone.
-func runBranchRows(t *testing.T, pool *pgxpool.Pool, issues ...string) {
-	t.Helper()
-	inTx(t, pool, func(tx pgx.Tx) {
-		ctx := context.Background()
-		rows, err := tx.Query(ctx, `select id from outbox where kind = 'issue_branch' and issue = any($1) order by id`, issues)
-		if err != nil {
-			t.Fatalf("list the branch rows of %v: %v", issues, err)
-		}
-		var ids []int64
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				t.Fatalf("scan a branch row: %v", err)
-			}
-			ids = append(ids, id)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			t.Fatalf("read the branch rows of %v: %v", issues, err)
-		}
-		if len(ids) != len(issues) {
-			t.Fatalf("the branch rows of %v are %v, want one each: every member past admitted gets one", issues, ids)
-		}
-		for _, id := range ids {
-			if err := record.NewStore().FinishOutbox(ctx, tx, id, ""); err != nil {
-				t.Fatalf("finish the branch row %d: %v", id, err)
-			}
-		}
-	})
-}
-
-// midPhaseChild records key in root's tree standing mid-phase at stands, with the phases row and
-// the claim of the role that works it as the tree's close left it: suspended by the daemon's own
-// suspend of every claim, since a close retires nothing of the record and only a worker's own
-// handoff moves a phase on.
-func midPhaseChild(t *testing.T, pool *pgxpool.Pool, root, key string, stands phase.Phase, status string) claim.Token {
-	t.Helper()
-	parent := root
-	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
-		Title: key, Tree: root, Parent: &parent, Phase: stands, Generation: 1, Status: status, DispatchStatus: status, Rank: key, LastDispatchSeq: 1})
-	role := phase.RoleFor(stands)
-	project, err := claim.ProjectToken(testProject)
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := claim.NewToken(project, key, role)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inTx(t, pool, func(tx pgx.Tx) {
-		ctx := context.Background()
-		if err := record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: role, Claim: token}); err != nil {
-			t.Fatalf("seed the %s's row of %s: %v", role, key, err)
-		}
-		if _, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
-			serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-			values ($1, $2, $3, $4, $5, 1, 'ses', '/sessions/ses.jsonl', 'suspended', 1, 0, 0, 0, 0, 'daemon')`,
-			string(token), project, root, key, string(role)); err != nil {
-			t.Fatalf("seed the %s of %s: %v", role, key, err)
-		}
-	})
-	return token
 }
 
 // entryOf is the phase entry role's phases row of issue is on and the work that entry names.

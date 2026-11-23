@@ -290,9 +290,9 @@ func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
 	assertWaitNotice(t, rig.pool, "LEGION-209 (in_progress)")
 }
 
-// While its root's merged close waits, a child's tree is not lingering, so the child's implementer
-// completes its phase and the child moves on. Before the wait the root's close lingered the tree
-// mid-turn and that completion was refused 409 TREE_LINGERING.
+// While its root's merged close waits, the child stays in Legion's work, so the child's
+// implementer completes its phase and the child moves on: the wait stops nothing of an issue
+// under the root.
 func TestAWaitingRootsChildCompletesItsPhase(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	seedPhase(t, rig.pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "child-implementer"})
@@ -334,7 +334,7 @@ func TestAWaitingRootTellsItsArchitectOnlyWhenTheWaitBegins(t *testing.T) {
 // queued: done written to Dispatch over retro, and nothing else until Dispatch shows the root
 // done, when the root moves to done, retires its claims but the tester's and opens its production
 // check on its merge.
-func TestAMergedRootClosesWhenItsLastOpenChildLeaves(t *testing.T) {
+func TestAMergedRootClosesWhenItsLastChildNotDoneIsDone(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		child record.Issue
@@ -436,7 +436,7 @@ func TestWhichChildrenHoldAMergedRootsCloseUp(t *testing.T) {
 
 // A root with no child not done queues its close at its merge, with nothing to wait for and nobody
 // told it waits, and closes once Dispatch shows it done, opening its production check.
-func TestARootWithNoOpenTreeClosesAtItsMerge(t *testing.T) {
+func TestARootWithNoChildNotDoneQueuesItsCloseAtItsMerge(t *testing.T) {
 	rig := seedMergedRoot(t)
 	assertPhase(t, rig.pool, phase.Merging)
 	assertOutboxCount(t, rig.pool, "dispatch_status", 1)
@@ -487,8 +487,8 @@ func TestNothingMovesAWaitingMergedRoot(t *testing.T) {
 // that time is new work, not the change the root waits to close on: GitHub has already merged that
 // one and never sends the merge again. The root still closes on that merge once its last child is
 // done, its production check reading pull request #42 at merge. The slots are admission's
-// rows, and a root in merging holds none; admit's
-// TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves asserts them.
+// rows, and a root in merging holds none (record.KeepsSlot); the admit package's slot tests
+// assert them.
 func TestANewPullRequestFromAWaitingRootsBranchLeavesItsMergeStanding(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	rig.apply("follow-up-opened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 99, Branch: "legion/LEGION-208", HeadSHA: "follow-up",
