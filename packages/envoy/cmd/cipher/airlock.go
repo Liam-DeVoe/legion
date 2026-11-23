@@ -15,6 +15,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net/url"
 	"os"
@@ -76,6 +77,31 @@ var systemTrustFiles = []string{
 	"/etc/pki/tls/certs/ca-bundle.crt",
 	"/etc/ssl/ca-bundle.pem",
 	"/etc/ssl/cert.pem",
+}
+
+// systemTrust is the machine's own trust store as every TLS client of it reads that store when
+// nothing names another: the first of systemTrustFiles that exists, read with no variable. It is
+// not x509.SystemCertPool, which reads SSL_CERT_FILE and SSL_CERT_DIR in place of the system's
+// files, as OpenSSL does: GnuTLS, under Debian's git (libcurl-gnutls) and wget, reads neither
+// variable and loads the system bundle alone, so a root that only the command's own SSL_CERT_FILE
+// or SSL_CERT_DIR names is one git and wget do not trust. The certificate directories
+// (/etc/ssl/certs) are left out for the same reason. A bundle that is there but cannot be read is
+// a store that trusts nothing, as it is to those clients, rather than a reason to read the next;
+// a machine with none of the files trusts nothing here either, and so gets the bundle, as does a
+// root added to macOS's keychain, which no file here holds.
+func systemTrust() *x509.CertPool {
+	pool := x509.NewCertPool()
+	for _, path := range systemTrustFiles {
+		data, err := os.ReadFile(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err == nil {
+			pool.AppendCertsFromPEM(data)
+		}
+		break
+	}
+	return pool
 }
 
 // airlockFiles are the two files one run writes for its command: the trust bundle every
@@ -185,12 +211,10 @@ const airlockBuildLifetime = time.Hour
 // earlier runs left (tidyAirlockDirs).
 //
 // A command that reaches the proxy with the trust it already has gets none of this: where the
-// system trust store trusts every root the release carries and no trust variable of the command
-// names a file that lacks one (proxyRootsTrusted), nothing is made or written, and the answer is
-// no files. x509.SystemCertPool reads the store as OpenSSL does, from SSL_CERT_FILE and
-// SSL_CERT_DIR where they are set and the system's own files and directories where not. Such a
-// run tidies nothing either; what earlier runs left waits for the next run that writes, and
-// holds nothing secret.
+// machine's own system trust bundle (systemTrust) trusts every root the release carries and no
+// trust variable or wgetrc of the command names a file that lacks one (proxyRootsTrusted),
+// nothing is made or written, and the answer is no files. Such a run tidies nothing either; what
+// earlier runs left waits for the next run that writes, and holds nothing secret.
 //
 // The directory is built under a name of its own and renamed into place once every file is in
 // it, and that rename is the guard between two runs that share a runtime directory — parallel
@@ -213,7 +237,7 @@ const airlockBuildLifetime = time.Hour
 // wgetrcFor skip a file they cannot read, and print nothing of it.
 func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
 	// First, since a command that needs no bundle has no directory to make, tidy or name.
-	if system, err := x509.SystemCertPool(); err == nil && proxyRootsTrusted(environ, release.CACertificate, system) {
+	if proxyRootsTrusted(environ, release.CACertificate, systemTrust()) {
 		return airlockFiles{}, nil
 	}
 	// The grant id becomes one path element, so it must be one: the broker's ids are opaque, and

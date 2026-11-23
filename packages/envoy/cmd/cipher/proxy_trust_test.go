@@ -1,6 +1,6 @@
 // packages/envoy/cmd/cipher/proxy_trust_test.go
 //
-// When a command needs no trust bundle: the machine's system trust store already trusts every
+// When a command needs no trust bundle: the machine's system trust bundle already trusts every
 // root the proxy's release carries, and no trust variable or wgetrc the command has names a file
 // that lacks one. Then nothing is written and no trust variable is set. Otherwise prepareAirlock
 // writes the bundle and every trust variable names it. The roots here are made for each test and
@@ -9,12 +9,9 @@ package main
 
 import (
 	"crypto/x509"
-	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -150,116 +147,34 @@ func TestProxyRootsTrustedReadsTheWgetrcTheCommandHas(t *testing.T) {
 	}
 }
 
-// proxyTrustChildInput and proxyTrustChildOutput are what TestProxyTrustChild reads and writes:
-// the environment and release it prepares the command's files for, and the paths and variables
-// that prepareAirlock and airlockVars answered.
-type proxyTrustChildInput struct {
-	Environ       []string `json:"environ"`
-	CACertificate string   `json:"ca_certificate"`
-}
-
-type proxyTrustChildOutput struct {
-	Bundle string            `json:"bundle"`
-	Wgetrc string            `json:"wgetrc"`
-	Vars   map[string]string `json:"vars"`
-	Error  string            `json:"error"`
-}
-
-// TestProxyTrustChild is the child process of runProxyTrustChild, skipped in every other run.
-// x509.SystemCertPool reads SSL_CERT_DIR once per process, so each store a test stands up needs a
-// process of its own.
-func TestProxyTrustChild(t *testing.T) {
-	inputPath := os.Getenv("AGENT_SECRETS_PROXY_TRUST_CHILD_INPUT")
-	if inputPath == "" {
-		t.Skip("subprocess of runProxyTrustChild")
-	}
-	data, err := os.ReadFile(inputPath)
-	if err != nil {
-		t.Fatalf("read the input: %v", err)
-	}
-	var in proxyTrustChildInput
-	if err := json.Unmarshal(data, &in); err != nil {
-		t.Fatalf("parse the input: %v", err)
-	}
-	release := testRelease("AIRLOCK_ME", []string{"api.example.com"}, nil)
-	release.CACertificate = in.CACertificate
-	var out proxyTrustChildOutput
-	files, err := prepareAirlock(in.Environ, release, "grant-one", nil)
-	if err == nil {
-		out.Bundle, out.Wgetrc = files.bundle, files.wgetrc
-		out.Vars, err = airlockVars(in.Environ, release, files)
-	}
-	if err != nil {
-		out.Error = err.Error()
-	}
-	answer, err := json.Marshal(out)
-	if err != nil {
-		t.Fatalf("encode the output: %v", err)
-	}
-	if err := os.WriteFile(os.Getenv("AGENT_SECRETS_PROXY_TRUST_CHILD_OUTPUT"), answer, 0o600); err != nil {
-		t.Fatalf("write the output: %v", err)
-	}
-}
-
-// runProxyTrustChild runs TestProxyTrustChild in a process of its own whose SSL_CERT_DIR is a
-// directory holding the store roots, the way a system store holds them, and answers what it
-// prepared for a release carrying caPEM, with environ as the environment the command has.
-func runProxyTrustChild(t *testing.T, store []string, caPEM string, environ []string) proxyTrustChildOutput {
+// useSystemTrustFiles points systemTrustFiles, the system bundles prepareAirlock reads the store
+// from, at paths until the test ends. A test that calls it swaps a package variable, so neither it
+// nor its subtests run in parallel.
+func useSystemTrustFiles(t *testing.T, paths ...string) {
 	t.Helper()
-	storeDir := t.TempDir()
-	for i, root := range store {
-		if err := os.WriteFile(filepath.Join(storeDir, "root-"+strconv.Itoa(i)+".pem"), []byte(root), 0o644); err != nil {
-			t.Fatalf("write the store's root: %v", err)
-		}
-	}
-	scratch := t.TempDir()
-	input, err := json.Marshal(proxyTrustChildInput{Environ: environ, CACertificate: caPEM})
-	if err != nil {
-		t.Fatal(err)
-	}
-	inputPath, outputPath := filepath.Join(scratch, "input.json"), filepath.Join(scratch, "output.json")
-	if err := os.WriteFile(inputPath, input, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(self, "-test.run", "^TestProxyTrustChild$", "-test.count", "1")
-	cmd.Env = append(os.Environ(),
-		"SSL_CERT_DIR="+storeDir,
-		"AGENT_SECRETS_PROXY_TRUST_CHILD_INPUT="+inputPath,
-		"AGENT_SECRETS_PROXY_TRUST_CHILD_OUTPUT="+outputPath)
-	if combined, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("the child process: %v\n%s", err, combined)
-	}
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("the child process wrote no answer: %v", err)
-	}
-	var out proxyTrustChildOutput
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("parse the child's answer %q: %v", data, err)
-	}
-	if out.Error != "" {
-		t.Fatalf("the child process: %s", out.Error)
-	}
-	return out
+	old := systemTrustFiles
+	systemTrustFiles = paths
+	t.Cleanup(func() { systemTrustFiles = old })
 }
 
 // TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot runs prepareAirlock and
-// airlockVars against a real system store, x509.SystemCertPool read through SSL_CERT_DIR, with
-// and without the release's roots in it. Where the store trusts every root and no trust variable
-// or wgetrc of the command names a file that lacks one, no file is written and none of the trust
-// variables or WGETRC is set, while the proxy still is. Every other row writes the bundle, holding
-// every root, and points each trust variable and WGETRC at it.
+// airlockVars against a system bundle of the test's own, with and without the release's roots in
+// it. Where the bundle trusts every root and no trust variable or wgetrc of the command names a
+// file that lacks one, no file is written and none of the trust variables or WGETRC is set, while
+// the proxy still is. Every other row writes the bundle, holding every root, and points each trust
+// variable and WGETRC at it. The store is the first of the system bundles that exists, as git and
+// wget read it: a missing one is passed over, and one that is there but cannot be read is a store
+// that trusts nothing, not a reason to read the next.
 func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *testing.T) {
 	newRoot, oldRoot, private := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test old authority"), proxyTestRoot(t, "test private authority")
 	withoutRoot := writeLoginFile(t, "private.pem", private)
 	withRoot := writeLoginFile(t, "private-and-root.pem", private+newRoot)
 	wgetrcWithoutRoot := writeLoginFile(t, "wgetrc", "ca_directory = "+filepath.Dir(withoutRoot)+"\n")
+	missing := filepath.Join(t.TempDir(), "not-there.crt")
+	unreadable := t.TempDir() // a directory: there, and not a file any client reads
 	for _, row := range []struct {
 		name       string
+		before     []string // system bundles listed ahead of the one holding store
 		store      []string
 		release    string
 		environ    []string
@@ -272,23 +187,33 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 		{name: "the command's CURL_CA_BUNDLE names a file without the root", store: []string{newRoot}, release: newRoot, environ: []string{"CURL_CA_BUNDLE=" + withoutRoot}, wantBundle: true},
 		{name: "the command's CURL_CA_BUNDLE names a file that holds the root", store: []string{newRoot}, release: newRoot, environ: []string{"CURL_CA_BUNDLE=" + withRoot}},
 		{name: "the command's wgetrc names a ca_directory without the root", store: []string{newRoot}, release: newRoot, environ: []string{"WGETRC=" + wgetrcWithoutRoot}, wantBundle: true},
+		{name: "the first system bundle is missing and the next holds the root", before: []string{missing}, store: []string{newRoot}, release: newRoot},
+		{name: "the first system bundle is there and cannot be read", before: []string{unreadable}, store: []string{newRoot}, release: newRoot, wantBundle: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
+			useSystemTrustFiles(t, append(slices.Clone(row.before), writeLoginFile(t, "ca-certificates.crt", strings.Join(row.store, "")))...)
 			runtimeDir := t.TempDir()
 			environ := append([]string{"XDG_RUNTIME_DIR=" + runtimeDir}, row.environ...)
-			out := runProxyTrustChild(t, row.store, row.release, environ)
-			t.Logf("the child answered: %+v", out)
-			if out.Vars["HTTPS_PROXY"] == "" || out.Vars["NO_PROXY"] == "" {
-				t.Errorf("the command's HTTPS_PROXY is %q and NO_PROXY %q, want both set whatever the store holds", out.Vars["HTTPS_PROXY"], out.Vars["NO_PROXY"])
+			release := testRelease("AIRLOCK_ME", []string{"api.example.com"}, nil)
+			release.CACertificate = row.release
+			files, err := prepareAirlock(environ, release, "grant-one", nil)
+			if err != nil {
+				t.Fatalf("prepareAirlock: %v", err)
+			}
+			vars, err := airlockVars(environ, release, files)
+			if err != nil {
+				t.Fatalf("airlockVars: %v", err)
+			}
+			if vars["HTTPS_PROXY"] == "" || vars["NO_PROXY"] == "" {
+				t.Errorf("the command's HTTPS_PROXY is %q and NO_PROXY %q, want both set whatever the store holds", vars["HTTPS_PROXY"], vars["NO_PROXY"])
 			}
 			grantDir := filepath.Join(runtimeDir, "agent-secrets", "airlock", "grant-one")
 			if !row.wantBundle {
-				if out.Bundle != "" || out.Wgetrc != "" {
-					t.Errorf("prepareAirlock answered the files %q and %q, want none", out.Bundle, out.Wgetrc)
+				if files.bundle != "" || files.wgetrc != "" {
+					t.Errorf("prepareAirlock answered the files %q and %q, want none", files.bundle, files.wgetrc)
 				}
 				for _, key := range append(slices.Clone(airlockBundleVars), "WGETRC") {
-					if value, set := out.Vars[key]; set {
+					if value, set := vars[key]; set {
 						t.Errorf("the command's %s is set to %q, want it left as the command has it", key, value)
 					}
 				}
@@ -297,10 +222,10 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 				}
 				return
 			}
-			if want := filepath.Join(grantDir, "ca-bundle.pem"); out.Bundle != want {
-				t.Fatalf("the bundle is at %q, want %q", out.Bundle, want)
+			if want := filepath.Join(grantDir, "ca-bundle.pem"); files.bundle != want {
+				t.Fatalf("the bundle is at %q, want %q", files.bundle, want)
 			}
-			bundle, err := os.ReadFile(out.Bundle)
+			bundle, err := os.ReadFile(files.bundle)
 			if err != nil {
 				t.Fatalf("read the bundle: %v", err)
 			}
@@ -310,12 +235,12 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 				}
 			}
 			for _, key := range airlockBundleVars {
-				if out.Vars[key] != out.Bundle {
-					t.Errorf("the command's %s is %q, want the bundle %q", key, out.Vars[key], out.Bundle)
+				if vars[key] != files.bundle {
+					t.Errorf("the command's %s is %q, want the bundle %q", key, vars[key], files.bundle)
 				}
 			}
-			if want := filepath.Join(grantDir, "wgetrc"); out.Vars["WGETRC"] != want {
-				t.Errorf("the command's WGETRC is %q, want %q", out.Vars["WGETRC"], want)
+			if want := filepath.Join(grantDir, "wgetrc"); vars["WGETRC"] != want {
+				t.Errorf("the command's WGETRC is %q, want %q", vars["WGETRC"], want)
 			}
 		})
 	}
