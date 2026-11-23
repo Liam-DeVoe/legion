@@ -47,8 +47,8 @@ A step of a role of this deployment runs the checks only where its prompt file a
 
 Without `acceptance:owner`, retro holds the checks (`skill://legion-retro`), and so does a reviewer step where the task has one.
 A reviewer step approves only once a pass stands for every `before_merge` check at the head.
-And retro's first step sends back a check with no pass standing there, except a `ci_check` of one of three kinds.
-Its run has not concluded or cannot be read, its derived result is a fail, or no run answers its name (`absent`).
+And retro's first step sends back a check with no pass standing there, except a `ci_check` of one of four kinds.
+Its run has not concluded or cannot be read, its derived result is a fail, no run answers its name (`absent`), or its `run` is a whole test suite.
 So on a task with no reviewer step and no `acceptance:owner`, such a check holds the merge only where it is among the checks the base branch requires.
 A step of a role of this deployment holds the checks only as its prompt file asks.
 
@@ -64,7 +64,7 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 
 ## When to give it
 
-- **A root:** before `register_gate`, because the gate's opening starts the root's first step.
+- **A root:** before `register_gate`, because the root's first step can start as soon as the gate opens.
 
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;

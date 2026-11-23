@@ -43,7 +43,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
    Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
 
 6. A root: file every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
-   the gate's opening starts the root's own first phase, and a later child runs beside it.
+   a child open when the gate opens holds the root's own first phase, and a child filed later runs beside that phase.
 
 - Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
   one `check` block per thing to prove, with `serves`, `surface` (`browser`, `cli` or `api`), `run`, `when` (`before_merge`, `after_merge` or `default_branch`) and `negative_control`.
