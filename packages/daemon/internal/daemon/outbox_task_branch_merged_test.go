@@ -128,7 +128,7 @@ func (rig *mergedNeedRig) runJoin(t *testing.T, id string) error {
 // git is the output of git with args in the fake's repository.
 func (rig *mergedNeedRig) git(t *testing.T, args ...string) string {
 	t.Helper()
-	return fixturegit.Isolated(t, t.TempDir()).Run(rig.github.Dir(), "git", args...)
+	return fixturegit.Isolated(t, t.TempDir()).Run(rig.github.Dir(), append([]string{"git"}, args...)...)
 }
 
 // A task whose need merged starts from main, which holds that need's work, and never reads the
