@@ -1,6 +1,6 @@
 import { type ReactNode, useId } from "react";
 
-import type { TextRewrite } from "../../api/types";
+import type { DisplayTree, TextRewrite } from "../../api/types";
 import { useTooltips, withoutEllipsis } from "../../components/tooltips";
 import {
   badgeBlocking,
@@ -17,6 +17,13 @@ import {
   pageLabelChip,
   pagePaperBg,
 } from "../../theme/classes";
+import {
+  type OriginalToggleProps,
+  originalToggleProps,
+  originalWording,
+  toggleOriginal,
+  useOriginalShown,
+} from "./ask-rewrite";
 
 /** Every state is the same box: a 1 px border, clear unless the state draws it (Original). */
 const PILL =
@@ -152,4 +159,52 @@ export function RewriteBadge({
       {tip.description}
     </>
   );
+}
+
+/** A comment or a message as a read carries it: its words, the reading Go sent of them, and the
+ *  reviewer's rewrite of it where it held the text and posted it rewritten. */
+export interface RewritableText {
+  readonly id: string;
+  readonly body: string;
+  readonly body_tree?: DisplayTree;
+  readonly rewrite?: TextRewrite;
+}
+
+/** What a page draws of a comment or a message the reviewer may have rewritten
+ *  (`useRewrittenText`). */
+export interface RewrittenText {
+  /** The badge, beside the text's author and time; nothing where no rewrite touched the text. */
+  readonly badge: ReactNode;
+  /** The Markdown the text shows: the agent's own wording while the badge shows it, else the
+   *  body. */
+  readonly markdown: string;
+  /** The reading Go sent of the body, which the agent's wording has none of: `MarkdownBody` reads
+   *  that wording itself. */
+  readonly tree: DisplayTree | undefined;
+  /** What the element holding the text spreads, so that `w` while it holds the focus does what a
+   *  press on the badge does (`originalToggleProps`). */
+  readonly toggle: OriginalToggleProps;
+}
+
+/**
+ * A reply or a message the reviewer rewrote before the reader saw it (INFRA-3231's R7), as every
+ * page draws one: its badge, with `w` as its key, shows the agent's wording in place, and `w`
+ * while the text's own element holds the focus does the same. Every part of a page that draws
+ * the text swaps together (`useOriginalShown`).
+ */
+export function useRewrittenText(text: RewritableText): RewrittenText {
+  const original = originalWording(text.rewrite, useOriginalShown(text.id));
+  return {
+    badge: (
+      <RewriteBadge
+        onToggle={() => toggleOriginal(text.id)}
+        rewrite={text.rewrite}
+        showingOriginal={original !== undefined}
+        toggleKey="w"
+      />
+    ),
+    markdown: original?.body ?? text.body,
+    toggle: originalToggleProps(text.id, text.rewrite?.state === "rewritten"),
+    tree: original === undefined ? text.body_tree : undefined,
+  };
 }

@@ -811,6 +811,41 @@ test("a collapsed suggestion card previews its note formatted on one line", asyn
   }
 });
 
+// A suggestion's note is the comment's body, which the reviewer may have rewritten: while the
+// badge shows the agent's wording, the note under the diff shows it too, and the folded card's
+// preview of the note reads the same wording (`useOriginalShown`).
+test("a rewritten suggestion's note shows its original while the badge does, open and folded", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const rewritten = suggestionThread({
+    body: "Tighter wording.",
+    rewrite: {
+      at: "2026-09-10T00:02:00Z",
+      by: "reviewer",
+      original: { body: "tighten pls" },
+      state: "rewritten",
+    },
+  });
+  const open = renderCard(rewritten);
+  try {
+    const card = screen.getByTestId("margin-comment-root-1");
+    expect(await within(card).findByText("Tighter wording.")).toBeTruthy();
+    await user.click(within(card).getByRole("button", { name: "Rewritten" }));
+    expect(await within(card).findByText("tighten pls")).toBeTruthy();
+    expect(within(card).queryByText("Tighter wording.")).toBeNull();
+  } finally {
+    open.unmount();
+  }
+  const folded = renderCard(rewritten, { expanded: false });
+  try {
+    const card = screen.getByTestId("margin-comment-root-1");
+    expect(await within(card).findByText("tighten pls")).toBeTruthy();
+    expect(within(card).queryByText("Tighter wording.")).toBeNull();
+  } finally {
+    folded.unmount();
+  }
+});
+
 afterEach(() => {
   jest.useRealTimers();
 });

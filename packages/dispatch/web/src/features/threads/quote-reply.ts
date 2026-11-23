@@ -242,24 +242,15 @@ export function quoteSelection(): boolean {
  *  page that draws no ask (`asks: false`, the Agents page) registers `q` alone, so its help
  *  lists no `d` that never applies there. */
 export function useSelectionBarKeys(scope: KeymapScope, { asks = true } = {}): void {
+  useKeymap(scope, selectionBarKeys({ asks }));
+}
+
+/** The bindings `useSelectionBarKeys` registers: `q`, and `d` unless `asks` is false. An open
+ *  dialog, which masks the page's keys, registers them in its own scope for the words selected
+ *  inside it (`useDialog`). */
+export function selectionBarKeys({ asks = true } = {}): KeyBinding[] {
   const quote = quoteReplyKey("Quote selected words in a reply", quoteSelection);
-  useKeymap(
-    scope,
-    asks
-      ? [
-          quote,
-          {
-            id: "define-selected-ask-words",
-            keys: "d",
-            label: "Define selected words of an ask",
-            // The palette's own field takes the selection, so a row of it would define nothing.
-            palette: false,
-            run: () => quotableSelection()?.target.define?.(),
-            when: () => quotableSelection()?.target.define !== undefined,
-          },
-        ]
-      : [quote]
-  );
+  return asks ? [quote, defineSelectionKey()] : [quote];
 }
 
 /** The binding `q` is, for a host that decides when it applies and what it quotes. */
@@ -275,6 +266,22 @@ export function quoteReplyKey(
     // The palette's own field takes the selection, so a row of it would quote nothing.
     palette: false,
     run,
+    when,
+  };
+}
+
+/** The binding `d` is, for a host that decides when it applies: Define on the selected words,
+ *  where the text holding them offers it (an ask's words, `QuoteTarget.define`). */
+export function defineSelectionKey(
+  when: () => boolean = () => quotableSelection()?.target.define !== undefined
+): KeyBinding {
+  return {
+    id: "define-selected-ask-words",
+    keys: "d",
+    label: "Define selected words of an ask",
+    // The palette's own field takes the selection, so a row of it would define nothing.
+    palette: false,
+    run: () => quotableSelection()?.target.define?.(),
     when,
   };
 }

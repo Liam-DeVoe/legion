@@ -38,13 +38,7 @@ import {
 } from "../../theme/classes";
 import { deliveryAttempts } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
-import {
-  originalToggleProps,
-  originalWording,
-  toggleOriginal,
-  useOriginalShown,
-} from "../inbox/ask-rewrite";
-import { RewriteBadge } from "../inbox/RewriteBadge";
+import { useRewrittenText } from "../inbox/RewriteBadge";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
 import { ThreadCard } from "../margin/ThreadCard";
@@ -252,20 +246,13 @@ function ConversationReply({
   // A reply the reviewer rewrote before the reader saw it: its badge beside the author and time,
   // or `w` while the reply holds the focus, shows the agent's wording in place, as the root's
   // does (`MessageTurn`).
-  const original = originalWording(reply.rewrite, useOriginalShown(reply.id));
+  const rewritten = useRewrittenText(reply);
   return (
     <ReplyTurn
       actions={<CopyRefButton route={{ id: reply.id, key: issueKey, kind: "message" }} />}
       at={reply.created_at}
       author={reply.author}
-      badge={
-        <RewriteBadge
-          onToggle={() => toggleOriginal(reply.id)}
-          rewrite={reply.rewrite}
-          showingOriginal={original !== undefined}
-          toggleKey="w"
-        />
-      }
+      badge={rewritten.badge}
       body={
         <QuotableText
           onQuote={
@@ -275,9 +262,9 @@ function ConversationReply({
           }
         >
           <MarkdownBody
-            markdown={original?.body ?? reply.body}
+            markdown={rewritten.markdown}
             source={textSourceOf("message", reply.id)}
-            tree={original === undefined ? reply.body_tree : undefined}
+            tree={rewritten.tree}
           />
           <Unfurl body={reply.body} source={textSourceOf("message", reply.id)} />
         </QuotableText>
@@ -301,7 +288,7 @@ function ConversationReply({
             }
       }
       onReply={() => onReply(replyTargetFor(reply, root, issueKey))}
-      originalToggle={originalToggleProps(reply.id, reply.rewrite?.state === "rewritten")}
+      originalToggle={rewritten.toggle}
       quote={{
         author: parent?.author,
         block: reply.reply_block,
@@ -406,7 +393,7 @@ function MessageTurn({
   // time, or `w` while the message holds the focus, shows the agent's wording in place. The
   // message's own row takes the focus, as a margin card does, so `w` can reach it; its thread's
   // replies are drawn outside that row, so a press on a reply, and its `w`, are the reply's.
-  const original = originalWording(item.root.rewrite, useOriginalShown(item.root.id));
+  const rewritten = useRewrittenText(item.root);
   return (
     <li
       aria-current={current ? "true" : undefined}
@@ -414,21 +401,13 @@ function MessageTurn({
       data-turn={item.id}
       ref={register}
     >
-      <div
-        className="flex gap-3"
-        {...originalToggleProps(item.root.id, item.root.rewrite?.state === "rewritten")}
-      >
+      <div className="flex gap-3" {...rewritten.toggle}>
         <Avatar actor={author} />
         <div className="min-w-0 flex-1">
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={author} className="font-semibold" inline />
             <Timestamp at={item.root.created_at} />
-            <RewriteBadge
-              onToggle={() => toggleOriginal(item.root.id)}
-              rewrite={item.root.rewrite}
-              showingOriginal={original !== undefined}
-              toggleKey="w"
-            />
+            {rewritten.badge}
             {item.unread ? <UnreadMark /> : null}
           </p>
           <QuotableText
@@ -439,9 +418,9 @@ function MessageTurn({
             }
           >
             <MarkdownBody
-              markdown={original?.body ?? item.root.body}
+              markdown={rewritten.markdown}
               source={textSourceOf("message", item.root.id)}
-              tree={original === undefined ? item.root.body_tree : undefined}
+              tree={rewritten.tree}
             />
             <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
           </QuotableText>
@@ -964,6 +943,11 @@ function TargetedMessageTurn({
   });
   const capabilities = capabilitiesForTarget(item.root.target, agents);
   const asker = item.root.author;
+  // A targeted message the reviewer rewrote, as a message's root is drawn (`MessageTurn`): its
+  // badge, or `w` while the card's own row holds the focus, shows the agent's wording in place.
+  // The thread's replies are drawn outside that row, so a press on a reply, and its `w`, are the
+  // reply's.
+  const rewritten = useRewrittenText(item.root);
 
   return (
     <TargetedMessageCard
@@ -973,6 +957,7 @@ function TargetedMessageTurn({
           <p className={`flex flex-wrap items-center gap-x-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={asker} className="font-semibold" inline />
             <Timestamp at={item.root.created_at} />
+            {rewritten.badge}
             <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
             {item.unread ? <UnreadMark /> : null}
           </p>
@@ -984,9 +969,9 @@ function TargetedMessageTurn({
             }
           >
             <MarkdownBody
-              markdown={item.root.body}
+              markdown={rewritten.markdown}
               source={textSourceOf("message", item.root.id)}
-              tree={item.root.body_tree}
+              tree={rewritten.tree}
             />
             <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
           </QuotableText>
@@ -1000,6 +985,7 @@ function TargetedMessageTurn({
       header={<Avatar actor={asker} />}
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
       onRetry={retry.mutate}
+      originalToggle={rewritten.toggle}
       register={register}
       replyDisabled={replyDisabled}
       retrying={retry.isPending}

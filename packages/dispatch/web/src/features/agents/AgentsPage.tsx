@@ -66,6 +66,7 @@ import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/Targ
 import { useAgents } from "../conversation/useAgents";
 import { type MeasuredHeights, rowWindow, withMeasuredHeights } from "../delivery/lib/rowWindow";
 import { waitingOnYou } from "../inbox/BlockedOnYou";
+import { useRewrittenText } from "../inbox/RewriteBadge";
 import {
   AgentName,
   type AgentPart,
@@ -228,10 +229,15 @@ function AgentExchangeReply({
     (candidate) => candidate.in_reply_to === reply.id && candidate.author.kind === "session"
   );
   const capabilities = capabilitiesForTarget(read.message.target, liveAgents);
+  // A session's reply the reviewer rewrote before the reader saw it: its badge, or `w` while the
+  // reply holds the focus, shows the agent's wording in place, as the Inbox's thread of this
+  // conversation does (`ThreadBody`).
+  const rewritten = useRewrittenText(reply);
   return (
     <ReplyTurn
       at={reply.created_at}
       author={reply.author}
+      badge={rewritten.badge}
       body={
         <QuotableText
           onQuote={
@@ -241,7 +247,7 @@ function AgentExchangeReply({
           }
         >
           <div className={textPrimaryOnCanvas}>
-            <MarkdownBody markdown={reply.body} tree={reply.body_tree} />
+            <MarkdownBody markdown={rewritten.markdown} tree={rewritten.tree} />
           </div>
         </QuotableText>
       }
@@ -262,6 +268,7 @@ function AgentExchangeReply({
             }
       }
       onReply={() => onReply(agentReplyTo(agent, read, reply))}
+      originalToggle={rewritten.toggle}
       quote={
         parent === undefined
           ? undefined
@@ -313,6 +320,9 @@ function AgentTargetedMessage({
   const replies = read.replies ?? [];
   const answer = replies.find((reply) => reply.author.kind === "session");
   const capabilities = capabilitiesForTarget(read.message.target, liveAgents);
+  // The conversation's first message, drawn as a message's root is (`ConversationTab`'s
+  // `TargetedMessageTurn`): a rewrite of it shows its badge, and `w` on the card's own row.
+  const rewritten = useRewrittenText(read.message);
   return (
     <TargetedMessageCard
       answeredBy={answer?.author}
@@ -321,6 +331,7 @@ function AgentTargetedMessage({
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnCanvas}`}>
             <AgentName actor={read.message.author} className="font-semibold" inline />
             <Timestamp at={read.message.created_at} />
+            {rewritten.badge}
           </p>
           <QuotableText
             onQuote={
@@ -330,7 +341,7 @@ function AgentTargetedMessage({
             }
           >
             <div className={textPrimaryOnCanvas}>
-              <MarkdownBody markdown={read.message.body} tree={read.message.body_tree} />
+              <MarkdownBody markdown={rewritten.markdown} tree={rewritten.tree} />
             </div>
           </QuotableText>
         </>
@@ -342,6 +353,7 @@ function AgentTargetedMessage({
       header={null}
       onReply={() => onReply(agentReplyTo(agent, read, read.message))}
       onRetry={retry.mutate}
+      originalToggle={rewritten.toggle}
       replyDisabled={replyDisabled}
       retrying={retry.isPending}
       targetName={rowTarget(agent)}

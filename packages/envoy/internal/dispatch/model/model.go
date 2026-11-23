@@ -3280,7 +3280,8 @@ type Message struct {
 	// names no block; ReplyBlock is read from it, and only for a message that names one.
 	RepliesToBlock *string `json:"-"`
 	// Rewrite is the reviewer's rewrite of the message where it posted rewritten (TextRewrite).
-	// Set on message reads only (api.hydrateMessageThreads), never on an event payload.
+	// Set on message reads only (api.hydrateMessageThreads, and the broadcast read's
+	// api.loadBroadcastRecipients), never on an event payload.
 	Rewrite *TextRewrite `json:"rewrite,omitempty"`
 }
 

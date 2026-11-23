@@ -69,13 +69,7 @@ import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
-import {
-  originalToggleProps,
-  originalWording,
-  toggleOriginal,
-  useOriginalShown,
-} from "./ask-rewrite";
-import { RewriteBadge } from "./RewriteBadge";
+import { useRewrittenText } from "./RewriteBadge";
 
 /** One message of a thread, whatever route it was read from. */
 interface ThreadTurn {
@@ -120,27 +114,26 @@ function ThreadTurnView({
   turn: ThreadTurn;
   unread: boolean;
 }): ReactNode {
-  const original = originalWording(turn.rewrite, useOriginalShown(turn.id));
   // A rewritten message takes the focus, as a margin card does, so `w` can reach it.
-  const toggle = originalToggleProps(turn.id, turn.rewrite?.state === "rewritten");
+  const rewritten = useRewrittenText({
+    body: turn.body,
+    body_tree: turn.tree,
+    id: turn.id,
+    rewrite: turn.rewrite,
+  });
   return (
     <article
       className={`rounded-lg p-2 text-sm ${surfaceMutedBg}`}
       data-inbox-thread-first-unread={first === true ? "" : undefined}
       data-inbox-thread-turn={turn.id}
       data-inbox-thread-unread={unread ? "" : undefined}
-      {...toggle}
+      {...rewritten.toggle}
     >
       <p className={`mb-1 flex flex-wrap items-center gap-x-2 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={turn.author} inline /> · <Timestamp at={turn.created_at} />
         </span>
-        <RewriteBadge
-          onToggle={() => toggleOriginal(turn.id)}
-          rewrite={turn.rewrite}
-          showingOriginal={original !== undefined}
-          toggleKey="w"
-        />
+        {rewritten.badge}
         {unread ? (
           <span
             className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase ${badgePrimary.bg} ${badgePrimary.text}`}
@@ -150,10 +143,7 @@ function ThreadTurnView({
         ) : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody
-          markdown={original?.body ?? turn.body}
-          tree={original === undefined ? turn.tree : undefined}
-        />
+        <MarkdownBody markdown={rewritten.markdown} tree={rewritten.tree} />
       </div>
       {turn.note}
     </article>

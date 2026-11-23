@@ -822,6 +822,67 @@ test("w on a rewritten reply shows its original in place, and no press on a repl
   }
 });
 
+// A targeted message the reviewer rewrote carries the badge a message's root carries: the badge,
+// or `w` while the card's own row holds the focus, shows the agent's wording in place. A targeted
+// message nobody rewrote shows no badge.
+test("a rewritten targeted message shows its badge and, on w, its original; one nobody rewrote shows none", async () => {
+  const user = userEvent.setup();
+  const asker = { id: "s2", kind: "session" } as const;
+  const stub = stubLists({
+    agents: [agent("s1", "planner")],
+    messages: [
+      thread(
+        message("message-targeted", {
+          author: asker,
+          body: "Is the build green?",
+          deliveries: [attempt({ message_id: "message-targeted" })],
+          rewrite: {
+            at: "2026-09-09T00:02:00Z",
+            by: "reviewer",
+            original: { body: "build ok??" },
+            state: "rewritten",
+          },
+          target: "session:s1",
+        })
+      ),
+      thread(
+        message("message-plain-targeted", {
+          author: asker,
+          body: "Is the deploy done?",
+          created_at: "2026-09-09T00:05:00Z",
+          deliveries: [attempt({ message_id: "message-plain-targeted" })],
+          target: "session:s1",
+        })
+      ),
+    ],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  try {
+    const words = await screen.findByText("Is the build green?");
+    const card = words.closest<HTMLElement>("[data-turn]");
+    if (card === null) throw new Error("the targeted message has no card");
+    expect(within(card).getByRole("button", { name: "Rewritten" })).toHaveAttribute(
+      "title",
+      "Show the original wording (w)"
+    );
+    await user.click(words);
+    await user.keyboard("w");
+    expect(await within(card).findByText("build ok??")).toBeTruthy();
+    expect(within(card).getByRole("button", { name: "Original" })).toBeTruthy();
+    await user.keyboard("w");
+    expect(await within(card).findByText("Is the build green?")).toBeTruthy();
+
+    const plain = (await screen.findByText("Is the deploy done?")).closest<HTMLElement>(
+      "[data-turn]"
+    );
+    if (plain === null) throw new Error("the second targeted message has no card");
+    expect(within(plain).queryByRole("button", { name: /Rewritten|Original/ })).toBeNull();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
 test("renders an anchored comment with the owner controls in Conversation", async () => {
   const user = userEvent.setup();
   const stub = stubLists({

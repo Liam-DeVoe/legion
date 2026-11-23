@@ -239,9 +239,9 @@ function CommentBody({
           {comment.body === "Suggested replacement." ? null : (
             <div className={`font-sans ${textSecondaryOnSurface}`}>
               <MarkdownBody
-                markdown={comment.body}
+                markdown={original?.body ?? comment.body}
                 source={textSourceOf("comment", comment.id)}
-                tree={comment.body_tree}
+                tree={original === undefined ? comment.body_tree : undefined}
               />
             </div>
           )}
@@ -650,9 +650,9 @@ export function ThreadCard({
                       className={`mt-2 text-xs ${textSecondaryOnSurface}`}
                       lines={1}
                       links="live"
-                      markdown={root.body}
+                      markdown={rootOriginal?.body ?? root.body}
                       source={textSourceOf("comment", root.id)}
-                      tree={root.body_tree}
+                      tree={rootOriginal === undefined ? root.body_tree : undefined}
                     />
                   )}
                 </>

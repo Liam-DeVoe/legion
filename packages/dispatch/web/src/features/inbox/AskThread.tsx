@@ -43,6 +43,7 @@ import type { ThreadOrder } from "../threads/thread-order";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import type { AskPress } from "./outstanding-answers";
 import { askArtifactId } from "./owner-reads";
+import { useRewrittenText } from "./RewriteBadge";
 import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
 import { UnsentText } from "./UnsentText";
 
@@ -55,6 +56,9 @@ export type CreateReply = (
 const createReply: CreateReply = (issueKey, input, bounds) =>
   api.createComment(issueKey, input, bounds);
 
+/** One reply in an ask's thread. A reply the reviewer rewrote before the reader saw it carries
+ *  its badge beside its author and time, and the badge, or `w` while the reply holds the focus,
+ *  shows the agent's wording in place (`useRewrittenText`). */
 function AskReply({
   comment,
   current = false,
@@ -64,23 +68,28 @@ function AskReply({
   current?: boolean;
   markRef?: DwellRef;
 }): ReactNode {
+  const rewritten = useRewrittenText(comment);
   return (
     <li
       aria-current={current ? "true" : undefined}
       className={`rounded-lg p-2 text-sm ${surfaceMutedBg}`}
       data-reply=""
       ref={markRef}
+      {...rewritten.toggle}
     >
       <div className={textPrimaryOnSurfaceMuted}>
         <MarkdownBody
-          markdown={comment.body}
+          markdown={rewritten.markdown}
           source={textSourceOf("comment", comment.id)}
-          tree={comment.body_tree}
+          tree={rewritten.tree}
         />
       </div>
       <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
-      <p className={`mt-1 text-xs ${textMutedOnSurfaceMuted}`}>
-        <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+      <p className={`mt-1 flex flex-wrap items-center gap-x-2 text-xs ${textMutedOnSurfaceMuted}`}>
+        <span>
+          <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+        </span>
+        {rewritten.badge}
       </p>
     </li>
   );

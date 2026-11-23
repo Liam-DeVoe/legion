@@ -5048,6 +5048,92 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
   }
 });
 
+/** Selects every word under the element `selector` names in `root`, as a drag of the mouse
+ *  across them would, leaving the focus where it is. */
+function selectWordsIn(root: HTMLElement, selector: string): void {
+  const element = root.querySelector(selector);
+  if (element === null) throw new Error(`nothing matches ${selector}`);
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+// A Reply row's ask thread draws the ask's own card, whose question offers Define on the
+// selection bar (`d`). The reading column's card keys find no card for that row - its id is the
+// thread's (`reply:<id>`), never the ask's - and a press on the card's words leaves the focus
+// outside it, so the Inbox's own `d` is the one that defines the words, as its `q` quotes them.
+test("in the reading column, d defines the selected words of a Reply thread's ask, the focus outside its card", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const theirs = issueAsk({
+    asked_of: "bob",
+    id: "ask-theirs",
+    issue: { assignee: "carol", key: "CORE-2", title: "Carol's issue" },
+    issue_key: "CORE-2",
+    question: "Which approach?",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([theirs]);
+  const getAsk = mockAskReads([theirs]);
+  const getIssue = mockIssueReads();
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: [
+      replyRow("ask-theirs", {
+        issue: { key: "CORE-2", title: "Carol's issue" },
+        kind: "ask",
+        ref: "/issues/CORE-2/asks/ask-theirs",
+        subject: "Which approach?",
+      }),
+    ],
+    total: 1,
+  });
+  const defineWords = spyOn(api, "defineWords").mockImplementation(() => new Promise(() => {}));
+  const { unmount } = renderInbox("/");
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    const card = await waitFor(() => {
+      const found = pane.querySelector<HTMLElement>('[data-ask-card="ask-theirs"]');
+      if (found === null) throw new Error("the column draws no card for the thread's ask");
+      return found;
+    });
+    await waitFor(() => {
+      const question = card.querySelector("[data-ask-question] .dispatch-markdown");
+      if (question?.textContent !== "Which approach?") {
+        throw new Error("the question's words have not rendered");
+      }
+    });
+    expect(shortRow("reply:ask-theirs").getAttribute("data-inbox-selected")).toBe("true");
+    // happy-dom computes no style from a stylesheet, so the card's padding and border would read
+    // as no number and Define's popover would place itself at none (`selectedWordsIn`): the card
+    // states its own, as a browser computes them.
+    card.style.padding = "0px";
+    card.style.borderWidth = "0px";
+    act(() => shortRow("reply:ask-theirs").focus());
+    selectWordsIn(card, "[data-ask-question] .dispatch-markdown");
+    expect(appKeymap.conflicts()).toEqual([]);
+    await user.keyboard("d");
+    await waitFor(() =>
+      expect(defineWords).toHaveBeenCalledWith(
+        { ask_id: "ask-theirs", words: ["Which approach?"] },
+        expect.anything()
+      )
+    );
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    unmount();
+    narrow();
+    defineWords.mockRestore();
+    listMyReplies.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("at the column's width with no column on the page, Enter is the focused control's", async () => {
   // The Inbox is wide enough for the reading column and has nothing to select, so no column is
   // mounted: `inbox-pane` is absent, exactly as it is in the commit a snooze of the last

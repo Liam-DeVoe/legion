@@ -9,6 +9,7 @@ import { api } from "../../api/client";
 import type { InboxRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
+import { replyRow } from "../threads/replies-fixture";
 import { InboxDrawer } from "./InboxDrawer";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 
@@ -373,6 +374,95 @@ test("in the drawer, a card's Decline dialog takes Escape before the list's way 
   } finally {
     view.unmount();
     window_.happyDOM.setViewport({ width: was });
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// A Reply row's ask thread draws the ask's own card in the drawer's row, whose question offers
+// Define on the selection bar (`d`). The drawer is a dialog, which consults its own scope alone:
+// there `d` defines the selected words wherever the focus is - on the drawer's Close, where it
+// starts - and with the focus on the row, the card's own `d` acts and the list's stands down.
+test("in the drawer, d defines the selected words of a Reply thread's ask, wherever the focus is", async () => {
+  const user = userEvent.setup();
+  const theirs = issueAsk({
+    asked_of: "bob",
+    id: "ask-theirs",
+    issue: { assignee: "carol", key: "CORE-2", title: "Carol's issue" },
+    issue_key: "CORE-2",
+    question: "Which approach?",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([theirs]);
+  const getAsk = mockAskReads([theirs]);
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: [
+      replyRow("ask-theirs", {
+        issue: { key: "CORE-2", title: "Carol's issue" },
+        kind: "ask",
+        ref: "/issues/CORE-2/asks/ask-theirs",
+        subject: "Which approach?",
+      }),
+    ],
+    total: 1,
+  });
+  const defineWords = spyOn(api, "defineWords").mockImplementation(() => new Promise(() => {}));
+  const view = renderDrawer();
+  try {
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inbox" });
+    const close = within(dialog).getByRole("button", { name: "Close" });
+    await waitFor(() => expect(close).toHaveFocus());
+    const card = await waitFor(() => {
+      const found = dialog.querySelector<HTMLElement>('[data-ask-card="ask-theirs"]');
+      if (found === null) throw new Error("the drawer draws no card for the thread's ask");
+      return found;
+    });
+    await waitFor(() => {
+      const question = card.querySelector("[data-ask-question] .dispatch-markdown");
+      if (question?.textContent !== "Which approach?") {
+        throw new Error("the question's words have not rendered");
+      }
+    });
+    // happy-dom computes no style from a stylesheet, so the card's padding and border would read
+    // as no number and Define's popover would place itself at none (`selectedWordsIn`): the card
+    // states its own, as a browser computes them.
+    card.style.padding = "0px";
+    card.style.borderWidth = "0px";
+    const selectQuestion = () => {
+      const range = document.createRange();
+      const words = card.querySelector("[data-ask-question] .dispatch-markdown");
+      if (words === null) throw new Error("the card draws no question");
+      range.selectNodeContents(words);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+    };
+
+    // From the row, as a press on the card's words leaves it: the card's own `d`.
+    const row = card.closest<HTMLElement>("[data-inbox-row]");
+    if (row === null) throw new Error("the card is drawn in no row");
+    act(() => row.focus());
+    selectQuestion();
+    expect(appKeymap.conflicts()).toEqual([]);
+
+    // From the drawer's Close, which is no row and in no card: the list's own `d`.
+    act(() => close.focus());
+    selectQuestion();
+    expect(appKeymap.conflicts()).toEqual([]);
+    await user.keyboard("d");
+    await waitFor(() =>
+      expect(defineWords).toHaveBeenCalledWith(
+        { ask_id: "ask-theirs", words: ["Which approach?"] },
+        expect.anything()
+      )
+    );
+  } finally {
+    window.getSelection()?.removeAllRanges();
+    view.unmount();
+    defineWords.mockRestore();
+    listMyReplies.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
   }

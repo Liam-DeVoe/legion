@@ -56,7 +56,12 @@ import {
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
-import { quotableSelection, quoteReplyKey, quoteSelection } from "../threads/quote-reply";
+import {
+  defineSelectionKey,
+  quotableSelection,
+  quoteReplyKey,
+  quoteSelection,
+} from "../threads/quote-reply";
 import { useThreadOrder } from "../threads/thread-order";
 import { AskCard } from "./AskCard";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
@@ -1269,9 +1274,13 @@ export function Inbox({
   ];
   // The lead goes in with the card's other keys, in the help's order.
   useAskCardKeys(cardHand, cardLead, cardScope);
-  // Quote reply on words of a thread the list or the column shows (`threads/quote-reply.ts`).
-  // The card in hand quotes its own question's words with its own `q`; in the drawer both are
-  // the dialog's scope, so this one stands down while the card's applies.
+  // Quote reply and Define on words of a thread the list or the column shows
+  // (`threads/quote-reply.ts`), the selection bar's two keys: an ask's card drawn in a thread
+  // row's body is no card in hand (the row's id is the thread's, never the ask's, and a press on
+  // the card's words leaves the focus on the row or the column), so the bar's Define over its
+  // question needs its `d` here. The card in hand quotes and defines its own question's words
+  // with its own `q` and `d`; in the drawer all of them are the dialog's scope, so these stand
+  // down while the card's apply.
   useKeymap(
     keymapScope,
     listKeys([
@@ -1279,6 +1288,11 @@ export function Inbox({
         "Quote selected words in a reply",
         quoteSelection,
         () => askCardActions(cardHand())?.hasSelection() !== true && quotableSelection() !== null
+      ),
+      defineSelectionKey(
+        () =>
+          askCardActions(cardHand())?.hasSelection() !== true &&
+          quotableSelection()?.target.define !== undefined
       ),
     ])
   );
