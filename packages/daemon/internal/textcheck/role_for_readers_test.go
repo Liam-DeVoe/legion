@@ -162,7 +162,9 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/stranded.go", fn: "Stranded"}: {calls: 1, tests: []string{
 		"TestStrandedNamesTheClaimsNothingWillWake", "TestTheResumePathsGiveTheRunningDeploymentRoleItsWork"}},
 	// The worker of an open phase: a ready worker's task (readyWorkerTask), the boot's resume
-	// (suspendedPhaseOwners), a release's backstop and the silence repair read it.
+	// (suspendedPhaseOwners) and the silence repair read it. So does a backstop's target
+	// (BackstopTarget), except at a step or a retro the owner does other than its acceptance,
+	// where the target is the owner.
 	{file: "internal/workflow/wake.go", fn: "OpenRoleOf"}: {calls: 1, tests: []string{
 		"TestAnArchitectGetsNoBackstop", "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted",
 		"TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting", "TestTheResumePathsGiveTheRunningDeploymentRoleItsWork"}},
