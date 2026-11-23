@@ -262,32 +262,50 @@ func TestAVersionThatChangesTheStoppedTaskStartsItAgain(t *testing.T) {
 	}
 }
 
-// A version that adds a need of the task that merges is refused while that task stands at its
-// retro or its merge, where the work of the issue merges: of the plan a to e at e's retro, a version
-// that adds h, needing e, is refused with one reason of h.
+// A version that adds a need on a task at its retro is refused where it changes whether the work of
+// that task merges, and taken where it does not: of the plan a to e at e's retro, a version that
+// adds h, needing e, takes the merge off e, and is refused with the one reason of e. Where e's block
+// says merges, e still merges with h needing it, and the same version is taken: h waits for e.
 //
-// The fault it catches is a need on the work the issue merges once it is merging (its control:
-// planGiven without the refusal, which takes the version).
+// The fault it catches is a need that takes the merge off the work of a task once its retro has
+// started (its control: planGiven without the refusal, which takes the version), and a refusal of
+// a need that changes no task's merge (its control: the refusal of each need on a task at its
+// retro, the revision before, which refuses the version where e says merges).
 func TestAVersionThatNeedsTheMergingTaskAtItsRetroIsRefused(t *testing.T) {
-	pool := migratedPool(t)
-	engine := returnEngine()
-	root := stepRoot(t, pool, phase.Retro)
-	seedTasks(t, pool, root.Key, root.Generation,
-		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskDone, place: atStep(1)},
-		planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, state: record.TaskDone, place: atStep(1)},
-		planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, needs: []string{"b"}, state: record.TaskDone, place: atStep(1)},
-		planTask{id: "d", steps: []string{"implementer:d"}, agents: []claim.Agent{"impl-d"}, needs: []string{"a", "c"}, state: record.TaskDone, place: atStep(1)},
-		planTask{id: "e", steps: []string{"tester:e"}, agents: []claim.Agent{"test-e"}, needs: []string{"d"}, state: record.TaskRunning,
-			place: record.TaskPlace{Kind: record.PlaceRetro}})
-	result := applyFacts(t, pool, engine)("version-2", laterVersion(t, root.Key, root.Generation, 2,
-		keyed(t, "a", "", []string{"implementer:a"}), keyed(t, "b", "", []string{"implementer:b"}), keyed(t, "c", "", []string{"implementer:c"}, "b"),
-		keyed(t, "d", "", []string{"implementer:d"}, "a", "c"), keyed(t, "e", "", []string{"tester:e"}, "d"), keyed(t, "h", "", []string{"implementer:h"}, "e")))
-	want := []plan.Refusal{{Task: "h", Reason: "task h needs task e, which stands at its retro, where the work of the issue merges. This release of Legion does not carry it out yet."}}
-	if result.Refusal == nil || !reflect.DeepEqual(result.Refusal.Reasons, want) {
-		t.Fatalf("the version that adds h, needing e at its retro, = %+v, want refused with %+v", result, want)
-	}
-	if _, ok := tasksOf(t, pool, engine, root.Key)["h"]; ok {
-		t.Fatalf("the plan of %s holds h after its version was refused", root.Key)
+	for _, says := range []bool{false, true} {
+		t.Run(map[bool]string{false: "e merges as the task no task needs", true: "e says merges"}[says], func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Retro)
+			seedTasks(t, pool, root.Key, root.Generation,
+				planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskDone, place: atStep(1)},
+				planTask{id: "b", steps: []string{"implementer:b"}, agents: []claim.Agent{"impl-b"}, state: record.TaskDone, place: atStep(1)},
+				planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, needs: []string{"b"}, state: record.TaskDone, place: atStep(1)},
+				planTask{id: "d", steps: []string{"implementer:d"}, agents: []claim.Agent{"impl-d"}, needs: []string{"a", "c"}, state: record.TaskDone, place: atStep(1)},
+				planTask{id: "e", steps: []string{"tester:e"}, agents: []claim.Agent{"test-e"}, needs: []string{"d"}, state: record.TaskRunning,
+					place: record.TaskPlace{Kind: record.PlaceRetro}})
+			eBlock := keyed(t, "e", "", []string{"tester:e"}, "d")
+			if says {
+				markMerges(t, pool, root.Key, "e")
+				eBlock.Merges = true
+			}
+			result := applyFacts(t, pool, engine)("version-2", laterVersion(t, root.Key, root.Generation, 2,
+				keyed(t, "a", "", []string{"implementer:a"}), keyed(t, "b", "", []string{"implementer:b"}), keyed(t, "c", "", []string{"implementer:c"}, "b"),
+				keyed(t, "d", "", []string{"implementer:d"}, "a", "c"), eBlock, keyed(t, "h", "", []string{"implementer:h"}, "e")))
+			if says {
+				mustTake(t, "the version that adds h, needing e, which says merges, at its retro", result)
+				assertTask(t, tasksOf(t, pool, engine, root.Key), "h", record.TaskWaiting, record.TaskPlace{})
+				return
+			}
+			want := []plan.Refusal{{Task: "e", Reason: "task e stands at its retro, which has started, so this version cannot change whether its work merges. " +
+				"Keep each need on task e as it is until it is done."}}
+			if result.Refusal == nil || !reflect.DeepEqual(result.Refusal.Reasons, want) {
+				t.Fatalf("the version that adds h, needing e at its retro, = %+v, want refused with %+v", result, want)
+			}
+			if _, ok := tasksOf(t, pool, engine, root.Key)["h"]; ok {
+				t.Fatalf("the plan of %s holds h after its version was refused", root.Key)
+			}
+		})
 	}
 }
 
