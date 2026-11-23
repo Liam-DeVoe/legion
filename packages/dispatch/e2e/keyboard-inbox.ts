@@ -12,7 +12,8 @@ import {
   requestApproval,
   withOpenedAsk,
 } from "./api";
-import { askControls, hasReadingPane, paneScroller, selectRow } from "./inbox-pane";
+import { askControls, paneScroller, selectRow } from "./inbox-pane";
+import { hasReadingPane } from "./reading-pane";
 
 export const session = {
   actor: { kind: "session" as const, id: "e2e-keyboard-inbox" },

@@ -17,7 +17,7 @@ import {
   openAssigneeFilter,
   pickAssignee,
 } from "./inbox-filter";
-import { hasReadingPane, inboxPane, paneScroller, selectedRow } from "./inbox-pane";
+import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
 import {
   askIdOf,
   goToRow,
@@ -30,6 +30,7 @@ import {
   seedPane,
   session,
 } from "./keyboard-inbox";
+import { hasReadingPane } from "./reading-pane";
 import { stubbed } from "./stub/stub-test";
 
 /** The three asks the marks are made on. */

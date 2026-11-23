@@ -10,6 +10,7 @@
  */
 import { expect } from "@playwright/test";
 
+import { peekTrigger } from "./inbox-drawer";
 import { inboxList, inboxPane, selectedRow } from "./inbox-pane";
 import {
   ADDED_WORD,
@@ -138,14 +139,11 @@ test("below 1280 px the Inbox reads the row it opens in place of the list, and t
   await expect(view).toHaveCount(0);
   await expect(row).toBeFocused();
 
-  // The drawer is a peek beside the page it covers, so it keeps the card at every width, and the
-  // approval card's own diff is the change view, with the same marks the column draws.
-  await page.setViewportSize({ height: 900, width: 1440 });
+  // The drawer is a peek over the page it covers, so it keeps the card at every width - on a
+  // phone it opens from the compact top bar's Peek - and the approval card's own diff is the
+  // change view, with the same marks the column draws.
   await page.goto(`/issues/${scene.decisionIssueKey}`);
-  await page
-    .getByRole("navigation", { name: "Navigation" })
-    .getByRole("button", { name: "Peek at the inbox without leaving this page" })
-    .click();
+  await peekTrigger(page).click();
   const drawer = page.getByRole("dialog", { name: "Inbox" });
   await expect(drawer).toBeVisible();
   await expect(drawer.getByTestId("inbox-pane")).toHaveCount(0);

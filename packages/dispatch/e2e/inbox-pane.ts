@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import { hasReadingPane } from "./reading-pane";
 import { settledState } from "./settled";
 
 /**
@@ -10,24 +11,17 @@ import { settledState } from "./settled";
  * `data-inbox-*` attribute it had, its checkbox, its owner link, a kind badge, the question's
  * first line and its age. The row the reader picks shows its own surface - its document, or its
  * card - in `inbox-pane`, whose head carries that question's Snooze, its priority and its
- * "Assign to me". From `READING_PANE_WIDTH` that pane is a column beside the list, a row is
- * always selected, and the selected row carries `data-inbox-selected="true"`. Below it a row the
- * reader opens is read in `inbox-reading-view` in place of the list and its header, which stay
- * hidden until the view's own Inbox control (or the browser's Back) brings them back at that
+ * "Assign to me". From `READING_PANE_WIDTH` (`e2e/reading-pane.ts`) that pane is a column beside
+ * the list, a row is always selected, and the selected row carries `data-inbox-selected="true"`.
+ * Below it a row the reader opens is read in `inbox-reading-view` in place of the list and its
+ * header, which stay hidden until the view's own Inbox control (or the browser's Back) brings them
+ * back at that
  * row. The drawer, at any width, is the list of cards it has always been: each row holds its own
  * card and its own controls.
  *
  * Each helper reads which of the two this page is drawing off the viewport, so one spec row runs
  * under `chromium` (1280 px, the column on) and `iphone` (390 px, the reading view).
  */
-
-/** The width the Inbox draws its reading column from (`READING_PANE_QUERY`, 80rem). */
-export const READING_PANE_WIDTH = 1280;
-
-/** Whether this page is wide enough for the Inbox page's reading column. */
-export function hasReadingPane(page: Page): boolean {
-  return (page.viewportSize()?.width ?? 0) >= READING_PANE_WIDTH;
-}
 
 /** The list column, which is the whole Inbox where no row is open below the column's width. */
 export function inboxList(page: Page): Locator {

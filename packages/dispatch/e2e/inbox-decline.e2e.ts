@@ -14,7 +14,8 @@ import {
 } from "./api";
 import { paragraphsOf } from "./bodies";
 import { documentEditor, indexedBlockAsk } from "./editor";
-import { askCard, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
+import { askCard, inboxPane, inboxRow, selectRow } from "./inbox-pane";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { resetDatabase } from "./seed";
 import { signIn } from "./users";
 

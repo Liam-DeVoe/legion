@@ -15,7 +15,6 @@ import {
   backToList,
   inboxList,
   inboxPane,
-  READING_PANE_WIDTH,
   readingView,
   selectedRow,
   selectRow,
@@ -33,6 +32,8 @@ import {
   unreadThreadRows,
 } from "./inbox-threads";
 import { openView } from "./inbox-view";
+import { commentWithBody } from "./margin-helpers";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { refusePosts, WRITE_REFUSED } from "./sends";
 import { expandedState } from "./settled";
 import { type BrowserContext, expect, type Page, type Request, test } from "./test";
@@ -291,11 +292,11 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
 });
 
 // Below 1280 px the page lists short rows and reads the row a reader opens in place of the list
-// (INFRA-5200): the mark stays the short row's own checkbox, and Dismiss is the reading view's,
-// in the head of the thread it shows.
-// SLOW(>=2s): three rows seeded, then a mark, a thread opened and a dismiss read back from the
-// server.
-test("on a phone a thread is marked from its short row and dismissed from the reading view its row opens @phone @phone-only", async ({
+// (INFRA-5200): the mark stays the short row's own checkbox, and the thread's reply box and its
+// Dismiss are the reading view's.
+// SLOW(>=2s): three rows seeded, then a mark, a thread opened, a reply and a dismiss read back
+// from the server.
+test("on a phone a thread is marked from its short row, and replied to and dismissed from the reading view its row opens @phone @phone-only", async ({
   browser,
 }) => {
   const seeded = await seedInbox();
@@ -316,6 +317,16 @@ test("on a phone a thread is marked from its short row and dismissed from the re
 
     await selectRow(page, replyRowId(seeded.reply));
     await assertPageFits(page);
+    // The thread's own box, at the end of the thread the view draws whole.
+    const composer = readingView(page).getByRole("form", { name: "Comment composer" });
+    await composer.getByRole("textbox", { name: "Reply" }).fill("Two hours from tonight, then.");
+    await composer.getByRole("button", { name: "Send" }).click();
+    const written = await commentWithBody(
+      seeded.issueKey,
+      undefined,
+      "Two hours from tonight, then."
+    );
+    expect(written.reply_to).toBe(seeded.reply);
     const sent = nextDismiss(page);
     await readingView(page)
       .locator(`[data-inbox-dismiss="${replyRowId(seeded.reply)}"]`)

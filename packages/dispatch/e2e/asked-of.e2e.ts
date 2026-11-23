@@ -16,8 +16,9 @@ import {
 } from "./api";
 import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
-import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
+import { backToList, inboxList, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -144,9 +145,9 @@ test("a person hands an ask to another person and it moves between the two Inbox
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
   try {
-    // Alice reads below the reading column's width, where every row draws its own card: that is
-    // where she presses the control. Bob reads above it, where the card is the reading column's,
-    // which is the second surface this row drives it on.
+    // Alice reads below the reading column's width, where the row she opens is read in place of
+    // the list: that is where she presses the control. Bob reads above it, where the card is the
+    // reading column's, which is the second surface this row drives it on.
     const alicePage = await alice.newPage();
     await alicePage.setViewportSize({ height: 900, width: 1100 });
     const bobPage = await bob.newPage();
@@ -180,13 +181,16 @@ test("a person hands an ask to another person and it moves between the two Inbox
       agentRow(bobAgents, asker.actor.id).getByRole("link", { name: "Needs you 1" })
     ).toBeVisible();
 
-    // 2. Alice hands it to bob with the control on her Inbox row, which names her as the person
-    // it waits on until she does.
-    const rowControl = handOnControl(inboxRow(alicePage, moved.id), moved.id);
+    // 2. Alice hands it to bob with the control on the question's card, in the view her row
+    // opens, which names her as the person it waits on until she does. The view then reads her
+    // next question, as the column does, and she goes back to the list.
+    await selectRow(alicePage, moved.id);
+    const rowControl = handOnControl(inboxPane(alicePage), moved.id);
     await expect(rowControl).toHaveCount(1);
     await expect(rowControl).toHaveValue("alice");
-    await expect(inboxRow(alicePage, moved.id)).toContainText("Asked of alice");
+    await expect(inboxPane(alicePage)).toContainText("Asked of alice");
     await handTo(rowControl, "bob");
+    await backToList(alicePage);
     await handsOff(alicePage);
 
     // 3. Without a reload, the row leaves her list and enters his, and every count beside it
@@ -237,9 +241,9 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(handOnControl(bobIssueCard, moved.id)).toHaveCount(1);
     await bobIssue.close();
 
-    // 5. The control is on the card wherever the card renders an open ask: on the Inbox row
-    // (pressed above), on the reading column's card, on the issue page, on a document's margin
-    // and in a document's ask block.
+    // 5. The control is on the card wherever the card renders an open ask: in the Inbox's view
+    // below the column's width (pressed above), on the reading column's card, on the issue page,
+    // on a document's margin and in a document's ask block.
     await selectRow(bobPage, moved.id);
     const paneControl = handOnControl(inboxPane(bobPage), moved.id);
     await expect(paneControl).toHaveCount(1);

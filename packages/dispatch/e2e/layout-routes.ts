@@ -15,6 +15,7 @@
 import type { BrowserContext, Locator, Page } from "@playwright/test";
 
 import { withIssuePage } from "./issue-page-option";
+import { hasReadingPane } from "./reading-pane";
 import { type ReviewedRoute, type ReviewSeed, reviewRoutes } from "./review-routes";
 import type { WalkRoutePath } from "./two-builds-routes";
 
@@ -178,7 +179,7 @@ const inboxItemOpened: LayoutState = {
     const row = page.locator("[data-inbox-row]").first();
     const id = await row.getAttribute("data-inbox-row");
     await row.locator("time").first().click();
-    await ((page.viewportSize()?.width ?? 0) >= 1280
+    await (hasReadingPane(page)
       ? page.locator(`[data-inbox-row="${id}"][data-inbox-selected="true"]`)
       : page.locator(`[data-inbox-reading-row="${id}"]`)
     ).waitFor();
@@ -192,7 +193,7 @@ const inboxItemOpened: LayoutState = {
 const inboxBackToList: LayoutState = {
   act: async (page) => {
     await inboxItemOpened.act(page);
-    if ((page.viewportSize()?.width ?? 0) >= 1280) return;
+    if (hasReadingPane(page)) return;
     await page
       .getByTestId("inbox-reading-view")
       .getByRole("button", { exact: true, name: "Inbox" })
