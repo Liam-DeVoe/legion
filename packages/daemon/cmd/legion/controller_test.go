@@ -1496,8 +1496,8 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 			[]string{"did not load pi-legion (not installed, disabled, or unregistered). Install the @sjawhar/pi-legion release built from this daemon's commit into the Oh My Pi the controller runs", " && <your omp_launch_prefix> ", "plugin list` under the controller's environment"}},
 		{"an Oh My Pi that loads the plugin but no pi-envoy", func(c *operatorMachine) { c.loadsEnvoyAt("none") },
 			[]string{"loaded pi-legion but no pi-envoy. Install the @sjawhar/pi-envoy release built from this daemon's commit into the Oh My Pi the controller runs, and check it with `cd ", " && <your omp_launch_prefix> ", "plugin list`"}},
-		// The module URL's query (`?mtime=1,`, which runs to the next space) is cut by the URL rule
-		// the refusal is printed through (printRefusal), as a query can carry a credential.
+		// The module URL's query (`?mtime=1`) is kept by the URL rule the refusal is printed through
+		// (printRefusal): a `file:` URL of this machine keeps its query, which holds no credential.
 		{"an Oh My Pi whose pi-envoy publishes another interface", func(c *operatorMachine) { c.loadsEnvoyAt("2") },
 			[]string{"loaded pi-envoy from file://" + "@HOME/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js?mtime=1, which publishes plugin interface 2, and a pi-legion that speaks 1. Install both releases built from this daemon's commit into the Oh My Pi the controller runs, and check them with `cd ", "plugin list`"}},
 		{"an Oh My Pi that still loads the pre-split package", func(c *operatorMachine) { c.loadsLegacyFrom("file:///plugins/legacy/dist/legion.js") },

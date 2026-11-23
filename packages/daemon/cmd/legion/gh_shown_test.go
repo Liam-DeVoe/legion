@@ -286,6 +286,12 @@ func ghCanaryRefusal(row ghCanaryRow) error {
 // TestNoRefusalFormatsAPersonsValueItself until it joins this table, which is where a reviewer
 // reads it.
 var ghFormattedValues = map[string]string{
+	"ghConfigShape: %w err":                                               "a read error of a file of the gh directory GH_CONFIG_DIR names, a configured path",
+	"ghWrapperPath: %w err":                                               "a read error of the wrapper's own path on PATH",
+	"parseGhHelp: %w err":                                                 "addFlag's error, which quotes a line of gh's own help",
+	"readGhCommand: %w err":                                               "readGhHelp's error, this command's own words with gh's exit, gh's output not printed",
+	"runGhChild: %w cause":                                                "the cause of a stop: a signal or a deadline",
+	"runGhChild: %w err (2 places)":                                       "exec's error of starting LEGION_GH_PATH, a configured path",
 	"ghShown: strconv.Quote(value)":                                       "the helper itself: a value its slot's strict form admits",
 	"ghCallLogValue: strconv.Quote(value)":                                "the call log's fields (role, issue, a placed repository, gh's command path, a visibility), no refusal",
 	"appendGhCallLog: %s ghCallLogValue(commandPath)":                     "the call log's field, quoted by ghCallLogValue",
@@ -368,10 +374,12 @@ var ghFormattedValues = map[string]string{
 }
 
 // ghFormatSites is every place in the package's non-test gh*.go files that quotes or formats a
-// value without ghShown: each strconv.Quote call (`fn: strconv.Quote(<arg>)`), each argument a
-// %q verb of an fmt call's literal format formats (`fn: %q <arg>`), and each cannotPlace call whose
-// name is neither a ghShown call nor a literal (`fn: cannotPlace(<name>)`), fn the function that
-// holds it, a method by its receiver's type.
+// value without ghShown: each strconv.Quote call (`fn: strconv.Quote(<arg>)`), each errors.New
+// call whose text is no literal (`fn: errors.New(<arg>)`), each argument a %s, %v, %q, %x, %X or
+// %w verb of an fmt call's literal format formats (`fn: %q <arg>`) but a literal, a ghShown call
+// or a position, and each cannotPlace call whose name is neither a ghShown call nor a literal
+// (`fn: cannotPlace(<name>)`), fn the function that holds it, a method by its receiver's type. A
+// place that stands more than once in one function is keyed with its count (`(5 places)`).
 func ghFormatSites(t *testing.T) map[string]string {
 	t.Helper()
 	files, err := filepath.Glob("gh*.go")
@@ -420,6 +428,10 @@ func ghFormatSites(t *testing.T) map[string]string {
 				switch callee := text(call.Fun); {
 				case callee == "strconv.Quote" && len(call.Args) == 1:
 					add(owner + ": strconv.Quote(" + text(call.Args[0]) + ")")
+				case callee == "errors.New" && len(call.Args) == 1:
+					if _, literal := call.Args[0].(*ast.BasicLit); !literal {
+						add(owner + ": errors.New(" + text(call.Args[0]) + ")")
+					}
 				case callee == "cannotPlace" && len(call.Args) > 0:
 					first := call.Args[0]
 					if _, literal := first.(*ast.BasicLit); literal {
@@ -447,7 +459,7 @@ func ghFormatSites(t *testing.T) map[string]string {
 					}
 					for i, verb := range formatVerbs(format) {
 						arg := formatAt + 1 + i
-						if arg >= len(call.Args) || !strings.ContainsRune("sqv", verb) {
+						if arg >= len(call.Args) || !strings.ContainsRune("sqvxXw", verb) {
 							continue
 						}
 						if _, literal := call.Args[arg].(*ast.BasicLit); literal {
@@ -500,7 +512,7 @@ func formatVerbs(format string) []rune {
 func TestNoRefusalFormatsAPersonsValueItself(t *testing.T) {
 	sites := ghFormatSites(t)
 	if len(sites) == 0 {
-		t.Fatal("UNKNOWN: the source holds no strconv.Quote call, no q verb and no cannotPlace name, so this read nothing")
+		t.Fatal("UNKNOWN: the source holds no strconv.Quote call, no formatted value and no cannotPlace name, so this read nothing")
 	}
 	for _, key := range slices.Sorted(maps.Keys(sites)) {
 		if _, ok := ghFormattedValues[key]; !ok {
