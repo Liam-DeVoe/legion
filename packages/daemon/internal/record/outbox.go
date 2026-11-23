@@ -1120,9 +1120,11 @@ func NoticePerClaim(kind NoticeKind) bool {
 // start named an architect queues (workflow's ownerSlotCredential), and stops nothing: it writes
 // only where the slot holds that App as the record stands when the row runs (runtime.SlotRole),
 // and nothing where the owner's next step of another App runs already, whose owner-step writes
-// the slot for that App (the daemon's slotCredential). A daemon of a release before it
-// refuses the op, and its way back deletes the rows that wait (docs/kubernetes.md, "Rolling back
-// below the release whose owner does a step").
+// the slot for that App (the daemon's slotCredential). The runtime judges the App again as it
+// writes, in the one order of the slot's writes (runtime.SlotCredentials), so a step begun since
+// the row read the record gets its own App. A daemon of a release before it refuses the op, and
+// its way back deletes the rows that wait (docs/kubernetes.md, "Rolling back below the release
+// whose owner does a step").
 // There is no plain stop: only a close ends a claim from the workflow, so the op states which.
 type SuperviseOp string
 
