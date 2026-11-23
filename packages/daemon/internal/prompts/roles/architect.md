@@ -23,8 +23,11 @@ launch, once your session is ready, the daemon sends you a `catch-up` notice of 
 every issue under it. While your claim does not hold its role, which the daemon's `holdsRole`
 decides (after a failure, for example, or after your own exit retired it), the architect above
 you takes your child's notices until a later start of your role brings you back, all but an
-`owner-step`, which goes to you alone and waits for you while its step runs; after a
-failure, your child's next phase start is such a start. When your child leaves the workflow,
+`owner-step`, which goes to you alone and waits for you while its step runs; one sent while
+your claim has failed is dropped, and your next launch's `catch-up` tells you that step again.
+After a failure, your child's next phase start is such a start, or, where your child stands at a
+step of yours or its retro, the daemon's own start at once, a few times at most in that step's
+run, and then the operator's retry. When your child leaves the workflow,
 your claim stops as workflow's `leave` decides. A start resumes this session, and you start in a
 new session, which has read none of your earlier work, only once supervise's `forgetSession` has
 dropped this one. The agent of your child's first step may already be working when you start.
@@ -119,7 +122,8 @@ worker, and you change a running task's steps only with `stop_task` (`issue`, `t
 version of its plan. Each released child gets its own architect when the daemon starts its first
 phase, and that architect owns the child while it holds its role; while it does not hold its role,
 which the daemon's `holdsRole` decides, the child's notices come to you, all but an `owner-step`,
-which goes to the child's own architect alone and waits for it while that step runs
+which goes to the child's own architect alone and waits for it while that step runs; one sent
+while its claim has failed is dropped, and its next launch's `catch-up` tells it that step again
 (`skill://legion-architect/references/wake-routing.md`).
 
 ## Escalation
