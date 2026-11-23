@@ -30,6 +30,14 @@ import (
 // nothing else, which is the whole point -- an in-process fan-out cannot cross between them.
 func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
+	handler, _ := secondProcess(t, database)
+	return handler
+}
+
+// secondProcess is secondProcessHandler and the second process's event stream relay, for a test
+// that orders its writes against that relay's start (awaitRelayStart).
+func secondProcess(t *testing.T, database *store.Store) (http.Handler, *eventStreamRelay) {
+	t.Helper()
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
@@ -53,8 +61,9 @@ func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 		t.Fatalf("new API dependencies for the second process: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return mux
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(served.waitBackground)
+	return mux, served.eventRelay
 }
 
 // TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed is what the live feed is for with two
@@ -90,7 +99,7 @@ func newCountedRelay(t *testing.T, deps Deps) (*eventStreamRelay, chan int64) {
 	relay.coalesce = time.Millisecond
 	reads := make(chan int64, 1024)
 	relay.readAfter = func(ctx context.Context, after, through int64) ([]model.Event, error) {
-		page, err := relay.server.readEventsAfterID(ctx, after, through, maxEventReplay)
+		page, err := relay.server.readEventsAfterID(ctx, model.Actor{}, after, through, maxEventReplay)
 		reads <- after
 		return page, err
 	}
