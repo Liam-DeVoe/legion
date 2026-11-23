@@ -46,8 +46,8 @@ func (r *issueRig) inTurn(role claim.Role, task supervise.RequestDeliver) claim.
 	return token
 }
 
-// wantSentAtOnce holds that machine's task went out at once on conn, after one more adoption of a
-// working copy than the adoptions made before it, under role's App and naming want.
+// wantSentAtOnce holds that task went out at once on conn, after one more adoption of a working
+// copy than the adoptions made before it, under role's App and naming want.
 func (r *issueRig) wantSentAtOnce(conn *fake.Conn, task string, adoptions int, role claim.Role, want runtime.Adoption) {
 	r.t.Helper()
 	if prompts := conn.Prompts(); len(prompts) != 1 || prompts[0].Message != task {
@@ -59,7 +59,7 @@ func (r *issueRig) wantSentAtOnce(conn *fake.Conn, task string, adoptions int, r
 	}
 }
 
-// wantHeldUntilTheTurnEnds holds that machine's task waits, unsent and adopting nothing, while the
+// wantHeldUntilTheTurnEnds holds that task waits on conn, unsent and adopting nothing, while the
 // turn of the claim inTurn is open, and goes once that turn ends: the hold is the turn's.
 func (r *issueRig) wantHeldUntilTheTurnEnds(conn *fake.Conn, task string, adoptions int, inTurn claim.Token) {
 	r.t.Helper()
