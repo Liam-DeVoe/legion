@@ -5017,7 +5017,8 @@ Each item below names a path with its method and identity, then its purpose.
   it is empty for a document that is not a spec.
 
   It never names a missing plan task, even for an issue that already holds a plan.
-  A spec with gaps still opens the request. A coverage read that failed answers `coverage_unread: true` with no lines.
+  A spec with gaps still opens the request.
+  A coverage read that failed answers `coverage_unread: true` with no lines.
 
 - `/api/v1/artifacts/{id}/plan-reviews` (POST; cookie, trusted header, or bearer)
 
