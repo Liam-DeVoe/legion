@@ -36,15 +36,18 @@ for (const driver of drivers) {
 }
 
 function recorded(state: unknown): number {
-  const result = Bun.spawnSync([
-    "bash",
-    "-c",
-    `set -Eeuo pipefail
+  const result = Bun.spawnSync(
+    [
+      "bash",
+      "-c",
+      `set -Eeuo pipefail
 daemon_state() { printf '%s' "$STATE"; }
 ${fn("role_handoff_record")}
 ${fn("role_handoff_recorded")}
 role_handoff_recorded LEGION-208 reviewer`,
-  ], { env: { ...process.env, STATE: JSON.stringify(state) } });
+    ],
+    { env: { ...process.env, STATE: JSON.stringify(state) } }
+  );
   return result.exitCode;
 }
 
@@ -52,6 +55,8 @@ test("role_handoff_recorded fails until the role's handoff record is in the daem
   expect(recorded({ issues: { "LEGION-208": { workers: { reviewer: {} } } } })).not.toBe(0);
   expect(recorded({ issues: {} })).not.toBe(0);
   const record = { handoffRecord: { id: "rec-1", version: 2 } };
-  expect(recorded({ issues: { "LEGION-208": { workers: { tester: record, reviewer: {} } } } })).not.toBe(0);
+  expect(
+    recorded({ issues: { "LEGION-208": { workers: { tester: record, reviewer: {} } } } })
+  ).not.toBe(0);
   expect(recorded({ issues: { "LEGION-208": { workers: { reviewer: record } } } })).toBe(0);
 });
