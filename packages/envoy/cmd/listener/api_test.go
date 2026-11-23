@@ -821,7 +821,14 @@ func trailingListeners(t *testing.T) (claimant, observer *listenerDeps) {
 		if err := sessions.WaitForCacheReady(ctx); err != nil {
 			t.Fatalf("warm the %s's session cache: %v", name, err)
 		}
-		return withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
+		// Every listener serves the Legion agent registry's routes, empty until a daemon writes
+		// (main.go's openLegionAgentRegistry); a Dispatch in front of this one asks them for a
+		// session it delivers to, and a registry left nil would panic on that read.
+		agents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("open the %s's legion agent registry: %v", name, err)
+		}
+		return withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, legionAgents: newLegionAgentRegistry(agents)})
 	}
 	claimant, observer = open("claimant"), open("observer")
 	observer.sessions.StopWatch()

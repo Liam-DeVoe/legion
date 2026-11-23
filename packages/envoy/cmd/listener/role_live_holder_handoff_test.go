@@ -2,8 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"sync/atomic"
 	"testing"
+
+	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/session"
 )
 
 // A send Dispatch marks with a finished Legion role, aimed at the role's stopped newest session,
@@ -93,14 +99,17 @@ func TestAMarkedSendToAFinishedRoleWhoseHolderLookupFailsIsRefusedAndNotHandedOf
 	rig.stop(t, agent)
 	rig.record(t, agent)
 	// The holder's record stands in the bucket alone, so the resolution reads the bucket for it,
-	// and that read fails.
+	// and that read fails. Only the holder's read fails: a read of another session the listener
+	// makes meanwhile (a consumer repair's read of the stopped agent) answers, and cannot take the
+	// failure meant for the holder (a loaded run of the package on 2026-11-23: that repair read
+	// took it, and the send was answered 202).
 	claimRoleBeyondTheSessionCache(t, rig.harness, holder, role)
-	failed := failTheNextSessionRead(t, rig.harness.sessions)
+	failed := failTheNextSessionReadOf(t, rig.harness.sessions, holder)
 	client := rig.harness.client
 
 	got := sendMarkedByDispatch(t, rig, principal, agent, role, "what did the review find?")
 	if !failed.Load() {
-		t.Fatalf("no read of the session bucket failed, so this send did not meet a failed lookup of %s", holder)
+		t.Fatalf("no read of %s in the session bucket failed, so this send did not meet a failed lookup of it", holder)
 	}
 	if got.status != http.StatusServiceUnavailable {
 		t.Fatalf("a send marked with %s to its stopped session %s while the lookup of %s fails: status %d, body %s; want 503",
@@ -110,4 +119,30 @@ func TestAMarkedSendToAFinishedRoleWhoseHolderLookupFailsIsRefusedAndNotHandedOf
 		t.Fatalf("the stream holds %d hand-offs for %s, want none: the lookup of %s did not answer", count, agent, holder)
 	}
 	assertNothingKept(t, client, role)
+}
+
+// failFirstGetOfKV is failFirstGetKV for one key: its first read of key does not answer, and every
+// other read answers.
+type failFirstGetOfKV struct {
+	natsgo.KeyValue
+	key    string
+	failed *atomic.Bool
+}
+
+func (kv failFirstGetOfKV) Get(key string) (natsgo.KeyValueEntry, error) {
+	if key == kv.key && kv.failed.CompareAndSwap(false, true) {
+		return nil, errors.New("the session bucket's read did not answer")
+	}
+	return kv.KeyValue.Get(key)
+}
+
+// failTheNextSessionReadOf is failTheNextSessionRead for the one session key: the next bucket read
+// of key fails, and the flag it returns reports whether a read of key took the failure.
+func failTheNextSessionReadOf(t *testing.T, sessions *session.SessionRegistry, key string) *atomic.Bool {
+	t.Helper()
+	failed := &atomic.Bool{}
+	swapSessionBucket(t, sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
+		return failFirstGetOfKV{KeyValue: kv, key: key, failed: failed}
+	})
+	return failed
 }
