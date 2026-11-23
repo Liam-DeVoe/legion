@@ -232,12 +232,14 @@ func TestPullRequestLinksSQLReadsOnlyTheRenamesOfItsRepository(t *testing.T) {
 
 // The statement reads the renaming rule once, however many pull requests it judges
 // (renameTerms): the nodes that scan its terms of the rule run as many loops for 20 pull requests
-// as for one. Where every comparison of a name read the rule from repo_projects
-// (refs.CanonicalRepoSQL), those nodes ran about 12 loops a pull request, 240 for 20, and a window
+// as for one. Where every comparison of a name read the rule from repo_projects, a scan of the
+// table for each name, those nodes ran about 12 loops a pull request, 240 for 20, and a window
 // read of 1,000 pull requests on the 43 mappings production held on 22 November spent about 40 ms
-// of its 170 ms in them. The controls in the same test: the plan scans the terms in some node, the
-// statement answers each pull request it was given, and the same count over a read of the
-// relation once for each of 20 names counts 20 loops, so the count sees a read made once a row.
+// of its 170 ms in them; where the subquery run for each cited URL joined renames
+// (citedPullRequest), a nested loop rescanned it for each URL, 47 loops for 20 and 9 for one. The
+// controls in the same test: the plan scans the terms in some node, the statement answers each
+// pull request it was given, and the same count over a read of the relation once for each of 20
+// names counts 20 loops, so the count sees a read made once a row.
 func TestTheStatementReadsTheRenamingRuleOnceWhateverItsPullRequests(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	storeTextsRows(t, ctx, pool, 1, 20)

@@ -150,7 +150,9 @@ func attributionHeldFor(source, held string) string {
 // statements, so the statement reads no table for the rule: repo_projects, which held the pairs,
 // is read once at boot (store.ReadRepoRenames) and a later change drops it. Every read of the rule
 // in the statement is a join of one of the two terms (renameJoin, namesJoin), which a hash join
-// serves, so the statement reads the rule once however many names it judges.
+// serves, so the statement reads the rule once however many names it judges; the one subquery the
+// statement runs for each row, citedPullRequest, compares by refs.CanonicalRepoSQL instead, which
+// reads no relation.
 func renameTerms(renames refs.Renames) string {
 	return `renames as materialized (` + refs.RenamesSQL(renames) + `
 	), renamed_names as materialized (
@@ -206,12 +208,17 @@ const attributionSubjects = `subjects as (
 // own branch names. A number Dispatch holds no results row of reads as an issue, so the answer
 // changes at the next read once Dispatch stores that pull request. The URL is read by the link
 // rule (LinkedPullRequestSQL), which bounds its number, so no citation casts past int's bound.
-func citedPullRequest(url string) string {
+//
+// The condition is a subquery the statement runs once for each cited URL, so it compares the two
+// names by refs.CanonicalRepoSQL, the renaming rule as a case over the pairs written into the
+// text, which reads no relation. A join of renames here is a scan of that relation for each cited
+// URL: with the pairs as literals the planner knows how few rows the relation holds and rescans it
+// in a nested loop, and the nodes that scan the rule ran 47 loops for 20 pull requests and 9 for
+// one (TestTheStatementReadsTheRenamingRuleOnceWhateverItsPullRequests).
+func citedPullRequest(renames refs.Renames, url string) string {
 	return `exists (select 1 from ` + LinkedPullRequestSQL(url) + ` cited
-		` + renameJoin("cited_rename", "cited.repo") + `
 		join pull_request_heads cited_pr on cited_pr.number = cited.number
-		` + renameJoin("cited_pr_rename", "cited_pr.repo") + `
-		where lower(` + canonicalOver("cited_pr_rename", "cited_pr.repo") + `) = lower(` + canonicalOver("cited_rename", "cited.repo") + `))`
+		where lower(` + refs.CanonicalRepoSQL(renames, "cited_pr.repo") + `) = lower(` + refs.CanonicalRepoSQL(renames, "cited.repo") + `))`
 }
 
 // One statement gives the issue of a pull request at read time, from its stored facts alone: the
@@ -356,7 +363,7 @@ func attributedTermsOver(schema string, renames refs.Renames, judged, texts stri
 		from batch src cross join lateral unnest(src.cited_issues) with ordinality u(url, n)
 			cross join lateral (select l.issue_key from issue_external_links l
 				where lower(l.url) = any(` + citedSpellings + `) and ` + linkURLAsCited + ` = any(` + citedSpellings + `) offset 0) l
-		where src.texts_current and src.own_head and not ` + citedPullRequest("u.url") + `
+		where src.texts_current and src.own_head and not ` + citedPullRequest(renames, "u.url") + `
 		union all
 		select src.repo, src.number, src.held_as, u.key, '` + string(sourceBranch) + `', 2, u.n
 		from batch src cross join lateral unnest(src.branch_keys) with ordinality u(key, n) join issues i on i.key = u.key
