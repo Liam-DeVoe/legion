@@ -2,18 +2,22 @@
 // T20), by kind: each its items views, its pure model function and its renderer (`ChartKind`,
 // kind.ts). A declared chart of a kind this record lacks draws one line naming it
 // (`DeclaredEval`). `kinds.test.ts` lists the 14 kinds the validator accepts against it.
+import { architectureKind } from "./architecture";
 import { bandKind } from "./band";
 import { gridKind } from "./grid";
 import type { ChartKind } from "./kind";
 import { lanesKind } from "./lanes";
+import { networkKind } from "./network";
 import { numberKind } from "./number";
 import { textKind } from "./text";
 import { xyKind } from "./xy";
 
 export const chartKinds: Readonly<Record<string, ChartKind>> = {
+  architecture: architectureKind,
   band: bandKind,
   grid: gridKind,
   lanes: lanesKind,
+  network: networkKind,
   number: numberKind,
   text: textKind,
   xy: xyKind,
