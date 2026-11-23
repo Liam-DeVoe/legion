@@ -1180,12 +1180,13 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 		    'calls', coalesce((budget_used->>'calls')::int, 0) + $5,
 		    'working_ms', coalesce((budget_used->>'working_ms')::bigint, 0) + $6,
 		    'model_ms', coalesce((budget_used->>'model_ms')::bigint, 0) + $8,
+		    'pace_ms', coalesce((budget_used->>'pace_ms')::bigint, 0) + $10,
 		    'tool_ms', coalesce((budget_used->>'tool_ms')::bigint, 0) + $9,
 		    'tokens', coalesce((budget_used->>'tokens')::int, 0) + $7)
 		where id = $1::uuid and lease_token = $2::uuid and state = 'working'
 		returning author_login
 	`, request.Run, request.LeaseToken, ended.State, ended.Reason, request.Used.Calls, request.Used.WorkingMS, request.Used.Tokens,
-		request.Used.ModelMS, request.Used.ToolMS).Scan(&login)
+		request.Used.ModelMS, request.Used.ToolMS, request.Used.PaceMS).Scan(&login)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return agentwire.EndAnswer{}, goingStaleLease(request.Run)
 	}

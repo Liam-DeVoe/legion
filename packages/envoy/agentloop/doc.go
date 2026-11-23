@@ -43,7 +43,9 @@
 // and is never retried, so a caller's OnText never sees the same text twice. A FaultProviderError
 // whose last call was answered with an error status carries that status in Result.Status, read
 // by the transport off the response, so a caller can tell a request the provider refuses outright
-// (a 400) from one it failed to serve.
+// (a 400) from one it failed to serve. Each 429 is logged at WARN as the transport reads it, once
+// for each attempt, with the deployment the request names, the attempt, the wait before the retry
+// and whether the call is made again, so every caller's 429 is logged in this one place.
 //
 // # The provider's own chunks
 //

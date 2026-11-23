@@ -105,8 +105,9 @@ type toolFrame struct {
 // answer is a question the run needs the person to answer before it can go on (ask_person), false
 // on every other reply. It says where the model call's time went too (modelCall): the
 // milliseconds from its request to its last token and to its first token of prose, left out for a
-// reply of tool calls alone, and the tokens of its prompt, those of the provider's cache
-// included, and of its reply.
+// reply of tool calls alone, how long the agent's pacer held it, the tokens of its prompt, those of
+// the provider's cache included, of its reply and of the reasoning in that reply, and the tokens
+// the pacer reserved for it.
 type replyFrame struct {
 	Step           int      `json:"step"`
 	Text           string   `json:"text"`
@@ -114,10 +115,23 @@ type replyFrame struct {
 	Labels         []string `json:"labels"`
 	Withheld       int      `json:"withheld,omitempty"`
 	WaitsForPerson bool     `json:"waits_for_person"`
-	ModelMS        int64    `json:"model_ms"`
-	FirstTokenMS   int64    `json:"first_token_ms,omitempty"`
-	InputTokens    int      `json:"input_tokens"`
-	OutputTokens   int      `json:"output_tokens"`
+	// ModelMS is the milliseconds from the call's request to its last token, the pacer's hold of
+	// it (PaceMS) included.
+	ModelMS int64 `json:"model_ms"`
+	// PaceMS is the milliseconds the agent's pacer held the call's HTTP attempts before each was
+	// made, summed, and left out where it held none: model_ms - pace_ms is the provider's own time.
+	PaceMS       int64 `json:"pace_ms,omitempty"`
+	FirstTokenMS int64 `json:"first_token_ms,omitempty"`
+	InputTokens  int   `json:"input_tokens"`
+	// OutputTokens is the tokens of the call's reply, its reasoning among them, and
+	// ReasoningTokens the reasoning tokens the provider reported of those.
+	OutputTokens    int `json:"output_tokens"`
+	ReasoningTokens int `json:"reasoning_tokens"`
+	// ReservedTokens is the tokens the pacer charged the call: the estimate of its prompt and its
+	// level's output tokens (step), summed over its HTTP attempts, which a run whose deployment
+	// names no quota still counts. Set against input_tokens + output_tokens, it says how far the
+	// estimate is from what the call spent.
+	ReservedTokens int `json:"reserved_tokens"`
 }
 
 // errStepTaken ends agentloop.Run once its one model call of a step finished and was saved: each
@@ -419,7 +433,7 @@ func (w *worker) step() stepOutcome {
 	if request.Bounds.Calls == 1 {
 		messages = withLastCallNote(messages)
 	}
-	request.Model = w.agent.pacer.paced(request.Model, func() int { return prompt/charsPerToken + w.level.OutputTokens })
+	request.Model = w.agent.pacer.paced(request.Model, func() int { return prompt/charsPerToken + w.level.OutputTokens }, w.charge)
 	request.System, request.Input, request.Tools = system, messages, w.tools(base)
 	request.OnStep = func(step agentloop.Step) error {
 		if step.Finish == finishContentFilter {
@@ -525,7 +539,8 @@ func withLastCallNote(messages []agentloop.Message) []agentloop.Message {
 // run once a call is refused with every result withheld, and a refusal of a run's last call would
 // otherwise end the run with no answer. The call is the run's model call in flight (inFlight)
 // until it returns, and adds its time from its request to its last token to the run's model
-// time: the time agentloop.Run took, where no token marked its end (modelCall).
+// time: the time agentloop.Run took, where no token marked its end (modelCall); and the time the
+// pacer held its HTTP attempts to the run's pace time.
 func (w *worker) runModel(request agentloop.Request) (agentloop.Result, bool, error) {
 	stepCtx, cancel := context.WithCancel(w.ctx)
 	defer cancel()
@@ -542,10 +557,13 @@ func (w *worker) runModel(request agentloop.Request) (agentloop.Result, bool, er
 	}
 	working := returned.Sub(call.asked)
 	model, _ := call.ended(returned)
+	held, _ := call.pacing()
 	w.turn.WorkingMS += working.Milliseconds()
 	w.used.WorkingMS += working.Milliseconds()
 	w.turn.ModelMS += model.Milliseconds()
 	w.used.ModelMS += model.Milliseconds()
+	w.turn.PaceMS += held.Milliseconds()
+	w.used.PaceMS += held.Milliseconds()
 	w.turn.Tokens += result.Usage.Output
 	w.used.Tokens += result.Usage.Output
 	if refused := result.Fault == agentloop.FaultContentFilter || errors.Is(err, errReplyFiltered); !refused && (len(result.Steps) > 0 || result.Fault != "") {
@@ -624,9 +642,11 @@ func faultDetail(detail string) string {
 // withheld tool results from the model saves the notice of them (withheldTold) after its text,
 // which the model reads in its later history; its frame carries the text alone and how many
 // results were withheld, which the bar says in its own words. Its frame says where call, the
-// model call in flight, spent its time, and the tokens of step's prompt and reply.
+// model call in flight, spent its time, the pacer's hold of it among that, the tokens of step's
+// prompt, reply and reasoning, and the tokens the pacer reserved for it.
 func (w *worker) saveReply(base int, step agentloop.Step, call *modelCall) bool {
 	took, first := call.ended(time.Now())
+	held, reserved := call.pacing()
 	var body modelBody
 	var questions []string
 	asked := false
@@ -675,8 +695,9 @@ func (w *worker) saveReply(base int, step agentloop.Step, call *modelCall) bool 
 		line = note(fmt.Sprintf("%s [calls %s]", body.Text, strings.Join(tools, ", ")))
 	}
 	reply := replyFrame{Step: base, Text: prose, Tools: tools, Labels: labels, Withheld: withheld, WaitsForPerson: waits,
-		ModelMS: took.Milliseconds(), FirstTokenMS: first.Milliseconds(),
-		InputTokens: step.Usage.Input + step.Usage.CacheRead + step.Usage.CacheWrite, OutputTokens: step.Usage.Output}
+		ModelMS: took.Milliseconds(), PaceMS: held.Milliseconds(), FirstTokenMS: first.Milliseconds(),
+		InputTokens: step.Usage.Input + step.Usage.CacheRead + step.Usage.CacheWrite, OutputTokens: step.Usage.Output,
+		ReasoningTokens: step.Usage.Reasoning, ReservedTokens: reserved}
 	if waits {
 		reply.Tools, reply.Labels = []string{}, []string{}
 	}
@@ -797,14 +818,25 @@ func (w *worker) callStarted(call callFrame) {
 	}
 }
 
+// charge adds the pacing of one HTTP attempt to the model call in flight (pacer.paced): the
+// tokens the pacer charged it and how long it held it. agentloop reads the endpoint's token, and
+// so paces the attempt, inside the Run runModel makes while the call is in flight.
+func (w *worker) charge(tokens int, held time.Duration) {
+	if call := w.inFlight.Load(); call != nil {
+		call.charge(tokens, held)
+	}
+}
+
 // modelCall is one model call of a run in flight (runModel): when it was asked, the times of its
-// first and last tokens, and the prose it streams (agentloop.Request.OnText), which the first call
-// frame of its step carries - the prose so far as that call starts, since the stream and the
-// step's tools run on goroutines of their own. Its first token is its first delta of prose, none
-// for a reply of tool calls alone. agentloop runs a step's tools once its stream ended, and gives
-// the step to OnStep once they ran, so its last token is the start of its first tool call
-// (toolRun), or the step's OnStep for a reply that calls none (saveReply), or the return of
-// agentloop.Run for a call that drew no reply.
+// first and last tokens, how long the pacer held its HTTP attempts and the tokens it charged them,
+// and the prose it streams (agentloop.Request.OnText), which the first call frame of its step
+// carries - the prose so far as that call starts, since the stream and the step's tools run on
+// goroutines of their own. Its first token is its first delta of prose, none for a reply of tool
+// calls alone. agentloop runs a step's tools once its stream ended, and gives the step to OnStep
+// once they ran, so its last token is the start of its first tool call (toolRun), or the step's
+// OnStep for a reply that calls none (saveReply), or the return of agentloop.Run for a call that
+// drew no reply. The pacer holds an attempt inside agentloop.Run, after the call was asked, so
+// the call's time to its last token holds the pacer's hold.
 type modelCall struct {
 	asked time.Time
 
@@ -812,6 +844,8 @@ type modelCall struct {
 	text                  strings.Builder
 	told                  bool
 	firstToken, lastToken time.Time
+	held                  time.Duration
+	reserved              int
 }
 
 // add adds delta, the next of the prose the model call streamed.
@@ -849,6 +883,22 @@ func (c *modelCall) ended(at time.Time) (took, first time.Duration) {
 		first = c.firstToken.Sub(c.asked)
 	}
 	return c.lastToken.Sub(c.asked), first
+}
+
+// charge adds one HTTP attempt's pacing: the tokens the pacer charged it and how long it held it.
+func (c *modelCall) charge(tokens int, held time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reserved += tokens
+	c.held += held
+}
+
+// pacing is how long the pacer held the call's HTTP attempts and the tokens it charged them, each
+// summed over the attempts so far.
+func (c *modelCall) pacing() (held time.Duration, reserved int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.held, c.reserved
 }
 
 // save saves one step of the run with body, and keeps it for the history of the next step. A

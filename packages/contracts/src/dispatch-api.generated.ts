@@ -1347,7 +1347,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, line (ask, do or file: the line on top the run was started from; null for a run not started from the line), state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens, model_ms?, tool_ms?, queued_ms? (the milliseconds its model calls took, its tool calls took and it waited in the queue before its first claim, each left out while 0)}, created_at, finished_at}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND. */
+    /** @description The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, line (ask, do or file: the line on top the run was started from; null for a run not started from the line), state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens, model_ms?, pace_ms?, tool_ms?, queued_ms? (the milliseconds its model calls took, of those the milliseconds the agent's pacer held them before they were sent, the milliseconds its tool calls took and those it waited in the queue before its first claim, each left out while 0)}, created_at, finished_at}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND. */
     get: operations["getApiV1GoingRunsById"];
     put?: never;
     post?: never;
@@ -5494,6 +5494,8 @@ export interface components {
       calls: number;
       /** Format: int64 */
       model_ms?: number;
+      /** Format: int64 */
+      pace_ms?: number;
       /** Format: int64 */
       queued_ms?: number;
       tokens: number;

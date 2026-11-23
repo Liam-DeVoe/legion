@@ -5182,7 +5182,7 @@
     },
     "/api/v1/going/runs/{id}": {
       "get": {
-        "description": "The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, line (ask, do or file: the line on top the run was started from; null for a run not started from the line), state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens, model_ms?, tool_ms?, queued_ms? (the milliseconds its model calls took, its tool calls took and it waited in the queue before its first claim, each left out while 0)}, created_at, finished_at}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND.",
+        "description": "The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, line (ask, do or file: the line on top the run was started from; null for a run not started from the line), state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens, model_ms?, pace_ms?, tool_ms?, queued_ms? (the milliseconds its model calls took, of those the milliseconds the agent's pacer held them before they were sent, the milliseconds its tool calls took and those it waited in the queue before its first claim, each left out while 0)}, created_at, finished_at}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND.",
         "operationId": "getApiV1GoingRunsById",
         "parameters": [
           {
@@ -22631,6 +22631,10 @@
             "type": "integer"
           },
           "model_ms": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "pace_ms": {
             "format": "int64",
             "type": "integer"
           },

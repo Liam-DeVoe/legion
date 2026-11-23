@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -41,11 +42,12 @@ func (s *goingScript) set(words string, reply func(n int) agenttest.Reply) {
 }
 
 // goingLoop is a fake chat model that answers each request as its script says, and the agent's
-// loop working the rig's runs against it.
+// loop working the rig's runs against it, paced to tokensPerMinute, none while it is 0.
 type goingLoop struct {
-	fake   *agenttest.Model
-	script *goingScript
-	stop   func()
+	fake            *agenttest.Model
+	script          *goingScript
+	tokensPerMinute int
+	stop            func()
 }
 
 // newGoingLoop is the fake and the agent's loop, which stops when the test ends.
@@ -73,7 +75,9 @@ func newGoingLoop(t *testing.T, rig goingAgentRig) *goingLoop {
 func (l *goingLoop) start(rig goingAgentRig) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ran := make(chan error, 1)
-	go func() { ran <- agent.Run(ctx, rig.client, agent.Config{Model: l.fake.Model(), Slots: 8}) }()
+	go func() {
+		ran <- agent.Run(ctx, rig.client, agent.Config{Model: l.fake.Model(), TokensPerMinute: l.tokensPerMinute, Slots: 8})
+	}()
 	l.stop = sync.OnceFunc(func() {
 		cancel()
 		<-ran
@@ -812,28 +816,92 @@ func TestACallsFrameReachesTheRunsEventsBeforeItsToolFrame(t *testing.T) {
 }
 
 // TestARunsRecordSaysWhereItsTimeWent: a run's record says where its time went, beside its calls,
-// working time and tokens: the milliseconds its model calls took, those its tool calls took, which
-// the agent's end adds, and those it waited in the queue before its first claim, which the end
-// keeps; GET /api/v1/going/runs/{id} and History show each in the run's used.
+// working time and tokens: the milliseconds its model calls took, of those the milliseconds the
+// agent's pacer held them, and those its tool calls took, which the agent's end adds, and those it
+// waited in the queue before its first claim, which the end keeps; GET /api/v1/going/runs/{id} and
+// History show each in the run's used. Each reply frame says the reasoning tokens the provider
+// counted and the tokens the pacer reserved for its call. The first run's agent names no quota,
+// so the pacer holds nothing and the record leaves pace_ms out, and its frames still say what the
+// pacer would have reserved. The second run, of the same words, is worked by an agent whose quota
+// is set from those frames: its minute's share is paceWait's worth of tokens short of the run's
+// two calls, so its second call waits up to paceWait, less the time since its first call, and its
+// record says so.
 func TestARunsRecordSaysWhereItsTimeWent(t *testing.T) {
 	rig := newGoingAgentRig(t, nil)
 	rig.served.deps.Identity = headerIdentity(rig.database)
 	loop := newGoingLoop(t, rig)
 	issue := rig.issue(t, "The issue the run reads slowly")
 	const words = "read the issue, slowly"
-	const modelWait, readWait = 30 * time.Millisecond, 200 * time.Millisecond
+	const modelWait, readWait, paceWait = 30 * time.Millisecond, 200 * time.Millisecond, 3 * time.Second
+	// Each run of the words asks twice: its read, then its answer.
 	loop.script.set(words, func(n int) agenttest.Reply {
 		wait := make(chan struct{})
 		time.AfterFunc(modelWait, func() { close(wait) })
-		if n == 1 {
-			return agenttest.Reply{Hold: wait, Calls: []agenttest.Call{{Name: "read", Arguments: map[string]any{"issue": issue}}}}
+		if n%2 == 1 {
+			return agenttest.Reply{Hold: wait, Calls: []agenttest.Call{{Name: "read", Arguments: map[string]any{"issue": issue}}}, Output: 3, Reasoning: 2}
 		}
-		return agenttest.Reply{Hold: wait, Text: "It says what its title says."}
+		return agenttest.Reply{Hold: wait, Text: "It says what its title says.", Output: 5, Reasoning: 4}
 	})
 	rig.hooks.set(t, http.MethodGet, "/api/v1/issues/"+issue, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
 		time.Sleep(readWait)
 		inner.ServeHTTP(w, r)
 	})
+	type replyFrame struct {
+		ModelMS         int64 `json:"model_ms"`
+		PaceMS          int64 `json:"pace_ms"`
+		ReasoningTokens int   `json:"reasoning_tokens"`
+		ReservedTokens  int   `json:"reserved_tokens"`
+	}
+	// replies are the reply frames of run's events, in order.
+	replies := func(t *testing.T, run string) []replyFrame {
+		t.Helper()
+		rows, err := rig.database.Pool.Query(context.Background(), `select data from going_run_events where run_id = $1::uuid and name = 'reply' order by sequence`, run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		frames, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (replyFrame, error) {
+			var frame replyFrame
+			var data []byte
+			if err := row.Scan(&data); err != nil {
+				return frame, err
+			}
+			return frame, json.Unmarshal(data, &frame)
+		})
+		if err != nil {
+			t.Fatalf("read the reply frames of run %s: %v", run, err)
+		}
+		if len(frames) != 2 || frames[0].ReasoningTokens != 2 || frames[1].ReasoningTokens != 4 {
+			t.Fatalf("run %s's reply frames are %+v, want its two calls', with the 2 and 4 reasoning tokens the model counted", run, frames)
+		}
+		return frames
+	}
+	// shown fails t unless GET /api/v1/going/runs/{id} and History show run with what its record
+	// spent.
+	shown := func(t *testing.T, run string, used agentwire.Budget) {
+		t.Helper()
+		queued := rig.count(t, `select coalesce((budget_used->>'queued_ms')::int, 0) from going_runs where id = $1::uuid`, run)
+		want := goingRunUsed{Calls: used.Calls, WorkingMS: used.WorkingMS, Tokens: used.Tokens, ModelMS: used.ModelMS, PaceMS: used.PaceMS,
+			ToolMS: used.ToolMS, QueuedMS: int64(queued)}
+		response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET the run answered %d %s", response.Code, response.Body.String())
+		}
+		if got := decodeBody[goingRun](t, response).Used; got != want {
+			t.Errorf("GET the run answers used %+v, want %+v", got, want)
+		}
+		var listed *goingRun
+		for _, conversation := range goingHistory(t, rig.mux, "alice", "").Rows {
+			for i := range conversation.Runs {
+				if conversation.Runs[i].ID == run {
+					listed = &conversation.Runs[i]
+				}
+			}
+		}
+		if listed == nil || listed.Used != want {
+			t.Errorf("History lists the run as %+v, want it with used %+v", listed, want)
+		}
+	}
+
 	// Queued at a shape no build reads, so no agent claims it before it has waited 5 s.
 	run := rig.queued(t, "alice", goingRunShape+1, words)
 	rig.exec(t, `update going_runs set shape = $2, created_at = created_at - interval '5 seconds' where id = $1::uuid`, run, goingRunShape)
@@ -847,29 +915,46 @@ func TestARunsRecordSaysWhereItsTimeWent(t *testing.T) {
 		t.Errorf("the run's record spent %d ms of model time, %d of tool time and %d of working time, want at least %d, %d and their sum",
 			used.ModelMS, used.ToolMS, used.WorkingMS, 2*modelWait.Milliseconds(), readWait.Milliseconds())
 	}
+	if used.PaceMS != 0 {
+		t.Errorf("the run of an agent that names no quota spent %d ms in its pacer, want none", used.PaceMS)
+	}
 	queued := rig.count(t, `select coalesce((budget_used->>'queued_ms')::int, -1) from going_runs where id = $1::uuid`, run)
 	if queued < 5000 || queued > 60_000 {
 		t.Errorf("the run's record says it waited %d ms in the queue, want the 5 s it waited", queued)
 	}
-	want := goingRunUsed{Calls: used.Calls, WorkingMS: used.WorkingMS, Tokens: used.Tokens, ModelMS: used.ModelMS, ToolMS: used.ToolMS, QueuedMS: int64(queued)}
-	response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("GET the run answered %d %s", response.Code, response.Body.String())
+	reserved := 0
+	for _, reply := range replies(t, run) {
+		reserved += reply.ReservedTokens
 	}
-	if got := decodeBody[goingRun](t, response).Used; got != want {
-		t.Errorf("GET the run answers used %+v, want %+v", got, want)
+	if reserved <= 2*agent.Levels["standard"].OutputTokens {
+		t.Errorf("the run's reply frames say the pacer would have reserved %d tokens, want its two calls' prompts and output tokens", reserved)
 	}
-	var listed *goingRun
-	for _, conversation := range goingHistory(t, rig.mux, "alice", "").Rows {
-		for i := range conversation.Runs {
-			if conversation.Runs[i].ID == run {
-				listed = &conversation.Runs[i]
-			}
-		}
+	shown(t, run, used)
+
+	// The agent's runs take 75% of the quota (going/agent's quotaShare), a minute's share of which
+	// is the pacer's burst and the most it holds.
+	loop.stop()
+	share := float64(reserved) * 60 / (60 + paceWait.Seconds())
+	loop.tokensPerMinute = int(math.Ceil(share / 0.75))
+	loop.start(rig)
+	paced := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	held := rig.ended(t, paced, time.Minute)
+	if held.state != "done" || held.used.Calls != 2 {
+		t.Fatalf("the paced run ended %s with %q after %d model calls, want done after 2", held.state, held.reason, held.used.Calls)
 	}
-	if listed == nil || listed.Used != want {
-		t.Errorf("History lists the run as %+v, want it with used %+v", listed, want)
+	// The paced run asks the same words of the same issue, so its calls' estimates are the run
+	// before's, give or take a character of the times its prompts show.
+	frames := replies(t, paced)
+	second := frames[1]
+	if second.PaceMS <= 0 || second.PaceMS > paceWait.Milliseconds() || second.ModelMS < second.PaceMS+modelWait.Milliseconds() {
+		t.Errorf("the paced run's second model call was held %d ms of its %d ms, want up to %s, within its time to its last token and beside the %s its model took (the pacer reserved %d and %d tokens of a share of %d, the run before %d)",
+			second.PaceMS, second.ModelMS, paceWait, modelWait, frames[0].ReservedTokens, second.ReservedTokens, int(share), reserved)
 	}
+	if pace := frames[0].PaceMS + second.PaceMS; held.used.PaceMS != pace || held.used.ModelMS < pace+2*modelWait.Milliseconds() {
+		t.Errorf("the paced run's record spent %d ms in its pacer and %d ms of model time, want its frames' %d ms within its model time",
+			held.used.PaceMS, held.used.ModelMS, pace)
+	}
+	shown(t, paced, held.used)
 }
 
 // TestARunWhoseSavedStepNamesAToolThisBuildLacksFails: a run whose saved step names a tool this

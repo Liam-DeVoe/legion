@@ -436,8 +436,9 @@ func (a *Answerer) faultCode(ctx context.Context, run *answerRun, result agentlo
 			return contracts.GoingErrorAnswerDidNotArrive
 		}
 		// The reader is told ANSWER_FAILED and no more than that, so this is the one place
-		// the refusal is said: an operator whose deployment answers 401 or 429 reads it here
-		// and nowhere else.
+		// the run's refusal is said: an operator whose deployment answers 401 reads it here,
+		// and one whose deployment answers 429 reads it here after agentloop's own line of
+		// each 429 attempt (agentloop's modelTransport.rateLimited).
 		slog.Warn("going: the model service refused the run", "status", result.Status, "detail", result.Detail)
 		return contracts.GoingErrorAnswerFailed
 	default:

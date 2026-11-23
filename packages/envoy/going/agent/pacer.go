@@ -51,47 +51,57 @@ func (p *pacer) delay(now time.Time, tokens int) (*rate.Reservation, time.Durati
 	return reservation, reservation.DelayFrom(now), true
 }
 
-// wait waits out the pacing of tokens, refusing a wait that ends past ctx's deadline rather than
-// spending the step's time on a call it cannot make.
-func (p *pacer) wait(ctx context.Context, tokens int) error {
+// wait waits out the pacing of tokens and answers how long it held the call, refusing a wait that
+// ends past ctx's deadline rather than spending the step's time on a call it cannot make. A nil
+// pacer holds nothing.
+func (p *pacer) wait(ctx context.Context, tokens int) (time.Duration, error) {
+	if p == nil {
+		return 0, nil
+	}
 	now := p.now()
 	reservation, wait, ok := p.delay(now, tokens)
 	if !ok {
-		return errQuotaPastDeadline
+		return 0, errQuotaPastDeadline
 	}
 	if wait <= 0 {
-		return nil
+		return 0, nil
 	}
 	if deadline, has := ctx.Deadline(); has && now.Add(wait).After(deadline) {
 		reservation.CancelAt(now)
-		return errQuotaPastDeadline
+		return 0, errQuotaPastDeadline
 	}
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		reservation.CancelAt(p.now())
-		return ctx.Err()
+		ended := p.now()
+		reservation.CancelAt(ended)
+		return ended.Sub(now), ctx.Err()
 	case <-timer.C:
-		return nil
+		return p.now().Sub(now), nil
 	}
 }
 
 // paced is model with the pacing taken in its endpoint's Token, which agentloop calls before
-// every HTTP attempt, the retry included: each attempt is charged estimate's tokens. A nil pacer
-// paces nothing.
-func (p *pacer) paced(model agentloop.Model, estimate func() int) agentloop.Model {
-	if p == nil {
-		return model
-	}
+// every HTTP attempt, the retry included: each attempt is charged estimate's tokens, of which the
+// pacer reserves at most a minute's share (delay). charged is told of each attempt the tokens it
+// was charged and how long the pacer held it, and of an attempt the pacer refused, which is not
+// made and keeps no reservation, how long it held it and no tokens. A nil pacer paces nothing and
+// holds no attempt, and still tells charged each attempt's estimate, so a run whose deployment
+// names no quota still says what the pacer would have reserved.
+func (p *pacer) paced(model agentloop.Model, estimate func() int, charged func(tokens int, held time.Duration)) agentloop.Model {
 	token := model.Endpoint.Token
 	model.Endpoint.Token = func(ctx context.Context) (string, error) {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if err := p.wait(ctx, estimate()); err != nil {
+		tokens := estimate()
+		held, err := p.wait(ctx, tokens)
+		if err != nil {
+			charged(0, held)
 			return "", err
 		}
+		charged(tokens, held)
 		return token(ctx)
 	}
 	return model

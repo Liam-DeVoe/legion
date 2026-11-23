@@ -92,7 +92,7 @@ func (w *worker) review() stepOutcome {
 	var asked []int
 	var text string
 	request := w.level.request(w.agent.config.Model, w.used)
-	request.Model = w.agent.pacer.paced(request.Model, func() int { return (len(reviewPrompt)+len(input))/charsPerToken + w.level.OutputTokens })
+	request.Model = w.agent.pacer.paced(request.Model, func() int { return (len(reviewPrompt)+len(input))/charsPerToken + w.level.OutputTokens }, w.charge)
 	request.System = reviewPrompt
 	request.Input = []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: input}}}}
 	request.Tools = []agentloop.Tool{{

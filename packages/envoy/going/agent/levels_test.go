@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -97,5 +98,63 @@ func TestTheAgentPacesItsShareOfTheQuota(t *testing.T) {
 	}
 	if newPacer(0) != nil {
 		t.Error("a deployment that names no quota is paced")
+	}
+}
+
+// TestEachAttemptIsToldWhatThePacerChargedAndHeldIt: every HTTP attempt of a paced model call, the
+// retry among them, is charged the call's estimate and told how long the pacer held it. Of a quota
+// of 60,000 a minute, whose share is 45,000, a first attempt of 22,575 tokens is held for nothing
+// and a second waits the 150 its share lacks, 0.2 s; a third, with 10 ms left, is refused at once,
+// charged nothing and not made. A deployment that names no quota holds no attempt and still
+// charges each its estimate, which a call's reply frame then says.
+func TestEachAttemptIsToldWhatThePacerChargedAndHeldIt(t *testing.T) {
+	const estimate = 22_575
+	type charge struct {
+		tokens int
+		held   time.Duration
+	}
+	for _, c := range []struct {
+		name  string
+		pacer *pacer
+	}{
+		{name: "a deployment that names no quota"},
+		{name: "a quota of 60,000 a minute", pacer: newPacer(60_000)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var charges []charge
+			read := 0
+			token := func(context.Context) (string, error) {
+				read++
+				return "a token", nil
+			}
+			model := c.pacer.paced(agentloop.Model{Endpoint: agentloop.Endpoint{Token: token}}, func() int { return estimate },
+				func(tokens int, held time.Duration) { charges = append(charges, charge{tokens, held}) })
+			for attempt := range 2 {
+				if _, err := model.Endpoint.Token(t.Context()); err != nil {
+					t.Fatalf("attempt %d: %v", attempt+1, err)
+				}
+			}
+			short, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+			defer cancel()
+			_, err := model.Endpoint.Token(short)
+			if len(charges) != 3 {
+				t.Fatalf("three attempts were told %d charges, %v, want one each", len(charges), charges)
+			}
+			if c.pacer == nil {
+				if err != nil || read != 3 || charges[0] != (charge{estimate, 0}) || charges[1] != charges[0] || charges[2] != charges[0] {
+					t.Errorf("with no quota the attempts were told %v and %d were made (%v), want each made, charged %d and held for nothing", charges, read, err, estimate)
+				}
+				return
+			}
+			if charges[0] != (charge{estimate, 0}) {
+				t.Errorf("the first attempt was told %+v, want %d tokens held for nothing", charges[0], estimate)
+			}
+			if second := charges[1]; second.tokens != estimate || second.held < 150*time.Millisecond || second.held > 2*time.Second {
+				t.Errorf("the second attempt was told %+v, want %d tokens held about 0.2 s", second, estimate)
+			}
+			if !errors.Is(err, errQuotaPastDeadline) || read != 2 || charges[2] != (charge{}) {
+				t.Errorf("the attempt with 10 ms left answered %v, was told %+v, and %d attempts were made; want it refused, charged nothing and not made", err, charges[2], read)
+			}
+		})
 	}
 }

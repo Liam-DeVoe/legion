@@ -94,13 +94,15 @@ type goingDelivery struct {
 // goingRunUsed is what a run has spent of its level's budget: its model calls, the milliseconds
 // it worked and the output tokens its model calls wrote. Time it waited for its person is in none
 // of it. It also says where the time went: the milliseconds its model calls took, each from its
-// request to its last token, those its tool calls took, and those it waited in the queue before
-// its first claim. Each of these is left out while 0, as on a run worked before they were kept.
+// request to its last token; of those, the milliseconds the agent's pacer held its calls before
+// they were sent; those its tool calls took; and those it waited in the queue before its first
+// claim. Each of these is left out while 0, as on a run worked before they were kept.
 type goingRunUsed struct {
 	Calls     int   `json:"calls"`
 	WorkingMS int64 `json:"working_ms"`
 	Tokens    int   `json:"tokens"`
 	ModelMS   int64 `json:"model_ms,omitempty"`
+	PaceMS    int64 `json:"pace_ms,omitempty"`
 	ToolMS    int64 `json:"tool_ms,omitempty"`
 	QueuedMS  int64 `json:"queued_ms,omitempty"`
 }

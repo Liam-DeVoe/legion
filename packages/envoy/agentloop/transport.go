@@ -19,15 +19,20 @@ import (
 
 // modelTransport carries every model call of a run. It puts the endpoint's token, read again for
 // the attempt, on each request; adds the endpoint's own query parameters to it; and makes the
-// run's one retry, on a 429, a 5xx or a transport error, within the run's time. It keeps the
-// status of the last response it handed back, which is how a provider error is given the HTTP
-// status the provider answered with, and whether that response's body names the provider's
+// run's one retry, on a 429, a 5xx or a transport error, within the run's time. It logs each 429
+// at WARN, once for the attempt it answered (rateLimited), which is the one place a caller's 429
+// is logged: the agent's runs and the server's short answers each make their calls here. It keeps
+// the status of the last response it handed back, which is how a provider error is given the
+// HTTP status the provider answered with, and whether that response's body names the provider's
 // content filter; and it cuts a response past streamLimit bytes.
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
 	token func(context.Context) (string, error)
 	query url.Values
+	// deployment is the model name the requests name, which a 429 is logged with: the Azure
+	// deployment where the endpoint names one, else the model id.
+	deployment string
 	// streamLimit is the most bytes of one response's body the transport hands on, 0 for no
 	// limit (Request.StreamLimit); a read past it fails with errStreamTooLarge and sets
 	// tooLarge.
@@ -72,9 +77,15 @@ func (t *modelTransport) contentFiltered() bool {
 }
 
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
-// the default transport, for the endpoint whose protocol, token and query parameters it carries.
-func newModelTransport(endpoint Endpoint) *modelTransport {
-	return &modelTransport{base: http.DefaultTransport, kind: endpoint.Kind, token: endpoint.Token, query: endpoint.Query}
+// the default transport, for model's endpoint, whose protocol, token and query parameters it
+// carries, and the deployment its requests name.
+func newModelTransport(model Model) *modelTransport {
+	deployment := model.Endpoint.Deployment
+	if deployment == "" {
+		deployment = model.ID
+	}
+	return &modelTransport{base: http.DefaultTransport, kind: model.Endpoint.Kind, token: model.Endpoint.Token,
+		query: model.Endpoint.Query, deployment: deployment}
 }
 
 // client is the HTTP client one Run or one Decide makes its model calls with: this transport,
@@ -145,7 +156,12 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err == nil && resp.StatusCode/100 != 2 {
 			t.status.Store(int32(resp.StatusCode))
 		}
-		if wait, retry := retryable(resp, err); retry && attempt == 0 && waitable(ctx, wait) {
+		wait, retry := retryable(resp, err)
+		retry = retry && attempt == 0 && waitable(ctx, wait)
+		if err == nil && resp.StatusCode == http.StatusTooManyRequests {
+			t.rateLimited(attempt, wait, retry)
+		}
+		if retry {
 			if resp != nil {
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
@@ -180,6 +196,16 @@ func (t *modelTransport) peekFilter(resp *http.Response) {
 		io.Reader
 		io.Closer
 	}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
+}
+
+// rateLimited logs a 429 the model service answered attempt (0 for the first) with, at WARN:
+// the deployment the request named, the attempt, from 1, the wait before the retry (the
+// Retry-After the service gave, or defaultRetryWait where it gave none), and whether the call is
+// made again after it, which it is not on the retry itself or where the run has no time for the
+// wait.
+func (t *modelTransport) rateLimited(attempt int, wait time.Duration, retry bool) {
+	slog.Warn("agentloop: the model service answered 429, its rate limit",
+		"deployment", t.deployment, "attempt", attempt+1, "wait", wait, "retry", retry)
 }
 
 // readToken reads the endpoint's token for one attempt. A Token that panics is recovered and

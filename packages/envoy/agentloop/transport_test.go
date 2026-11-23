@@ -2,11 +2,15 @@ package agentloop
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"net/http"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestRetryableBoundsTheWaitTheEndpointNames: the one retry of a model call reads the wait the
@@ -59,5 +63,48 @@ func TestRetryableBoundsTheWaitTheEndpointNames(t *testing.T) {
 	}
 	if driven < rowsToDrive {
 		t.Fatalf("the table drove %d rows, want %d", driven, rowsToDrive)
+	}
+}
+
+// TestA429IsLoggedOnceForTheAttemptItAnswered: a 429 the model service answers is logged at WARN
+// for the attempt it answered, once, with the deployment the request names, the attempt, the wait
+// before the retry, here the Retry-After of 1 the service gave, and that the call is made again;
+// the retry's answer is the call's. The test runs alone, not in parallel, so the default logger it
+// reads holds no other test's lines.
+func TestA429IsLoggedOnceForTheAttemptItAnswered(t *testing.T) {
+	logs := &logtest.Recorder{}
+	logtest.SetDefault(t, logs)
+	limited := reply{
+		status: http.StatusTooManyRequests, headers: map[string]string{"Retry-After": "1"},
+		body: []byte(`{"error":{"code":"429","message":"Requests to the deployment have exceeded its rate limit."}}`),
+	}
+	s := newStandIn(t, limited, chatStream("stop", chatUsage{Prompt: 2, Completion: 3}, "The note says plum."))
+	f := newFixture(t, s, OpenAIChat, 1)
+	f.req.Model.ID = "chat-deployment-standin"
+	result, err := Run(context.Background(), f.req)
+	if err != nil || result.Fault != "" || result.Text != "The note says plum." {
+		t.Fatalf("after a 429: result %+v, %v; want the retry's answer", result, err)
+	}
+	if n := len(s.attempts()); n != 2 {
+		t.Errorf("a 429 then an answer took %d requests, want 2", n)
+	}
+	var warned []map[string]any
+	for _, record := range logs.Records() {
+		if record.Level != slog.LevelWarn {
+			continue
+		}
+		attrs := map[string]any{"msg": record.Message}
+		record.Attrs(func(attr slog.Attr) bool {
+			attrs[attr.Key] = attr.Value.Any()
+			return true
+		})
+		warned = append(warned, attrs)
+	}
+	want := []map[string]any{{
+		"msg":        "agentloop: the model service answered 429, its rate limit",
+		"deployment": "chat-deployment-standin", "attempt": int64(1), "wait": time.Second, "retry": true,
+	}}
+	if !reflect.DeepEqual(warned, want) {
+		t.Errorf("the run logged the warnings %v, want the one line of its 429 %v", warned, want)
 	}
 }

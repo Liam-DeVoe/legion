@@ -41,7 +41,8 @@ type Call struct {
 // status with an error body, Error where it is set and the fake's own otherwise, and RetryAfter
 // its Retry-After header. Otherwise the reply streams Padding bytes of SSE comments, which a
 // reader skips, then Text, in one piece, then Calls, and finishes with Finish ("stop", or
-// "tool_calls" where it calls a tool, by default), having written Output completion tokens.
+// "tool_calls" where it calls a tool, by default), having written Output completion tokens, of
+// which it counts Reasoning as reasoning tokens.
 // Hold, where set, is waited on before anything is sent, until it closes or the client leaves;
 // Endless streams text with no end until the client leaves.
 type Reply struct {
@@ -53,6 +54,7 @@ type Reply struct {
 	Calls      []Call
 	Finish     string
 	Output     int
+	Reasoning  int
 	Hold       <-chan struct{}
 	Endless    bool
 }
@@ -364,9 +366,13 @@ func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	output := max(reply.Output, 1)
+	usage := map[string]any{"prompt_tokens": 10, "completion_tokens": output, "total_tokens": 10 + output}
+	if reply.Reasoning > 0 {
+		usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": reply.Reasoning}
+	}
 	if !send(chunk(map[string]any{}, finish)) || !send(map[string]any{
 		"id": "chatcmpl-agenttest", "object": "chat.completion.chunk", "created": 1, "model": ModelID, "choices": []any{},
-		"usage": map[string]any{"prompt_tokens": 10, "completion_tokens": output, "total_tokens": 10 + output},
+		"usage": usage,
 	}) {
 		left()
 		return

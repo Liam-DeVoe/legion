@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"go.uber.org/goleak"
+	"golang.org/x/time/rate"
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going"
@@ -166,7 +167,13 @@ func (s *fakeServer) lastReply(t *testing.T) replyFrame {
 // workRun works one turn of a fast run of words on model, at the server client calls.
 func workRun(t *testing.T, model agentloop.Model, client agentwire.Client, words string) {
 	t.Helper()
-	a := &agent{client: client, config: Config{Model: model}, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+	workPacedRun(t, model, nil, client, words)
+}
+
+// workPacedRun is workRun with the run's model calls paced by pacer, nil for none.
+func workPacedRun(t *testing.T, model agentloop.Model, pacer *pacer, client agentwire.Client, words string) {
+	t.Helper()
+	a := &agent{client: client, config: Config{Model: model}, pacer: pacer, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
 	run := &agentwire.ClaimedRun{ID: "run-1", Words: words, Level: "fast", Mode: "ask", LeaseToken: "lease-1"}
 	newWorker(t.Context(), a, run, func() {}).work()
 }
@@ -701,78 +708,112 @@ func TestACallsLineShowsAsItStarts(t *testing.T) {
 
 // TestARunsFramesSayWhereItsTimeWent: each model call's reply frame says how long the call took
 // from its request to its last token, and to its first token of prose, none for a reply of tool
-// calls alone, and the tokens of its prompt and of its reply; each tool call's frame says how
-// long the call took; and the turn's end adds the model calls' time and the tool calls' time to
-// the run's budget, each summed over its calls, within the turn's working time. A model call's
-// time ends where its tools start: the first call, whose model takes 30 ms and whose read takes
-// 500 ms, took less than its read.
+// calls alone, how long the agent's pacer held it, the tokens of its prompt, of its reply and of
+// the reasoning in that reply, and the tokens the pacer reserved for it, its prompt's and its
+// level's output tokens, which a deployment that names no quota counts too; each tool call's frame
+// says how long the call took; and the turn's end adds the model calls' time, the pacer's part of
+// it and the tool calls' time to the run's budget, each summed over its calls, within the turn's
+// working time. A model call's time ends where its tools start: the first call, whose model takes
+// 30 ms, whose pacer holds it up to 200 ms and whose read takes 500 ms, took less than its read.
 func TestARunsFramesSayWhereItsTimeWent(t *testing.T) {
-	const modelWait, readWait = 30 * time.Millisecond, 500 * time.Millisecond
-	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
-		time.Sleep(modelWait)
-		if len(request.ToolResults()) > 0 {
-			return agenttest.Reply{Text: "DEMO-15 has no comments.", Output: 7}
-		}
-		return agenttest.Reply{Calls: []agenttest.Call{{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-15"}}}, Output: 3}
-	})
-	server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
-		time.Sleep(readWait)
-		return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"key":"DEMO-15"}`)}
-	})
-	workRun(t, fake.Model(), client, "what is DEMO-15")
-	end, _ := server.end(t)
-	if end.State != agentwire.StateDone {
-		t.Fatalf("the run ended %s with %q, want done", end.State, end.Reason)
+	const modelWait, readWait, paceWait = 30 * time.Millisecond, 500 * time.Millisecond, 200 * time.Millisecond
+	for _, c := range []struct {
+		name  string
+		pacer func() *pacer
+	}{
+		{name: "a deployment that names no quota", pacer: func() *pacer { return nil }},
+		{name: "a call the pacer holds", pacer: func() *pacer { return spentPacer(paceWait) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+				time.Sleep(modelWait)
+				if len(request.ToolResults()) > 0 {
+					return agenttest.Reply{Text: "DEMO-15 has no comments.", Output: 7, Reasoning: 4}
+				}
+				return agenttest.Reply{Calls: []agenttest.Call{{Name: toolRead, Arguments: map[string]any{"issue": "DEMO-15"}}}, Output: 3, Reasoning: 2}
+			})
+			server, client := newFakeServer(t, func(agentwire.CallRequest) agentwire.CallAnswer {
+				time.Sleep(readWait)
+				return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"key":"DEMO-15"}`)}
+			})
+			pacer := c.pacer()
+			workPacedRun(t, fake.Model(), pacer, client, "what is DEMO-15")
+			end, _ := server.end(t)
+			if end.State != agentwire.StateDone {
+				t.Fatalf("the run ended %s with %q, want done", end.State, end.Reason)
+			}
+			server.mu.Lock()
+			defer server.mu.Unlock()
+			var tools []toolFrame
+			var replies []replyFrame
+			for _, frame := range server.events {
+				var err error
+				switch frame.Name {
+				case frameTool:
+					var tool toolFrame
+					err = json.Unmarshal(frame.Data, &tool)
+					tools = append(tools, tool)
+				case frameReply:
+					var reply replyFrame
+					err = json.Unmarshal(frame.Data, &reply)
+					replies = append(replies, reply)
+				}
+				if err != nil {
+					t.Fatalf("the %s frame %s does not read: %v", frame.Name, frame.Data, err)
+				}
+			}
+			if len(tools) != 1 || len(replies) != 2 {
+				t.Fatalf("the run's events hold %d tool frames and %d reply frames, want the read's and the two model calls'", len(tools), len(replies))
+			}
+			read, called, answer := tools[0], replies[0], replies[1]
+			if read.MS < readWait.Milliseconds() {
+				t.Errorf("the read's tool frame says it took %d ms, want at least the %d ms its call took", read.MS, readWait.Milliseconds())
+			}
+			for i, reply := range replies {
+				if reply.ModelMS < reply.PaceMS+modelWait.Milliseconds() || reply.InputTokens != 10 {
+					t.Errorf("model call %d's reply frame says %d ms, %d of them paced, and %d prompt tokens, want at least its pace and %d ms, and the 10 the model counted",
+						i+1, reply.ModelMS, reply.PaceMS, reply.InputTokens, modelWait.Milliseconds())
+				}
+			}
+			if called.OutputTokens != 3 || answer.OutputTokens != 7 || called.ReasoningTokens != 2 || answer.ReasoningTokens != 4 {
+				t.Errorf("the reply frames say %d and %d reply tokens, %d and %d of them reasoning, want the 3 and 7, and 2 and 4, the model counted",
+					called.OutputTokens, answer.OutputTokens, called.ReasoningTokens, answer.ReasoningTokens)
+			}
+			// The second call's prompt holds the first call's reply and its read's result.
+			if called.ReservedTokens <= Levels["fast"].OutputTokens || answer.ReservedTokens <= called.ReservedTokens {
+				t.Errorf("the reply frames say the pacer reserved %d and %d tokens, want each call's prompt and the level's %d output tokens, the second's prompt the longer",
+					called.ReservedTokens, answer.ReservedTokens, Levels["fast"].OutputTokens)
+			}
+			if held := called.PaceMS > 0; held != (pacer != nil) {
+				t.Errorf("the first model call's reply frame says the pacer held it %d ms, want a hold %t", called.PaceMS, pacer != nil)
+			}
+			if called.FirstTokenMS != 0 {
+				t.Errorf("the reply of a tool call alone says its first token came at %d ms, want none", called.FirstTokenMS)
+			}
+			if answer.FirstTokenMS < modelWait.Milliseconds() || answer.FirstTokenMS > answer.ModelMS {
+				t.Errorf("the answer's first token came at %d ms, want at least %d ms and at most its last at %d ms", answer.FirstTokenMS, modelWait.Milliseconds(), answer.ModelMS)
+			}
+			if called.ModelMS >= read.MS {
+				t.Errorf("the first model call took %d ms, want less than its read's %d ms: its time ends where its tools start", called.ModelMS, read.MS)
+			}
+			if used := end.Used; used.ModelMS != called.ModelMS+answer.ModelMS || used.PaceMS != called.PaceMS+answer.PaceMS || used.ToolMS != read.MS ||
+				used.WorkingMS < used.ModelMS+used.ToolMS {
+				t.Errorf("the turn's end spent %d ms of model time, %d of them paced, %d of tool time and %d of working time, want %d, %d, %d and at least the model's and the tools' sum",
+					used.ModelMS, used.PaceMS, used.ToolMS, used.WorkingMS, called.ModelMS+answer.ModelMS, called.PaceMS+answer.PaceMS, read.MS)
+			}
+		})
 	}
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	var tools []toolFrame
-	var replies []replyFrame
-	for _, frame := range server.events {
-		var err error
-		switch frame.Name {
-		case frameTool:
-			var tool toolFrame
-			err = json.Unmarshal(frame.Data, &tool)
-			tools = append(tools, tool)
-		case frameReply:
-			var reply replyFrame
-			err = json.Unmarshal(frame.Data, &reply)
-			replies = append(replies, reply)
-		}
-		if err != nil {
-			t.Fatalf("the %s frame %s does not read: %v", frame.Name, frame.Data, err)
-		}
-	}
-	if len(tools) != 1 || len(replies) != 2 {
-		t.Fatalf("the run's events hold %d tool frames and %d reply frames, want the read's and the two model calls'", len(tools), len(replies))
-	}
-	read, called, answer := tools[0], replies[0], replies[1]
-	if read.MS < readWait.Milliseconds() {
-		t.Errorf("the read's tool frame says it took %d ms, want at least the %d ms its call took", read.MS, readWait.Milliseconds())
-	}
-	for i, reply := range replies {
-		if reply.ModelMS < modelWait.Milliseconds() || reply.InputTokens != 10 {
-			t.Errorf("model call %d's reply frame says %d ms and %d prompt tokens, want at least %d ms and the 10 the model counted",
-				i+1, reply.ModelMS, reply.InputTokens, modelWait.Milliseconds())
-		}
-	}
-	if called.OutputTokens != 3 || answer.OutputTokens != 7 {
-		t.Errorf("the reply frames say %d and %d reply tokens, want the 3 and 7 the model counted", called.OutputTokens, answer.OutputTokens)
-	}
-	if called.FirstTokenMS != 0 {
-		t.Errorf("the reply of a tool call alone says its first token came at %d ms, want none", called.FirstTokenMS)
-	}
-	if answer.FirstTokenMS < modelWait.Milliseconds() || answer.FirstTokenMS > answer.ModelMS {
-		t.Errorf("the answer's first token came at %d ms, want at least %d ms and at most its last at %d ms", answer.FirstTokenMS, modelWait.Milliseconds(), answer.ModelMS)
-	}
-	if called.ModelMS >= read.MS {
-		t.Errorf("the first model call took %d ms, want less than its read's %d ms: its time ends where its tools start", called.ModelMS, read.MS)
-	}
-	if used := end.Used; used.ModelMS != called.ModelMS+answer.ModelMS || used.ToolMS != read.MS || used.WorkingMS < used.ModelMS+used.ToolMS {
-		t.Errorf("the turn's end spent %d ms of model time, %d of tool time and %d of working time, want %d, %d and at least their sum",
-			used.ModelMS, used.ToolMS, used.WorkingMS, called.ModelMS+answer.ModelMS, read.MS)
-	}
+}
+
+// spentPacer is a pacer whose share is spent: a burst of 1,000 tokens, fewer than any call's
+// estimate, which the level's output tokens alone pass, so each call reserves the whole burst
+// (pacer.delay), earned back in wait. The first call it paces waits up to wait, less the time
+// since the pacer was made, and a call made wait after the one before it waits for nothing.
+func spentPacer(wait time.Duration) *pacer {
+	const burst = 1000
+	p := &pacer{limiter: rate.NewLimiter(rate.Limit(burst/wait.Seconds()), burst), now: time.Now}
+	p.limiter.ReserveN(time.Now(), burst)
+	return p
 }
 
 // TestThePagesIssueIsReadBeforeTheFirstModelCall: a run asked on an issue's page reads that issue
