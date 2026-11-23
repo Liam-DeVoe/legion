@@ -17,13 +17,13 @@
 -- gives its task to the process the claim still runs.
 --
 -- But a claim whose name the issue's plan rows give a key records that key, `key:<key>`: the key
--- of the latest plan_steps row of the issue that holds the name and names a key other than the
--- owner's, in the order record.Postgres.PlanStepsOf reads the rows (generation, task, place). That
--- is the key record.NameAgents keeps the name for: a later row of the name with no key does not
--- end its hold, and a row of the owner, or one that holds no name, gives none. A claim's name is
--- the last part of its token after the issue's part (claim.Token.Cut). NameAgents keeps a key's
--- name from the rows and from the claims that record a key's session (record.KeySessionsOf), and a
--- write of a plan deletes rows: a version replaces the rows of each task it gives
+-- of the latest plan_steps row of the issue that holds the name, in the order
+-- record.Postgres.PlanStepsOf reads the rows (generation, task, place), where that row names a key.
+-- A row of the owner, or one that holds no name, is left out, as record.NameAgents takes no name
+-- from it, and NameAgents keeps the name for that key. A claim's name is the last part of its
+-- token after the issue's part (claim.Token.Cut). NameAgents keeps a key's name from the rows and
+-- from the claims that record a key's session (record.KeySessionsOf), and a write of a plan
+-- deletes rows: a version replaces the rows of each task it gives
 -- (record.Postgres.PutPlan), a later version removes a task with its rows (DeleteTasks), and the
 -- first step of a new owner's run deletes the plans an earlier owner gave (workflow's
 -- passOverEarlierOwners). Left recording no agent, the claim would lose the name once the last row
@@ -36,6 +36,20 @@
 -- reaches records the key. A name whose last row of the key the release before had already deleted
 -- is one no record says was a key's, and its claim records no agent.
 --
+-- The fill skips a name whose latest row names no key, though an earlier row of it names one: its
+-- claim records no agent, and a queued start of it names none. NameAgents gives no step with no key
+-- a name a key holds, so such a row is one the release before wrote: its naming checked only the
+-- names of the version it named, so it gave the name to an agent with no key after the key, and
+-- that agent ran on the claim after the key's agent, and may run on it now. Had the fill recorded
+-- the key, that agent's next start of its own step, which names it (`step:<place>:<task>`), would
+-- find another agent's session on the claim and start the agent again mid-step in a new session;
+-- with the name skipped, that start takes the session the claim holds and records the agent. What
+-- the skip leaves: the rows show which agent a version named, not which ran, so where that agent
+-- with no key had not started at the upgrade, its first start takes the session the claim holds,
+-- the key's, as the release before did. And NameAgents still holds the name for the key while the
+-- key's earlier row stands, since a later row of the name with no key does not end a key's hold,
+-- so a later version names that agent with no key `<role>-2`, in a session of its own.
+--
 -- The release before this one names each column it reads and writes (the claim store's
 -- claimSelect and upsertClaim), so it neither reads nor writes this one, and every row it inserts
 -- takes the default.
@@ -47,6 +61,14 @@
 -- supervise rows of each run it reads). The update takes the key off each such row and leaves
 -- every other key, and that release then starts the claim as it did, resuming the session it
 -- holds. The update is owed to that release, not to the roll-forward.
+--
+-- The fill writes the claims and queued starts of every project the database holds: a migration is
+-- one static file that each database runs once (store.Store.apply), and nothing in it names the
+-- project of the daemon that runs it, so it cannot keep to one project, and no later run would fill
+-- another project's rows. So until each other project's pod restarts on this release, its daemon of
+-- the release before fails that decode on each start of its project the fill gave the key `agent`,
+-- and on each read of that start's role's runs, and the start is tried again on its backoff, so
+-- nothing is lost.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
@@ -68,10 +90,13 @@
 -- commit;
 alter table claims add column session_agent text not null default '';
 with holders as (
-  select distinct on (issue, agent) issue, agent, agent_key
-  from plan_steps
-  where agent_key not in ('', 'owner') and agent <> ''
-  order by issue, agent, generation desc, task desc, position desc
+  select issue, agent, agent_key from (
+    select distinct on (issue, agent) issue, agent, agent_key
+    from plan_steps
+    where agent_key <> 'owner' and agent <> ''
+    order by issue, agent, generation desc, task desc, position desc
+  ) latest
+  where agent_key <> ''
 ), recorded as (
   update claims c set session_agent = 'key:' || h.agent_key
   from holders h
