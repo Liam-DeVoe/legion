@@ -12,12 +12,12 @@ import type { EvalsUrlState } from "./evals-url";
 import type { EvalsScope } from "./useEvalsViews";
 
 /**
- * The present the tab reads its default compare range at: the moment it mounted, and again just
+ * The present a page reads its default compare range at: the moment it mounted, and again just
  * after each UTC midnight it stays open past. A preset window is subscribed by its days, so the
  * server moves it to the next day at midnight; this moves the range the tab compares it with to
- * the days before it on the same tick. The timer goes when the tab does.
+ * the days before it on the same tick. The timer goes when the page does.
  */
-function useUtcDayClock(): number {
+export function useUtcDayClock(): number {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     // A millisecond past the midnight that ends the day `windowDays` reads `now` in: at midnight

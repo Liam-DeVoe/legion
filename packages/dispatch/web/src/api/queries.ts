@@ -707,6 +707,33 @@ export const evalDetailQuery = (project: string, slug: string, version: number) 
     queryFn: () => api.getEval(project, slug, { limit: 1 }),
   });
 
+/** One page of the cross-project read: its window and compare range (null for none) as whole UTC
+ *  days, the repositories, and the offset of its page. */
+export interface EvalsAcrossProjectsParams {
+  readonly window: { readonly from: string; readonly to: string };
+  readonly compare: { readonly from: string; readonly to: string } | null;
+  readonly repos: readonly string[];
+  readonly offset: number;
+}
+
+/** Every project's evals (dispatch://INFRA-2918/artifact/plan-md, D11; spec R11): `GET
+ *  /api/v1/evals` with no project named, so one request reads every project the reader may read,
+ *  in the item shape a project's evals view answers, a page of EVALS_VIEW_LIMIT at `offset`. */
+export const evalsAcrossProjectsQuery = (params: EvalsAcrossProjectsParams) =>
+  queryOptions({
+    queryKey: ["evals", "across", params],
+    queryFn: () =>
+      api.listEvals({
+        compare_from: params.compare?.from,
+        compare_to: params.compare?.to,
+        from: params.window.from,
+        limit: EVALS_VIEW_LIMIT,
+        offset: params.offset > 0 ? params.offset : undefined,
+        repo: [...params.repos],
+        to: params.window.to,
+      }),
+  });
+
 /** The delivery timeline's configuration record, or `null` until someone sets it: the Settings
  *  section's form reads it, while the Delivery page's setup form starts from the `null` the
  *  timeline's `DELIVERY_NOT_CONFIGURED` already implies and reads nothing. */

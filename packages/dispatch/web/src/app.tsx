@@ -189,6 +189,11 @@ const AnswersPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
 );
+const EvalsAcrossProjects = lazy(() =>
+  import("./features/evals/EvalsAcrossProjects").then((module) => ({
+    default: module.EvalsAcrossProjects,
+  }))
+);
 
 function IssuePageFallback(): ReactNode {
   return (
@@ -1094,6 +1099,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
                 <Route element={<ProjectPage />} path="/projects/:key/evals" />
+                <Route element={<EvalsAcrossProjects />} path="/evals" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
                 <Route element={<InboxPage />} path="/credentials/*" />
                 <Route element={<MachineLoginRoute />} path="/credentials/machine" />

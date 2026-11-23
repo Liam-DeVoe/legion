@@ -35,6 +35,7 @@ import { AgentName, useAgentText } from "../refs/AgentName";
 import {
   buildIssuePath,
   buildProjectPath,
+  EVALS_PATH,
   liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
@@ -319,15 +320,15 @@ export function Sidebar({
               }
               to={PRIORITIES_PATH}
             />
-            {/* Every project's numbers on one page (`/evals`); a project's own are its Evals
+            {/* Every project's numbers on one page (`EVALS_PATH`); a project's own are its Evals
                 tab. The Delivery and Pipeline pages it replaces are each project's tab now. */}
             <RailRow
               badge={undefined}
               detail="Every project's numbers"
               label="Evals"
               onNavigate={onNavigate}
-              selected={location.pathname === "/evals"}
-              to="/evals"
+              selected={location.pathname === EVALS_PATH}
+              to={EVALS_PATH}
             />
           </ul>
         </section>
