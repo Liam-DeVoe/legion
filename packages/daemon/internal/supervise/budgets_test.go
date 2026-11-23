@@ -592,10 +592,11 @@ func TestSpawnsTheRuntimeKeepsRefusingEndInFailed(t *testing.T) {
 // A launch the runtime refuses because the claim's issue pod cannot run it until the pod's update
 // round or its release replaces it (runtime.ErrAwaitsPodUpdate) is no launch failure: the pod is
 // the daemon's to replace, and nothing of the claim failed. The claim is charged nothing, keeps
-// the refusal as its last start failure, and is tried again at the probe interval for as long as
-// the pod stands, past what the launch budget allows; the try after the pod is replaced starts it.
-// The control is another refusal of the runtime's, which is charged and fails the claim at the
-// budget, as every refusal of the runtime's did before.
+// the refusal as its last start failure, and is suspended by the daemon (podRefused). Resumed while
+// the pod still refuses it — a refusal that names no pod holds no resume back — it is refused
+// again, past what the launch budget allows, and never failed; the resume after the pod is
+// replaced starts it. The control is another refusal of the runtime's, which is charged and fails
+// the claim at the budget, as every refusal of the runtime's did before.
 func TestALaunchThatWaitsForItsPodsUpdateIsChargedNothing(t *testing.T) {
 	waits := fmt.Errorf("launch %s: the pod pod-1 of LEGION-208 was built before its launchers waited for a start's credential: %w", testToken, runtime.ErrAwaitsPodUpdate)
 	limit := testLimits().LaunchFailures
@@ -611,17 +612,21 @@ func TestALaunchThatWaitsForItsPodsUpdateIsChargedNothing(t *testing.T) {
 			t.Fatalf("the spawn answered %v, want the runtime's refusal, which is runtime.ErrAwaitsPodUpdate", err)
 		}
 		for range limit + 1 {
-			h.advance(testProbe)
+			if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's step"}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+				t.Fatalf("a resume answered %v, want the runtime's refusal, which is runtime.ErrAwaitsPodUpdate", err)
+			}
 		}
 		h.wantCalls("Spawn", limit+2)
-		h.wantState(StateLaunching)
+		h.wantState(StateSuspended)
 		h.wantBudgets(Budgets{})
 		if got := h.claim(); !strings.Contains(got.LastStartFailure, waits.Error()) || got.Locator != nil {
 			t.Fatalf("after %d refusals the claim records the last start failure %q and locator %+v, want %q and none",
 				limit+2, got.LastStartFailure, got.Locator, waits.Error())
 		}
 
-		h.advance(testProbe)
+		if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's step"}); err != nil {
+			t.Fatalf("the resume after the pod's replacement = %v, want the claim started", err)
+		}
 		h.wantCalls("Spawn", limit+3)
 		h.wantBudgets(Budgets{})
 		if h.claim().Locator == nil {
