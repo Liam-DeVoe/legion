@@ -1,6 +1,10 @@
 package leakguard
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/termsafe"
+)
 
 // RefusedBy is the check a refusal names. Its two values are the two constants below: a named
 // type rather than a bare string, so a reader of a Refusal sees which values the field holds. An
@@ -30,15 +34,21 @@ type Refusal struct {
 	Lines []string
 }
 
+// Error is the refusal as a log or a terminal shows it. Each line of the report is written as
+// termsafe.Escaped writes it, uncut: a line names a path, which the push's author chose, and a
+// path's control characters written raw could move the cursor, erase the line that names the file,
+// start a line of their own, or reverse how the rest of the path reads. A backslash is written as
+// it is, so the shared check's report lines, already escaped by its own printer, pass unchanged.
+// The write's name is escaped the same way: it can hold a remote's URL or a local path.
 func (r *Refusal) Error() string {
 	var b strings.Builder
 	b.WriteString("LEAK CHECK: refusing ")
-	b.WriteString(r.What)
+	b.WriteString(termsafe.Escaped(r.What, 0))
 	b.WriteString(": ")
 	b.WriteString(string(r.By))
 	for _, line := range r.Lines {
 		b.WriteString("\n  ")
-		b.WriteString(line)
+		b.WriteString(termsafe.Escaped(line, 0))
 	}
 	return b.String()
 }
@@ -58,10 +68,20 @@ type SetupFailure struct {
 	Err error
 }
 
+// Error is the setup failure as a log or a terminal shows it, with the write's name, the reason
+// and the failure underneath written as termsafe.Escaped writes them: the name can hold a remote's
+// URL or path, and the failure underneath can quote what git or the shared check wrote on its
+// standard error, which can quote a path the push's author chose. The failure underneath keeps
+// its own line breaks, each of its lines escaped, so a git's warnings and its `fatal:` line still
+// read as the lines they are.
 func (f *SetupFailure) Error() string {
-	message := "LEAK CHECK SETUP ERROR: " + f.What + ": " + f.Why
+	message := "LEAK CHECK SETUP ERROR: " + termsafe.Escaped(f.What, 0) + ": " + termsafe.Escaped(f.Why, 0)
 	if f.Err != nil {
-		message += ": " + f.Err.Error()
+		lines := strings.Split(f.Err.Error(), "\n")
+		for i, line := range lines {
+			lines[i] = termsafe.Escaped(line, 0)
+		}
+		message += ": " + strings.Join(lines, "\n")
 	}
 	return message
 }
@@ -83,7 +103,7 @@ type NotFound struct {
 }
 
 func (f *NotFound) Error() string {
-	return f.What + ": " + notFoundText(f.Repo)
+	return termsafe.Escaped(f.What, 0) + ": " + notFoundText(f.Repo)
 }
 
 // notFoundText is what a *NotFound and the read's own *notFoundError say of repo, a repository
