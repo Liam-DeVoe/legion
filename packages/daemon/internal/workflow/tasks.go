@@ -42,11 +42,12 @@ func viewOn(issue record.Issue, stored *record.StoredPlan, task string) (record.
 		w, err := walkIn(issue, stored)
 		return issue, w, err == nil, err
 	}
-	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == task })
-	if at < 0 {
+	row, ok := stored.TaskOf(task)
+	if !ok {
 		return issue, Walk{}, false, nil
 	}
-	w := walkOfTask(issue.Key, stored, at, mergingTask(stored))
+	merging, _ := stored.MergingTask()
+	w := walkOfTask(issue.Key, stored, row, merging)
 	issue.ViewTask = task
 	issue.Phase, issue.Hold = taskStanding(w)
 	return issue, w, true, nil
@@ -364,8 +365,7 @@ func sameHold(a, b *record.Hold) bool {
 // refused (plan.Validate).
 func needsDone(stored *record.StoredPlan, task record.PlanTask) bool {
 	for _, need := range task.Needs {
-		at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == need })
-		if at < 0 || stored.Tasks[at].State != record.TaskDone {
+		if row, ok := stored.TaskOf(need); !ok || row.State != record.TaskDone {
 			return false
 		}
 	}
@@ -481,8 +481,8 @@ func (e *Engine) restartViewed(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return err
 	}
-	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == w.Task })
-	if at < 0 {
+	row, ok := stored.TaskOf(w.Task)
+	if !ok {
 		return fmt.Errorf("restart task %s of %s: its plan holds no such task", w.Task, issue.Key)
 	}
 	if w.Place.Started() {
@@ -496,7 +496,7 @@ func (e *Engine) restartViewed(ctx context.Context, tx pgx.Tx, issue record.Issu
 		}
 	}
 	from := record.StandsAt(issue)
-	if !needsDone(stored, stored.Tasks[at]) {
+	if !needsDone(stored, row) {
 		if err := e.moveTask(ctx, tx, &issue, &w, phase.Admitted, record.TaskPlace{}, record.TaskWaiting); err != nil {
 			return err
 		}

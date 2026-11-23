@@ -158,14 +158,12 @@ func planToldOf(issue record.Issue, stored *record.StoredPlan, task string) (pla
 	if join {
 		told.join = base
 	}
-	byID := make(map[string]record.PlanTask, len(stored.Tasks))
-	for _, row := range stored.Tasks {
-		byID[row.Task] = row
+	of, _ := stored.TaskOf(task)
+	for _, need := range of.JoinConflicts {
+		row, _ := stored.TaskOf(need)
+		told.conflicts = append(told.conflicts, joinConflict{task: need, branch: row.BranchOf(issue.Key)})
 	}
-	for _, need := range byID[task].JoinConflicts {
-		told.conflicts = append(told.conflicts, joinConflict{task: need, branch: byID[need].BranchOf(issue.Key)})
-	}
-	told.unmerged = join && byID[task].JoinUnmerged
+	told.unmerged = join && of.JoinUnmerged
 	return told, nil
 }
 

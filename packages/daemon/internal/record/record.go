@@ -390,6 +390,22 @@ const HoldTaskStopped HoldReason = "task-stopped"
 // slot): the retro starts once the last of them has left.
 const HoldForChildren HoldReason = "children"
 
+// TaskStanding is where an issue stands for one task alone, whose place's phase is at and whose
+// state is state: at itself, and for a held task held from at for its hold's reason (reason,
+// PlanTask.HoldReason), or for a stopped task held from at for its stop (HoldTaskStopped). It is
+// the one reading of a task's standing: the workflow's copy of an issue read for one task stands
+// in it, the derivation of an issue's phase from its tasks ranks it, and the completion route's
+// position of a task reads it.
+func TaskStanding(at phase.Phase, state TaskState, reason HoldReason) (phase.Phase, *Hold) {
+	switch state {
+	case TaskHeld:
+		return phase.Held, &Hold{From: at, Reason: reason}
+	case TaskStopped:
+		return phase.Held, &Hold{From: at, Reason: HoldTaskStopped}
+	}
+	return at, nil
+}
+
 // Awaiting is what a root in awaiting_person waits on: an ask its architect opened on the root
 // (Ask, the ask's id), or the closed design gate at a spec version (GateVersion) on the document
 // it registered (Artifact); when a person answered it (AnsweredAt, nil until then), with what
@@ -2055,9 +2071,10 @@ type Store interface {
 	// PullRequestOfTask is the pull request of task of issue, the one on the branch task holds
 	// (PullRequest.Task), nil for none ("" is the task of an issue with no plan rows).
 	PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
-	// MergePullRequest is the pull request of the task of issue that merges: the one task of the
-	// plan at the issue's generation that no task needs (plan.Sinks), or task "" where the issue
-	// has no plan rows at its generation; nil where that task has none.
+	// MergePullRequest is the pull request of the task of issue that merges: the task of the plan
+	// at the issue's generation that merges (StoredPlan.MergingTask), or task "" where the issue
+	// has no plan rows at its generation; nil where that task has none, and where the plan holds no
+	// task that merges.
 	MergePullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	// TaskPullRequests is each pull request of issue, by task (PullRequest.Task), those of one task
 	// by branch.
