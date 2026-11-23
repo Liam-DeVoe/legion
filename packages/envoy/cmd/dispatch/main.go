@@ -901,6 +901,10 @@ func main() {
 	// same in every configuration.
 	redeliverLeases := reserve("webhook redelivery")
 	ciReconcileLeases := reserve("CI reconcile")
+	// The CI verify loop's (cireconcile.Reconciler.Verify), apart from the reconcile pass's: a
+	// reconcile pass holds its lease connection for up to five minutes while a verify pass that has
+	// requests to answer holds another under its own lease.
+	ciVerifyLeases := reserve("CI verify")
 	architectureImportLeases := reserve("architecture import")
 	deliveryReconcileLeases := reserve("delivery reconcile")
 	maintenanceSweepLeases := reserve("maintenance sweep")
@@ -1211,6 +1215,16 @@ func main() {
 		// lease alone only keeps two passes from overlapping, and the App's budget pays for every
 		// pass that runs.
 		go duty.RunLeased(ctx, ciReconcileLeases, cireconcile.Lease, ciReconcileInterval, duty.TickAfterInterval, reconciler.Pass)
+		// A listener with ENVOY_CI_VERIFY on publishes a head's settlement only after this loop has
+		// read the head from GitHub after it asked. It lists the requests every VerifyInterval with
+		// no lease, and answers any it finds under a lease of its own (VerifyLeases), so a pass with
+		// nothing to answer takes no lease connection and logs nothing, and a reconcile pass that
+		// runs for minutes holds none back.
+		reconciler.VerifyLeases = ciVerifyLeases
+		go duty.RunWoken(ctx, duty.WokenLoop{
+			MinGap: cireconcile.VerifyInterval,
+			Pass:   reconciler.Verify,
+		})
 	} else {
 		slog.Info("dispatch: CI reconcile off: it needs NATS and the GitHub App private key")
 	}

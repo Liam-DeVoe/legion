@@ -1362,7 +1362,16 @@ func main() {
 	var renames ghrename.Renames
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
-		ciStore, err = cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
+		verify, err := ciVerifySetting(os.Getenv(ciVerifyEnv))
+		if err != nil {
+			log.Fatal(err)
+		}
+		if verify {
+			logger.Info(ciVerifyEnv + "=on: a CI settlement is published only after Dispatch's CI reconcile has read the head from GitHub after the listener asked")
+		} else {
+			logger.Info(ciVerifyEnv + "=off: a CI settlement is published from the webhooks alone, with no GitHub read before it")
+		}
+		ciStore, err = cistore.Open(starting, client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour), cistore.WithVerify(verify))
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)
 		}
