@@ -666,7 +666,9 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 	}
 	refreshToken, err := s.seal.open(email, *sealed)
 	if err != nil {
-		slog.Warn("dispatch: a stored refresh token did not open; the person signs in again", "email", email, "reason", err.Error())
+		// The person by their login's hash, never the address (model.LoginHash); reason is the
+		// seal's own fixed words (refreshTokenSeal.open).
+		slog.Warn("dispatch: a stored refresh token did not open; the person signs in again", "login_hash", model.LoginHash(email), "reason", err.Error())
 		membership.Unopenable, membership.ConfirmedAge = true, *age
 		return membership, true, nil
 	}

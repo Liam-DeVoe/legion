@@ -219,9 +219,11 @@ func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 
 // A refresh token that does not open is no refresh token: one sealed under another signing key (the
 // key rotated), one sealed for another person (a value moved between rows), and one stored in plain
-// text. Each read answers none, so the person signs in again, and logs that, naming the person and
-// never the value; the read writes nothing and asks the pool nothing. The person's next sign-in
-// replaces the value, revoking one in plain text first; a sealed value is never sent to the pool.
+// text. Each read answers none, so the person signs in again, and logs that, naming the person by
+// their login's hash (model.LoginHash), never by their address, and never the value; the read
+// writes nothing and asks the pool nothing. The person's next sign-in replaces the value, revoking
+// one in plain text first; a sealed value is never sent to the pool. Control: log "email", email on
+// that line again, and each row fails on the address.
 func TestPgPeopleStoreReadsARefreshTokenThatDoesNotOpenAsNone(t *testing.T) {
 	ctx := context.Background()
 	database := openTestStore(t)
@@ -274,8 +276,11 @@ func TestPgPeopleStoreReadsARefreshTokenThatDoesNotOpenAsNone(t *testing.T) {
 				t.Errorf("the reads sent %q to the sign-in pool, want nothing", got)
 			}
 			out := logs.String()
-			if count := strings.Count(out, "a stored refresh token did not open"); count != 2 || !strings.Contains(out, email) {
-				t.Errorf("logged %d lines naming the unopened token, want one per read naming %s:\n%s", count, email, out)
+			if count := strings.Count(out, "a stored refresh token did not open"); count != 2 || strings.Count(out, "login_hash="+model.LoginHash(email)) != 2 {
+				t.Errorf("logged %d lines naming the unopened token, want one per read naming login_hash=%s:\n%s", count, model.LoginHash(email), out)
+			}
+			if strings.Contains(strings.ToLower(out), email) {
+				t.Errorf("the log holds the address %s:\n%s", email, out)
 			}
 			if strings.Contains(out, token) || strings.Contains(out, *stored) {
 				t.Errorf("the log carries the stored value:\n%s", out)

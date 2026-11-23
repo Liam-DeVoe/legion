@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/errkind"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
@@ -109,18 +110,21 @@ func (r DomainRule) End(ctx context.Context, people auth.PeopleStore, email stri
 // writes nothing and the request is simply not signed in. A write that fails ends nothing and is
 // logged at WARN, as a Directory check's failed write is: the row keeps its sign-in and its lapsed
 // confirmation, so the request is refused with the write's error and the next confirmation tries
-// again.
+// again. Each line names the person by their login's hash and a failed write by its kind, never
+// the address or the store's error, which quotes it (model.LoginHash, errkind.Of); reason names
+// no address either (Membership.refresh).
 func endSubject(ctx context.Context, people auth.PeopleStore, email string, read auth.PersonMembership, reason string, mode auth.EndMode, ended string) (bool, error) {
 	done, err := people.EndSubject(ctx, email, read.Subject, read.RefreshToken, mode)
 	if err != nil {
-		slog.Warn("dispatch: a failed confirmation could not end the sign-in, as its write failed; the request is refused and the next confirmation tries again", "email", email, "reason", reason, "error", err)
+		slog.Warn("dispatch: a failed confirmation could not end the sign-in, as its write failed; the request is refused and the next confirmation tries again",
+			"login_hash", model.LoginHash(email), "reason", reason, "error_kind", errkind.Of(err))
 		return false, err
 	}
 	if !done {
-		slog.Info("dispatch: a failed confirmation ended nothing: the address was signed in to again since it read the sign-in", "email", email, "reason", reason)
+		slog.Info("dispatch: a failed confirmation ended nothing: the address was signed in to again since it read the sign-in", "login_hash", model.LoginHash(email), "reason", reason)
 		return false, ErrNoIdentity
 	}
-	slog.Warn(ended, "email", email, "reason", reason)
+	slog.Warn(ended, "login_hash", model.LoginHash(email), "reason", reason)
 	return true, ErrNoIdentity
 }
 

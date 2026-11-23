@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+  Dispatch's sign-in and membership log lines no longer carry a person's address. A sign-out, the
+  hourly confirmation and the end of a sign-in, a Workspace Directory check under IAP identity, a
+  stored refresh token that does not open, and a decision, mint or scope change refused because a
+  caller's standing could not be read each name the person as `login_hash`, the first 16 hex
+  digits of the SHA-256 of their canonical login, where they named `email` before; an end's
+  `reason` names the address a refreshed sign-in carried the same way. Each failed store or broker
+  call on those lines is named by `error_kind` (`database SQLSTATE <code>`, `broker HTTP <status>`,
+  `deadline exceeded` and others) in place of `error`, whose text quoted the address. The Dispatch
+  server README's section "A person in the sign-in and membership lines" gives the command that
+  hashes an address and the statement that reads the address a value stands for from the people
+  table. A document socket's answer before its upgrade is now sent as `text/plain` with
+  `X-Content-Type-Options: nosniff` whatever wrote it; ygo's own answers, which already were, reach
+  the peer unchanged. CodeQL's `go/clear-text-logging` and `go/reflected-xss` queries reported
+  these lines and that writer.
+time: 2026-11-23T17:31:18Z
+custom:
+    Issue: codeql-subjects

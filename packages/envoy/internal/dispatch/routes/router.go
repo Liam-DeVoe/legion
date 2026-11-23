@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/errkind"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
@@ -703,18 +704,21 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 // only while signed_in_at is still the one it read, so a sign-in that commits while the broker is
 // asked keeps its own token. Once the sessions have ended, the ask and the write go on if the
 // browser goes away, so a sign-out the person started finishes as it would have; the broker's ask
-// is bounded by its client's window.
+// is bounded by its client's window. Each failure it logs names the person by their login's hash
+// and the failure by its kind, never the address or the store's or the broker client's error,
+// which quotes it (model.LoginHash, errkind.Of).
 func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 	email, ok := r.login(w, req)
 	if !ok {
 		return
 	}
+	person := model.LoginHash(email)
 	googleRule := r.ctx.SignInRule != nil && r.ctx.SignInRule.Holds()
 	var signedInAt time.Time
 	if googleRule {
 		membership, _, err := r.ctx.People.Membership(req.Context(), email)
 		if err != nil {
-			slog.Warn("dispatch: read the sign-in a sign-out ends failed", "email", email, "error", err)
+			slog.Warn("dispatch: read the sign-in a sign-out ends failed", "login_hash", person, "error_kind", errkind.Of(err))
 			writeError(w, http.StatusInternalServerError, "read sign-in")
 			return
 		}
@@ -722,7 +726,7 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 	}
 	if r.ctx.Sessions != nil {
 		if err := r.ctx.Sessions.RevokeSessions(req.Context(), email); err != nil {
-			slog.Warn("dispatch: revoke sessions failed", "email", email, "error", err)
+			slog.Warn("dispatch: revoke sessions failed", "login_hash", person, "error_kind", errkind.Of(err))
 			writeError(w, http.StatusInternalServerError, "revoke session")
 			return
 		}
@@ -731,17 +735,17 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 		ctx := context.WithoutCancel(req.Context())
 		outlives, err := r.ctx.apiDeps.Outliving.Holds(ctx, email)
 		if err != nil {
-			slog.Warn("dispatch: a sign-out could not ask whether the person has access that outlives the browser; keeping their refresh token", "email", email, "error", err)
+			slog.Warn("dispatch: a sign-out could not ask whether the person has access that outlives the browser; keeping their refresh token", "login_hash", person, "error_kind", errkind.Of(err))
 		}
 		if outlives || err != nil {
 			if err := r.ctx.People.KeepAfterSignOut(ctx, email, signedInAt); err != nil {
-				slog.Warn("dispatch: keep the signed-out person's refresh token failed", "email", email, "error", err)
+				slog.Warn("dispatch: keep the signed-out person's refresh token failed", "login_hash", person, "error_kind", errkind.Of(err))
 			}
 		} else if err := r.ctx.People.ForgetAfterSignOut(ctx, email, signedInAt); err != nil {
-			slog.Warn("dispatch: forget the sign-in's refresh token failed", "email", email, "error", err)
+			slog.Warn("dispatch: forget the sign-in's refresh token failed", "login_hash", person, "error_kind", errkind.Of(err))
 		}
 	} else if err := r.ctx.People.End(req.Context(), email); err != nil {
-		slog.Warn("dispatch: forget the sign-in's refresh token failed", "email", email, "error", err)
+		slog.Warn("dispatch: forget the sign-in's refresh token failed", "login_hash", person, "error_kind", errkind.Of(err))
 	}
 	auth.ClearSessionCookies(req.Context(), w.Header(), !r.ctx.InsecureCookie)
 	api.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})

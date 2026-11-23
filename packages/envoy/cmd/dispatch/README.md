@@ -4964,6 +4964,28 @@ the `403` a cookie request from another origin gets, the `421` a request for ano
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
 
+## A person in the sign-in and membership lines
+
+The access log names a request's caller by address (`caller`, above).
+The lines the sign-in and membership code writes about a person name them by `login_hash` instead: the first 16 hex digits of the SHA-256 of their canonical login (`model.LoginHash`).
+These are the lines of a sign-out, of the hourly confirmation and the end of a sign-in, of a Workspace Directory check under IAP identity, of a stored refresh token that does not open, and of a decision, mint or scope change refused because whether Dispatch holds its caller could not be read.
+An end's `reason` names the address a refreshed sign-in carried by its `login_hash` too.
+One login has one value in every process and every build.
+To find a person's lines, hash their address the same way:
+
+```
+printf %s alice@example.com | sha256sum | cut -c1-16
+```
+
+To read the address a value stands for, ask the people table, which holds the canonical login of every person who signed in (`TestTheLoginHashResolveQueryFindsThePerson` holds this statement to `model.LoginHash`):
+
+```sql
+select email from people where left(encode(sha256(convert_to(email, 'UTF8')), 'hex'), 16) = '<value>';
+```
+
+The same lines name a failed store or broker call by `error_kind`, never by its error, whose text quotes the address (`errkind.Of`):
+`canceled`, `deadline exceeded`, `database connection`, `database SQLSTATE <code>`, `broker HTTP <status>`, `broker account token`, `network timeout`, `network`, or else the Go type of the innermost error.
+
 ## Routes
 
 `GET /api/v1` is the authoritative list, for any signed-in person or agent credential:

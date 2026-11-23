@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
+	"github.com/sjawhar/envoy/internal/dispatch/errkind"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -575,7 +576,10 @@ func (s *server) browserDeciderHeld(ctx context.Context, actor model.Actor) erro
 	}
 	standing, err := s.deps.Standing.Standing(ctx, actor.ID)
 	if err != nil {
-		slog.Warn("dispatch: a decision, a mint or a scope change at a browser was refused: whether Dispatch holds its caller could not be read", "error", err)
+		// The person by their login's hash and the failure by its kind: the store's error quotes
+		// the address it read (model.LoginHash, errkind.Of).
+		slog.Warn("dispatch: a decision, a mint or a scope change at a browser was refused: whether Dispatch holds its caller could not be read",
+			"login_hash", model.LoginHash(actor.ID), "error_kind", errkind.Of(err))
 		return errDeciderUnreadable()
 	}
 	switch {
