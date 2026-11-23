@@ -59,6 +59,7 @@ func (w *idleRigCheckWatch) IssueKeepsVolume(issue string, since time.Time) bool
 // (sandbox.Runtime.WorkspaceWork). With the check behind those stops, every check would fail, every
 // release would be declined workspace_unread, and no pod would ever be released.
 func TestTheReleaseChecksTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 
@@ -114,6 +115,7 @@ func TestTheReleaseChecksTheWorkspaceWhileTheRolesProcessIsStillRunning(t *testi
 // shape that catches a divergence: every test that picks one spelling and uses it on both sides
 // passes either way, which is how it was missed.
 func TestTheEngineAndTheDaemonReadThePodTablesUnderOneProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool, "LEGION-208")

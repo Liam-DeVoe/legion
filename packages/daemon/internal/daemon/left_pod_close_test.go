@@ -273,6 +273,7 @@ func queuedLeftPodCheck(t *testing.T, rig *idleRig) (record.OutboxRow, record.Is
 // the Sandbox goes a second time, and no tree_not_live hold is recorded, after that stop or
 // before it.
 func TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive(t *testing.T) {
+	t.Parallel()
 	rig := newLeftPodRig(t, false)
 
 	parkChild(t, rig)
@@ -345,6 +346,7 @@ func TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive(t *testing.
 // — and reads that a pass takes it: the passes queue the close's Sandbox suspension alone, which
 // deletes the Sandbox, the pod and the disk, and leave the claim as it was.
 func TestAPodHeldTreeNotLiveIsTakenOnceItsCloseHasNothingLeftToStop(t *testing.T) {
+	t.Parallel()
 	rig := newLeftPodRig(t, true)
 	if record.InWorkflow(rig.issue) {
 		t.Fatalf("the staged child = %s at %s, want it out of the workflow", rig.issue.Phase, rig.issue.Status)
@@ -391,6 +393,7 @@ func TestAPodHeldTreeNotLiveIsTakenOnceItsCloseHasNothingLeftToStop(t *testing.T
 // held as unpushed_work, and the planner is told once which commit keeps it. The passes after the
 // decline ask nothing more.
 func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
+	t.Parallel()
 	rig := newLeftPodRig(t, false)
 	parkChild(t, rig)
 	rig.drain(t)
@@ -463,6 +466,7 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 // row now decides the close. A read that finds work records no decline, no hold and no message to
 // the role; a read that finds nothing forgets no decline on record and queues no stop.
 func TestALeftPodCloseCheckWhoseLeaseWasLostWritesNothing(t *testing.T) {
+	t.Parallel()
 	// run hands the check's lease to another lane and runs the check under the lease it had.
 	run := func(t *testing.T, rig *idleRig, row record.OutboxRow, check record.IssueWorkspaceCheck) {
 		t.Helper()
@@ -515,6 +519,7 @@ func TestALeftPodCloseCheckWhoseLeaseWasLostWritesNothing(t *testing.T) {
 // transaction takes the serializer, the run starts and waits on a lock, and the lane writes the
 // decline row and commits; then the run goes on, finds its lease lost and writes nothing.
 func TestTwoRunsOfALeftPodCloseCheckAfterALostLeaseDoNotDeadlock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newLeftPodRig(t, false)
 	row, check := queuedLeftPodCheck(t, rig)
@@ -678,6 +683,7 @@ func checkedLeftPodClose(t *testing.T, reading func(rig *idleRig, readAt time.Ti
 // the pass, and the close stops the planner: a check that lost the pass's turn start on the way
 // would read the planner's old turn as one since the pass and hold.
 func TestALeftPodCloseHoldsOnATurnThatEndedDuringItsRead(t *testing.T) {
+	t.Parallel()
 	t.Run("a_turn_that_ended_during_the_read", func(t *testing.T) {
 		rig, _ := checkedLeftPodClose(t, func(rig *idleRig, readAt time.Time) {
 			// The turn started a second before the read began, after the pass, and it has
@@ -721,6 +727,7 @@ func TestALeftPodCloseHoldsOnATurnThatEndedDuringItsRead(t *testing.T) {
 // The control runs the same stop with no turn since the check: the planner is suspended by the
 // daemon and the Sandbox goes, the turn start of the planner's old turn notwithstanding.
 func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	stopQueued := func(t *testing.T) (*idleRig, time.Time) {
 		t.Helper()
@@ -820,6 +827,7 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 // no teardown and record one streak of that hold. The control stands the same pod with no decline,
 // and the passes close it as before: the Sandbox suspension alone.
 func TestALeftPodWithNoLiveClaimKeepsADiskADeclineSaysHoldsWork(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// failedLeftPod is the parked child of newLeftPodRig whose planner failed rather than being
 	// suspended, recording no process, in a pod the runtime names pod-a.

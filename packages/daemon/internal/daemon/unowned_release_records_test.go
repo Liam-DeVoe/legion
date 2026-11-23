@@ -142,6 +142,7 @@ func (r *idleRig) startQueuedAt(t *testing.T, row int64, role claim.Role) {
 // them over this release would wait for sessions that are failed, retired or suspended, and for a
 // pod that is gone.
 func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("the record, the mark and the line of the release that took the pod", func(t *testing.T) {

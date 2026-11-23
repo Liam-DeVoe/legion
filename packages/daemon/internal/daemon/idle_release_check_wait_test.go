@@ -63,6 +63,7 @@ func (r *idleRig) pendingCheck(t *testing.T) {
 // Once the check row leaves on a later pass, the teardown it held back finishes without a pod to
 // take (the check declined the release) or tears the pod down (the check found nothing).
 func TestATeardownWaitsForTheReleasesWorkspaceCheck(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// One drain over what the release queued: the check fails first, and the stop and teardown
 	// listed beside it run in the same pass.

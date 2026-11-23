@@ -83,6 +83,7 @@ func roleMessages(publisher *outboxPublisher, token string) []string {
 // nobody. No second message means no second turn, so the passes after that ask nothing more: the
 // message, the turn and the read do not come back every idle period.
 func TestADeclinedIdleReleaseAsksThePodOnceUntilATurn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// declined is a rig whose first pass has run and whose release the check has declined, with
 	// what that pass did read back: the decline's own moment, and the publisher that holds the
@@ -215,6 +216,7 @@ func TestADeclinedIdleReleaseAsksThePodOnceUntilATurn(t *testing.T) {
 // that pod, and the next turn of the role is a turn in that same pod, whose workspace still holds
 // the commit. The role is told which commit holds the release.
 func TestAnIdleReleaseDeclinesAWorkspaceWithOneUnpushedCommitAndKeepsThePod(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	publisher := &outboxPublisher{}
 	rig.runner.notices = publisher
@@ -273,6 +275,7 @@ func TestAnIdleReleaseDeclinesAWorkspaceWithOneUnpushedCommitAndKeepsThePod(t *t
 // was, so the hold stands. Only a pod made again — the runtime answering another pod for the issue
 // than the one the check read — takes the disk the decline spoke of, and the pass releases it.
 func TestAnUnownedPodWhoseDeclineNamesUnpushedWorkIsKept(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newIdleRig(t)
 	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
@@ -350,6 +353,7 @@ func TestAnUnownedPodWhoseDeclineNamesUnpushedWorkIsKept(t *testing.T) {
 // left_pod: the close of a parked child whose planner an operator's resume brought back reads the
 // workspace through the planner, and the close goes on.
 func TestACleanReadForgetsTheDecline(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// endedDecline records a decline of the rig's issue for one commit, read two hours ago in a pod
 	// the runtime could not name, and a turn of the rig's role an hour ago, after that read.
@@ -418,6 +422,7 @@ func (r *readClockRuntime) WorkspaceWork(ctx context.Context, issue string, role
 // (pods.IdleDecline.Stands). The runner's clock reads t1 until the read begins and t2, ten
 // seconds later, from then on; the decline reads t1.
 func TestADeclineIsStampedWithTheMomentItsReadBegan(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
 	t1 := time.Now().Add(time.Minute).UTC().Truncate(time.Microsecond)
@@ -458,6 +463,7 @@ func TestADeclineIsStampedWithTheMomentItsReadBegan(t *testing.T) {
 // marks the release again and its check reads the new pod once; that read finds nothing, and the
 // release takes the pod.
 func TestADeclineInAReplacedPodEndsWithThePod(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
 	rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
@@ -495,6 +501,7 @@ func TestADeclineInAReplacedPodEndsWithThePod(t *testing.T) {
 // (packages/pi-shared/src/workspace-recreated.ts) carries its sentence about what the release
 // takes. Neither says the workspace's unpushed work was kept.
 func TestAReleasedCleanPodsWakeTaskSaysWhatThePluginNoticeSays(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 

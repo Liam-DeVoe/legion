@@ -412,6 +412,7 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 // recorded a release of a pod that still stands, armed a backstop over it and forgot its wake
 // marks, and left the other roles released in a running pod with nothing to bring them back.
 func TestATeardownTheRuntimeFindsUnauthorizedCancelsTheRelease(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
@@ -465,6 +466,7 @@ func TestATeardownTheRuntimeFindsUnauthorizedCancelsTheRelease(t *testing.T) {
 // back. Resuming it would put a role into a pod that has no work for it, with no wake and no
 // task saying why it is there.
 func TestACancelResumesOnlyTheRolesItsOwnReleaseSuspended(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	architect := rig.releasedArchitect(t)
@@ -499,6 +501,7 @@ func TestACancelResumesOnlyTheRolesItsOwnReleaseSuspended(t *testing.T) {
 // delivery unanswered, the release ran on and took the pod, and the delivery then cost a wake
 // and a pod start to answer what the standing pod would have answered.
 func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	// A start for another role of the pod whose transaction was already in flight when the mark
@@ -555,6 +558,7 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 // claim back. No pause held that resume, so the wake says at Warn that it stands open with no
 // process behind it (logRefusedByOpenResume).
 func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
@@ -614,6 +618,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 // keeping its phase and the task it holds, the workspace is read before any role process is
 // stopped — only a shim can read it — and the Sandbox teardown runs last.
 func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 
@@ -680,6 +685,7 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 // pod, nothing is suspended, no Sandbox is torn down and no decline is recorded, since the
 // workspace check found nothing to decline for.
 func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		before bool
@@ -751,6 +757,7 @@ func TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease(t *testing.T) {
 // claim, working rather than idle. The check read the workspace from before that turn's edits, so
 // the boundary cancels the release and the pod keeps whatever the turn does in its own workspace.
 func TestATurnStartedAfterTheMarkCancelsTheRelease(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePods(ctx)
@@ -780,6 +787,7 @@ func TestATurnStartedAfterTheMarkCancelsTheRelease(t *testing.T) {
 // that failed tells nobody, since there is nothing the role can push on its word. The work a role
 // has not pushed is kept at the cost of a pod, never dropped to save one.
 func TestAWorkspaceCheckThatCannotShowACleanWorkspaceDeclinesTheRelease(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		work     runtime.WorkspaceWork
@@ -835,6 +843,7 @@ func TestAWorkspaceCheckThatCannotShowACleanWorkspaceDeclinesTheRelease(t *testi
 // Kubernetes, and a runtime that cannot read the issue's pod each leave the tick with nothing to
 // run, so it returns rather than ticking over a pod it must not decide.
 func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		w    *workflowRuntime
@@ -868,6 +877,7 @@ func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 // finish the close without acting, and leave the roles of a parked issue running in a Sandbox
 // nothing deletes.
 func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),

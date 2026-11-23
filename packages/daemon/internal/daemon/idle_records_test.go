@@ -24,6 +24,7 @@ func (r *idleRig) records(t *testing.T) store.PodReleaseRecords {
 // claims it suspended, so a deployment can count what release did without reading the daemon's
 // log.
 func TestAReleaseRecordsItsRunAndItsRoles(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 
@@ -63,6 +64,7 @@ func TestAReleaseRecordsItsRunAndItsRoles(t *testing.T) {
 // would charge this release with a role it never touched — and charge a reader of the records
 // for the hours that role's pod was gone twice over.
 func TestAReleaseRecordsNoRoleAnEarlierReleaseSuspended(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.releasedArchitect(t)
@@ -84,6 +86,7 @@ func TestAReleaseRecordsNoRoleAnEarlierReleaseSuspended(t *testing.T) {
 // not: the idle rule reports a hold for every working pod on every tick, and recording those
 // would drown the ones that mean something.
 func TestAHeldPodRecordsTheRulesOwnReason(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("quiet and held", func(t *testing.T) {
@@ -144,6 +147,7 @@ func TestAHeldPodRecordsTheRulesOwnReason(t *testing.T) {
 // A release the check could not finish keeps the pod, and the reason it read is recorded as a hold
 // in the same vocabulary the tick uses.
 func TestAReleaseThatCouldNotFinishRecordsItsHold(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.rt.FailWorkspaceWork(rig.issue.Key, errors.New("the launcher is gone"))
