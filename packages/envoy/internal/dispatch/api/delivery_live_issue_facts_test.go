@@ -214,6 +214,73 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 	t.Log("the facts writes of INFRA-4, on a card, and INFRA-99, closed and on none in a tree the board shows, each recomputed the board once and sent it one delta carrying its entry and no freshness frame, and sent the timeline nothing; a write of INFRA-98, of a tree the board does not show, recomputed it once and sent nothing; a write of OPS-1 recomputed nothing and sent nothing")
 }
 
+// TestAnEventOnAnIssueWithNoCardRecomputesNothingAndItsFactsSendOneDelta: a Legion board marks
+// itself on an issue's event by the issues the daemon reports, the issues it may draw a card of
+// (legionBoardPopulation.issueKeys), and not by the issues it carries only a stored row of. What
+// an event moves on the board of such an issue, the facts consumer writes after it as a row of
+// the issue's facts, whose change marks the board of its project (touchedBy's issue_facts arm), so
+// a mark of the event itself recomputes a board whose answer has not moved yet: every PATCH of an
+// open issue on no card cost the board a recompute that sent nothing, then the one its row's write
+// owed.
+//
+// INFRA-50 is an open issue the daemon reports nothing of, outside every tree: the board draws it
+// no card and carries its stored row, as it carries every open row. A rename of it recomputes no
+// view; the write of its facts row recomputes the board once and sends it one delta carrying the
+// issue's entry.
+func TestAnEventOnAnIssueWithNoCardRecomputesNothingAndItsFactsSendOneDelta(t *testing.T) {
+	rig := newHubRig(t, nil)
+	seedLegionProjects(t, rig.handler, "INFRA")
+	nameLegionDaemon(t, rig.handler, "INFRA", "http://legion-infra.internal:13370")
+	seedLegionBoard(t, rig.database, "INFRA", rig.clock.Now())
+	issue := seedLegionIssue(t, rig.database, "INFRA", 50, "A parked issue", "z", nil, "")
+	workedAt := rig.clock.Now().Add(-5 * time.Hour)
+	writeIssueFacts(t, rig.database, "INFRA", issue, issue, workedAt, workedAt.Add(time.Hour), nil)
+	if _, carded := legionCardHeld(legionBoardOf(t, rig.handler, "INFRA"), issue); carded {
+		t.Fatalf("the board draws a card of %s, so its events are a card's and this test states nothing", issue)
+	}
+
+	boardFrame := legionView("INFRA")
+	board := newFakeLiveConn()
+	rig.hub.Subscribe(board, subscribeFrame("b", boardFrame))
+	var answered struct {
+		Issues map[string]json.RawMessage `json:"issues"`
+	}
+	if err := json.Unmarshal(board.snapshot(t, 5*time.Second, "b").Body, &answered); err != nil {
+		t.Fatalf("read the board's first answer: %v", err)
+	}
+	if _, carried := answered.Issues[issue]; !carried {
+		t.Fatalf("the board's first answer carries no entry of %s, so a rename of it moves nothing this test can judge", issue)
+	}
+	rig.settle(t)
+
+	// A title Dispatch rewrites: the event reaches the hub on the relay's feed, behind the event
+	// horizon, and the board's answer carries no title of an issue on no card.
+	renamed := rig.mark()
+	patchHubIssue(t, rig.handler, issue, map[string]any{"title": "A parked issue, renamed"})
+	rig.waitForEventCursor(t, eventHead(t, rig.database), "the rename of "+issue)
+	rig.waitNoRecompute(t, viewMaxWait)
+	if n := rig.count(renamed, recomputeBegin("")); n != 0 {
+		t.Errorf("the rename of %s, on no card, recomputed %d views, want none", issue, n)
+	}
+	board.none(t, time.Second, "the rename of "+issue+", on no card")
+
+	// The write of its facts row, which is what moves its entry.
+	written := rig.mark()
+	writeIssueFacts(t, rig.database, "INFRA", issue, issue, workedAt, workedAt.Add(2*time.Hour), nil)
+	rig.hub.catchUpNow()
+	rig.waitFor(t, written, 5*time.Second, "a recompute of the board of "+issue+"'s project", recomputeOfView(t, boardFrame))
+	delta := board.delta(t, 5*time.Second, "b")
+	if _, sent := delta.Maps["issues"][issue]; !sent {
+		t.Fatalf("the delta after the facts write of %s carries the issues entries %v, want %s's", issue, delta.Maps["issues"], issue)
+	}
+	board.none(t, viewMaxWait, "the one delta of the facts write of "+issue)
+	if boardRecomputes, all := rig.count(written, recomputeOfView(t, boardFrame)), rig.count(written, recomputeBegin("")); boardRecomputes != 1 || all != 1 {
+		t.Errorf("the facts write of %s recomputed the board %d times and %d views in all, want the board once and no other view",
+			issue, boardRecomputes, all)
+	}
+	t.Logf("the rename of %s, on no card, recomputed no view and sent nothing; the write of its facts row recomputed the board once and sent one delta carrying its entry", issue)
+}
+
 // batchRows is how many stored facts rows one whole read of a project of INFRA's size rewrites:
 // the 210 issues of the facts' own rig that carry Legion phase work. A build's first whole read
 // rewrites every row whose values or writer moved, as the newer build of a roll rewrites every
