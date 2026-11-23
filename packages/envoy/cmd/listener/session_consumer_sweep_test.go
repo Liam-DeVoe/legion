@@ -188,6 +188,7 @@ func TestTheSweepDeletesNothingWhileTheSessionCacheIsNotReady(t *testing.T) {
 // bucket answers, so a session another listener registered keeps the consumer that delivers
 // its messages.
 func TestTheSweepKeepsTheConsumerOfASessionTheBucketStillHolds(t *testing.T) {
+	t.Parallel()
 	// The bucket keeps its records for an hour, past the lapse below, so the record stands while
 	// the windows the registry judges age by have long passed.
 	rig := newSweepRigKeeping(t, time.Hour)

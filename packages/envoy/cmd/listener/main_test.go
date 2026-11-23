@@ -176,6 +176,7 @@ func TestDependencyHealthStatus(t *testing.T) {
 }
 
 func TestFullMux_StartingState(t *testing.T) {
+	t.Parallel()
 	// Simulate the full mux with no deps published (starting state).
 	var state atomic.Pointer[listenerDeps]
 
@@ -247,6 +248,7 @@ func TestFullMux_StartingState(t *testing.T) {
 }
 
 func TestPublishHandler_RejectsAgentTopics(t *testing.T) {
+	t.Parallel()
 	// publishHandler validation runs before deps.client is used, so a
 	// minimal non-nil deps (with nil inner fields) is enough to test the
 	// rejection path without NATS.
@@ -306,6 +308,7 @@ func TestPublishHandler_MethodNotAllowed(t *testing.T) {
 }
 
 func TestPublishHandler_RejectsInvalidSource(t *testing.T) {
+	t.Parallel()
 	// Validation runs before deps.client is used, so nil inner fields
 	// are enough for rejection-path tests.
 	state := &listenerDeps{}
@@ -1988,6 +1991,7 @@ func TestSubscribeHandler_RejectsEmptySessionID(t *testing.T) {
 }
 
 func TestSubscribeHandler_StoresSelfSubscribedSessionWithoutPort(t *testing.T) {
+	t.Parallel()
 	// Given
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}
@@ -2016,6 +2020,7 @@ func TestSubscribeHandler_StoresSelfSubscribedSessionWithoutPort(t *testing.T) {
 }
 
 func TestSessionsHandler_ReportsSelfSubscribedSession(t *testing.T) {
+	t.Parallel()
 	// Given
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_omp": {"notifications.test.>"},
@@ -2082,6 +2087,7 @@ func TestSessionsHandler_EmptyList(t *testing.T) {
 }
 
 func TestSessionsHandler_OnlyLiveSessions(t *testing.T) {
+	t.Parallel()
 	// Sessions in interests but NOT in envoy_sessions should be excluded
 	registry, sessions := setupSessionsTest(t,
 		map[string][]string{
@@ -2119,6 +2125,7 @@ func TestSessionsHandler_OnlyLiveSessions(t *testing.T) {
 }
 
 func TestSessionsHandler_NoInterestsData(t *testing.T) {
+	t.Parallel()
 	// Session in envoy_sessions but NOT in interests — still appears, just no topics
 	registry, sessions := setupSessionsTest(t,
 		nil, // no interests
@@ -4391,6 +4398,7 @@ func TestCheckSelfHealth_HealthyReturnsNil(t *testing.T) {
 }
 
 func TestCheckSelfHealth_ClosedConnReturnsError(t *testing.T) {
+	t.Parallel()
 	// A stale KV handle must remain observable through checkSelfHealth so
 	// /healthz reports the unavailable dependency while NATS reconnects.
 	client := setupTestNATS(t)

@@ -486,6 +486,7 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 // memory — would let a proof captured from one replica be presented to another, so there is no
 // fallback to refuse into.
 func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
+	t.Parallel()
 	// A server of this test's own with no -js, connected to directly: testnats.Connect waits for
 	// JetStream, which this one will never have.
 	_, uri := testnats.StartConfig(t, "", nil, true)

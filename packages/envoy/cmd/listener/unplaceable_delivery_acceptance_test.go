@@ -579,6 +579,7 @@ func agentWakesFor(t *testing.T, subscription *natsgo.Subscription, sessionID st
 // way of receiving is still NAKed as delivery_failed with no wake, so the rig takes the interest
 // path and the first subtest's give-up is the missing record's doing.
 func TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestNamesThisListener(t *testing.T) {
+	t.Parallel()
 	// start registers target's interest row naming the harness's own listener and, when entry is
 	// not nil, its record, then drives one envelope on target's agent subject through a handler
 	// that reports wakes, at a window of one deferral. It returns the run and a subscription to
