@@ -6,7 +6,7 @@ Read it when GitHub reports the pull request `CONFLICTING`, the daemon's merge-f
 
 The agent of the task's implementation step (the implementer, in the default steps) merges the base into the issue branch only when GitHub reports it `CONFLICTING`, the daemon's merge-forward message asks it (*The daemon's ask*, below), the controller asks because of a conflict, the architect's backward move names a parent's last round, the change needs something only the base has, or the pull request was retargeted. Never to refresh CI or pick up the default branch: each merge is a new head that reruns CI and can void a review. Never with `jj rebase`, which rewrites pushed commits (*A wrong pushed commit*, below).
 
-Before you race another tree's pull request on shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and merge once, after it.
+Before you race another tree's pull request on shared files, `envoy_publish` to the agent of its implementing step that runs now (`dispatch steps --issue <KEY>` names it: an issue can have two implementer agents), ask when its next push lands, and merge once, after it.
 
 1. Merge the bookmark, never `@`, with the base, in one new commit. `base` is the pull request's base branch, JSON-quoted so jj reads it as a string literal:
 

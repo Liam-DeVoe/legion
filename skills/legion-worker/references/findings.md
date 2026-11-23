@@ -16,15 +16,15 @@ Search first (`skill://dispatch-first`). An open issue that tracks the problem g
 
 ## Send a finding to the controller
 
-1. Post the evidence as a `dispatch comment` on the report issue (*Where it goes*), its first line exactly `Clear defect from <your role token>`. It prints `Posted comment <id>`.
-2. `envoy_publish` one message to the controller topic your `Legion addressing` line names, with `expects_reply: false`: your role token; the defect (what went wrong, where, to whom, the numbers, `dispatch://<KEY>`); the repository and component where the fix belongs; the fix; and `dispatch://<REPORT KEY>/comment/<id>`.
+1. Post the evidence as a `dispatch comment` on the report issue (*Where it goes*), its first line exactly `Clear defect from <your claim token>`. It prints `Posted comment <id>`.
+2. `envoy_publish` one message to the controller topic your `Legion addressing` line names, with `expects_reply: false`: your claim token, the token of your own topic in that line, never one spelled from your role; the defect (what went wrong, where, to whom, the numbers, `dispatch://<KEY>`); the repository and component where the fix belongs; the fix; and `dispatch://<REPORT KEY>/comment/<id>`.
 3. File nothing and wait for nothing. The controller replies under your evidence comment with where the work went. When the report issue is missing or closed, put the evidence in the message itself.
 
 ### When no controller takes it
 
 A publish to a role answers with its live `holder`. When no live session holds the controller role, the answer says Envoy kept the message for one hour (`kept_until`); a keep is not a delivery. An `unresponsive` holder is not a stopped one: release nothing, take nothing from it, and publish no second copy. Treat a kept answer as a controller not taking it, and make the finding an ask on the first of these that holds:
 
-1. **The report issue is open:** ask there, the question opening `Clear defect from <your role token>` and `--ref` naming your evidence comment, then reply `Asked dispatch://<REPORT KEY>/ask/<id>` under that comment.
+1. **The report issue is open:** ask there, the question opening `Clear defect from <your claim token>` and `--ref` naming your evidence comment, then reply `Asked dispatch://<REPORT KEY>/ask/<id>` under that comment.
 2. **The report issue is missing or closed:** post the evidence on your own issue and ask there, then publish the ask's reference to the architect that owns your issue. It holds your issue's acceptance until a controller takes the ask, since an open ask on a closed issue drops out of the controller's listing.
 3. **Your own issue is closed too** (`409 ISSUE_CLOSED`): put the report issue back in reach, then post and ask there, and say in your summary that you did. This is the one lifecycle status you write, and never through the `legion` tool's `set_status`.
    - It exists and is closed: `dispatch issue-update --issue <REPORT KEY> --status icebox`, the status alone (a closed issue refuses a reopening status beside any other field).
@@ -36,7 +36,7 @@ An ask goes on the controller's report issue while it is open: the issue the dep
 
 ## What the ask says
 
-The question stands alone in at most 2,000 characters, the `Ref:` line `--ref` appends included. Its first line is `Clear defect from <your role token>` for a clear defect no controller took, else `Finding from <your role token>`. Then the concrete case: what went wrong, where and to whom (`dispatch://<KEY>`, the machine, file, command or session, the numbers); where the fix belongs, saying plainly when it is not Legion's; the decision a person must make, each option's effect and your recommendation. A clear defect carries the fix instead, with `Hand it to the owning tree` as the first, recommended option. Evidence the decision does not need goes in a comment posted first and cited by `--ref`:
+The question stands alone in at most 2,000 characters, the `Ref:` line `--ref` appends included. Its first line is `Clear defect from <your claim token>` for a clear defect no controller took, else `Finding from <your claim token>`. Then the concrete case: what went wrong, where and to whom (`dispatch://<KEY>`, the machine, file, command or session, the numbers); where the fix belongs, saying plainly when it is not Legion's; the decision a person must make, each option's effect and your recommendation. A clear defect carries the fix instead, with `Hand it to the owning tree` as the first, recommended option. Evidence the decision does not need goes in a comment posted first and cited by `--ref`:
 
 ```bash
 dispatch comment --issue '<ASK KEY>' --body-file - <<'EOF'
@@ -47,7 +47,7 @@ dispatch ask --issue '<ASK KEY>' --ref 'dispatch://<ASK KEY>/comment/<id>' --que
   --option 'File an issue: <what it would track, and who would own it>' \
   --option 'File it for Legion: Legion works it once it is filed' \
   --option 'Do not file: <what stays as it is>' <<'EOF'
-Finding from <your role token>
+Finding from <your claim token>
 <what went wrong, where and to whom, with dispatch://<KEY> and the numbers; where the fix belongs; what each option does to whom; your recommendation and why>
 EOF
 ```
