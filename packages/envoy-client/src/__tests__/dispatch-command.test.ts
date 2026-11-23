@@ -59,7 +59,7 @@ describe("the dispatch command surface", () => {
         tool: spec.name,
         args: spec.example,
         dryRun: false,
-        fileTexts: [],
+        fileFields: [],
       });
     }
   });
@@ -142,7 +142,7 @@ describe("the dispatch command surface", () => {
       tool: "dispatch_project",
       args: { key: "SMOKE684", name: "Smoke" },
       dryRun: false,
-      fileTexts: [],
+      fileFields: [],
     });
   });
 
@@ -228,7 +228,7 @@ describe("the dispatch command surface", () => {
       tool: "dispatch_ask",
       args,
       dryRun: false,
-      fileTexts: [],
+      fileFields: [],
     });
     // Every label free of the separator keeps the readable flag.
     expect(
@@ -261,7 +261,7 @@ describe("the dispatch command surface", () => {
       tool: "dispatch_read",
       args: { issue: "ACME-12" },
       dryRun: false,
-      fileTexts: [],
+      fileFields: [],
     });
     expect(parseCommand(["message", "ACME-12", "--body", "hi"], noFiles)).toMatchObject({
       kind: "call",
@@ -382,7 +382,7 @@ describe("the dispatch command surface", () => {
         tool: "dispatch_handoff_write",
         args: { issue: "DSP-1", phase: "implement", body },
         dryRun: false,
-        fileTexts: [{ field: "body", text: body }],
+        fileFields: ["body"],
       });
     }
     expect(
@@ -392,7 +392,7 @@ describe("the dispatch command surface", () => {
       tool: "dispatch_handoff_read",
       args: { issue: "DSP-1", phase: "plan", version: 2 },
       dryRun: false,
-      fileTexts: [],
+      fileFields: [],
     });
   });
 });
@@ -485,7 +485,7 @@ describe("a bare - given to a text flag", () => {
       tool: "dispatch_artifact",
       args: { issue: "DSP-1", name: "a.txt", path: "-" },
       dryRun: false,
-      fileTexts: [],
+      fileFields: [],
     });
   });
 
@@ -497,7 +497,7 @@ describe("a bare - given to a text flag", () => {
       tool: "dispatch_issue",
       args: { project: "DSP", title: "T", labels: ["-"] },
       dryRun: false,
-      fileTexts: [],
+      fileFields: [],
     });
     expect(
       parseCommand(["issue-update", "--issue", "DSP-1", "--priority", "-"], noFiles)
@@ -527,10 +527,7 @@ describe("a bare - given to a text flag", () => {
       tool: "dispatch_result",
       args: { ...resultArgs, run: "-", observed: "-" },
       dryRun: false,
-      fileTexts: [
-        { field: "run", text: "-" },
-        { field: "observed", text: "-" },
-      ],
+      fileFields: ["run", "observed"],
     });
   });
 
@@ -556,7 +553,7 @@ describe("a bare - given to a text flag", () => {
         negative_control: "go test -run 'A|B' | tee out",
       },
       dryRun: false,
-      fileTexts: [],
+      fileFields: [],
     });
   });
 

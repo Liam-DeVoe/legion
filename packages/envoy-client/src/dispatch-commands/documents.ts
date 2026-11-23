@@ -1,4 +1,3 @@
-import { resolve as resolvePath } from "node:path";
 import type {
   Artifact,
   ArtifactBlock,
@@ -718,15 +717,14 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   const blank = content === undefined || goBlankPattern.test(content);
   // The file a path names, as its upload sends it (uploadedFile), under the type that upload
   // declares, which is what Dispatch reads for whether it stores the file as a Markdown document.
-  // Such a file is read here (documentFileBytes) and refused there, before anything is asked,
-  // past the bytes one document may hold and then for its first U+0000 or byte that is not
-  // UTF-8, in the upload's order and words, so the bytes the file round trip is asked about
-  // below are the bytes sent; any other file is not read here. The CLI made that same check once
-  // the flags were read (`DispatchCommand.documentPathFields`), before anything that needs
-  // Dispatch, and this read checks the bytes it reads again. The bytes AskGate's check read,
-  // where it read them, are the bytes the call checks and sends, copied once into a plain buffer
-  // of their own, which a Blob takes.
-  const file = path === undefined ? undefined : uploadedFile(resolvePath(input.cwd, path));
+  // Such a file's bytes are checked here (documentFileBytes) and refused there, before anything is
+  // asked, past the bytes one document may hold and then for its first U+0000 or byte that is not
+  // UTF-8, in the upload's order and words, so the bytes the file round trip is asked about below
+  // are the bytes sent; any other file is not read here. The bytes checked and sent are those the
+  // CLI read where it read them (`uploadBytes`: AskGate's, else the Markdown file's it checked once
+  // the flags were read, `runDispatchCli`), copied once into a plain buffer of their own, which a
+  // Blob takes; the file is read here only where the caller holds none of its bytes.
+  const file = path === undefined ? undefined : uploadedFile(input.cwd, path);
   const heldBytes = input.uploadBytes === undefined ? undefined : new Uint8Array(input.uploadBytes);
   const documentBytes = file === undefined ? undefined : await documentFileBytes(file, heldBytes);
   // The check of the text alone, the one the dry run makes (artifactTextCheck chooses it for both),
@@ -864,8 +862,9 @@ function endedSentence(text: string): string {
  * so the dry run refuses a text the call would refuse for its spelling or for the text alone, with
  * the call's own refusal and exit code, and stores nothing. The check is chosen as the call chooses
  * it (`artifactTextCheck`). Inline text takes the call's check (`storedTextCheck`), which decides
- * what blank text is asked. A `--path` file Dispatch stores as a Markdown document is read as the
- * call reads it (`documentFileBytes`), which makes the call's checks of its size and then of its
+ * what blank text is asked. A `--path` file Dispatch stores as a Markdown document is checked as
+ * the call checks it (`documentFileBytes`), in the bytes the CLI read of it (`uploadBytes`), or
+ * read here where the CLI holds none, which makes the call's checks of its size and then of its
  * first U+0000 or byte that is not UTF-8, and then takes the call's file check
  * (`storedFileCheck`), which asks the file round trip for its refusal alone: the round trip
  * refuses, in the upload's own words, what the upload of that file is refused for, and the
@@ -884,22 +883,18 @@ function endedSentence(text: string): string {
  * `failed` text it refuses until Dispatch answers. A dry run that failed there would let an
  * AskGate older than DISPATCH_DRY_RUN_LOCAL, which runs the call after a failed dry run, post this
  * write unreviewed; AskGate now sets that variable, under which this step does not run. A text
- * read from a file or stdin, and a Markdown `--path` file, reach this step, as they reach the call,
- * only when `runDispatchCli` did not refuse them, as it refuses such a text past the bytes one
- * document holds or holding a U+0000 or a byte that is not UTF-8 once the flags are read, before
- * the argument check (`DispatchCommand.documentFileFields`, `documentPathFields`), whether or not
- * DISPATCH_DRY_RUN_LOCAL is set. This step reads such a file again, and checks the bytes it reads.
+ * the CLI refuses once the flags are read (`runDispatchCli`) never reaches this step.
  */
 export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerdict> {
-  const { tool, args, cwd, client, deadline, deadlineMs } = context;
+  const { tool, args, cwd, uploadBytes, client, deadline, deadlineMs } = context;
   const content = optionalString(args, "content");
   const path = optionalString(args, "path");
   let bytes: Uint8Array | undefined;
   if (content === undefined && path !== undefined) {
     try {
-      bytes = await documentFileBytes(uploadedFile(resolvePath(cwd, path)));
+      bytes = await documentFileBytes(uploadedFile(cwd, path), uploadBytes);
     } catch (error) {
-      // The call reads the file the same way before it asks anything, and throws this.
+      // The call checks the file the same way before it asks anything, and throws this.
       return {
         kind: "refused",
         refusal: error instanceof Error ? error : new Error(messageFor(error)),

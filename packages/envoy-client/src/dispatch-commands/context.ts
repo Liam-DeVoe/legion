@@ -55,8 +55,10 @@ export interface ExecuteDispatchToolInput {
   readonly args: ToolArguments;
   readonly cwd: string;
   /**
-   * The bytes of an upload's `--path` file as the CLI already read them for AskGate's check, sent
-   * in place of a fresh read, so the upload sends exactly the bytes that check digested.
+   * The bytes of an upload's `--path` file the CLI already read, sent in place of a read: those
+   * AskGate's check digested where it read them, so the upload sends exactly those bytes, and
+   * otherwise those of a Markdown file as the CLI read and checked them once the flags were read
+   * (`documentFileRead`), so the call reads the file no second time.
    */
   readonly uploadBytes?: Uint8Array;
   readonly host: DispatchHost;
@@ -112,6 +114,9 @@ export interface DryRunContext {
   readonly args: ToolArguments;
   /** The directory the call resolves a relative file path against, as the call does. */
   readonly cwd: string;
+  /** The bytes of the upload's Markdown `--path` file as the CLI read and checked them once the
+   *  flags were read (`documentFileRead`), which the step checks in place of a read. */
+  readonly uploadBytes?: Uint8Array<ArrayBuffer>;
   /**
    * The client the call builds, from the session's Dispatch as the call resolves it. It stops at
    * `deadline`, and its own deadline is the same budget (`deadlineMs`), so a failure after the

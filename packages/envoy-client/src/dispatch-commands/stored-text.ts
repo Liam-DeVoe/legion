@@ -6,6 +6,7 @@
 // file's or those of inline text read from a file or stdin, are refused in the upload's order,
 // their size first and then the first U+0000 or byte that is not UTF-8, by one function
 // (`documentBytesRefusal`).
+import { resolve as resolvePath } from "node:path";
 import {
   MARKDOWN_DOCUMENT_MAX_BYTES,
   MARKDOWN_DOCUMENT_TOO_LARGE,
@@ -13,7 +14,7 @@ import {
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import type { BunFile } from "bun";
-import { unstorableBytes } from "../dispatch-file-text";
+import { fileTextBytes, unstorableBytes } from "../dispatch-file-text";
 import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";
@@ -93,7 +94,7 @@ export type StoredTextCheck =
  * server answers `artifact blob exceeds 25 MB` instead (errUploadTooLarge). The server refuses
  * such an upload whatever name it carries, so `dispatch artifact` refuses such text first: the
  * call before it reads whether the owner holds the name (`artifactCommand`), the call and its dry
- * run before they ask the round trip (`storedTextCheck`, and `documentFileBytes` for a file), and
+ * run before they ask the round trip (`storedTextCheck`, and `documentFileRead` for a file), and
  * a document's bytes before the first U+0000 or byte that is not UTF-8 in them
  * (`documentBytesRefusal`).
  */
@@ -115,62 +116,108 @@ function documentTooLarge(measured: string | Uint8Array | number): Error | undef
  * bytes that order passes: first the size (`documentTooLarge`), and then the first U+0000 or
  * byte that is not UTF-8, whichever comes first (`unstorableBytes`), in Dispatch's own code,
  * words and count, under `field`. `field` is the field the upload names: `file` for a `--path`
- * file (`documentFileBytes`), `content` for inline text a flag read from a file or stdin, which
- * `runDispatchCli` refuses once the flags are read (`DispatchCommand.documentFileFields`), UTF-8
- * or not. Both call this, so the same bytes get the same refusal but for the field, whichever way
- * they are given.
+ * file (`documentFileRead`), `content` for inline text a flag read from a file or stdin
+ * (`documentFileTextRefusal`, and `runDispatchCli` for bytes that are not UTF-8). Each calls this,
+ * so the same bytes get the same refusal but for the field, whichever way they are given.
  */
 export function documentBytesRefusal(field: string, bytes: Uint8Array): Error | undefined {
   return documentTooLarge(bytes) ?? unstorableBytes(field, bytes);
 }
 
 /**
- * The file `dispatch artifact --path` sends for the file at `local`, under the type its upload
- * declares, which Dispatch stores it by: an upload whose file part is declared `text/markdown`,
- * its parameters and its case aside, is a document, and any other is a picture or a file
- * (`artifactKind`, packages/envoy/internal/dispatch/api/artifacts.go). It declares the type Bun
- * reads from the path's extension, `text/markdown` for .md and .markdown (PATH_KEEPS_BYTES). The
- * call uploads this file, or the bytes it read of it under its type, and the call and its dry run
- * read from it whether the file is Markdown before they check it (`documentFileBytes`), so the
- * upload and its check take one rule of which files are Markdown.
+ * The refusal of a Markdown document's `text`, read for `field` from a file or stdin and decoded
+ * by the strict read (`readFileText`), or undefined for text Dispatch stores: the refusal of the
+ * bytes it was read from (`fileTextBytes`) by `documentBytesRefusal`. The strict read decodes
+ * UTF-8 alone, so only the text's size or a U+0000 can refuse it, and the text is encoded and
+ * scanned again only where its UTF-8 is past the bytes one document holds or it holds a U+0000.
  */
-export function uploadedFile(local: string): BunFile {
-  return Bun.file(local);
+export function documentFileTextRefusal(field: string, text: string): Error | undefined {
+  return Buffer.byteLength(text, "utf8") > MARKDOWN_DOCUMENT_MAX_BYTES || text.includes("\u0000")
+    ? documentBytesRefusal(field, fileTextBytes(text))
+    : undefined;
 }
 
 /**
- * The bytes of an upload's `--path` file that Dispatch stores as a Markdown document, or undefined
- * for a file it stores as its bytes, which is not read here. `file` is the file the call sends
- * (`uploadedFile`), under the type its upload declares, and Dispatch stores an upload as a
- * document exactly when that type is `text/markdown`, its parameters and its case aside. The bytes
- * are the ones the call checks and sends: `held`, those the CLI read for AskGate's check where it
- * read them, or else the file's own, read once. They are refused before they are answered, with
- * the refusal this throws, so no caller checks them again: a file whose size is past the bytes
- * one document holds (`documentTooLarge`) before it is read, and the bytes in hand, held or read,
- * by `documentBytesRefusal`, which refuses bytes past that size, from a file whose size could not
- * be read or that grew since, and then the first U+0000 or byte that is not UTF-8 in them. So such
- * a file is refused in Dispatch's own words before anything is asked, as its upload refuses it.
- * `runDispatchCli` makes this check once the flags are read, before anything that needs Dispatch
- * (`DispatchCommand.documentPathFields`), and the call and the dry run's step make it again on the
- * bytes they read.
+ * The file `dispatch artifact --path` sends for `path`, resolved against `cwd`, the directory the
+ * call runs in, under the type its upload declares, which Dispatch stores it by: an upload whose
+ * file part is declared `text/markdown`, its parameters and its case aside, is a document, and any
+ * other is a picture or a file (`artifactKind`, packages/envoy/internal/dispatch/api/artifacts.go).
+ * It declares the type Bun reads from the path's extension, `text/markdown` for .md and .markdown
+ * (PATH_KEEPS_BYTES). The call uploads this file, or the bytes read of it under its type, and the
+ * CLI's check of the file, the call and its dry run read from it whether the file is Markdown
+ * (`documentFileRead`), so the upload and its check take one rule of which files are Markdown.
  */
-export async function documentFileBytes(
+export function uploadedFile(cwd: string, path: string): BunFile {
+  return Bun.file(resolvePath(cwd, path));
+}
+
+/**
+ * What the check of an upload's `--path` file found (`documentFileRead`):
+ * - `passed`: the check passes the file. `bytes` are its bytes where Dispatch stores it as a
+ *   Markdown document, which the call checks and sends, and undefined for a file Dispatch stores
+ *   as its bytes, which is not read.
+ * - `refused`: Dispatch's own refusal of the file's text, which the call throws.
+ * - `unread`: the file could not be read, and `error` is the read's own error. That is no refusal
+ *   of the text: the call throws it when it reads the file.
+ */
+export type DocumentFileRead =
+  | { readonly kind: "passed"; readonly bytes: Uint8Array<ArrayBuffer> | undefined }
+  | { readonly kind: "refused"; readonly refusal: Error }
+  | { readonly kind: "unread"; readonly error: unknown };
+
+/**
+ * The check of an upload's `--path` file `file` (`uploadedFile`), which reads a file Dispatch
+ * stores as a Markdown document once and refuses its text in Dispatch's own words, in its upload's
+ * order, before anything is asked. Dispatch stores an upload as a document exactly when the type
+ * it declares is `text/markdown`, its parameters and its case aside; any other file is not read.
+ * The bytes checked are `held` where the caller holds them, or else the file's own: a file whose
+ * size is past the bytes one document holds (`documentTooLarge`) is refused before it is read, and
+ * the bytes in hand by `documentBytesRefusal`, which refuses bytes past that size, from a file
+ * whose size could not be read or that grew since, and then the first U+0000 or byte that is not
+ * UTF-8 in them. `runDispatchCli` checks the file with this once the flags are read, and the call
+ * and its dry run (`documentFileBytes`) check the bytes it read.
+ */
+export async function documentFileRead(
   file: BunFile,
   held?: Uint8Array<ArrayBuffer>
-): Promise<Uint8Array<ArrayBuffer> | undefined> {
-  if (file.type.split(";", 1)[0]?.trim().toLowerCase() !== "text/markdown") return undefined;
-  if (held === undefined) {
+): Promise<DocumentFileRead> {
+  if (file.type.split(";", 1)[0]?.trim().toLowerCase() !== "text/markdown") {
+    return { kind: "passed", bytes: undefined };
+  }
+  let bytes = held;
+  if (bytes === undefined) {
     const size = await file.stat().then(
       (stats) => stats.size,
       () => undefined
     );
     const tooLarge = size === undefined ? undefined : documentTooLarge(size);
-    if (tooLarge !== undefined) throw tooLarge;
+    if (tooLarge !== undefined) return { kind: "refused", refusal: tooLarge };
+    try {
+      bytes = await file.bytes();
+    } catch (error) {
+      return { kind: "unread", error };
+    }
   }
-  const bytes = held ?? (await file.bytes());
   const refusal = documentBytesRefusal("file", bytes);
-  if (refusal !== undefined) throw refusal;
-  return bytes;
+  return refusal === undefined ? { kind: "passed", bytes } : { kind: "refused", refusal };
+}
+
+/**
+ * The bytes of an upload's `--path` file `file` that Dispatch stores as a Markdown document, as
+ * `documentFileRead` checks them, or undefined for a file Dispatch stores as its bytes. `held` are
+ * the bytes the CLI read of the file where it read them (`ExecuteDispatchToolInput.uploadBytes`,
+ * `DryRunContext.uploadBytes`), which are checked in place of a read. The refusal of the text, and
+ * the error of a read that failed, are thrown, so the call and its dry run answer them before
+ * anything is asked.
+ */
+export async function documentFileBytes(
+  file: BunFile,
+  held?: Uint8Array<ArrayBuffer>
+): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  const read = await documentFileRead(file, held);
+  if (read.kind === "refused") throw read.refusal;
+  if (read.kind === "unread") throw read.error;
+  return read.bytes;
 }
 
 /** What a round trip answers for a text: the markdown Dispatch would store for it, Dispatch's

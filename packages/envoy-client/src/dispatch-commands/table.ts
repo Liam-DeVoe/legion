@@ -64,17 +64,18 @@ export type DispatchDryRunStep = (context: DryRunContext) => Promise<DryRunVerdi
  * One command, and whether running it resolves this call's origin. `origin: "none"` is a command
  * that answers on the session's context alone, so no subprocess runs for it; every other command
  * is handed the context `commandContext` builds. `dryRun` is the command's dry-run step, when it
- * has one. `documentFileFields` are the command's fields that hold a Markdown document's text,
+ * has one. `documentFileFields` are the command's fields it checks as a Markdown document's text,
  * when it has any. Read from a file or stdin, such a field's bytes are refused by `runDispatchCli`
  * as the upload of a Markdown file of the same bytes refuses them, the size first, then the first
  * U+0000 or byte that is not UTF-8 (`documentBytesRefusal`), whether or not they are UTF-8. Any
  * other field read from a file or stdin is no document, and is refused only for bytes that are not
  * UTF-8, at their first U+0000 or byte that is not UTF-8 (`unstorableBytes`).
- * `documentPathFields` are the command's fields whose value names a local file it uploads, when it
- * has any: `runDispatchCli` reads such a file that Dispatch stores as a Markdown document as the
- * upload reads it, and refuses it as the upload does (`documentFileBytes`). Both checks run once
- * the flags are read, before the arguments are checked and before anything that needs Dispatch,
- * in the call and its dry run alike.
+ * `documentPathField` is the command's field whose value names a local file it uploads, when it
+ * has one: `runDispatchCli` reads such a file once where Dispatch stores it as a Markdown
+ * document, refuses it as the upload does (`documentFileRead`), and hands the bytes it read to the
+ * dry run's step and the call; a file it cannot read it leaves to them. Both checks run once the
+ * flags are read, before the arguments are checked and before anything that needs Dispatch, in
+ * the call and its dry run alike.
  */
 export type DispatchCommand = (
   | {
@@ -88,7 +89,7 @@ export type DispatchCommand = (
 ) & {
   readonly dryRun?: DispatchDryRunStep;
   readonly documentFileFields?: readonly string[];
-  readonly documentPathFields?: readonly string[];
+  readonly documentPathField?: string;
 };
 
 /** A command that acts for the session: it is handed the context whose origin was resolved. */
@@ -136,7 +137,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
     ...acting(artifactCommand),
     dryRun: artifactDryRun,
     documentFileFields: ["content"],
-    documentPathFields: ["path"],
+    documentPathField: "path",
   },
   dispatch_handoff_write: acting(handoffWriteCommand),
   dispatch_handoff_read: acting(handoffReadCommand),

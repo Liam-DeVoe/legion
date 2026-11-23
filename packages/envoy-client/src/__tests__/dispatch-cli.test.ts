@@ -684,6 +684,64 @@ async function refusedAlike(
   expect(requests, named).toEqual([]);
 }
 
+/** Writes `body` to `file`, and runs `dispatch comment --body-file` reading it from `file` and then
+ *  from stdin, each as the `dispatch` entry reads them (`readFileText`): expects the dry run to
+ *  print the arguments with `body` as read and send nothing, and the call to post `body` as read. */
+async function commentPostedAsRead(file: string, body: string): Promise<void> {
+  writeFileSync(file, body);
+  for (const [path, stdin] of [
+    [file, Buffer.of()],
+    ["-", Buffer.from(body)],
+  ] as const) {
+    const argv = ["comment", "--issue", "DSP-1", "--body-file", path];
+    const reader = { readText: (read: string) => readFileText(read, () => stdin) };
+    requests.length = 0;
+    const dry = await run([...argv, "--dry-run"], omp, "", reader);
+    expect(dry, path).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", body }, null, 2)}\n`,
+      stderr: "",
+    });
+    expect(requests, path).toEqual([]);
+    const call = await run(argv, omp, "", reader);
+    expect(call.code, call.stdout).toBe(0);
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
+    expect(posted?.body, path).toMatchObject({ body });
+  }
+}
+
+/** Bytes an upload refuses, named by `name`, and the refusal printed for them under `field`. */
+interface RefusedBytes {
+  readonly name: string;
+  readonly bytes: Uint8Array;
+  readonly stdout: (field: string) => string;
+}
+
+/** For each row, expects `dispatch artifact` to refuse its bytes alike (`refusedAlike`) in `env`,
+ *  read from `--content-file <file>` and from stdin under `content`, and from a markdown `--path`
+ *  file under `file`. */
+async function uploadRefusedEveryWay(
+  rows: readonly RefusedBytes[],
+  env: Record<string, string | undefined> = omp
+): Promise<void> {
+  const file = join(stateDir, "text");
+  const upload = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
+  for (const row of rows) {
+    writeFileSync(file, row.bytes);
+    writeFileSync(join(stateDir, "x.md"), row.bytes);
+    const inline = row.stdout("content");
+    await refusedAlike([...upload, "--content-file", file], Buffer.of(), inline, row.name, env);
+    await refusedAlike(UPLOAD, row.bytes, inline, row.name, env);
+    await refusedAlike(
+      [...upload, "--path", "x.md"],
+      Buffer.of(),
+      row.stdout("file"),
+      row.name,
+      env
+    );
+  }
+}
+
 /** An inline upload, its text read from stdin, and the route its stored-text check asks. */
 const UPLOAD = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--content-file", "-"];
 const NOTES = "# Notes\n\n* one\n";
@@ -1290,16 +1348,6 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // The dry run asks Dispatch nothing for a text past the document limit, so it builds no client
-  // for it: with Dispatch off it refuses the text as it does with Dispatch on, and says nothing
-  // about Dispatch on stderr.
-  test("an upload's dry run with Dispatch off refuses a text past the document limit, building no client", async () => {
-    const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
-    const dry = await run([...UPLOAD, "--dry-run"], off, PAST_DOCUMENT_LIMIT);
-    expect(dry).toEqual({ code: 1, stdout: `${DOCUMENT_TOO_LARGE}\n`, stderr: "" });
-    expect(requests).toEqual([]);
-  });
-
   // A text whose round trip Dispatch marks as its refusal of the text (TEXT_REFUSAL_HEADER): here
   // its refusal of markdown whose rendering no reader reads back, which its upload answers too.
   // The call refuses the text with Dispatch's own refusal, printed as it prints the upload's
@@ -1533,37 +1581,21 @@ describe("the dispatch CLI", () => {
       await refusedAlike(row.argv, row.stdin ?? Buffer.of(), row.stdout, "not UTF-8");
     }
 
-    const text = "\uFEFFCafé 😀 naïve\n";
-    writeFileSync(file, text);
-    for (const [path, stdin] of [
-      [file, Buffer.of()],
-      ["-", Buffer.from(text)],
-    ] as const) {
-      const argv = ["comment", "--issue", "DSP-1", "--body-file", path];
-      const reader = { readText: (read: string) => readFileText(read, () => stdin) };
-      requests.length = 0;
-      const dry = await run([...argv, "--dry-run"], omp, "", reader);
-      expect(dry, path).toEqual({
-        code: 0,
-        stdout: `${JSON.stringify({ issue: "DSP-1", body: text }, null, 2)}\n`,
-        stderr: "",
-      });
-      expect(requests, path).toEqual([]);
-      const call = await run(argv, omp, "", reader);
-      expect(call.code, call.stdout).toBe(0);
-      const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
-      expect(posted?.body, path).toMatchObject({ body: text });
-    }
+    await commentPostedAsRead(file, "\uFEFFCafé 😀 naïve\n");
   });
 
   /** UTF-8 holding U+0000, and a text holding a byte that is not UTF-8, each refused at character
    *  11: two rows of packages/envoy/internal/dispatch/api/testdata/text-refusals.json. */
-  const utf8WithNul = Buffer.from("# Notes\n\nA\u0000B\n");
-  const notUtf8Text = Buffer.concat([
-    Buffer.from("# Notes\n\nA"),
-    Buffer.from([0xff]),
-    Buffer.from("B\n"),
-  ]);
+  const utf8WithNulRow: RefusedBytes = {
+    name: "UTF-8 holding U+0000",
+    bytes: Buffer.from("# Notes\n\nA\u0000B\n"),
+    stdout: (field) => nul(field, 11),
+  };
+  const notUtf8Row: RefusedBytes = {
+    name: "a file holding a byte that is not UTF-8",
+    bytes: Buffer.concat([Buffer.from("# Notes\n\nA"), Buffer.from([0xff]), Buffer.from("B\n")]),
+    stdout: (field) => notUtf8(field, "0xFF", 11),
+  };
 
   // INFRA-4224 R3 (spec v27): for the same bytes, `dispatch artifact --content-file <file>`,
   // `--content-file -` (stdin) and a markdown `--path` file get the same refusal, in the order the
@@ -1578,13 +1610,12 @@ describe("the dispatch CLI", () => {
   // bytes that are not UTF-8, and its UTF-8 holding U+0000 the command does not refuse. The dry run
   // passes it, and the call sends it to Dispatch as read, which answers it.
   test("an upload's bytes from --content-file, stdin or a markdown --path file are refused alike, the size first, then the first U+0000 or byte that is not UTF-8, by the dry run as by the call, sending nothing", async () => {
-    const file = join(stateDir, "text");
     const nulFirst = Buffer.from([0x41, 0x00, 0x42, 0xff]);
-    const texts = [
+    await uploadRefusedEveryWay([
       {
         name: "a file holding U+0000 before a byte that is not UTF-8",
         bytes: nulFirst,
-        stdout: (field: string) => nul(field, 2),
+        stdout: (field) => nul(field, 2),
       },
       {
         name: "a file past the bytes one document holds holding a byte that is not UTF-8",
@@ -1595,101 +1626,67 @@ describe("the dispatch CLI", () => {
         ]),
         stdout: () => `${DOCUMENT_TOO_LARGE}\n`,
       },
-      {
-        name: "a file holding a byte that is not UTF-8",
-        bytes: notUtf8Text,
-        stdout: (field: string) => notUtf8(field, "0xFF", 11),
-      },
-      {
-        name: "UTF-8 holding U+0000",
-        bytes: utf8WithNul,
-        stdout: (field: string) => nul(field, 11),
-      },
-    ];
-    const upload = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
-    for (const text of texts) {
-      writeFileSync(file, text.bytes);
-      writeFileSync(join(stateDir, "x.md"), text.bytes);
-      const inline = text.stdout("content");
-      await refusedAlike([...upload, "--content-file", file], Buffer.of(), inline, text.name);
-      await refusedAlike(UPLOAD, text.bytes, inline, text.name);
-      await refusedAlike(
-        [...upload, "--path", "x.md"],
-        Buffer.of(),
-        text.stdout("file"),
-        text.name
-      );
-    }
+      notUtf8Row,
+      utf8WithNulRow,
+    ]);
 
+    const file = join(stateDir, "text");
     writeFileSync(file, nulFirst);
     const comment = ["comment", "--issue", "DSP-1", "--body-file", file];
     await refusedAlike(comment, Buffer.of(), nul("body", 2), "a comment");
-
-    const body = "Looks good.\u0000\n";
-    writeFileSync(file, body);
-    for (const [path, stdin] of [
-      [file, Buffer.of()],
-      ["-", Buffer.from(body)],
-    ] as const) {
-      const argv = ["comment", "--issue", "DSP-1", "--body-file", path];
-      const reader = { readText: (read: string) => readFileText(read, () => stdin) };
-      requests.length = 0;
-      const dry = await run([...argv, "--dry-run"], omp, "", reader);
-      expect(dry, path).toEqual({
-        code: 0,
-        stdout: `${JSON.stringify({ issue: "DSP-1", body }, null, 2)}\n`,
-        stderr: "",
-      });
-      expect(requests, path).toEqual([]);
-      const call = await run(argv, omp, "", reader);
-      expect(call.code, call.stdout).toBe(0);
-      const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
-      expect(posted?.body, path).toMatchObject({ body });
-    }
+    await commentPostedAsRead(file, "Looks good.\u0000\n");
   });
 
   // INFRA-4224 R3: with Dispatch off (no Dispatch in the environment and no envoy.json), the dry
   // run and the call refuse the same bytes from `--content-file <file>`, `--content-file -`
   // (stdin) and a markdown `--path` file alike, as they do with Dispatch on: UTF-8 holding U+0000,
   // a text of UTF-8 past the bytes one document holds, and bytes that are not UTF-8, each with
-  // exit 1 and the same stdout but for the field, and nothing on stderr. Each is refused once the
-  // flags are read, before anything that needs Dispatch, so the call is never refused for Dispatch
-  // being off; a file these checks pass is (the test of the dry run's warning with Dispatch off).
+  // exit 1 and the same stdout but for the field, nothing on stderr, and no request. Each is
+  // refused once the flags are read, before anything that needs Dispatch, so no client is built
+  // and the call is never refused for Dispatch being off; a file these checks pass is (the test of
+  // the dry run's warning with Dispatch off).
   test("with Dispatch off an upload's bytes from --content-file, stdin or a markdown --path file are refused alike by the dry run and the call", async () => {
     const off = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
-    const file = join(stateDir, "text");
-    const texts = [
-      {
-        name: "UTF-8 holding U+0000",
-        bytes: utf8WithNul,
-        stdout: (field: string) => nul(field, 11),
-      },
-      {
-        name: "a text past the bytes one document holds",
-        bytes: Buffer.from(PAST_DOCUMENT_LIMIT),
-        stdout: () => `${DOCUMENT_TOO_LARGE}\n`,
-      },
-      {
-        name: "a file holding a byte that is not UTF-8",
-        bytes: notUtf8Text,
-        stdout: (field: string) => notUtf8(field, "0xFF", 11),
-      },
-    ];
-    const upload = ["artifact", "--issue", "DSP-1", "--name", "notes.md"];
-    for (const text of texts) {
-      writeFileSync(file, text.bytes);
-      writeFileSync(join(stateDir, "x.md"), text.bytes);
-      const inline = text.stdout("content");
-      await refusedAlike([...upload, "--content-file", file], Buffer.of(), inline, text.name, off);
-      await refusedAlike(UPLOAD, text.bytes, inline, text.name, off);
-      await refusedAlike(
-        [...upload, "--path", "x.md"],
-        Buffer.of(),
-        text.stdout("file"),
-        text.name,
-        off
-      );
-    }
+    await uploadRefusedEveryWay(
+      [
+        utf8WithNulRow,
+        {
+          name: "a text past the bytes one document holds",
+          bytes: Buffer.from(PAST_DOCUMENT_LIMIT),
+          stdout: () => `${DOCUMENT_TOO_LARGE}\n`,
+        },
+        notUtf8Row,
+      ],
+      off
+    );
+  });
+
+  // A markdown --path file the command cannot read is no refusal of its text, so the check made
+  // once the flags are read leaves it to the argument check: a dry run naming both a path and
+  // content is refused for that, with exit 2, and sends nothing.
+  test("an upload's dry run naming content and a markdown --path file that is not there is refused by the argument check", async () => {
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "a.md", "--content", "# A"];
+    const dry = await run([...argv, "--path", "gone.md", "--dry-run"], omp);
+    expect(dry.code).toBe(2);
+    expect(dry.stdout).toStartWith(
+      "dispatch artifact was not called: 1 problem\n- Give at most one of path and content."
+    );
+    expect(dry.stderr).toBe("");
+    expect(requests).toEqual([]);
+  });
+
+  // With DISPATCH_DRY_RUN_LOCAL=1 an upload's dry run runs no step, so a markdown --path file that
+  // is not there, which the check made once the flags are read leaves, is never read: the dry run
+  // prints the arguments and sends nothing.
+  test("with DISPATCH_DRY_RUN_LOCAL=1 an upload's dry run of a markdown --path file that is not there prints the arguments", async () => {
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "a.md", "--path", "gone.md"];
+    const dry = await run([...argv, "--dry-run"], { ...omp, DISPATCH_DRY_RUN_LOCAL: "1" });
+    expect(dry).toEqual({
+      code: 0,
+      stdout: `${JSON.stringify({ issue: "DSP-1", name: "a.md", path: "gone.md" }, null, 2)}\n`,
+      stderr: "",
+    });
+    expect(requests).toEqual([]);
   });
 
   // INFRA-4224: the call of a markdown --path file asks the file round trip about the bytes it

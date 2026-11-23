@@ -1,5 +1,4 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
 import {
   askgateState,
   bytesDigest,
@@ -21,7 +20,8 @@ import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-co
 import { loginCommand } from "./dispatch-commands/login";
 import {
   documentBytesRefusal,
-  documentFileBytes,
+  documentFileRead,
+  documentFileTextRefusal,
   uploadedFile,
 } from "./dispatch-commands/stored-text";
 import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
@@ -33,7 +33,7 @@ import {
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
-import { fileTextBytes, unstorableBytes } from "./dispatch-file-text";
+import { unstorableBytes } from "./dispatch-file-text";
 import { DispatchClient, DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
@@ -83,10 +83,11 @@ export interface DispatchCliIo {
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
  *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
- *  refusal), or text this CLI refuses in Dispatch's own refusal before it asks (a file or stdin
- *  holding a byte that is not UTF-8, or a document's text past the bytes one holds or holding
- *  U+0000, read from a file or stdin or from a Markdown `--path` file); any other argument this
- *  CLI refuses before any request is USAGE, whether the argv named a command or not. */
+ *  refusal), or text this CLI refuses in Dispatch's own refusal once the flags are read, before it
+ *  asks: bytes that are not UTF-8 in a file or stdin a flag read, and a Markdown document's text
+ *  past the bytes one document holds or holding U+0000 or a byte that is not UTF-8, read from a
+ *  file or stdin or from a Markdown `--path` file. Any other argument this CLI refuses before any
+ *  request is USAGE, whether the argv named a command or not. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
@@ -349,46 +350,47 @@ export async function runDispatchCli(
   // The local checks of a text alone run here, once the flags are read: before the arguments are
   // checked and before anything that needs Dispatch (its configuration, the refusal of a Dispatch
   // that is off, any client), so the dry run and the call refuse a text from this one step alike,
-  // with Dispatch on or off, in Dispatch's own refusal and with its exit code, and send nothing.
-  // Text a flag read from a file or stdin is refused by the rule of its field. A field the
-  // command's table entry says holds a Markdown document's text
-  // (`DispatchCommand.documentFileFields`) is refused as the upload of a Markdown `--path` file of
+  // with Dispatch on or off and whether or not DISPATCH_DRY_RUN_LOCAL is set, in Dispatch's own
+  // refusal and with its exit code, and send nothing. The command's table entry names the fields
+  // held to a Markdown document's rule (`DispatchCommand.documentFileFields`, `documentPathField`).
+  // Such a field read from a file or stdin is refused as the upload of a Markdown `--path` file of
   // the same bytes refuses it, the size first, then the first U+0000 or byte that is not UTF-8
-  // (`documentBytesRefusal`), whether or not the bytes are UTF-8: a text the strict read decoded is
-  // checked in the bytes it was read from (`fileTextBytes`). Any other field is no document, so it
-  // is refused only for bytes that are not UTF-8 (an `unstorable` parse), at their first U+0000 or
-  // byte that is not UTF-8 (`unstorableBytes`); a U+0000 in its UTF-8 goes to Dispatch, which
-  // answers it. Bytes that are not UTF-8 hold such a byte, so each finds a refusal. A field the
-  // table entry says names a local file the command uploads (`DispatchCommand.documentPathFields`)
-  // has its file read as the upload reads it (`documentFileBytes`), which reads only a file
-  // Dispatch stores as a Markdown document and refuses it in the same order: past the bytes one
-  // document holds by its size, then by the bytes read, then at the first U+0000 or byte that is
-  // not UTF-8. Such a file it cannot read is refused here too, with the read's own error and exit
-  // 1, as the call and the dry run's step would refuse it. The call and the dry run's step read
-  // such a file again, and check the bytes they read.
+  // (`documentBytesRefusal`), whether or not the bytes are UTF-8; a text the strict read decoded
+  // can fail only for its size or a U+0000 (`documentFileTextRefusal`). Any other field read from
+  // a file or stdin is no document, so it is refused only for bytes that are not UTF-8 (an
+  // `unstorable` parse), at their first U+0000 or byte that is not UTF-8 (`unstorableBytes`); a
+  // U+0000 in its UTF-8 goes to Dispatch, which answers it. Bytes that are not UTF-8 hold such a
+  // byte, so each finds a refusal. The file the command uploads is checked as its upload is
+  // (`documentFileRead`), which reads it once, only where Dispatch stores it as a Markdown
+  // document, and refuses it in the same order: past the bytes one document holds by its size,
+  // then by the bytes read, then at the first U+0000 or byte that is not UTF-8. The bytes it read
+  // are handed on (`uploadBytes`), so the dry run's step and the call check and send those bytes
+  // and do not read the file again. A file it cannot read is no refusal of its text, so it is left
+  // to what comes after: the argument check, and then the dry run's step, where it runs, and the
+  // call, which read the file and throw the read's own error.
   const command = dispatchCommands[parsed.tool as DispatchToolName];
-  const documentFields = command?.documentFileFields ?? [];
+  const documentFileFields = command?.documentFileFields ?? [];
   if (parsed.kind === "unstorable") {
     const { tool, field, bytes } = parsed;
-    const refusal = (documentFields.includes(field) ? documentBytesRefusal : unstorableBytes)(
+    const refusal = (documentFileFields.includes(field) ? documentBytesRefusal : unstorableBytes)(
       field,
       bytes
     );
     return refuse(messageFor(refusal), REFUSED, tool);
   }
-  for (const { field, text } of parsed.fileTexts) {
-    if (!documentFields.includes(field)) continue;
-    const refusal = documentBytesRefusal(field, fileTextBytes(text));
+  for (const field of documentFileFields) {
+    const text = parsed.args[field];
+    if (typeof text !== "string" || !parsed.fileFields.includes(field)) continue;
+    const refusal = documentFileTextRefusal(field, text);
     if (refusal !== undefined) return refuse(messageFor(refusal), REFUSED, parsed.tool);
   }
-  for (const field of command?.documentPathFields ?? []) {
-    const path = parsed.args[field];
-    if (typeof path !== "string") continue;
-    try {
-      await documentFileBytes(uploadedFile(resolvePath(io.cwd, path)));
-    } catch (error) {
-      return refuse(messageFor(error), REFUSED, parsed.tool);
-    }
+  const uploadPath =
+    command?.documentPathField === undefined ? undefined : parsed.args[command.documentPathField];
+  let pathBytes: Uint8Array<ArrayBuffer> | undefined;
+  if (typeof uploadPath === "string") {
+    const read = await documentFileRead(uploadedFile(io.cwd, uploadPath));
+    if (read.kind === "refused") return refuse(messageFor(read.refusal), REFUSED, parsed.tool);
+    if (read.kind === "passed") pathBytes = read.bytes;
   }
 
   const hostName = ledgerHost();
@@ -461,6 +463,7 @@ export async function runDispatchCli(
         tool: parsed.tool,
         args: checked.args,
         cwd: io.cwd,
+        ...defined("uploadBytes", pathBytes),
         deadline,
         deadlineMs,
         client: () => {
@@ -687,7 +690,9 @@ export async function runDispatchCli(
       tool,
       args,
       cwd: io.cwd,
-      ...(uploadBytes === undefined ? {} : { uploadBytes }),
+      // AskGate's bytes, where its check read the file, are the bytes it digested, so they are sent
+      // in place of those read once the flags were read.
+      ...defined("uploadBytes", uploadBytes ?? pathBytes),
       host,
       sessionId,
       sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
