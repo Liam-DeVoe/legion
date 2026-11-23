@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,45 +22,62 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// endMeaningStatementsAt points searchMeaningScan's bound (searchMeaningStatementBound) at `at`
-// for one test, so that a meaning statement is ended by the server rather than answered, without
-// a test waiting production's fifteen seconds out. The bound it replaces must be in the list: a
-// list that holds none is the defect an earlier fix closed (a meaning statement with no bound of
+// endMeaningStatementsAt points the server's bound on a search statement at `at` for one test:
+// searchStatementBound, and the setting built from it (searchMeaningStatementBound) in both
+// searchMeaningScan and searchKeywordScan. A keyword or meaning statement is then ended by the
+// server rather than answered, without a test waiting production's fifteen seconds out, and the
+// 503 the search route answers names the bound in force. The bound it replaces must be in each
+// list: a list that holds none is the defect an earlier fix closed (a statement with no bound of
 // its own), and a test that quietly added its own bound would pass on a server that holds none.
 //
-// Swapping a package-level statement is safe only because no test in internal/dispatch/api calls
-// t.Parallel, so no other test's meaning query can read the shortened list before the cleanup
-// puts it back; a test added here that does call t.Parallel breaks these. It is the same seam,
-// under the same constraint, as the claim path's (issue_claim_test.go).
+// The lists and the bound are package variables, read by every test that runs a search, a
+// related-item check or a scan, many of them parallel:
+// TestMeaningScanAppliesTheServersBoundToItsTransaction,
+// TestKeywordScanAppliesTheBoundAndTheConnectionCheckToItsTransaction and
+// TestEverySearchStatementRunsInsideItsBoundedTransaction among them. Swapping them is safe only
+// because every test that writes them - this helper's callers
+// (TestSearchReportsAMeaningStatementTheServerEnded,
+// TestSearchReportsAKeywordStatementTheServerEnded, TestASearchWhoseClientLeftIsNotATimeout and
+// TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout) and
+// TestMeaningScanRollsBackWhenASettingFails - calls no t.Parallel: Go runs the part of a
+// top-level test after its t.Parallel only once every top-level test that does not call it has
+// returned and put the variables back, so no reader sees a shortened list. A writer that called
+// t.Parallel would race every one of those readers. It is the same seam, under the same
+// constraint, as the claim path's (issue_claim_test.go).
 //
-// The shortened bound alone does not end a meaning statement. On a test database of a few rows
-// the statement itself executes in well under a millisecond (0.14 to 0.53 ms measured on Postgres
+// The shortened bound alone does not end a statement. On a test database of a few rows a meaning
+// statement itself executes in well under a millisecond (0.14 to 0.53 ms measured on Postgres
 // 18); what takes longer is its plan, 9 to 18 ms for each custom plan the server makes. A
 // backend that reuses a plan it has already made answers the statement inside the bound: 39
 // runs of 40 did with plan_cache_mode = force_generic_plan, and one run of the whole package saw
-// a search answered in 7 ms. So each test below also holds the one table every meaning
-// statement reads (holdMeaningStatements): the statement waits however fast it would run, and
-// the bound is what ends it. Were the bound ever to end one of the two `set local` statements
-// it precedes instead, beginMeaningScan would fail with that same cancellation, and each caller
-// below reports it the same way, so what these tests assert does not depend on which of the
-// transaction's statements the bound ends.
-func endMeaningStatementsAt(t *testing.T, at string) {
+// a search answered in 7 ms. So each test below also holds a table the statement reads
+// (holdMeaningStatements, holdKeywordStatements): the statement waits however fast it would
+// run, and the bound is what ends it. Were the bound ever to end one of the `set local`
+// statements it precedes instead, beginSearchScan would fail with that same cancellation, and
+// each caller below reports it the same way, so what these tests assert does not depend on which
+// of the transaction's statements the bound ends.
+func endMeaningStatementsAt(t *testing.T, at time.Duration) {
 	t.Helper()
-	healthy := searchMeaningScan
-	shortened := slices.Clone(searchMeaningScan)
-	bounded := false
-	for index, setting := range shortened {
-		if setting == searchMeaningStatementBound {
-			shortened[index] = "set local statement_timeout = '" + at + "'"
-			bounded = true
-		}
+	bound, meaning, keyword := searchStatementBound, searchMeaningScan, searchKeywordScan
+	shortened := "set local statement_timeout = '" + at.String() + "'"
+	shortenedMeaning := shortenedScan(t, "searchMeaningScan", meaning, shortened)
+	shortenedKeyword := shortenedScan(t, "searchKeywordScan", keyword, shortened)
+	searchStatementBound, searchMeaningScan, searchKeywordScan = at, shortenedMeaning, shortenedKeyword
+	t.Cleanup(func() { searchStatementBound, searchMeaningScan, searchKeywordScan = bound, meaning, keyword })
+}
+
+// shortenedScan is scan, the list named name, with the server's bound on a search statement
+// (searchMeaningStatementBound) replaced by shortened.
+func shortenedScan(t *testing.T, name string, scan []string, shortened string) []string {
+	t.Helper()
+	at := slices.Index(scan, searchMeaningStatementBound)
+	if at < 0 {
+		t.Fatalf("%s = %q, want it to hold the server's own bound on a search statement (%q)",
+			name, scan, searchMeaningStatementBound)
 	}
-	if !bounded {
-		t.Fatalf("searchMeaningScan = %q, want it to hold the server's own bound on a meaning statement (%q)",
-			searchMeaningScan, searchMeaningStatementBound)
-	}
-	searchMeaningScan = shortened
-	t.Cleanup(func() { searchMeaningScan = healthy })
+	replaced := slices.Clone(scan)
+	replaced[at] = shortened
+	return replaced
 }
 
 // holdMeaningStatements locks embeddings, the table every meaning statement reads its vectors
@@ -79,18 +97,35 @@ func endMeaningStatementsAt(t *testing.T, at string) {
 // neither those writes nor the server's own shutdown queue behind it.
 func holdMeaningStatements(t *testing.T, database *store.Store) (release func()) {
 	t.Helper()
+	return holdTable(t, database, "embeddings")
+}
+
+// holdKeywordStatements is holdMeaningStatements for the keyword statement: it locks messages,
+// which the statement's message arm reads (searchKeywordLegs). Nothing else on a keyword search's
+// path reads messages: search's own key and numnode reads read issues or nothing, and
+// attachAskStates runs only once the statement has answered.
+func holdKeywordStatements(t *testing.T, database *store.Store) (release func()) {
+	t.Helper()
+	return holdTable(t, database, "messages")
+}
+
+// holdTable locks table in ACCESS EXCLUSIVE mode on a transaction of the test's own and answers
+// the function that rolls that transaction back; the test's cleanup rolls it back too, should
+// the test end first.
+func holdTable(t *testing.T, database *store.Store, table string) (release func()) {
+	t.Helper()
 	ctx := context.Background()
 	hold, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the transaction that holds embeddings: %v", err)
+		t.Fatalf("begin the transaction that holds %s: %v", table, err)
 	}
 	t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
-	if _, err := hold.Exec(ctx, "lock table embeddings in access exclusive mode"); err != nil {
-		t.Fatalf("lock embeddings: %v", err)
+	if _, err := hold.Exec(ctx, "lock table "+table+" in access exclusive mode"); err != nil {
+		t.Fatalf("lock %s: %v", table, err)
 	}
 	return func() {
 		if err := hold.Rollback(ctx); err != nil {
-			t.Fatalf("release the lock on embeddings: %v", err)
+			t.Fatalf("release the lock on %s: %v", table, err)
 		}
 	}
 }
@@ -98,10 +133,12 @@ func holdMeaningStatements(t *testing.T, database *store.Store) (release func())
 // A meaning query's transaction carries the server's own bound, read from the transaction itself
 // rather than from the list that set it: a search whose caller has gone cannot be cancelled while
 // the pool is full, since pgx cancels out of band and a CancelRequest needs a connection of its
-// own, so the statement has to end itself. The two index settings are read beside it: all three
-// reach a query the same way, and a list that lost one of them is read here too.
+// own, so the statement has to end itself. The connection check is read beside it, the other half
+// of that: a backend whose client closed its connection ends its statement within a second. The
+// two index settings are read with them: all four reach a query the same way, and a list that
+// lost one of them fails here.
 //
-// The bound is local to the transaction, so the connection goes back to the pool without it.
+// The settings are local to the transaction, so the connection goes back to the pool without them.
 func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
@@ -112,14 +149,18 @@ func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var timeout, efSearch, iterativeScan string
-	if err := tx.QueryRow(ctx, `select current_setting('statement_timeout'), current_setting('hnsw.ef_search'),
-		current_setting('hnsw.iterative_scan')`).Scan(&timeout, &efSearch, &iterativeScan); err != nil {
+	var timeout, check, efSearch, iterativeScan string
+	if err := tx.QueryRow(ctx, `select current_setting('statement_timeout'), current_setting('client_connection_check_interval'),
+		current_setting('hnsw.ef_search'), current_setting('hnsw.iterative_scan')`).Scan(&timeout, &check, &efSearch, &iterativeScan); err != nil {
 		t.Fatalf("read the settings the meaning transaction applies: %v", err)
 	}
 	if timeout != "15s" {
 		t.Fatalf("statement_timeout = %q in a meaning query's transaction, want 15s: the server's own bound is what "+
 			"ends a search whose caller has gone, since pgx cannot deliver a cancellation when the pool is full", timeout)
+	}
+	if check != "1s" {
+		t.Fatalf("client_connection_check_interval = %q in a meaning query's transaction, want 1s: the check is what "+
+			"ends a statement whose client closed its connection before the bound does", check)
 	}
 	if efSearch != "400" || iterativeScan != "relaxed_order" {
 		t.Fatalf("hnsw.ef_search = %q and hnsw.iterative_scan = %q, want 400 and relaxed_order", efSearch, iterativeScan)
@@ -128,14 +169,63 @@ func TestMeaningScanAppliesTheServersBoundToItsTransaction(t *testing.T) {
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatalf("roll the meaning transaction back: %v", err)
 	}
-	var pooled string
-	if err := database.Pool.QueryRow(ctx, `show statement_timeout`).Scan(&pooled); err != nil {
-		t.Fatalf("read statement_timeout outside a meaning transaction: %v", err)
+	var pooled, pooledCheck string
+	if err := database.Pool.QueryRow(ctx, `select current_setting('statement_timeout'),
+		current_setting('client_connection_check_interval')`).Scan(&pooled, &pooledCheck); err != nil {
+		t.Fatalf("read statement_timeout and client_connection_check_interval outside a meaning transaction: %v", err)
 	}
-	if pooled == "15s" {
-		t.Fatalf("statement_timeout = %q outside the meaning transaction, want the server's own default: "+
-			"`set local` must not follow a pooled connection to the next request", pooled)
+	if pooled == "15s" || pooledCheck == "1s" {
+		t.Fatalf("statement_timeout = %q and client_connection_check_interval = %q outside the meaning transaction, "+
+			"want the server's own defaults: `set local` must not follow a pooled connection to the next request", pooled, pooledCheck)
 	}
+}
+
+// The keyword statement's transaction carries the same bound and the same connection check as a
+// meaning query's, read with `show` inside the transaction beginKeywordScan opens, and the
+// server's own defaults outside it before and after: both are local to the transaction, so the
+// connection goes back to the pool without them.
+func TestKeywordScanAppliesTheBoundAndTheConnectionCheckToItsTransaction(t *testing.T) {
+	t.Parallel()
+	_, database, deps := newTestServer(t, testServerOptions{})
+	ctx := context.Background()
+	defaultTimeout, defaultCheck := showSearchScanSettings(t, database.Pool, "before the keyword scan")
+	if defaultTimeout == "15s" || defaultCheck == "1s" {
+		t.Fatalf("statement_timeout = %q and client_connection_check_interval = %q on the pool before any scan, "+
+			"want defaults other than the scan's, or this test reads nothing", defaultTimeout, defaultCheck)
+	}
+
+	tx, err := directServer(deps).beginKeywordScan(ctx)
+	if err != nil {
+		t.Fatalf("begin the keyword scan: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if timeout, check := showSearchScanSettings(t, tx, "inside the keyword scan"); timeout != "15s" || check != "1s" {
+		t.Fatalf("statement_timeout = %q and client_connection_check_interval = %q in the keyword statement's "+
+			"transaction, want 15s and 1s", timeout, check)
+	}
+
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("roll the keyword transaction back: %v", err)
+	}
+	if timeout, check := showSearchScanSettings(t, database.Pool, "after the keyword scan"); timeout != defaultTimeout || check != defaultCheck {
+		t.Fatalf("statement_timeout = %q and client_connection_check_interval = %q outside the keyword transaction, "+
+			"want the defaults %q and %q: `set local` must not follow a pooled connection to the next request",
+			timeout, check, defaultTimeout, defaultCheck)
+	}
+}
+
+// showSearchScanSettings reads statement_timeout and client_connection_check_interval with
+// `show` on q, where says where for a failure.
+func showSearchScanSettings(t *testing.T, q queryer, where string) (timeout, check string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := q.QueryRow(ctx, `show statement_timeout`).Scan(&timeout); err != nil {
+		t.Fatalf("show statement_timeout %s: %v", where, err)
+	}
+	if err := q.QueryRow(ctx, `show client_connection_check_interval`).Scan(&check); err != nil {
+		t.Fatalf("show client_connection_check_interval %s: %v", where, err)
+	}
+	return timeout, check
 }
 
 // A setting the server refuses fails the whole scan's setup, and beginMeaningScan rolls the
@@ -176,10 +266,11 @@ func TestMeaningScanRollsBackWhenASettingFails(t *testing.T) {
 	}
 }
 
-// The search route reports a meaning statement the server ended as the failure of this request it
-// is - 500 INTERNAL - and never as an answer. runSearch keeps its keyword-only answer for a query
-// whose embedding could not be had; papering a cut-off search over as a degraded result would
-// serve a caller a page of keyword hits as though meaning search had run.
+// The search route reports a meaning statement the server ended as what it is - 503
+// SEARCH_TIMEOUT, naming the bound in force - and never as an answer. runSearch keeps its
+// keyword-only answer for a query whose embedding could not be had; papering a cut-off search
+// over as a degraded result would serve a caller a page of keyword hits as though meaning search
+// had run.
 //
 // The bounded search runs while embeddings is held (holdMeaningStatements), so its meaning
 // statement cannot answer before the shortened bound ends it. A server that held no bound on the
@@ -197,27 +288,160 @@ func TestSearchReportsAMeaningStatementTheServerEnded(t *testing.T) {
 
 	// The query shares no word with the issue, so the hit below came from the meaning query
 	// alone: this server answered the same search before the bound was shortened, and what the
-	// 500 after it reports is the statement the server ended, not a broken fixture.
+	// 503 after it reports is the statement the server ended, not a broken fixture.
 	healthy := searchResponse(t, handler, "q=wibbleflorp")
 	if healthy.Degraded != "" || len(healthy.Results) != 1 || healthy.Results[0].ID != issue.Key {
 		t.Fatalf("search before the bound was shortened = %+v, want the issue %s found by meaning", healthy, issue.Key)
 	}
 
-	endMeaningStatementsAt(t, "1ms")
+	const bound = time.Millisecond
+	endMeaningStatementsAt(t, bound)
 	release := holdMeaningStatements(t, database)
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=wibbleflorp", nil)
+	ended := searchBeforeTheBinaryDeadline(t, handler, aliceSearch(context.Background(), "/api/v1/search", "q=wibbleflorp"))
+	release()
+	requireSearchTimedOut(t, ended, bound, issue.Key)
+}
+
+// The search route reports a keyword statement the server ended as it reports a meaning one: 503
+// SEARCH_TIMEOUT, naming the bound in force, and no result. It holds on both paths that run the
+// keyword statement: the bar's keystroke request (keywords_only), and a search answered by
+// keywords because no embedder is configured (degraded). Each search is first answered on this
+// server, so the 503 after it is the statement the server ended and not a broken fixture.
+//
+// The bounded search runs while messages is held (holdKeywordStatements), so its keyword
+// statement cannot answer before the shortened bound ends it. A server that held no bound on the
+// statement would wait for that lock until the test binary's deadline guard fails the case by
+// name.
+func TestSearchReportsAKeywordStatementTheServerEnded(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "KBOUND", "Quillmotor gearbox maintenance", "Routine upkeep notes.")
+	for _, path := range []struct {
+		name, path, query string
+		degraded          bool
+	}{
+		{"keywords only", "/api/v1/search/results", "q=quillmotor&keywords_only=true", false},
+		{"degraded because no embedder is configured", "/api/v1/search", "q=quillmotor", true},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			healthy := searchResponseOn(t, handler, path.path, path.query)
+			if (healthy.Degraded != "") != path.degraded || len(healthy.Results) != 1 || healthy.Results[0].ID != issue.Key {
+				t.Fatalf("search before the bound was shortened = %+v, want the issue %s found by keywords, degraded %v",
+					healthy, issue.Key, path.degraded)
+			}
+
+			const bound = time.Millisecond
+			endMeaningStatementsAt(t, bound)
+			release := holdKeywordStatements(t, database)
+			ended := searchBeforeTheBinaryDeadline(t, handler, aliceSearch(context.Background(), path.path, path.query))
+			release()
+			requireSearchTimedOut(t, ended, bound, issue.Key)
+		})
+	}
+}
+
+// A search whose client has left is not a timeout of the server's, whatever Postgres answered its
+// statement with: the route answers it as a request its client closed, never 503
+// SEARCH_TIMEOUT. Postgres ends a statement with SQLSTATE 57014 for its bound and for the
+// CancelRequest a client sends as it leaves alike, so the route tells the two apart by whether
+// the request's context had ended when the 57014 came back (searchFailed).
+//
+// A client that leaves while pgx still reads ends that read with the context's own error, which
+// no reading of 57014 takes for the bound; the case that needs the context read is the 57014
+// that meets a context already ended. The test stages that meeting with no race: the search runs
+// while embeddings is held (holdMeaningStatements) under a shortened bound, which ends its
+// meaning statement with 57014, and the tracer ends the request's context the moment that answer
+// comes back (leaveAsTheStatementEnds), before the search reads it. A route that read every
+// 57014 as its bound answers this search 503 SEARCH_TIMEOUT.
+func TestASearchWhoseClientLeftIsNotATimeout(t *testing.T) {
+	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
+	embedder := &fakeEmbedder{vectors: map[string][]float32{
+		issueEmbeddingText(title, spec): angledVector(0.9, 2),
+		"wibbleflorp":                   queryVector(),
+	}}
+	leaving := &leaveAsTheStatementEnds{}
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, tracer: leaving})
+	issue := createInteractionIssue(t, handler, "LEFT", title, spec)
+	processAllPending(t, database, embedder)
+	healthy := searchResponse(t, handler, "q=wibbleflorp")
+	if healthy.Degraded != "" || len(healthy.Results) != 1 || healthy.Results[0].ID != issue.Key {
+		t.Fatalf("search before the bound was shortened = %+v, want the issue %s found by meaning", healthy, issue.Key)
+	}
+
+	endMeaningStatementsAt(t, time.Millisecond)
+	release := holdMeaningStatements(t, database)
+	ctx, leave := context.WithCancel(context.Background())
+	t.Cleanup(leave)
+	answer := searchBeforeTheBinaryDeadline(t, handler,
+		aliceSearch(context.WithValue(ctx, leaveKey{}, leave), "/api/v1/search", "q=wibbleflorp"))
+	release()
+	if !leaving.left.Load() {
+		t.Fatalf("no statement of the search came back ended by the server, so its client never left: the search "+
+			"answered %d %s", answer.Code, answer.Body.String())
+	}
+	if answer.Code == http.StatusServiceUnavailable || strings.Contains(answer.Body.String(), "SEARCH_TIMEOUT") {
+		t.Fatalf("a search whose client had left when Postgres's 57014 came back answered %d %s, want no 503 "+
+			"SEARCH_TIMEOUT: nobody waited on the bound", answer.Code, answer.Body.String())
+	}
+}
+
+// leaveKey marks the context of the one request leaveAsTheStatementEnds may end, carrying the
+// function that ends it.
+type leaveKey struct{}
+
+// leaveAsTheStatementEnds is a tracer that ends a request's context (leaveKey) the moment
+// Postgres answers one of that request's statements with SQLSTATE 57014: pgx calls
+// TraceQueryEnd once the answer has come back and before it hands the error to the code that
+// sent the statement. left records that it did.
+type leaveAsTheStatementEnds struct {
+	left atomic.Bool
+}
+
+func (l *leaveAsTheStatementEnds) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
+}
+
+func (l *leaveAsTheStatementEnds) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if leave, ok := ctx.Value(leaveKey{}).(context.CancelFunc); ok && meaningStatementEnded(data.Err) {
+		l.left.Store(true)
+		leave()
+	}
+}
+
+// aliceSearch is a search request on path with query, as alice, on ctx.
+func aliceSearch(ctx context.Context, path, query string) *http.Request {
+	request := httptest.NewRequestWithContext(ctx, http.MethodGet, path+"?"+query, nil)
 	request.Header.Set("X-Dispatch-User", "alice")
-	ended := answeredBeforeTheBinaryDeadline(t, "the search", func() *httptest.ResponseRecorder {
+	return request
+}
+
+// searchBeforeTheBinaryDeadline serves request and answers what the handler wrote, failing the
+// case by name when the handler has not answered before the test binary's deadline
+// (answeredBeforeTheBinaryDeadline).
+func searchBeforeTheBinaryDeadline(t *testing.T, handler http.Handler, request *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+	return answeredBeforeTheBinaryDeadline(t, "the search", func() *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
 		return recorder
 	})
-	release()
-	if ended.Code != http.StatusInternalServerError || !strings.Contains(ended.Body.String(), `"code":"INTERNAL"`) {
-		t.Fatalf("search under a statement the server ends: status=%d body=%s, want 500 INTERNAL", ended.Code, ended.Body.String())
+}
+
+// requireSearchTimedOut fails the test unless answer is the refusal of a search whose statement
+// the server ended at bound: 503 SEARCH_TIMEOUT, a message naming the bound in force, and no
+// result naming found.
+func requireSearchTimedOut(t *testing.T, answer *httptest.ResponseRecorder, bound time.Duration, found string) {
+	t.Helper()
+	if answer.Code != http.StatusServiceUnavailable {
+		t.Fatalf("search under a statement the server ends: status=%d body=%s, want 503 SEARCH_TIMEOUT",
+			answer.Code, answer.Body.String())
 	}
-	if strings.Contains(ended.Body.String(), issue.Key) {
-		t.Fatalf("search under a statement the server ends answered results: %s", ended.Body.String())
+	refusal := decodeBody[apiErrorBody](t, answer)
+	if want := "ran past its " + bound.String() + " bound"; refusal.Code != "SEARCH_TIMEOUT" || !strings.Contains(refusal.Error, want) {
+		t.Fatalf("search under a statement the server ends answered %s, want the code SEARCH_TIMEOUT and an error "+
+			"naming the %s bound in force (%q)", answer.Body.String(), bound, want)
+	}
+	if strings.Contains(answer.Body.String(), found) {
+		t.Fatalf("search under a statement the server ends answered results: %s", answer.Body.String())
 	}
 }
 
@@ -255,7 +479,7 @@ func TestRelatedCheckReportsAMeaningStatementTheServerEndedAsATimeout(t *testing
 
 	const meaningBound = time.Hour
 	srv.meaningBound, srv.suggestionTimeout = meaningBound, meaningBound
-	endMeaningStatementsAt(t, "1ms")
+	endMeaningStatementsAt(t, time.Millisecond)
 	release := holdMeaningStatements(t, database)
 	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
 		return srv.relatedCheck(context.Background(), relatedInput{project: "MBOUND", text: text})

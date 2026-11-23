@@ -15,6 +15,7 @@ import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
+import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -152,6 +153,9 @@ interface RenderPaletteOptions {
   entries?: string[];
   index?: number;
   onClose?: () => void;
+  /** The client the palette reads through: one that never retries unless a row gives its own
+   *  (`appQueryClient`). */
+  queryClient?: QueryClient;
 }
 
 function renderPalette({
@@ -159,8 +163,8 @@ function renderPalette({
   entries = ["/"],
   index,
   onClose = () => {},
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 }: RenderPaletteOptions = {}): { queryClient: QueryClient; unmount: () => void } {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MemoryRouter initialEntries={entries} initialIndex={index}>
       <QueryClientProvider client={queryClient}>
@@ -1208,6 +1212,193 @@ test("shows a retryable failure when the search request fails", async () => {
     await tick(150);
     expect(await screen.findByRole("alert")).toHaveTextContent("Search failed.");
     expect(screen.getByRole("button", { name: "Retry" })).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+/** A `QueryClient` built as the app's is (`main.tsx`): a failed read is asked again twice unless
+ *  `isRetryableQueryError` exempts it, each time after `queryRetryDelay`'s wait. The rows below
+ *  count what the bar sends under it. */
+function appQueryClient(): QueryClient {
+  return new DispatchQueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
+  });
+}
+
+/** The bar's two searches of one query, each answered by a script of its own, and how many
+ *  requests each has sent: `words` answers the keystroke's search, which asks for the keyword leg
+ *  alone, and `fused` the search the pause makes. Each script is given how many requests its
+ *  search has sent, this one included, so a row can refuse a search's first requests and answer
+ *  a later one. */
+function scriptedTiers(
+  words: (sent: number) => Promise<SearchResponse>,
+  fused: (sent: number) => Promise<SearchResponse>
+): {
+  answer: (query: string, options?: { keywords_only?: boolean }) => Promise<SearchResponse>;
+  sent: { fused: number; words: number };
+} {
+  const sent = { fused: 0, words: 0 };
+  return {
+    answer: (_query, options = {}) => {
+      if (options.keywords_only === true) {
+        sent.words += 1;
+        return words(sent.words);
+      }
+      sent.fused += 1;
+      return fused(sent.fused);
+    },
+    sent,
+  };
+}
+
+/** Dispatch's answer to a search whose statement ran past its bound. */
+function searchTimedOut(): Promise<SearchResponse> {
+  return Promise.reject(
+    new ApiError(503, {
+      code: "SEARCH_TIMEOUT",
+      error:
+        "the search statement ran past its 15s bound, so nothing was found; try again later or narrow the query",
+    })
+  );
+}
+
+/** Types `query` into the box and moves the clock `ms` on from the keystroke: past the 150 ms
+ *  debounce, and past the 500 ms pause where `ms` reaches it. */
+async function typeAndWait(user: UserEvent, query: string, ms: number): Promise<void> {
+  const input = screen.getByRole("combobox", { name: "Search" });
+  await user.clear(input);
+  await user.click(input);
+  await user.paste(query);
+  await tick(ms);
+}
+
+// The retry of a search, one row per state of the plan's table "UI state with timing"
+// (dispatch://INFRA-4864), on the app's own retry policy. A search that ran past the server's
+// bound is sent once: asking again costs the database the bound again and finds nothing more.
+// Any other failure is asked again twice, as every read is. Each row moves the clock 6 s past the
+// keystroke, past the pause and every wait the policy takes (500 ms, or a 1 s Retry-After and up
+// to as much again), so a retry the policy made would have been sent.
+//
+// The bar shows the pause's answer only once it has one, and the keystroke's until then
+// (`useTieredSearch`), so a pause's search that fails leaves the keystroke's list up: the rows
+// whose pause shows "Search failed." have the keystroke's search time out as well, as both do on
+// a database too busy for either.
+test("a keystroke's search answered 503 SEARCH_TIMEOUT is sent once, and the bar shows Search failed. with Retry", async () => {
+  const user = userOnFakeClock();
+  // The pause's search stays out, so the list is the keystroke's whatever the clock does.
+  const tiers = scriptedTiers(searchTimedOut, () => new Promise<SearchResponse>(() => {}));
+  const search = spyOn(api, "search").mockImplementation(tiers.answer);
+  const view = renderPalette({ queryClient: appQueryClient() });
+
+  try {
+    await typeAndWait(user, "astrolabe", 6_000);
+    expect(tiers.sent.words).toBe(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("Search failed.");
+    expect(screen.getByRole("button", { name: "Retry" })).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a pause's search answered 503 SEARCH_TIMEOUT is sent once, and the bar shows Search failed. with Retry", async () => {
+  const user = userOnFakeClock();
+  const tiers = scriptedTiers(searchTimedOut, searchTimedOut);
+  const search = spyOn(api, "search").mockImplementation(tiers.answer);
+  const view = renderPalette({ queryClient: appQueryClient() });
+
+  try {
+    await typeAndWait(user, "astrolabe", 6_000);
+    expect(tiers.sent.fused).toBe(1);
+    expect(tiers.sent.words).toBe(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("Search failed.");
+    expect(screen.getByRole("button", { name: "Retry" })).not.toBeNull();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a pause's search answered 503 DATABASE_BUSY with a Retry-After is sent three times, and the bar shows the third answer", async () => {
+  const user = userOnFakeClock();
+  const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
+  const tiers = scriptedTiers(
+    () => Promise.resolve(searchAnswer([first, second])),
+    (sent) =>
+      sent < 3
+        ? Promise.reject(
+            new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" }, 1_000)
+          )
+        : Promise.resolve(searchAnswer([second, first]))
+  );
+  const search = spyOn(api, "search").mockImplementation(tiers.answer);
+  const view = renderPalette({ queryClient: appQueryClient() });
+
+  try {
+    await typeAndWait(user, "astrolabe", 6_000);
+    expect(tiers.sent.fused).toBe(3);
+    await waitFor(() => expect(optionIds()).toEqual([optionId(second), optionId(first)]));
+    expect(screen.queryByText("Search failed.")).not.toBeInTheDocument();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+test("a pause's search answered 500 INTERNAL is sent three times, and the bar shows the third answer", async () => {
+  const user = userOnFakeClock();
+  const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
+  const tiers = scriptedTiers(
+    () => Promise.resolve(searchAnswer([first, second])),
+    (sent) =>
+      sent < 3
+        ? Promise.reject(new ApiError(500, { code: "INTERNAL", error: "internal server error" }))
+        : Promise.resolve(searchAnswer([second, first]))
+  );
+  const search = spyOn(api, "search").mockImplementation(tiers.answer);
+  const view = renderPalette({ queryClient: appQueryClient() });
+
+  try {
+    await typeAndWait(user, "astrolabe", 6_000);
+    expect(tiers.sent.fused).toBe(3);
+    await waitFor(() => expect(optionIds()).toEqual([optionId(second), optionId(first)]));
+    expect(screen.queryByText("Search failed.")).not.toBeInTheDocument();
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
+// Retry asks again for the search the list shows, which is the keystroke's until the pause's has
+// answered: that search is sent a second time, its answer is the list, and the pause's search,
+// which no Retry asked for, stays at the one request it sent.
+test("a search answered 503 SEARCH_TIMEOUT at the pause is sent again on a click on Retry, and the bar shows the second answer", async () => {
+  const user = userOnFakeClock();
+  const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
+  const tiers = scriptedTiers(
+    (sent) => (sent < 2 ? searchTimedOut() : Promise.resolve(searchAnswer([first, second]))),
+    searchTimedOut
+  );
+  const search = spyOn(api, "search").mockImplementation(tiers.answer);
+  const view = renderPalette({ queryClient: appQueryClient() });
+
+  try {
+    await typeAndWait(user, "astrolabe", 6_000);
+    expect(tiers.sent).toEqual({ fused: 1, words: 1 });
+    expect(screen.getByRole("alert")).toHaveTextContent("Search failed.");
+
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(optionIds()).toEqual([optionId(first), optionId(second)]));
+    await tick(6_000);
+    expect(tiers.sent).toEqual({ fused: 1, words: 2 });
+    expect(screen.queryByText("Search failed.")).not.toBeInTheDocument();
   } finally {
     search.mockRestore();
     view.unmount();
