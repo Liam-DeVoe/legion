@@ -284,6 +284,28 @@ func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
 	}
 }
 
+// register_plan reads each need against the issue it registers (plan.FromBlocks), so a need
+// written as a reference into another issue, here d's of task a of the plan of LEGION-209, is no
+// need of this plan's task a: it is refused with a reason of its own, naming the reference and that
+// issue, and nothing is recorded. Since d needs nothing of this plan, a and d are two tasks that no
+// task needs, the reason of this release beside it. The fault is the reference read as this plan's
+// task a, under which the plan is taken; the control is plan.FromBlocks without the check of the
+// issue, under which the route answers 200.
+func TestRegisterPlanRefusesANeedIntoAnotherIssue(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 1, taskBlock("a", "implementer reviewer"),
+		needing(taskBlock("d", "implementer reviewer"), "dispatch://LEGION-209/artifact/plan-md#b-a"))
+
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1),
+		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, d), and the work of each would merge by itself. This release of Legion does not carry it out yet."},
+		PlanReason{Task: "d", Reason: "task d needs dispatch://LEGION-209/artifact/plan-md#b-a, which names another issue, LEGION-209: " +
+			"a task can need only a task of this plan, and an issue waits for another issue by a blocked_by link between the two."})
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("a refused registration recorded %#v, want nothing", got)
+	}
+}
+
 // register_plan of the plan of tasks a to e, each need written as Dispatch writes a reference to a
 // block (c needs b, d needs a and c, e needs d), is taken: the workflow stores each need as the id
 // of the task it names, so plan_tasks.needs of d reads {a,c}, and the answer names each task's

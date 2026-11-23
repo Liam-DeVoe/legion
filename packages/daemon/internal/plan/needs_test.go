@@ -83,6 +83,51 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 	}
 }
 
+// A task can need only a task of its own plan, and an issue waits for another issue by a
+// blocked_by link between the two, so a need written as a reference into another issue (an issue
+// key after `dispatch://` that is not the plan's) is kept out of the task's needs, whatever task of
+// this plan its block id would name, and Validate refuses it for good, once for each such word,
+// with a reason of its own that names the word and that issue. Every other word is read as before:
+// a reference into the plan's own issue by its block id, so a block of another document of that
+// issue that is no task gets the refusal of a need of no task, and a word with no `dispatch://` as
+// a block of the plan's own document. The fault is a reference into another issue read as the task
+// of this plan its block id names, which Validate takes (d needs a); the control is the read
+// without the check of the issue, under which the first four cases fail.
+func TestANeedIntoAnotherIssueIsRefused(t *testing.T) {
+	d := Deployment{Roles: BuiltinRoles()}
+	into := func(word string) Refusal {
+		return Refusal{Task: "d", Reason: "task d needs " + word + ", which names another issue, ACME-2: a task can need only a task of this plan, " +
+			"and an issue waits for another issue by a blocked_by link between the two."}
+	}
+	other := "dispatch://ACME-2/artifact/plan-md#b-a"
+	for _, tc := range []struct {
+		name  string
+		block Block
+		needs []string
+		want  []Refusal
+	}{
+		{name: "a reference to a task of another issue's plan", block: taskNeeding("d", other), want: []Refusal{into(other)}},
+		{name: "that reference pinned and written twice, beside a task of this plan", block: taskNeeding("d", other+"@v2", needWord("a"), other+"@v2"),
+			needs: []string{"a"}, want: []Refusal{into(other + "@v2")}},
+		{name: "a reference to a block of another issue that is no task here", block: taskNeeding("d", "dispatch://ACME-2/spec#b-r1"),
+			want: []Refusal{into("dispatch://ACME-2/spec#b-r1")}},
+		{name: "another issue itself", block: taskNeeding("d", "dispatch://ACME-2"), want: []Refusal{into("dispatch://ACME-2")}},
+		{name: "a block of another document of the plan's issue that is no task", block: taskNeeding("d", "dispatch://ACME-1/spec#b-r1"),
+			want: []Refusal{{Task: "d", Reason: "task d needs dispatch://ACME-1/spec#b-r1, which names no task of this plan."}}},
+		{name: "a reference with no dispatch://, to the plan's own document", block: taskNeeding("d", "plan-md#b-a"), needs: []string{"a"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := planOf(t, 1, taskNeeding("a"), tc.block)
+			if got := p.Tasks[1].Needs; !reflect.DeepEqual(got, tc.needs) {
+				t.Fatalf("d needs %q, want %q", got, tc.needs)
+			}
+			if got := Validate(p, d); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A task that needs itself through other tasks never starts, so Validate refuses each cycle
 // of needs for good, named by its first task in id order with the chain from that task. Each need
 // that lies on a cycle is in a chain of the answer, the shortest cycle through it, so the owner

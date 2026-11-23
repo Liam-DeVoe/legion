@@ -29,6 +29,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 ## Several tasks
 
 A task's `needs` names each task it needs, separated by spaces, each as a reference to that task's block: `dispatch://<KEY>/artifact/plan-md#b-<id>`.
+A need that names another issue is refused (`PLAN_REFUSED`): a task needs only tasks of its own plan, and an issue waits on another issue by its `blocked_by` list (`skill://legion-architect/references/decomposition.md`, "Recording a wait on other work").
 Legion starts each task with no `needs` when the issue's work starts, and each other task once every task it needs is done, from their joined work.
 Exactly one task is needed by no task: Legion runs the retro and the merge in that task alone, and the work of every task merges there as one change.
 Each other task is done when its last step passes.

@@ -1065,7 +1065,9 @@ func TestTheProductionCheckRuleHoldsInEveryPromptPart(t *testing.T) {
 // attribute, one reference to the needed task's block of `plan.md` for each. Both architect
 // compositions, and the reference of skill://legion-architect on the plan, give that form, with
 // the rule that lets this release take such a plan: one agent of each role for an issue, so the
-// steps of one role in several tasks share one key. Where two or more tasks stand at the act an
+// steps of one role in several tasks share one key; and with the rule that a task needs only tasks
+// of its own plan, since an issue waits for another issue by a `blocked_by` link, so a need that
+// names another issue is refused. Where two or more tasks stand at the act an
 // owner's call answers, the call names its task in `task`: `sign_off` and the architect's
 // `request_backward_move` in `accepting`, and `retry_or_escalate` on a held task, each refused
 // `TASK_REQUIRED` with none named and `TASK_NOT_AT_PHASE` for a task that does not stand there. The
@@ -1081,6 +1083,7 @@ func TestTheOwnersPromptGivesTheFormOfNeeds(t *testing.T) {
 		{"`needs`", "dispatch://<KEY>/artifact/plan-md#b-<id>"},
 		{"needs=\"dispatch://<KEY>/artifact/plan-md#b-a dispatch://<KEY>/artifact/plan-md#b-c\""},
 		{"one agent of each role", "same key"},
+		{"another issue", "`PLAN_REFUSED`", "`blocked_by`"},
 	}
 	retired := []string{"This release runs one task for each issue", "with one `plan_task` block", "the issue's one task"}
 	skill, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "skills", "legion-architect", "references", "plan.md"))

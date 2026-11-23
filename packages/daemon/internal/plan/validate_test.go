@@ -56,7 +56,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 // control: a plan of one block with no `steps` is taken.
 func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
-	empty, err := FromBlocks("plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}})
+	empty, err := FromBlocks("ACME-1", "plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(no task block): %v", err)
 	}
@@ -70,7 +70,7 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	if r := Supported(empty, d); len(r) != 0 {
 		t.Fatalf("Supported(no task) = %+v, want none: the cause is Validate's alone", r)
 	}
-	taken, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
+	taken, err := FromBlocks("ACME-1", "plan-md", 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(one block): %v", err)
 	}
@@ -120,7 +120,7 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 		}}, want: []Refusal{
 			{Task: "", Reason: "the plan has 3 tasks that no task needs (a, b, c), and the work of each would merge by itself." + yet},
 		}},
-		{name: "needs that lead to one task", plan: planOf(t, 1, taskNeeding("a", "b", "dispatch://ACME-2/artifact/plan-md#b-c"), taskNeeding("b"), taskNeeding("c"))},
+		{name: "needs that lead to one task", plan: planOf(t, 1, taskNeeding("a", "b", "dispatch://ACME-1/artifact/plan-md#b-c"), taskNeeding("b"), taskNeeding("c"))},
 		{name: "a step that reads a pull request before the implementer", plan: oneTask("a", "reviewer implementer"),
 			want: []Refusal{{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet}}},
 		{name: "a task with no implementer", plan: oneTask("a", "tester reviewer"), want: []Refusal{
