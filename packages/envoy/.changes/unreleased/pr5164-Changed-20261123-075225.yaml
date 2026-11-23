@@ -6,7 +6,8 @@ body: |-
   shared secret is listed for the issue's assignee. The Legion board has a twelfth column, `step`,
   for an issue at a step of such a role. The sampler observes each issue's `stepRole` as
   `step_role`, and metric 2 puts the hours of such a step on a bar of that role, read from the
-  observations and, before them, from the step's runs.
+  observations and, before them, from the step's runs. Metric 3 counts such a step as a send-back
+  only when its run failed and returned the task to an earlier step.
 time: 2026-11-23T07:52:25Z
 custom:
     Issue: pr5164

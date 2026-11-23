@@ -868,6 +868,56 @@ func TestAnObservedStepIsOnItsRolesBar(t *testing.T) {
 	partitionsItsWorkTime(t, issue)
 }
 
+// TestAnObservedStepIsASendBackOnlyWhenItsRunReturned: a move from `step` to implementing is a
+// send-back only when the step failed and returned its task (StepRun.Returned). A step of a role
+// the deployment defines that stands before the implementer moves to implementing when it
+// passes, a forward move, and the observed phases cannot tell the two apart: only the run can.
+// Before it, the observed half of sentBackOnce read the designer's pass as a send-back, while its
+// fallback half answered false for the same history.
+func TestAnObservedStepIsASendBackOnlyWhenItsRunReturned(t *testing.T) {
+	for _, one := range []struct {
+		name     string
+		issue    *Issue
+		timeline []string
+		sentBack bool
+	}{
+		{
+			name: "the designer's step before the implementer passes",
+			issue: newIssue("INFRA-1").worked("implementer", hour(2)).closedAt(hour(5)).
+				observeString(legion.FieldPhase, hour(0), "step").
+				observeString(legion.FieldStepRole, hour(0), "designer").
+				observeString(legion.FieldPhase, hour(2), "implementing").
+				observe(legion.FieldStepRole, hour(2), "null").
+				observeString(legion.FieldPhase, hour(4), "retro").
+				stepRan("designer", hour(0), hour(2), false),
+			timeline: []string{"step:designer 0-2", "implementing 2-4", "retro 4-5"},
+		},
+		{
+			name: "the checker's step fails and returns the task to the implementer",
+			issue: newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
+				observeString(legion.FieldPhase, hour(0), "implementing").
+				observeString(legion.FieldPhase, hour(2), "step").
+				observeString(legion.FieldStepRole, hour(2), "checker").
+				observeString(legion.FieldPhase, hour(4), "implementing").
+				observe(legion.FieldStepRole, hour(4), "null").
+				observeString(legion.FieldPhase, hour(5), "retro").
+				stepRan("checker", hour(2), hour(4), true),
+			timeline: []string{"implementing 0-2", "step:checker 2-4", "implementing 4-5", "retro 5-6"},
+			sentBack: true,
+		},
+	} {
+		t.Run(one.name, func(t *testing.T) {
+			population := fixture(hour(-24), hour(24), one.issue)
+			if got := timelineOf(population, one.issue); !reflect.DeepEqual(got, one.timeline) {
+				t.Fatalf("the observed timeline is %v, want %v", got, one.timeline)
+			}
+			if row := Compute(population, ScopeAll, hour(24)).Rework.Issues[0]; row.SentBack != one.sentBack {
+				t.Errorf("sent back = %t, want %t", row.SentBack, one.sentBack)
+			}
+		})
+	}
+}
+
 // TestAStepBeforeObservationsIsOnItsRolesBar: before observations a step of a role the deployment
 // defines is read from its run (Issue.Runs), since its role writes no handoff and the workflow
 // writes `in_progress` as the step starts: that status, which reads as a send-back to
