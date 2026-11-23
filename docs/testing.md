@@ -630,13 +630,19 @@ waited (CI run 45206462019).
 
 Envoy's `internal/textcheck` (`lock_wait_reads_test.go`) holds the three Go modules to this: Envoy,
 Envoy's infra and the daemon, each walked alone. It reads every Go string literal and fails on one
-that writes `lockwaittest`'s predicate out (`select pid from pg_locks where not granted`), and on
-one that compares a wait event with a lock: `wait_event_type = 'Lock'`, the reverse
-`'Lock' = wait_event_type`, a list such as `wait_event_type in ('Lock')`, a `like`, `wait_event`
-with a lock type such as `'advisory'`, and each of those with the column qualified
+that writes `lockwaittest`'s predicate out: the subquery
+`pid in (select pid from pg_locks where not granted)`, with or without one
+`and locktype = '…'` before its `)`, or that select as the whole of a literal. It fails on one
+that compares a wait event with a lock by its exact value: `wait_event_type = 'Lock'`, the
+reverse `'Lock' = wait_event_type`, a list such as `wait_event_type in ('Lock')`, a `like 'Lock'`,
+`wait_event` with a lock type such as `'advisory'`, and each of those with the column qualified
 (`a.wait_event_type`), in a `coalesce` or cast (`::text`). It fails too on a root that holds no
 `go.mod`, and on a module in which it read no Go file. It does not see:
 
+- the predicate written another way: its conditions in the other order
+  (`where locktype = 'advisory' and not granted`), with a table alias
+  (`select l.pid from pg_locks l where not l.granted`), or as the start of a longer statement;
+- a wait event matched by a pattern rather than its exact value, such as `like 'Lock%'`;
 - a comparison made in Go, of a `wait_event_type` the test scanned;
 - a statement built from pieces: a value passed as a bind parameter (`wait_event_type = $1`), a
   column and a value in two literals joined by `+`, or a format verb;

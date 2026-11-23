@@ -43,8 +43,9 @@ var (
 		`|` + lockWaitTerm + `\s+(?:not\s+)?in\s*\([^)]*` + lockWaitValue)
 	// lockWaitPredicate is lockwaittest's predicate written out: the subquery of the backends
 	// pg_locks holds an ungranted request of, with or without one lock type, and no other
-	// condition. A read of the waiters behind one backend (pg_blocking_pids) is another read.
-	lockWaitPredicate = regexp.MustCompile(`(?i)select\s+pid\s+from\s+pg_locks\s+where\s+not\s+granted(?:\s+and\s+locktype\s*=\s*'\w+')?\s*\)`)
+	// condition, or that select as the whole of a literal. A read of the waiters behind one
+	// backend (pg_blocking_pids) is another read.
+	lockWaitPredicate = regexp.MustCompile(`(?i)select\s+pid\s+from\s+pg_locks\s+where\s+not\s+granted(?:\s+and\s+locktype\s*=\s*'\w+')?(?:\s*\)|\s*;?\s*$)`)
 )
 
 // No Go file of the three modules reads whether a backend waits on a lock from pg_stat_activity's
@@ -66,12 +67,13 @@ func TestEveryTestReadsALockWaitThroughLockwaittest(t *testing.T) {
 }
 
 // The check names a wait event compared with a lock as SQL writes it plainly, reversed, in a list,
-// qualified, in a coalesce and cast, and by like, and the predicate written out, each at the line
-// it is on, in a raw literal across lines too. It leaves alone a wait event read for a diagnosis
-// or compared with another wait, a read of the waiters behind one backend, a comment, the helper
-// file, and a module below the root. A root that holds no go.mod, and one in which it reads no Go
-// file, is an error. The planted source splits each form across two literals, so this file holds
-// none of them whole.
+// qualified in the reversed form and in a coalesce and cast, and by like with the exact value, and
+// the predicate written out as a subquery, with a lock type, and as the whole of a literal, each
+// at the line it is on, in a raw literal across lines too. It leaves alone a wait event read for a
+// diagnosis or compared with another wait, a read of the waiters behind one backend, a comment,
+// the helper file, and a module below the root. A root that holds no go.mod, and one in which it
+// reads no Go file, is an error. The planted source splits each form across two literals, so this
+// file holds none of them whole.
 func TestTheLockWaitCheckSeesWhatItGuards(t *testing.T) {
 	root := t.TempDir()
 	plant := func(path string, lines ...string) string {
@@ -93,13 +95,14 @@ func TestTheLockWaitCheckSeesWhatItGuards(t *testing.T) {
 		"var plain = \""+typed+" = 'Lock'\"",
 		"var reversed = \"'Lock' = "+typed+"\"",
 		"var listed = \""+typed+" in ('LWLock', 'Lock')\"",
-		"var qualified = \"a."+event+" <> 'advisory'\"",
-		"var cast = \"coalesce("+typed+", '')::text = 'Lock'\"",
+		"var qualified = \"'advisory' <> a."+event+"\"",
+		"var cast = \"coalesce(a."+typed+", '')::text = 'Lock'\"",
 		"var liked = \""+typed+" not like 'Lock'\"",
 		"var spelled = `select count(*) from pg_stat_activity",
 		"\twhere "+"pid in (select pid from pg_"+"locks where not granted)`",
 		"var typedSpelled = \"pid in (select pid from pg_"+"locks where not granted and locktype = 'advisory')\"",
 		"var behind = \"select pid from pg_"+"locks where not granted and pg_backend_pid() = any(pg_blocking_pids(pid))\"",
+		"var whole = \"select pid from pg_"+"locks where not granted\"",
 		"var diagnosis = \"select "+typed+", "+event+" from pg_stat_activity\"",
 		"var other = \""+typed+" = 'IO' and "+event+" = 'WalSync'\"",
 		"",
@@ -117,6 +120,7 @@ func TestTheLockWaitCheckSeesWhatItGuards(t *testing.T) {
 	want := []string{
 		planted + ":11: the predicate lockwaittest.Waiting holds, written out",
 		planted + ":12: the predicate lockwaittest.Waiting holds, written out",
+		planted + ":14: the predicate lockwaittest.Waiting holds, written out",
 		planted + ":4: a wait event compared with a lock",
 		planted + ":5: a wait event compared with a lock",
 		planted + ":6: a wait event compared with a lock",
