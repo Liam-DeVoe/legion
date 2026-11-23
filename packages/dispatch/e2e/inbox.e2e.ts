@@ -1936,7 +1936,9 @@ test("on a phone a question is asked back, another snoozed and a third declined 
       .toMatchObject({ kind: "declined" });
     await backToList(page);
     await expect(inboxRow(page, declined.id)).toHaveCount(0);
-    await expect(inboxRow(page, snoozed.id)).toHaveAttribute("data-inbox-section", "later");
+    // The snoozed row is in Later, a band folded at rest, so its heading is what shows.
+    await expect(inboxRow(page, snoozed.id)).toHaveCount(0);
+    await expect(inboxList(page).getByRole("button", { name: "Later (1)" })).toBeVisible();
     await assertPageFits(page);
   } finally {
     await alice.close();
