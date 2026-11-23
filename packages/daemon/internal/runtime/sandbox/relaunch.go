@@ -413,6 +413,31 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			"sandbox %s's pod %s: its launcher has not said in its hello that it can look a session up by its id, so it was sent nothing: %w",
 			loc.Sandbox.Name, loc.Sandbox.PodUID, runtime.ErrSessionLookupUnavailable))
 	}
+	// A launch into a pod it keeps writes its slot's credential, and its start names it, which the
+	// launcher waits for; a launcher of an image before that wait, in a pod the release before
+	// built, starts a child at once, as whatever App the slot's gh files held. The outbox's fence
+	// before a re-role cannot see such a launcher right after the daemon restarts, while no
+	// launcher is connected, so the launch judges the launcher of the pod it got. One that would
+	// start the slot as another App than its files may hold (slotAppChanges) ends here, before
+	// anything is done in the pod, as a launch into a pod built without its slot or role does: the
+	// pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate). The start goes to
+	// a launcher of this same pod (serveLeakCheck), whose image is the pod's for its life.
+	if !replace {
+		session, err := r.launchers.await(starting, spec.Claim, string(pod.UID))
+		if err != nil {
+			return fail("wait for its role launcher's connection", err)
+		}
+		if !session.credentialWait {
+			changes, err := r.slotAppChanges(starting, pod, spec)
+			if err != nil {
+				return fail("read the App its slot holds", err)
+			}
+			if changes {
+				return runtime.Locator{}, fmt.Errorf("launch %s: the pod %s of %s was built before its launchers waited for a start's credential, so its slot %s would start the %s at once as the App its gh files held: %w",
+					spec.Claim, pod.UID, spec.Issue, slotOf(spec.Claim), spec.Role, runtime.ErrAwaitsPodUpdate)
+			}
+		}
+	}
 	// A launcher still running an earlier generation of this claim's slot runs a process the
 	// supervisor has already given up on: it is stopped before the new generation starts, so two
 	// generations of a slot, one agent's, never run side by side.

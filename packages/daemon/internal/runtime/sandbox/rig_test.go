@@ -582,6 +582,11 @@ type rig struct {
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// noCredentialWait has every fake launcher's hello say nothing of waiting for a start's
+	// credential (shimwire.LauncherHello.CredentialWait, withoutCredentialWait): a launcher of the
+	// release before, which starts a child at once. Unset, each says it waits, as a launcher of
+	// this release does.
+	noCredentialWait bool
 	// holdStart, when set, is what every fake launcher waits on, or the rig's end, before it
 	// answers a start it has recorded: a start the launcher is still waiting on, as a real
 	// launcher waits for its slot's gh files to hold the start's credential. Guarded by commandsMu.
@@ -633,6 +638,10 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withoutCredentialWait has every fake launcher's hello say nothing of waiting for a start's
+// credential, as a launcher of the release before says nothing.
+func withoutCredentialWait() rigOption { return func(g *rig, _ *Options) { g.noCredentialWait = true } }
 
 // testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
 // carry, no receiver for a memory guard's reports and no volume seam behind it: the tests that
@@ -1202,6 +1211,7 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
+		CredentialWait: !g.noCredentialWait,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))

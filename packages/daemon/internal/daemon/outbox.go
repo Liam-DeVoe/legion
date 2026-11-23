@@ -4084,7 +4084,11 @@ func slotOfToken(token claim.Token, role claim.Role) claim.Role {
 // and the kubelet's sync. It answers a wait, whose text begins with pods.StartWaitsForPodPrefix and
 // which is runtime.ErrAwaitsPodUpdate too, as roleWaitsForItsPod's is, and the row tries again on
 // its own backoff; the pod's update round or its release replaces the pod with launchers that
-// wait. A runtime with no pods answers nothing, and a start that re-roles nothing never asks.
+// wait. A runtime with no pods answers nothing, and a start that re-roles nothing never asks. A
+// slot with no launcher connected answers that it waits, which is what a daemon that has just
+// restarted reads of every slot: the launch then judges the launcher it reaches, and refuses a
+// start of another App into one that does not wait with the same runtime.ErrAwaitsPodUpdate,
+// which the supervisor charges nothing (the sandbox runtime's relaunch).
 func (r *outbox) reroleWaitsForCredential(issue record.Issue, token claim.Token, role claim.Role) error {
 	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
 	if !ok {

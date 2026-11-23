@@ -573,6 +573,42 @@ func (r *Runtime) writeLaunchCredential(ctx context.Context, pod *corev1.Pod, sp
 	return &shimwire.LauncherGitHubCredential{HostsFile: held.owner + "/" + ghconfig.HostsFile, TokenDigest: hex.EncodeToString(sum[:])}, nil
 }
 
+// slotAppChanges is whether a launch of spec into pod, a pod it keeps, would start its claim's slot
+// as another App than the slot's gh files may hold: the App of the role the launch's process runs
+// as (runtime.SlotRole) against that of the slot's own name, the role a slot of a pod the release
+// before built ran as, and that of the role the slot's last launch recorded on its Secret
+// (launchedRoleAnnotation), where it records one. A role that acts as no App the deployment
+// defines is another App. It reads the slot's Secret and writes nothing; relaunch asks it only of a
+// launcher that does not wait for a start's credential.
+func (r *Runtime) slotAppChanges(ctx context.Context, pod *corev1.Pod, spec runtime.SpawnSpec) (bool, error) {
+	appOf := func(role claim.Role) (appauth.AppRole, error) {
+		acting, err := runtime.SlotRole(ctx, r.actsAs, spec.Claim, role)
+		if err != nil {
+			return "", err
+		}
+		return appauth.AppRoleFor(acting, r.deploymentApps)
+	}
+	app, err := appOf(spec.Role)
+	if err != nil {
+		return false, err
+	}
+	slot := slotOf(spec.Claim)
+	secret, err := r.kube.CoreV1().Secrets(r.namespace).Get(ctx, roleSecretName(pod.Name, slot), metav1.GetOptions{})
+	if err != nil {
+		return false, err
+	}
+	held := []claim.Role{slot}
+	if _, launched, ok := readLaunched(secret.Annotations[launchedRoleAnnotation]); ok {
+		held = append(held, launched)
+	}
+	for _, role := range held {
+		if was, err := appOf(role); err != nil || was != app {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // slotKey names one slot of one pod: the Sandbox the pod is named for, and the slot.
 type slotKey struct {
 	sandbox string

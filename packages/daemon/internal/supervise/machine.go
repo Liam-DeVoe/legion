@@ -2696,7 +2696,10 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 // budget runs out; only a start that succeeds forgets it. A system prompt past the start frame
 // (runtime.PromptTooLarge, promptRefused) is no launch failure: the claim fails at once, charged
 // nothing, and a start the session store could not answer is charged nothing and tried again
-// (startWaitsForStore). A launch that fails stops the process it
+// (startWaitsForStore). Nor is a launch the runtime refuses because the claim's issue pod cannot
+// run it until the pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): it
+// is charged nothing, keeps its refusal as the claim's last start failure, and is tried again at
+// the probe interval for as long as that pod stands. A launch that fails stops the process it
 // let go (stopPrevious), whichever step failed. A launch the tree lifecycle refuses (checkLaunch)
 // starts nothing and is charged nothing (relaunchRefused), and so is one whose context ended under
 // it — the daemon's stop. A runtime waits out a cluster that answers a launch's requests overloaded
@@ -2901,6 +2904,18 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		m.claim.LastStartFailure = storetext.FarSideError(err.Error())
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt, start)
+		}
+		if errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+			// The pod is the daemon's to replace, by its update round or its release, and nothing
+			// of the claim failed: charged, the tries of the wait would fail the claim at its launch
+			// budget long before the pod is replaced.
+			err = errors.Join(err, m.stopPrevious(starting))
+			m.logFarSideError(ctx, slog.LevelWarn, "supervise: the claim's pod cannot run this launch until its update round or its release replaces it; trying it again at the probe interval, charging nothing",
+				err, "generation", m.claim.Generation)
+			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
+				return m.launchAfter(ctx, charged, exempt, noEnd, start)
+			}))
+			return errors.Join(err, m.persist(starting))
 		}
 		var tooLarge *runtime.PromptTooLarge
 		if errors.As(err, &tooLarge) {

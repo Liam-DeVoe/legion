@@ -6776,6 +6776,9 @@ it is told so before its next turn, by `LEGION_WORKSPACE_RECREATED` and the mess
 An agent's unpushed work is lost with the pod at every end above but one, and never at a role start into a live pod, which is why a phase pushes what it has done.
 The one is a release, which keeps it as a bundle in the daemon's database and nowhere else ([Idle release](#idle-release)).
 On a kept volume, a new pod finds the workspace as the last pod left it, unpushed work included, and its agents are told `LEGION_WORKSPACE_RECREATED=false` ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+A start into a live pod also waits for the pod's update round or its release where the slot's launcher is of an image before the credential wait, whose hello does not say it waits, and the launch would start the slot as another App than its gh files may hold: such a launcher starts a child at once, as the App the files held.
+The launch judges the launcher it reached, so a re-role the outbox let through right after a daemon restart, while no launcher was connected, still waits.
+That wait, like the wait for a slot or a role the pod lacks, writes nothing in the pod and charges no launch failure: the supervisor keeps the refusal as the claim's `lastStartFailure` and tries the launch again at the probe interval until the pod is replaced.
 
 A near-full disk slows jj's working-copy snapshot before a push, which is why `legion push`'s grant lives `credential.pushTTL` (5 minutes) in place of the usual 60 seconds (`internal/credential/grants.go`;
 `docs/solutions/legion/worker-pane-shell-gotchas.md` has the mechanics).
