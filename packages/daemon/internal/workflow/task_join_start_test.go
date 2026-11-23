@@ -276,3 +276,32 @@ func TestAJoinThatWaitedAtAReadmissionStartsAgain(t *testing.T) {
 		t.Fatalf("the implementer's starts of %s after d's join at generation 2 = %v, want d's agent impl-d alone", root.Key, claims)
 	}
 }
+
+// The one task of a plan of one starts at its first step at once, on the issue's own branch: it
+// needs none and takes that branch at its first start (record.Store.AssignTaskBranch), so the start
+// queues no task_branch row and its step waits for no join, the outcome of a task of several that
+// holds the issue's branch and needs none.
+//
+// It is the twin of TestEachStartOfATaskWaitsForItsJoin's last case on a plan of one task.
+func TestThePlansOneTaskStartsAtOnceOnTheIssuesBranch(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskWaiting})
+
+	firstStepOf(t, pool, engine, root.Key)
+
+	if rows := taskBranchRowsOf(t, pool, root.Key); len(rows) != 0 {
+		t.Fatalf("the task_branch rows of %s name %v, want none: a holds the issue's own branch and needs nothing", root.Key, rows)
+	}
+	tasks := tasksOf(t, pool, engine, root.Key)
+	assertWaits(t, tasks, "a", atStep(1), record.StepWaitNone)
+	if branch := tasks["a"].BranchOf(root.Key); branch != claim.IssueBranch(root.Key) {
+		t.Fatalf("task a works on %s, want the issue's own branch %s", branch, claim.IssueBranch(root.Key))
+	}
+	if claims := startClaims(t, pool, root.Key, claim.RoleImplementer); !slices.Equal(claims, []claim.Token{agentClaim(t, root.Key, "impl-a")}) {
+		t.Fatalf("the implementer's starts of %s name %v, want a's agent impl-a alone", root.Key, claims)
+	}
+}
