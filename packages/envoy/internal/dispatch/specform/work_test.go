@@ -181,6 +181,11 @@ func workRows(race bool) []workRow {
 // finding's words stand and it does not each read for its Spread from a copy of the sentences kept
 // in a field of wholeText, once for each finding, first passed the bound at 45 (34.1; 27.1 at 32),
 // so its n is 90, where the smaller window lasts about 500 ms unbroken and the row grows 15.5 times.
+// At 90 that walk failed the row in 5 of 5 runs, 54.6 times or more, and the row grew 16.3 to 17.9
+// times unbroken; the same walk through the charge passes it (17.4), and with the charge taken out
+// the row fails (235.6). The walk of every word of every sentence from such a copy for each finding
+// (the acceptance's sb-holding-fields) passes this row (22.7 to 25.8 in 5 runs) and fails the row
+// of many findings beside ten sentences each (140.5 times) and the row of runs (33.0).
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
