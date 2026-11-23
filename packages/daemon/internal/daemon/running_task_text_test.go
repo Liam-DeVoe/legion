@@ -35,17 +35,15 @@ func textPlan(id, steps, text string) string {
 }
 
 // editPlan is a person writing a later version of the document artifact through Dispatch's edit
-// route, replacing find with with, and fails unless Dispatch stored version want.
-func (r *ownerStepsRig) editPlan(artifact, find, with string, want int) {
+// route with the one operation op, and fails unless Dispatch stored version want.
+func (r *ownerStepsRig) editPlan(artifact string, op map[string]any, want int) {
 	r.t.Helper()
 	var edited struct {
 		Version *struct {
 			Number int `json:"number"`
 		} `json:"version"`
 	}
-	r.person(http.MethodPost, "/api/v1/artifacts/"+artifact+"/edits", map[string]any{
-		"ops": []map[string]string{{"op": "replace", "find": find, "with": with}},
-	}, http.StatusOK, &edited)
+	r.person(http.MethodPost, "/api/v1/artifacts/"+artifact+"/edits", map[string]any{"ops": []map[string]any{op}}, http.StatusOK, &edited)
 	if edited.Version == nil || edited.Version.Number != want {
 		r.t.Fatalf("the edit of %s stored version %+v, want version %d", artifact, edited.Version, want)
 	}
@@ -120,7 +118,11 @@ func (r *ownerStepsRig) processEnds(c *stepClaimant, method string) {
 		r.t.Fatalf("%s records no process", c.token)
 	}
 	before := r.launchCount(c.token, method)
-	c.sh.end()
+	// The pane's connection closes with its process, as reattach closes it; the rig's cleanup ends
+	// the shim it handed the claimant.
+	c.mu.Lock()
+	_ = c.sh.conn.Close()
+	c.mu.Unlock()
 	r.rt.Emit(runtime.Observation{Locator: *held.Locator, Kind: runtime.Gone, At: time.Now(), Detail: "the driver ended the process"})
 	testwait.WithinPolling(r.t, stepRecordsWait, 50*time.Millisecond, fmt.Sprintf("a %s of %s", method, c.token), func() bool {
 		return r.launchCount(c.token, method) > before
@@ -151,7 +153,7 @@ func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.
 	holdsText(t, "implementer", takeText(implementer), one, two)
 	before := r.taskRow("a")
 
-	r.editPlan(plan, one, two, 2)
+	r.editPlan(plan, map[string]any{"op": "replace", "find": one, "with": two}, 2)
 	running := r.registeredRunning(plan, 2)
 	if got := running["a"]; got == nil || *got != (api.RunningStep{Kind: "step", Place: 1, Role: string(claim.RoleImplementer)}) {
 		t.Fatalf("register_plan of version 2 names task a running at %+v, want step 1, the implementer", got)
@@ -195,7 +197,8 @@ func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.
 	r.finish(fresh, "implement", api.HandoffCompleteRequest{Summary: "implemented again", Commit: stepRecordsHead}, phase.Reviewing)
 	holdsText(t, "second reviewer", takeText(reviewer), two, one)
 
-	r.editPlan(plan, `steps="implementer reviewer"`, `steps="implementer tester reviewer"`, 3)
+	r.editPlan(plan, map[string]any{"op": "retype", "block": "a", "type": "plan_task",
+		"attributes": map[string]any{"steps": "implementer tester reviewer"}}, 3)
 	status, body := r.registerPlan(plan, 3)
 	var refusal api.PlanRefusal
 	if err := json.Unmarshal([]byte(body), &refusal); err != nil || status != http.StatusConflict || refusal.Code != "PLAN_REFUSED" ||
