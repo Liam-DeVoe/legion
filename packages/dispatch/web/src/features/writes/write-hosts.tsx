@@ -10,7 +10,7 @@ import {
 } from "../shell/chunk-loads";
 import { useContentDrawn } from "../shell/content-drawn";
 import { indicatorWrites, keptWrites } from "./shown-writes";
-import { useWriteSelection } from "./write-store";
+import { kindsRegistered, useWriteSelection } from "./write-store";
 
 /**
  * Where the shell places its two lists of writes, and where their code is fetched: the
@@ -70,6 +70,19 @@ export function loadWriteKinds(): Promise<unknown> {
   return renderChunk(() => importWhenOnline(writeKinds));
 }
 
+/**
+ * Starts the kinds of write for a host, nobody waiting on them yet (`prefetchChunk`), and once
+ * the load answers ends every take-up still waiting for them (`kindsRegistered`). The kinds end
+ * those take-ups as `kinds.ts` is evaluated too, but only the load that evaluates it does that: a
+ * take-up that began after another load brought the kinds in, and whose own ask failed, would
+ * wait for an evaluation that does not come again. An answer of this load says the kinds are
+ * in, whichever load evaluated them, so it ends the take-up as the take-up's own answered ask
+ * does (`Writes.resume`).
+ */
+function prefetchWriteKinds(): void {
+  prefetchChunk(() => writeKinds().then(kindsRegistered));
+}
+
 /** The pending-writes indicator, for the shell's status corner. */
 export function PendingWritesHost(): ReactNode {
   const rows = useWriteSelection("indicator", indicatorWrites);
@@ -92,14 +105,14 @@ export function PendingWritesHost(): ReactNode {
   // lost before the page drew, with no reload to follow - the page was being left, the reader
   // chose to stay at the leave prompt that the writes the reload kept (`WriteStorage.load`) or a
   // write pressed meanwhile open, or the tab's recovery reloads are spent - is asked for again
-  // here, and once it is in, its kinds end the take-up (`kindsRegistered`) with no press to ask
-  // for them (`Writes.run`).
+  // here, and once it answers it ends the take-up (`prefetchWriteKinds`) with no press to ask for
+  // them (`Writes.run`).
   const drawn = useContentDrawn();
   useEffect(() => {
     if (!drawn) return;
     prefetchChunk(pendingWritesChunk.load);
     prefetchChunk(keptWritesChunk.load);
-    prefetchChunk(writeKinds);
+    prefetchWriteKinds();
   }, [drawn]);
   return rows.length > 0 || shown ? (
     <ChunkBoundary reset={rows.length}>
@@ -116,9 +129,10 @@ export function KeptWritesHost(): ReactNode {
   // and only then are they rows of the store this list shows. The shell that asked for them is
   // gone, so if its download failed with no reload to follow, nothing else on this page would ask
   // again and the list would never show those writes. Nobody waits on them here, which is what
-  // `prefetchChunk` tells the chunk-failure recovery; once they are in, a later load is answered
-  // from what is in (`keptUntilRejected`).
-  useEffect(() => prefetchChunk(writeKinds), []);
+  // `prefetchChunk` tells the chunk-failure recovery. Once they are in, a later load is answered
+  // from what is in (`keptUntilRejected`), and its answer ends the take-up all the same
+  // (`prefetchWriteKinds`).
+  useEffect(prefetchWriteKinds, []);
   return rows.length === 0 ? null : (
     <ChunkBoundary reset={rows.length}>
       <KeptWrites />

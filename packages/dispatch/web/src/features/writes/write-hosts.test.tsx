@@ -4,19 +4,25 @@ import { type RenderResult, render, waitFor } from "@testing-library/react";
 
 import { api } from "../../api/client";
 import { PendingWritesHost } from "./write-hosts";
-import { plainWrite, writesOf } from "./write-store";
+import { kindsRegistered, plainWrite, writesOf } from "./write-store";
 
 // The store's take-up of what a reload kept waits for every kind of write, a chunk of its own
 // (`kinds.ts`), and its own ask for that chunk can fail with no reload to follow: the page being
 // left, the reader staying at the leave prompt that the writes the reload kept
 // (`WriteStorage.load`) or a write pressed meanwhile open, or the tab's recovery reloads spent.
-// The writes host asks for the same chunk once the page has drawn, and the chunk ends every
-// take-up still waiting as it is evaluated (`kindsRegistered`), so the write pressed meanwhile
-// goes out with no second press to ask again. Nothing this file imports loads
-// `kinds.ts`, and each test file loads its modules afresh (`--parallel` implies `--isolate`), so
-// the host's is the one load here that can evaluate it. The write is one the indicator does not
-// show (`composer`): the host draws nothing, and the row reads the store alone.
-test("the writes host's fetch of the kinds of write ends a take-up whose own ask failed, and the write pressed meanwhile goes out", async () => {
+// The writes host asks for the same chunk once the page has drawn, and its answer ends every
+// take-up still waiting (`prefetchWriteKinds`, `kindsRegistered`), so the write pressed meanwhile
+// goes out with no second press to ask again. The write is one the indicator does not show
+// (`composer`): the host draws nothing, and the row reads the store alone.
+//
+// Each run holds nothing over into the next, which `bun test --rerun-each` runs in the same
+// process with the same modules (the repeated unit lane, dispatch-unit-repeat.yaml): `kinds.ts`
+// is evaluated once in that process, so only the first run of a file sees its evaluation end the
+// take-up, and every later run sees the host's answered load end it, which is what the second row
+// below holds on purpose. The press is handled from the start, so the store's clear between rows
+// (`__tests__/setup.ts`) rejecting a press a failed run left out reaches no one as an unhandled
+// rejection, and `kindsRegistered` in `finally` ends a take-up a failed run left waiting.
+async function takeUpEndsWithTheHost(): Promise<void> {
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const send = spyOn(api, "send").mockResolvedValue(null as never);
@@ -37,6 +43,7 @@ test("the writes host's fetch of the kinds of write ends a take-up whose own ask
       path: "/api/v1/issues/CORE-1/comments",
     },
   });
+  pressed.catch(() => undefined);
   let view: RenderResult | undefined;
   try {
     for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
@@ -55,5 +62,20 @@ test("the writes host's fetch of the kinds of write ends a take-up whose own ask
   } finally {
     view?.unmount();
     send.mockRestore();
+    kindsRegistered();
   }
+}
+
+test("the writes host's fetch of the kinds of write ends a take-up whose own ask failed, and the write pressed meanwhile goes out", async () => {
+  await takeUpEndsWithTheHost();
+});
+
+// Another load brought the kinds in before this take-up began - on the sign-in page, the
+// kept-writes host's - so their evaluation, which ends the take-ups waiting at that moment, came
+// before this one waited. Only the writes host's answered load can end it then. The import is a
+// run-time one on purpose: a static import would evaluate `kinds.ts` as the file loads, before
+// the first row, which could then no longer see an evaluation end its take-up.
+test("a take-up whose own ask failed ends with the writes host's fetch also when another load brought the kinds in before it began", async () => {
+  await import("./kinds");
+  await takeUpEndsWithTheHost();
 });
