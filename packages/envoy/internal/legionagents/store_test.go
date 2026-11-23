@@ -133,6 +133,39 @@ func TestRoleTokenIsTheDaemonsToken(t *testing.T) {
 	}
 }
 
+// ParseRoleToken reads back the issue key and the role RoleToken wrote, for one of Legion's six and
+// for a role the deployment defines, a "-" in it included, and reads nothing out of a token that is
+// no issue role's: the controller's, a claim on the controller's name, a role outside the grammar,
+// or an issue part that is no issue key's.
+func TestParseRoleTokenReadsTheIssueAndTheRole(t *testing.T) {
+	for _, one := range []struct{ project, issue, role string }{
+		{"infra", "INFRA-448", "tester"},
+		{"sjawharlegion", "LEGION-7", "architect"},
+		{"acme", "ACME7-3", "checker"},
+		{"acme", "ACME-12", "code-check"},
+		{"acme", "ACME-12", strings.Repeat("r", 32)},
+	} {
+		token := legionagents.RoleToken(one.project, one.issue, one.role)
+		issue, role, ok := legionagents.ParseRoleToken(token)
+		if !ok || issue != one.issue || role != one.role {
+			t.Errorf("ParseRoleToken(%q) = %q, %q, %t; want %q, %q, true", token, issue, role, ok, one.issue, one.role)
+		}
+	}
+	for _, token := range []string{
+		"legion-acme-controller",
+		"legion-acme-acme-12-controller",
+		"legion-acme-acme-12-Planner",
+		"legion-acme-acme-12-" + strings.Repeat("r", 33),
+		"legion-acme-acme-12",
+		"legion-acme-12-planner",
+		"",
+	} {
+		if issue, role, ok := legionagents.ParseRoleToken(token); ok {
+			t.Errorf("ParseRoleToken(%q) = %q, %q, true; want no issue role's token", token, issue, role)
+		}
+	}
+}
+
 // One entry written is read back whole by each read: by its session, its role token and its issue,
 // carrying the recorded_at the store stamped at the write and no replacement.
 func TestAnEntryRoundTripsThroughEveryRead(t *testing.T) {
