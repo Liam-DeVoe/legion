@@ -759,32 +759,37 @@ test("the architect's skill says what holds a parent before retro, who holds acc
   ]).toEqual([]);
 });
 
-// Only a review that requests changes counts a review round (the daemon's recordRound): a tester's
-// fail and a move back, the architect's from `accepting` among them, count none, as the architect's
-// prompt parts say (`go/architect-common.md`). The wake table and the two guides that say what the
-// cap counts say so too, and each sentence that counted every move back is gone. A move made at a
-// conflicting head raises no pair, whoever made it (recordPass), so the concepts page says that of
-// any such move. The guides are read where they live in the repository. This shows the text ships,
-// never that a role follows it.
-test("the wake table and the guides say only a review that requests changes counts a round", () => {
+// A review's request for changes counts a review round, and so does the fail of a step of the type
+// review whose agent is not the owner (the daemon's recordRound, at a fail where reviewFails
+// holds). A tester's fail, the fail of a step of another type and a move back, the architect's
+// from `accepting` among them, count none, as the architect's prompt parts say
+// (`go/architect-common.md`). The wake table and the two guides that say what the cap counts say
+// so too, and each sentence that counted every move back is gone. A move made at a conflicting
+// head raises no pair, whoever made it (recordPass), so the concepts page says that of any such
+// move. The guides are read where they live in the repository. This shows the text ships, never
+// that a role follows it.
+test("the wake table and the guides say a review's request for changes or a review step's fail counts a round", () => {
   const guide = (relative: string, duties: RegExp[]) => {
     const text = collapsed(path.join(REPO_ROOT, "docs/site/src/content/docs/legion", relative));
     return duties.filter((duty) => !duty.test(text)).map((duty) => `${relative} lacks ${duty}`);
   };
   expect([
     ...lacks("legion-architect/references/wake-routing.md", [
-      /Only requests for changes count: no tester's fail, no move back\./,
+      /Changes requested and review steps' fails count: no tester's fail, no move back\./,
       /^(?![\s\S]*Tester fails and requests for changes are what it counts)/,
+      /^(?![\s\S]*Only requests for changes count)/,
     ]),
     ...guide("concepts.md", [
-      /Only a review that requests changes counts a round: a tester's fail and a move back by a worker or the architect count none\./,
-      /A request for changes made while the record holds the head conflicting with its base is a conflict round/,
+      /A review's request for changes counts a round\. So does the fail of a step of the type review whose agent is not the owner\. A tester's fail, the fail of a step of any other type and a move back by a worker or the architect count none\./,
+      /A round counted while the record holds the head conflicting with its base is a conflict round/,
       /a move made while the head conflicts with its base raises no pair/,
       /^(?![\s\S]*Every move back to an earlier phase counts a round)/,
+      /^(?![\s\S]*Only a review that requests changes counts a round)/,
     ]),
     ...guide("troubleshooting.md", [
-      /only a review that requests changes raises the count/,
+      /A review's request for changes raises the count\. So does the fail of a step of the type review whose agent is not the owner\. A tester's fail, the fail of a step of another type and a move back raise none\./,
       /^(?![\s\S]*every move back to an earlier phase raises the count)/,
+      /^(?![\s\S]*only a review that requests changes raises the count)/,
     ]),
   ]).toEqual([]);
 });
@@ -846,15 +851,17 @@ test("an issue runs the default steps unless its architect registers a plan befo
 
 // Each rule of the worker and retro skills states its exceptions where it is stated, so no other
 // sentence of the skills or the prompts contradicts it: a kept volume keeps more than the tracked
-// work, a parent can be held before its retro, a completion after a merge forward carries a
-// handoff only where its phase writes one, a merge forward the daemon asks for in retro is no part
-// of retro and its review is Legion's ask, a tool that takes no rating is never refused for its
-// absence, and step 3 writes no comment when no point qualifies.
+// work, a parent can be held before its retro, the working copy is cleaned before a step's report
+// as before a handoff, a completion after a merge forward carries a handoff only where its phase
+// writes one, a merge forward the daemon asks for in retro is no part of retro and its review is
+// Legion's ask, a tool that takes no rating is never refused for its absence, and step 3 writes no
+// comment when no point qualifies.
 test("the worker and retro skills state the exceptions of their rules", () => {
   expect([
     ...lacks("legion-worker/SKILL.md", [
-      /nothing else of the disk survives, unless the deployment keeps the pod's volume/,
+      /nothing else of the disk survives but a volume the deployment keeps\./,
       /without `acceptance:owner`, the last step starts retro, or holds a parent until the issues beneath it leave/,
+      /Before you write the handoff or report your step, run `jj -R "\$LEGION_WORKSPACE" status`/,
       /complete again at the new head, with a handoff that names it where your phase writes one\./,
     ]),
     ...lacks("legion-retro/SKILL.md", [
