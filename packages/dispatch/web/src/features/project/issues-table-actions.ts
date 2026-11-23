@@ -11,9 +11,14 @@ import {
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
-import { dryRunStatusChange, optionInput } from "../issue/parent-status/useParentStatusMove";
+import {
+  dryRunStatusChange,
+  isParentStatusConflict,
+  optionInput,
+} from "../issue/parent-status/useParentStatusMove";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { plainWrite, useWrites } from "../writes/write-store";
 import { IN_WORK_STATUSES, statusText } from "./board-model";
@@ -324,7 +329,7 @@ export function useIssueTableActions({
   };
   /** Sends the status change the reader said yes to: `epic` into work, with each parent above it
    *  that is not (`INTO_WORK`), before the moves it lets in. Its key is a step of the action `id`,
-   *  so Finish waits on it, or sends it again where it was refused. */
+   *  so Finish waits on it, and where it was refused or stopped makes it afresh (`afreshSteps`). */
   const moveIntoWork = async (epic: string, id?: string) => {
     const write = newSendKey();
     recovery.record({ intoWork: write }, id);
@@ -338,10 +343,17 @@ export function useIssueTableActions({
       if (answer !== null) mergeIssue(client, answer.issue);
     } catch (error) {
       // A change the reader stopped in Pending changes may have been made, which its words say in
-      // place of the error's own, a composer's.
+      // place of the error's own, a composer's. Finish makes a step of an action again: it checks
+      // the epic again and asks before it moves it. A Retry in Pending changes would send the move
+      // past those checks.
+      const what = `the move of ${epic} into work`;
       const why =
         error instanceof SendStoppedError
-          ? `${stoppedWriteNote(`the move of ${epic} into work`, "made", { method: "POST", stopped: error })} Retry it in Pending changes.`
+          ? id === undefined
+            ? `${stoppedWriteNote(what, "made", { method: "POST", stopped: error })} Retry it in Pending changes.`
+            : stoppedWriteNote(what, "made", {
+                anew: `Finish the interrupted action: it checks ${epic} again and asks before it moves it.`,
+              })
           : error instanceof Error
             ? error.message
             : String(error);
@@ -695,6 +707,36 @@ export function useIssueTableActions({
     if (title && title !== titleOf(key))
       void perform(`Renamed the epic to “${title}”.`, () => apply([{ key, input: { title } }]));
   };
+  /**
+   * Refuses the close of a merge's source `source` while an issue the merge does not move is open
+   * under it: the table reads its own project alone, and a child can be in another project.
+   * `current` is the listing read just before the close. Its row of the source counts the source's
+   * children in every project (`progress.children`), so only where that row shows one not done
+   * does the page send the dry run of the source's close. Dispatch answers that dry run as the
+   * rule is on, whatever its setting, and its `409 PARENT_STATUS_CONFLICT` names each issue that
+   * holds the close: the refusal names each one with its project. A dry run that is not answered
+   * refuses the close too. Either refusal comes before the merge's reason, with nothing written.
+   */
+  const refuseHeldClose = async (source: string, current: readonly IssueSummary[]) => {
+    const children = current.find((issue) => issue.key === source)?.progress.children;
+    if (!children || children.done >= children.total) return;
+    try {
+      await dryRunStatusChange(client, source, { status: "done" });
+    } catch (error) {
+      if (!isParentStatusConflict(error))
+        throw new Error(
+          `The source epic ${source} remains open: Dispatch could not check the issues under it. ${apiErrorMessage(error, "The page could not reach Dispatch.")}`,
+          { cause: error }
+        );
+      const held = (error.issues ?? []).map(
+        ({ key, title }) => `${key} “${title}” (project ${issueProject(key)})`
+      );
+      throw new Error(
+        `The source epic ${source} remains open: ${held.join(", ")} still ${held.length === 1 ? "needs" : "need"} to move.`,
+        { cause: error }
+      );
+    }
+  };
   const closeMerge = async (record: TableAction, resumed: boolean) => {
     const from = record.source;
     const into = record.target;
@@ -771,6 +813,8 @@ export function useIssueTableActions({
           `The source epic ${from} remains open. ${error instanceof Error ? error.message : String(error)}`
         );
       }
+      if (!recovery.active(record.id)) return undefined;
+      await refuseHeldClose(from, await listAll());
       await closeMerge(record, false);
       if (!recovery.active(record.id)) return undefined;
       recovery.dismiss();
@@ -888,7 +932,13 @@ export function useIssueTableActions({
       guard: mergeGuard,
       resume: async (record, current) => {
         const source = record.source ?? "";
-        if (sourceClosed(current, source)) return true;
+        // A source closed since leaves no move to make and no guard to run, so the refused writes
+        // of the steps Finish decides afresh are dropped here, as the guard drops them where it
+        // answers true: a Retry of the move into work would need no merge.
+        if (sourceClosed(current, source)) {
+          recovery.discard(record.id, afreshSteps(record));
+          return true;
+        }
         if (!(await mergeGuard(record, current))) return false;
         const members = mergeMembers(current, source);
         await apply(
@@ -896,11 +946,13 @@ export function useIssueTableActions({
           record.id
         );
         if (!recovery.active(record.id)) return true;
-        const remaining = mergeMembers(await listAll(), source);
+        const latest = await listAll();
+        const remaining = mergeMembers(latest, source);
         if (remaining.length)
           throw new Error(
             `The source epic ${source} remains open: ${remaining.join(", ")} still need to move.`
           );
+        await refuseHeldClose(source, latest);
         await closeMerge(record, true);
         return true;
       },
