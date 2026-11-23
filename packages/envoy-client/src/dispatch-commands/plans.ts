@@ -53,11 +53,13 @@ function issueLine(issue: FinishedIssue): string {
     timeText(issue.duration_seconds),
     "failed steps",
     issue.failed_steps,
+    "fixes",
+    issue.fixes,
   ].join(" ");
 }
 
-/** `dispatch plans`: each finished issue of a project with its plan, its ratings, its time and its
- *  count of failed steps, as Dispatch lists them. */
+/** `dispatch plans`: each finished issue of a project with its plan, its ratings, its time, its
+ *  count of failed steps and its count of fixes, as Dispatch lists them. */
 export async function plansCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
   const read = await client.listProjectPlans(stringArg(args, "project"), {

@@ -19,9 +19,10 @@ import (
 )
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
-// it says (tellChecks). It moves nothing: a failed CI check is information the worker holding the
+// it says (tellChecks). It moves nothing: the settlement is information the worker holding the
 // phase decides on - rerun, wait, or fix - and not the daemon's to read the semantics of
-// (dispatch://INFRA-714/spec R1).
+// (dispatch://INFRA-714/spec R1). A failed check that a CI job runs is judged by Dispatch's check
+// states instead, and for a task that takes a fix the fix rule starts the fix (fixRule).
 //
 // It runs for every settlement fact, after the wake (wakeOnSettlement), and each settlement it
 // does not apply is named by one INFO line once the fact commits, since a pull request whose head
@@ -523,6 +524,9 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // a role holder with a message. In merging the implementer is not told: the merge and what breaks
 // it are the merger's to decide, and the merger asks the implementer when it needs it
 // (cybermonklabs/legion#4979). A held issue keeps the worker of Hold.From (record.StandsAt).
+// A task whose run takes a fix (record.PlanTask.FixesCI) tells the architect alone: the fix rule
+// gives each failure to the step that holds it, or starts a fix (fixRule), so neither the worker
+// of the phase nor the implementer gets the settlement beside it.
 // A role named twice, the implementer holding the phase, is told once, and a phase no worker holds
 // names none (addressRoles). told is what the settlement
 // standing for the head said before this one, so a second settlement of the same head that leaves
@@ -564,9 +568,19 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 		}
 		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
 	}
-	roles := []claim.Role{RoleFor(record.StandsAt(*issue))}
-	if !record.StandsIn(*issue, phase.Merging) {
-		roles = append(roles, claim.RoleImplementer)
+	// A task whose run takes a fix hears of a failure from the fix rule (fixRule), which tells the
+	// step that holds it, or starts the fix: the settlement goes to the owner alone, so the
+	// implementer never gets a failure as a second task beside its fix.
+	fixesCI, err := e.store.RunFixesCI(ctx, tx, issue.Key, issue.Generation)
+	if err != nil {
+		return err
+	}
+	var roles []claim.Role
+	if !fixesCI || e.everyRoleToldCI {
+		roles = append(roles, RoleFor(record.StandsAt(*issue)))
+		if !record.StandsIn(*issue, phase.Merging) {
+			roles = append(roles, claim.RoleImplementer)
+		}
 	}
 	for _, role := range roles {
 		if role == claim.RoleArchitect || role == woken {

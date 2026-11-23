@@ -1134,7 +1134,7 @@ func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor 
 	if err != nil {
 		return false, fmt.Errorf("read %s for the phase of its task: %w", key, err)
 	}
-	return record.PhaseHolds(issue, queuedFor, generation), nil
+	return record.PhaseHolds(issue, queuedFor, generation, 0), nil
 }
 
 // rootHears answers supervise's Deps.RootHears from the issue record: a root architect's task of a

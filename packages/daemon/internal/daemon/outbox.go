@@ -566,8 +566,11 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 	case record.StepRecord:
 		// Nobody is told: no architect can change an issue Dispatch does not have, a body it will
 		// never take, a writer its route refuses or an id of another issue, and the work the
-		// record is of went on without it. The line is what says the record is not in Dispatch,
-		// since nothing else would.
+		// record is of went on without it. The line stands for two refusals. Where Dispatch
+		// refused the record's own write, the line is what says the record is not in Dispatch,
+		// since nothing else would. Where it refused the commits' write after it took the record
+		// (publishStepCommits), the record stays in Dispatch with no commits. The line's error
+		// tells the two apart: only the commits' names "write the commits of the step record".
 		told = r.recordDropped(row, "step", value.ID, cause)
 	case record.PlanRecord:
 		// Nobody is told, for the step record's reasons: the plan is history of a run that went
@@ -883,13 +886,13 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 }
 
 // waitsForTheRoute is whether a write of kind waits for a Dispatch that has no route for it: the
-// records of the record lane (a step's start and end, a retro's rating and a run's plan) and the
-// role holders' publication, whose routes came after the Dispatch a daemon may meet. Every other
-// kind's route stands on every Dispatch it is sent to, so that answer there means a dispatch_url
-// that reaches no such Dispatch, and it is the refusal it says: a status write, a message post and
-// a claim release end on it with their follow-ups (dispatch.PermanentRefusal), and a status write
-// left waiting would hold every later status of its issue behind it; the gated steps' and the
-// design gates' publications retry it as a failure.
+// records of the record lane (a step's start and end, a retro's rating, a run's commits and a
+// run's plan) and the role holders' publication, whose routes came after the Dispatch a daemon may
+// meet. Every other kind's route stands on every Dispatch it is sent to, so that answer there means
+// a dispatch_url that reaches no such Dispatch, and it is the refusal it says: a status write, a
+// message post and a claim release end on it with their follow-ups (dispatch.PermanentRefusal),
+// and a status write left waiting would hold every later status of its issue behind it; the gated
+// steps' and the design gates' publications retry it as a failure.
 func waitsForTheRoute(kind record.OutboxKind) bool {
 	return record.LaneOf(kind) == record.LaneRecord || kind == record.OutboxKindRoleHoldersPublish
 }
@@ -941,11 +944,21 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.publishRoleHolders(ctx, value)
 	case record.StepRecord:
 		// A step record carrying a rating is the rating a retro gave the plan, which Dispatch
-		// takes on the record's rating route alone (publishStepRating).
+		// takes on the record's rating route alone (publishStepRating). One naming a commit or a
+		// fix's check sends them after that write, on the record's commits route alone
+		// (publishStepCommits), so a Dispatch older than that route takes the record and only the
+		// commits wait.
+		publish := r.publishStepRecord
 		if value.PlanRating != nil {
-			return r.publishStepRating(ctx, row, value)
+			publish = r.publishStepRating
 		}
-		return r.publishStepRecord(ctx, row, value)
+		if err := publish(ctx, row, value); err != nil {
+			return err
+		}
+		if commits, named := stepCommitsOf(value); named {
+			return r.publishStepCommits(ctx, row, value, commits)
+		}
+		return nil
 	case record.PlanRecord:
 		return r.publishPlanRecord(ctx, row, value)
 	case record.IssueBranch:
@@ -962,6 +975,8 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.updateAsk(ctx, row, value)
 	case record.MergeQueueRead:
 		return r.mergeQueueRead(ctx, row, value)
+	case record.FixJobRead:
+		return r.fixJobRead(ctx, row, value)
 	case record.MergeQueueRemoval:
 		return r.mergeQueueRemoval(ctx, row, value)
 	case record.DesignNewsReconcile:
@@ -1510,8 +1525,8 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 
 // publishStepRecord writes one start or one end of a step onto Dispatch's record of it, under the
 // row's issue and the record's own id. Dispatch writes each field once and keeps what the write
-// leaves out, so the start, the end and the rating land in any order, and a write that runs again
-// after a lost answer changes nothing.
+// leaves out, so the start, the end, the rating and the commits land in any order, and a write
+// that runs again after a lost answer, or after its commits waited, changes nothing.
 //
 // A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
 // so the daemon and Dispatch deploy in either order, and once Dispatch serves the route the row's
@@ -1543,13 +1558,41 @@ func (r *outbox) publishStepRating(ctx context.Context, row record.OutboxRow, pa
 	return nil
 }
 
-// stepWriteOf is the step write of payload's fields, the rating aside: the identity of the run, and
-// each field of its start or its end that payload carries.
+// publishStepCommits writes the commits payload's run started and ended at, and the check a fix's
+// run is of, onto its record on Dispatch, under the row's issue and the record's own id, through the
+// record's commits route (dispatch.Client.PutStepCommits), with the run's identity. run sends them
+// only once the record's own write was taken, so a Dispatch older than that route still holds the
+// record: its router's 404 makes the row wait (execute), and each run of the waiting row sends the
+// record's own write again before the commits, which changes nothing Dispatch holds. Its answers
+// are decided as a step record's are (publishStepRecord).
+func (r *outbox) publishStepCommits(ctx context.Context, row record.OutboxRow, payload record.StepRecord, commits dispatch.StepCommits) error {
+	if err := r.dispatch.PutStepCommits(ctx, row.Issue, payload.ID, stepWriteOf(payload), commits); err != nil {
+		return fmt.Errorf("write the commits of the step record %s of %s: %w", payload.ID, row.Issue, err)
+	}
+	return nil
+}
+
+// stepWriteOf is the step write of payload's fields, the rating and the commits aside: the
+// identity of the run, and each field of its start or its end that payload carries.
 func stepWriteOf(payload record.StepRecord) dispatch.StepWrite {
 	return dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
 		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
 		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
 		ReturnedTo: payload.ReturnedTo, Report: payload.Report}
+}
+
+// stepCommitsOf is the commits payload names, each "" where it names none, and whether it names
+// any: the route takes a commit sent as "" as stating nothing, so a record naming none, or naming
+// each as "", has no write of its commits to make.
+func stepCommitsOf(payload record.StepRecord) (dispatch.StepCommits, bool) {
+	text := func(value *string) string {
+		if value == nil {
+			return ""
+		}
+		return *value
+	}
+	commits := dispatch.StepCommits{StartCommit: text(payload.StartCommit), EndCommit: text(payload.EndCommit), FixCheck: text(payload.FixCheck)}
+	return commits, commits != dispatch.StepCommits{}
 }
 
 // publishPlanRecord writes the plan one run of an issue carries out onto Dispatch, under the row's
@@ -1576,14 +1619,14 @@ func (r *outbox) publishPlanRecord(ctx context.Context, row record.OutboxRow, pa
 	return nil
 }
 
-// recordRefused is whether Dispatch refused a step record, a rating or a plan in a way no retry
-// changes: an issue it does not have (404 ISSUE_NOT_FOUND), a body it will never take (a coded 400
-// the shared rule calls final, which leaves out the refusal of a field this daemon added by a
-// Dispatch from before #2461; a refusal naming the rating is no such refusal, since no Dispatch
-// refused the rating by name), a writer its route refuses (403 STEP_WRITER, which the step, the
-// rating and the plan routes all answer: the daemon names its own session on every write, so the
-// route's rule and the daemon's disagree) and an id of another issue (409 STEP_OTHER_ISSUE, or
-// PLAN_OTHER_ISSUE for a plan).
+// recordRefused is whether Dispatch refused a step record, a rating, a record's commits or a plan
+// in a way no retry changes: an issue it does not have (404 ISSUE_NOT_FOUND), a body it will never
+// take (a coded 400 the shared rule calls final, which leaves out the refusal of a field this
+// daemon added by a Dispatch from before #2461; a refusal naming the rating is no such refusal,
+// since no Dispatch refused the rating by name), a writer its route refuses (403 STEP_WRITER,
+// which the step, the rating, the commits and the plan routes all answer: the daemon names its own
+// session on every write, so the route's rule and the daemon's disagree) and an id of another
+// issue (409 STEP_OTHER_ISSUE, or PLAN_OTHER_ISSUE for a plan).
 // Everything else retries: a handler's 404 NOT_FOUND, which the code, not the status, tells from
 // ISSUE_NOT_FOUND, an outage, "come back later", a codeless answer and a credential an operator
 // restores. The router's NOT_FOUND of a Dispatch older than the route never reaches it: execute
@@ -1605,6 +1648,48 @@ func recordRefused(err error) bool {
 		return refusal.Code == steprecord.CodeOtherIssue || refusal.Code == steprecord.CodePlanOtherIssue
 	}
 	return false
+}
+
+// fixJobReadBound is how long a fix's read of its failed CI job (record.FixJobRead) goes on reading
+// Dispatch, from the row's first try, before the fix starts without the job's name and page.
+const fixJobReadBound = 2 * time.Minute
+
+// fixJobRead reads from Dispatch the CI job whose failure a fix starts for (record.FixJobRead,
+// dispatch.Client.CIJob): the name of the check run the check's CI job makes, and the page of its
+// run at the row's head. The read is made once an attempt, and its answer starts the fix: the row
+// applies intake.FixJobRead with the name and the page, each "" where Dispatch holds none. A read
+// that failed is made again on the row's backoff, the failure being the row's error, while the
+// row is younger than fixJobReadBound; the first read that fails at or after that bound starts the
+// fix without its job: the row applies the fact with ReadFailed, the failure's text, and no name
+// and no page, so a Dispatch that does not answer holds a fix back for that long and no longer.
+// The row carries no moment of its own and is due at once when the fact that starts the fix
+// queues it, so its first try is its creation (row.CreatedAt), as the claim release measures its
+// own bound from (claimReleaseWait). The fact is applied under an event id that names the row, so
+// a row run again after its finish was lost applies it no second time.
+func (r *outbox) fixJobRead(ctx context.Context, row record.OutboxRow, payload record.FixJobRead) error {
+	if r.dispatch == nil {
+		return errors.New("fix job read executor has no Dispatch client")
+	}
+	read := intake.FixJobRead{Key: row.Issue, Generation: payload.Generation, Task: payload.Task, Fix: payload.Fix}
+	attributes := []any{"row", row.ID, "issue", row.Issue, "task", payload.Task, "fix", payload.Fix, "check", payload.Check,
+		"head", payload.Head, "attempt", row.Attempts + 1}
+	job, err := r.dispatch.CIJob(ctx, row.Issue, payload.Check, payload.Head)
+	switch {
+	case err == nil:
+		read.Name, read.URL = job.Name, job.URL
+		r.log.Info("outbox fix job read: Dispatch answered; the fix starts", append(attributes, "job", job.Name, "page", job.URL)...)
+	case r.now().UTC().Sub(row.CreatedAt) < fixJobReadBound:
+		return fmt.Errorf("read the CI job of check %s at %s for fix %d of task %s of %s: %w",
+			payload.Check, payload.Head, payload.Fix, payload.Task, row.Issue, err)
+	default:
+		read.ReadFailed = storetext.FarSideError(err.Error())
+		r.log.Warn("outbox fix job read: no read of Dispatch answered within its bound; the fix starts without its job",
+			append(attributes, "bound", fixJobReadBound, "error", read.ReadFailed)...)
+	}
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("fix-job-read:%s:%d", row.Issue, row.ID), read, r.handlers...); err != nil {
+		return fmt.Errorf("apply the CI job read of fix %d of task %s of %s: %w", payload.Fix, payload.Task, row.Issue, err)
+	}
+	return nil
 }
 
 // consumeHandover applies the hand-over to the record once Dispatch shows it: the row's hand-over
@@ -2444,7 +2529,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
 			return nil
 		}
-		if payload.Phase != "" && payload.Phase != issue.Phase {
+		// A start of a phase is the issue's work while the issue stands in that phase, and the start
+		// of a fix's task (record.SuperviseRequest.Fix) while that fix runs, whatever phase the issue
+		// stands in: it runs beside the step of the phase. record.PhaseHolds is the one rule of both,
+		// and the machine's own fence of a delivery asks it too.
+		if payload.Phase != "" && !record.PhaseHolds(&issue, payload.Phase, payload.Generation, payload.Fix) {
+			if payload.Fix > 0 {
+				r.log.Info("outbox start serves a fix that no longer runs; finished without acting", "row", row.ID, "issue", issue.Key,
+					"fix", payload.Fix, "runningFix", issue.RunningFix, "phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
+				return nil
+			}
 			r.log.Info("outbox start serves a phase the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
 				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
 			return nil
@@ -2616,14 +2710,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// request delivered below, so the two never read different starts.
 		//
 		// The row's phase, already held to the issue's above, travels with the delivery: it is
-		// what says the task is still the work to do once the delivery has outlived its id. The
-		// row's entry travels with it too, the number the start's own transaction raised on the
-		// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
-		// reports is held to (api/handoff.go), and what says a later row carrying the same
-		// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
-		// the role the work of the entry its row already names travels with the mark that
-		// says so (record.SuperviseRequest.ResendEntry), and the claim takes its task though
-		// it was given that entry. A check start's look
+		// what says the task is still the work to do once the delivery has outlived its id. A
+		// fix's task carries its fix the same way, held above to the fix that runs, with the head
+		// its working copy is made at and the head the task's working copy moves to
+		// (deliverRequestOf). The row's entry travels with it too, the number the start's own
+		// transaction raised on the role's phases row (record.PhaseRow.Entry): it is what the
+		// completion this task's turn reports is held to (api/handoff.go), and what says a later
+		// row carrying the same entry queues no second task of it (supervise.Claim.GivenEntry). A
+		// start that hands the role the work of the entry its row already names travels with the
+		// mark that says so (record.SuperviseRequest.ResendEntry), and the claim takes its task
+		// though it was given that entry. A check start's look
 		// and check instance travel the same way, and are what say the completion this task's
 		// turn reports is a report on that look rather than a phase completion
 		// (supervise.Claim.ServingCheck, api/handoff.go). The row travels as well: the claim
@@ -2660,10 +2756,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			if err != nil {
 				return err
 			}
-			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
-				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
+			task = deliverRequestOf(token, row, payload, news, kept)
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
@@ -3005,6 +3098,21 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // workflow between its first phase start and that start's run ever has such a row.
 func childArchitectFirstStart(issue record.Issue, payload record.SuperviseRequest) bool {
 	return payload.Role == claim.RoleArchitect && !claim.IsTreeRoot(issue.Key, issue.Tree) && payload.Phase == "" && payload.Task == "" && !payload.News
+}
+
+// deliverRequestOf is the task start row row gives the claim token (supervise.RequestDeliver):
+// the text the start composed (news.task) and the news it carries, the row's phase, run, entry
+// and check look, the row's own delivery id, and what the row says of the work: the decisions it
+// names (kept, encoded), whether it resends its entry, names the review round or carries news
+// alone, and the fix it is of with the head the fix's working copy is made at and the head the
+// task's working copy moves to (record.SuperviseRequest.Fix, FixFrom, MoveTo). The supervise
+// executor's comment above its one call says why each travels.
+func deliverRequestOf(token claim.Token, row record.OutboxRow, payload record.SuperviseRequest, news startNews, kept []byte) *supervise.RequestDeliver {
+	return &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
+		Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
+		CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+		ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News,
+		Fix: payload.Fix, FixFrom: payload.FixFrom, MoveTo: payload.MoveTo}
 }
 
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still

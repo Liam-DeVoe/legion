@@ -41,12 +41,18 @@ const (
 // the record's id from and writes again (workflow's endStep), so the start and the end agree
 // whichever reaches Dispatch first. The zero StepStart is a place no start of this release has
 // raised: a step that was running when the release deployed. StartedAt is zero where the moment
-// is unknown: an end of such a step whose role's entry recorded none.
+// is unknown: an end of such a step whose role's entry recorded none. StartCommit and FixCheck are
+// the commit the latest start named and, for a fix's start, the check the fix is of, and
+// EndCommit the commit the end of that start's run named: "" for none, and EndCommit "" until the
+// run ends.
 type StepStart struct {
-	Starts    int64
-	Agent     string
-	StartedAt time.Time
-	Run       StepRun
+	Starts      int64
+	Agent       string
+	StartedAt   time.Time
+	Run         StepRun
+	StartCommit string
+	EndCommit   string
+	FixCheck    string
 }
 
 // RaiseStepStarts counts one more start of place on issue, marks its run open whatever the run
@@ -72,25 +78,36 @@ func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string,
 }
 
 // keepStart keeps write, the record of the latest start of place on issue, on the place's row: the
-// agent and the moment it names, which the run's end writes again, and the write itself, which the
-// roll forward of a rollback ends the record under where an earlier release ended the run.
+// agent, the moment, the commit and the fix's check it names, which the run's end writes again, and
+// the write itself, which the roll forward of a rollback ends the record under where an earlier
+// release ended the run. The start is a run of its own, so the row names no end commit after it.
 func keepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, write StepRecord) error {
 	identity, err := json.Marshal(write)
 	if err != nil {
 		return fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
-	if _, err := tx.Exec(ctx, `update step_starts set agent = $5, started_at = $6, record = $7
+	if _, err := tx.Exec(ctx, `update step_starts set agent = $5, started_at = $6, record = $7, start_commit = $8, fix_check = $9,
+			end_commit = ''
 		where issue = $1 and task = $2 and kind = $3 and place = $4`,
-		issue, place.Task, place.Kind, place.Place, write.Agent, write.StartedAt, identity); err != nil {
+		issue, place.Task, place.Kind, place.Place, write.Agent, write.StartedAt, identity,
+		textOf(write.StartCommit), textOf(write.FixCheck)); err != nil {
 		return fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	return nil
 }
 
+// textOf is the text a field of a step record names, "" for one it leaves out.
+func textOf(field *string) string {
+	if field == nil {
+		return ""
+	}
+	return *field
+}
+
 // StepStarts is the count of starts of place on issue, with the agent, the moment and the run of
 // the latest, unchanged: the zero StepStart where the place has no row.
 func (s *Postgres) StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error) {
-	start, err := scanStepStart(tx.QueryRow(ctx, `select starts, agent, started_at, run from step_starts
+	start, err := scanStepStart(tx.QueryRow(ctx, `select `+stepStartColumns+` from step_starts
 		where issue = $1 and task = $2 and kind = $3 and place = $4`, issue, place.Task, place.Kind, place.Place))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StepStart{}, nil
@@ -134,14 +151,15 @@ func (s *Postgres) OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepE
 }
 
 // EndStepStart is the end of the step running at place on issue, in the transaction that writes
-// that run's end. An open run it marks ended, and answers that start, marked, and true. It marks
-// nothing otherwise, and answers false: the run's end was written already, since the settle of an
-// earlier fact ended it. The update locks the row, so two transactions that end one run at one time
-// end it once: the second finds no open run once the first commits.
-func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error) {
-	start, err := scanStepStart(tx.QueryRow(ctx, `update step_starts set run = 'ended'
+// that run's end, at endCommit, the commit the end names ("" for none). An open run it marks ended
+// with that commit, and answers that start, marked, and true. It marks nothing otherwise, and
+// answers false: the run's end was written already, since the settle of an earlier fact ended it.
+// The update locks the row, so two transactions that end one run at one time end it once: the
+// second finds no open run once the first commits.
+func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, endCommit string) (StepStart, bool, error) {
+	start, err := scanStepStart(tx.QueryRow(ctx, `update step_starts set run = 'ended', end_commit = $5
 		where issue = $1 and task = $2 and kind = $3 and place = $4 and run = 'open'
-		returning starts, agent, started_at, run`, issue, place.Task, place.Kind, place.Place))
+		returning `+stepStartColumns, issue, place.Task, place.Kind, place.Place, endCommit))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StepStart{}, false, nil
 	}
@@ -184,11 +202,14 @@ func (s *Postgres) OpenUncountedStep(ctx context.Context, tx pgx.Tx, issue strin
 	return true, nil
 }
 
-// scanStepStart reads one step_starts row's starts, agent, started_at and run.
+// stepStartColumns is the columns of a step_starts row in the order scanStepStart reads them.
+const stepStartColumns = `starts, agent, started_at, run, start_commit, end_commit, fix_check`
+
+// scanStepStart reads one step_starts row of stepStartColumns.
 func scanStepStart(row pgx.Row) (StepStart, error) {
 	var start StepStart
 	var at *time.Time
-	if err := row.Scan(&start.Starts, &start.Agent, &at, &start.Run); err != nil {
+	if err := row.Scan(&start.Starts, &start.Agent, &at, &start.Run, &start.StartCommit, &start.EndCommit, &start.FixCheck); err != nil {
 		return StepStart{}, err
 	}
 	if at != nil {

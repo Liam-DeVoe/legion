@@ -2846,6 +2846,9 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			// and the NoPluginInstall option three lines below).
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 			architectStalls: architectStalls,
+			// The directory the runtime places an issue's roles in, as the engine names it in
+			// every task, beside which a fix's working copy is made: the state's `fix` names it.
+			workspaceDir: engineWorkspaceDir(cfg),
 		},
 		StateTransactions:  st,
 		ConsumerLag:        consumerLag,
@@ -3040,6 +3043,11 @@ type source struct {
 	// which State serves as each root's `architectStalls`; nil for a daemon with no workflow,
 	// which weighs no architect and serves no arm.
 	architectStalls func(context.Context, pgx.Tx) (map[string][]record.ArchitectStallArm, error)
+	// workspaceDir is the directory this daemon's runtime places an issue's workspace in
+	// (engineWorkspaceDir, the directory every task the engine composes names), beside which a
+	// running fix's working copy is made: State serves an issue's `fix` naming that directory
+	// (projection.Inputs.WorkspaceDir). Nil, in a source a test builds by hand, names none.
+	workspaceDir func(record.Issue) string
 }
 
 // projectRecords scopes the shared daemon database to the daemon's configured project without
@@ -3440,7 +3448,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	state, err := projection.Project(ctx, projection.Inputs{
 		Tx: tx, Store: records, Project: s.project, Steps: s.gatedSteps, Experiments: s.experiments,
 		Claims: claims, Stranded: stranded, Reports: s.reports(),
-		Wakes: api.WakesWaitingOf(held, paced), Now: now,
+		Wakes: api.WakesWaitingOf(held, paced), Now: now, WorkspaceDir: s.workspaceDir,
 	})
 	if err != nil {
 		return api.State{}, nil, err

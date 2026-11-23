@@ -219,8 +219,9 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 // artifacts answers none, an upload answers the slug Dispatch files the name under, which for a
 // message's document is its name (record.MessageArtifact), and a read of a plan document at a
 // version finds none, since no executor of the outbox reads one. It also takes every role-holder
-// publication and keeps none. Every fake of the client that no test drives through a message's
-// document or a role-holder publication embeds it.
+// publication and every write of a step record's commits and keeps none, and answers a read of a
+// CI job with none. Every fake of the client that no test drives through a message's document, a
+// role-holder publication, a record's commits or a fix's job read embeds it.
 type noArtifacts struct{}
 
 func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
@@ -231,6 +232,12 @@ func (noArtifacts) PlanDocument(context.Context, string, int) (dispatch.Document
 	return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "artifact not found"}
 }
 func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
+func (noArtifacts) PutStepCommits(context.Context, string, string, dispatch.StepWrite, dispatch.StepCommits) error {
+	return nil
+}
+func (noArtifacts) CIJob(context.Context, string, string, string) (dispatch.CIJob, error) {
+	return dispatch.CIJob{}, nil
+}
 
 func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), time.Now())

@@ -209,6 +209,25 @@ const mergeSentBack: StepRecord = {
   fix_check: null,
 };
 
+/** Two commits of LEG-1's head, in the order the head moved; a line prints the first ten
+ *  characters of each. */
+const HEAD_X = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+const HEAD_Y = "b2c3d4e5f60718293a4b5c6d7e8f9012345678a1";
+
+/** The implementer's second run of step 2, a fix of the CI check k-ci that failed at X: the head
+ *  was at X when it started and at Y when it ended. */
+const fixRun: StepRecord = {
+  ...implementer,
+  id: "8e0a2c4e-5b7d-5f9a-8c1e-4a6c8e0b2d58",
+  attempt: 2,
+  started_at: "2026-11-16T10:30:00Z",
+  ended_at: "2026-11-16T10:50:00Z",
+  report: null,
+  start_commit: HEAD_X,
+  end_commit: HEAD_Y,
+  fix_check: "k-ci",
+};
+
 const config = {
   enabled: true,
   url: "http://dispatch.test",
@@ -299,6 +318,50 @@ describe("dispatch steps", () => {
       issue: "LEG-1",
       tasks: [{ task: "default", steps: [implementer, ratedRetro] }],
     });
+  });
+
+  // A run's line ends with the commits its task's head was at when it started and when it ended,
+  // each cut to ten characters, and a fix's line then names the CI check it fixes.
+  test("a fix's line ends with its commits and the check it fixes", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [implementer, fixRun] }],
+    };
+
+    const { result } = await readSteps(answer);
+
+    expect(result.text.split("\n")[2]).toBe(
+      "default 2 step implementer implementation attempt 2 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T10:30:00Z 2026-11-16T10:50:00Z passed at a1b2c3d4e5..b2c3d4e5f6 fix of k-ci"
+    );
+    expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
+  });
+
+  // The control of the line above: a run that names no check prints no `fix of`, a run whose
+  // record holds no commit prints no `at`, and a commit the record does not hold yet prints `-`,
+  // as a running run's end commit.
+  test("a run with no check prints no fix of, and a run with no commit prints no at", async () => {
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          steps: [implementer, { ...fixRun, fix_check: null }, { ...tester, start_commit: HEAD_Y }],
+        },
+      ],
+    };
+
+    const { result } = await readSteps(answer);
+    const [, uncommitted, unchecked, running] = result.text.split("\n");
+
+    expect(uncommitted).toBe(
+      "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed"
+    );
+    expect(unchecked).toBe(
+      "default 2 step implementer implementation attempt 2 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T10:30:00Z 2026-11-16T10:50:00Z passed at a1b2c3d4e5..b2c3d4e5f6"
+    );
+    expect(running).toBe(
+      "default 3 step tester testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running at b2c3d4e5f6..-"
+    );
   });
 
   // Dispatch stores passed, failed or stopped as the result of a run that ended, and "" as that of

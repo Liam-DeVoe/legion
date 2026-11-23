@@ -111,8 +111,10 @@ type Conn interface {
 	// Shutdown asks the agent to end its own process — the graceful half of a stop.
 	Shutdown(ctx context.Context) error
 	// AdoptWorkingCopy makes the agent's side set the author of its working copy, for a
-	// workspace the daemon cannot reach itself.
-	AdoptWorkingCopy(ctx context.Context, id GitIdentity, timeout time.Duration) error
+	// workspace the daemon cannot reach itself, making or moving a fix's working copy at
+	// adoption.FixFrom and moving the task's to adoption.MoveTo first, where it names them. The
+	// answer is the shim's echo of each member it acted on.
+	AdoptWorkingCopy(ctx context.Context, id GitIdentity, adoption Adoption, timeout time.Duration) (Adopted, error)
 	// Compact asks Oh My Pi to compact its session's context, writing the summary to
 	// customInstructions, and returns when it answers or bound runs out. Nil is a session
 	// compacted. A compaction Oh My Pi refused or skipped — a session too small, one already

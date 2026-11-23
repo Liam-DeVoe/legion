@@ -647,6 +647,14 @@ type RequestDeliver struct {
 	// gives way to a task of an entry while no turn has taken it (Machine.supersedes), since the
 	// start of an entry carries the same news itself.
 	NewsOnly bool
+	// Fix is the fix of the issue's task this task is of, from the start row that queued it
+	// (record.SuperviseRequest.Fix), 0 for a task of no fix: such a task is its issue's work while
+	// that fix runs, whatever phase the issue stands in (record.PhaseHolds). FixFrom is the head the
+	// fix's working copy is made at, which only a fix's task names, and MoveTo the head the task's
+	// working copy moves to before the task, "" for none. An operator's task names none of them.
+	Fix     int
+	FixFrom string
+	MoveTo  string
 }
 
 // RequestExit is the agent reporting its own end.
@@ -1585,6 +1593,12 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // name of its own: it is raised before any frame leaves, and an operator told the transport lost
 // the prompt would look at the network while the GitHub App is the thing that is down.
 //
+// So does an adoption a shim built before a fix ran beside the other steps answered with no echo
+// of the fix's commit or the task's move it was asked (runtime.ErrAdoptionUnsupported): that shim
+// ignored the members, so the task waits rather than run in the wrong working copy. It is charged
+// nothing, since asking that shim again changes nothing and spending the budget would only fail a
+// claim whose pod the update round replaces; its one WARN line names the claim and the pod.
+//
 // Every failure here, charged or not, is recorded on the pending delivery before the split acts:
 // how many sends of this task have failed, when this one failed and the error it failed
 // with (Delivery.SendFailures and its two companions). That record is a diagnosis rather than a
@@ -1650,6 +1664,9 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		msg, charge = "supervise: the shim refused to adopt the working copy; the prompt was never sent", "the working copy was not adopted: "
 	case errors.Is(r.Err, runtime.ErrIdentityUnavailable):
 		msg = "supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits"
+	case errors.Is(r.Err, runtime.ErrAdoptionUnsupported):
+		msg = "supervise: the issue's pod runs a shim that does not make a fix's working copy or move the task's; the task waits, charged nothing, until the pod's update round replaces it"
+		args = append(args, "pod", podOf(m.claim.Locator))
 	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
@@ -1673,6 +1690,19 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		return m.sendPending(ctx)
 	}
 	return nil
+}
+
+// podOf names the place loc's process runs in for a log line: the pod a sandbox locator names,
+// and otherwise the process's incarnation, which is all a pane has of a place. A claim with no
+// locator names none.
+func podOf(loc *runtime.Locator) string {
+	switch {
+	case loc == nil:
+		return ""
+	case loc.Sandbox != nil:
+		return loc.Sandbox.PodUID
+	}
+	return loc.Incarnation
 }
 
 // refusedElsewhere is the part of a late refusal every state shares, and it reports whether that

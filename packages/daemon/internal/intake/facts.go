@@ -943,6 +943,21 @@ type ConflictConfirmDone struct {
 
 func (f ConflictConfirmDone) namedIssue() (string, bool) { return f.Issue, true }
 
+// FixJobRead is the outbox's read of the CI job a fix starts for (record.FixJobRead) finishing:
+// never decoded from an event. Dispatch answered the failed job of fix Fix of Task of issue Key at
+// Generation with its name and the address of its page (Name, URL), or no read found it, and
+// ReadFailed is the last read's error. The workflow then starts the fix, naming the job where the
+// read found one, while the fix still reads its job (record.FixReading).
+type FixJobRead struct {
+	Key                   string
+	Generation            uint64
+	Task                  string
+	Fix                   int
+	Name, URL, ReadFailed string
+}
+
+func (f FixJobRead) namedIssue() (string, bool) { return f.Key, true }
+
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
 // is in implementing with no open or merged pull request recorded: never decoded from an event.
@@ -1046,6 +1061,10 @@ type HandoffComplete struct {
 	// (record.PhaseRow.ReturnTo), and returns a fail the states decide to it. A pass does not use
 	// it. 0 on every other completion, and on a tester's that names none.
 	ReturnTo int
+	// Fix is the fix whose task the completion ends (record.TaskFix), 0 for a completion of no
+	// fix: the route reads it from the entry the claim serves, the running fix's entry. A fix's
+	// completion ends the fix, not the step of the phase the issue stands in.
+	Fix int
 }
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
@@ -1054,7 +1073,9 @@ func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 // architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
 // claim of the architect, the issue's generation and the run of the step the issue stood in
 // (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
-// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three.
+// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three. Fix is
+// the fix whose task the worker's move ends (record.TaskFix), 0 for a move of no fix: the route
+// reads it from the entry the claim serves, the running fix's entry, as HandoffComplete.Fix is.
 type BackwardMove struct {
 	Issue      string
 	Requester  claim.Role
@@ -1063,6 +1084,7 @@ type BackwardMove struct {
 	By         claim.Token
 	Generation uint64
 	Entry      record.StepEntry
+	Fix        int
 }
 
 func (f BackwardMove) namedIssue() (string, bool) { return f.Issue, true }
