@@ -117,6 +117,14 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 			text:     "Run make test all now.",
 		},
 		{
+			name:     "a find inside a code span that holds quotes, a caret, a dollar and pipes",
+			markdown: "Run `go test ... -run '^(A|B|TestStreamsEnsureCreatesOnlyTheMeasureStream|TestStreamsUpdateChangesOnlyReplicas)$' -count=1 -v` now.\n",
+			find:     "TestStreamsEnsureCreatesOnlyTheMeasureStream|TestStreamsUpdateChangesOnlyReplicas",
+			with:     "TestStreamsUpdateMakesAndRaisesTheMeasureStream|TestStreamsUpdateChangesOnlyReplicas|TestStreamsUpdateMakesNoCopiedBucket",
+			want:     "Run `go test ... -run '^(A|B|TestStreamsUpdateMakesAndRaisesTheMeasureStream|TestStreamsUpdateChangesOnlyReplicas|TestStreamsUpdateMakesNoCopiedBucket)$' -count=1 -v` now.\n",
+			text:     "Run go test ... -run '^(A|B|TestStreamsUpdateMakesAndRaisesTheMeasureStream|TestStreamsUpdateChangesOnlyReplicas|TestStreamsUpdateMakesNoCopiedBucket)$' -count=1 -v now.",
+		},
+		{
 			name:     "a with that writes the span's own mark",
 			markdown: "**Sami said bold** now.\n",
 			find:     "said",
