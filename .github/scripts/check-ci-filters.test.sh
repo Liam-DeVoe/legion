@@ -37,9 +37,9 @@
 # changes job must name that step and a filter that file holds, that file must be there and open,
 # and a listed block's patterns are passed over by rule 9 only while its marker names a check a
 # job of CI runs. A script's go command is read under every step of each job that may run it, a
-# run that changes a file of the tree, but the two the write mode writes, fails naming each, as one
-# does that cannot read the tree through git, and the header's run recipe runs the check, or says
-# why it stops.
+# run that changes a file of the tree, but the filters file and the PUSH_WORKFLOWS workflows the
+# write mode writes, fails naming each, as one does that cannot read the tree through git, and the
+# header's run recipe runs the check, or says why it stops.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a .github/ci-filters.yaml holding the
@@ -3834,8 +3834,8 @@ done
 
 # A run of either mode may change no file of the tree it checks but those the write mode writes,
 # and fails naming each other file it changed. The go commands of go_build_tags.py run under the
-# machine's own GOPROXY and module cache, so one can record a checksum the committed go.sum or
-# go.work.sum lacks, which the cases plant: a go first on PATH that appends the line this
+# machine's own GOPROXY and module cache, so in a workspace one can record a checksum the
+# committed go.work.sum lacks, which the cases plant: a go first on PATH that appends the line this
 # repository's go.work.sum once lacked to the fixture's go.work.sum, then runs the real go.
 # Writing on every command, it writes at the engine's `go env GOROOT`, which comes after the
 # engine has listed the repository's files and before its first go list; writing on `go list`
@@ -3845,18 +3845,26 @@ done
 real_go=$(command -v go)
 planted_sum='golang.org/x/mod v0.42.0/go.mod h1:u5fzIrRInkL8MaO1cbRkUHT64v303YIT5KEqpNr7jRs='
 
-# run_check_planted <commands> <root> [mode]: run_check with that go first on PATH, writing the
-# line when its arguments match <commands>, a shell case pattern.
-run_check_planted() {
-  local saved=$PATH commands=$1
+# run_check_with_go <script> <root> [mode]: run_check with a go first on PATH that runs the shell
+# text <script>, then the real go.
+run_check_with_go() {
+  local saved=$PATH script=$1
   shift
   mkdir -p "$1.bin"
-  printf '#!/bin/sh\ncase "$*" in\n  %s) echo "%s" >> "%s/go.work.sum" ;;\nesac\nexec "%s" "$@"\n' \
-    "$commands" "$planted_sum" "$1" "$real_go" > "$1.bin/go"
+  printf '#!/bin/sh\n%s\nexec "%s" "$@"\n' "$script" "$real_go" > "$1.bin/go"
   chmod +x "$1.bin/go"
   PATH="$1.bin:$PATH"
   run_check "$@"
   PATH=$saved
+}
+
+# run_check_planted <commands> <root> [mode]: the planted go, appending the line when its
+# arguments match <commands>, a shell case pattern.
+run_check_planted() {
+  local commands=$1
+  shift
+  run_check_with_go "$(printf 'case "$*" in\n  %s) echo "%s" >> "%s/go.work.sum" ;;\nesac' \
+    "$commands" "$planted_sum" "$1")" "$@"
 }
 
 # run_check_writing_sum <root> [mode]: the planted go writing on every command.
@@ -3921,6 +3929,23 @@ check "git itself reports no change" "$(is "$(git -C "$root" status --porcelain)
 check "fails" "$(is "$status" 1)"
 check "and names it" "$(contains "$out" "$sum_refusal")"
 
+# The second reading hashes again only a file whose lstat changed, and every write changes the
+# change time, which no call can set back: a go that overwrites one byte of go.work.sum in place
+# and then sets its modification time back keeps its inode, mode, size and that time, and is
+# still caught.
+echo "case: a go command rewrites go.work.sum in place, keeping its size and modification time"
+root=$(fixture sum-same-stat)
+committed_sum "$root"
+cp -p "$root/go.work.sum" "$root.ref"
+kept=$(stat -c '%i %f %s %y' "$root/go.work.sum")
+run_check_with_go "$(printf 'printf B | dd of="%s/go.work.sum" bs=1 seek=40 count=1 conv=notrunc 2>/dev/null\ntouch -r "%s.ref" "%s/go.work.sum"' \
+  "$root" "$root" "$root")" "$root"
+check "the go kept the inode, mode, size and modification time" \
+  "$(is "$(stat -c '%i %f %s %y' "$root/go.work.sum")" "$kept")"
+check "and changed the bytes" "$(is "$(cmp -s "$root/go.work.sum" "$root.ref" && echo same || echo changed)" changed)"
+check "fails" "$(is "$status" 1)"
+check "and names it" "$(contains "$out" "$sum_refusal")"
+
 echo "case: the write mode, while a go command of the check records a checksum"
 root=$(fixture sum-written-write)
 run_check_writing_sum "$root" write
@@ -3928,9 +3953,9 @@ check "fails" "$(is "$status" 1)"
 check "names the file and the files that mode may change" \
   "$(contains "$out" '^::error file=go.work.sum::go.work.sum changed while this check ran, and a write run may change only .github/ci-filters.yaml and .github/workflows/site.yaml: a go command this check runs recorded module checksums')"
 
-# The files the write mode may change are the two it writes: .github/ci-filters.yaml, which
-# generated-write above changes alone, and the on.push.paths of a PUSH_WORKFLOWS workflow, which
-# this case pairs with the app filter so that the block lands in both.
+# The files the write mode may change are those it writes: .github/ci-filters.yaml, which
+# generated-write above changes alone, and the on.push.paths of each PUSH_WORKFLOWS workflow, here
+# the one this case pairs with the app filter so that the block lands in both.
 echo "case: the write mode writes the block into the filter and into its push workflow's paths"
 root=$(fixture sum-write-push-workflow)
 unread_package "$root"

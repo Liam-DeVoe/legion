@@ -364,8 +364,9 @@ a Bun job's typecheck program are the two halves it does find, from `go list` an
 answer on a cold runner as on a warm machine; third-party packages fail to load, which loses no
 first-party package. The tag sets of the darwin vet steps come from `go_build_tags.py`, whose go
 list runs under the machine's own proxy and module cache and can write a checksum a committed
-`go.sum` or `go.work.sum` lacks. A run that changes a file of the tree, but the two files its
-`write` mode writes, fails naming each: commit the checksum lines it wrote. Run it locally from
+`go.work.sum` lacks. A run that changes a file of the tree fails naming each, except the files
+its `write` mode writes (`.github/ci-filters.yaml` and each `PUSH_WORKFLOWS` workflow): commit
+the checksum lines it wrote. Run it locally from
 anywhere: `.github/scripts/check-ci-filters.sh`.
 
 ## Caches: no job of the router writes a Go cache

@@ -441,18 +441,21 @@
 # `go env GOROOT`, which resolves the toolchain (below) and writes nothing. The other is
 # .github/scripts/go_build_tags.py's: ci_job_reads.py runs its tag_sets as it is imported, to give
 # each darwin vet step one Run per tag set, and rule 20 runs its platforms. Its `go list -find`
-# still resolves every import, so it writes the checksum of each go.mod it needs that the
-# committed files lack: into the workspace's go.work.sum, or into the go.sum of a module outside
-# a workspace. The darwin vet steps of CI run the same script and write the same lines. So a
-# run rewrites a committed checksum file that lacks such a line (packages/envoy/infra/go.work.sum
-# lacked two, and every run passed over the rewrite), and in either mode a run that changes a
-# file of the tree, but the ones the write mode writes (below), fails naming each: for a go.sum
-# or a go.work.sum, commit what the run wrote. The tree is read before the first go command and
-# after the last: each file git lists, tracked or untracked and not ignored (the files the engine
-# reads), by its bytes and execute bit, every file read whole rather than taken as unchanged
-# because git says so (an assume-unchanged mark, a normalized line ending), so a file edited
-# before the run is compared with itself. A tree git cannot list, or in which it lists no file,
-# fails the run saying so, since a reading of nothing would pass any run.
+# still resolves every import, so in a workspace it writes into go.work.sum the checksum of each
+# go.mod it needs that the committed files lack. (Outside a workspace, go's default -mod=readonly
+# keeps it from writing a go.sum: it reports the missing checksum instead.) The darwin vet steps of
+# CI run the same script and write the same lines. So a run rewrites a committed go.work.sum that
+# lacks such a line (packages/envoy/infra/go.work.sum lacked two, and every run passed over the
+# rewrite), and in either mode a run that changes a file of the tree, but those the write mode
+# writes (.github/ci-filters.yaml and the PUSH_WORKFLOWS workflows, below), fails naming each: for
+# a go.work.sum, commit what the run wrote. The tree is read before the first go command and after
+# the last: each file git lists, tracked or untracked and not ignored (the files the engine reads),
+# by its bytes and execute bit, read off the file rather than taken as unchanged because git says
+# so (an assume-unchanged mark, a normalized line ending), so a file edited before the run is
+# compared with itself. The first reading hashes every file; the second hashes again only a file
+# whose lstat is not the one the first saw, since every write sets a file's change time. A tree
+# git cannot list, or in which it lists no file, fails the run saying so, since a reading of
+# nothing would pass any run.
 #
 # One thing that empty cache cannot hold is the Go toolchain itself. Where the installed go is
 # older than the `go` directive of the module being listed, GOTOOLCHAIN=auto satisfies the
@@ -539,27 +542,34 @@ import sys
 import warnings
 
 
-def held(path):
-    """What a file holds: its bytes and execute bit, the target of a symbolic link, or that it is
-    gone."""
-    try:
-        info = os.lstat(path)
-    except (FileNotFoundError, NotADirectoryError):
+def held(path, info):
+    """What a file holds, given its lstat (None for no file): its bytes and execute bit, read in
+    blocks, the target of a symbolic link, or that it is gone."""
+    if info is None:
         return "absent"
     if stat.S_ISLNK(info.st_mode):
         return "a link to " + os.readlink(path)
     if not stat.S_ISREG(info.st_mode):
         return "no regular file"
+    digest = hashlib.sha256()
     with open(path, "rb") as handle:
-        return hashlib.sha256(handle.read()).hexdigest() + (" executable" if info.st_mode & 0o111 else "")
+        while block := handle.read(1 << 20):
+            digest.update(block)
+    return digest.hexdigest() + (" executable" if info.st_mode & 0o111 else "")
 
 
-def tree():
+def tree(first=None):
     """Each file git lists under this directory, tracked or untracked and not ignored (the files
-    the engine reads), mapped to what it holds; or, as a string, why there is no such map. Each
-    is read whole, never taken as unchanged because git says so: git reports no change to a file
-    marked assume-unchanged or skip-worktree, to a line ending it normalizes, or to an execute
-    bit core.filemode tells it to ignore. A file edited before the run is compared with itself."""
+    the engine reads), mapped to its lstat and what it holds; or, as a string, why there is no
+    such map. What a file holds is read off the file, never taken as unchanged because git says
+    so: git reports no change to a file marked assume-unchanged or skip-worktree, to a line ending
+    it normalizes, or to an execute bit core.filemode tells it to ignore. A file edited before the
+    run is compared with itself. The first reading hashes every file; a later one, given the
+    first, hashes again only a file whose lstat (device, inode, mode, size, modification and
+    change times) is not the one the first saw. No write leaves all of those as they were, since
+    the kernel sets the change time at each write, chmod or rename, and the first write of a run
+    comes after the whole first reading. A file written again with the bytes it held is no
+    change."""
     try:
         result = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
                                 capture_output=True)
@@ -567,8 +577,21 @@ def tree():
         return f"git cannot list them: {failure}"
     if result.returncode != 0:
         return f"git cannot list them: git ls-files failed: {os.fsdecode(result.stderr).strip()}"
+    files = {}
     try:
-        files = {path: held(path) for path in map(os.fsdecode, result.stdout.split(b"\0")) if path}
+        for path in map(os.fsdecode, result.stdout.split(b"\0")):
+            if not path:
+                continue
+            try:
+                info = os.lstat(path)
+            except (FileNotFoundError, NotADirectoryError):
+                info = None
+            seen = info and (info.st_dev, info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns,
+                             info.st_ctime_ns)
+            if first is not None and path in first and first[path][0] == seen:
+                files[path] = first[path]
+            else:
+                files[path] = (seen, held(path, info))
     except OSError as failure:
         return f"a file git lists cannot be read: {failure}"
     return files or "git lists none"
@@ -586,7 +609,7 @@ print(f"::{token}::", flush=True)
 for import_warning in caught:
     ci_filter_coverage.print_import_warning(import_warning)
 status = ci_filter_coverage.main()
-after = tree()
+after = tree(before if isinstance(before, dict) else None)
 
 mode = os.environ["CI_FILTERS_MODE"]
 writable = set()
@@ -601,9 +624,9 @@ if unread is not None:
 else:
     may = "may change only " + " and ".join(sorted(writable)) if writable else "may change no file of the tree"
     for path in sorted(before.keys() | after.keys()):
-        if before.get(path) == after.get(path) or path in writable:
+        if path in writable or (before.get(path) or (None, None))[1] == (after.get(path) or (None, None))[1]:
             continue
-        if os.path.basename(path) in ("go.sum", "go.work.sum"):
+        if os.path.basename(path) == "go.work.sum":
             why = ("a go command this check runs recorded module checksums the committed file lacks (the go list "
                    "commands of .github/scripts/go_build_tags.py, which ci_job_reads.py runs for each darwin vet "
                    "step, run under the GOPROXY and module cache of this machine and record the checksum of each "

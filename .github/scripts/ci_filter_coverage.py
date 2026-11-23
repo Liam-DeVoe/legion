@@ -324,8 +324,8 @@ class Session:
     (check-ci-filters.sh's header says why). The toolchain is the exception that cache cannot
     hold: `toolchain()` resolves it first, under the machine's own cache and proxy, with a `go env
     GOROOT` that writes nothing. The go commands of go_build_tags.py, which ci_job_reads.py and
-    rule 20 run outside a Session, have no such environment and can write checksums into a go.sum
-    or go.work.sum; check-ci-filters.sh fails a run that changes one, naming it."""
+    rule 20 run outside a Session, have no such environment and can write checksums into the
+    go.work.sum of their workspace; check-ci-filters.sh fails a run that changes one, naming it."""
 
     problems: list[Annotation] = field(default_factory=list)
     cache: dict = field(default_factory=dict)
