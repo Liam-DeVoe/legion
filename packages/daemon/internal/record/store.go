@@ -2463,8 +2463,9 @@ var liveClaimStates = []string{
 // RoleHolder is one live claim of an issue, the role it holds and the session that holds it:
 // Claim is the claim's token, and WorksStep whether the claim is the worker on its role's step
 // (WorkerClaim), the claim the record gives the step. Two claims of one issue can hold one role —
-// the agent of a key on a step of another role, beside that role's own claim of an earlier version
-// of the plan — and each is a holder of its own.
+// a second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the agent of
+// a key on a step of another role, beside that role's own claim of an earlier version of the
+// plan — and each is a holder of its own.
 type RoleHolder struct {
 	Role      claim.Role
 	Session   string
@@ -3501,8 +3502,9 @@ type IssueClaim struct {
 
 // IssueClaims is every stored claim of issue in project, the claims' project token as
 // claims.project holds it, in any state, with its stored role and the agent of its session,
-// ordered by token. Two claims of an issue can hold one role — a keyed agent on a step of another
-// role, beside that role's own claim from an earlier version of the plan — so a walk over every
+// ordered by token. Two claims of an issue can hold one role — a second agent of the role in a
+// task, `…-implementer-2` beside `…-implementer`, or a keyed agent on a step of another role,
+// beside that role's own claim from an earlier version of the plan — so a walk over every
 // claim of an issue reads them here rather than one claim for each role.
 func (s *Postgres) IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error) {
 	rows, err := tx.Query(ctx, `select token, role, session_agent from claims where project = $1 and issue = $2 order by token`, project, issue)
