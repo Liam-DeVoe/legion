@@ -130,17 +130,20 @@ import (
 // holds from the claim on, has them compared with what the room holds there
 // (crdt.HeldStructsDifferV1Limit, refusedDuplicates), and is refused
 // DocumentClientIdRefusedCloseReason where they differ, from any socket and whether or not the
-// claim window is open. An equal resend - any browser handing back what the room relayed -
-// passes. The row keeps the id's clock in the document as the claim was made (claimed_from), so
-// only clocks the claim could have written are compared, never the tab's own history before it.
-// Each comparison decodes the whole update, under the apply's own value limit, so an update is
-// compared only where it carries such structs under at most maxComparedClaims claimed ids, as a
-// keystroke in flight, a resend or a saved row replayed does; a whole-state handoff of the
-// history, which carries the structs of every claim the room holds, is not compared, and is
+// claim window is open; and so is one carrying structs at clocks the room holds under an id from
+// the floor up that a row names for another person, compared from clock 0: a closed tab's saved
+// row replayed under its freed id once another person was minted the id and wrote there first
+// (mintForSender, below). An equal resend - any browser handing back what the room relayed -
+// passes. The row keeps a claimed id's clock in the document as the claim was made
+// (claimed_from), so only clocks the claim could have written are compared, never the tab's own
+// history before it. Each comparison decodes the whole update, under the apply's own value limit,
+// so an update is compared only where it carries such structs under at most maxComparedClaims
+// such ids, as a keystroke in flight, a resend or a saved row replayed does; a whole-state handoff
+// of the history, which carries the structs of every id the room holds, is not compared, and is
 // refused whole from a legacy socket alone, since an honest legacy tab writes under one id. Only an
-// update carrying structs under an id below the floor that its socket does not hold and that fall
-// wholly at clocks the room holds pays the one lookup of their ids' rows that finds the claims
-// among them, never a keystroke under the socket's own id.
+// update carrying structs under an id its socket does not hold that fall wholly at clocks the
+// room holds pays the one lookup of their ids' rows that finds other people's among them, never a
+// keystroke under the socket's own id.
 //
 // A row is stored only for a page that may write. A read-only admission - a closed issue, a page
 // the live fleet does not admit - is decided before its id (ServeHTTP, decideWritable), and is
@@ -164,9 +167,11 @@ import (
 // swept: a socket marks the row of its own id, and of each id from mintedClientFloor up its
 // updates wrote under besides, once the room holds a struct under it after one of its applies
 // (settleClients), or once the room has stored a later commit that landed what the socket's frames
-// parked under it (markParkedLanded). The history can still name an id whose row went: a frame
-// that parked leaves its row unmarked where its socket ended before a commit landed it, and so does
-// a landing whose mark the store refused before its socket closed (settleClients, recordLanded).
+// parked under it, whether the socket is open by then (markParkedLanded) or has ended
+// (markEndedLanded). The history can still name an id whose row went: a landing whose mark the
+// store refused before its socket closed leaves the row unmarked (settleClients, recordLanded),
+// and so does a frame whose socket ended before a commit landed it, where the room let go of what
+// it kept of the socket first, past the most its queue holds (parkedWaits.boundEnded).
 // An update is never minted such an id: the judgement mints only an id the room and the history
 // hold no struct under. An admission may be: the person that row named had no
 // socket presenting it - a give-back takes a row unpresented for clientPresenceLapses intervals,
@@ -174,7 +179,8 @@ import (
 // nothing when sent again. Where someone else is minted the id first, the page of the person the
 // row named presents it at its next admission, finds the new row, is given a fresh id, and drops
 // the rows it saved under the old one, saying how many (takeClientId), and another page of that
-// person's replaying those rows is refused and drops them the same way (dropClientRows); its
+// person's replaying those rows is refused and drops them the same way (dropClientRows), its rows
+// at clocks the new holder wrote first among them, which are compared (refusedDuplicates); its
 // frames under the id that only parked were answered not applied, and are among those rows. Of
 // two people whose updates reach the mint of one such id together, the row's key lets the first
 // in and the second is refused (mintForSender). The one page still writing under an id a mint
@@ -204,23 +210,24 @@ import (
 // maxUnlandedMintsADocument rows in a document that no edit landed under: a mint past that gives
 // back, in the same statement, the person's row there least recently presented (storeMint), and
 // where each of them is live the admission is refused for now, DocumentBusyCloseCode, which the
-// editor retries. A row is live while an open socket holds it: the socket presents it again every
-// clientPresenceInterval until its row records an edit landed under it (keepPresenting), and a row
-// presented within clientPresenceLapses intervals is no mint's to give back, on this process or
-// another. A page whose row was given back is minted the same id at its next admission where no
-// other row names it by then, and keeps what it typed offline under it, and so does another page
-// of the browser whose update replays what the first saved under the id; otherwise the page is
-// given a fresh id, or its replay is refused, and it loses only what it typed offline under the
-// old one that never landed. A row no edit landed under that nothing has presented for
-// unusedClientIDAge is deleted by the hourly compaction sweep (sweepUnusedClientIDs), and a page
-// presenting its id after that is minted it as a page whose row was given back is. A row whose id
-// landed an edit is neither given back nor swept, and neither is a claimed row: a socket marks its
-// own row, and the row of each id from mintedClientFloor up its updates wrote under besides, once
-// the room holds a struct under the id after one of its applies, or once the room has stored a
-// later commit that landed what the socket's frames parked under it while the socket was open
-// (recordLanded, markParkedLanded), and a claim is stored as landed. A claim is bounded by
-// the claim window and the claims' bounds rather than swept: a swept claim's id could be claimed
-// by another person while the tab that holds it is still open and writing under it.
+// editor retries. A row is live while an open socket holds it: the socket presents its own id and
+// each other id it holds again every clientPresenceInterval until the id's row records an edit
+// landed under it (keepPresenting), and a row presented within clientPresenceLapses intervals is
+// no mint's to give back, on this process or another. A page whose row was given back is minted
+// the same id at its next admission where no other row names it by then, and keeps what it typed
+// offline under it, and so does another page of the browser whose update replays what the first
+// saved under the id; otherwise the page is given a fresh id, or its replay is refused, and it
+// loses only what it typed offline under the old one that never landed. A row no edit landed
+// under that nothing has presented for unusedClientIDAge is deleted by the hourly compaction
+// sweep (sweepUnusedClientIDs), and a page presenting its id after that is minted it as a page
+// whose row was given back is. A row whose id landed an edit is neither given back nor swept, and
+// neither is a claimed row: a socket marks its own row, and the row of each id from
+// mintedClientFloor up its updates wrote under besides, once the room holds a struct under the id
+// after one of its applies, or once the room has stored a later commit that landed what the
+// socket's frames parked under it, open or ended by then (recordLanded, markParkedLanded,
+// markEndedLanded), and a claim is stored as landed. A claim is bounded by the claim window and
+// the claims' bounds rather than swept: a swept claim's id could be claimed by another person
+// while the tab that holds it is still open and writing under it.
 
 const (
 	// mintedClientFloor and mintedClientCeiling bound the client ids an admission gives out:
@@ -271,17 +278,18 @@ const (
 	// person in one document over every honest drive of round 9 was 5
 	// (dispatch://INFRA-179/artifact/infra179-r9-caps-measure-md).
 	maxUnlandedMintsADocument = 64
-	// clientPresenceInterval is how often an open socket presents its own id again while its row
-	// records no edit landed under it (keepPresenting), and clientPresenceLapses how many such
-	// intervals a row may go unpresented and still be live: no mint gives back a row presented more
-	// recently than that (storeMint). Three intervals leave room for two presentations that came
-	// late or failed before the row of a socket still open could be given back.
+	// clientPresenceInterval is how often an open socket presents each id it holds again while
+	// that id's row records no edit landed under it (keepPresenting), and clientPresenceLapses how
+	// many such intervals a row may go unpresented and still be live: no mint gives back a row
+	// presented more recently than that (storeMint). Three intervals leave room for two
+	// presentations that came late or failed before the row of a socket still open could be given
+	// back.
 	clientPresenceInterval = 5 * time.Minute
 	clientPresenceLapses   = 3
-	// maxComparedClaims is the most ids another person claimed whose structs at clocks the room
-	// holds one update has compared (refusedDuplicates): a keystroke in flight, a resend or a saved
-	// row replayed carries one. An update past it is a whole-state handoff of the history, which
-	// would otherwise pay a read of itself for every claim the room holds.
+	// maxComparedClaims is the most ids another person claimed or was given whose structs at
+	// clocks the room holds one update has compared (refusedDuplicates): a keystroke in flight, a
+	// resend or a saved row replayed carries one. An update past it is a whole-state handoff of
+	// the history, which would otherwise pay a read of itself for every such id the room holds.
 	maxComparedClaims = 4
 	// unusedClientIDAge is how long a row whose id never landed an edit stays after the last
 	// admission that presented it.
@@ -719,10 +727,11 @@ func (s *Service) releaseClaims(room string, actor model.Actor, claims []uint64)
 // person. It runs off the peer's read loop, one mark at a time for each id of a socket, after an
 // apply of the socket's that stood and left the room holding a struct under client
 // (settleClients) - not one whose structs under it only parked - or once the room has stored a
-// later commit that landed what the socket's frames parked under it (markParkedLanded), and only
-// where the row did not say an edit had landed as the socket was admitted or confirmed the id,
-// which a claimed row does. A write that fails is logged; the socket goes on presenting its own
-// row (keepPresenting), and its next such apply under the id marks it.
+// later commit that landed what the socket's frames parked under it, the socket open
+// (markParkedLanded) or ended (markEndedLanded) by then, and only where the row did not say an
+// edit had landed as the socket was admitted or confirmed the id, which a claimed row does. A
+// write that fails is logged; an open socket goes on presenting the row (keepPresenting), and its
+// next such apply under the id marks it.
 func (s *Service) recordLanded(room string, actor model.Actor, client crdt.ClientID) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), clientCheckTimeout)
 	defer cancel()

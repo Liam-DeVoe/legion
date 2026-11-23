@@ -34,24 +34,28 @@
 -- - writing at the clock the tab writes next, and the tab's own edit at that clock then arrives
 -- as a duplicate of a clock the room holds, which would be dropped with no word. So an update
 -- carrying an edit under a claimed id below 2^32 at a clock from claimed_from on that the room
--- already holds is compared with what the room holds there, and refused where its content
--- differs, where it carries such clocks under at most 4 claimed ids; one carrying them under more,
--- a whole-state handoff of the history, is not compared, and is refused whole from a socket that
--- presents no client id. claimed_from is the id's clock in the document when the claim was made,
--- so the history before the claim, which no claim could have written, is never compared.
+-- already holds, or under an id at 2^32 or above whose row names another person at any clock the
+-- room holds - a closed tab's saved edit replayed under its freed id once another person was
+-- given the id and wrote there first - is compared with what the room holds there, and refused
+-- where its content differs, where it carries such clocks under at most 4 such ids; one carrying
+-- them under more, a whole-state handoff of the history, is not compared, and is refused whole
+-- from a socket that presents no client id. claimed_from is the id's clock in the document when
+-- the claim was made, so the history before the claim, which no claim could have written, is
+-- never compared.
 --
 -- The person a row names never changes, but the row does: presented_at is moved to now each time
 -- a socket's admission gives the id back to the page that presented it, and every 5 minutes while
--- a socket that holds the id is open and no edit has landed under it; landed is set once an edit
--- from the socket given the id, or from another of the person's that holds it, such as a page
--- replaying a closed tab's saved edits, leaves the document holding an edit under the id -
--- integrated, not only parked behind a clock the room lacks - or once the document has stored a
--- later edit that landed what such a socket had parked under the id while that socket was still
--- open. A person holds at most 64 rows of minted ids in a document that never landed an edit: an
--- admission past that deletes, in the statement that writes its own row, the person's one there
--- presented least recently, and only one no socket has presented for 15 minutes, which no open
--- socket's is; where none is that old, the admission is refused for the editor to retry. A row
--- whose id never landed an edit and that nothing has presented for 30 days is deleted by the
+-- a socket that holds the id is open and no edit has landed under it, the socket's own id and
+-- each other id it holds alike; landed is set once an edit from the socket given the id, or from
+-- another of the person's that holds it, such as a page replaying a closed tab's saved edits,
+-- leaves the document holding an edit under the id - integrated, not only parked behind a clock
+-- the room lacks - or once the document has stored a later edit that landed what such a socket
+-- had parked under the id, whether that socket was still open or had closed by then. A person
+-- holds at most 64 rows of minted ids in a document that never landed an edit: an admission past
+-- that deletes, in the statement that writes its own row, the person's one there presented least
+-- recently, and only one no socket has presented for 15 minutes, which no open socket's is; where
+-- none is that old, the admission is refused for the editor to retry. A row whose id never
+-- landed an edit and that nothing has presented for 30 days is deleted by the
 -- hourly compaction sweep. A page that comes back after either deletion and presents the id is
 -- given it again, its row written afresh, where no other row names it by then, and so is another
 -- page of the same browser whose edit replays what the first saved under the id, where the

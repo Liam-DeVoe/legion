@@ -77,8 +77,8 @@ func roomHolds(room *crdt.Doc, client crdt.ClientID) bool {
 // one client's structs under the id the socket was given passes there, and only an update
 // carrying another id - a saved row replayed, a sync step 2, a page of the earlier build - reads
 // the whole header (crdt.ParseUpdateMeta) and the room's state vector, and asks the table about
-// the ids its socket has not shown before that carry clocks the room lacks, and about the ids
-// below mintedClientFloor whose structs fall wholly at clocks the room holds (heldDuplicates,
+// the ids its socket has not shown before that carry clocks the room lacks, and about the ids its
+// socket does not hold whose structs fall wholly at clocks the room holds (heldDuplicates,
 // refusedDuplicates). An update of one client's structs under another id the socket holds asks
 // the socket, besides, whether that id's row awaits its mark (socketClients.unmarked).
 func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudgement, refusal error) {
@@ -100,8 +100,8 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 	}
 	// A client whose structs the room holds to their end adds nothing - a whole-state handoff
 	// carries every client of the history back - so only the clients the update carries clocks of
-	// that the room lacks are judged (beyondHeld), and of the rest only a claimed id's duplicates
-	// are read (heldDuplicates).
+	// that the room lacks are judged (beyondHeld), and of the rest only the duplicates of an id
+	// another person holds are read (heldDuplicates).
 	held := heldBy(info.Doc)
 	asked := beyondHeld(held, from, to, clients)
 	duplicated := heldDuplicates(held, from, to, clients)
@@ -242,31 +242,36 @@ func (s *Service) mintForSender(ctx context.Context, info websocket.PeerUpdateIn
 	}
 }
 
-// refusedDuplicates is the refusal of update for its structs under duplicated, the ids below
-// mintedClientFloor whose structs fall wholly at clocks the room holds (heldDuplicates), whose
-// rows owners holds. Of those, the ids another person claimed whose structs reach into the claim
-// (clientOwner.claimedAgainst) are what a tab typed at clocks someone else claimed first, which the
-// apply would drop as duplicates and say nothing of. Where the update carries them under at most
-// maxComparedClaims ids - a keystroke in flight, a saved row replayed, a resend - each is compared
-// (refusedDuplicate). Past that it is a whole-state handoff of the history, which carries what the
-// room relayed: a page of this build's is neither compared nor refused for it, and a legacy
-// socket's is refused whole, since an honest legacy tab writes under one id. So no update pays
-// more than maxComparedClaims comparisons, whatever the room's claims.
+// refusedDuplicates is the refusal of update for its structs under duplicated, the ids its socket
+// does not hold whose structs fall wholly at clocks the room holds (heldDuplicates), whose rows
+// owners holds. Of those, the ids another person was given from mintedClientFloor up, and the
+// ids below it another person claimed whose structs reach into the claim
+// (clientOwner.claimedAgainst), are what a tab typed at clocks someone else wrote or claimed
+// first, which the apply would drop as duplicates and say nothing of: a closed tab's saved row
+// replayed under its freed id once another person was minted the id and wrote there first
+// (mintForSender), or a keystroke of the earlier build's under an id someone else claimed. Where
+// the update carries them under at most maxComparedClaims ids - a keystroke in flight, a saved row
+// replayed, a resend - each is compared (refusedDuplicate). Past that it is a whole-state handoff
+// of the history, which carries what the room relayed: a page of this build's is neither compared
+// nor refused for it, and a legacy socket's is refused whole, since an honest legacy tab writes
+// under one id. So no update pays more than maxComparedClaims comparisons, whatever the room's
+// rows.
 func (s *Service) refusedDuplicates(info websocket.PeerUpdateInfo, connection *connectionState, owners map[uint64]clientOwner, duplicated []uint64, from, to crdt.StateVector) error {
-	var claimed []uint64
+	var compared []uint64
 	for _, client := range duplicated {
-		if owners[client].claimedAgainst(connection.actor, to[crdt.ClientID(client)]) {
-			claimed = append(claimed, client)
+		owner, bound := owners[client]
+		if bound && client >= mintedClientFloor && !owner.is(connection.actor) || owner.claimedAgainst(connection.actor, to[crdt.ClientID(client)]) {
+			compared = append(compared, client)
 		}
 	}
-	if len(claimed) > maxComparedClaims {
+	if len(compared) > maxComparedClaims {
 		if !connection.clients.legacy {
 			return nil
 		}
-		return s.refuseClient(info, connection, claimed[0], fmt.Sprintf(
-			"it carries structs at clocks the room holds under %d ids other people claimed, and a socket that presents no client id writes under one", len(claimed)))
+		return s.refuseClient(info, connection, compared[0], fmt.Sprintf(
+			"it carries structs at clocks the room holds under %d ids other people hold, and a socket that presents no client id writes under one", len(compared)))
 	}
-	for _, client := range claimed {
+	for _, client := range compared {
 		if refusal := s.refusedDuplicate(info, connection, owners[client], client, from); refusal != nil {
 			return refusal
 		}
@@ -274,12 +279,13 @@ func (s *Service) refusedDuplicates(info websocket.PeerUpdateInfo, connection *c
 	return nil
 }
 
-// refusedDuplicate is the refusal of update's structs under client, an id another person claimed
-// whose structs in update fall wholly at clocks the room holds, where they differ from what the
-// room holds at the same clocks from the claim on (crdt.HeldStructsDifferV1Limit): an edit typed
-// at a clock another person claimed first. It is nil for an update that hands back the room's own
-// structs, as a browser relayed them. An update whose structs do not decode is the apply's to
-// refuse.
+// refusedDuplicate is the refusal of update's structs under client, an id another person was
+// given or claimed whose structs in update fall wholly at clocks the room holds, where they
+// differ from what the room holds at the same clocks from the claim on - from clock 0 for an id a
+// mint gave out, whose row claimed from nothing (crdt.HeldStructsDifferV1Limit): an edit typed at
+// a clock another person wrote or claimed first. It is nil for an update that hands back the
+// room's own structs, as a browser relayed them. An update whose structs do not decode is the
+// apply's to refuse.
 //
 // The comparison decodes the whole update into a document of its own, which no apply's budget
 // reaches, so it decodes under the apply's own value limit (maxDecodedValuesPerApply), and an
@@ -298,7 +304,7 @@ func (s *Service) refusedDuplicate(info websocket.PeerUpdateInfo, connection *co
 	if err != nil || !differs {
 		return nil
 	}
-	return s.refuseClient(info, connection, client, "it carries an edit at clocks another person claimed first that differs from what the room holds there")
+	return s.refuseClient(info, connection, client, "it carries an edit at clocks another person wrote or claimed first under it that differs from what the room holds there")
 }
 
 // beyondHeld is the clients of an update, from and to as crdt.ParseUpdateMeta reads them, that
@@ -316,15 +322,14 @@ func beyondHeld(held, from, to crdt.StateVector, clients *socketClients) []uint6
 	return beyond
 }
 
-// heldDuplicates is the clients of an update below mintedClientFloor that clients does not hold
-// as the socket's own and whose structs all fall at clocks held, what the room holds, already:
-// duplicates the apply would land nothing of, which are compared with the room's where another
-// person claimed the id (refusedDuplicates). A client whose structs reach past held is
-// beyondHeld's.
+// heldDuplicates is the clients of an update that clients does not hold and whose structs all
+// fall at clocks held, what the room holds, already: duplicates the apply would land nothing of,
+// which are compared with the room's where another person was given or claimed the id
+// (refusedDuplicates). A client whose structs reach past held is beyondHeld's.
 func heldDuplicates(held, from, to crdt.StateVector, clients *socketClients) []uint64 {
 	var duplicated []uint64
 	for client, start := range from {
-		if client < mintedClientFloor && start < held[client] && to[client] <= held[client] && !clients.holds(client) {
+		if start < held[client] && to[client] <= held[client] && !clients.holds(client) {
 			duplicated = append(duplicated, uint64(client))
 		}
 	}
@@ -392,7 +397,8 @@ func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudg
 // the socket wrote under the id again, so a tab closed by then left a row a give-back or the sweep
 // could take while the stored history named the id. It runs once the room's store holds the
 // landing commit, and marks as settleClients does (markLanded). A socket that ended before the
-// landing is listed no longer (parkedWaits.note) and marks nothing: its row stays unmarked.
+// landing is marked for by markEndedLanded instead, from what the room kept of it as it ended
+// (parkedWaits.end).
 func (s *Service) markParkedLanded(room string, live *crdt.Doc, connection *connectionState, reached crdt.StateVector) {
 	if connection == nil || connection.clients == nil {
 		return
@@ -400,6 +406,40 @@ func (s *Service) markParkedLanded(room string, live *crdt.Doc, connection *conn
 	clients := connection.clients
 	_, reachesOwn := reached[clients.own]
 	s.markLanded(room, live, connection, reachesOwn && clients.isOwn(clients.own), clients.awaitingMarks(reached))
+}
+
+// parkedMarks is the ids of reached, what a browser connection's parked frames reach past the room
+// (parkedNeeds), whose rows await the socket's mark (markParkedLanded): its own, where the socket
+// has not written that mark, and each of its other ids whose row awaits it
+// (socketClients.unmarked). None for a connection no admission made. The room reads it as the
+// connection ends with its frames still parked (parkedWaits.end), and keeps these ids and the
+// connection's person alone.
+func parkedMarks(connection *connectionState, reached crdt.StateVector) []crdt.ClientID {
+	if connection == nil || connection.clients == nil {
+		return nil
+	}
+	clients := connection.clients
+	marks := clients.awaitingMarks(reached)
+	if _, reachesOwn := reached[clients.own]; reachesOwn && clients.isOwn(clients.own) && !clients.landed.Load() {
+		marks = append(marks, clients.own)
+	}
+	return marks
+}
+
+// markEndedLanded marks the rows of sender's ids (endedSender.marks), a browser connection's that
+// ended before the room stored the commit that landed what its frames parked under them, as
+// having landed an edit, for the person it was signed in as (recordLanded), off the caller's
+// goroutine. The room holds each of them to the clock those frames reached, which is what made
+// the commit their landing (coverParked). Its socket is gone, so no apply of its marks them and
+// nothing presents their rows: unmarked, a give-back or the sweep would take a row while the
+// stored history names its id, and the person's next page replaying the closed tab's saved rows
+// under it would be refused (judgeClients) and drop them.
+func (s *Service) markEndedLanded(room string, sender *endedSender) {
+	go func() {
+		for _, client := range sender.marks {
+			s.recordLanded(room, sender.actor, client)
+		}
+	}()
 }
 
 // markLanded starts the marks an apply of connection's left due in room (settleClients,

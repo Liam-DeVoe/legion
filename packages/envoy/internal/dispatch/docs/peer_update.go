@@ -1474,7 +1474,7 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	stood := err == nil || errors.Is(err, crdt.ErrApplyCheckDrain)
 	s.settleClients(info, judged, stood)
 	if discarded := (*crdt.DrainDiscardedError)(nil); errors.As(err, &discarded) {
-		s.closeDiscardedSenders(info.Room, info.Update, discarded)
+		s.closeDiscardedSenders(info.Room, applies, info.Update, discarded)
 	}
 	if !stood {
 		// The room took the refused update back out whole, so nothing the grant covered stays, and
@@ -1520,10 +1520,12 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 // (crdt.StructStore.noteAppend, crdt/store.go:162-174 in cybermonklabs/ygo v1.55.1-legion.1,
 // marks what such a struct releases for the next drain). Nothing says the edit is too large
 // then, so the honest answer is the one the editor keeps the edit and sends it again for, and its
-// resend is weighed whole, its gap now filled. A sender already gone is closed by nothing, and its
 // saved row is weighed the same way when it comes back. The close is safe from any goroutine and
-// goes out after the answers the sender is still owed (websocket.Server.ClosePeer).
-func (s *Service) closeDiscardedSenders(room string, update []byte, discarded *crdt.DrainDiscardedError) {
+// goes out after the answers the sender is still owed (websocket.Server.ClosePeer). Each sender
+// is dropped from applies' list of senders whose parked frames await their landing first
+// (dropDiscarded): what it parked will not land, so its connection's end keeps no record of it.
+func (s *Service) closeDiscardedSenders(room string, applies *roomApplies, update []byte, discarded *crdt.DrainDiscardedError) {
+	applies.dropDiscarded(discarded.Senders)
 	refusal := documentTooTangled()
 	var rendered *renderRefusal
 	if errors.As(discarded.Cause, &rendered) {
@@ -1562,7 +1564,7 @@ func (s *Service) serverApplyError(room string, live *crdt.Doc, update []byte, e
 		return err
 	}
 	if discarded := (*crdt.DrainDiscardedError)(nil); errors.As(err, &discarded) {
-		s.closeDiscardedSenders(room, update, discarded)
+		s.closeDiscardedSenders(room, s.roomWeighingOf(live).applies(), update, discarded)
 	}
 	s.roomWeighingOf(live).weighPending(live, live.PendingStats())
 	return nil

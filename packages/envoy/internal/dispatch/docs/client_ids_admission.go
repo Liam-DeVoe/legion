@@ -23,7 +23,7 @@ import (
 // This file holds the client id rule's admission (client_ids.go): the ids a document socket's
 // admission gives its page, kept or minted (admitClients, keepsClient, mintClient), what the
 // socket may write and announce under from then on (socketClients), and the presentation that
-// keeps a minted id's row live while its socket is open (keepPresenting).
+// keeps the rows of the ids a socket holds live while it is open (keepPresenting).
 
 // presenceIntervalForTest replaces clientPresenceInterval where it is set, in nanoseconds: a test
 // of the give-back shortens it, so the sockets it holds open present their ids within the test's
@@ -56,7 +56,8 @@ type socketClients struct {
 	marking atomic.Bool
 	// mu guards confirmed, unmarked and claims: the hook changes them on the peer's read loop,
 	// and reads confirmed inside the apply it waits for there (parkJudge), so the lock is never
-	// contended but by a mark's end (endMark).
+	// contended but by a mark's end (endMark), the presentation's read (presenting), and the read
+	// of the room's list of parked senders as the socket ends (parkedMarks).
 	mu sync.Mutex
 	// confirmed is every id this socket holds besides own: the ids its updates claimed and have
 	// not given back, and those its updates showed the table names its person for. It keeps each
@@ -65,8 +66,9 @@ type socketClients struct {
 	// unmarked is the ids of confirmed from mintedClientFloor up whose rows said no edit had
 	// landed under them as this socket confirmed them - a closed tab's id whose saved rows the
 	// page replays - until this socket's mark of each is written (recordLanded), each true while
-	// its mark is in flight. A mark the store refused leaves its id here, and the next apply of
-	// the socket's that writes under it marks it again (settleClients). own is never among them.
+	// its mark is in flight. The socket presents each of them every interval until then
+	// (keepPresenting). A mark the store refused leaves its id here, and the next apply of the
+	// socket's that writes under it marks it again (settleClients). own is never among them.
 	unmarked map[crdt.ClientID]bool
 	// claims is how many claims this socket's updates hold: made by its updates (judgeClients)
 	// and not given back (settleClients). A socket holds at most maxClaimsASocket of them.
@@ -141,6 +143,23 @@ func (c *socketClients) awaitingMarks(writes crdt.StateVector) []crdt.ClientID {
 		}
 	}
 	return awaiting
+}
+
+// presenting is the ids this socket presents again each interval while it is open
+// (keepPresenting), as the table's queries take them: own, where a row names it as the socket's
+// person's and the socket has not written its mark (stored, landed), and each id whose row awaits
+// the socket's mark (unmarked). It is empty while every row the socket holds says an edit landed.
+func (c *socketClients) presenting() []int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var ids []int64
+	if c.stored && !c.landed.Load() {
+		ids = append(ids, int64(c.own))
+	}
+	for client := range c.unmarked {
+		ids = append(ids, int64(client))
+	}
+	return ids
 }
 
 // startMark is whether this call starts the mark of client, an id whose row awaits this socket's
@@ -445,19 +464,21 @@ func (s *Service) storeMint(ctx context.Context, room string, actor model.Actor,
 	return minted != nil, nil
 }
 
-// keepPresenting presents clients' own id again every presenceInterval while its socket is open
-// and its row does not say an edit landed under it (presentClient), so the row stays live and no
-// mint gives it back (storeMint), on this process or another. A socket whose id no row of its
-// own names - a legacy socket, a read-only admission's drawn id - presents nothing, and nor does
-// one whose row says an edit landed already, which no mint gives back. Each presentation is one
-// timer and one statement, and the timer is set again only once the statement has returned and
-// while the socket has not written its row's mark (socketClients.landed): a mark in flight, or
-// one the store refused, leaves it presenting. It returns what the socket's end runs, which stops
-// it.
+// keepPresenting presents, every presenceInterval while clients' socket is open, each id it holds
+// whose row does not say an edit landed under it (socketClients.presenting): its own id, and each
+// other id whose row awaits its mark (socketClients.unmarked) - a closed tab's id its page replays
+// saved rows under, minted for it by that replay (mintForSender) or named its person's
+// (judgeClients) - so each such row stays live and no mint gives it back (storeMint), on this
+// process or another, while the socket that writes under it is open. Otherwise the row of such an
+// id would lapse while the socket kept writing under it, a mint of its person's would give it
+// back, and another person's update could be minted the id. A socket whose own id no row names -
+// a legacy socket, a read-only admission's drawn id - presents no own id, and a read-only socket
+// holds no other id to present, since ygo hands the hook none of its updates. Each presentation
+// is one timer and, where any id awaits it, one statement for all of them; the timer is set again
+// only once the statement has returned, while the socket is open, since an id it holds can await
+// a mark whatever it held before: a mark in flight, or one the store refused, leaves the id
+// presented. It returns what the socket's end runs, which stops it.
 func (s *Service) keepPresenting(room string, actor model.Actor, clients *socketClients) (end func()) {
-	if !clients.stored || clients.landed.Load() {
-		return func() {}
-	}
 	interval := presenceInterval()
 	var mu sync.Mutex
 	ended := false
@@ -465,10 +486,9 @@ func (s *Service) keepPresenting(room string, actor model.Actor, clients *socket
 	defer mu.Unlock()
 	var timer *time.Timer
 	timer = time.AfterFunc(interval, func() {
-		if clients.landed.Load() {
-			return
+		if presented := clients.presenting(); len(presented) > 0 {
+			s.presentClients(room, actor, presented)
 		}
-		s.presentClient(room, actor, clients.own)
 		mu.Lock()
 		defer mu.Unlock()
 		if !ended {
@@ -483,18 +503,18 @@ func (s *Service) keepPresenting(room string, actor model.Actor, clients *socket
 	}
 }
 
-// presentClient records that an open socket still holds client, actor's id in room that no edit
-// landed under, as an admission that gives an id back records it (presented_at). A row an edit
-// has landed under since is left as it is. A write that fails is logged, and the next interval
-// presents the row again.
-func (s *Service) presentClient(room string, actor model.Actor, client crdt.ClientID) {
+// presentClients records that an open socket still holds clients, actor's ids in room that no
+// edit landed under, as the table's queries take them, as an admission that gives an id back
+// records it (presented_at), in one statement. A row an edit has landed under since is left as
+// it is. A write that fails is logged, and the next interval presents the rows again.
+func (s *Service) presentClients(room string, actor model.Actor, clients []int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), clientCheckTimeout)
 	defer cancel()
 	if _, err := s.store.Pool.Exec(ctx, `
 		update document_client_ids set presented_at = now()
-		where artifact_id = $1 and client_id = $2 and actor_kind = $3 and actor_id = $4 and not landed
-	`, room, int64(client), actor.Kind, actor.ID); err != nil {
-		slog.Warn("dispatch: could not present an open socket's client id again; the next interval presents it",
-			"room", room, "client", uint64(client), "error", err)
+		where artifact_id = $1 and client_id = any($2) and actor_kind = $3 and actor_id = $4 and not landed
+	`, room, clients, actor.Kind, actor.ID); err != nil {
+		slog.Warn("dispatch: could not present an open socket's client ids again; the next interval presents them",
+			"room", room, "clients", len(clients), "error", err)
 	}
 }

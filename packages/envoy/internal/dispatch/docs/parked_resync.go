@@ -1,12 +1,16 @@
 package docs
 
 import (
+	"cmp"
 	"context"
+	"slices"
 	"sync"
 	"sync/atomic"
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // A browser's frame that leaves anything of its own parked is answered not applied
@@ -38,37 +42,74 @@ import (
 // room, each of which waits behind a struct or a delete range the queue holds, which takes at most
 // MaxPendingItems structs (maxParkedStructs) and MaxPendingDeleteRanges delete ranges
 // (maxParkedDeleteRanges), the ranges only under clients the sender's socket holds (parkJudge). A
-// sender is dropped once it is resynced, once its connection ends, and, while it waits on nothing
-// the queue still holds, once the queue empties: what it parked was then discarded with a refused
-// drain, which closes it (closeDiscardedSenders).
+// sender is dropped once it is resynced; once a refused drain discards what it parked, which
+// closes it (closeDiscardedSenders, dropDiscarded); and, while it waits on nothing the queue still
+// holds, once the queue empties.
+//
+// A sender whose connection ends is resynced no more, but what its frames parked can still land:
+// a tab closed while its frame waited behind another browser's lost edit, which that browser
+// sends again. So where those frames reach ids whose rows await its socket's mark (parkedMarks),
+// the list keeps its person and those ids alone, with the clocks they wait on, and lets go of its
+// connection and its origin (parkedWaits.end); the store of the commit that lands them marks them
+// for that person (markEndedLanded), or the row of an id the stored history names would stay
+// unmarked, a give-back or the sweep would take it, and the person's next page replaying the
+// closed tab's saved rows under it would be refused and drop them. ygo forgets a sender's origin
+// as its connection ends (crdt.Doc.ForgetParkedOrigin), so a discard after that names it no more:
+// such a record then waits on nothing the queue holds. Each record waits on a struct or a range
+// of its own sender's the queue held as it ended, so the list keeps no more records still waiting
+// than the queue holds, and drops the oldest past that after each browser apply (boundEnded).
 
 // parkedWaits is, for one room instance, each browser connection whose frames left something
-// parked that has not landed yet, by the origin ygo applies its updates with.
+// parked that has not landed yet, by the origin ygo applies its updates with, and what it keeps
+// of each such connection that has ended, by the record itself.
 type parkedWaits struct {
 	// held is how many senders are listed, so a commit in a room listing none reads one atomic.
-	held  atomic.Int32
-	mu    sync.Mutex
-	waits map[any]*parkedWait
+	held atomic.Int32
+	// endedHeld is how many of them are connections that have ended (parkedWait.ended), so an
+	// apply in a room listing no more than its queue holds reads one atomic (boundEnded).
+	endedHeld atomic.Int32
+	mu        sync.Mutex
+	waits     map[any]*parkedWait
+	// endings counts the connections that ended while listed, the order of their records
+	// (endedSender.at).
+	endings uint64
 }
 
 // parkedWait is one sender's frames that parked: origin, the origin ygo applies its updates with,
 // which the resync goes to and the list keys it by; connection, the connection they came on, whose
 // person the ids they reach are marked landed for once they land (markParkedLanded), nil where the
-// apply's context named none; needs, the clock the room must hold each client to for all of them
-// to have landed; coveredAt, the commit position at which the room first held them, zero until it
-// has; and unwatch, which stops the watch that drops the sender as its connection ends, for a
-// sender the list drops first.
+// apply's context named none; ended, set once that connection has ended (parkedWaits.end), its
+// person and the ids to mark, with origin and connection let go; needs, the clock the room must
+// hold each client to for all of them to have landed; coveredAt, the commit position at which the
+// room first held them, zero until it has; and unwatch, which stops the watch that ends the
+// sender as its connection ends, for a sender the list drops first.
 type parkedWait struct {
 	origin     any
 	connection *connectionState
+	ended      *endedSender
 	needs      crdt.StateVector
 	coveredAt  uint64
 	unwatch    func() bool
 }
 
+// endedSender is what the list keeps of a sender whose connection ended with its frames still
+// parked (parkedWaits.end): the person it was signed in as, the ids its frames reach past the room
+// whose rows awaited its socket's mark then (parkedMarks), which the store of their landing marks
+// for that person (markEndedLanded), and at, the order it ended in.
+type endedSender struct {
+	actor model.Actor
+	marks []crdt.ClientID
+	at    uint64
+}
+
 // dropLocked takes wait off the list. The caller holds w.mu.
 func (w *parkedWaits) dropLocked(wait *parkedWait) {
-	delete(w.waits, wait.origin)
+	if wait.ended != nil {
+		delete(w.waits, wait)
+		w.endedHeld.Add(-1)
+	} else {
+		delete(w.waits, wait.origin)
+	}
 	w.held.Add(-1)
 	if wait.unwatch != nil {
 		wait.unwatch()
@@ -78,7 +119,8 @@ func (w *parkedWaits) dropLocked(wait *parkedWait) {
 // noteParked lists the sender of info's frame, which its apply stood with, where the frame left
 // something parked: before and after are the room's pending queue around the apply. A frame into
 // a room whose queue the apply left empty parked nothing, and the room drops every sender that
-// waits on what the queue no longer holds.
+// waits on what the queue no longer holds. The records of connections that ended are held to what
+// the queue holds after the apply (boundEnded).
 func (a *roomApplies) noteParked(info websocket.PeerUpdateInfo, before, after crdt.PendingStats) {
 	if a == nil {
 		return
@@ -90,6 +132,7 @@ func (a *roomApplies) noteParked(info websocket.PeerUpdateInfo, before, after cr
 	if needs := parkedNeeds(info.Doc, info.Update, after.DeleteRanges > before.DeleteRanges); len(needs) > 0 {
 		a.parked.note(info.Context, info.Origin, needs)
 	}
+	a.parked.boundEnded(after.Items + after.DeleteRanges)
 }
 
 // parkedNeeds is, for each client update reaches past what doc holds, the clock doc must hold the
@@ -132,8 +175,9 @@ func parkedNeeds(doc *crdt.Doc, update []byte, readDeletes bool) crdt.StateVecto
 }
 
 // note lists origin as waiting on needs, beside what it already waits on, and starts its wait over:
-// a frame that parks again has not landed. The connection's context drops it as the connection
-// ends, and names the socket whose person the ids its frames reach are marked for (connectionOf).
+// a frame that parks again has not landed. The connection's context ends it as the connection
+// ends (end), and names the socket whose person the ids its frames reach are marked for
+// (connectionOf).
 func (w *parkedWaits) note(connection context.Context, origin any, needs crdt.StateVector) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -146,7 +190,7 @@ func (w *parkedWaits) note(connection context.Context, origin any, needs crdt.St
 		w.waits[origin] = wait
 		w.held.Add(1)
 		if connection != nil {
-			wait.unwatch = context.AfterFunc(connection, func() { w.forget(origin) })
+			wait.unwatch = context.AfterFunc(connection, func() { w.end(origin) })
 		}
 	}
 	for client, clock := range needs {
@@ -155,11 +199,80 @@ func (w *parkedWaits) note(connection context.Context, origin any, needs crdt.St
 	wait.coveredAt = 0
 }
 
+// end is the end of origin's connection while origin is listed: the room resyncs it no more.
+// Where its frames reach ids whose rows await its socket's mark (parkedMarks), the list keeps,
+// keyed by the record itself, its person, those ids and the clocks they wait on, and lets go of
+// its connection and origin, until the store of the commit that lands them marks them
+// (resyncLanded, markEndedLanded) or the list drops it; otherwise it drops origin.
+func (w *parkedWaits) end(origin any) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	wait, listed := w.waits[origin]
+	if !listed {
+		return
+	}
+	marks := parkedMarks(wait.connection, wait.needs)
+	if len(marks) == 0 {
+		w.dropLocked(wait)
+		return
+	}
+	needs := make(crdt.StateVector, len(marks))
+	for _, client := range marks {
+		needs[client] = wait.needs[client]
+	}
+	delete(w.waits, origin)
+	w.endings++
+	wait.ended = &endedSender{actor: wait.connection.actor, marks: marks, at: w.endings}
+	wait.origin, wait.connection, wait.needs, wait.unwatch = nil, nil, needs, nil
+	w.waits[wait] = wait
+	w.endedHeld.Add(1)
+}
+
 // forget drops origin.
 func (w *parkedWaits) forget(origin any) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if wait, listed := w.waits[origin]; listed {
+		w.dropLocked(wait)
+	}
+}
+
+// dropDiscarded drops senders, the browsers whose parked frames a refused drain discarded
+// (crdt.DrainDiscardedError.Senders), before closeDiscardedSenders closes them: what they parked
+// will not land, so neither a resync nor a mark is owed them, and their connections' end keeps no
+// record of them (end).
+func (a *roomApplies) dropDiscarded(senders []any) {
+	if a == nil || a.parked.held.Load() == 0 {
+		return
+	}
+	for _, sender := range senders {
+		a.parked.forget(sender)
+	}
+}
+
+// boundEnded drops the oldest records of ended connections still waiting (parkedWaits.end) past
+// most, the structs and delete ranges the room's queue holds. Each waited on one of those of its
+// own sender's as it ended, so more of them than the queue holds wait on what a refused drain
+// discarded after their senders had gone, which names none of them (ygo forgets a gone sender's
+// origin, crdt.Doc.ForgetParkedOrigin): they would otherwise stay until the queue empties. A room
+// keeping no more of them than its queue holds reads one atomic.
+func (w *parkedWaits) boundEnded(most int) {
+	if int(w.endedHeld.Load()) <= most {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var waiting []*parkedWait
+	for _, wait := range w.waits {
+		if wait.ended != nil && wait.coveredAt == 0 {
+			waiting = append(waiting, wait)
+		}
+	}
+	if len(waiting) <= most {
+		return
+	}
+	slices.SortFunc(waiting, func(a, b *parkedWait) int { return cmp.Compare(a.ended.at, b.ended.at) })
+	for _, wait := range waiting[:len(waiting)-most] {
 		w.dropLocked(wait)
 	}
 }
@@ -228,7 +341,8 @@ func (a *roomApplies) landedParked(through uint64) []*parkedWait {
 // position of instance through which the room's persistence has just stored the room's commits
 // (StoreUpdateStored), so the answer to the SyncStep2 its provider sends back clears the rows the
 // editor kept for those frames, and marks the rows of the ids those frames wrote under that await
-// its socket's mark (markParkedLanded). A position of an instance the room no longer runs resyncs
+// its socket's mark (markParkedLanded); for a connection that ended before, it marks the rows the
+// room kept of it (markEndedLanded). A position of an instance the room no longer runs resyncs
 // and marks nothing.
 func (s *Service) resyncLanded(room string, instance *roomInstance, through uint64) {
 	live := s.srv.GetDoc(room)
@@ -236,6 +350,10 @@ func (s *Service) resyncLanded(room string, instance *roomInstance, through uint
 		return
 	}
 	for _, wait := range s.roomWeighingOf(live).applies().landedParked(through) {
+		if wait.ended != nil {
+			s.markEndedLanded(room, wait.ended)
+			continue
+		}
 		s.srv.ResyncPeer(wait.origin)
 		s.markParkedLanded(room, live, wait.connection, wait.needs)
 	}
