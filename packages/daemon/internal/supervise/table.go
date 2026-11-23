@@ -179,6 +179,13 @@ const (
 	// claim's connection shows every frame of its turns (connview.go). Armed on the pending task's
 	// id.
 	TimerReport TimerKind = "report"
+	// TimerPodStart is the grant of its issue pod's start to a launch parked at the pod's gate
+	// (askPod): no wait of the clock's, but the gate's grant, posted to the machine as a timer's
+	// firing is (podHold.notify, fire). The launch asks the runtime for its process when it fires
+	// (podStartDue). The claim waits launching with no process until then, and whatever drops the
+	// parked launch's wake takes its start out of the gate at the end of that decision, naming
+	// that end, and disarms it (endPodPark).
+	TimerPodStart TimerKind = "pod_start"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -780,6 +787,8 @@ const (
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
 	// The bound of the wait for a take's report (reportwait.go).
 	onReportTimer eventKind = timerPrefix + eventKind(TimerReport)
+	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod).
+	onPodStartTimer eventKind = timerPrefix + eventKind(TimerPodStart)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -1214,6 +1223,19 @@ func fillTable(t *builder) {
 		[]ClaimState{StateLaunching, StateSuspended, StateFailed}, StateReady, StateIdle, StateWorking)
 	t.ignore(onReportTimer, "no take's turn awaits its report", unready...)
 	t.ignore(onReportTimer, "no take's turn awaits its report", gone...)
+
+	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod). The park
+	// keeps the claim launching with no process, and every decision that moves the claim out of
+	// launching drops the parked launch's wake, and its end takes the start out of the gate for
+	// what it left of the claim and disarms this timer (endPodPark, after suspended, retire, and
+	// letGo, which a failure makes), so the grant reaches a launching claim alone. Its launch ends
+	// as any launch does: started and launching, failed, or launching again for a retry; or held
+	// by the pause's gate, where the project is paused at the grant (pauseGate).
+	t.row(onPodStartTimer, "the issue pod's gate granted this claim's parked launch its start: ask the runtime for its process now", podStartDue,
+		[]ClaimState{StateLaunching, StateFailed}, StateLaunching)
+	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a parked launch keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its park",
+		StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle,
+		StateSuspended, StateFailed, StateRetired)
 
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
@@ -2542,7 +2564,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // failure refuses to carry (workflow.noticeFailure) — for as long as this run has not reached
 // its launch, which the wake pacing may park and a refused lifecycle recheck may leave
 // unwritten. The claim being run again is what clears the record; the launch clearing it a
-// second time (launchNow) costs nothing.
+// second time (launchTries) costs nothing.
 //
 // Nothing is cleared before Store.AdmitClaim admits the claim, because the admission can refuse
 // — the tree's cleanup is reserved — and a refused admission runs the claim no more than a
