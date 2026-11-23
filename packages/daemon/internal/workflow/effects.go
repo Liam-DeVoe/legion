@@ -565,7 +565,7 @@ func (e *Engine) waitForAgent(ctx context.Context, tx pgx.Tx, s *TaskScope, role
 // with it.
 func (e *Engine) joinNeeds(ctx context.Context, tx pgx.Tx, s *TaskScope, role claim.Role) (bool, error) {
 	issue, w := s.issue, &s.walk
-	queued, err := e.startTaskCopy(ctx, tx, *s)
+	queued, err := e.startTaskCopy(ctx, tx, s)
 	if err != nil {
 		return false, err
 	}
@@ -1391,7 +1391,7 @@ func HeldNotice(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Iss
 		notice.Role = held[0].Role
 		return notice, nil
 	}
-	stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+	stopped, ok, err := copyStoppedStep(ctx, s, tx, issue)
 	if ok {
 		notice.Role = stopped.Role
 	}

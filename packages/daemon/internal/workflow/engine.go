@@ -2813,7 +2813,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// out is written (WritePlan): the run's plan node, the plan whose first step is the start below.
 	// The node, the move's write and the start each read w, the walk this transition read once.
 	if trigger == TriggerGateOpened {
-		if err := e.writePlanOn(ctx, tx, issue, []Walk{w}); err != nil {
+		if err := e.writePlanOn(ctx, tx, issue, s.plan); err != nil {
 			return err
 		}
 	}
@@ -2889,7 +2889,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 		return e.leave(ctx, tx, written, "done")
 	}
 	if w.State == record.TaskDone {
-		_, err := e.startReady(ctx, tx, written)
+		_, err := e.startReady(ctx, tx, written, s.plan, trigger)
 		return err
 	}
 	return nil
@@ -3121,12 +3121,13 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // plan, behind a row creating its branch (record.IssueBranch): its first worker's start waits for
 // that row, so no worker's push is the one that creates the branch. A member whose earlier row a
 // linger dropped, or one admitted before the daemon queued such rows, gets its row here. The plan
-// the transition walks is settled first (planFirstStep). Its one caller, StartFirstPhase, runs for
-// an issue the waiting line offers at admitted (record.LineFirstPhase), so the issue always
-// stands there. A plan of several tasks has no one line to walk: its plan node, which holds each
-// task, is written (WritePlan), each task whose needs are done starts at its first step
-// (startReady), and the architect is told the gate's opening once, as the transition out of
-// admitted tells it (noticeFor).
+// is settled first (planFirstStep). Its one caller, StartFirstPhase, runs for an issue the waiting
+// line offers at admitted (record.LineFirstPhase), so the issue always stands there. Whatever the
+// plan's count of tasks, each task whose needs are done starts at its first step (startReady),
+// which writes the plan node after the first task's status, and the architect is told the gate's
+// opening once (noticeFor). A tree that lingers starts nothing, as no move runs in it. A run
+// with no plan rows, which the first step settles for no issue Legion records, moves out of
+// admitted on today's line (transition on noPlanScope).
 //
 // A child's own architect starts between the branch row and the first worker's start
 // (StartFirstPhase says why here): the plain start (childArchitectStart), with no phase, task,
@@ -3136,7 +3137,7 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // order the outbox tries, not one it holds to: a start that fails and backs off holds back none of
 // the rows behind it.
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	several, err := e.planFirstStep(ctx, tx, issue)
+	stored, err := e.planFirstStep(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
@@ -3148,25 +3149,20 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 			return err
 		}
 	}
-	if several {
-		// The node holds each task of the plan before any of them starts, so a step record or a
-		// need of any task names a task the node holds.
-		if err := e.WritePlan(ctx, tx, issue); err != nil {
-			return err
-		}
-		written, err := e.startReady(ctx, tx, issue)
-		if err != nil {
-			return err
-		}
-		return e.notice(ctx, tx, issue.Key, noticeFor(TriggerGateOpened, issue.Phase, written.Phase, record.PhaseRow{}, "", ""))
+	if stored == nil {
+		return e.transition(ctx, tx, noPlanScope(issue), TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, nil, "")
 	}
-	// The plan's one task starts at the gate's opening, on its scope (scopes): a plan of one task,
-	// or the run's no-plan scope where the first step settled none.
-	scopes, err := e.scopes(ctx, tx, issue)
+	// The gate's opening is the move out of admitted (Table's one row of TriggerGateOpened): an
+	// issue that has left admitted starts nothing, and tells nothing, at a second opening, and a
+	// tree that lingers starts nothing, as no move runs in it.
+	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers || issue.Phase != phase.Admitted {
+		return err
+	}
+	written, err := e.startReady(ctx, tx, issue, stored, TriggerGateOpened)
 	if err != nil {
 		return err
 	}
-	return e.transition(ctx, tx, scopes[0], TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, nil, "")
+	return e.notice(ctx, tx, issue.Key, noticeFor(TriggerGateOpened, issue.Phase, written.Phase, record.PhaseRow{}, "", ""))
 }
 
 // stopLostRole stops s's task, whose step at lost names a role the engine's deployment no longer
@@ -3205,12 +3201,27 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 			continue
 		}
 		// Each task of the run is read on its own scope (scopes), and each task's lost step is
-		// stopped where that task stands.
+		// stopped where that task stands. A stop writes the issue and its task, so each task after
+		// the first stop is read again on the issue as that write left it (ScopeOf), and its write
+		// derives the issue from every task as it stands.
 		scopes, err := e.scopes(ctx, tx, issue)
 		if err != nil {
 			return err
 		}
+		stopped := false
 		for _, s := range scopes {
+			if stopped {
+				current, err := e.store.Issue(ctx, tx, issue.Key)
+				if err != nil {
+					return err
+				}
+				if current == nil {
+					return fmt.Errorf("stop the lost roles of %s: the issue is no longer recorded", issue.Key)
+				}
+				if s, err = e.ScopeOf(ctx, tx, *current, s.walk.Task); err != nil {
+					return err
+				}
+			}
 			if planHold(s.issue, s.walk.Stored) {
 				continue
 			}
@@ -3225,7 +3236,9 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 			if refusal != nil {
 				e.logOnCommit(ctx, "workflow: a task whose step names a role the deployment no longer defines is not stopped where it stands",
 					"issue", s.issue.Key, "task", s.walk.Task, "step", lost.Position, "reason", refusal.Message)
+				continue
 			}
+			stopped = true
 		}
 	}
 	return nil

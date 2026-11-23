@@ -2336,8 +2336,11 @@ type Store interface {
 	// read from its plan rows with issue's own phase and hold.
 	RunningSteps(ctx context.Context, tx pgx.Tx, issue Issue) ([]RunningStep, error)
 	// StoppedStep is the step the stop of issue's task ended while its stop holds the issue, read
-	// from its plan rows as a running step is read; ok is false for any other issue.
+	// from its plan rows as a running step is read: the first stopped task's, for the issue as a
+	// whole; ok is false for any other issue.
 	StoppedStep(ctx context.Context, tx pgx.Tx, issue Issue) (step RunningStep, ok bool, err error)
+	// StoppedStepOf is StoppedStep of one task of issue's plan: the step that task's stop ended.
+	StoppedStepOf(ctx context.Context, tx pgx.Tx, issue Issue, task string) (step RunningStep, ok bool, err error)
 	// TaskActs is the act each task of issue's run stands at, in task id order, read from its plan
 	// rows as a running step is read, whatever the task's state and whatever its step waits for;
 	// none for a task at no act, and none for an issue with no plan rows.
