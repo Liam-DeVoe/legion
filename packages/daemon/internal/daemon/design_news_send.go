@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -30,10 +29,11 @@ import (
 //
 //   - the gate sentence is said of the tree root's gate rows as they stand now, so a task composed
 //     while the gate stood open and sent after a later version closed it says closed;
-//   - an item stands while the gate's row of its step still holds the document it names, approved
-//     at its To (classify.DesignApprovalStands), and the told row of its audience still holds a
-//     version below To or none it knows; every other item is dropped from the text and from the
-//     news the delivery carries, so its confirmation credits only what was told;
+//   - an item stands while the approval it names is still the person's word, as the one predicate
+//     answers it (workflow.StepApprovalStands), the tree still holds a gate row of its step, and
+//     the told row of its audience still holds a version below To or none it knows (itemStands);
+//     every other item is dropped from the text and from the news the delivery carries, so its
+//     confirmation credits only what was told;
 //   - an item or an opening told to the holder audience of a member stands only while the claim
 //     the task is held for holds that member's phase now (newsClaims.holderOf): the claim of the
 //     role its phase names, or, for a member in accepting, the architect that owns it. The
@@ -310,7 +310,7 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 		}
 		for _, i := range listener.items {
 			item := carried.Items[i]
-			if !itemStands(item, tree.gates[item.Step], heard.told) {
+			if !itemStands(item, tree.gates, heard.told) {
 				continue
 			}
 			items[i] = inRun(rekeyed(item, heard.told), issue.Generation, tree.root.Generation)
@@ -446,12 +446,21 @@ func readNewsTree(ctx context.Context, tx pgx.Tx, records record.Store, steps []
 	return trees[root], nil
 }
 
-// itemStands says whether an item a delivery carries is still news its audience is owed: the gate
-// row of its step holds the document it names, approved at the version it tells
-// (classify.DesignApprovalStands), and the audience's told row holds a version of that step below
-// it, or none it knows.
-func itemStands(item record.DeliveryNewsItem, gate record.DesignGate, told record.DesignTold) bool {
-	if !classify.DesignApprovalStands(gate, item.Artifact, item.To) {
+// itemStands says whether an item a delivery carries is still news its audience is owed, read from
+// gates, the gates of the item's tree, and told, the audience's told row, in three parts:
+//
+//   - the person's word: the approval the item names is still theirs, as the one predicate
+//     answers it (workflow.StepApprovalStands);
+//   - a fact of the tree: the tree still holds a gate row of the item's step. A gate that is gone
+//     (a clear of the tree's generation deleted it) holds no approval to tell an audience of, so
+//     the item drops. This is no second rule of the person's word, which the clear leaves standing;
+//   - a fact of the audience: its told row holds a version of that step below the item's, or none
+//     it knows, so the item is still news to it.
+func itemStands(item record.DeliveryNewsItem, gates map[record.DesignStep]record.DesignGate, told record.DesignTold) bool {
+	if !workflow.StepApprovalStands(gates, item.Step, item.Artifact, item.To) {
+		return false
+	}
+	if _, held := gates[item.Step]; !held {
 		return false
 	}
 	took, known := told.Took(item.Step)

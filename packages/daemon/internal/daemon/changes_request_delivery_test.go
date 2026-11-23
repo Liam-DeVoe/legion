@@ -235,7 +235,10 @@ func soleNoticeRow(t *testing.T, pool *store.Pool, kind record.NoticeKind) queue
 // The controls are a request no approval followed, one Dispatch recorded after the person's
 // approval of the same version, and one on a document the step's gate has since left for another,
 // which the person approved at the version reviewed: each is told, since the review's mark and
-// its document, not the version alone, decide whether the approval answered it.
+// its document, not the version alone, decide whether the approval answered it. Where the request
+// came after the approval, the approval's own relay is not told: the request cleared it from the
+// gate before the relay asked, so it is no longer the person's word, and the one predicate answers
+// a relayed approval as it answers every approval.
 func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T) {
 	reviewed := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
 	changes := intake.DispatchArtifact{Key: "LEGION-1", ArtifactID: "artifact-1", Kind: intake.DispatchArtifactChangesRequested, Version: 3,
@@ -254,11 +257,13 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 		// queued are the facts applied before the relay's first attempt, and waited those
 		// applied while its row waits for the controller. told is every decision the controller
 		// is then told, in order. keptFirst has the approval's own notice relayed, and kept in
-		// the request's place, before the request's row runs again.
+		// the request's place, before the request's row runs again. cleared is an approval whose
+		// relay finds the request has cleared it from the gate.
 		queued, waited []intake.Fact
 		told           []record.DecisionKind
 		superseded     bool
 		keptFirst      bool
+		cleared        bool
 	}{
 		{name: "the person approved the reviewed version after the request",
 			queued: []intake.Fact{changes}, waited: []intake.Fact{approved},
@@ -271,7 +276,7 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 			told:   []record.DecisionKind{changesKind}},
 		{name: "the request came after the person's approval",
 			queued: []intake.Fact{earlier, changes},
-			told:   []record.DecisionKind{approvalKind, changesKind}},
+			told:   []record.DecisionKind{changesKind}, cleared: true},
 		{name: "the gate moved to another document the person approved at the version reviewed",
 			queued: []intake.Fact{changes}, waited: []intake.Fact{moved},
 			told: []record.DecisionKind{changesKind, approvalKind}},
@@ -351,6 +356,13 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 			}
 			if told := controllerDecisions(publisher); !slices.Equal(told, tc.told) {
 				t.Fatalf("told the controller %v, want %v; log %s", told, tc.told, logged.String())
+			}
+			// An approval's relay that finds the gate holds no approval names no version that
+			// replaced it: the line says the gate no longer holds it, and names none approved.
+			unheld := textLines(logged.String(), `msg="outbox parked decision not relayed: the gate no longer holds the approval it reports"`)
+			if tc.cleared != (len(unheld) == 1) || tc.cleared && !strings.Contains(unheld[0], "version=3 approved=none") {
+				t.Fatalf("logged %q, want one line that the gate no longer holds the approval (%t), naming version 3 and none approved",
+					unheld, tc.cleared)
 			}
 			dropped := textLines(logged.String(), `msg="outbox parked changes request finished without publishing`)
 			if !tc.superseded {

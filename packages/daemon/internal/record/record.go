@@ -530,10 +530,11 @@ const (
 // (Store.ForgetKeptDecisions) or by the confirmation of the delivery that holds it (HeldBy). A
 // claiming row that reached no architect hands it over instead (workflow.HandOverKept): it goes
 // back to KEPT, and a fresh catch-up names it at once while its tree has an architect to tell, so
-// a release never leaves it kept with nobody to name it again. A design decision that a later
-// approval superseded is deleted unnamed, by the task that asks it or by the clear of a
-// generation, before it deletes the approval's gate (workflow.ForgetSuperseded, the one forget,
-// which Store.ClearGeneration is handed): nothing of it is left to tell.
+// a release never leaves it kept with nobody to name it again. A design decision that is no
+// longer the person's word is deleted unnamed, by the task that asks it or by the clear of a
+// generation, before it deletes the gate that records what took its place
+// (workflow.ForgetSuperseded, the one forget, which Store.ClearGeneration is handed): nothing of
+// it is left to tell.
 type ParkedDecision struct {
 	// Issue is where in Dispatch the decision was made: the issue of the ask, comment or spec it
 	// was made on. It is the row's key with Ref, and what says whose debt the row is: the
@@ -1135,10 +1136,10 @@ type PullRequest struct {
 	// withJudgement), and so does a move of the head (classify's advance): it names its own head,
 	// and a read of another head confirms nothing of it.
 	ConflictRead *ConflictRead
-	// MergeForward is the daemon's ask that the implementer merge the base forward onto a head
-	// whose conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands.
-	// The issue keeps its phase, and the ask is a message on the implementer's role topic rather
-	// than a phase start: it names the head and the base branch of the conflict, the phase the
+	// MergeForward is the daemon's ask that a role merge the base forward onto a head whose
+	// conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands. The
+	// issue keeps its phase, and the ask is a message on the role's own topic rather than a phase
+	// start: it names the head and the base branch of the conflict, the role asked, the phase the
 	// issue stood in and stays in, why the act was needed, when it was asked, and, once a new head
 	// arrives, that head (MergeForward.Landed). It also keeps every merge forward that landed
 	// before it in the same stretch of work (MergeForward.Earlier).
@@ -1186,27 +1187,40 @@ type ConflictRead struct {
 	At   time.Time `json:"at"`
 }
 
-// MergeForward is the daemon's ask that the implementer merge Base forward onto Head
-// (PullRequest.MergeForward). Phase is the phase the issue stood in when the daemon asked, and
-// stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374 R0, ConflictWhy).
-// AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
-// until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
-// it does when the issue stands past review. Earlier is every merge forward that landed before
-// this ask in the same stretch of work, oldest first: a later ask replaces the one the record
-// holds, so when the head a merge left conflicts in its turn and is merged forward again, Earlier
-// is what still names the head the first merge replaced (PullRequest.MergeForward says how long
-// the stretch lasts). It is stored as the jsonb of pull_requests.merge_forward (migration
-// 20261119003157), null for nil; the jsonb takes Earlier with no migration of its own, and leaves
-// it out while it is empty.
+// MergeForward is the daemon's ask that a role merge Base forward onto Head
+// (PullRequest.MergeForward). Role is the role asked: the implementer before merging, and the
+// merger in merging (MergeForwardAsker, cybermonklabs/legion#4979); Asked reads it. Phase is the phase
+// the issue stood in when the daemon asked, and stays in. Why is the first of R0's reasons that
+// held (dispatch://INFRA-4374 R0, ConflictWhy). AskedAt is when the ask was written. Landed is the
+// first new head that arrived after the ask, "" until one does; ReviewAsked is whether that
+// landing asked the reviewer to read the merge, which it does when the issue stands past review.
+// Earlier is every merge forward that landed before this ask in the same stretch of work, oldest
+// first: a later ask replaces the one the record holds, so when the head a merge left conflicts in
+// its turn and is merged forward again, Earlier is what still names the head the first merge
+// replaced (PullRequest.MergeForward says how long the stretch lasts). It is stored as the jsonb
+// of pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier
+// and Role with no migration of their own, and leaves each out while it is empty.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
+	Role        claim.Role           `json:"role,omitempty"`
 	Phase       phase.Phase          `json:"phase"`
 	Why         ConflictWhy          `json:"why"`
 	AskedAt     time.Time            `json:"askedAt"`
 	Landed      string               `json:"landed,omitempty"`
 	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
+}
+
+// Asked is the role the ask names: Role, or the implementer for an ask that names none, which a
+// daemon before cybermonklabs/legion#4979 wrote, since it asked the implementer in every phase. So an
+// implementer that daemon asked in merging still merges after the upgrade, and the merger is asked
+// only by a new act (workflow's mergeForward).
+func (m MergeForward) Asked() claim.Role {
+	if m.Role == "" {
+		return claim.RoleImplementer
+	}
+	return m.Role
 }
 
 // LandedMergeForward is a merge forward that landed before the ask the record holds
@@ -1226,8 +1240,8 @@ type LandedMergeForward struct {
 type ConflictWhy string
 
 const (
-	// ConflictMergeNext: the issue stands in accepting, retro or merging, or is held from one of
-	// them (PastReview).
+	// ConflictMergeNext: the issue stands in merging, or is held from it. A conflict in accepting
+	// or retro waits for merging, where the merger merges the base forward (cybermonklabs/legion#4979).
 	ConflictMergeNext ConflictWhy = "merge-next"
 	// ConflictRulesUnread: the daemon could not read the base branch's rules.
 	ConflictRulesUnread ConflictWhy = "base-rules-unread"
@@ -1237,22 +1251,35 @@ const (
 	ConflictCheckNotGreen ConflictWhy = "required-check-not-green"
 )
 
-// MergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
-// already is, and every phase after it up to the merge, which the issue keeps while the
-// implementer merges (dispatch://INFRA-4374 R1). An issue that stands in none of them - before its
-// implementation, or out of the workflow - has no pull request work to merge forward. They are
-// also the phases a head move is read for a conflict in (classify.MergeStateReadOwed), since that
-// read is what can lead to the ask. Both read it through StandsIn, so a hold from one of them
-// counts as standing there.
+// MergeForwardPhases is the phases a merge forward stands in: implementing, where the work
+// already is, and every phase after it up to the merge, which the issue keeps while the role asked
+// (MergeForwardAsker) merges (dispatch://INFRA-4374 R1). In accepting and retro nothing is asked
+// (classify.ConflictNeedsMerge): the merger merges the base forward once the issue reaches merging
+// (cybermonklabs/legion#4979), and an ask made before stands there until it lands. An issue that
+// stands in none of them - before its implementation, or out of the workflow - has no pull request
+// work to merge forward. They are also the phases a head move is read for a conflict in
+// (classify.MergeStateReadOwed), since that read is what records the conflict an ask is made for.
+// Both read it through StandsIn, so a hold from one of them counts as standing there.
 var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
+
+// MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
+// in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
+// the implementer in every earlier phase of MergeForwardPhases. The ask's row goes to it
+// (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
+func MergeForwardAsker(at phase.Phase) claim.Role {
+	if at == phase.Merging {
+		return claim.RoleMerger
+	}
+	return claim.RoleImplementer
+}
 
 // BaseRules is what the daemon read of the rules a pull request's base branch holds for its
 // required status checks, on a read that found the head conflicting with that base
 // (intake.PullRequestMergeability.Rules). It is what R0 decides a confirmed conflict on
 // (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge): a base that requires a check which has
 // not passed on the head, or that requires a pull request to be current with it, is a base the
-// head cannot merge into until the implementer merges it forward, and GitHub runs no check at
-// all on a head that conflicts with its base.
+// head cannot merge into until the base is merged forward, and GitHub runs no check at all on a
+// head that conflicts with its base.
 //
 // Required is every required status-check context, each once and sorted: the contexts of each
 // `required_status_checks` rule the base's rulesets apply, then a classic protection rule's
@@ -2176,10 +2203,12 @@ type Store interface {
 	// member's whole record, done ones included.
 	TreeMembersRun(ctx context.Context, tx pgx.Tx, tree string) (bool, error)
 	// KeepReadmittedApproval keeps, for root's next architect start, the step whose document a
-	// person approved, the version they approved and that document's latest version, which its
-	// re-admission found above the approved one before it cleared the old generation's gate; a
-	// later keep replaces it, KEPT again. The step is what the start task names the document by,
-	// so an architect told to request approval again is sent to the document the person reviewed.
+	// person approved, that document, the version they approved and that document's latest
+	// version, which its re-admission found above the approved one before it cleared the old
+	// generation's gate; a later keep replaces it, KEPT again. The step is what the start task
+	// names the document by, so an architect told to request approval again is sent to the
+	// document the person reviewed, and the document is what the start asks the approval of
+	// (KeptApproval.Artifact).
 	KeepReadmittedApproval(ctx context.Context, tx pgx.Tx, root string, approval KeptApproval) error
 	// DropReadmittedApproval deletes the pair root keeps, if any: a re-admission whose gate holds no
 	// stale approval, or under gates.design off, leaves nothing an earlier one kept.
@@ -2243,8 +2272,8 @@ type Store interface {
 	//
 	// Before it clears, it runs forget over every decision the tree keeps on a cleared issue, and
 	// every changes request the outbox holds on one (QueuedChanges), while that issue's gates
-	// stand, and forget deletes each one a later approval superseded. The clear deletes those
-	// gates, and a gate is the only record of the approval that superseded a decision: a start or
+	// stand, and forget deletes each one that is no longer the person's word. The clear deletes
+	// those gates, and a gate is the only record of what took a decision's place: a start or
 	// catch-up that names a kept decision after the clear, or the delivery of a queued request or
 	// the publish of its relay, asks a gate that is gone or new, and the decision would read as the
 	// person's word again. A person who requested changes and then approved the latest version as

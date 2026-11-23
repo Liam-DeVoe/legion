@@ -53,7 +53,8 @@ var errNoticeRowGone = errors.New("the notice row was deleted under its lease")
 // changesSuperseded is a changes request the person's approval followed: the gates stillOwed read
 // record an approval of the document reviewed, at the version the request reviewed or a later
 // one, given after the review (decisionSuperseded). approved is the version approved, which the
-// line that finishes the row names.
+// line that finishes the row names. Only an approval replaces a changes request, so the
+// predicate's answer for one always names it (workflow.Supersession.By).
 type changesSuperseded struct{ approved int }
 
 func (s changesSuperseded) Error() string {
@@ -86,12 +87,12 @@ func (r *outbox) stillOwed(ctx context.Context, tx pgx.Tx, row record.OutboxRow,
 	if !asks {
 		return nil
 	}
-	approval, err := r.decisionSuperseded(ctx, tx, row.Issue, request, record.DecisionDesignChangesRequested)
+	superseded, err := r.decisionSuperseded(ctx, tx, row.Issue, request, record.DecisionDesignChangesRequested)
 	if err != nil {
 		return err
 	}
-	if approval != nil {
-		return changesSuperseded{approved: approval.Version}
+	if superseded != nil {
+		return changesSuperseded{approved: superseded.By.Version}
 	}
 	return nil
 }

@@ -462,13 +462,14 @@ func gatedDocuments(steps []record.DesignStep) string {
 
 // NarrowRootTask is a root architect's held task rewritten from what it still names of its tree's
 // kept decisions (the daemon's rootTask, which drops a decision whose issue has left this tree,
-// and one a later approval superseded). decided is the decisions' own text, written again from
-// what stays by the wording it always was (KeptDecisionsTask), which the caller renders in its own
-// transaction from the gates as they stand at the narrowing, so every decision it names is asked
-// again whether it is still the person's word (SupersedingApproval). Where the task it rewrites carried
-// the first-task instruction that instruction is written again with it: a decision leaving the
-// tree says nothing about whether the tree has been taken up, and a rewrite that dropped the
-// instruction would hand a fresh architect the empty task the instruction exists to replace.
+// and one that is no longer the person's word). decided is the decisions' own text, written again
+// from what stays by the wording it always was (KeptDecisionsTask), which the caller renders in
+// its own transaction from the gates as they stand at the narrowing, so every decision it names is
+// asked again whether it is still the person's word (SupersedingApproval). Where the task it
+// rewrites carried the first-task instruction that instruction is written again with it: a
+// decision leaving the tree says nothing about whether the tree has been taken up, and a rewrite
+// that dropped the instruction would hand a fresh architect the empty task the instruction exists
+// to replace.
 // start is the record as it stands at the narrowing (ArchitectStartOf), whose Decided this sets
 // to decided; the shape is derived again from it, so a root that moved between the send and the
 // narrowing is rewritten into the shape it stands in now, and a root that moved past admitted

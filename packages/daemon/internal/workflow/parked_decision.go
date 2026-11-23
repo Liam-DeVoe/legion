@@ -72,7 +72,7 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // retry`) adds what was kept since to its catch-up. When the re-admission found the root's spec
 // approved at a version below its latest (the admission's readmit, Store.KeepReadmittedApproval: a
 // person approved a version the spec has since moved past), it also names both versions, so the
-// architect requests approval of the latest. It first forgets what a later approval superseded
+// architect requests approval of the latest. It first forgets what is no longer the person's word
 // (ForgetSuperseded), then renders what is left (KeptDecisionsTask).
 //
 // What it may name is what root's tree is owed now: every row whose issue stands in that tree and
@@ -83,12 +83,13 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 //
 // The text names no generation: a start's task waits on its claim and is prompted whenever that
 // claim is next ready, which can be generations later, and the one architect session of the root
-// reads it then as what a person decided on its tree. It deletes only the rows a later approval
-// superseded (ForgetSuperseded): the caller enqueues the task with the record of what it named
-// (record.KeptDecisions) and claims those rows for it in the same transaction (EnqueueNaming). A
-// catch-up that published tells what it named (Store.ForgetKeptDecisions) and a start's task tells
-// it at the confirmation of the delivery the claim queued it as; one that reached no architect
-// hands it over (HandOverKept). Both results are zero when there is nothing to name.
+// reads it then as what a person decided on its tree. It deletes only the rows that are no longer
+// the person's word (ForgetSuperseded): the caller enqueues the task with the record of what it
+// named (record.KeptDecisions) and claims those rows for it in the same transaction
+// (EnqueueNaming). A catch-up that published tells what it named (Store.ForgetKeptDecisions) and
+// a start's task tells it at the confirmation of the delivery the claim queued it as; one that
+// reached no architect hands it over (HandOverKept). Both results are zero when there is nothing
+// to name.
 func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (string, *record.KeptDecisions, error) {
 	decisions, approval, err := store.UnclaimedKept(ctx, tx, root.Key)
 	if err != nil {
@@ -130,23 +131,24 @@ func ReadKeptGates(ctx context.Context, tx pgx.Tx, store record.Store, tree stri
 }
 
 // ForgetSuperseded reads the gates owed is asked of (ReadKeptGates) and deletes in tx the row of
-// every decision of owed that a later approval superseded (keptSuperseded, SupersedingApproval),
+// every decision of owed that is no longer the person's word (keptSuperseded, SupersedingApproval),
 // and returns the gates it read, for the caller to render the task from (KeptDecisionsTask). It is
 // the write half of a kept-decisions task, and every caller that renders one at a start, a ready or
 // a send calls it first; the delivery of a catch-up, whose read is read-only, renders from
 // ReadKeptGates and deletes nothing.
 //
-// A decision a later approval superseded is forgotten: the approval is the person's word, the gate
-// records it, and nothing of the decision is left to tell. If the row stays KEPT, every later
-// start, catch-up and hand-over asks it again. Also, a later changes request that clears the
-// gate's approval on a tree that runs, which keeps nothing, would make the old decision read as
-// the person's word again. A row another tree's claim still holds is not this tree's to delete,
-// and it stays (Store.ForgetKeptDecisions). A superseded approval stays in its row as it always
-// has (Store.KeepReadmittedApproval replaces it at the next re-admission). The gates a decision is
-// asked of go when a generation is cleared, so each clear runs this forget first, over the
-// decisions kept on the issues it clears (Engine.ClearGeneration hands it to
-// record.Store.ClearGeneration, which builds that set), and asks what every start and catch-up
-// asks.
+// A decision that is no longer the person's word is forgotten: a changes request that a later
+// approval followed, or an approval the gate no longer holds, since a later changes request or
+// approval took its place. Nothing of the decision is left to tell. If the row stays KEPT, every
+// later start, catch-up and hand-over asks it again. Also, a later changes request that clears the
+// gate's approval on a tree that runs, which keeps nothing, would make an old changes request read
+// as the person's word again. A row another tree's claim still holds is not this tree's to
+// delete, and it stays (Store.ForgetKeptDecisions). The approval a re-admission kept stays in its
+// row when superseded, as it always has (Store.KeepReadmittedApproval replaces it at the next
+// re-admission). The gates a decision is asked of go when a generation is cleared, so each clear
+// runs this forget first, over the decisions kept on the issues it clears
+// (Engine.ClearGeneration hands it to record.Store.ClearGeneration, which builds that set), and
+// asks what every start and catch-up asks.
 func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, tree string,
 	owed record.KeptDecisions) (KeptGates, error) {
 	gates, err := ReadKeptGates(ctx, tx, store, tree, owed)
@@ -183,11 +185,23 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // gates.design off asks no person, and a step the deployment stopped gating asks no person either,
 // unless it is criteria the root registered beside a deployment that gates spec and not criteria),
 // on the document of that step (record.DesignStep.Document), which is the document the person
-// reviewed and the one whose approval the architect requests again. It is asked at the version the
-// person approved, with no mark: the gate's approval of that same version is the kept approval as
-// the new generation's registration read it again, so it stands, and an approval of a later
-// version is the person's word in its place, so the sentence would ask them again for what they
-// already decided.
+// reviewed and the one whose approval the architect requests again. It is asked as the news asks
+// an approval it tells (StepApprovalStands, SupersedingApproval): of the document the re-admission
+// kept it of (record.KeptApproval's Artifact; a pair kept before that field is asked of whichever
+// document the gate holds), at the version the person approved, with no mark. It stands while the
+// step has no gate, which records nothing later, or while the gate holds that version of that
+// document approved. It is not named once a later approval replaced it, which is the person's
+// word in its place, so the sentence would ask them again for what they already decided; nor once
+// a later changes request cleared it, which is the person's word against that version; nor once
+// the step's gate holds another document.
+//
+// Before the new generation registers the step there is no gate row, since the re-admission's
+// clear deleted it, so the kept approval stands and is named. Once it registers, the gate holds no
+// approval below the latest: a registration records only an approval of the latest version
+// (dispatch.Approval.ApprovedLatest, which the api's gateRegister reads), and carries an older one
+// only from a stored gate of the same document (gateRegistered), which the clear deleted. The kept
+// approval is below the latest, so it is no longer named unless a person approves that same
+// version of that document again.
 func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, owed record.KeptDecisions) (string, record.KeptDecisions) {
 	var kept record.KeptDecisions
 	named := make([]string, 0, len(owed.Decisions))
@@ -199,8 +213,8 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 		named = append(named, fmt.Sprintf("%s (%s by %s)", d.Ref, d.Decision, d.Actor))
 	}
 	step := owed.Step.OrSpec()
-	if owed.Approved > 0 && record.TakesStep(steps, step) && SupersedingApproval(gateOf(gates[tree], step), true,
-		Decision{Kind: record.DecisionDesignApproved, Step: step, Version: owed.Approved}) == nil {
+	if owed.Approved > 0 && record.TakesStep(steps, step) &&
+		StepApprovalStands(gates[tree], step, owed.Artifact, owed.Approved) {
 		kept.KeptApproval = owed.KeptApproval
 	}
 	var parts []string
@@ -216,18 +230,18 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 	return strings.Join(parts, " "), kept
 }
 
-// keptSuperseded is the approval that superseded the kept decision mark (SupersedingApproval), nil
-// when it stands, asked of gates, the gates of the issue it was made on, under steps, the steps
-// the deployment gates. It is asked of the step whose document its reference names
-// (RefSuperseded), at the version reviewed, at the review's place in Dispatch's log and of the
-// document reviewed, as the relay of the same decision is asked (NoticeSuperseded): an approval
-// of a later version is the person's word in the review's place whichever of the two Dispatch
-// marked first, and the approval of a document the step's gate has moved to answers no review of
-// the one it left. A row kept with no version (an earlier release's, or a notice's that carried
-// none) is asked at the version its gate holds approved, and one kept with no document is asked of
-// whichever document the gate holds. A reference that names no step's document is asked of no
-// gate, and stands.
-func keptSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, mark record.DecisionMark) *Approval {
+// keptSuperseded is what took the place of the kept decision mark (SupersedingApproval), nil while
+// it stands, asked of gates, the gates of the issue it was made on, under steps, the steps the
+// deployment gates. It is asked of the step whose document its reference names (RefSuperseded),
+// at the version reviewed, at the review's place in Dispatch's log and of the document reviewed,
+// as the relay of the same decision is asked (NoticeSuperseded): an approval of a later version
+// is the person's word in a changes request's place whichever of the two Dispatch marked first,
+// the approval of a document the step's gate has moved to answers no review of the one it left,
+// and a kept approval stands only while the gate still holds it. A row kept with no version (an
+// earlier release's, or a notice's that carried none) is asked at the version its gate holds
+// approved, and one kept with no document is asked of whichever document the gate holds. A
+// reference that names no step's document is asked of no gate, and stands.
+func keptSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, mark record.DecisionMark) *Supersession {
 	return RefSuperseded(gates, steps, mark.Issue, mark.Ref, Decision{Kind: mark.Decision, Artifact: mark.Artifact,
 		Version: mark.Version, Mark: record.EventMark{Seq: mark.Seq, At: mark.At}})
 }

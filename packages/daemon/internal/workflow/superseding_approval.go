@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"log/slog"
+
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -20,78 +22,141 @@ type Decision struct {
 	Mark     record.EventMark
 }
 
-// Approval is a person's approval a gate records (record.DesignGate.ApprovedVersion): the one
-// that superseded a review, as SupersedingApproval answers it, by the version approved, which is what
-// a sender names of it.
+// Approval is a person's approval a gate records (record.DesignGate.ApprovedVersion), by the
+// version approved, which is what a sender names of it.
 type Approval struct {
 	Version int
 }
 
-// SupersedingApproval is the one place that decides whether a person's recorded review of a design
-// document is still their word, so a task or a notice may name it. Every sender of a task or a
-// notice about a person's review asks it, of the gate the issue holds for d.Step as the record
-// holds it when it asks (gate, nil where the issue holds none) and of whether a person approves
-// that step (gated): the changes notice (tellChanges; the registration's and the artifact event's
-// reading of the gate before they apply the review; and the daemon's readNoticeTree at the notice's
-// delivery), the resume of a root a person answered (resumeTask), the decisions and the approval
-// kept for an architect's start or catch-up (KeptDecisionsTask, again at each send and each
-// delivery) and the controller's relay of a decision nobody in its tree hears (the daemon's
-// parkDecision, and again at a relayed changes request's publish, its controllerNotice); the clear
-// of a generation asks it too, before it deletes the gates of the issues it clears, of each
-// decision kept on them and each changes request the outbox holds on them (Engine.ClearGeneration).
-// It holds the guards that choose whether the one rule (classify.ReviewSuperseded) is asked of a
-// review, listed below, so a new step kind or a change to how an approval of the same version is
-// read is made here once. Which reviews a sender asks about is the sender's: of the queued notices,
-// record.ChangesRequest is the one rule for which rows a reader asks again.
+// LogValue is how a log line names a: the version approved, or "none" for a nil a, which is the
+// Supersession.By of a decision that no approval replaced.
+func (a *Approval) LogValue() slog.Value {
+	if a == nil {
+		return slog.StringValue("none")
+	}
+	return slog.IntValue(a.Version)
+}
+
+// Supersession is what SupersedingApproval answers for a person's decision that is no longer
+// their word. By is the approval the gate records in its place, which a sender may name. It is
+// nil where the gate records no approval, so none replaced the decision: an approval that a later
+// changes request cleared (classify.ApplyDesignGateEvent). A sender names a version only where By
+// is set. Only an approval replaces a changes request, so By is always set for one.
+type Supersession struct {
+	By *Approval
+}
+
+// SupersedingApproval is the one place that decides whether a person's recorded decision on a
+// design document, a changes request or an approval, is still their word, so a task or a notice
+// may name it. Every sender of a task or a notice about such a decision asks it, of the gate the
+// issue holds for d.Step as the record holds it when it asks (gate, nil where the issue holds
+// none) and of whether a person approves that step (gated): the changes notice (tellChanges; the
+// registration's and the artifact event's reading of the gate before they apply the review; and
+// the daemon's readNoticeTree at the notice's delivery), the resume of a root a person answered
+// (resumeTask), the decisions and the approval kept for an architect's start or catch-up
+// (KeptDecisionsTask, again at each send and each delivery; the kept approval through
+// StepApprovalStands), the controller's relay of a decision nobody in its tree hears (the daemon's
+// parkDecision, and again at a relayed changes request's publish, its controllerNotice) and the
+// news of an approved version at each send of the task that carries it (StepApprovalStands, which
+// the daemon's itemStands asks); the clear of a generation asks it too, before it deletes the
+// gates of the issues it clears, of each decision kept on them and each changes request the
+// outbox holds on them (Engine.ClearGeneration). It holds the guards that choose which of
+// classify's two rules is asked of a decision, listed below, so a new step kind or a change to how
+// a decision is read is made here once. Which decisions a sender asks about is the sender's: of
+// the queued notices, record.ChangesRequest is the one rule for which rows a reader asks again.
 //
-// The news of an approved version is no such sender: it asks classify.DesignApprovalStands, whose
-// doc says how the two rules differ.
-//
-// It answers the approval that superseded the review, which a sender may name, and nil when the
-// review stands. The review stands at each of these guards, in the order they are asked, because
+// It answers nil while the decision stands, and otherwise what took its place (Supersession).
+// A decision of either kind stands at each of these guards, in the order they are asked, because
 // nothing the gate records can then be the person's later word:
 //
 //   - a decision that is no changes request or approval (an answer on an ask, a carried gate's
 //     opening);
-//   - no gate of the issue for d.Step's document, or a gate of another step (a step and a gate
-//     naming none are the spec step's, record.DesignStep.OrSpec);
-//   - a step no person approves (its approval is its registration's: record.TakesStep);
-//   - a gate with no approval;
-//   - a gate that now holds another document than the one reviewed, where the sender knows it
-//     (d.Artifact);
-//   - an approval that is the gate's own approval: the same version, and a mark that can be the
-//     same event (record.EventMark.Same), which is no later word than itself.
+//   - no gate of the issue for d.Step's document: the daemon cleared the gate (a re-admission's
+//     clear deletes the root's gates, and the approval it kept is asked after that), so nothing
+//     in the record can be the person's later word;
+//   - a gate of another step (a step and a gate naming none are the spec step's,
+//     record.DesignStep.OrSpec);
+//   - a step no person approves (its approval is its registration's: record.TakesStep).
 //
-// Past them the gate is asked whether its approval followed the review (classify.ReviewSuperseded):
-// at d.Version, or, where the sender knows no version, at the version the gate holds approved — a
-// review of a lower one is answered by that approval, and one of that version is placed by its
-// mark — and at d.Mark. Both marks are Dispatch's, so the two are ordered by Dispatch's sequences
-// when both carry one and otherwise by its times (record.EventMark.After), never by the daemon's
-// clock against Dispatch's.
+// Past them an approval stands while the gate still holds it (classify.DesignApprovalStands): the
+// document approved (d.Artifact, or the document the gate holds where the sender knows none), at
+// the version approved (d.Version, or the version the gate holds approved where the sender knows
+// none). Its mark is not asked: a person who approves the same version again after a changes
+// request gives the same word again, under a new mark. An approval the gate no longer holds is
+// superseded: a later changes request cleared it, or the gate now holds another version approved
+// or another document.
+//
+// Past them a changes request stands where the gate holds no approval, or now holds another
+// document than the one reviewed, where the sender knows it (d.Artifact). Otherwise the gate is
+// asked whether its approval followed the review (classify.ReviewSuperseded): at d.Version, or,
+// where the sender knows no version, at the version the gate holds approved — a review of a lower
+// one is answered by that approval, and one of that version is placed by its mark — and at
+// d.Mark. Both marks are Dispatch's, so the two are ordered by Dispatch's sequences when both
+// carry one and otherwise by its times (record.EventMark.After), never by the daemon's clock
+// against Dispatch's.
 //
 // One other function asks classify.ReviewSuperseded itself: requestStands
 // (awaiting_reconcile.go). It is no sender of a task or notice about a person's recorded decision.
 // It asks whether an architect's approval request of a document still waits on the person, a
 // different question that the same classifier answers, so it does not go through this predicate.
-func SupersedingApproval(gate *record.DesignGate, gated bool, d Decision) (superseded *Approval) {
+func SupersedingApproval(gate *record.DesignGate, gated bool, d Decision) *Supersession {
 	if d.Kind != record.DecisionDesignChangesRequested && d.Kind != record.DecisionDesignApproved {
 		return nil
 	}
-	if gate == nil || gate.Step.OrSpec() != d.Step.OrSpec() || !gated || gate.ApprovedVersion == nil ||
-		d.Artifact != "" && gate.ArtifactID != d.Artifact {
+	if gate == nil || gate.Step.OrSpec() != d.Step.OrSpec() || !gated {
+		return nil
+	}
+	if d.Kind == record.DecisionDesignApproved {
+		artifact, version := d.Artifact, d.Version
+		if artifact == "" {
+			artifact = gate.ArtifactID
+		}
+		if version == 0 && gate.ApprovedVersion != nil {
+			version = *gate.ApprovedVersion
+		}
+		if classify.DesignApprovalStands(*gate, artifact, version) {
+			return nil
+		}
+		return &Supersession{By: gateApproval(*gate)}
+	}
+	if gate.ApprovedVersion == nil || d.Artifact != "" && gate.ArtifactID != d.Artifact {
 		return nil
 	}
 	version := d.Version
 	if version == 0 {
 		version = *gate.ApprovedVersion
 	}
-	if d.Kind == record.DecisionDesignApproved && version == *gate.ApprovedVersion && d.Mark.Same(gate.ApprovedMark) {
-		return nil
-	}
 	if !classify.ReviewSuperseded(*gate, version, d.Mark) {
 		return nil
 	}
+	return &Supersession{By: gateApproval(*gate)}
+}
+
+// gateApproval is the approval gate records, nil where it records none.
+func gateApproval(gate record.DesignGate) *Approval {
+	if gate.ApprovedVersion == nil {
+		return nil
+	}
 	return &Approval{Version: *gate.ApprovedVersion}
+}
+
+// StepApprovalStands is the predicate's answer for a person's approval of version to of the
+// document artifact on step, asked of step's gate in gates: whether it is still the person's word.
+// It is the one ask of the two senders that hold such an approval by its step, not by a Dispatch
+// reference: the news of an approved version, of each item a send of the task that carries it
+// tells, from the gates of the item's tree (the daemon's itemStands), and the approval a
+// re-admission kept, from the gates of the root it was kept for, at each start or catch-up that
+// may name it (KeptDecisionsTask; artifact is "" for a pair kept before record.KeptApproval named
+// its document, and such a pair is asked of whichever document the gate holds). Each is asked as
+// an approval of step, and as gated: the gate recorded the approval a news item tells, so a person
+// approves that step, and KeptDecisionsTask asks only of a step a person approves
+// (record.TakesStep). It reads no fact of the tree beside the person's word: whether the tree
+// still holds a gate row for step to tell an audience of is the news's to read, beside what the
+// audience's told row holds.
+func StepApprovalStands(gates map[record.DesignStep]record.DesignGate, step record.DesignStep,
+	artifact string, to int) bool {
+	d := Decision{Kind: record.DecisionDesignApproved, Step: step, Artifact: artifact, Version: to}
+	return SupersedingApproval(gateOf(gates, step), true, d) == nil
 }
 
 // RefSuperseded is SupersedingApproval for a sender that holds only the review's Dispatch reference,
@@ -102,7 +167,7 @@ func SupersedingApproval(gate *record.DesignGate, gated bool, d Decision) (super
 // registered beside a deployment that gates spec and not criteria, which the one approval of both
 // documents opens, as the engine's gatesStep reads it). A reference that names no step's document
 // (an ask's or a comment's) is asked of no gate, and stands: nil.
-func RefSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, issue, ref string, d Decision) *Approval {
+func RefSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, issue, ref string, d Decision) *Supersession {
 	step, named := refStep(issue, ref)
 	if !named {
 		return nil
@@ -118,7 +183,7 @@ func RefSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record
 // delivery and publish (its decisionSuperseded) and the clear of a generation
 // (Engine.ClearGeneration), so each asks the same question of the same notice.
 func NoticeSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep,
-	issue string, notice record.Notice, kind record.DecisionKind) *Approval {
+	issue string, notice record.Notice, kind record.DecisionKind) *Supersession {
 	return RefSuperseded(gates, steps, issue, notice.Ref, Decision{Kind: kind,
 		Artifact: notice.Artifact, Version: notice.Version, Mark: notice.Review})
 }

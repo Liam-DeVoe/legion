@@ -35,8 +35,8 @@ func TestADecisionIsAskedOnlyOfTheGateOfItsOwnStep(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := SupersedingApproval(tc.gate, true, tc.d)
-			if (got == nil) != (tc.superseded == nil) || got != nil && *got != *tc.superseded {
-				t.Fatalf("SupersedingApproval(gate of step %q, review of step %q) = %+v, want %+v", tc.gate.Step, tc.d.Step, got, tc.superseded)
+			if (got == nil) != (tc.superseded == nil) || got != nil && (got.By == nil || *got.By != *tc.superseded) {
+				t.Fatalf("SupersedingApproval(gate of step %q, review of step %q) = %+v, want by %+v", tc.gate.Step, tc.d.Step, got, tc.superseded)
 			}
 		})
 	}
