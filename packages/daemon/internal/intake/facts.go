@@ -2040,9 +2040,10 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
 // row names (record.PhaseRow.Entry), movedBack whether the move that raised it was a move back
 // (record.PhaseRow.EntryMovedBack), and otherSteps the highest entry another step's row of the role
-// holds (record.OtherStepsEntry), 0 for a role at one step; issue is the record as the same read
-// holds it, pr the pull request it holds, and pending the claim's queued task, which only the
-// route reads.
+// holds (record.OtherStepsEntry), 0 for a role at one step; token is the completing claim
+// (HandoffComplete.Claim) and holder the claim that row names (record.PhaseRow.Claim); issue is the
+// record as the same read holds it, pr the pull request it holds, and pending the claim's queued
+// task, which only the route reads.
 //
 // Like a completion of a run that is over (HANDOFF_STALE_GENERATION), a completion of a phase
 // entry the issue's phase has moved past is refused, and for the reason the run alone cannot
@@ -2086,10 +2087,19 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // An entry above the row's is refused with the entry below it (unraisedEntry), though the record
 // should never produce it: the transition raises the row's entry in the transaction that composes
 // that entry's task, so no delivery can carry an entry the row does not already name, and a row's
-// entry only rises. An entry behind the row's is refused (StaleEntry) unless BehindEntryClause
-// takes it.
-func EntryFence(issue record.Issue, role claim.Role, entry, current int64, movedBack bool, otherSteps int64, commit string, pr *record.PullRequest,
-	pending *supervise.Delivery) *Refusal {
+// entry only rises.
+//
+// An entry behind the row's from a claim, token, other than the one the row names, holder, is a
+// turn of another agent of the role (AnotherAgentsStep): two agents of one role keep a row each,
+// as `implementer:a tester:b implementer:b` does once a failed review returns the task to key a's
+// step 1 while key b's turn of step 3 is still open. The entry the row is on is holder's work, and
+// its task goes to holder alone, so StaleEntry's words, which tell the worker that task comes to it,
+// would have it wait for nothing. Either side naming no claim (a row or a completion the release
+// before wrote) is no such turn.
+//
+// Every other entry behind the row's is refused (StaleEntry) unless BehindEntryClause takes it.
+func EntryFence(issue record.Issue, role claim.Role, token, holder claim.Token, entry, current int64, movedBack bool, otherSteps int64, commit string,
+	pr *record.PullRequest, pending *supervise.Delivery) *Refusal {
 	if entry == 0 || current == 0 || entry == current {
 		return nil
 	}
@@ -2100,12 +2110,26 @@ func EntryFence(issue record.Issue, role claim.Role, entry, current int64, moved
 	if entry > current {
 		return &Refusal{Status: 409, Code: StaleEntryCode, Message: unraisedEntry(issue.Key, role, p, current, entry)}
 	}
+	if token != "" && holder != "" && token != holder {
+		return AnotherAgentsStep(issue.Key, role, p, current, entry, holder)
+	}
 	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).
 	_, _, recordBacked := phase.Handoff(p)
 	if clause := BehindEntryClause(recordBacked, commit, pr, movedBack, entry <= otherSteps); clause != "" {
 		return StaleEntry(issue.Key, role, p, current, entry, pending, clause)
 	}
 	return nil
+}
+
+// AnotherAgentsStep is the 409 HANDOFF_NOT_CURRENT_PHASE refusal of a completion of entry serving
+// of role's phase p of issue, behind the entry current that the role's row where the task stands
+// is on, whose step is the work of another agent's claim, holder (EntryFence). The code is the one
+// every worker's prompt names for a completion of work it no longer has (NotCurrentPhase): the
+// completing claim has no step of the task to do, and nothing of holder's step comes to it.
+func AnotherAgentsStep(issue string, role claim.Role, p phase.Phase, current, serving int64, holder claim.Token) *Refusal {
+	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf(
+		"the %s step of %s that the task stands at, in phase %s, is the work of another agent's claim, %s, on entry %d; this completion is of entry %d, a step this claim ran that the task has left, so no task of that step comes to this claim: do not wait for one and do not complete again; this completion changed nothing",
+		role, issue, p, holder, current, serving)}
 }
 
 // unraisedEntry is the refusal of a completion of a phase entry above the one the role's phases

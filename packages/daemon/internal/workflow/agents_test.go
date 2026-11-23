@@ -321,10 +321,14 @@ func TestWorkerClaimPicksTheRowThatPhaseRowAtGives(t *testing.T) {
 // Two agents of one role keep a row of it each, and the entry a step's start raises is above every
 // row of its role: in `implementer:a tester:b implementer:b reviewer`, the failed review returns
 // the task to step 1, whose row rises above step 3's, so key b's completion at the entry it was
-// handed for step 3 is behind step 1's and refused HANDOFF_STALE_ENTRY, and step 1's row keeps key
-// a and no report. Before, the entry rose only above the rows of its own agent, so step 1's row and
-// step 3's stood on one entry, and key b's completion passed the fence and was recorded as step 1's,
-// its claim and its record on that row.
+// handed for step 3 is behind step 1's, and step 1's row keeps key a and no report. Step 1 is key
+// a's work, so the refusal is HANDOFF_NOT_CURRENT_PHASE naming key a, and it tells key b that no
+// task of that step comes to it, unspent. Before, the entry rose only above the rows of its own
+// agent, so step 1's row and step 3's stood on one entry, and key b's completion passed the fence
+// and was recorded as step 1's, its claim and its record on that row; and then it was refused
+// HANDOFF_STALE_ENTRY, whose words told key b that step 1's task was owed to it and came by itself,
+// though that task goes to key a. A turn of the same agent's other step is still refused
+// HANDOFF_STALE_ENTRY (TestATurnOfARolesEarlierStepDoesNotCompleteItsLaterStep).
 func TestAStepsEntryRisesAboveEveryRowOfItsRole(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
@@ -340,9 +344,17 @@ func TestAStepsEntryRisesAboveEveryRowOfItsRole(t *testing.T) {
 	result := applyFacts(t, pool, engine)("implementer-late-key-b", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
 		Claim: keyB, Entry: served, Summary: "done", Commit: "head", HandoffRecord: "implement-3", HandoffVersion: 3})
 	rows := rolesRows(t, pool, engine, root.Key, claim.RoleImplementer)
-	if result.Refusal == nil || result.Refusal.Code != intake.StaleEntryCode {
-		t.Fatalf("key b's completion at entry %d after the return to step 1 = %+v, want %s; step 1's row names %q with the record %q at entry %d",
-			served, result.Refusal, intake.StaleEntryCode, rows[1].Claim, rows[1].HandoffRecord, rows[1].Entry)
+	if result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_CURRENT_PHASE" || !result.Unspent {
+		t.Fatalf("key b's completion at entry %d after the return to step 1 = %+v (unspent %t), want HANDOFF_NOT_CURRENT_PHASE, unspent; step 1's row names %q with the record %q at entry %d",
+			served, result.Refusal, result.Unspent, rows[1].Claim, rows[1].HandoffRecord, rows[1].Entry)
+	}
+	for _, says := range []string{"is the work of another agent's claim, " + string(keyA), "no task of that step comes to this claim", "do not wait for one"} {
+		if !strings.Contains(result.Refusal.Message, says) {
+			t.Fatalf("the refusal = %q, want it to say %q", result.Refusal.Message, says)
+		}
+	}
+	if strings.Contains(result.Refusal.Message, intake.StaleEntryInstruction) {
+		t.Fatalf("the refusal = %q, want no promise of step 1's task to key b", result.Refusal.Message)
 	}
 	if first, third := rows[1], rows[3]; first.Claim != keyA || first.HandoffRecord != "" || first.Entry <= third.Entry {
 		t.Fatalf("step 1's row after the refusal names %q with the record %q at entry %d, want %q with none, above step 3's entry %d",
