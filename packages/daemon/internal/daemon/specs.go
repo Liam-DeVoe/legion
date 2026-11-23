@@ -233,7 +233,8 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	}
 	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
 	// Every architect owns a plan, whose steps name the roles this sentence lists; it stands
-	// before the tree architect's design-gate line, which ends that addressing.
+	// before the tree architect's design-gate line, and the production check line ends every
+	// architect's addressing.
 	if c.Role == claim.RoleArchitect {
 		addressing += " " + DeploymentRolesFragment(s.roles)
 	}

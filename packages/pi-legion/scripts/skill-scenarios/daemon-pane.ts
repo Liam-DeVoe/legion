@@ -4,14 +4,15 @@
  * rig asks it rather than restating the daemon: a change to the daemon reaches the rig by
  * construction. The exceptions are `daemon-pane.go`'s own copies of the daemon's table of the
  * handoff words, its resolution of the real gh, its join and write of a system prompt, the parts of
- * a step of a role of the deployment (`stepPromptPaths`) and the sentence that tells an architect
- * the roles of its deployment (`deploymentRolesLine`), which the program carries because one
- * program runs against each label's checkout of the daemon module, and an older one names them
- * otherwise or lacks them; each one's comment says so, and `daemon-pane_test.go`, which
- * `goInDaemonModule` runs with the program in this checkout's module, holds the last two to the
- * daemon's own functions. `workerPane` builds a phase worker's whole pane environment over it,
- * `composeRolePrompt` the prompt a launch of any role starts with, and `composeStepPrompt` the
- * prompt a launch of a step of a role of the rig's deployment starts with.
+ * a step of a role of the deployment (`stepPromptPaths`), the sentence that tells an architect
+ * the roles of its deployment (`deploymentRolesLine`) and the sentence of its production check
+ * (`productionCheckLine`), which the program carries because one program runs against each label's
+ * checkout of the daemon module, and an older one names them otherwise or lacks them; each one's
+ * comment says so, and `daemon-pane_test.go`, which `goInDaemonModule` runs with the program in
+ * this checkout's module, holds the last three to the daemon's own functions. `workerPane` builds
+ * a phase worker's whole pane environment over it, `composeRolePrompt` the prompt a launch of any
+ * role starts with, and `composeStepPrompt` the prompt a launch of a step of a role of the rig's
+ * deployment starts with.
  */
 import { existsSync, mkdirSync, mkdtempSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -77,11 +78,12 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
 }
 
 /** The prompt a launch of `role` starts with, as the daemon in `module` composes it (daemon-pane.go
- * `prompt`): the role's parts, a blank line, then its addressing, which for an architect ends with
- * the roles of the rig's deployment where the module's daemon has the key `roles`, and for the
- * architect of a tree's root (`root`) then with the design gate steps, byte for byte as the daemon
- * writes the prompt file. The claim is the rig's: its issue is the root of its tree, or a child
- * under that root. */
+ * `prompt`): the role's parts, a blank line, then its addressing, which for an architect goes on
+ * with the roles of the rig's deployment where the module's daemon has the key `roles`, for the
+ * architect of a tree's root (`root`) then with the design gate steps, and for every architect ends
+ * with the production check where the module's daemon has the key `production_check`, byte for
+ * byte as the daemon writes the prompt file. The claim is the rig's: its issue is the root of its
+ * tree, or a child under that root. */
 export function composeRolePrompt(module: string, role: LegionRole, root: boolean): string {
   return runDaemonPane(module, ["prompt", role, root ? "root" : "child"]);
 }
