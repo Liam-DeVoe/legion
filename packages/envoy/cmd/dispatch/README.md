@@ -305,11 +305,18 @@ A full member's list decides only which private projects the credential reads an
 A restricted member's list narrows what that person sees to the projects it lists, whatever the deployment holds.
 A broker token an operator's entry scoped to one project keeps the write scope such a token has always had, whatever the deployment holds: it writes that project alone (below).
 
+A restricted member's token is their agent's, held to the one project it works in and settling nothing of the member's own.
+Their personal token holds no scope and lists exactly one project they see: their browser's mint gives it that shape, taking the one project they see where the body names none, and a mint or an edit asking for a scope, or for a list of other than one project, is `403 RESTRICTED_MEMBER` saying why (`api.tokenScopes`, `api.tokenProjects`).
+A stored token of a restricted owner holding a scope, minted before this rule or while its owner was a full member, acts with none: its scopes are dropped at every use (`api.personalTokenActor`), and the token list answers it holding none.
+A token acting for a restricted member that lists other than one project, their personal token or a token the broker issued naming them, acts for nobody, `403 RESTRICTED_MEMBER` at every request and at its socket's every heartbeat (`api.personalTokenActor`, `api.restrictedBrokerTokenList`).
+So no agent of an outside person approves a login, mints a token or decides a credential request: each of those routes needs a scope, which no token of theirs holds.
+Once a private project's full switch is live, the rule for private projects' tokens on developer boxes (R18) has Dispatch make no personal token that lists a private project, so a restricted member's personal token can then list only a public project that names them, and their agents work in a private project through the broker's `named` token alone.
+
 - A person at a browser sees every project they own, that lists them or a group they are a full member of, or that is public while they are a full member.
 
 - A full member's credential sees the public projects its person sees, and the private projects its list names that its person sees.
 
-- A restricted member's credential that lists projects sees those of them its person sees, and nothing of any other project; one that lists none sees the public projects its person sees.
+- A restricted member's credential that lists projects sees those of them its person sees, and nothing of any other project; one that lists none sees the public projects its person sees, though no token of theirs lists other than one project and acts (above).
 
 - A credential that names no person — the shared token, a Kubernetes service-account token, a broker-issued token that names a service — sees the public projects and the private projects its list names.
 
@@ -385,6 +392,7 @@ A restricted member still revokes their own credential grants and ends their own
 The secrets broker decides whose each sign-in is, from the person Dispatch names.
 Whose each grant is Dispatch decides for a restricted member, whatever the broker knows of them: their `GET /api/v1/credential-grants` lists only the grants whose session acts for them (the broker's grant list's `enrollment.operator`), and their revoke of any other id, an id no grant has among them, is `403 RESTRICTED_MEMBER` in one sentence that names nothing of the grant, with no revoke sent to the broker; while Dispatch cannot read their grant list from the broker, their revoke is answered as that read failed and revokes nothing.
 For a full member the broker decides, as before.
+They do it at their browser: no token of theirs holds the scopes those two routes need (above), so their agents revoke neither.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so before anything is read a credential that lists projects is refused a project its list does not cover (a private project it does not list, and, for a restricted member's credential, any project it does not list), and a broker token scoped to one project any other, `403 PROJECT_SCOPE`, naming its list and the project the body named.
 A private project the caller does not see is refused in the words a project nobody holds is.
 `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` refuse a restricted member's `repo`, a string or `null`, with `403 RESTRICTED_MEMBER`: an issue's own repository makes its project own that repository (`refs.ProjectRepositoriesSQL`), which the GitHub proxy, the App-installation route and the Delivery views then show the people of that project (`refs.RepositoryClause`), so only a full member names one.
@@ -5443,15 +5451,18 @@ Each item below names a path with its method and identity, then its purpose.
   a scope this deployment does not know, or `approve` without `person`, is `400 TOKEN_SCOPES_INPUT`, and a scope the caller does not hold itself is `403 OAUTH_SCOPE_REQUIRED`.
   `projects` is the list of projects the token may use, at most 16, each one the caller sees, stored sorted with each key once, else `400 TOKEN_PROJECTS_INPUT`;
   it defaults to the list that holds the writes of the caller's own credential (`writesHeldTo`), and a credential whose writes a list holds mints no token that lists none.
+  A restricted member's token holds no scope and lists exactly one project they see, which a body naming none takes where they see one: a body asking for a scope, naming other than one project, or naming none while they see several is `403 RESTRICTED_MEMBER` saying why.
   The mint takes the owner's `people` row for share, the row a sign-in under another Google account takes for update, and inserts only while its caller still holds the address (a cookie's session generation is still its login's, and a personal token is not revoked and its account still holds the address, `api.tokenAccountReplaced`); a broker-issued token never mints, since none holds the `approve` scope:
   a mint racing that sign-in writes nothing and is refused as the caller's next request is, `401 NO_IDENTITY` for a cookie and `401 TOKEN_REVOKED` for a personal token.
   Under `iap`, a mint at the person's browser is `401 MEMBERSHIP_HELD` while the Workspace Directory holds them and `503 IDENTITY_UNAVAILABLE` past their deadline (Identity, above).
   A listed row's `projects` holds only the projects the caller's own credential sees, so a token whose every project is hidden from the caller reads as one that lists none;
   at the person's own browser, `projects_hidden: true` marks a token that lists a project the person no longer sees, and it is absent everywhere else.
+  A restricted member's token is listed holding no scope, the scopes it acts with, whatever was given it before.
 
 - `/api/v1/me/agent-tokens/{id}` (PATCH, DELETE; cookie, trusted header, or bearer; needs the `person` and `approve` scopes)
 
   PATCH sets the token's scopes and projects `{scopes, projects?}` — the whole set and list it is to hold, refused as the mint's are, and a `projects` left out keeps the list — and answers the token as the list does; DELETE revokes it.
+  A restricted member's edit that keeps a list of other than one project they see is `403 RESTRICTED_MEMBER` and writes nothing.
   Another person's token, or none, is `404 NOT_FOUND`.
 
 - `/api/v1/users` (GET; cookie, trusted header, or bearer; needs the `person` scope)

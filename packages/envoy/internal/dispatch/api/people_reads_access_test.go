@@ -121,7 +121,9 @@ func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) 
 		{callerCarol, everyone, every(2), []string{seedAlice, seedCarol}},
 		{callerCarolPrivToken, everyone, every(2), []string{seedAlice, seedCarol}},
 		{callerAlicePrivToken, everyone, publicOnly, []string{seedAlice}},
-		{callerBobPrivToken, ofPrivate, privateOnly, []string{seedCarol}},
+		// A restricted member's token holds no scope (R16), so bob's token reads the agents and is
+		// refused the people list and the pages, as the shared token is.
+		{callerBobPrivToken, nil, privateOnly, nil},
 		{callerCarolToken, everyone, publicOnly, []string{seedAlice, seedCarol}},
 		{callerSharedToken, nil, publicOnly, nil},
 	} {
@@ -627,26 +629,29 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 
 	for _, test := range []struct {
 		caller privateCaller
-		// refused is a viewer that is not open, which the deployment class refuses both routes.
+		// refused is a viewer that is not open, which the deployment class refuses both routes,
+		// with code: DEPLOYMENT_READ_REFUSED, or OAUTH_SCOPE_REQUIRED for bob's token, which holds
+		// no scope (a restricted member's token, R16), so the scope gate refuses it first.
 		refused bool
+		code    string
 		// listed is the broadcasts the caller reads, newest first, and replies whether it reads
 		// session-priv's answer under the broadcast to PRIV's session.
 		listed  []string
 		replies bool
 	}{
-		{callerAlice, false, []string{}, false},
-		{callerBob, true, nil, false},
-		{callerCarol, false, []string{toBoth.ID, toPrivate.ID}, true},
-		{callerCarolPrivToken, false, []string{toBoth.ID, toPrivate.ID}, true},
-		{callerAlicePrivToken, false, []string{}, false},
-		{callerBobPrivToken, true, nil, false},
-		{callerCarolToken, false, []string{}, false},
+		{callerAlice, false, "", []string{}, false},
+		{callerBob, true, codeDeploymentReadRefused, nil, false},
+		{callerCarol, false, "", []string{toBoth.ID, toPrivate.ID}, true},
+		{callerCarolPrivToken, false, "", []string{toBoth.ID, toPrivate.ID}, true},
+		{callerAlicePrivToken, false, "", []string{}, false},
+		{callerBobPrivToken, true, codeScopeRequired, nil, false},
+		{callerCarolToken, false, "", []string{}, false},
 	} {
 		t.Run(string(test.caller), func(t *testing.T) {
 			if test.refused {
 				list := seed.request(t, test.caller, http.MethodGet, "/api/v1/broadcasts", nil)
-				if list.Code != http.StatusForbidden || !strings.Contains(list.Body.String(), `"code":"DEPLOYMENT_READ_REFUSED"`) {
-					t.Errorf("%s: GET /api/v1/broadcasts = %d %s, want 403 DEPLOYMENT_READ_REFUSED", test.caller, list.Code, list.Body.String())
+				if list.Code != http.StatusForbidden || !strings.Contains(list.Body.String(), `"code":"`+test.code+`"`) {
+					t.Errorf("%s: GET /api/v1/broadcasts = %d %s, want 403 %s", test.caller, list.Code, list.Body.String(), test.code)
 				}
 				missing := seed.request(t, test.caller, http.MethodGet, "/api/v1/broadcasts/"+uuid.NewString(), nil)
 				for _, sent := range []broadcastResponse{toBoth, toPrivate} {
@@ -802,10 +807,11 @@ func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 // member no list names.
 //
 // A person is one of a project's people when the rule lets them see it (R2), so while PRIV is
-// public every full member is one of PRIV's people, and bob and bob's token that lists PRIV read
-// alice: she can read and write PRIV like carol. Once PRIV is private, only its owner and its list
-// see it, and neither reads her any more. carol's token that lists PRIV, a full member's, is open
-// whatever it lists, and reads every person in both states.
+// public every full member is one of PRIV's people, and bob reads alice: she can read and write
+// PRIV like carol. Once PRIV is private, only its owner and its list see it, and he does not read
+// her any more. carol's token that lists PRIV, a full member's, is open whatever it lists, and
+// reads every person in both states. bob's token holds no scope (a restricted member's token,
+// R16), so it reads no people list in either state: 403 OAUTH_SCOPE_REQUIRED.
 func TestTheUsersOfAPublicListedProjectAreEveryFullMember(t *testing.T) {
 	seed := seedPrivateProject(t)
 	const driverAlice = "alice@example.com"
@@ -827,11 +833,11 @@ func TestTheUsersOfAPublicListedProjectAreEveryFullMember(t *testing.T) {
 		{model.ProjectPrivate, []string{seedBob, seedCarol}},
 	} {
 		seed.setVisibility(t, seedPrivate, state.visibility)
-		for _, caller := range []privateCaller{callerBob, callerBobPrivToken} {
-			if got := users(caller); !slices.Equal(got, state.want) {
-				t.Errorf("PRIV %s: %s reads GET /api/v1/users = %v, want %v", state.visibility, caller, got, state.want)
-			}
+		if got := users(callerBob); !slices.Equal(got, state.want) {
+			t.Errorf("PRIV %s: %s reads GET /api/v1/users = %v, want %v", state.visibility, callerBob, got, state.want)
 		}
+		wantRefusal(t, seed.request(t, callerBobPrivToken, http.MethodGet, "/api/v1/users", nil), http.StatusForbidden, codeScopeRequired,
+			string(callerBobPrivToken), "GET /api/v1/users with PRIV "+state.visibility)
 		if got := users(callerCarolPrivToken); !slices.Equal(got, everyone) {
 			t.Errorf("PRIV %s: %s reads GET /api/v1/users = %v, want %v", state.visibility, callerCarolPrivToken, got, everyone)
 		}
@@ -860,12 +866,16 @@ func TestAPersonPageOfOnlyHiddenActivityAnswersAsMissing(t *testing.T) {
 				caller, got.Code, got.Body.String(), missing.Code, missing.Body.String())
 		}
 	}
-	for _, caller := range []privateCaller{callerBob, callerCarol, callerCarolPrivToken, callerBobPrivToken} {
+	for _, caller := range []privateCaller{callerBob, callerCarol, callerCarolPrivToken} {
 		rows := decodeBody[personNodes](t, seed.mustRequest(t, caller, http.MethodGet, page, nil, http.StatusOK)).Rows
 		if len(rows) != 1 || rows[0].Title != "bob was here." {
 			t.Errorf("PRIV private: %s reads bob's page with rows %+v, want his comment", caller, rows)
 		}
 	}
+	// bob's token holds no scope (a restricted member's token, R16), and the page needs the person
+	// scope.
+	wantRefusal(t, seed.request(t, callerBobPrivToken, http.MethodGet, page, nil), http.StatusForbidden, codeScopeRequired,
+		string(callerBobPrivToken), "GET bob's page")
 
 	// No private project: alice reads bob's page as carol, who sees every project, reads it.
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)

@@ -49,11 +49,12 @@ import (
 // shows and that login's approve and deny, and the list of their machine logins and the revoke of
 // one. Each handler then holds the member to a machine login of their own (ownMachineLogin for a
 // pending one, memberMachineLogins, their own machines' and their pods', for an issued one).
-// Through a token a restricted member is refused
-// every one of them: 403 OAUTH_SCOPE_REQUIRED where the token lacks the row's scopes
-// (gateRouteScopes, which runs first), as their agent's named token holds none, and 403
-// RESTRICTED_MEMBER otherwise (restrictedOwnLoginRefusal), so no agent of theirs decides, lists or
-// ends any credential, their own machine's included.
+// Through a token a restricted member is refused every one of them: no token of theirs holds a
+// scope - their agent's named broker token, a broker token acting as them, and their personal
+// token (personalTokenActor) - so gateRouteScopes, which runs first, answers 403
+// OAUTH_SCOPE_REQUIRED, and restrictedOwnLoginRefusal's 403 RESTRICTED_MEMBER stands behind it for
+// any credential of theirs that held a row's scopes; so no agent of theirs decides, lists or ends
+// any credential, their own machine's included.
 var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/credential-requests/machine-lookup": true,
 	"POST /api/v1/credential-requests/{id}/approve":   true,
