@@ -2205,7 +2205,7 @@ test("the controller reads the state without a grant and sets an issue's status 
 });
 
 // Contract 221: the summary lists each worker of an issue's map, a role of the deployment's after
-// Legion's own in their workflow order, so the controller sees the claim that works a step.
+// Legion's own in the order of the default steps, so the controller sees the claim that works a step.
 test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
   const state = stateOf92Issues(1);
   const running = state.issues["INFRA-100"];

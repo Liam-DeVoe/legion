@@ -172,7 +172,7 @@ func (s *Store) ByRoleToken(ctx context.Context, token string) ([]Agent, error) 
 	return succession(entries), nil
 }
 
-// ByIssue answers every session of the issue, by role in workflow order (Roles), each other role
+// ByIssue answers every session of the issue, by role in the order of the default steps (Roles), each other role
 // after them by name, then newest first, each with its replacement within its role token. An
 // issue no session worked answers none.
 func (s *Store) ByIssue(ctx context.Context, issue string) ([]Agent, error) {

@@ -264,7 +264,7 @@ func succession(entries []Entry) []Agent {
 	return agents
 }
 
-// issueOrder lists an issue's agents by role, the six in workflow order and then every other role
+// issueOrder lists an issue's agents by role, the six in the order of the default steps and then every other role
 // by name, then by role token, then newest first, each role token's replacements derived among its
 // own sessions.
 func issueOrder(entries []Entry) []Agent {

@@ -2183,9 +2183,8 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 // Where staleCompletion sends the same completion again — a run's completion is the right work,
 // arrived early — this one does not, and that is the whole difference between the two: an entry
 // is new only because the phase was entered again, so the task it hands the role is work of its
-// own. A head that starts conflicting with its base takes the issue back to implementing, and
-// the testing entry the implementer's merge forward then raises is for a new head, so a verdict
-// reported for the head before it would stand as that new head's. The worker does the new
+// own. A move back raises a new entry of the step it returns to, whose work is done again, so a
+// verdict reported for the earlier entry would stand as the new entry's. The worker does the new
 // task's work and writes a handoff of its own for it, which StaleEntryInstruction says.
 //
 // clause says what refused this completion (BehindEntryClause).

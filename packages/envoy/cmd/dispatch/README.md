@@ -4854,7 +4854,7 @@ Each item below names a path with its method and identity, then its purpose.
   A body without `holders`, a role that is no name of that grammar or is `controller`, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
   The write takes a closed issue, appends no issue event and notifies nobody.
-  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`, Legion's six in workflow order, then every role the deployment defines by name.
+  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`, Legion's six in the order of the default steps, then every role the deployment defines by name.
 
   - **Two writes of one issue.**
     A write holds the issue's owner lock (`store.LockOwner`), which a second write of the same issue waits for, so the stored set is always one whole set.
@@ -4876,7 +4876,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/role-holders` (GET; cookie, trusted header, or bearer)
 
-  The set that the daemon last published: `{issue, holders}`, Legion's six in workflow order, then every role the deployment defines by name, and `[]` when no session holds a role.
+  The set that the daemon last published: `{issue, holders}`, Legion's six in the order of the default steps, then every role the deployment defines by name, and `[]` when no session holds a role.
   A closed issue reads too, and an issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
 
 - `/api/v1/handoffs/{id}` (GET; cookie, trusted header, or bearer)

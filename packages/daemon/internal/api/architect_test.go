@@ -833,7 +833,7 @@ func TestWaveReleaseOfAChildNamedTwiceWritesItOnce(t *testing.T) {
 	}
 }
 
-// An architect parks a child of its tree and runs a parked or signed-off child again by the same
+// An architect parks a child of its tree and runs a parked or closed child again by the same
 // Dispatch status a human would move it by: backlog, then todo. Each route applies its own write in
 // the request, as the write's event, at the sequence Dispatch answered it with and with the daemon's
 // own actor, so it takes the human move's path through the workflow, which parks the child (leave)
@@ -929,7 +929,7 @@ func setIssue(t *testing.T, h *harness, key string, change func(*record.Issue)) 
 	}
 }
 
-// The design gate is the only human checkpoint before planning, so it opens only on the tree
+// The design gate is the only human checkpoint before the tree's first step, so it opens only on the tree
 // root's own document. A document another issue carries is refused naming both, as the shipped
 // daemon refuses it (routes/issues.ts seedGateFromDispatch), and so is a gate on a child, whose
 // gate would advance the whole tree; neither reaches the workflow.

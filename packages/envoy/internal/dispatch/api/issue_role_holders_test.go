@@ -218,7 +218,7 @@ func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
 // A role the deployment defines holds a role of an issue as Legion's six do (legionagents.IsRole):
 // a set naming checker and linter beside the tester is stored whole, and the read the results route
 // makes finds the checker's session. A role is a name of the role grammar, so one of 32 characters
-// is taken too. The set reads back with Legion's six in the order the workflow reaches them, then
+// is taken too. The set reads back with Legion's six in the order of the default steps, then
 // every other role by name. The controller, a name with a capital and a name of 33 characters are
 // each refused 400 INVALID_ROLE_HOLDER naming the grammar, and the stored set stays as it was.
 func TestARoleTheDeploymentDefinesHoldsARoleOfAnIssue(t *testing.T) {

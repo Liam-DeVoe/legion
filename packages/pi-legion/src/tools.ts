@@ -290,7 +290,7 @@ function stateSummary(state: LegionState): string {
     }
     const claims: Array<readonly [string, SummaryClaim]> = [];
     if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
-    // Each worker of the issue's map: Legion's six in their workflow order, then each role of the
+    // Each worker of the issue's map: Legion's six in the order of the default steps, then each role of the
     // deployment (contract 221) in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
