@@ -962,7 +962,9 @@ func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArch
 
 // The status Dispatch itself refuses is set by nothing: the issue keeps the status it has while
 // the daemon's record reads the one the row wrote, and the architect is told that the two
-// disagree from here on.
+// disagree from here on. Settling that takes a person's move, and only the root's architect asks a
+// person with dispatch ask: a child's architect sends the question to the architect above it
+// (roles/architect.md), as the children-first notice says it (workflow.ChildrenFirstNotice).
 func TestAStatusWriteDispatchRefusesTellsTheArchitectTheStatusDidNotLand(t *testing.T) {
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_STATUS", Message: "no such status"}
 	notice := statusWriteRefused("LEGION-208", record.OrdinaryStatusWrite("done", "", ""),
@@ -974,6 +976,11 @@ func TestAStatusWriteDispatchRefusesTellsTheArchitectTheStatusDidNotLand(t *test
 	}
 	if strings.Contains(notice.Reason, "begins") {
 		t.Fatalf("the notice = %+v, want no reason quoted for a write that carried none", notice)
+	}
+	const asked = "Have a person on your tree's root asked to set the status on the issue. " +
+		"The root's architect asks with `dispatch ask`, and a child's architect sends the question to the architect above it."
+	if !strings.Contains(notice.Reason, asked) || strings.Contains(notice.Reason, "ask a person with `dispatch ask`") {
+		t.Fatalf("the notice = %+v, want it saying how each architect has a person asked: %q", notice, asked)
 	}
 }
 
