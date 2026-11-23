@@ -178,7 +178,8 @@ func TestTheOperatorGuidesSayWhichHeadTheOwnersReviewKeepsAndWhatTheDriversProve
 func TestTheWorkerPromptsSayWhatACopyAReportAndAMissingSurfaceAre(t *testing.T) {
 	saysAndRetires(t, promptPart, [][2]string{
 		{"mechanics/headless.md", "A copy of the head under `$TMPDIR` that you only read or run checks from is no workspace: commit nothing in it."},
-		{"mechanics/headless.md", "Your completion's summary reaches the architect by itself, in its `phase-finished` notice."},
+		{"mechanics/headless.md", "Your completion's summary reaches the architect in the `phase-finished` notice of the move your completion makes."},
+		{"mechanics/headless.md", "A completion that moves nothing reaches no one, such as the merger's, or a reviewer's after its own review moved the issue."},
 		{"core/tester.md", "Report the missing surface to whoever owns the plan, and hold your completion until it exists."},
 		{"core/planner.md", "nothing refuses a plan handoff without them, so check them yourself before you record it."},
 		{"core/reviewer.md", "Run the thermonuclear pair over that diff as the paragraph above says."},
@@ -233,5 +234,14 @@ func TestTheOwnersRetroOfItsImplementationStepActsAsTheImplementApp(t *testing.T
 		{"docs/site/src/content/docs/legion/concepts.md", "The architect acts as that role where the step was its own, and keeps its own App where the task has none"},
 	}, [][2]string{
 		{"docs/site/src/content/docs/legion/running-legion.md", "(its acceptance, a tester or reviewer step, its retro), needs no write"},
+	})
+}
+
+// A completion's summary rides the phase-finished notice of the transition it makes (workflow's
+// noticeFor); merging has no completion case and a completion of a phase left moves nothing
+// (handoff, reportEndedStep), so the worker sends what the architect must act on itself.
+func TestTheHeadlessPartSaysAReportThatMovesNothingReachesNoOne(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{}, [][2]string{
+		{"mechanics/headless.md", "Your completion's summary reaches the architect by itself"},
 	})
 }
