@@ -634,6 +634,16 @@ test("a job held back without its label is a check with no pass, not wrong words
   );
 });
 
+// #5175 split envoy's Go build and checks (envoy-go-build) from its script tests (envoy-go-checks,
+// a held-back slow suite). A check of the gofmt, OpenAPI, pmdoc or edited-migrations steps that
+// still named envoy-go-checks would pass under that job's label with none of those steps run, so
+// the worker's reference names the job that runs them.
+test("a check of envoy's Go build and checks names envoy-go-build, not the held-back script tests", () => {
+  expect(collapsed(path.join(staged, "legion-worker", "references", "ci-checks.md"))).toContain(
+    "a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's script tests, a held-back slow suite"
+  );
+});
+
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites
 // a file and a symbol, or text quoted from it, read at the head the pull request commits, never a
 // line number the next edit above it moves.
