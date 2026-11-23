@@ -238,23 +238,25 @@ func TestAVersionOfAnEvalADeliveryViewReadsMarksIt(t *testing.T) {
 
 // TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs: the live Pipeline view ranks its slowest jobs
 // through the GET route's compute with the GET route's min_n, the one of pr-ci's job series in the
-// project whose published default repository is the deploy repository (evals.Store.DeployRepoEvals
-// reads eval_days_defaults, which the evals refresher's page commit moves, and which the test
-// writes as that commit does), and a register write of that min_n reaches it: the write's version
-// of pr-ci marks the view, and its delta lands on the GET route's body. Of six PR-checks runs,
-// all with a quick job and three with a slow one, no job ranks at the seeded 50, both rank at 3,
-// the slower first, and the quick one alone at 6, each body stating its min_n.
-// The view is pinned at the moment the runs are dated from, and each GET reads that at: the
+// project whose deploy source reads the deploy repository, here through the project's published
+// default repository (evals.Store.DeployRepoEvals reads eval_days_defaults, which the evals
+// refresher's page commit moves, and which the test writes as that commit does), and a register
+// write of that min_n reaches it: the write's version of pr-ci marks the view, and its delta lands
+// on the GET route's body. Of six PR-checks runs, all with a quick job and three with a slow one,
+// no job ranks at the seeded 50, both rank at 3, the slower first, and the quick one alone at 6,
+// each body stating its min_n. The view is pinned at the moment the runs are dated from, and each
+// GET reads that at: the
 // Pipeline route reads at alone, and the hub's clock runs on with the wall clock, so a view of the
 // present would answer a later moment than any at the test could send.
 func TestAPRCIMinNWriteMovesTheLivePipelinesSlowestJobs(t *testing.T) {
 	rig := newHubRig(t, nil)
-	seedHubSettings(t, rig.database)
 	ctx := t.Context()
 	createTestProject(t, rig.handler, "HUB")
 	if _, err := rig.database.Pool.Exec(ctx, `update projects set default_repo = 'acme/widgets' where key = 'HUB'`); err != nil {
 		t.Fatalf("make acme/widgets HUB's default repository: %v", err)
 	}
+	// HUB's one source names no repository, so it reads the default repository, as published.
+	saveProjectRules(t, rig.database, "HUB", deployRule("acme/widgets", "release / release"))
 	publishDefaultRepos(t, rig.database.Pool)
 	now := rig.clock.Now()
 	success, jobSuccess := delivery.DeliveryRunConclusionSuccess, delivery.DeliveryJobConclusionSuccess
@@ -391,11 +393,12 @@ func TestAP0WriteAndTheSamplerMarkNoEvalsView(t *testing.T) {
 // other, and counts every recompute that began after it, of any view.
 func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	rig := newHubRig(t, nil)
-	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "INFRA")
+	saveProjectRules(t, rig.database, "INFRA", deployRule("acme/widgets", "release / release"))
 	createTestProject(t, rig.handler, "OTHER")
 	now := rig.clock.Now()
 	today := measures.Midnight(now)
+	publishDeployRepo(t, rig.database, "INFRA", deployRule("acme/widgets", "release / release"), today.AddDate(0, 0, -27))
 
 	// The timeline is read first, so its read sets the hub's verdict and every later first answer
 	// is followed by it.
@@ -883,9 +886,10 @@ func newSettingsRewritePage(t *testing.T, configure func(*deliveryHub)) *setting
 	t.Helper()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	rig := hubOn(t, handler, database, deps, newStillHubClock(), configure)
-	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "INFRA")
+	saveProjectRules(t, rig.database, "INFRA", deployRule("acme/widgets", "release / release"))
 	today := measures.Midnight(rig.clock.Now())
+	publishDeployRepo(t, rig.database, "INFRA", deployRule("acme/widgets", "release / release"), today.AddDate(0, 0, -27))
 	page := &settingsRewritePage{
 		rig: rig, conn: newFakeLiveConn(), today: today,
 		frame: evalsLiveView("INFRA", evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1)), ""),
@@ -896,10 +900,10 @@ func newSettingsRewritePage(t *testing.T, configure func(*deliveryHub)) *setting
 	return page
 }
 
-// saveSettings saves the delivery settings with one more production job named, which logs one
-// change of the settings row, and moves the clock past its quiet: its own recompute reads the
-// figures before the refresher's rewrite and sends nothing. No run holds the name, so the change
-// moves no eval and the refresher's rewrite of it commits no day row (evals'
+// saveSettings saves INFRA's delivery settings with one more production job named, which logs the
+// settings changes of INFRA's rows alone, and moves the clock past its quiet: its own
+// recompute reads the figures before the refresher's rewrite and sends nothing. No run holds the
+// name, so the change moves no eval and the refresher's rewrite of it commits no day row (evals'
 // TestASettingsChangeThatMovesNoEvalWritesNothing); a test writes the day rows that follow it as
 // the rewrite's or as another writer's (writeDays).
 func (p *settingsRewritePage) saveSettings(t *testing.T) {
@@ -908,20 +912,20 @@ func (p *settingsRewritePage) saveSettings(t *testing.T) {
 	// a recompute after the save is the save's.
 	p.rig.quiesce(t, p.frame)
 	before, mark := latestChange(t, p.rig.database), p.rig.mark()
-	settings, err := delivery.GetSettings(t.Context(), p.rig.database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
+	settings, read := seededDeliveryRules(t, p.rig.database.Pool).For("acme/widgets")
+	if !read {
+		t.Fatal("no deploy source reads acme/widgets")
 	}
-	settings.ProductionJobNames = append(settings.ProductionJobNames, "release / release-canary")
-	if _, err := delivery.PutSettings(t.Context(), p.rig.database.Pool, settings, model.Actor{Kind: "user", ID: "alice"}); err != nil {
-		t.Fatalf("save the delivery settings: %v", err)
-	}
+	settings.ProductionJobNames = append(slices.Clone(settings.ProductionJobNames), "release / release-canary")
+	saveProjectRules(t, p.rig.database, "INFRA", settings)
 	changes, err := delivery.ChangesSince(t.Context(), p.rig.database.Pool, before, 100)
 	if err != nil {
 		t.Fatalf("read the changes the save logged: %v", err)
 	}
-	if len(changes) != 1 || changes[0].Kind != delivery.ChangeKindSettings || changes[0].Repo != "" {
-		t.Fatalf("the settings save logged %+v, want one change of the settings row", changes)
+	if len(changes) == 0 || slices.ContainsFunc(changes, func(change delivery.Change) bool {
+		return change.Kind != delivery.ChangeKindSettings || change.Repo != "INFRA"
+	}) {
+		t.Fatalf("the settings save logged %+v, want changes of INFRA's settings alone", changes)
 	}
 	p.rig.hub.catchUpNow()
 	p.rig.clock.Advance(viewMaxWait)
@@ -1390,17 +1394,15 @@ func deployRunsInTheSecondRepository(t *testing.T, other *string) func(*store.St
 	}
 }
 
-// moveDeployRepoAndRule saves, in one save of the delivery settings, other as the deploy
-// repository and a production job name no run holds as the production rule's only one.
+// moveDeployRepoAndRule saves, in one save of the delivery settings of the history's project, other
+// as the repository its source reads and a production job name no run holds as the production
+// rule's only one.
 func (p *refreshedEvalsPage) moveDeployRepoAndRule(t *testing.T, other string) {
 	t.Helper()
-	settings, err := delivery.GetSettings(t.Context(), p.rig.database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
+	settings := p.fixture.Settings
 	settings.DeployRepo, settings.ProductionJobNames = other, []string{"release / a job no run holds"}
-	if _, err := delivery.PutSettings(t.Context(), p.rig.database.Pool, settings, model.Actor{Kind: "user", ID: "alice"}); err != nil {
-		t.Fatalf("save the delivery settings: %v", err)
+	if _, err := deliverytest.SaveRules(t.Context(), p.rig.database.Pool, p.fixture.Project, settings); err != nil {
+		t.Fatalf("save the delivery settings of %s: %v", p.fixture.Project, err)
 	}
 }
 
@@ -1573,4 +1575,26 @@ func TestAWalkBatchsFoldAfterARecomputeLeavesTheEvalsPageAtTheRoute(t *testing.T
 	}
 	page.requireAtRoute(t, "after the walk's last fold")
 	t.Logf("the walk begun again folded its batches' figures behind %d recomputes of the page's view; the page took %d deltas and holds the route's body", folds, deltas)
+}
+
+// publishDeployRepo writes the record a refresher's page leaves of a repository whose rows it
+// brought to its source's rule (eval_days_rules, evals.recordRules): rule.DeployRepo's rows of the
+// evals that read the deploy repository stand built under rule for project, kept from since. A
+// read of those evals folds the rows of the repositories that record names alone
+// (evals.DeployReposIn), the one state the refresher published, so a test that writes such rows by
+// hand, with no refresher's pass, writes the record they stand under too. It writes no change row:
+// the record moves in the commit of the rows it describes, which logs theirs.
+func publishDeployRepo(t testing.TB, database *store.Store, project string, rule delivery.DeliverySettings, since time.Time) {
+	t.Helper()
+	if _, err := database.Pool.Exec(t.Context(), `
+		insert into eval_days_rules (repo, project_key, production_job_names, production_apply_step_name,
+			staging_e2e_job_name, staging_apply_job_name, kept_since)
+		values ($1, $2, $3, $4, $5, $6, $7::date)
+		on conflict (repo) do update set project_key = excluded.project_key, production_job_names = excluded.production_job_names,
+			production_apply_step_name = excluded.production_apply_step_name, staging_e2e_job_name = excluded.staging_e2e_job_name,
+			staging_apply_job_name = excluded.staging_apply_job_name, kept_since = excluded.kept_since, updated_at = now()
+	`, rule.DeployRepo, project, rule.ProductionJobNames, rule.ProductionApplyStepName, rule.StagingE2EJobName,
+		rule.StagingApplyJobName, since.Format(time.DateOnly)); err != nil {
+		t.Fatalf("publish the rule %s's rows stand built under: %v", rule.DeployRepo, err)
+	}
 }

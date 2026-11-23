@@ -15,7 +15,7 @@ import (
 
 // A failure day is a day of failed deploy runs written on top of the history Load wrote, so the
 // measurement times the Delivery timeline on the day its read is largest: the timeline reads each
-// deploy run's production jobs and every job of it that failed (delivery.ReadWindowRows with
+// deploy run's production jobs and every job of it that failed (delivery.ReadWindowRuns with
 // failedJobs), so the more jobs fail, the more it reads.
 //
 // The day INFRA's history had is the worst UTC day of its deploy workflow's runs on main from

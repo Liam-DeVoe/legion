@@ -4257,7 +4257,7 @@
     },
     "/api/v1/delivery/measures": {
       "get": {
-        "description": "The delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per deploy, failed deployment recovery time with the failures not restored, deployment rework rate, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. The three failure measures fold their evals' stored day rows: each is null where no row holds a part of it, \"no data\" with no verdict, since a rate nothing measured is no 0. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per deploy, failed deployment recovery time with the failures not restored, deployment rework rate, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. The three failure measures fold their evals' stored day rows: each is null where no row holds a part of it, \"no data\" with no verdict, since a rate nothing measured is no 0. The runs are every deploy source's repository's of every project with delivery on, each judged by its own source's rule, and the targets are the project's whose sources read every deploy repository where one project owns them all, or the catalogue's defaults where two or more projects own them or none is read; 404 DELIVERY_NOT_CONFIGURED when no project has delivery on.",
         "operationId": "getApiV1DeliveryMeasures",
         "parameters": [
           {
@@ -4397,7 +4397,7 @@
     },
     "/api/v1/delivery/pipeline": {
       "get": {
-        "description": "The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets. A job is ranked among the slowest with as many timed results as pr_checks.slowest_min_results states: the min_n of the job series (job:*) of the pr-ci eval of the project the deploy repository is mapped to, or 50 where it is mapped to no project or that project holds no pr-ci eval yet; the ranking is the one pr-ci's items read with sort=median. Not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, one named more than once, or one whose seven days start before the UTC year 1, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets, over every deploy source's repository of every project with delivery on, each repository's runs judged by its own source's rule. A job is ranked among the slowest with as many timed results as pr_checks.slowest_min_results states: the min_n of the job series (job:*) of the pr-ci eval of the project whose sources read every deploy repository, or 50 where two or more projects own them, none is read, or that project holds no pr-ci eval yet; the ranking is the one pr-ci's items read with sort=median. Not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, one named more than once, or one whose seven days start before the UTC year 1, 404 DELIVERY_NOT_CONFIGURED when no project has delivery on.",
         "operationId": "getApiV1DeliveryPipeline",
         "parameters": [
           {
@@ -4443,7 +4443,7 @@
     },
     "/api/v1/delivery/runs/{id}": {
       "get": {
-        "description": "One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "One run of a deploy source's repository of a project with delivery on, with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED when no project has delivery on.",
         "operationId": "getApiV1DeliveryRunsById",
         "parameters": [
           {
@@ -4646,7 +4646,7 @@
     },
     "/api/v1/delivery/timeline": {
       "get": {
-        "description": "The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets). The runs are every deploy source's repository's of every project with delivery on, each judged by its own source's rule; 404 DELIVERY_NOT_CONFIGURED when no project has delivery on.",
         "operationId": "getApiV1DeliveryTimeline",
         "parameters": [
           {
@@ -11206,7 +11206,7 @@
     },
     "/api/v1/projects/{key}/default-repository": {
       "put": {
-        "description": "Set or clear a project's default repository {repo}: \"owner/name\" sets it and null clears it. An issue of the project resolves to it when neither the issue nor an issue above it names a repository. A write of the value the project holds already changes nothing and appends no event; a change appends project.updated with the project row. A body without repo, or a repo that is not a repository GitHub could hold, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. The default belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. It declares no personal scope: the credential the deployment configured writes it, and so does a person.",
+        "description": "Set or clear a project's default repository {repo}: \"owner/name\" sets it and null clears it. An issue of the project resolves to it when neither the issue nor an issue above it names a repository. A write of the value the project holds already changes nothing and appends no event; a change appends project.updated with the project row. A body without repo, or a repo that is not a repository GitHub could hold, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. A deploy source of the project's delivery settings that names no repository reads the default, so for a project with delivery on and such a source a clear is 409 DELIVERY_NEEDS_REPOSITORY, and a repository another delivery-on project's source reads, or another source of the project names, is 409 DELIVERY_REPOSITORY_SHARED naming the project that reads it; a move clears the reconcile progress of the old and the new repository, so the new one's runs are imported. The default belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. It declares no personal scope: the credential the deployment configured writes it, and so does a person.",
         "operationId": "putApiV1ProjectsByKeyDefaultRepository",
         "parameters": [
           {
@@ -11253,6 +11253,23 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProjectDefaultRepository"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DeliverySettingsRefusal"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
                 }
               }
             }
@@ -12658,6 +12675,150 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/projects/{key}/settings/delivery": {
+      "get": {
+        "description": "The project's delivery settings, or null when it has none: delivery (on or off), its deploy sources in order (each github_workflow, with an optional repo, null for the project's default repository, its deploy workflow, production jobs, optional production apply step, optional staging end-to-end and staging deploy jobs, pull-request checks workflow and optional roll-up job, or events, the project's posted deploys), each with its id, its resolved_repo (the repository it reads, null where it names none and the project has no default) and reconciled_through (how far the reconcile has imported that repository's deploy runs, pull-request check runs and merged pull requests; null for an events source, a project with delivery off, and a repository whose import has not finished), the population authors and excluded repositories, the failure sources with failures_measured_since (YYYY-MM-DD), and the targets of deploy-frequency, change-fail-rate, merge-to-production, pr-open-to-merge, deploy-run-success, failed-deploy-recovery and unowned-p0, each a number or \"off\", read from the project's eval rows. Every reader of the project may read them. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "operationId": "getApiV1ProjectsByKeySettingsDelivery",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProjectDeliverySettings"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "put": {
+        "description": "Replace the project's delivery settings {delivery, sources, population_authors?, excluded_repos?, failure_sources?, failures_measured_since?, targets?} and answer them as GET does. targets sets each named eval's target, a number or \"off\", as a new version of the project's eval row in the same transaction; a target the body leaves out, or one the eval holds already, writes nothing. A source whose repository and rule are unchanged keeps its id and its repository's reconcile progress; every other source's repository is imported again. 400 DELIVERY_SETTINGS_INPUT names the field, and the source's index for a source's field; with delivery on, 409 DELIVERY_SETTINGS_ACCESS names a source whose repository Dispatch's GitHub App cannot read, 409 DELIVERY_NO_DEFAULT_REPOSITORY a source naming no repository of a project with no default repository, and 409 DELIVERY_REPOSITORY_SHARED a repository another delivery-on project's source reads, naming that project; a refused save writes nothing. The settings belong to the deployment, so a project-scoped credential is refused them, the project this path names included. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "operationId": "putApiV1ProjectsByKeySettingsDelivery",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectDeliverySettingsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDeliverySettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DeliverySettingsRefusal"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DeliverySettingsRefusal"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBody"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "deployment"
+      }
+    },
     "/api/v1/reference-targets": {
       "get": {
         "description": "What many dispatch:// references point at, in one read: ?ref=\u003cdispatch ref\u003e once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges.",
@@ -13248,7 +13409,7 @@
     },
     "/api/v1/settings/delivery": {
       "get": {
-        "description": "The delivery timeline's one configuration record (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set.",
+        "description": "The delivery timeline's one configuration record of the release before this one (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set. This release reads it nowhere else: each project's settings, GET /api/v1/projects/{key}/settings/delivery, replace it, and the next release removes this route.",
         "operationId": "getApiV1SettingsDelivery",
         "parameters": [
           {
@@ -13292,7 +13453,7 @@
         "x-auth": "any"
       },
       "put": {
-        "description": "Set the delivery timeline's configuration after proving the GitHub App can read the deploy repository; 409 DELIVERY_SETTINGS_ACCESS a credential or repository problem.",
+        "description": "Set the delivery timeline's one configuration record of the release before this one after proving the GitHub App can read the deploy repository; 409 DELIVERY_SETTINGS_ACCESS a credential or repository problem. This release reads it nowhere else: each project's settings, PUT /api/v1/projects/{key}/settings/delivery, replace it, and the next release removes this route.",
         "operationId": "putApiV1SettingsDelivery",
         "parameters": [
           {
@@ -20681,6 +20842,30 @@
           "production_job_names",
           "pr_checks_workflow_path",
           "population_authors"
+        ],
+        "type": "object"
+      },
+      "DeliverySettingsRefusal": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "source": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "error"
         ],
         "type": "object"
       },
@@ -29062,6 +29247,526 @@
         },
         "required": [
           "repo"
+        ],
+        "type": "object"
+      },
+      "ProjectDeliverySettings": {
+        "properties": {
+          "default_repo": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "delivery": {
+            "type": "boolean"
+          },
+          "excluded_repos": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "failure_sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "failures_measured_since": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "population_authors": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "project": {
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectDeploySource"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "targets": {
+            "additionalProperties": false,
+            "description": "each eval's target, a number or \"off\" for none",
+            "properties": {
+              "change-fail-rate": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "deploy-frequency": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "deploy-run-success": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "failed-deploy-recovery": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "merge-to-production": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "pr-open-to-merge": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "unowned-p0": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        },
+        "required": [
+          "project",
+          "delivery",
+          "default_repo",
+          "sources",
+          "population_authors",
+          "excluded_repos",
+          "failure_sources",
+          "failures_measured_since",
+          "updated_by",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "ProjectDeliverySettingsInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delivery": {
+            "type": "boolean"
+          },
+          "excluded_repos": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "failure_sources": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "failures_measured_since": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "population_authors": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectDeploySourceInput"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "targets": {
+            "additionalProperties": false,
+            "description": "each eval's target, a number or \"off\" for none",
+            "properties": {
+              "change-fail-rate": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "deploy-frequency": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "deploy-run-success": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "failed-deploy-recovery": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "merge-to-production": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "pr-open-to-merge": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              },
+              "unowned-p0": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "enum": [
+                      "off"
+                    ],
+                    "type": "string"
+                  }
+                ]
+              }
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "delivery",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "ProjectDeploySource": {
+        "properties": {
+          "deploy_workflow_path": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "github_workflow",
+              "events"
+            ],
+            "type": "string"
+          },
+          "last_error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "last_event_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "last_reconcile_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "pr_checks_rollup_job_name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "pr_checks_workflow_path": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "production_apply_step_name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "production_job_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "reconciled_through": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "repo": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_repo": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "staging_apply_job_name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "staging_e2e_job_name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "repo",
+          "deploy_workflow_path",
+          "production_job_names",
+          "production_apply_step_name",
+          "staging_e2e_job_name",
+          "staging_apply_job_name",
+          "pr_checks_workflow_path",
+          "pr_checks_rollup_job_name",
+          "last_event_at",
+          "last_reconcile_at",
+          "last_error",
+          "resolved_repo",
+          "reconciled_through"
+        ],
+        "type": "object"
+      },
+      "ProjectDeploySourceInput": {
+        "properties": {
+          "deploy_workflow_path": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "github_workflow",
+              "events"
+            ],
+            "type": "string"
+          },
+          "pr_checks_rollup_job_name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "pr_checks_workflow_path": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "production_apply_step_name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "production_job_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "repo": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "staging_apply_job_name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "staging_e2e_job_name": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "kind"
         ],
         "type": "object"
       },

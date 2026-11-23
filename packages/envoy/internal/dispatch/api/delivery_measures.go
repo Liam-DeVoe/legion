@@ -40,16 +40,16 @@ func (s *server) getDeliveryMeasures(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
 	}
-	settings, ok := s.deliverySettings(w, r)
+	rules, ok := s.deliveryRules(w, r)
 	if !ok {
 		return
 	}
-	population, err := s.readDeliveryPopulation(r.Context(), settings, from, to, query, false)
+	population, err := s.readDeliveryPopulation(r.Context(), rules, from, to, query, false)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, deliveryMeasuresCompute(settings, population, from, to, time.Now().UTC()))
+	WriteJSON(w, http.StatusOK, deliveryMeasuresCompute(rules, population, from, to, time.Now().UTC()))
 }
 
 // measuresPRs is the derived pull requests that pass the search and facets, as the measures
@@ -71,9 +71,10 @@ func (d deliveryDerived) measuresPRs() []measures.PR {
 }
 
 // deliveryMeasuresCompute is GET /api/v1/delivery/measures' body for [from, to) from a population
-// read for that window or narrowed to it. It reads nothing; now is only computed_at.
-func deliveryMeasuresCompute(settings delivery.DeliverySettings, pop deliveryPopulation, from, to, now time.Time) deliveryMeasuresResponse {
-	return deliveryMeasuresOver(settings, pop, pop.derive(settings), from, to, now)
+// read for that window or narrowed to it, each source repository's runs judged by its own rule of
+// rules. It reads nothing; now is only computed_at.
+func deliveryMeasuresCompute(rules *delivery.SourceRules, pop deliveryPopulation, from, to, now time.Time) deliveryMeasuresResponse {
+	return deliveryMeasuresOver(rules, pop, pop.derive(rules), from, to, now)
 }
 
 // deliveryMeasuresOver measures [from, to) over population and what derive computed from it.
@@ -98,11 +99,12 @@ func deliveryMeasuresCompute(settings delivery.DeliverySettings, pop deliveryPop
 // several they read null, "no data", each with no verdict. So do they for a window that starts
 // before the project's failures_measured_since, as its evals read one; and otherwise they are the
 // values its evals' read of the same window answers (dispatch://INFRA-978, k11).
-func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopulation, derived deliveryDerived, from, to, now time.Time) deliveryMeasuresResponse {
-	applies := delivery.ProductionApplies(pop.windowRuns, pop.windowJobs, settings.Production()).Applies
+func deliveryMeasuresOver(rules *delivery.SourceRules, pop deliveryPopulation, derived deliveryDerived, from, to, now time.Time) deliveryMeasuresResponse {
 	reached := map[int64]bool{}
-	for _, apply := range applies {
-		reached[apply.RunID] = true
+	for _, applies := range deliveryApplies(rules, pop.windowRuns, pop.windowJobs) {
+		for _, apply := range applies {
+			reached[apply.RunID] = true
+		}
 	}
 	runs := make([]measures.Run, len(pop.windowRuns))
 	for i, run := range pop.windowRuns {

@@ -238,6 +238,18 @@ func publishedSettingsIn(ctx context.Context, q delivery.Querier) ([]delivery.Pr
 	return projects, nil
 }
 
+// ProjectEvals reads the current definition and series of each of slugs project holds, by slug,
+// in one snapshot (evals_current, eval_series_current): what the delivery settings route answers
+// the targets of (dispatch://INFRA-978, R3). A slug the project holds no version of is absent.
+func (s *Store) ProjectEvals(ctx context.Context, project string, slugs []string) (map[string]Entry, error) {
+	tx, err := s.BeginSnapshot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin the read of %s's evals %v: %w", project, slugs, err)
+	}
+	defer tx.Rollback(ctx)
+	return projectEntries(ctx, tx, project, slugs)
+}
+
 // projectEntries reads each of slugs project holds as Eval reads one, by slug, in tx: its newest
 // definition and the newest version of each of its series, the primary series first, then by
 // name.

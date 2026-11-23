@@ -93,9 +93,10 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 	}
 
 	s := directServer(deps)
+	rules := seededDeliveryRules(t, pool)
 	for _, days := range []int{84, 28, 7} {
 		from, to := fixture.To.AddDate(0, 0, -days), fixture.To
-		pop, err := s.readDeliveryPopulation(ctx, fixture.Settings, from, to, url.Values{}, true)
+		pop, err := s.readDeliveryPopulation(ctx, rules, from, to, url.Values{}, true)
 		if err != nil {
 			t.Fatalf("%d days: read the timeline's population: %v", days, err)
 		}
@@ -114,8 +115,8 @@ func TestTheTimelineAnswersWhatEveryJobOfItsRunsAnswers(t *testing.T) {
 			t.Errorf("%d days: the timeline read %d jobs of its %d deploy runs, which hold %d: want the production and the failed ones alone, fewer than every job", days, read, len(pop.applyRuns), held)
 		}
 
-		got := deliveryTimelineCompute(fixture.Settings, pop, from, to, to)
-		want := deliveryTimelineCompute(fixture.Settings, every, from, to, to)
+		got := deliveryTimelineCompute(rules, pop, from, to, to)
+		want := deliveryTimelineCompute(rules, every, from, to, to)
 		gotBody, err := json.Marshal(got)
 		if err != nil {
 			t.Fatalf("encode: %v", err)

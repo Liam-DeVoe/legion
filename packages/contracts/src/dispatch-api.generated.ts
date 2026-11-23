@@ -1108,7 +1108,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per deploy, failed deployment recovery time with the failures not restored, deployment rework rate, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. The three failure measures fold their evals' stored day rows: each is null where no row holds a part of it, "no data" with no verdict, since a rate nothing measured is no 0. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per deploy, failed deployment recovery time with the failures not restored, deployment rework rate, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. The three failure measures fold their evals' stored day rows: each is null where no row holds a part of it, "no data" with no verdict, since a rate nothing measured is no 0. The runs are every deploy source's repository's of every project with delivery on, each judged by its own source's rule, and the targets are the project's whose sources read every deploy repository where one project owns them all, or the catalogue's defaults where two or more projects own them or none is read; 404 DELIVERY_NOT_CONFIGURED when no project has delivery on. */
     get: operations["getApiV1DeliveryMeasures"];
     put?: never;
     post?: never;
@@ -1125,7 +1125,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets. A job is ranked among the slowest with as many timed results as pr_checks.slowest_min_results states: the min_n of the job series (job:*) of the pr-ci eval of the project the deploy repository is mapped to, or 50 where it is mapped to no project or that project holds no pr-ci eval yet; the ranking is the one pr-ci's items read with sort=median. Not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, one named more than once, or one whose seven days start before the UTC year 1, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets, over every deploy source's repository of every project with delivery on, each repository's runs judged by its own source's rule. A job is ranked among the slowest with as many timed results as pr_checks.slowest_min_results states: the min_n of the job series (job:*) of the pr-ci eval of the project whose sources read every deploy repository, or 50 where two or more projects own them, none is read, or that project holds no pr-ci eval yet; the ranking is the one pr-ci's items read with sort=median. Not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, one named more than once, or one whose seven days start before the UTC year 1, 404 DELIVERY_NOT_CONFIGURED when no project has delivery on. */
     get: operations["getApiV1DeliveryPipeline"];
     put?: never;
     post?: never;
@@ -1142,7 +1142,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description One run of a deploy source's repository of a project with delivery on, with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED when no project has delivery on. */
     get: operations["getApiV1DeliveryRunsById"];
     put?: never;
     post?: never;
@@ -1194,7 +1194,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. */
+    /** @description The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets). The runs are every deploy source's repository's of every project with delivery on, each judged by its own source's rule; 404 DELIVERY_NOT_CONFIGURED when no project has delivery on. */
     get: operations["getApiV1DeliveryTimeline"];
     put?: never;
     post?: never;
@@ -2760,7 +2760,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Set or clear a project's default repository {repo}: "owner/name" sets it and null clears it. An issue of the project resolves to it when neither the issue nor an issue above it names a repository. A write of the value the project holds already changes nothing and appends no event; a change appends project.updated with the project row. A body without repo, or a repo that is not a repository GitHub could hold, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. The default belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. It declares no personal scope: the credential the deployment configured writes it, and so does a person. */
+    /** @description Set or clear a project's default repository {repo}: "owner/name" sets it and null clears it. An issue of the project resolves to it when neither the issue nor an issue above it names a repository. A write of the value the project holds already changes nothing and appends no event; a change appends project.updated with the project row. A body without repo, or a repo that is not a repository GitHub could hold, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. A deploy source of the project's delivery settings that names no repository reads the default, so for a project with delivery on and such a source a clear is 409 DELIVERY_NEEDS_REPOSITORY, and a repository another delivery-on project's source reads, or another source of the project names, is 409 DELIVERY_REPOSITORY_SHARED naming the project that reads it; a move clears the reconcile progress of the old and the new repository, so the new one's runs are imported. The default belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. It declares no personal scope: the credential the deployment configured writes it, and so does a person. */
     put: operations["putApiV1ProjectsByKeyDefaultRepository"];
     post?: never;
     delete?: never;
@@ -2979,6 +2979,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/projects/{key}/settings/delivery": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The project's delivery settings, or null when it has none: delivery (on or off), its deploy sources in order (each github_workflow, with an optional repo, null for the project's default repository, its deploy workflow, production jobs, optional production apply step, optional staging end-to-end and staging deploy jobs, pull-request checks workflow and optional roll-up job, or events, the project's posted deploys), each with its id, its resolved_repo (the repository it reads, null where it names none and the project has no default) and reconciled_through (how far the reconcile has imported that repository's deploy runs, pull-request check runs and merged pull requests; null for an events source, a project with delivery off, and a repository whose import has not finished), the population authors and excluded repositories, the failure sources with failures_measured_since (YYYY-MM-DD), and the targets of deploy-frequency, change-fail-rate, merge-to-production, pr-open-to-merge, deploy-run-success, failed-deploy-recovery and unowned-p0, each a number or "off", read from the project's eval rows. Every reader of the project may read them. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    get: operations["getApiV1ProjectsByKeySettingsDelivery"];
+    /** @description Replace the project's delivery settings {delivery, sources, population_authors?, excluded_repos?, failure_sources?, failures_measured_since?, targets?} and answer them as GET does. targets sets each named eval's target, a number or "off", as a new version of the project's eval row in the same transaction; a target the body leaves out, or one the eval holds already, writes nothing. A source whose repository and rule are unchanged keeps its id and its repository's reconcile progress; every other source's repository is imported again. 400 DELIVERY_SETTINGS_INPUT names the field, and the source's index for a source's field; with delivery on, 409 DELIVERY_SETTINGS_ACCESS names a source whose repository Dispatch's GitHub App cannot read, 409 DELIVERY_NO_DEFAULT_REPOSITORY a source naming no repository of a project with no default repository, and 409 DELIVERY_REPOSITORY_SHARED a repository another delivery-on project's source reads, naming that project; a refused save writes nothing. The settings belong to the deployment, so a project-scoped credential is refused them, the project this path names included. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    put: operations["putApiV1ProjectsByKeySettingsDelivery"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/reference-targets": {
     parameters: {
       query?: never;
@@ -3156,9 +3174,9 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The delivery timeline's one configuration record (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set. */
+    /** @description The delivery timeline's one configuration record of the release before this one (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set. This release reads it nowhere else: each project's settings, GET /api/v1/projects/{key}/settings/delivery, replace it, and the next release removes this route. */
     get: operations["getApiV1SettingsDelivery"];
-    /** @description Set the delivery timeline's configuration after proving the GitHub App can read the deploy repository; 409 DELIVERY_SETTINGS_ACCESS a credential or repository problem. */
+    /** @description Set the delivery timeline's one configuration record of the release before this one after proving the GitHub App can read the deploy repository; 409 DELIVERY_SETTINGS_ACCESS a credential or repository problem. This release reads it nowhere else: each project's settings, PUT /api/v1/projects/{key}/settings/delivery, replace it, and the next release removes this route. */
     put: operations["putApiV1SettingsDelivery"];
     post?: never;
     delete?: never;
@@ -4864,6 +4882,13 @@ export interface components {
       production_job_names: string[] | null;
       staging_apply_job_name?: null | string;
       staging_e2e_job_name?: null | string;
+    };
+    DeliverySettingsRefusal: {
+      code: string;
+      error: string;
+      field?: string;
+      project?: string;
+      source?: number;
     };
     DeliveryShippedPRView: {
       id: string;
@@ -6758,6 +6783,81 @@ export interface components {
     ProjectDefaultRepositoryInput: {
       actor?: components["schemas"]["Actor"] | null;
       repo: string | null;
+    };
+    ProjectDeliverySettings: {
+      default_repo: null | string;
+      delivery: boolean;
+      excluded_repos: string[] | null;
+      failure_sources: string[] | null;
+      failures_measured_since: null | string;
+      population_authors: string[] | null;
+      project: string;
+      sources: components["schemas"]["ProjectDeploySource"][] | null;
+      /** @description each eval's target, a number or "off" for none */
+      targets?: {
+        "change-fail-rate"?: number | "off";
+        "deploy-frequency"?: number | "off";
+        "deploy-run-success"?: number | "off";
+        "failed-deploy-recovery"?: number | "off";
+        "merge-to-production"?: number | "off";
+        "pr-open-to-merge"?: number | "off";
+        "unowned-p0"?: number | "off";
+      };
+      /** Format: date-time */
+      updated_at: string;
+      updated_by: components["schemas"]["Actor"];
+    };
+    ProjectDeliverySettingsInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      delivery: boolean;
+      excluded_repos?: string[] | null;
+      failure_sources?: string[] | null;
+      failures_measured_since?: null | string;
+      population_authors?: string[] | null;
+      sources: components["schemas"]["ProjectDeploySourceInput"][] | null;
+      /** @description each eval's target, a number or "off" for none */
+      targets?: {
+        "change-fail-rate"?: number | "off";
+        "deploy-frequency"?: number | "off";
+        "deploy-run-success"?: number | "off";
+        "failed-deploy-recovery"?: number | "off";
+        "merge-to-production"?: number | "off";
+        "pr-open-to-merge"?: number | "off";
+        "unowned-p0"?: number | "off";
+      };
+    };
+    ProjectDeploySource: {
+      deploy_workflow_path: null | string;
+      id: string;
+      /** @enum {string} */
+      kind: "github_workflow" | "events";
+      last_error: null | string;
+      /** Format: date-time */
+      last_event_at: null | string;
+      /** Format: date-time */
+      last_reconcile_at: null | string;
+      pr_checks_rollup_job_name: null | string;
+      pr_checks_workflow_path: null | string;
+      production_apply_step_name: null | string;
+      production_job_names: string[] | null;
+      /** Format: date-time */
+      reconciled_through: null | string;
+      repo: null | string;
+      resolved_repo: null | string;
+      staging_apply_job_name: null | string;
+      staging_e2e_job_name: null | string;
+    };
+    ProjectDeploySourceInput: {
+      deploy_workflow_path?: null | string;
+      /** @enum {string} */
+      kind: "github_workflow" | "events";
+      pr_checks_rollup_job_name?: null | string;
+      pr_checks_workflow_path?: null | string;
+      production_apply_step_name?: null | string;
+      production_job_names?: string[] | null;
+      repo?: null | string;
+      staging_apply_job_name?: null | string;
+      staging_e2e_job_name?: null | string;
     };
     ProjectGatedSteps: {
       project: string;
@@ -14521,6 +14621,17 @@ export interface operations {
           "application/json": components["schemas"]["ProjectDefaultRepository"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["DeliverySettingsRefusal"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -15285,6 +15396,100 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Suggestions"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ProjectsByKeySettingsDelivery: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectDeliverySettings"] | null;
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1ProjectsByKeySettingsDelivery: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProjectDeliverySettingsInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectDeliverySettings"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["DeliverySettingsRefusal"]
+            | components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["DeliverySettingsRefusal"]
+            | components["schemas"]["ErrorBody"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -16181,6 +16386,7 @@ export type DeliveryRunProduction = components["schemas"]["DeliveryRunProduction
 export type DeliverySessionGroup = components["schemas"]["DeliverySessionGroup"];
 export type DeliverySettings = components["schemas"]["DeliverySettings"];
 export type DeliverySettingsInput = components["schemas"]["DeliverySettingsInput"];
+export type DeliverySettingsRefusal = components["schemas"]["DeliverySettingsRefusal"];
 export type DeliveryShippedPRView = components["schemas"]["DeliveryShippedPRView"];
 export type DeliverySpread = components["schemas"]["DeliverySpread"];
 export type DeliveryTarget = components["schemas"]["DeliveryTarget"];
@@ -16378,6 +16584,10 @@ export type ProjectDefaultAssignee = components["schemas"]["ProjectDefaultAssign
 export type ProjectDefaultAssigneeInput = components["schemas"]["ProjectDefaultAssigneeInput"];
 export type ProjectDefaultRepository = components["schemas"]["ProjectDefaultRepository"];
 export type ProjectDefaultRepositoryInput = components["schemas"]["ProjectDefaultRepositoryInput"];
+export type ProjectDeliverySettings = components["schemas"]["ProjectDeliverySettings"];
+export type ProjectDeliverySettingsInput = components["schemas"]["ProjectDeliverySettingsInput"];
+export type ProjectDeploySource = components["schemas"]["ProjectDeploySource"];
+export type ProjectDeploySourceInput = components["schemas"]["ProjectDeploySourceInput"];
 export type ProjectGatedSteps = components["schemas"]["ProjectGatedSteps"];
 export type ProjectGatedStepsInput = components["schemas"]["ProjectGatedStepsInput"];
 export type ProjectPlans = components["schemas"]["ProjectPlans"];

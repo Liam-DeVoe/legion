@@ -507,9 +507,9 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true})
 	ctx := t.Context()
-	settings, err := delivery.GetSettings(ctx, database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
+	settings, read := seededDeliveryRules(t, database.Pool).For(fixture.DeployRepo)
+	if !read {
+		t.Fatalf("no deploy source reads %s", fixture.DeployRepo)
 	}
 	registry := evals.New(database, deps.Docs, deps.Events)
 	entries := seededEntries(t, registry, fixture.Project)
@@ -574,12 +574,13 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 // condition): in deliverytest's default history, whose pull requests name issues of DELIV, one in
 // twenty of DELIVX, and some none, and whose deploy repository is DELIV's default repository, the
 // deploys that ship pull requests of both are counted once by GET /api/v1/delivery/measures over a
-// window holding one, and once in each project's read; a deploy that ships no pull request of
-// either project counts for DELIV alone, through the repository it publishes as its default (R15),
-// and one that ships a pull request of a project through its issue counts in that project once,
-// not twice (its repository's row names the project among its sharers, which the project's read
-// skips). So the two projects' folded deploy-frequency deploys, less the deploys that ship both,
-// are the deployment-wide count. A delivery route that answered the sum of the projects' rows
+// window holding one, and once in each project's read; a deploy that ships no pull request at all
+// counts for DELIV alone, whose deploy source found it (dispatch://INFRA-978, R12), and so does one
+// that ships pull requests of no project, through the repository DELIV publishes as its default
+// (R15); and one that ships a pull request of a project through its issue counts in that project
+// once, not twice (its repository's row names the project among its sharers, which the project's
+// read skips). So the two projects' folded deploy-frequency deploys, less the deploys that ship
+// both, are the deployment-wide count. A delivery route that answered the sum of the projects' rows
 // would count the deploys of both twice, and fail here.
 func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -596,11 +597,13 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		}
 	}
 	ships := map[int64]map[string]bool{}
+	shipsAny := map[int64]bool{}
 	for _, pr := range fixture.PullRequests {
 		apply := delivery.ContainingRun(pr, fixture.DeployRepo, fixture.Applies)
 		if apply == nil {
 			continue
 		}
+		shipsAny[apply.RunID] = true
 		if pr.IssueKey == nil {
 			continue
 		}
@@ -630,13 +633,19 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		to = fixture.To
 	}
 
-	deploys, both, inFirst, inSecond, none := 0, 0, 0, 0, 0
+	deploys, both, inFirst, inSecond, none, bare := 0, 0, 0, 0, 0, 0
 	for _, apply := range fixture.Applies {
 		if at := startedAt[apply.RunID]; at.Before(from) || !at.Before(to) {
 			continue
 		}
 		deploys++
 		first, second := ships[apply.RunID][fixture.Project], ships[apply.RunID][fixture.SecondProject]
+		if !shipsAny[apply.RunID] {
+			// It ships no pull request at all, so it counts for the project whose source found it
+			// (R12).
+			first = true
+			bare++
+		}
 		if first {
 			inFirst++
 		}
@@ -647,7 +656,8 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 			both++
 		}
 		if !first && !second {
-			// It ships no pull request of a project, so it counts for none.
+			// It ships pull requests of no project, so it counts for DELIV through its default
+			// repository (R15).
 			none++
 		}
 	}
@@ -675,12 +685,12 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 		folded[project] = frequency.SuccessfulDeploys
 	}
 	if folded[fixture.Project] != inFirst+none || folded[fixture.SecondProject] != inSecond {
-		t.Errorf("the day rows count %d deploys for %s and %d for %s, want %d (the %d of its issues and the %d of no project, through its default repository) and %d",
+		t.Errorf("the day rows count %d deploys for %s and %d for %s, want %d (the %d of its issues or of no pull request, and the %d of no project, through its default repository) and %d",
 			folded[fixture.Project], fixture.Project, folded[fixture.SecondProject], fixture.SecondProject, inFirst+none, inFirst, none, inSecond)
 	}
-	if both == 0 || none == 0 || folded[fixture.Project]+folded[fixture.SecondProject]-both != wide {
-		t.Errorf("%s's %d deploys and %s's %d, less the %d that ship pull requests of both, are %d, want the deployment-wide %d",
-			fixture.Project, folded[fixture.Project], fixture.SecondProject, folded[fixture.SecondProject], both,
+	if both == 0 || none == 0 || bare == 0 || folded[fixture.Project]+folded[fixture.SecondProject]-both != wide {
+		t.Errorf("%s's %d deploys (%d of them shipping no pull request) and %s's %d, less the %d that ship pull requests of both, are %d, want the deployment-wide %d",
+			fixture.Project, folded[fixture.Project], bare, fixture.SecondProject, folded[fixture.SecondProject], both,
 			folded[fixture.Project]+folded[fixture.SecondProject]-both, wide)
 	}
 

@@ -17,10 +17,7 @@ func TestADaysPartOfAWalksDeployRunsIsTheDaysOwnRead(t *testing.T) {
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	fixture := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
-	settings, err := delivery.GetSettings(ctx, pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
+	settings := deployRule(t, pool, fixture.DeployRepo)
 	applies, err := delivery.ReadApplyRows(ctx, pool, settings, fixture.From)
 	if err != nil {
 		t.Fatalf("read the deploy runs from %s on: %v", fixture.From, err)

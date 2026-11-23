@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -93,13 +92,11 @@ func seedMeasuresFixture(t *testing.T, database *store.Store) measuresFixture {
 		t.Fatalf("decode fixture: %v", err)
 	}
 
-	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, pool, delivery.DeliverySettings{
 		DeployRepo: fixture.Settings.DeployRepo, DeployWorkflowPath: fixture.Settings.DeployWorkflowPath,
 		ProductionJobNames: fixture.Settings.ProductionJobNames, PRChecksWorkflowPath: fixture.Settings.PRChecksWorkflowPath,
 		PopulationAuthors: fixture.Settings.PopulationAuthors,
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 
 	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice') on conflict do nothing`); err != nil {
 		t.Fatalf("seed project: %v", err)
@@ -208,13 +205,11 @@ func assertMeasuresSpread(t *testing.T, name string, got measures.Spread, median
 
 func seedMeasuresSettings(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := delivery.PutSettings(t.Context(), database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 }
 
 func TestGetDeliveryMeasuresWithoutSettingsIs404(t *testing.T) {

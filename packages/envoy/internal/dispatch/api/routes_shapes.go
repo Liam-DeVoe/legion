@@ -787,8 +787,27 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},
+	// A move a delivery-on project's source refuses answers the settings save's own refusal body
+	// (delivery.SettingsError, defaultRepositoryMove), naming the project that reads the repository.
 	"PUT /api/v1/projects/{key}/default-repository": {
 		Status: http.StatusOK, Response: projectDefaultRepository{}, Request: projectDefaultRepositoryInput{},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: delivery.SettingsError{}}},
+	},
+	"GET /api/v1/projects/{key}/settings/delivery": {
+		Status: http.StatusOK, Response: projectDeliverySettings{},
+		// A project with no delivery settings answers 200 and the JSON literal `null`
+		// (project_settings_delivery.go).
+		Nullable: true,
+	},
+	// A refused save answers its own body (delivery.SettingsError: the code, the reason, and the
+	// field, the source's index and the other project where it names them), 400 for its input and
+	// 409 for every other refusal (writeSettingsRefusal).
+	"PUT /api/v1/projects/{key}/settings/delivery": {
+		Status: http.StatusOK, Response: projectDeliverySettings{}, Request: projectDeliverySettingsInput{},
+		Refusals: []routeAnswer{
+			{Status: http.StatusBadRequest, Body: delivery.SettingsError{}},
+			{Status: http.StatusConflict, Body: delivery.SettingsError{}},
+		},
 	},
 	"GET /api/v1/settings/delivery": {
 		Status: http.StatusOK, Response: delivery.DeliverySettings{},

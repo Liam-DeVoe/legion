@@ -1785,6 +1785,28 @@ export class DispatchApiClient {
     );
   }
 
+  /** One project's delivery settings, or `null` for a project with none: the switch, its deploy
+   *  sources (each with its `id`, the repository it reads as `resolved_repo`, and
+   *  `reconciled_through`, null until that repository's import has run), the population, the
+   *  failure sources with `failures_measured_since`, and the targets of its seven delivery evals,
+   *  each a number or `"off"`. Every reader of the project reads them. */
+  getProjectDeliverySettings(project: string) {
+    return this.read("/api/v1/projects/{key}/settings/delivery", { key: project });
+  }
+
+  /** Replaces one project's delivery settings and sets the targets it names, each a new version
+   *  of the project's eval, in one write, and answers them as `getProjectDeliverySettings` does.
+   *  A refusal names its field and source (`400 DELIVERY_SETTINGS_INPUT`, `409
+   *  DELIVERY_SETTINGS_ACCESS`, `409 DELIVERY_NO_DEFAULT_REPOSITORY`) or the other project
+   *  (`409 DELIVERY_REPOSITORY_SHARED`), and writes nothing. */
+  putProjectDeliverySettings(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/settings/delivery", "put">,
+    bounds: WriteBounds
+  ) {
+    return this.put("/api/v1/projects/{key}/settings/delivery", { key: project }, input, bounds);
+  }
+
   /** The delivery timeline's configuration record, or `null` until someone sets it. */
   getDeliverySettings() {
     return this.read("/api/v1/settings/delivery", {});

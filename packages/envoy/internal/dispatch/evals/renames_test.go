@@ -63,7 +63,6 @@ func TestARenamedRepositorysRowsAreStoredAndReadUnderItsNewName(t *testing.T) {
 	r := newRefresherRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	deliveries := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
-	seedProjectSettings(t, pool, deliveries)
 	legion := legiontest.Seed(t, pool, legiontest.Spec{Trees: 6, Now: deliverytest.DefaultNow})
 	const legionRepo = "acme/legion"
 	r.exec(t, "give the Legion roots a repository", `update issues set repo = $2 where project_key = $1 and parent_key is null`,

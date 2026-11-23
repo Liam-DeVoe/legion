@@ -6,9 +6,9 @@
 // legion/legiontest is, so every package whose tests need such a history can import it (Go cannot
 // share test-only code across packages), and a command can write the same history through Write.
 //
-// Write stores the rows GitHub intake and the reconcile leave behind: the one delivery_settings
-// row and the first project's own delivery settings (one deploy source reading its default
-// repository, SaveRules), two projects and the issues the pull requests name, the first project's
+// Write stores the rows GitHub intake and the reconcile leave behind: the first project's delivery
+// settings (one deploy source reading its default repository, SaveRules), two projects and the
+// issues the pull requests name, the first project's
 // default repository (the deploy repository), the pull requests merged into three repositories,
 // the deploy workflow's push runs on main of the deploy repository, and the PR-checks workflow's
 // pull_request runs of that same repository (the one repository whose runs Dispatch reads), each
@@ -27,8 +27,8 @@
 // still waiting at its end. A pull request of the other two repositories is never tracked by a
 // deploy (ComputeDeployedStatus), as in production.
 //
-// One database holds one such history per project: delivery_settings is a single row, so a second
-// Write replaces the first one's singleton, while each project keeps its own delivery settings.
+// One database holds one such history per project, each project with its own delivery settings: a
+// second history's project is another project, whose source reads another deploy repository.
 package deliverytest
 
 import (
@@ -195,8 +195,8 @@ type Fixture struct {
 	// deploy repository first.
 	DeployRepo string
 	Repos      []string
-	// Settings is the deploy repository's rule, as Write gave it to delivery.PutSettings (the
-	// singleton row) and to SaveRules (the project's own settings, one source reading its default).
+	// Settings is the deploy repository's rule, as Write saved it as the project's own settings
+	// (SaveRules: one source reading its default repository).
 	Settings delivery.DeliverySettings
 	// From and To are the two ends of the history: To is the Spec's Now, From is Days days
 	// before it. Every pull request merged, and every run was created, in [From, To).
@@ -751,10 +751,9 @@ func (s *seeding) judge() {
 	}
 }
 
-// write stores the history, one statement per table: the settings through delivery.PutSettings,
-// the one write of the singleton row the readers not yet moved to per-project settings read, and
-// through SaveRules, the project's own delivery settings with one source reading its default
-// repository, the deploy repository; and every other table as arrays unnested into one insert, so
+// write stores the history, one statement per table: the delivery settings through SaveRules, the
+// project's own with one source reading its default repository, the deploy repository; and every
+// other table as arrays unnested into one insert, so
 // a history of eighty thousand jobs costs a handful of round trips. The tables go in the order
 // their foreign keys need: projects before their delivery settings, issues before the pull
 // requests that name them, and the runs before their jobs. A project that has a row already keeps
@@ -770,9 +769,6 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 		return nil
 	}
 	actor := fmt.Sprintf(`{"kind":%q,"id":%q}`, system.Kind, system.ID)
-	if _, err := delivery.PutSettings(ctx, pool, s.fixture.Settings, system); err != nil {
-		return fmt.Errorf("write the delivery settings of %s: %w", s.spec.Project, err)
-	}
 	projects := []string{s.fixture.Project, s.fixture.SecondProject}
 	nextNumbers := []int32{s.nextNumber(s.fixture.Project), s.nextNumber(s.fixture.SecondProject)}
 	defaults := []*string{&s.fixture.DeployRepo, nil}

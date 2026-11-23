@@ -21,7 +21,7 @@ import (
 // The delivery and CI evals' day rows (dispatch://INFRA-2916, R12, R15, R16 and D1). One UTC day's
 // delivery population is read once (readDeliveryDay), by the rules the delivery routes read their
 // window by: delivery.ReadDeploys and ReadMergedRows' two reads (ListPullRequestsInWindow and
-// ReadApplyRows), whose answer the routes' one read of a window, delivery.ReadWindowRows, gives
+// ReadApplyRows), whose answer the routes' read of a window's runs, delivery.ReadWindowRuns, gives
 // too (TestAWindowsReadAnswersWhatItsTwoReadsAnswer holds it), and ReadCIRows, which the routes
 // read with; each row of it is attributed to the projects it counts for; each project's rows are
 // built into day parts by the measures package's day builders, the builders the delivery routes
@@ -258,7 +258,7 @@ type repoReads struct {
 // sets read (delivery.ReadDeploys), the pull requests merged in the day
 // (delivery.ListPullRequestsInWindow) and every deploy run created from the day's start on
 // (delivery.ReadApplyRows), which are delivery.ReadMergedRows' two reads and whose answer the
-// routes' one read, delivery.ReadWindowRows, gives too (TestAWindowsReadAnswersWhatItsTwoReadsAnswer
+// routes' read of a window's runs, delivery.ReadWindowRuns, gives too (TestAWindowsReadAnswersWhatItsTwoReadsAnswer
 // holds it); the day's CI runs (delivery.ReadCIRows); and what attributes them (readAttribution):
 // the projects of the issues those pull requests name and of the pull requests the day's PR-checks
 // runs are of. Of an events repository it reads the project's posted deploys that finished from the

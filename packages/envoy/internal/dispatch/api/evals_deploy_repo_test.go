@@ -98,18 +98,24 @@ func (r *deployRepoRig) refresh(t *testing.T) {
 	refreshEvalDays(t, r.registry, r.database, r.now)
 }
 
-// moveTo saves the delivery settings with repo as the deploy repository and runs the passes after.
+// moveTo saves the delivery settings of the history's project with its source reading repo
+// (deliverytest.SaveRules: none named where repo is its default repository) and runs the passes
+// after.
 func (r *deployRepoRig) moveTo(t *testing.T, repo string) {
 	t.Helper()
-	settings, err := delivery.GetSettings(t.Context(), r.database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
-	settings.DeployRepo = repo
-	if _, err := delivery.PutSettings(t.Context(), r.database.Pool, settings, deployRepoAlice); err != nil {
-		t.Fatalf("save the delivery settings: %v", err)
-	}
+	r.saveSource(t, repo)
 	r.refresh(t)
+}
+
+// saveSource saves the delivery settings of the history's project with its one source reading
+// repo under the history's rule.
+func (r *deployRepoRig) saveSource(t *testing.T, repo string) {
+	t.Helper()
+	settings := r.fixture.Settings
+	settings.DeployRepo = repo
+	if _, err := deliverytest.SaveRules(t.Context(), r.database.Pool, r.fixture.Project, settings); err != nil {
+		t.Fatalf("save the delivery settings of %s: %v", r.fixture.Project, err)
+	}
 }
 
 // read is the list read of every eval of the rig's projects in shape at the rig's moment
@@ -332,16 +338,7 @@ func TestAMoveBackToTheOldDeployRepositoryAnswersWhatItAnsweredBefore(t *testing
 // the values it stated before.
 func TestAMoveOfTheDeployRepositoryAwayAndBackWritesNothing(t *testing.T) {
 	r := newDeployRepoRig(t, true, nil)
-	walked := newDeployRepoRig(t, true, func(w *deployRepoRig) {
-		settings, err := delivery.GetSettings(t.Context(), w.database.Pool)
-		if err != nil {
-			t.Fatalf("read the delivery settings: %v", err)
-		}
-		settings.DeployRepo = w.other
-		if _, err := delivery.PutSettings(t.Context(), w.database.Pool, settings, deployRepoAlice); err != nil {
-			t.Fatalf("save the delivery settings: %v", err)
-		}
-	})
+	walked := newDeployRepoRig(t, true, func(w *deployRepoRig) { w.saveSource(t, w.other) })
 	shapes := storedEvalShapes(r.today, r.fixture.Repos[0], r.fixture.Repos[1])
 	original := map[string][]string{}
 	for _, shape := range shapes {
