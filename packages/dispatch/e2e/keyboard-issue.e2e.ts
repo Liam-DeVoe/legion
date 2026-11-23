@@ -738,7 +738,8 @@ test.describe("keys typed straight after a key that opens a surface", () => {
   // to `<main>` only for another issue or another top-level route (`pageIdentity`, `app.tsx`) - so
   // the box keeps the focus, and only its own close on an address change (`useCloseOnNavigation`
   // in `asked-surface.tsx`) calls the open off. Back from the issue to the Inbox, the shell moves
-  // the focus to `<main>`, and the box's blur calls it off first.
+  // the focus to `<main>`, and the box's blur calls it off: both addresses carry the key `default`
+  // (below), so its close on an address change sees no move there.
   test("a create dialog whose chunk lands after the reader went back a page opens nothing there", async ({
     browser,
   }) => {

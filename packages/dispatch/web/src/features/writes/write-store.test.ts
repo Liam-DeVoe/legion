@@ -767,9 +767,9 @@ test("another person's write a reload kept goes as the take-up begins, so their 
 // signed in by then would read bob's kept writes, find none, and remove hers from the tab's
 // storage only as an entry of another login, which leaves the page still counting it as out. The
 // page would then ask the reader to confirm leaving for a write it has already let go, and keep
-// asking until it is closed. So the row reads, besides the tab and the sends, whether leaving
-// still asks once the take-up is done: it asked while the take-up waited, since the kept write
-// was then in the tab's storage alone (`WriteStorage.load`).
+// asking until it is closed or the person signs out here. So the row reads, besides the tab and
+// the sends, whether leaving still asks once the take-up is done: it asked while the take-up
+// waited, since the kept write was then in the tab's storage alone (`WriteStorage.load`).
 test("a take-up waiting when another person signs in drops what the reload kept of the person it began for, and leaving asks for it no more", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();

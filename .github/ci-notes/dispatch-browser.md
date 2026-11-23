@@ -89,7 +89,7 @@ and 2,317 s, each over eight jobs for 1,727 rows: 1.42, 1.50 and 1.34 machine-se
 own times of 1,098, 1,245 and 1,019 s - each run's binaries job, longest leg and merge job, end
 to end. The same lane on the default branch that day, every green merge-queue full lane up to
 08:09:40Z, is 32 runs of twelve jobs for 1,677 rows that cost 3,431 to 4,034 s, a median of
-3,821.5 s and 2.27758 s a row at the median of their per-row figures. So the head's lanes cost
+3,821.5 s and 2.27758 s a row at the median of their per-row figures. So those three lanes cost
 0.606 to 0.679 of that median, and spend 0.589 to 0.660 of its row's machine time. The
 pull-request lane, run 45130649093 at 5e22df0a: 701 s over five jobs for 290 rows, in an own
 time of 432 s.
@@ -489,7 +489,8 @@ maxima of 24 four-leg legs in five runs on the image build sha256:ba003193 (run
 there and 10 s here, now that the store starts just after the checkout and comes up while
 the install runs, and `bun install --frozen-lockfile`, 62 s there and 15 s here. The browser
 step's hang guard takes main's runner factor and drift from main's four-leg runs, and its leg
-from this job's own two-leg full lanes at the merged head; its section says which is which.
+from this job's own two-leg full lanes at a650b091, a6d8e108 and 5e22df0a; its section says which
+is which.
 
 The rows: listed at `fc1baefb` on 2026-11-16 with `bunx playwright test --config
 e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,511 rows in 206
@@ -760,11 +761,11 @@ The guard was set twice before, and both readings are replaced by the one above.
 carried over as main's own leg figure rescaled to two legs (main's p90 of its 347 four-leg legs,
 534 s, as 1,044 s for half main's row time, and 34 minutes), which rested on main's rows and
 main's four-leg runs rather than on any leg this job ran. Then it was set from this job's own
-legs before the merge: 855 s, the largest of the eight browser steps of four full lanes that
-ran under Playwright's count split (runs 44997458055, 44997506117, 44997560086 and
-45005495938, 666 to 855 s), and 855 x 1.75 x 1.11 = 1,661 s, 28 minutes. The lanes at the
-merged head are the first that ran the split this job runs now, and their largest leg is the
-one above.
+legs before the merge 01ca837e brought main's split: 855 s, the largest of the eight browser
+steps of four full lanes that ran under Playwright's count split (runs 44997458055,
+44997506117, 44997560086 and 45005495938, 666 to 855 s), and 855 x 1.75 x 1.11 = 1,661 s, 28
+minutes. The lanes at a650b091, a6d8e108 and 5e22df0a are the first that ran the split this job
+runs now, and their largest leg is the one above.
 
 What a hang looks like to it. A row cannot hang it: each row ends at its own budget, the 60 s of
 e2e/playwright.config.ts's `testTimeout` or the longer one a row sets, and the leg goes on. What
@@ -776,10 +777,13 @@ Playwright writes it when the run ends: the always-run upload finds no file (run
 cut shard 4 logged `No files were found with the provided path: /__w/_temp/leg-report`), and
 the merge job says so by name - reading one's `no blob report arrived from: shard-4` in that
 run, `shard-2` for this job's second leg, and reading three's `... uploaded no blob report, so
-the merged report holds none of its rows` - and fails on the leg's result. No row's verdict
+the merged report holds none of its rows` - and fails on the leg's result. No row of a green leg
 rests on the guard: the 901 s leg on the slowest runner seen, under a table up to a week old,
-ends at about 1,750 s, under it. What it costs is time: a hung leg is cut 13 minutes later
-than at the 17 the rule gave this job's legs.
+ends at about 1,750 s, under it. A red leg can pass it: a failing row's retries lengthen its leg,
+and red shard 1 of run 45122396660, 930 s, would end at about 1,807 s on that runner under such a
+table. That leg is cut, and the merge job names it as a leg with no blob report rather than
+naming its failing rows; its own log still holds them. What the guard costs is time: a hung leg
+is cut 13 minutes later than at the 17 the rule gave this job's legs.
 
 The week is what the guard holds, so each leg says when its table is past it: below its
 placement line it prints a `::warning::` when e2e/shard-weights.json was read more than 7 days

@@ -304,14 +304,14 @@ func parseLandingRequest(w http.ResponseWriter, r *http.Request) (landingRequest
 //
 // Each part that reads the node and tuple store reads it for the reader its route reads it for,
 // so a node reserved for its author is in the part exactly when it is in the route's answer. For
-// every route but the comment lists that reader is the caller: the routes name it with
-// actingReader and this one with actingPerson, and the two prove one author for every credential
-// that holds the person scope this route requires - the cookie its login, a personal or
-// broker-issued token the person it names (graphstore's provedAuthor) - which is the author an
-// author-private read compares. The comment lists are read as everyReader, as their route reads
-// them (answerCommentList), since that route keeps its answer for every reader of the owner:
-// read for the caller, the landing would seed a comment the route never shows, and the page
-// would drop it at its first refetch.
+// every route but the comment lists that reader is the caller: the inbox's route names it with
+// actingPerson as this one does, the others with actingReader, and the two prove one author for
+// every credential that holds the person scope this route requires - the cookie its login, a
+// personal or broker-issued token the person it names (graphstore's provedAuthor) - which is the
+// author an author-private read compares. The comment lists are read as everyReader, as their
+// route reads them (answerCommentList), since that route keeps its answer for every reader of
+// the owner: read for the caller, the landing would seed the block a reply answers where the
+// route leaves it null, and the page would drop it at its first refetch.
 func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {

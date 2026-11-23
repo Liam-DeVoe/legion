@@ -165,14 +165,14 @@ jobs:
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 2)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
         # A hang guard, not a verdict: 901 s x 1.75 x 1.11 = 1,750 s -> 30 min. 901 s is the largest
-        # of the six browser steps of the three green full lanes at the merged head, under main's
-        # split by time (shard 1 of run 45130540632; runs 45130372249, 45130540632 and 45130647066
-        # read 596 to 901 s); it replaced the 855 s of the branch's four count-split lanes. 1.75 is
-        # the slowest runner seen (run 44985914477 ran its rows 1.75 times slower, per-row median,
-        # than a runner of the same minute); 1.11 is main's drift figure, the worst share of the
-        # mean the heaviest of four legs took under a row-time table up to 7 days old, not read for
-        # two. A largest leg on that runner under such a table ends under it, so no row's verdict
-        # rests on it; it cuts a leg that has stopped running rows.
+        # of the six browser steps of the three green full lanes at a650b091, a6d8e108 and 5e22df0a,
+        # under main's split by time (shard 1 of run 45130540632; runs 45130372249, 45130540632 and
+        # 45130647066 read 596 to 901 s). 1.75 is the slowest runner seen (run 44985914477 ran its
+        # rows 1.75 times slower, per-row median, than a runner of the same minute); 1.11 is main's
+        # drift figure, the worst share of the mean the heaviest of four legs took under a row-time
+        # table up to 7 days old, not read for two. A largest green leg on that runner under such a
+        # table ends under it, so no row of a green leg rests on it; it cuts a leg that has stopped
+        # running rows, and a red leg whose retries take it past 30 minutes (the note says when).
         timeout-minutes: 30
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
