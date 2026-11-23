@@ -770,18 +770,15 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		RoundNamed: marks.stored && namesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
 }
 
-// startClaim is the claim a start of role on issue is queued for, read on w, issue's walk: the
-// agent of the step issue stands in (stepToken), which the step's entry writes on the role's
-// phases row (enter), and role's own token where the walk holds no place for where issue stands.
-// An issue whose key names no claims (recordsSteps) has none.
+// startClaim is the claim a start of role on issue is queued for, read on w, issue's walk
+// (walkToken): the agent of the step issue stands in (stepToken), which the step's entry writes on
+// the role's phases row (enter), and role's own token where the walk holds no place for where issue
+// stands. An issue whose key names no claims (recordsSteps) has none.
 func (e *Engine) startClaim(issue record.Issue, w Walk, role claim.Role) (claim.Token, error) {
 	if !recordsSteps(issue) {
 		return "", nil
 	}
-	if place, ok := w.placeIn(record.StandsAt(issue)); ok {
-		return e.stepToken(issue, w, place, role)
-	}
-	return stepClaim(issue, issue.Key, role)
+	return e.walkToken(issue, w, record.StandsAt(issue), role)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
