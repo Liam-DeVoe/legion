@@ -193,6 +193,53 @@ func TestAFailedOwnersRestartsAtOneStepAreBoundedAndTheOperatorsRetryResetsThem(
 	}
 }
 
+// The operator's retry of a failed owner whose owner-step of the step's run is still queued —
+// held for the owner's slot, or for the claim the retry relaunches — queues no second one: the
+// queued notice tells the owner when it publishes, and a second would tell the same session the
+// same step again. The retry still gives the daemon its restarts of the run again. The control is
+// the retry where that notice is gone (TestAFailedOwnersRestartsAtOneStepAreBoundedAndTheOperatorsRetryResetsThem),
+// which tells the step once more.
+//
+// Before, the retry told the step whatever the outbox held (restart's tellOwner), so the owner
+// got the step twice.
+func TestTheOperatorsRetryOfAnOwnerWhoseStepIsStillQueuedTellsNothingMore(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	stepRoot(t, pool, phase.Implementing)
+	child := stepChild(t, pool, "LEGION-209", phase.Implementing, nil)
+	seedStepsAt(t, pool, child.Key, child.Generation, 1, nil, "implementer:owner", "reviewer")
+	factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := engine.store.Issue(ctx, tx, child.Key)
+		if err != nil {
+			return err
+		}
+		return engine.StartStepRecord(ctx, tx, *issue)
+	})
+	seedIssuesArchitect(t, pool, child.Key, supervise.StateFailed, "")
+	ownerFailed(t, pool, engine, child.Key, 1)
+	startsRan(t, pool, child.Key)
+	told := ownerSteps(t, pool, child.Key)
+	if len(told) != 1 {
+		t.Fatalf("the step's start told %+v, want one owner-step still queued", told)
+	}
+
+	token := claim.Token(treeRoleToken(t, child.Key, claim.RoleArchitect))
+	if result := applyOwned(t, pool, engine, "operator-retry", intake.RestartPhase{Issue: child.Key, Role: claim.RoleArchitect, Claim: token}); result.Refusal != nil {
+		t.Fatalf("the operator's retry of the owner = %+v, want it applied", result.Refusal)
+	}
+	if again := ownerSteps(t, pool, child.Key); len(again) != 1 || again[0].Reason != told[0].Reason {
+		t.Fatalf("the retry with the step's owner-step queued holds %+v, want that one alone", again)
+	}
+	var restarts int
+	if err := pool.QueryRow(t.Context(), `select owner_restarts from step_starts where issue = $1 and task = 'a' and kind = 'step' and place = 1`,
+		child.Key).Scan(&restarts); err != nil {
+		t.Fatalf("read the owner's restarts of step 1's run: %v", err)
+	}
+	if restarts != 0 {
+		t.Fatalf("the retry left %d restarts of step 1's run spent, want none: it gives the daemon its restarts again", restarts)
+	}
+}
+
 // The stranded list names a child's own architect that failed while its child stands at a place
 // only that architect ends — a step of its own, or its retro — with no start of it queued: nothing
 // but the operator's retry starts it then. It names none where a start is queued (the daemon's
