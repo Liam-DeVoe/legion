@@ -289,26 +289,29 @@ function stateSummary(state: LegionState): string {
       const gate = issue.designGate;
       lines.push(`  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}`);
     }
-    const claims: Array<readonly [string, SummaryClaim]> = [];
-    if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
+    // Each claim with its label and what ends its line: the token of a claim `workers` does not show.
+    const claims: Array<readonly [string, SummaryClaim, string]> = [];
+    if (issue.architect !== undefined) claims.push(["architect", issue.architect, ""]);
     // Each worker of the issue's map: Legion's six in their workflow order, then each role of the
     // deployment (contract 221) in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
-      if (claim !== undefined) claims.push([role, claim]);
+      if (claim !== undefined) claims.push([role, claim, ""]);
     }
     // Each other claim of the issue, with the role it holds (contract 222): two claims of one
     // issue can hold one role, and `workers` shows one of them, so the other is listed after the
-    // workers and marked as another claim of its role.
+    // workers, marked as another claim of its role, with its token: issue and role reach only the
+    // claim `workers` shows, and fresh_session and compact reach this one by its token (`claim`).
     for (const other of issue.otherClaims ?? []) {
-      claims.push([`${other.role} (another claim)`, other.claim]);
+      const token = other.claim.token === undefined ? "" : ` claim ${other.claim.token}`;
+      claims.push([`${other.role} (another claim)`, other.claim, token]);
     }
-    for (const [role, claim] of claims) {
+    for (const [role, claim, token] of claims) {
       // A working claim whose last turn began hours ago is wedged; an idle claim's end is when
       // it last did anything, and a dash is a turn the daemon recorded none of.
       lines.push(
-        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}`
+        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}${token}`
       );
     }
   }

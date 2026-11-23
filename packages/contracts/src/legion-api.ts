@@ -2213,7 +2213,7 @@ export const LegionTaskStopRequest = z.strictObject({
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
  * design gate, and the state and both turn times of the architect's claim, of every worker's and
- * of each other claim of the issue with its role (`otherClaims`, contract 222).
+ * of each other claim of the issue with its role and its token (`otherClaims`, contract 222).
  * The record route and the state's `issues{}` answer the same node, so the read set below names
  * these paths at both, `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under
  * the state's prefix. They are written once here because the two entries must say the same thing.
