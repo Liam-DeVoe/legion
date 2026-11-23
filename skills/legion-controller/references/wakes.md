@@ -32,6 +32,8 @@ Without `reason`, the architect that owns the issue decides: do nothing. With `r
 
 The root's architect ran out of launches or prompts. When the root's `phase` is `done`, the tree is parked: do nothing. Otherwise look for the cause: `issues.<KEY>.architect.failure`, an open `capabilities` row naming its session, its last message on the root. With none, or a cause that is gone, restart the tree: `set_status` the root to `backlog`, then `todo`, in the same turn. When the cause stays, ask whether to park it (`skill://legion-controller/references/park-asks.md`).
 
+A child's own architect whose restarts at a step of its own are spent: the notice is on the child, and its `reason` says the daemon started it again three times there, and names `legion claims retry` for it, the operator's form of the same retry. Only that architect can report the step, so the architect above cannot move the child on. Look for the cause as above. With none, or with a cause that is gone, call `fresh_session` with the child's key and the role `architect`: the daemon relaunches the claim and tells it its step again. When the cause stays, it is a finding for a person.
+
 ## `worker-stalled` (architect)
 
 The daemon ended a stalled turn of the tree's architect; the notice says what became of the process and what the owed task waits on. Do nothing, unless it names the failed end (its `worker-died` follows) or a stop the runtime did not confirm, which is a finding for a person, as are repeated stalls of one architect.
