@@ -220,6 +220,50 @@ func TestTheReferencesReadAnswersALinkToTheIssuesCommentReservedForItsAuthorToTh
 	}
 }
 
+// The in statement's own target filter is the one clause that holds a link read from an item's
+// block: the arm of an ask's, a comment's or a message's block links binds its source block and
+// its item, and no target clause, where the refs and block_refs arms bind the target again. An ask
+// of a public document has a part, an option, that links CORE-1's comment C, reserved for its
+// author: an option's link is in ask_block_refs and in no refs row of the ask. Another person's
+// read lists no node linking in; the author's lists the ask, through C.
+func TestTheReferencesReadAnswersALinkFromAnAskPartToTheIssuesCommentReservedForItsAuthorToThatAuthorAlone(t *testing.T) {
+	tx := prefixFixture(t)
+	ctx := context.Background()
+	publicDocument, _ := createReferenceArtifact(t, tx, "", "CORE", "public-md")
+	privateComment := createReferenceComment(t, tx, "CORE-1")
+	const question = "Which option holds?"
+	var ask string
+	if err := tx.QueryRow(ctx, `
+		insert into asks (artifact_id, author, question)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', $2)
+		returning id::text
+	`, publicDocument, question).Scan(&ask); err != nil {
+		t.Fatalf("create the document's ask: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into ask_blocks (ask_id, block_id, node_id, position, type, text_sha256, excerpt,
+		                        made_at, changed_revision, changed_at)
+		values ($1::uuid, 'b2', 'ask/' || $1 || '#b2', 1, 'paragraph', 'sha', 'An option.', now(), 1, now())
+	`, ask); err != nil {
+		t.Fatalf("index the ask's option part: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into ask_block_refs (ask_id, block_id, from_node, to_kind, to_id, kind)
+		values ($1::uuid, 'b2', 'ask/' || $1 || '#b2', 'comment', $2, 'mentions')
+	`, ask, privateComment); err != nil {
+		t.Fatalf("link the private comment from the ask's option: %v", err)
+	}
+	reserveForAuthor(t, tx, "comment", privateComment)
+
+	if got := linkedFromOf(t, tx, privateReader); len(got) != 0 {
+		t.Errorf("another person's linked_from = %q; want none, since the one link in ends at the private comment %s", got, privateComment)
+	}
+	want := []string{relatedSummary("ask", ask, question, []string{"mentions"}, model.ReferenceVia{Kind: "comment", ID: privateComment})}
+	if got := linkedFromOf(t, tx, privateAuthor); !slices.Equal(got, want) {
+		t.Errorf("the author's linked_from = %q; want %q", got, want)
+	}
+}
+
 // The references read reads a block of the issue's own document only where the reader may see the
 // block, whichever end of a link it is. CORE-1's document D is public and its block b1 is reserved
 // for its author. As a source, b1 holds D's mention of a public document A (block_refs, and D's own
