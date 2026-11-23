@@ -77,7 +77,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 ## Pull request and merge gate
 
 - An implementation step's agent opens the pull request with the line `Dispatch: <KEY>` in its body;
-  later steps push to that branch and edit that pull request; a task with no such step has none.
+  later steps push to that branch and edit that pull request; an issue none of whose steps opened one has none.
 
 - No deferrals where the issue has a pull request.
   A finding that changes behaviour, hides an error, or breaks a gate is fixed in this pull request.

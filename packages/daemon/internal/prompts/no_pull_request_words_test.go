@@ -49,6 +49,7 @@ func TestTheNoPullRequestAndOwnerStepWordsSayWhatTheCodeDoes(t *testing.T) {
 		{"acceptance.md", "Never `pass` while such a check stands."},
 		{"reviewer.md", "or in your handoff's `body` where the issue has no pull request"},
 		{"reviewer.md", "on an issue with no pull request also `body`, the text a review body would carry"},
+		{"tester.md", "and on an issue with no pull request with `--at <the commit you test>` too, since a plain read stands no pass there."},
 		{"tester.md", "That verdict judges the implementer's recorded results alone: your own `failures`, such as a red test you wrote, never make it `rejected`."},
 		{"tester.md", "say in `implementerProof.how` that no implementer step stood before yours, so nothing was judged."},
 		{"tester.md", "the pushed commit you tested, which `jj -R \"$LEGION_WORKSPACE\" log -r @- --no-graph -T commit_id` printed before you tested (never `@`, the working-copy commit, which is never pushed)"},

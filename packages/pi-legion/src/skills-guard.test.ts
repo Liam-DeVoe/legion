@@ -726,7 +726,7 @@ test("an implementer and reviewer task has the implementer prove the surface and
   expect([
     ...lacks("legion-worker/SKILL.md", [
       /no tester step[^.;]*an implementation step's evidence serves/,
-      /implementation step's agent opens the pull request[^.]*a task with no such step has none/,
+      /implementation step's agent opens the pull request[^.]*an issue none of whose steps opened one has none/,
     ]),
     ...lacks("legion-worker/references/ci-checks.md", [
       /with no tester step the implementation step's agent[^.;]*real surface/,
