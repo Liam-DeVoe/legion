@@ -370,7 +370,10 @@ test("the toggle keeps the compare", async () => {
   if (renderer === undefined || model === undefined) throw new Error("no bars renderer");
   render(<EvalChart model={model} renderer={renderer} />);
   const compare = () => within(figure()).getByRole("checkbox", { name: "Compare" });
+  const windowChange = () => figure().querySelector('[data-window-change="per_day"]')?.textContent;
   expect(compare()).toBeChecked();
+  // The window's figure says its change from the compare range's.
+  expect(windowChange()).toBe("\u221210.0/day vs compare");
 
   // Shown in the graph, then in the table: each day's compare value and change beside its value.
   await user.click(within(figure()).getByRole("button", { name: "Table" }));
@@ -389,6 +392,7 @@ test("the toggle keeps the compare", async () => {
   await user.click(within(figure()).getByRole("button", { name: "Graph" }));
   expect(compare()).not.toBeChecked();
   expect(figure().querySelector('[data-series-range="compare"]')).toBeNull();
+  expect(windowChange()).toBeUndefined();
   await user.click(within(figure()).getByRole("button", { name: "Table" }));
   expect(compare()).not.toBeChecked();
   expect(table().querySelector('[data-range="compare"]')).toBeNull();

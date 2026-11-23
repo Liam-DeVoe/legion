@@ -189,9 +189,6 @@ function useUnownedIssuesLink(project: string): { state: LinkState; open: () => 
   return { open, state };
 }
 
-/** Which state a card is in: its view not answered yet, refused, or painted. */
-type CardState = EvalsViewState["status"];
-
 /** One target card: its eval's primary series as a chart (`EvalChart`), its verdict's badge
  *  beside the title, and its target. A card whose eval the view does not hold, or whose series it
  *  holds no row of, reads "no data", never 0 (spec R5). */
@@ -233,7 +230,7 @@ function TargetCard({
     };
   }, [answer, series, spec, target]);
   const link = useUnownedIssuesLink(project);
-  const state: CardState = view.status;
+  const state = view.status;
   const badge =
     verdict === null ? null : (
       <TargetBadge met={verdict.met} metLabel={"\u2713 met"} missedLabel={"\u2717 missed"} />
