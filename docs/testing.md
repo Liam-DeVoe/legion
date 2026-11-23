@@ -568,15 +568,35 @@ takes for writing, so no fork falls inside the write.
 
 Two kinds of package write such a file with `testexec.WriteFile`: a package whose tests call
 `Parallel`, in its test files, and a test-support package (a package whose name begins or ends
-with `test`), in every file, since tests of any package call it. Each module's
-`internal/textcheck` names, by `testexec.Unguarded`, each place in those files that opens a file
-by `os.WriteFile`, `os.OpenFile` or `os.Create` and gives it an execute bit, in the open's own
-mode or by a `Chmod` of the same file in the same function. The comment on `Unguarded` lists what
-it cannot see. A package whose tests run one at a time can still write such a file with
-`os.WriteFile`. Its test binary runs one test at a time, and a fork in another process copies
-none of its descriptors, so only a goroutine of the running test can fork while the file is open.
-Once its tests call `Parallel`, the check names its writes. A test that starts a command from
+with `test`), in every file, since tests of any package call it. A test that starts a command from
 another goroutine while it writes such a file writes it with `testexec.WriteFile` wherever it is.
+A package whose tests run one at a time can still write such a file with `os.WriteFile`. Its test
+binary runs one test at a time, and a fork in another process copies none of its descriptors, so
+only a goroutine of the running test can fork while the file is open.
+
+Each module's `internal/textcheck` holds those two kinds of package to the rule with
+`testexec.Unguarded`, and fails on each place it names, as file and line. It names:
+
+- an `os.WriteFile` or `os.OpenFile` whose mode has an execute bit, or a mode it cannot read as a
+  constant;
+- an `os.WriteFile`, `os.OpenFile`, `os.Create` or `os.CreateTemp` whose file the same top-level
+  function gives an execute bit with a `Chmod`: `os.Chmod` of the path the open names, spelled
+  the same way, `os.Chmod` of the file's `Name()`, or the file's own `Chmod` method;
+- a use of `os.WriteFile`, `os.OpenFile`, `os.Create`, `os.CreateTemp` or `os.Chmod` as a value;
+- a dot import of `os`.
+
+It reads each file's syntax alone, with no types, so it does not see:
+
+- a `Chmod` in another function than the open, or of the same path spelled another way, such as
+  a variable that holds the open's `filepath.Join` or its file's `Name()`;
+- a file written by another function of `os` (`os.CopyFS`), by another package's function
+  (`syscall.Open`, a helper of a package that is neither of the two kinds above), or by a command
+  such as `cp`;
+- a test-support package whose name does not begin or end with `test`.
+
+A write in one of those forms needs `testexec.WriteFile` by hand. The check also fails when the
+directory it reads holds no `go.mod`, or when it read no test file there, so a check pointed at the
+wrong directory cannot pass while it reads nothing.
 
 ## A Go test that opens a NATS client
 
