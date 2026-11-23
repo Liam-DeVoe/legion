@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/store/testdata"
 )
 
@@ -18,7 +19,7 @@ import (
 // through everything before it whatever lands beside it, and fixBesideStepsRelease names the
 // release whose way back the migration's header carries, as a failure to read that block names it.
 const (
-	fixBesideStepsVersion = 20261123134547
+	fixBesideStepsVersion = migrations.FixBesideSteps
 	fixBesideStepsRelease = "the release that starts a fix beside the other steps of a task"
 )
 
