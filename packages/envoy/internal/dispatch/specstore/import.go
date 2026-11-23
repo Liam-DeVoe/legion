@@ -30,7 +30,9 @@ import (
 // is itself held - is kept as a node of kind spec_import_hold, with its text, its provenance and the
 // fields it lacks, until a change request that supplies them is approved (Apply clears the hold of
 // each node it writes). A row of the Components table that reads as no component refuses the
-// level (ParseLevel), so no component is left out either.
+// level (ParseLevel), so no component is left out either; and so does an id that two nodes of the
+// level hold, or that no node of the approved spec can have (Import), so no node is written or held
+// at an address another node of the level takes or the store cannot hold.
 
 // The values of a hold: what it keeps, and the issue opened for its repair.
 const (
@@ -470,10 +472,17 @@ type Imported struct {
 // resolve, as a node's first version, with in's provenance; and each statement that does not as a
 // hold. A node the approved spec already holds or held is left as it stands, and a statement with
 // an open or a cleared hold is not held again, so an import run again writes only what the one
-// before could not; a statement it writes whose hold is open clears that hold. A level whose nodes
-// the approved spec could not hold - a loop, a node of no kind - is refused (*Refusal), writing
+// before could not; a statement it writes whose hold is open clears that hold. A level that holds an
+// id no node of the approved spec can have at an address of its own - an id two of its nodes hold,
+// an id that is no id, an id longer than an address of the store - is refused (*Refusal,
+// RefusalNodeInvalid) before anything is read or written, whether that node would be written or
+// held (levelIDProblems). A level whose nodes the approved spec could not hold - a node that breaks
+// a rule of its kind, a statement under no statement, a loop - is refused too (judgeMerged), writing
 // nothing.
 func Import(ctx context.Context, tx pgx.Tx, in ImportInput) (Imported, error) {
+	if problems := levelIDProblems(in.Project, in.Repo, in.Level); len(problems) > 0 {
+		return Imported{}, &Refusal{Code: RefusalNodeInvalid, Detail: problemDetail(problems), Problems: problems}
+	}
 	if err := Lock(ctx, tx, in.Project, in.Repo); err != nil {
 		return Imported{}, err
 	}
@@ -622,6 +631,55 @@ func Import(ctx context.Context, tx pgx.Tx, in ImportInput) (Imported, error) {
 		return Imported{}, err
 	}
 	return Imported{At: at, Written: written, Held: holds}, nil
+}
+
+// levelIDProblems is a problem for each id of level that no node of the approved spec of repo can
+// have at an address of its own, in the order the level first gives it: an id that two of the
+// level's nodes hold - two statements, two components, a statement and a component - is
+// doubled-id; an id that is no id (specgraph.IsID), and one whose address is longer than an address
+// of the store, is bad-id. Each node the import writes or holds is one row at its address, so a
+// level with such an id is refused whole, naming it, rather than written in part or failed by the
+// store.
+func levelIDProblems(project, repo string, level Level) []specgraph.Problem {
+	var order []string
+	kinds := map[string][]string{}
+	give := func(id, kind string) {
+		if _, given := kinds[id]; !given {
+			order = append(order, id)
+		}
+		kinds[id] = append(kinds[id], kind)
+	}
+	for _, statement := range level.Statements {
+		give(statement.ID, "statement")
+	}
+	for _, component := range level.Components {
+		kind := "component"
+		if component.Interface {
+			kind = "interface"
+		}
+		give(component.ID, kind)
+	}
+	var problems []specgraph.Problem
+	for _, id := range order {
+		address := Address(project, repo, id)
+		var rule, detail string
+		switch {
+		case len(kinds[id]) > 1:
+			rule = "doubled-id"
+			detail = fmt.Sprintf("the level gives the id to %d nodes: %s", len(kinds[id]), strings.Join(kinds[id], ", "))
+		case !specgraph.IsID(id):
+			rule = "bad-id"
+			detail = "the " + kinds[id][0] + "'s id is not an id: words of lower-case ASCII letters and digits joined by single hyphens, with no word that states a position"
+		case !graphstore.AddressFits(address):
+			rule = "bad-id"
+			detail = fmt.Sprintf("the %s's id is %d bytes, and its address in the approved spec is %d bytes, longer than the %d bytes an address of the store holds",
+				kinds[id][0], len(id), len(address), graphstore.MaxAddressBytes)
+		default:
+			continue
+		}
+		problems = append(problems, specgraph.Problem{Node: id, Rule: rule, Detail: rule + ": " + detail, Effect: specgraph.LosesNode})
+	}
+	return problems
 }
 
 // holdFields is what a hold keeps of a statement's fields beside its text, as the level wrote them.
