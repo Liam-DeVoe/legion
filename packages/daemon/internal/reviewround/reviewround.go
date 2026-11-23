@@ -1,9 +1,12 @@
-// Package reviewround writes the two sentences that end each task a reviewer is given: the
-// commit the reviewer's newest recorded deciding review read, and the entry of its round. Two
-// places write them, and both through Sentences: the workflow, onto each task of the reviewer it
-// queues (workflow's namingTheReviewRound), and the claim's send of a task that no such queue
-// named, a task the release before this one queued or an operator wrote (supervise's
-// Delivery.message), which names neither.
+// Package reviewround writes the daemon's sentences of a reviewer's review round: the two that end
+// each task a reviewer is given, the commit the reviewer's newest recorded deciding review read and
+// the entry of its round (Sentences), and the one before them where the reviewer's row holds no
+// commit and another agent's review on the task read one (AnotherAgentsSentence). Two places write
+// the two: the workflow, onto each task of the reviewer it queues (workflow's
+// namingTheReviewRound), and the claim's send of a task that no such queue named, a task the
+// release before this one queued or an operator wrote (supervise's Delivery.message), which names
+// neither. Only the workflow writes the one before them, on a reviewer's task and on the task of a
+// deployment role's review step.
 package reviewround
 
 import "strconv"
@@ -24,15 +27,17 @@ const EntryLabel = "Review entry"
 // commit is 40 hexadecimal characters and an entry a number, so neither is ever this word.
 const none = "none"
 
-// AnotherAgentLabel labels the commit the review of the step before a reviewer's step read, on the
-// same task, where that step's agent is another than the reviewer's (record.AnotherAgentsReview).
-// The reviewer read no part of the change itself, so its own sentence names no commit and it reads
-// the whole change; this sentence lets it see what changed since the other agent's review.
+// AnotherAgentLabel labels the commit another agent's review on the same task read, which a review
+// step's task names where the step's own row holds no commit (record.AnotherAgentsReview): its
+// agent has no deciding review of its own on the task, so its own sentence names none and it reads
+// the whole change, and this sentence lets it see what changed since the other agent's review.
 const AnotherAgentLabel = "Commit another agent's review read"
 
 // AnotherAgentsSentence is " Commit another agent's review read: <commit>.", and "" where commit
-// is "". It stands before the two sentences of the round (Sentences), which stay a task's last
-// two, so the way back that strips those two at a task's end strips them alone.
+// is "". On a reviewer's task it stands before the two sentences of the round (Sentences), which
+// stay the task's last two, so the way back of the reviewed-head migration, which strips those two
+// at a task's end (store/migrations/20261116234034_phase_reviewed_head.up.sql, its header's three
+// regexp_replace updates), strips them alone.
 func AnotherAgentsSentence(commit string) string {
 	if commit == "" {
 		return ""

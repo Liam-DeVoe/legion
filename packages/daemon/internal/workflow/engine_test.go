@@ -406,8 +406,9 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 	}
 }
 
-// The reviewer is told the commit its later round reads from, and the entry of each round, by
-// the labels its task carries (reviewround.Sentences), and its prompt and the merge gate of
+// The reviewer is told the commit its later round reads from, the entry of each round, and the
+// commit another agent's review read where its own row holds none, by the labels its task carries
+// (reviewround.Sentences, reviewround.AnotherAgentsSentence), and its prompt and the merge gate of
 // skill://legion-worker, which the prompt sends it to, name those fields, so a rename of a label
 // in the writer alone, in the reviewer's prompt alone or in the merge gate alone fails here. The
 // reviewer writes the entry into its review's footer, so a prompt that did not name the field
@@ -419,12 +420,13 @@ func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
 		t.Fatalf("read %s, the skill the reviewer's prompt sends it to: %v", mergeGate, err)
 	}
 	prompt := reviewerPrompt(t)
-	sentences := reviewround.Sentences("<sha>", 7)
+	sentences := reviewround.AnotherAgentsSentence("<sha>") + reviewround.Sentences("<sha>", 7)
 	for _, tc := range []struct {
 		field, part string
 	}{
 		{field: reviewround.CommitLabel + ": <sha>", part: " " + reviewround.CommitLabel + ": <sha>. "},
 		{field: reviewround.EntryLabel + ": <n>", part: " " + reviewround.EntryLabel + ": 7."},
+		{field: reviewround.AnotherAgentLabel + ": <sha>", part: reviewround.AnotherAgentsSentence("<sha>")},
 	} {
 		if !strings.Contains(sentences, tc.part) {
 			t.Fatalf("a task names its round as %q, want it to hold %q", sentences, tc.part)
