@@ -361,14 +361,24 @@ func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time
 // prChecksCompletedInQuery is ReadPRChecksCompletedIn's read of the runs: the PR-checks runs of a
 // window as listRunsStartedIn lists them (kind $2, event $3, started in [$4, $5)), of those the
 // ones completed in [$6, $7], oldest start first and those started in one instant by run id. The
-// completion is a range of delivery_runs_kind_completed_at (migration 20261123042253), (repo,
-// kind, completed_at), so the read reads the runs of those hours alone, and checks the start and
-// the event on them.
+// runs are read by their completion alone, one range of delivery_runs_kind_completed_at (migration
+// 20261123042253), (repo, kind, completed_at), in a materialized CTE that names no start, so the
+// read reads the runs of those hours alone; the start is checked on the runs it answers, which are
+// then ordered and bounded. Named beside the completion, the start's range and the order by it let
+// the planner read delivery_runs_kind_started_at's range of every run started in the window
+// instead, in the order asked for, and test each run's completion on the way: the plan it takes
+// where it holds no statistics of the two ranges, as under a generic plan, which reads every run
+// of 84 days to answer a day's (dispatch://INFRA-2918, R12; api's
+// TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues).
 const prChecksCompletedInQuery = `
+		with completed as materialized (
+			select ` + RunColumns + `
+			from delivery_runs
+			where repo = $1 and kind = $2 and event = $3 and completed_at >= $6 and completed_at <= $7
+		)
 		select ` + RunColumns + `
-		from delivery_runs
-		where repo = $1 and kind = $2 and event = $3 and started_at >= $4 and started_at < $5
-			and completed_at >= $6 and completed_at <= $7
+		from completed
+		where started_at >= $4 and started_at < $5
 		order by started_at, run_id
 		limit $8`
 
