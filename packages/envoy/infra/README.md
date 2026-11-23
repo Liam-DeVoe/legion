@@ -3484,6 +3484,11 @@ fails leaves the hub unchanged. `restore --from DIR` validates that manifest fir
 before any hold is set, then, for each bucket, deletes its stream and restores it; a restore cut
 part way runs once more from its first chunk after the cut's leftover stream is deleted, and a
 second cut stops the command, naming the bucket and both errors, with no partial stream left.
+Each delete of a stream (before its restore, and of a cut run's leftover) is sent once and waited
+on for the restore's request bound, 30 s. If no answer comes in that time, the command reads the
+stream: when it is absent, the delete landed and the restore continues. When it is still there,
+or the read gets no answer either, the command stops UNKNOWN naming the stream, sends no further
+delete, and records the stream as perhaps left.
 
 A usage error exits 2 and echoes no word the command could not read, since an nkey seed may have
 been pasted there: a stray argument is named by its position (`word 6 after "buckets"`), a value

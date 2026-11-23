@@ -267,7 +267,8 @@ const restoreRuns = 2
 // JetStream cannot place yet made again within bound. Each bucket's change states the archive and
 // the stream's own reading right after its restore (writerhold.Change.Restored), which restoreOne
 // has already found equal to the archive. A restore that stops is a *writerhold.Left naming what
-// the command left: each bucket restored before it, and the stopped one's stream deleted.
+// the command left: each bucket restored before it, and the stopped one's stream deleted, or
+// perhaps left when its delete did not complete (leftoverRemains).
 func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string, m *Manifest, buckets []string, bound time.Duration) (map[string]writerhold.Change, map[string]string, error) {
 	changes, outputs := map[string]writerhold.Change{}, map[string]string{}
 	var left []string
@@ -275,7 +276,12 @@ func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string
 		archive := m.Buckets[bucket]
 		restored, err := restoreOne(ctx, nc, stdout, bucket, filepath.Join(dir, bucket), archive, bound)
 		if err != nil {
-			left = append(left, "KV_"+bucket+" deleted, its restore stopped")
+			var remains *leftoverRemains
+			if errors.As(err, &remains) {
+				left = append(left, "KV_"+bucket+" perhaps left, its restore stopped and its delete did not complete")
+			} else {
+				left = append(left, "KV_"+bucket+" deleted, its restore stopped")
+			}
 			return nil, nil, &writerhold.Left{What: strings.Join(left, ", "), Err: err}
 		}
 		left = append(left, "KV_"+bucket+" restored")
@@ -293,22 +299,24 @@ func restoreAll(ctx context.Context, nc *nats.Conn, stdout io.Writer, dir string
 // (its connection closed, an answer that does not come) is run again from its first chunk,
 // restoreRuns times in all, each after the cut's leftover is gone; a cut on the last run stops the
 // command, naming the bucket and each run's error, with the leftover deleted, so no partial stream
-// stays. A start JetStream refuses to place (a peer still offline after the hold's restart) stores
+// stays. Each delete is deleteNow's, waited on for restoreRequest and never sent again: a delete
+// that ends UNKNOWN (leftoverRemains) stops the command at once, with no delete after it. A start
+// JetStream refuses to place (a peer still offline after the hold's restart) stores
 // nothing and is sent again (writerhold.RetryPlacementUntil), the runs sharing one placement limit
 // of bound; the limit passing is UNKNOWN naming the restore and the code, and no cut: no run
 // follows and no leftover is searched for, since the server stored nothing. A restored stream whose
 // state is not the archive's stops it too. It returns the restored stream's state it read.
 func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bucketDir string, archive Archive, bound time.Duration) (streamState, error) {
 	stream := "KV_" + bucket
-	js, err := nc.JetStream(nats.Context(ctx))
-	if err != nil {
-		return streamState{}, err
-	}
-	if err := js.DeleteStream(stream); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
-		return streamState{}, fmt.Errorf("delete %s before its restore: %w", stream, err)
+	if err := deleteNow(ctx, nc, stream, "delete "+stream+" before its restore"); err != nil {
+		return streamState{}, remainsAfter(err)
 	}
 	placement := time.Now().Add(writerhold.PlacementBound(bound))
 	var errs []error
+	stopped := func(err error) (streamState, error) {
+		errs = append(errs, err)
+		return streamState{}, remainsAfter(fmt.Errorf("restore %s stopped, and the delete of %s did not complete: %w", bucket, stream, errors.Join(errs...)))
+	}
 	for run := 1; run <= restoreRuns; run++ {
 		var state streamState
 		err := writerhold.RetryPlacementUntil(ctx, placement, "restore "+stream, stdout, func() error {
@@ -326,18 +334,21 @@ func restoreOne(ctx context.Context, nc *nats.Conn, stdout io.Writer, bucket, bu
 		if writerhold.PlacementRefused(err) {
 			return streamState{}, fmt.Errorf("restore %s stopped, and %s is deleted: %w", bucket, stream, err)
 		}
+		var remains *leftoverRemains
+		if errors.As(err, &remains) {
+			return stopped(fmt.Errorf("run %d: %w", run, err))
+		}
 		errs = append(errs, fmt.Errorf("run %d: %w", run, err))
 		fmt.Fprintf(stdout, "restore of %s: run %d of %d stopped part way: %v\n", bucket, run, restoreRuns, err)
 		if run == restoreRuns {
 			break
 		}
 		if err := deleteLeftover(ctx, nc, stream); err != nil {
-			errs = append(errs, err)
-			break
+			return stopped(err)
 		}
 	}
 	if err := deleteLeftover(ctx, nc, stream); err != nil {
-		errs = append(errs, err)
+		return stopped(err)
 	}
 	return streamState{}, fmt.Errorf("restore %s stopped, and %s is deleted: %w", bucket, stream, errors.Join(errs...))
 }
@@ -360,7 +371,7 @@ func startRestore(ctx context.Context, nc *nats.Conn, stdout io.Writer, stream, 
 			return streamState{}, err
 		}
 		if deleteFirst {
-			if err := deleteNow(nc, stream); err != nil {
+			if err := deleteNow(ctx, nc, stream, "delete the leftover of a cut restore of "+stream); err != nil {
 				return streamState{}, err
 			}
 		}
@@ -405,7 +416,7 @@ func restoreRun(ctx context.Context, nc *nats.Conn, stream, bucketDir string) (s
 		return false, nil, fmt.Errorf("connect for the restore of %s: %w", stream, err)
 	}
 	defer conn.Close()
-	mgr, err := jsm.New(conn, jsm.WithTimeout(30*time.Second))
+	mgr, err := jsm.New(conn, jsm.WithTimeout(restoreRequest))
 	if err != nil {
 		return false, nil, err
 	}
@@ -419,6 +430,11 @@ type streamState struct {
 	Msgs, LastSeq uint64
 }
 
+// restoreRequest bounds each request a restore sends and waits on: each of jsm.go's (restoreRun)
+// and each delete of the stream it replaces or of a cut run's leftover (deleteNow), in place of
+// nats.go's 5 s default, which a loaded hub's answer to a delete outlasted (CI run 45074967422).
+var restoreRequest = 30 * time.Second
+
 // leftoverWait is how long deleteLeftover watches for a cut restore's stream to appear: on a
 // clustered hub STREAM.INFO answers 10059 for about 10 s after the cut, then an empty stream
 // appears and stays.
@@ -427,9 +443,10 @@ var leftoverWait = 20 * time.Second
 // deleteLeftover deletes what a cut restore of stream left: it watches for leftoverWait, deleting
 // the stream each time it is found, and returns once the stream has stayed absent to the end.
 func deleteLeftover(ctx context.Context, nc *nats.Conn, stream string) error {
+	what := "delete the leftover of a cut restore of " + stream
 	end := time.Now().Add(leftoverWait)
 	for time.Now().Before(end) {
-		if err := deleteNow(nc, stream); err != nil {
+		if err := deleteNow(ctx, nc, stream, what); err != nil {
 			return err
 		}
 		select {
@@ -438,17 +455,64 @@ func deleteLeftover(ctx context.Context, nc *nats.Conn, stream string) error {
 		case <-time.After(time.Second):
 		}
 	}
-	return deleteNow(nc, stream)
+	return deleteNow(ctx, nc, stream, what)
 }
 
-// deleteNow deletes stream if it is there.
-func deleteNow(nc *nats.Conn, stream string) error {
-	js, err := nc.JetStream()
+// deleteNow deletes stream if it is there, what naming the delete in an error. The delete is sent
+// once, never again, and waited on for restoreRequest. When no answer comes within it, the stream
+// is read back, within restoreRequest too: absent means the delete landed, this one or another
+// before it, and the restore goes on. A stream still there, or a read that does not answer either,
+// is UNKNOWN naming the stream (a leftoverRemains), since the command cannot say whether the delete
+// will still land.
+func deleteNow(ctx context.Context, nc *nats.Conn, stream, what string) error {
+	err := withRequestBound(ctx, nc, func(js nats.JetStreamContext) error { return js.DeleteStream(stream) })
+	switch {
+	case err == nil, errors.Is(err, nats.ErrStreamNotFound):
+		return nil
+	case !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, nats.ErrTimeout):
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	readErr := withRequestBound(ctx, nc, func(js nats.JetStreamContext) error {
+		_, err := js.StreamInfo(stream)
+		return err
+	})
+	switch {
+	case errors.Is(readErr, nats.ErrStreamNotFound):
+		return nil
+	case readErr == nil:
+		return remainsAfter(&writerhold.Unknown{Step: writerhold.StepPostcheck, Err: err,
+			What: fmt.Sprintf("%s: the delete had no answer within %s, and %s is still there", what, restoreRequest, stream)})
+	default:
+		return remainsAfter(&writerhold.Unknown{Step: writerhold.StepPostcheck, Err: errors.Join(err, readErr),
+			What: fmt.Sprintf("%s: the delete had no answer within %s, and the read of %s after it had none either", what, restoreRequest, stream)})
+	}
+}
+
+// withRequestBound runs request on a JetStream context of nc whose requests wait restoreRequest
+// at most, within ctx.
+func withRequestBound(ctx context.Context, nc *nats.Conn, request func(nats.JetStreamContext) error) error {
+	ctx, cancel := context.WithTimeout(ctx, restoreRequest)
+	defer cancel()
+	js, err := nc.JetStream(nats.Context(ctx))
 	if err != nil {
 		return err
 	}
-	if err := js.DeleteStream(stream); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
-		return fmt.Errorf("delete the leftover of a cut restore of %s: %w", stream, err)
+	return request(js)
+}
+
+// leftoverRemains is a restore stopped where a delete of its stream did not complete, so the
+// stream may still be there: restoreAll records it as perhaps left, never as deleted, and
+// restoreOne sends no delete after it.
+type leftoverRemains struct{ err error }
+
+func (r *leftoverRemains) Error() string { return r.err.Error() }
+func (r *leftoverRemains) Unwrap() error { return r.err }
+
+// remainsAfter marks err a leftoverRemains, once.
+func remainsAfter(err error) error {
+	var remains *leftoverRemains
+	if errors.As(err, &remains) {
+		return err
 	}
-	return nil
+	return &leftoverRemains{err: err}
 }
