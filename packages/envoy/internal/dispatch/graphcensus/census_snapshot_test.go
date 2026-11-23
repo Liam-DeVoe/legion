@@ -174,8 +174,9 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 // and name that kind in its verdict. A tie kind of decisions, readings and asks is a kind a
 // deployment holds none of until somebody writes one, and the agreeing store holds none: no row
 // and no node of it is no refusal, and the report says so on that kind's own line. So is a kind a
-// deployment may hold none of (the runs, the frames and the visibility and state of the
-// reasoning kinds), which must pass and say on its own line that it checked no row.
+// deployment may hold none of (the runs, the frames, the visibility and state of the reasoning
+// kinds, and the priority, the run of a step and the plan dispatch://INFRA-1098's R32 moved into the
+// store), which must pass and say on its own line that it checked no row.
 func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 	database := storetest.Open(t)
 	seedAgreeingStore(t, database)
@@ -217,8 +218,8 @@ func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 				held.Kind, emptied.Rows(), emptied.Refused(), verdict, printed.String())
 		}
 	}
-	if optional != 8 {
-		t.Errorf("the census reads %d kinds a deployment may hold none of, want 8: the interaction, its frames, and the visibility and state of a run, a lens, a finding, a risk, a constraint and a lens kind", optional)
+	if optional != 11 {
+		t.Errorf("the census reads %d kinds a deployment may hold none of, want 11: the interaction, its frames, the visibility and state of a run, a lens, a finding, a risk, a constraint and a lens kind, and the priority, the step and the plan", optional)
 	}
 }
 

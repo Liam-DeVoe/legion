@@ -306,9 +306,11 @@ func (r *StoreReport) renderDifferences() int64 {
 // are the people and the agents, which no table projects (actorProjections); the eight after
 // those are the ties of decisions, readings and asks that block_refs, document_blocks, asks and
 // ask_followers project, and the six after those the same ties as graph_edges answers them, each
-// one that view answers (decisionProjections); then every other topic's kinds; and last the
-// visibility and the state of each run, lens, finding, risk, constraint and lens kind, held to the
-// store's own record of them (visibilityStateProjections). The comment kind is read first:
+// one that view answers (decisionProjections); then every other topic's kinds, the priority, the
+// run of a step and the plan that the stores' move took into the store among them
+// (storesProjections); and last the visibility and the state of each run, lens, finding, risk,
+// constraint and lens kind, held to the store's own record of them (visibilityStateProjections).
+// The comment kind is read first:
 // TestTheStoreCensusReadsOneSnapshot commits a write after it and before the block kind.
 //
 // Each topic of the store keeps its kinds in a list in a file of its own, census_<topic>.go, and
@@ -343,7 +345,7 @@ var projections = slices.Concat(
 	commentProjections, blockProjections, runProjections, actorProjections, decisionProjections,
 	issueProjections, componentProjections, resultProjections, versionProjections, refProjections,
 	approvalProjections, searchProjections, citationProjections, queryRoleProjections, anchorProjections,
-	visibilityStateProjections,
+	storesProjections, visibilityStateProjections,
 )
 
 // backfillPasses are the backfill's passes (Backfill), in the order it runs them, each topic's

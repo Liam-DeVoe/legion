@@ -1395,6 +1395,13 @@ So for each surface the two builds share, this is what build N+1 may change whil
 - **SQL.**
   Expand-then-contract across two releases (Database migrations, below), unchanged.
 
+- **The priority store and the workflow store.**
+  This build's boot moves both into the graph store, after its migrations and before it listens (`internal/dispatch/storesmove`, dispatch://INFRA-1098's R32), and keeps, for one release, the four names of their old tables as views over `graph_nodes` and `graph_tuples`, which PostgreSQL updates itself, with two triggers on `graph_nodes` that complete a run or a plan the release before writes through them.
+  So during a roll and after a rollback the release before writes through the views: it reads and writes its priorities, runs and plans under the names it always used, and each of its writes reaches the graph store.
+  Every connection this build opens carries `dispatch.stores_moved_writer=on` (`store.StoresMovedWriterSetting`), so the triggers pass over its own writes, which state those facts through `graphstore`.
+  After an image rollback the release before's reads through the views may take up to 4.0 times the read they replace (R22's exception for this move).
+  A step of every boot drops the views and the triggers once the newest announcement of another build lists the capability `stores_moved`, which this build announces, or at a boot that created the database from empty (`startup.StoresMovedRetirement`): the first boot of a build after this one, which no rollback leaves needing them.
+
 - **Owner locks.**
   Both builds' writers of one issue, document or project exclude each other, so a write of either build decides on what the other committed.
   Each process registers the owner lock protocol it serialises those writers by (`server_processes.owner_lock_protocol`, migration `20261115100924_server_processes_owner_lock_protocol`): a build that takes the owner's row first and holds it to its commit, as every build before that migration does, reads the column's default 0, and a build that takes the owner's advisory lock first (`store.LockOwner`) registers 1.
@@ -1432,7 +1439,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   That is the registry's own model: every other decision over the fleet (the signing keys, the embedder, the schema admission) counts a process silent past its live window as gone.
   A subcommand of an earlier build that an operator runs beside this one neither publishes nor registers, so it is never in the fleet.
   Of those subcommands, `rebuild-refs` takes issues' and documents' rows `for no key update` (from `legion-envoy-v30.21.1` on), and `backfill-block-ids` and `backfill-anchor-blocks` settle a document they open that owes a settlement, which takes its owner's row and appends its events: run those from a build that carries this change.
-  The others write no owner's row: `census` reads in one read-only transaction, `stored-order` reads, `backfill-files` writes only file versions' bytes, `redeliver-webhooks` writes the shared GitHub rate limits and asks GitHub to deliver again to the serving processes, and `settings`, `routes` and `openapi` open no database.
+  The others write no owner's row: `census` reads in one read-only transaction, and while the priority store's tables are still tables it rehearses the boot's move of the two stores in a second transaction that it rolls back (Pre-deploy census, below), `stored-order` reads, `backfill-files` writes only file versions' bytes, `redeliver-webhooks` writes the shared GitHub rate limits and asks GitHub to deliver again to the serving processes, and `settings`, `routes` and `openapi` open no database.
   The production deployment runs two of them as Jobs from the image its server is moving to (example-org/deployment, `dispatch/main.go`), and neither writes an owner's row.
   `census` runs before the server's Deployment moves to that image, and runs again only when the Job's template changes, a new image among them, or after a run that failed (`declareCensusJob`): so a roll forward runs the later build's census beside the earlier server, and a rollback the earlier build's census beside the later server.
   `backfill-files` runs once the server has rolled out, and only when a file move or restore is set (`declareFileJob`).
@@ -3026,7 +3033,20 @@ as a Kubernetes Job from the new image, or by hand as the one-off pod in `packag
 DATABASE_URL=postgres://... envoy-dispatch census
 ```
 
-The census is one `repeatable read, read only` transaction over the migrations this binary carries that the database has not applied:
+The census sees the migrations, and before the boot's move of the priority store and the workflow store into the graph store (dispatch://INFRA-1098's R32), which is no migration, it rehearses that move too.
+While the priority store's node table is still a table, after the migration census below it runs the move's copy and its census before the drop in a second transaction of its own, `repeatable read`, which it always rolls back (`storesmove.Rehearse`):
+
+- It reads the pending migrations in name order. Of this issue's own (`storesmove.OwnMigrations`) it applies each transactional one made only of `create table`, `create index` on a table the same migration creates and bounded inserts, skips a concurrent index build and a view replacement, and refuses any other.
+  Of another tree's it applies none, skips one that touches none of the six tables the move reads and writes - the stores' four old tables, `graph_nodes` and `graph_tuples` - nor replaces the function of a trigger on one, naming it, and refuses one that does.
+  A refusal prints `census: the rehearsal refuses the pending migration <name>` and exits 2, since the census could not be taken.
+- It then copies every tuple of the old tables in batches of 200, as the boot does, and runs the census before the drop, prints the time the copy took and each store's counts, and refuses on any difference on a line that starts `census: REFUSED rehearsal:`, which names the row by its store, kind, id and old `seq` alone, and exits 1.
+- It stops after 300 seconds, half of the census Job's deadline, wherever it is, prints its report so far and refuses on such a line. Its session sets `idle_in_transaction_session_timeout` to 60 seconds.
+- It takes `row exclusive` on the two graph tables and no lock the serving release's writes meet, takes no owner's row and appends no event, so it holds up no write; its `nextval` draws stay after the rollback.
+
+So a difference stops the deploy before the old pod stops, and the boot's own census under the swap's locks stays the second guard.
+After the swap, and after the boot step drops the views, the census runs no rehearsal and prints nothing of it.
+
+The migration census is one `repeatable read, read only` transaction over the migrations this binary carries that the database has not applied:
 every migration whose version `schema_migrations` does not record, the rule the runner applies them by (a database without that table records none, so everything is pending).
 For each it prints the tables the migration locks above ACCESS SHARE (`pgmigrate.CensusTables`), with each table's total size, its row count and the sessions holding locks on it;
 the transactions open longer than a minute anywhere in the database, and those whose age it cannot see (another role's without `pg_read_all_stats`, any with `track_activities` off, or a WAL sender's), which it tells from a session in no transaction by the virtual transaction id every transaction locks;

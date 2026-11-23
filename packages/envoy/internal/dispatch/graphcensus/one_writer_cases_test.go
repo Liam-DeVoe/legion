@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -35,6 +37,7 @@ import (
 // oneWriterState is what the cases leave for the cases after them.
 type oneWriterState struct {
 	issue, spec, notes, notesSlug, ask, comment, result string
+	priority                                            string
 	count                                               int
 }
 
@@ -48,7 +51,121 @@ const oneWriterInstallation = 23
 func oneWriterCases() []writerCase {
 	state := &oneWriterState{}
 	next := func() int { state.count++; return state.count }
-	return slices.Concat(apiCases(state, next), documentCases(state, next), rigPackageCases(state, next), ownDatabaseCases())
+	return slices.Concat(apiCases(state, next), storesCases(state, next), documentCases(state, next), rigPackageCases(state, next), ownDatabaseCases())
+}
+
+// storesCases are the writers of the three kinds the move of dispatch://INFRA-1098's R32 took into
+// the store, each through its route over the rig's issue: a priority's create, its rank move and
+// its delete (prioritystore), an issue's advances (writeIssueAdvances), a run's start (PutStep), a
+// plan (PutPlan) and a retro's rating. No table projects these kinds, so each case is store-only:
+// its runs fail at the store write's commit, and must leave nothing.
+func storesCases(state *oneWriterState, next func() int) []writerCase {
+	daemon := sessionActor("legion-daemon:SIZE")
+	createPriority := func(r *oneWriterRig) (string, error) {
+		id := fmt.Sprintf("one-writer-goal-%d", next())
+		_, err := r.send(http.MethodPost, "/api/v1/priorities", map[string]any{"id": id, "title": "Goal " + id}, "alice", http.StatusCreated)
+		return id, err
+	}
+	created := func(t *testing.T, r *oneWriterRig, _ *store.Store) error {
+		id, err := createPriority(r)
+		if err == nil && state.priority == "" {
+			state.priority = id
+		}
+		return err
+	}
+	var anchor string
+	anchored := func(t *testing.T, r *oneWriterRig, _ *store.Store) {
+		var err error
+		if anchor, err = createPriority(r); err != nil {
+			t.Fatalf("create the priority a rank move lands beside: %v", err)
+		}
+	}
+	// Each move lands the priority on the other side of the anchor, so every run moves it.
+	moved := func(t *testing.T, r *oneWriterRig, _ *store.Store) error {
+		body, err := r.send(http.MethodGet, "/api/v1/priorities", nil, "alice", http.StatusOK)
+		if err != nil {
+			return err
+		}
+		side := "after"
+		for _, row := range decodedOr[model.Priorities](body).Priorities {
+			if row.ID == anchor {
+				side = "before"
+				break
+			}
+			if row.ID == state.priority {
+				break
+			}
+		}
+		_, err = r.send(http.MethodPatch, "/api/v1/priorities/"+state.priority, map[string]any{"rank": map[string]any{side: anchor}}, "alice", http.StatusOK)
+		return err
+	}
+	var doomed string
+	toDelete := func(t *testing.T, r *oneWriterRig, _ *store.Store) {
+		var err error
+		if doomed, err = createPriority(r); err != nil {
+			t.Fatalf("create the priority a delete ends: %v", err)
+		}
+	}
+	deleted := func(t *testing.T, r *oneWriterRig, _ *store.Store) error {
+		_, err := r.send(http.MethodDelete, "/api/v1/priorities/"+doomed, nil, "alice", http.StatusNoContent)
+		return err
+	}
+	// Each write of the issue's advances states the set the issue does not hold, so every run
+	// states or retracts a relation.
+	advanced := func(t *testing.T, r *oneWriterRig, _ *store.Store) error {
+		body, err := r.send(http.MethodGet, "/api/v1/issues/"+state.issue, nil, "alice", http.StatusOK)
+		if err != nil {
+			return err
+		}
+		set := []string{state.priority}
+		if len(decodedOr[model.Issue](body).Advances) > 0 {
+			set = []string{}
+		}
+		_, err = r.send(http.MethodPatch, "/api/v1/issues/"+state.issue, map[string]any{"advances": set}, "alice", http.StatusOK)
+		return err
+	}
+	started := func(t *testing.T, r *oneWriterRig, _ *store.Store) error {
+		_, err := r.send(http.MethodPut, "/api/v1/issues/"+state.issue+"/steps/"+uuid.NewString(), map[string]any{
+			"actor": daemon, "task": "default", "step": 1, "kind": "step", "role": "planner", "generation": next(),
+			"started_at": time.Now().UTC().Format(time.RFC3339),
+		}, "", http.StatusOK)
+		return err
+	}
+	planned := func(t *testing.T, r *oneWriterRig, _ *store.Store) error {
+		_, err := r.send(http.MethodPut, "/api/v1/issues/"+state.issue+"/plans/"+uuid.NewString(), map[string]any{
+			"actor": daemon, "generation": next(), "source": "default",
+			"tasks": []map[string]any{{"id": "default", "steps": []string{"planner", "implementer"}}},
+		}, "", http.StatusOK)
+		return err
+	}
+	var retro string
+	var retroGeneration int
+	retroIdentity := func() map[string]any {
+		return map[string]any{"actor": daemon, "task": "default", "step": 0, "kind": "retro", "role": "implementer", "generation": retroGeneration}
+	}
+	retroEnded := func(t *testing.T, r *oneWriterRig, _ *store.Store) {
+		retro, retroGeneration = uuid.NewString(), next()
+		body := retroIdentity()
+		body["result"], body["ended_at"] = "passed", time.Now().UTC().Format(time.RFC3339)
+		if _, err := r.send(http.MethodPut, "/api/v1/issues/"+state.issue+"/steps/"+retro, body, "", http.StatusOK); err != nil {
+			t.Fatalf("end the retro a rating rates: %v", err)
+		}
+	}
+	rated := func(t *testing.T, r *oneWriterRig, _ *store.Store) error {
+		body := retroIdentity()
+		body["rating"], body["rating_reason"] = 4, "It held."
+		_, err := r.send(http.MethodPut, "/api/v1/issues/"+state.issue+"/steps/"+retro+"/rating", body, "", http.StatusOK)
+		return err
+	}
+	return []writerCase{
+		{name: "a priority's create", storeOnly: true, drive: created},
+		{name: "a priority's rank move", storeOnly: true, ready: anchored, drive: moved},
+		{name: "a priority's delete", storeOnly: true, each: toDelete, drive: deleted},
+		{name: "an issue's advances", storeOnly: true, drive: advanced},
+		{name: "a run's start", storeOnly: true, drive: started},
+		{name: "a plan", storeOnly: true, drive: planned},
+		{name: "a retro's rating", storeOnly: true, each: retroEnded, drive: rated},
+	}
 }
 
 // createIssue creates an issue of the rig's project as alice and answers its key and its spec.

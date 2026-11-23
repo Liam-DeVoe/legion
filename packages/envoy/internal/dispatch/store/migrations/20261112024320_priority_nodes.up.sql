@@ -1,13 +1,15 @@
 -- 20261112024320_priority_nodes.up.sql — the cross-project priority, as a node and its tuples.
 --
 -- INFRA-2947: a priority is a thing the whole deployment holds rather than a row of one project's
--- board, and work in any project states that it advances one. The two tables are the shape of
--- the node and tuple store legion/INFRA-1149 is to add, whose own migration this tree does not
--- hold yet, less `legacy_source_seq`, which exists there only for a projection's own backfill:
--- so the day that store lands, these rows copy into
--- `graph_nodes` and `graph_tuples` column for column. They carry names of their own rather than
--- the store's, because tables named `graph_nodes` and `graph_tuples` here would collide with that
--- migration on the day it lands.
+-- board, and work in any project states that it advances one. The two tables were the shape of
+-- the node and tuple store legion/INFRA-1149 was to add, less `legacy_source_seq`, which exists
+-- there only for a projection's own backfill. They carried names of their own rather than the
+-- store's, because tables named `graph_nodes` and `graph_tuples` here would have collided with that
+-- migration. dispatch://INFRA-1098's boot moved their rows into `graph_nodes` and `graph_tuples`
+-- (internal/dispatch/storesmove) and left views of these names for one release; prioritystore
+-- writes and reads the graph store.
+--
+-- replaces: 20261112024320_priority_nodes.up.sql sha256:fe6022681f006c560e751e8bfc1f801bcfde252428a23b3b79fb271d626cb56e
 --
 -- No column names a project. That is what makes a priority cross-project: an issue of any board
 -- states `advances` on one, and neither table holds a row that could be narrowed to one project.

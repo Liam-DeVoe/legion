@@ -1307,6 +1307,8 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"risk":             {tuples: 11, writes: 11 * sizingWindowDays, assumed: true},
 		"node_state":       {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		"pointer_retarget": {tuples: 2, writes: 1 * sizingWindowDays, assumed: true},
+		// No table counts a write of the moved stores once the boot has moved them into the store.
+		"moved_stores": {tuples: 1, writes: movedStoresTuplesADay * sizingWindowDays, assumed: true},
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, printedTerm := terms[name]
@@ -1621,4 +1623,53 @@ func TestTheSizingReadsAVersionOfATypeOnlyTheStoreDeclares(t *testing.T) {
 		t.Errorf("the sizing counts %d move(s) over the claim document's %d version(s) read, %d of them unreadable; want versions 1 and 2 read, neither unreadable, and the 1 move version 2 makes of a paragraph out of its claim counted, since the store's type nodes declare claim\n%s",
 			got.writes, got.read, got.unreadable, printed)
 	}
+}
+
+// TestTheSizingSumsTheMovedStoresRate holds the sizing to the term of the moved stores
+// (dispatch://INFRA-1098's R32): the priority store and the workflow store write graph_tuples at
+// about 6,240 tuples a day, the Design part "The time the move takes" measured, and no table counts
+// those writes once the boot moved both stores into the store. Over a seeded history the sizing
+// prints the term moved_stores of the root at that rate, assumed, and its projection of
+// graph_tuples grows by it: the rows a day it projects are the sum of the terms, the moved stores'
+// 6,240 among them, and the same sum less the term is 6,240 short.
+func TestTheSizingSumsTheMovedStoresRate(t *testing.T) {
+	database := storetest.Open(t)
+	seedSizedHistory(t, database)
+	report, err := StoreCensus(context.Background(), database.Pool.Config().ConnString(), true, nil)
+	if err != nil {
+		t.Fatalf("take the sizing: %v", err)
+	}
+	var printed bytes.Buffer
+	report.Write(&printed)
+	var moved *StoreKind
+	var others float64
+	for index, kind := range report.Sizing.Kinds {
+		if kind.Name == "moved_stores" {
+			moved = &report.Sizing.Kinds[index]
+			continue
+		}
+		others += kind.TuplesADay
+	}
+	if moved == nil {
+		t.Fatalf("the sizing holds no term moved_stores:\n%s", printed.String())
+	}
+	t.Logf("the term: moved_by=%s tuples_a_write=%d writes=%d assumed=%d tuples_a_day=%.1f; the other terms' tuples a day %.1f",
+		moved.MovedBy, moved.Tuples, moved.Writes, moved.Assumed, moved.TuplesADay, others)
+	if moved.MovedBy != movedByTheRoot || moved.Assumed == 0 || moved.TuplesADay != 6240 {
+		t.Errorf("the term moved_stores is moved_by=%s assumed=%d at %.1f tuples a day, want the root's, assumed, at 6240", moved.MovedBy, moved.Assumed, moved.TuplesADay)
+	}
+	if !strings.Contains(printed.String(), "census: sizing tuples-a-write kind=moved_stores ") {
+		t.Errorf("the sizing prints no line of the term moved_stores:\n%s", printed.String())
+	}
+	for _, growth := range report.Sizing.Growth {
+		if growth.Name != "graph_tuples" {
+			continue
+		}
+		t.Logf("graph_tuples: %.1f rows a day, %d bytes in a year", growth.RowsADay, growth.YearBytes)
+		if diff := growth.RowsADay - others; diff < 6239.5 || diff > 6240.5 {
+			t.Errorf("the projection of graph_tuples grows by %.1f rows a day beside the other terms, want the moved stores' 6240", diff)
+		}
+		return
+	}
+	t.Fatalf("the sizing projects no graph_tuples:\n%s", printed.String())
 }

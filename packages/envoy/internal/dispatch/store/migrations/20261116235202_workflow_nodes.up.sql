@@ -5,13 +5,14 @@
 -- run and at its end, under one id, and a person reads an issue's steps through the `part_of`
 -- relation each node states to its issue.
 --
--- The two tables are the priority's shape (20261112024320_priority_nodes.up.sql), which is the shape
--- of the graph's node and tuple store, less `legacy_source_seq`: so the day that store lands, these
--- rows copy into `graph_nodes` and `graph_tuples` column for column. They carry names of their
--- own, because tables named `graph_nodes` and `graph_tuples` here would collide with that store's
--- own migration on the day it lands. The columns, the primary keys and the three read indexes are
--- the priority's exactly, which the store's test reads out of the catalogue
--- (workflowstore TestTheTablesAreThePriorityShape).
+-- The two tables were the priority's shape (20261112024320_priority_nodes.up.sql), which is the
+-- shape of the graph's node and tuple store, less `legacy_source_seq`. They carried names of their
+-- own, because tables named `graph_nodes` and `graph_tuples` here would have collided with that
+-- store's own migration. dispatch://INFRA-1098's boot moved their rows into `graph_nodes` and
+-- `graph_tuples` (internal/dispatch/storesmove) and left views of these names for one release;
+-- workflowstore writes and reads the graph store.
+--
+-- replaces: 20261116235202_workflow_nodes.up.sql sha256:0f9d86a0aa66ac9414934eb00809c4affe9400ea9dee92b7f3a09aefcec4708a
 --
 -- Nothing updates a tuple and nothing deletes one. The node row is the projection of its own
 -- tuples: `attributes` holds each field of the step, written once, and the tuples hold who wrote

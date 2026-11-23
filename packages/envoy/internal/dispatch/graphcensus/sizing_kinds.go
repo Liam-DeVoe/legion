@@ -27,6 +27,19 @@ const (
 	movedWithBlocks = "blocks-child"
 )
 
+// movedByTheRoot is the parent change's own move of the priority store and the workflow store into
+// the store (dispatch://INFRA-1098's R32), whose tuples the sizing sums beside the five children's
+// (movedStoresTuplesADay).
+const movedByTheRoot = "the-root"
+
+// movedStoresTuplesADay is the rate the moved stores write graph_tuples at, from the Design part
+// "The time the move takes" of dispatch://INFRA-1098's spec: production's API answered 2,195 runs
+// on 241 issues at 2026-11-23T12:50Z, 6.6 days after the first run started, so the runs grew by
+// about 333 a day, which state about 6,240 tuples a day. A priority's writes add few beside them.
+// No table counts these writes once the boot has moved both stores into the store, so the term is
+// assumed at that rate.
+const movedStoresTuplesADay = 6240
+
 // StoreKind is one term of the projection: one kind of write the five children of
 // the parent change move, the child that moves it, how many nodes and how many tuples one such
 // write appends, and how many such writes the database's own history holds inside the window.
@@ -138,7 +151,9 @@ const (
 //   - the lenses child's interaction, its frames and its node stated gone once the release before
 //     deletes its row, a lens and its finding blocks, a lens kind, a constraint, a risk, a node's
 //     state and a pointer's retarget (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
-//     #b-r-constraint-risk), every one of them assumed.
+//     #b-r-constraint-risk), every one of them assumed;
+//   - the root's move of the priority store and the workflow store, each tuple a write of its own,
+//     assumed at the rate the root's spec measured (movedStoresTuplesADay).
 //
 // Every node of an issue, a document, an ask, a message, a comment and a block states its project
 // or its parties beside its visibility and state, written by the create that makes it: each of
@@ -665,6 +680,13 @@ func storeKinds() []StoreKind {
 		Driver: "assumed at 1 a day, since production writes no pointer before the lenses child ships: a retarget of" +
 			" a lens's, a risk's or a requirement's pointer, the retraction of the far end it held and the assertion" +
 			" of the new one",
+	}, {
+		// Counted off the Design part "The time the move takes" of dispatch://INFRA-1098's spec:
+		// prioritystore's and workflowstore's value tuples and relations, each one write here.
+		Name: "moved_stores", MovedBy: movedByTheRoot, Tuples: 1, Assumed: movedStoresTuplesADay * sizingWindowDays,
+		Driver: "assumed at 6,240 tuples a day, the rate production's runs grew at to 2026-11-23, since no table counts" +
+			" them once the boot moved the priority store and the workflow store into the store: a priority's, a run's" +
+			" and a plan's value tuples, each run's and plan's part_of, a run's reports and an issue's advances",
 	}}
 }
 

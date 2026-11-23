@@ -32,10 +32,10 @@
 #       are outside this inventory. It prints the count it wrote of each migrated kind, and fails on
 #       a kind it wrote none of, naming the gap in the fixture.
 #   I   The inventory, straight from that database before the upgrade: every row of every kind
-#       this tree migrates, each as the node or tuple it is to become. The rows of the four tables
-#       of R21's exception (priority_nodes, priority_tuples, workflow_nodes and workflow_tuples) are
-#       left out, until the version of the spec that states their move: this tree moves none of them
-#       into the store before then. A component is written only by the architecture importer from
+#       this tree migrates, each as the node or tuple it is to become. The priorities, runs and
+#       plans that the boot's move of R32 takes into the store are c-stores-moved's, whose driver
+#       reads them across the move: the fixture writes none, and `census --store` reads their three
+#       kinds with no refusal of a zero count. A component is written only by the architecture importer from
 #       a repository on GitHub, which no server this harness boots reaches, so the fixture writes
 #       none and the inventory holds none, which its `inventory: component` line says with the
 #       count the baseline's rows hold; `census --store` still reads the component censuses.
@@ -174,14 +174,12 @@ readonly fixture_role="graph-census-$stamp"
 # block index may take to drain the documents backfill-graph-store marked owed (U).
 readonly convert_limit=300 owed_limit=300
 
-# R21's closed list of supertags, spec version 117: the thirty-one, handoff among them, and the
-# query and query version nodes R28's approval row points at. priority, step and plan are not on it
-# while R32 is out of the spec.
+# R21's closed list of supertags: the thirty-one of spec version 117, handoff among them, the query
+# and query version nodes R28's approval row points at, and priority, step and plan, which R32 adds
+# (20261123134318_stores_moved).
 readonly -a r21_supertags=(issue document "document version" block callout ask requirement plan_task check result
   decision reading criterion lens lens_kind constraint risk comment message person session role page interaction
-  delivery_attempt component supertag attribute handoff query "query version")
-# The four tables of R21's exception, whose rows this census leaves out.
-readonly -a excepted_tables=(priority_nodes priority_tuples workflow_nodes workflow_tuples)
+  delivery_attempt component supertag attribute handoff query "query version" priority step plan)
 # The four children whose new read replaces an old one, each with the check that compares the two.
 readonly -a compared_children=("INFRA-1149 c-census" "INFRA-1150 c-census" "INFRA-1152 c-routes-gone" "INFRA-1253 c-queries")
 
@@ -465,7 +463,7 @@ done < <(inventory_kinds)
 # kind out unnamed; census --store still reads the component censuses (C).
 query I "count the baseline's components" "select count(*) from components"
 printf 'inventory: component %s (not seeded: only the architecture importer writes a component, from an architecture repository on GitHub, which no server lib-baseline.sh boots reaches)\n' "$answer"
-pass I "the inventory holds $(grep -c . "$work/inventory.tsv") records of $(inventory_kinds | grep -c .) migrated kinds, every kind at least one; components are not seeded (the line above says why); the rows of ${excepted_tables[*]} are left out (R21's exception)"
+pass I "the inventory holds $(grep -c . "$work/inventory.tsv") records of $(inventory_kinds | grep -c .) migrated kinds, every kind at least one; components are not seeded (the line above says why)"
 
 # --- O: the old answers, on the baseline --------------------------------------------------------
 
@@ -561,10 +559,6 @@ if [[ "$handoff_held" != 1 ]]; then
   want_value S "a head without dispatch://INFRA-1336's merge holds no handoff node" 0 \
     "select count(*) from graph_nodes where kind = 'handoff' or supertag = 'handoff'"
 fi
-for table in "${excepted_tables[@]}"; do
-  query S "count the rows of $table" "select count(*) from $table"
-  printf 'left out (R21 exception): %s holds %s rows\n' "$table" "$answer"
-done
 
 # --- C: each census of the store, both ways -----------------------------------------------------
 

@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log/slog"
 	"maps"
 	"net/http/httptest"
 	"os"
@@ -26,8 +27,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus/censustest"
+	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/storesmove"
 )
 
 // This file is c-one-writer of dispatch://INFRA-1098 (dispatch://INFRA-1098/spec#b-r-derived): the
@@ -41,12 +44,6 @@ import (
 
 // moduleRoot is packages/envoy, read from this package's own directory.
 const oneWriterModule = "../../.."
-
-// r21Exceptions are the four tables of R21's exception: the priority store's and the workflow
-// store's, which are no projection of the store until the version of the spec that states their
-// move (Verification version 117). The inventory leaves them out, with their writers and the
-// reads that answer from them.
-var r21Exceptions = []string{"priority_nodes", "priority_tuples", "workflow_nodes", "workflow_tuples"}
 
 // namedProjections are the tables R21 names as projections of the store that no kind of the
 // census holds to it on this line, each with why it is one.
@@ -69,9 +66,10 @@ type projection struct {
 }
 
 // readProjections reads the tables that project the store off the census the line ships
-// (graphcensus.StoreCensus) over database, adds the ones R21 names, and leaves out R21's
-// exception. A kind whose row side is many tables' columns - the people, the sessions, the roles
-// and their pages - is one no table projects, and is printed.
+// (graphcensus.StoreCensus) over database, and adds the ones R21 names. A kind whose row side is
+// many tables' columns - the people, the sessions, the roles and their pages - is one no table
+// projects, and is printed, and so is a kind held to the store's own record, as the priority, the
+// run and the plan are since the stores' move (dispatch://INFRA-1098's R32).
 func readProjections(t *testing.T, ctx context.Context, database *store.Store) map[string]*projection {
 	t.Helper()
 	report, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, nil)
@@ -130,13 +128,6 @@ func readProjections(t *testing.T, ctx context.Context, database *store.Store) m
 			continue
 		}
 		projections[table] = &projection{table: table, kinds: []string{"(" + why + ")"}, whole: true}
-	}
-	for _, table := range r21Exceptions {
-		if held, ok := projections[table]; ok {
-			t.Logf("left out: %s, which the census holds as %v, a table of R21's exception", table, held.kinds)
-			delete(projections, table)
-		}
-		t.Logf("left out: %s, a table of R21's exception, which is no projection of the store until the version of the spec that states its move (Verification version 117), with its writers and the reads that answer from it", table)
 	}
 	if len(projections) == 0 {
 		t.Fatal("the census names no table that projects the store, so no writer can be held to it")
@@ -214,6 +205,9 @@ var runtimeProjectionWrites = map[string][]string{
 	// A migration runner's version table.
 	"internal/pgmigrate/identity.go#writeFixes: update":  nil,
 	"internal/pgmigrate/identity.go#Record: insert into": nil,
+	// The pre-deploy census's rehearsal of dispatch://INFRA-1098's R32 naming, in its refusal, a
+	// pending migration's insert it cannot admit: words of a report, which write nothing.
+	"internal/pgmigrate/rehearsal.go#insertsBounded: insert into": nil,
 }
 
 // cutPackage is the package dispatch://INFRA-1149's cut (5a51d205) deletes; the package ships in
@@ -697,6 +691,137 @@ func withoutLineComments(body string) string {
 	return strings.Join(lines, "\n")
 }
 
+// keptStoreWriters is the one write of the store outside graphstore that a database holds while
+// the boot's move of the priority store and the workflow store into it stands for the release
+// before (dispatch://INFRA-1098's R32, storesmove): the four names of the old tables as views over
+// graph_nodes and graph_tuples, which PostgreSQL updates itself, so the release before reads and
+// writes its priorities, runs and plans through them, and the two triggers on graph_nodes with the
+// functions of their names (graphstore.StoresMovedTriggers), which complete a run or a plan it
+// writes. They are kept for one release under R22's first condition, and the boot step drops them
+// once the newest announcement of another build lists stores_moved (startup.StoresMovedRetirement),
+// so a database the step ran over holds none. Each is named as readStoreWritersOutsideGraphstore
+// names it.
+var keptStoreWriters = []string{
+	"the function graph_nodes_workflow_state(), which writes graph_tuples",
+	"the trigger graph_nodes_workflow_project on graph_nodes, before each update, sets the row it runs for (graph_nodes_workflow_project())",
+	"the trigger graph_nodes_workflow_state on graph_nodes, after each insert, runs graph_nodes_workflow_state(), which writes graph_tuples",
+	"the view priority_nodes, which PostgreSQL updates as graph_nodes",
+	"the view priority_tuples, which PostgreSQL updates as graph_tuples",
+	"the view workflow_nodes, which PostgreSQL updates as graph_nodes",
+	"the view workflow_tuples, which PostgreSQL updates as graph_tuples",
+}
+
+// readStoreWritersOutsideGraphstore reads the catalogue of database for every write of the
+// store's two tables that no statement of graphstore issues, sorted: each view over graph_nodes or
+// graph_tuples that PostgreSQL can update itself, each function whose body writes either table,
+// and each trigger on either table that sets the row it runs for (before each row) or runs such a
+// function.
+func readStoreWritersOutsideGraphstore(t *testing.T, ctx context.Context, database *store.Store) []string {
+	t.Helper()
+	var found []string
+	views, err := database.Pool.Query(ctx, `
+		select distinct v.relname::text, base.relname::text
+		from pg_class v
+		join pg_rewrite r on r.ev_class = v.oid
+		join pg_depend d on d.classid = 'pg_rewrite'::regclass and d.objid = r.oid and d.refclassid = 'pg_class'::regclass
+		join pg_class base on base.oid = d.refobjid and base.oid <> v.oid
+		where v.relkind = 'v' and v.relnamespace = current_schema()::regnamespace
+		  and base.relname in ('graph_nodes', 'graph_tuples') and pg_relation_is_updatable(v.oid, false) <> 0`)
+	if err != nil {
+		t.Fatalf("read the views over the store: %v", err)
+	}
+	for views.Next() {
+		var view, base string
+		if err := views.Scan(&view, &base); err != nil {
+			t.Fatal(err)
+		}
+		found = append(found, "the view "+view+", which PostgreSQL updates as "+base)
+	}
+	views.Close()
+	writes := projectionWrites(storeTables)
+	bodies, err := database.Pool.Query(ctx, `
+		select p.proname::text, p.prosrc from pg_proc p
+		join pg_language l on l.oid = p.prolang
+		where p.pronamespace = current_schema()::regnamespace and l.lanname not in ('internal', 'c')`)
+	if err != nil {
+		t.Fatalf("read pg_proc: %v", err)
+	}
+	written := map[string]string{}
+	for bodies.Next() {
+		var name, body string
+		if err := bodies.Scan(&name, &body); err != nil {
+			t.Fatal(err)
+		}
+		if match := writes.FindStringSubmatch(withoutLineComments(body)); match != nil {
+			written[name] = strings.ToLower(match[2])
+			found = append(found, "the function "+name+"(), which writes "+written[name])
+		}
+	}
+	bodies.Close()
+	triggers, err := database.Pool.Query(ctx, `
+		select t.tgname::text, c.relname::text, p.proname::text, t.tgtype
+		from pg_trigger t
+		join pg_class c on c.oid = t.tgrelid
+		join pg_proc p on p.oid = t.tgfoid
+		where not t.tgisinternal and c.relname in ('graph_nodes', 'graph_tuples') and c.relnamespace = current_schema()::regnamespace`)
+	if err != nil {
+		t.Fatalf("read the triggers of the store: %v", err)
+	}
+	for triggers.Next() {
+		var trigger, table, function string
+		var kind int16
+		if err := triggers.Scan(&trigger, &table, &function, &kind); err != nil {
+			t.Fatal(err)
+		}
+		// pg_trigger.tgtype: bit 0 for each row, bit 1 before, then insert, delete and update.
+		var events []string
+		for _, event := range []struct {
+			bit  int16
+			name string
+		}{{4, "insert"}, {8, "delete"}, {16, "update"}} {
+			if kind&event.bit != 0 {
+				events = append(events, event.name)
+			}
+		}
+		if kind&3 == 3 {
+			found = append(found, "the trigger "+trigger+" on "+table+", before each "+strings.Join(events, " or ")+", sets the row it runs for ("+function+"())")
+		} else if target, writer := written[function]; writer {
+			found = append(found, "the trigger "+trigger+" on "+table+", after each "+strings.Join(events, " or ")+", runs "+function+"(), which writes "+target)
+		}
+	}
+	triggers.Close()
+	slices.Sort(found)
+	return found
+}
+
+// requireTheStoreWritersOutsideGraphstore holds database's writers of the store outside graphstore
+// (readStoreWritersOutsideGraphstore) to want, printing each.
+func requireTheStoreWritersOutsideGraphstore(t *testing.T, ctx context.Context, database *store.Store, what string, want []string) {
+	t.Helper()
+	found := readStoreWritersOutsideGraphstore(t, ctx, database)
+	t.Logf("%s holds %d writers of the store outside graphstore:\n  %s", what, len(found), strings.Join(found, "\n  "))
+	for _, writer := range found {
+		if !slices.Contains(want, writer) {
+			t.Errorf("%s holds %s, a write of the store outside graphstore that is no part of the release before's path through the stores' move", what, writer)
+		}
+	}
+	for _, writer := range want {
+		if !slices.Contains(found, writer) {
+			t.Errorf("%s does not hold %s, which the stores' move keeps for the release before", what, writer)
+		}
+	}
+}
+
+// movedStores runs the boot's move of the priority store and the workflow store over database
+// (storesmove.Move), which swaps the four tables for the views and creates the two triggers.
+func movedStores(t *testing.T, ctx context.Context, database *store.Store) *store.Store {
+	t.Helper()
+	if result, err := storesmove.Move(ctx, database.Pool.Config().ConnString(), storesmove.Options{}); err != nil || !result.Moved {
+		t.Fatalf("move the stores: moved=%v, %v; want them moved", result != nil && result.Moved, err)
+	}
+	return database
+}
+
 // --- the behavioural half --------------------------------------------------------------------
 
 // injectionObjects are the test's own objects in a behavioural database, none of them a
@@ -978,6 +1103,11 @@ type writerCase struct {
 	// process is the directory of the module, from packages/envoy, whose writers the case's run
 	// stands for where they run in a process or on a connection the tracer does not see: the seed.
 	process string
+	// storeOnly says the writer writes a kind no table projects, one the move of
+	// dispatch://INFRA-1098's R32 took into the store: no failure between its store write and a
+	// projection write exists, so its runs inject the failure at the store write's commit alone,
+	// and its plain run must write the store.
+	storeOnly bool
 	// drives are the writers, by their inventory key, whose statement names its table with a
 	// runtime value, so neither a stack nor a statement's text names them: the case drives each,
 	// which its run's write of the writer's table stands for.
@@ -1170,6 +1300,10 @@ func (r *oneWriterRig) runCase(t *testing.T, c writerCase) caseRun {
 		{"between", "a failure between the store write and the projection write"},
 		{"after", "a failure after the projection write"},
 	} {
+		if c.storeOnly && injection.point == "between" {
+			t.Logf("%s writes a kind no table projects, so no failure between its store write and a projection write exists to inject", c.name)
+			continue
+		}
 		written := database(injection.point)
 		ready(written)
 		drain := r.listenOn(t, written)
@@ -1235,6 +1369,9 @@ func (r *oneWriterRig) runCase(t *testing.T, c writerCase) caseRun {
 	}
 	run.log = logSince(t, written, top)
 	r.requireEveryProjectionWriteBesideAStoreWrite(t, c.name, run.log, c.tables)
+	if c.storeOnly && !slices.ContainsFunc(run.log, func(row loggedWrite) bool { return slices.Contains(storeTables, row.table) }) {
+		t.Errorf("%s wrote no node and no tuple", c.name)
+	}
 	return run
 }
 
@@ -1384,14 +1521,15 @@ func (r *oneWriterRig) serve(method, target string, body any, login, contentType
 // for each writer the inventory finds, the case that drove it.
 func TestEveryGraphKindHasOneWriter(t *testing.T) {
 	ctx := context.Background()
-	inventoryDatabase := storetest.Open(t)
+	inventoryDatabase := movedStores(t, ctx, storetest.Open(t))
 	var name, version string
 	var migrations int
 	if err := inventoryDatabase.Pool.QueryRow(ctx, `
 		select current_database(), current_setting('server_version'), (select count(*) from schema_migrations)`).Scan(&name, &version, &migrations); err != nil {
 		t.Fatalf("read which database the inventory reads: %v", err)
 	}
-	t.Logf("the inventory reads the database %s on Postgres %s: a clone of the template this tree's migrations wrote (storetest.Open), %d migrations applied, and no object of the test's own",
+	t.Logf("the inventory reads the database %s on Postgres %s: a clone of the template this tree's migrations wrote (storetest.Open), %d migrations applied, "+
+		"which the boot's move of the priority store and the workflow store then swapped for its views and triggers (storesmove.Move), and no object of the test's own",
 		name, version, migrations)
 
 	projections := readProjections(t, ctx, inventoryDatabase)
@@ -1426,6 +1564,19 @@ func TestEveryGraphKindHasOneWriter(t *testing.T) {
 		})
 	}
 
+	t.Run("the one write of the store outside graphstore is the release before's, through the move's views and triggers, until the boot step drops them", func(t *testing.T) {
+		requireTheStoreWritersOutsideGraphstore(t, ctx, inventoryDatabase, "the inventory's database "+name, keptStoreWriters)
+		dropped := movedStores(t, ctx, storetest.Open(t))
+		var logged bytes.Buffer
+		startup.Retire(ctx, dropped.Pool, "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e", true, slog.New(slog.NewTextHandler(&logged, nil)),
+			[]startup.Retirement{startup.StoresMovedRetirement})
+		var droppedName string
+		if err := dropped.Pool.QueryRow(ctx, `select current_database()`).Scan(&droppedName); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("the database %s, another clone the move swapped, then took the boot step at a boot that created it from empty, which logged:\n%s", droppedName, logged.String())
+		requireTheStoreWritersOutsideGraphstore(t, ctx, dropped, "the database "+droppedName+" after the boot step", nil)
+	})
 	t.Run("every writer the inventory finds in the sources was driven", func(t *testing.T) {
 		requireEverySourceWriterDriven(t, sources, runs)
 	})
