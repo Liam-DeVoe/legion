@@ -257,8 +257,11 @@ export interface SessionContext {
    * then every link prints as its `dispatch://` reference (`linkBaseOf`, `linkFor`).
    */
   readonly linkBase: string | undefined;
-  /** This host's own session id, trimmed as Dispatch trims it, with Go's `strings.TrimSpace`
-   *  (`goTrimSpace`); a command that needs one refuses an empty one itself. */
+  /** This host's own session id with Go's `strings.TrimSpace` cut from both ends (`goTrimSpace`):
+   *  Dispatch trims it on the routes that read it so (open-asks, follow, read --message) and
+   *  refuses an id holding whitespace on those that read it with `requestSessionID` (answers, a
+   *  picture upload), so an id blank to Go is none. Every command that sends the id reads it here,
+   *  and one that needs one refuses an empty one itself. */
   readonly hostSession: string | undefined;
   /**
    * A factory, not one instance: the constructor starts the request deadline, and the main path
