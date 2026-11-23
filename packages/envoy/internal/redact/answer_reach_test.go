@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -124,5 +125,113 @@ func TestAnAnswerRefusesAWholeBodyDestinationBehindPointers(t *testing.T) {
 	var control *echoed
 	if err := answer.Decode(&control); err != nil || control == nil || control.Message.IsEmpty() {
 		t.Fatalf("control: Decode of a struct behind two pointers = %v, %+v; want it filled", err, control)
+	}
+}
+
+// boxedKey is a map key that holds the box behind a pointer it embeds, as a key of a struct type
+// may: its UnmarshalText is the box's own, promoted through the pointer, which is nil in the zero
+// key encoding/json makes, so encoding/json panicked decoding into it.
+type boxedKey struct{ *redact.RemoteText }
+
+// printedKeys is each key of every map v holds - through a pointer, an interface value, a list or
+// a struct's member - as fmt prints it.
+func printedKeys(v reflect.Value) string {
+	var b strings.Builder
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if !v.IsNil() {
+			b.WriteString(printedKeys(v.Elem()))
+		}
+	case reflect.Slice:
+		for i := range v.Len() {
+			b.WriteString(printedKeys(v.Index(i)))
+		}
+	case reflect.Struct:
+		for i := range v.NumField() {
+			b.WriteString(printedKeys(v.Field(i)))
+		}
+	case reflect.Map:
+		for _, key := range v.MapKeys() {
+			fmt.Fprintf(&b, "%v ", key.Interface())
+		}
+	}
+	return b.String()
+}
+
+// TestDecodeRefusesADestinationWhoseMapKeyHoldsABox: encoding/json fills a map's key through the
+// key's UnmarshalText, which the box has, and a map's key has no address, so no record of the
+// answer reaches a box there: a key that echoes the request's bearer prints it as it came. The box
+// itself, and every type that holds it, is no map key (it holds its record behind a func, which
+// makes it not comparable), but a key can hold it behind a pointer. Decode refuses such a
+// destination before it decodes anything - a map keyed by a pointer to the box or to a
+// RemoteNumber, a struct's member, a list of such maps, one behind a nil pointer, one behind an
+// interface value the caller set to a pointer, and a struct key that embeds a pointer to the box,
+// into which encoding/json panicked - with fixed text that quotes no word of the answer, and the
+// destination holds no key. The control is the same answer decoded with the key as a plain string,
+// which encoding/json fills. Captures redact.answer-box-key/<case>.
+func TestDecodeRefusesADestinationWhoseMapKeyHoldsABox(t *testing.T) {
+	for _, box := range []reflect.Type{reflect.TypeFor[redact.RemoteText](), reflect.TypeFor[redact.RemoteNumber]()} {
+		if box.Comparable() {
+			t.Errorf("%v is comparable, so a map can key on it, where no record reaches it", box)
+		}
+	}
+	keyed := func(auth string) string { return `{"the token ` + auth + ` was refused":1}` }
+	member := func(auth string) string { return `{"codes":` + keyed(auth) + `}` }
+	listed := func(auth string) string { return `{"codes":[` + keyed(auth) + `]}` }
+	var top map[*redact.RemoteText]int
+	var field struct {
+		Codes map[*redact.RemoteText]int `json:"codes"`
+	}
+	var number map[*redact.RemoteNumber]int
+	var list struct {
+		Codes []map[*redact.RemoteText]int `json:"codes"`
+	}
+	var nilPointer struct {
+		Codes *map[*redact.RemoteText]int `json:"codes"`
+	}
+	set := map[*redact.RemoteText]int{}
+	var behind struct {
+		Codes any `json:"codes"`
+	}
+	behind.Codes = &set
+	var embedded map[boxedKey]int
+	for _, c := range []struct {
+		name   string
+		answer func(auth string) string
+		into   any
+	}{
+		{"map", keyed, &top},
+		{"member", member, &field},
+		{"number", keyed, &number},
+		{"list", listed, &list},
+		{"nil-pointer", member, &nilPointer},
+		{"interface", member, &behind},
+		{"embedded-pointer", keyed, &embedded},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			answer := answerOf(t, http.StatusForbidden, c.answer)
+			err := func() (err error) {
+				defer func() {
+					if p := recover(); p != nil {
+						err = fmt.Errorf("Decode panicked: %v", p)
+					}
+				}()
+				return answer.Decode(c.into)
+			}()
+			printed := printedKeys(reflect.ValueOf(c.into))
+			redacttest.RequireNone(t, "redact.answer-box-key/"+c.name, fmt.Sprintf("%s| %v", printed, err))
+			switch {
+			case err == nil:
+				t.Errorf("Decode filled %s, whose map's key holds a box no record of the answer reaches: %s", c.name, printed)
+			case strings.Contains(err.Error(), "was refused") || !strings.Contains(err.Error(), "map's key"):
+				t.Errorf("Decode's refusal %q quotes the answer or does not name the map's key", err)
+			case printed != "":
+				t.Errorf("Decode refused %s after it filled it: %s", c.name, printed)
+			}
+		})
+	}
+	var control map[string]int
+	if err := answerOf(t, http.StatusForbidden, keyed).Decode(&control); err != nil || len(control) != 1 {
+		t.Fatalf("control: Decode of the same answer keyed by a plain string = %v, %v; want it filled", err, control)
 	}
 }

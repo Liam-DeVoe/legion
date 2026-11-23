@@ -481,6 +481,13 @@
         "why": "Answer.Decode's walk of the value a caller decodes an answer into: it reaches each RemoteText as a *RemoteText and hands it the answer's record through WithoutTokens, descending into no box and reading no box's storage"
       },
       {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "function": "github.com/sjawhar/envoy/internal/redact.unreached",
+        "operands": [],
+        "records_boxes": true,
+        "why": "Answer.Decode's walk of the value a caller decodes an answer into, before it decodes: it finds what encoding/json would fill that no record of the answer reaches, reading each struct field encoding/json decodes, a box's none among them, so it descends into no box and reads no box's storage"
+      },
+      {
         "file": "packages/daemon/internal/store/storetext/strings.go",
         "function": "github.com/sjawhar/legion/daemon/internal/store/storetext.holdsChange",
         "operands": [],
@@ -2499,6 +2506,20 @@
         "file": "packages/envoy/internal/redact/answer.go",
         "preimage": "for t.Kind() == reflect.Pointer {\n\t\tt = t.Elem()\n\t}\n",
         "replacement": ""
+      }
+    },
+    {
+      "id": "answer-decode-box-key",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestDecodeRefusesADestinationWhoseMapKeyHoldsABox",
+      "production": "redact Answer.Decode: a destination whose map's key holds a box, which encoding/json fills through UnmarshalText and no record reaches, is refused before anything is decoded (unreached, unreachedType)",
+      "function": "github.com/sjawhar/envoy/internal/redact.unreachedType",
+      "capture": "redact.answer-box-key/map",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "if t.Key().Kind() != reflect.Interface && holdsBox(t.Key(), map[reflect.Type]bool{}) {",
+        "replacement": "if false {"
       }
     },
     {
@@ -8837,6 +8858,11 @@
       "site": "RemoteText kept its request's credentials behind a *[]string, which fmt spells out at the top level under a verb a pointer does not take (%s, %q, %t) from a box in an unexported field: a struct, a pointer to one or a slice of them printed the bearer, the client secret and the subject token",
       "source": "the review of #4368 at de683f95d2, finding 4",
       "guard": "print-kept-credentials"
+    },
+    {
+      "site": "Answer.Decode filled a RemoteText in a map's key with no record of the answer (recordBoxes and holdsBox walked map values only), so a key that echoed the request's bearer printed it as it came",
+      "source": "the review of #4368 at de683f95d2, finding 7",
+      "guard": "answer-decode-box-key"
     },
     {
       "site": "daemon dispatchError: Dispatch's code taken through SendBack, so a message that quotes ISSUE_NOT_FOUND made a permanent refusal codeless and retried for ever",

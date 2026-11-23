@@ -208,13 +208,16 @@ func ContainsFold(body []byte, phrase string) bool {
 // a field another party wrote prints with the request's credentials redacted, as Words prints the
 // body, and compares as it came. A destination that would take the body whole - a string, a byte
 // slice, a json.RawMessage or an interface value, behind however many pointers - is refused, since
-// its text would leave the answer as plain text. So is one that embeds a RemoteText itself under
-// an unexported name (an alias of it), whose box no record can reach (recordBoxes); the box is
-// left as encoding/json filled it, and the error says the destination holds it. Its error is
-// fixed text: it names the destination's type and, where it can, the member that did not decode
-// and the JSON kind it held, and never a value of the answer, since encoding/json's errors, and
-// the errors of the types it decodes into (time.Time's among them), quote the value they could not
-// read; it unwraps to nothing, so no caller reaches the decoder's own error.
+// its text would leave the answer as plain text. So is one that would fill a box no record can
+// reach (unreached), before anything is decoded into it: a box in a map's key, which
+// encoding/json fills through UnmarshalText and which has no address. So is one that embeds a
+// RemoteText itself under an unexported name (an alias of it), whose box no record can reach
+// either (recordBoxes); that box is left as encoding/json filled it, and the error says the
+// destination holds it. Its error is fixed text: it names the destination's type and, where it
+// can, the member that did not decode and the JSON kind it held, and never a value of the answer,
+// since encoding/json's errors, and the errors of the types it decodes into (time.Time's among
+// them), quote the value they could not read; it unwraps to nothing, so no caller reaches the
+// decoder's own error.
 func (a Answer) Decode(v any) error {
 	rv := reflect.ValueOf(v)
 	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
@@ -222,6 +225,9 @@ func (a Answer) Decode(v any) error {
 	}
 	if whole(rv.Type().Elem()) {
 		return fmt.Errorf("redact: an answer does not decode into %T, which would hold the body whole", v)
+	}
+	if held := unreached(rv, map[followed]bool{}); held != "" {
+		return fmt.Errorf("redact: an answer does not decode into %T, which holds %s, where no record of the answer reaches it", v, held)
 	}
 	data := a.bytes()
 	err := json.Unmarshal(data, v)
@@ -248,6 +254,90 @@ func whole(t reflect.Type) bool {
 		return t.Elem().Kind() == reflect.Uint8
 	}
 	return false
+}
+
+// boxInKey is what unreached answers of a map whose key holds a box.
+const boxInKey = "a RemoteText in a map's key"
+
+// followed is a pointer unreached has followed: its target's address and type.
+type followed struct {
+	at uintptr
+	t  reflect.Type
+}
+
+// unreached is what decoding into v would fill that no record of the answer reaches, as Decode's
+// refusal names it, or "": a box in a map's key (holdsBox of the key's type), which encoding/json
+// fills through the key's UnmarshalText and which has no address recordBoxes could hand the record
+// through. It reads v as encoding/json decodes into it: the value a non-nil pointer points at, an
+// interface value the caller set to a non-nil pointer (pointsAt), each struct field encoding/json
+// decodes (decoded) and each element a slice or an array holds, since encoding/json decodes into
+// each of those in place; and the type (unreachedType) of what it makes - the value of a nil
+// pointer, a list's further elements, a map. seen holds the pointers it has followed, so a value
+// that points back at itself ends the walk.
+func unreached(v reflect.Value, seen map[followed]bool) string {
+	switch v.Kind() {
+	case reflect.Pointer:
+		at := followed{v.Pointer(), v.Type()}
+		switch {
+		case v.IsNil():
+			return unreachedType(v.Type().Elem(), map[reflect.Type]bool{})
+		case seen[at]:
+			return ""
+		}
+		seen[at] = true
+		return unreached(v.Elem(), seen)
+	case reflect.Interface:
+		if pointsAt(v) {
+			return unreached(v.Elem(), seen)
+		}
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if decoded(v.Type().Field(i)) {
+				if held := unreached(v.Field(i), seen); held != "" {
+					return held
+				}
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			if held := unreached(v.Index(i), seen); held != "" {
+				return held
+			}
+		}
+		return unreachedType(v.Type().Elem(), map[reflect.Type]bool{})
+	case reflect.Map:
+		return unreachedType(v.Type(), map[reflect.Type]bool{})
+	}
+	return ""
+}
+
+// unreachedType is unreached of a value of t that encoding/json makes: through a pointer, a
+// slice's or an array's element, a map's value or a struct's field it decodes. An interface value
+// it makes holds a JSON value of its own, never a box. A map whose key is an interface value is
+// one encoding/json refuses to decode into.
+func unreachedType(t reflect.Type, seen map[reflect.Type]bool) string {
+	if seen[t] {
+		return ""
+	}
+	seen[t] = true
+	switch t.Kind() {
+	case reflect.Map:
+		if t.Key().Kind() != reflect.Interface && holdsBox(t.Key(), map[reflect.Type]bool{}) {
+			return boxInKey
+		}
+		return unreachedType(t.Elem(), seen)
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return unreachedType(t.Elem(), seen)
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if f := t.Field(i); decoded(f) {
+				if held := unreachedType(f.Type, seen); held != "" {
+					return held
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // decodeText is the fixed text of err, encoding/json's error decoding data into a value of type
