@@ -16,6 +16,10 @@ import (
 // assertion is routes.callback-502.
 func TestASignInWhoseExchangeTheIssuerRefusedAnswers502WithNoStatusLineItWrote(t *testing.T) {
 	rig := newSignInRig(t, "")
+	// The issuer sends a browser back only to a callback its client registered. The client is armed
+	// again here with the callback the rig's sign-ins name, so the row reads the same wherever its
+	// rig armed the client without one.
+	rig.issuer.EnableCodeFlow(rig.issuer.PublishKey(t, "callback-status-line"), rigClientID, "dispatch-secret", "http://dispatch.test/auth/callback")
 	rig.issuer.SignInAs(personClaims(rigGroup))
 	authURL, stateCookie := rig.start(t, "http://dispatch.test/auth/start")
 	code, state := rig.issuer.Authorize(t, authURL.String())
