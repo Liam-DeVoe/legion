@@ -48,10 +48,13 @@ type runAt struct {
 // factRuns is what one fact names of the runs it ends that the record does not hold: the end each
 // move of the table names for the run it leaves, and the trees whose linger it closed. settled says
 // the fact's runs are settled already: an engine and the admission that holds it share one fact.
+// writtenBack is each owner whose slot's write-back the fact queued for the end of a merge forward
+// asked of it (mergeForwardWriteBack), so two writes of one fact that each end it queue one.
 type factRuns struct {
-	ends    map[runAt]StepEnd
-	closed  map[string]bool
-	settled bool
+	ends        map[runAt]StepEnd
+	closed      map[string]bool
+	settled     bool
+	writtenBack map[claim.Token]bool
 }
 
 // factRunsKey is the context key of a fact's factRuns.
@@ -270,7 +273,10 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 // transaction, so ending it without a record would mark it ended while Dispatch never learned it
 // started. The end of a step or a retro whose start named an architect gives the owner's slot its
 // own App back, as endStep's does (ownerSlotCredential): the plan rows that made it the owner's are
-// gone, and the start's agent is what is left of them.
+// gone, and the start's agent is what is left of them. With the rows gone, the end of the owner's
+// retro cannot tell the retro of its own implementation step, whose slot was switched, from a retro
+// it did as itself, whose slot was not, so it queues the write-back for both; where the slot holds
+// the owner's own App already the runtime rewrites nothing (runtime.SlotCredentials).
 func (e *Engine) endOffWalk(ctx context.Context, tx pgx.Tx, row record.IssueStepRun, end StepEnd) error {
 	if row.Kept.ID == "" {
 		return fmt.Errorf("end the off-walk run of %s %s/%s/%d: its open start row holds no kept record", row.Issue, row.Place.Task, row.Place.Kind, row.Place.Place)
