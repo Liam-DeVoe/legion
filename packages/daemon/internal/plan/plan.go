@@ -122,6 +122,27 @@ func Sinks(tasks []Task) []string {
 	return sinks
 }
 
+// Merging is the ids of the tasks of tasks whose work merges by itself, in id order: each task
+// whose block says merges (Merges), and each task of the top level (PartOf "") that no task of
+// tasks needs, whatever its block says. A part of another task merges only where its block says
+// merges. A need is a task id (FromBlocks). It is the one statement of which tasks merge.
+func Merging(tasks []Task) []string {
+	needed := map[string]bool{}
+	for _, task := range tasks {
+		for _, id := range task.Needs {
+			needed[id] = true
+		}
+	}
+	var merging []string
+	for _, task := range tasks {
+		if task.Merges || (task.PartOf == "" && !needed[task.ID]) {
+			merging = append(merging, task.ID)
+		}
+	}
+	slices.Sort(merging)
+	return merging
+}
+
 // RoleDef is a role a step can name: its name and the type of the work it does. How a step of the
 // role runs is decided by its name alone (RunsAs).
 type RoleDef struct {

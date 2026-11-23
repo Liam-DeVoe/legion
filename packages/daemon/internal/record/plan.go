@@ -425,6 +425,23 @@ func (p *StoredPlan) MergingTask() (string, bool) {
 	return "", false
 }
 
+// Merging is the ids of the tasks of p whose work merges by itself, in id order: the rule of the
+// plan (plan.Merging) over each task of p that is not left, each as its row gives its id, its
+// needs, its part_of and its merges. A left task, whose issue left the workflow before the task
+// was done, neither merges nor needs: a need that only it names keeps no task from merging. It
+// answers which tasks will merge under the plan p is, so a version that changes a task's needs or
+// its merges changes it. plan.Merging has this one caller.
+func (p StoredPlan) Merging() []string {
+	tasks := make([]plan.Task, 0, len(p.Tasks))
+	for _, row := range p.Tasks {
+		if row.State == TaskLeft {
+			continue
+		}
+		tasks = append(tasks, plan.Task{ID: row.Task, Needs: row.Needs, PartOf: row.PartOf, Merges: row.Merges})
+	}
+	return plan.Merging(tasks)
+}
+
 // TaskOf is the task of p whose id is id, and false where p holds none, or where there is no plan
 // (p nil): the one lookup of a plan's task by its id.
 func (p *StoredPlan) TaskOf(id string) (PlanTask, bool) {
