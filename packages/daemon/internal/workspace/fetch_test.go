@@ -2566,11 +2566,11 @@ func recordPackWindows(t *testing.T, run *recordingRunner) string {
 		"      ahead=\n" +
 		"    fi\n" +
 		"  done\n" +
-		"  '" + realGit + "' \"$@\" config --show-scope --get-regexp '^(" + strings.Join(keys, "|") + ")$'\n" +
+		"  " + shellprefix.Literal(realGit) + " \"$@\" config --show-scope --get-regexp '^(" + strings.Join(keys, "|") + ")$'\n" +
 		"}\n" +
 		"reads=$(scoped \"$@\" | tr '\\t\\n' ' ;')\n" +
-		"printf '%s\\t%s\\n' \"$*\" \"$reads\" >> '" + sink + "'\n" +
-		"exec '" + realGit + "' \"$@\"\n"
+		"printf '%s\\t%s\\n' \"$*\" \"$reads\" >> " + shellprefix.Literal(sink) + "\n" +
+		"exec " + shellprefix.Literal(realGit) + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -299,10 +299,10 @@ func TestTheBuiltLegionTakesItsBoundsFromTheTestBinarysDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	wrappers := t.TempDir()
-	if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec "+shellprefix.Literal(legion)+" gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	slowGit := "#!/bin/sh\nfor a; do if [ \"$a\" = --show-origin ]; then sleep " + strconv.Itoa(int(ghGitReadBound/time.Second)+1) + "; break; fi; done\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
+	slowGit := "#!/bin/sh\nfor a; do if [ \"$a\" = --show-origin ]; then sleep " + strconv.Itoa(int(ghGitReadBound/time.Second)+1) + "; break; fi; done\nexec " + shellprefix.Literal(fixturegit.CompiledGit(t)) + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(wrappers, "git"), []byte(slowGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
