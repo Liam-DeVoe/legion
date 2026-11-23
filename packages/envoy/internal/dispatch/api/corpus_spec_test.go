@@ -25,7 +25,7 @@ import (
 // corpusWritableSpec is spec, a spec of issue key, with every `block[]` pointer into another
 // document taken out, and rewritten true when it took one out; else spec as it is. A pointer into
 // the issue's own spec is kept: the create writes all of that document, so it holds the block.
-func corpusWritableSpec(t *testing.T, key, spec string) (written string, rewritten bool) {
+func corpusWritableSpec(t testing.TB, key, spec string) (written string, rewritten bool) {
 	t.Helper()
 	tree, err := pmdoc.ParseForWrite(spec, nil)
 	if err != nil {
@@ -76,7 +76,7 @@ func corpusWritableSpec(t *testing.T, key, spec string) (written string, rewritt
 // setCorpusFirstSpec sets version 1 of key's spec to markdown, the corpus's text, which its create
 // wrote without its pointers into other documents (corpusWritableSpec). The search triggers keep
 // every vector of the markdown in step with it.
-func setCorpusFirstSpec(t *testing.T, ctx context.Context, database *store.Store, key, markdown string) {
+func setCorpusFirstSpec(t testing.TB, ctx context.Context, database *store.Store, key, markdown string) {
 	t.Helper()
 	tag, err := database.Pool.Exec(ctx, `
 		update artifact_versions v set markdown = $2
