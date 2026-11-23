@@ -212,6 +212,15 @@ type ciJobRig struct {
 
 func newCIJobRig(t *testing.T) *ciJobRig {
 	t.Helper()
+	return newCIJobRigSettling(t, 0)
+}
+
+// newCIJobRigSettling is newCIJobRig whose document service settles after settle (0 is the test
+// server's default). A test that reads who holds the issue's owner lock passes a delay that cannot
+// fire before it finishes, since the settlement of the uploaded Verification document holds that
+// lock for a moment of its own.
+func newCIJobRigSettling(t *testing.T, settle time.Duration) *ciJobRig {
+	t.Helper()
 	github := &ciJobGitHub{
 		checkRuns:   map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
 		listings:    newCheckRunsFake(),
@@ -223,6 +232,7 @@ func newCIJobRig(t *testing.T) *ciJobRig {
 		brokerTokenRig: newBrokerTokenRigOn(t, testServerOptions{
 			app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 			githubAPIBase: github.serve(t),
+			settle:        settle,
 		}),
 		github: github,
 		caller: newBrokerCaller(t),

@@ -80,19 +80,24 @@ func writeVerification(t *testing.T, rig *ciJobRig, markdown string) {
 }
 
 // A results write that is held before its locks, in GitHub's answer to whether the repository
-// holds its commit (refuseUnknownCommit), holds no owner lock of either issue across that read: a
-// PATCH of the recording issue, which takes its owner lock, answers while the read is still held,
-// and the read ends only once the test lets it go. The test judges whom the writer waits for,
-// never how long it took (main's #4776): each wait is testwait.Receive, whose one bound is the
-// test binary's deadline, so a read moved under the locks fails naming the step that never came,
-// and a merely slow step is no failure. It reads no lock table: the rig's document service may
-// hold the issue's owner lock for a moment of its own, which a PATCH waits out and a snapshot of
-// the lock table would take for the write's.
+// holds its commit (refuseUnknownCommit), holds no owner lock of either issue across that read: no
+// transaction holds the recording issue's owner lock while the read is held, and a PATCH of that
+// issue, which takes the lock, answers then, since the read ends only once the test lets it go.
+// The test judges whom the writer waits for, never how long it took (main's #4776): each wait is
+// testwait.Receive, whose one bound is the test binary's deadline. The PATCH alone cannot fail the
+// test: a transaction left idle across the held read is ended by the database's idle timeout, and
+// the PATCH then answers. The lock table is read on a rig whose document service settles after an
+// hour, since the settlement of the uploaded Verification document holds the issue's owner lock
+// for a moment of its own.
 func TestAResultsWriteHoldsNoOwnerLockWhileGitHubIsAskedForItsCommit(t *testing.T) {
-	rig := newCIJobRig(t)
+	rig := newCIJobRigSettling(t, time.Hour)
 	held := holdWriteBeforeItsLocks(t, rig, rig.sessionToken(),
 		resultBody("k1", "pass", heldWriteCommit, map[string]any{"role": "tester"}))
 
+	if holder := readIssueOwnerLockHolder(t, rig.database, rig.issue); holder != nil {
+		t.Fatalf("while the results write asks GitHub for its commit, %s's owner lock is held by %s: the write holds its issues' owner locks across that read",
+			rig.issue, holder)
+	}
 	patched := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		patched <- dispatchRequest(t, rig.handler, http.MethodPatch, "/api/v1/issues/"+rig.issue,
