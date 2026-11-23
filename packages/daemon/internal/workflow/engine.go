@@ -1927,22 +1927,27 @@ func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.Po
 // queueRefusedStart queues the start of a claim whose launch its issue's pod refused where the
 // outbox holds no start that brings the claim back (podRefusedLaunch). The suspension that refusal
 // ended in retired the phase task the claim held (supervise's settle), and the record holds that
-// work all the same: where the claim works the step its issue stands in, the start is that step's
-// owed entry (sendOwedEntry), the entry and the task its phases row holds, marked as a resend of
-// that entry so the claim, which was given it, is given it again. Any other is a start naming the
-// claim, of no phase, which resumes it with whatever it holds. The outbox runs either as a wait for
-// the pod while that pod stands (supervise's podStillRefuses) and resumes the claim once another
-// stands or none.
+// work all the same: where the claim is the worker of the step its issue stands in (workerClaim,
+// the one rule every reader of that claim reads), the start is that step's owed entry
+// (sendOwedEntry), the entry and the task its phases row holds, marked as a resend of that entry
+// so the claim, which was given it, is given it again. Any other is a start naming the claim, of
+// no phase, which resumes it with whatever it holds. The outbox runs either as a wait for the pod
+// while that pod stands (supervise's podStillRefuses) and resumes the claim once another stands or
+// none.
 func (e *Engine) queueRefusedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.PodRefusedLaunch) error {
 	if record.OutOfWorkflow(issue.Status) {
 		return nil
 	}
 	if role := OpenRoleOf(issue); role != "" && role == fact.Role {
+		worker, err := e.workerClaim(ctx, tx, issue, role)
+		if err != nil {
+			return err
+		}
 		row, err := e.phaseRow(ctx, tx, issue.Key, role)
 		if err != nil {
 			return err
 		}
-		if row.Claim == fact.Claim && row.Entry > 0 {
+		if worker == fact.Claim && row.Entry > 0 {
 			return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{resend: true})
 		}
 	}
