@@ -113,6 +113,9 @@ var oneInboxWriteBounds = map[string]float64{
 	"dismissal":                        1.50,
 	"thread-read":                      1.50,
 	"snooze":                           1.50,
+	// A person's reply under an Agent root, the write the Inbox requests' R1 added and their c-p99
+	// check times, bounded by the same rule: three clean runs gave p50 ratios of 1.80, 2.13 and 2.20.
+	"agent-reply": 2.50,
 }
 
 // oneInboxReader is one shape the read is measured over: the person whose read it is, and the
