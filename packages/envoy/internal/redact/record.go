@@ -236,3 +236,12 @@ func Carried(resp *http.Response) []string {
 func Header(resp *http.Response, name string) RemoteText {
 	return NewRemoteText(resp.Header.Get(name)).WithoutTokens(Carried(resp)...)
 }
+
+// StreamedWords is text a client read out of resp's body streamed as data (StreamAnswer) - the
+// name of an entry of a tar it unpacks - as another party's words: a RemoteText held with every
+// credential the requests that led to resp carried redacted (Carried), as Header holds a header's
+// value, which prints only as the rule reads it and compares as it came. A stream is no Answer, so
+// Answer.Said, which holds a value read out of an Answer's bytes, cannot hold it.
+func StreamedWords(resp *http.Response, text string) RemoteText {
+	return NewRemoteText(text).WithoutTokens(Carried(resp)...)
+}

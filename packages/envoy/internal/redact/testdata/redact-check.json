@@ -10,6 +10,8 @@
       "github.com/sjawhar/envoy/internal/redact.Error",
       "github.com/sjawhar/envoy/internal/redact.AnswerText",
       "github.com/sjawhar/envoy/internal/redact.Tokens",
+      "github.com/sjawhar/envoy/oauth2call.Field",
+      "github.com/sjawhar/envoy/oauth2call.Tokens",
       "(github.com/sjawhar/envoy/cipheraddr.Address).Words",
       "(github.com/sjawhar/envoy/cipheraddr.Address).Cause",
       "(github.com/sjawhar/envoy/cipheraddr.Address).Error"
@@ -6095,6 +6097,209 @@
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
       "production": "workspace fetchCredential.scrub and remote.scrub: a run under the one-shot credential gives its stderr through the URL rule (redact.URLCredentials) after the token scrub, so git's refusal of a redirect names its Location with no query value or user information in Fetch's error and log lines, the shared clone's fetch's and its clone's"
+    },
+    {
+      "id": "workspace-git-scrub-runs",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.scrubTokens",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.scrubTokens",
+      "capture": "workspace.git-redirect/fetch-run",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/credential_scrub.go",
+        "preimage": "oauth2call.Tokens(redactDecoded(text, credentials), -1, credentials...)",
+        "replacement": "redactDecoded(text, credentials)"
+      }
+    },
+    {
+      "id": "workspace-git-scrub-decoded-reading",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.redactDecoded",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.redactDecoded",
+      "capture": "workspace.git-redirect/fetch-line-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/credential_scrub.go",
+        "preimage": "oauth2call.Tokens(decoded, -1, credentials...)",
+        "replacement": "decoded"
+      }
+    },
+    {
+      "id": "workspace-git-scrub-decoded-window",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.redactDecoded",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.redactDecoded",
+      "capture": "workspace.git-redirect/fetch-line-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/credential_scrub.go",
+        "preimage": "oauth2call.Tokens(window, -1, credentials...)",
+        "replacement": "window"
+      }
+    },
+    {
+      "id": "workspace-git-shown-clone",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
+      "production": "(github.com/sjawhar/legion/daemon/internal/workspace.remote).shown: the shared clone's steps (cloneSteps.runIn) and its fetch (ensureFetchConfiguration)",
+      "function": "(github.com/sjawhar/legion/daemon/internal/workspace.remote).shown",
+      "capture": "workspace.git-redirect/clone-userinfo-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/credential_scrub.go",
+        "preimage": "oauth2call.Field(strings.TrimSpace(r.scrub(text)))",
+        "replacement": "r.scrub(text)"
+      }
+    },
+    {
+      "id": "workspace-git-fetch-error",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.transferWithRetries: the error Fetch returns",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.transferWithRetries",
+      "capture": "workspace.git-redirect/fetch-userinfo-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "oauth2call.Field(strings.TrimSpace(result.Stderr))",
+        "replacement": "result.Stderr"
+      }
+    },
+    {
+      "id": "workspace-git-fetch-retry-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.transferWithRetries: the line a retry logs",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.transferWithRetries",
+      "capture": "workspace.git-redirect/log-userinfo-encoded",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "oauth2call.Field(strings.ReplaceAll(strings.TrimSpace(result.Stderr), \"\\n\", \" | \"))",
+        "replacement": "strings.ReplaceAll(strings.TrimSpace(result.Stderr), \"\\n\", \" | \")"
+      }
+    },
+    {
+      "id": "oauth2call-tokens-forward",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
+      "production": "github.com/sjawhar/envoy/oauth2call.Tokens, the daemon's reach of redact.Tokens",
+      "function": "github.com/sjawhar/envoy/oauth2call.Tokens",
+      "capture": "workspace.git-redirect/fetch-run",
+      "mutation": {
+        "file": "packages/envoy/oauth2call/oauth2call.go",
+        "preimage": "return redact.Tokens(text, limit, tokens...)",
+        "replacement": "return text"
+      }
+    },
+    {
+      "id": "oauth2call-field-forward",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
+      "production": "github.com/sjawhar/envoy/oauth2call.Field, the daemon's reach of redact.Field",
+      "function": "github.com/sjawhar/envoy/oauth2call.Field",
+      "capture": "workspace.git-redirect/fetch-userinfo-encoded",
+      "mutation": {
+        "file": "packages/envoy/oauth2call/oauth2call.go",
+        "preimage": "return redact.Field(field)",
+        "replacement": "return field"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-outside",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/outside",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry: an entry that leaves the feed, named as another party's words with the /tar request's record (oauth2call.StreamedWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry",
+      "capture": "workspace.cache-echo/outside",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "which is not a path inside the feed\", oauth2call.StreamedWords(response, name)",
+        "replacement": "which is not a path inside the feed\", name"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-link",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/link",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry: an entry that is neither a regular file nor a directory, named as another party's words with the /tar request's record (oauth2call.StreamedWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry",
+      "capture": "workspace.cache-echo/link",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "nor a directory\", oauth2call.StreamedWords(response, name)",
+        "replacement": "nor a directory\", name"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-entry",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/bearer",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry: an entry that is no ref or pack, named as another party's words with the /tar request's record (oauth2call.StreamedWords)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.unpackEntry",
+      "capture": "workspace.cache-echo/bearer",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "refs or packs\", oauth2call.StreamedWords(response, name)",
+        "replacement": "refs or packs\", name"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-entry-failure",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/cut",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.entryFailure: a read or a write of an entry that failed, naming the entry as another party's words with the /tar request's record and no path",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.entryFailure",
+      "capture": "workspace.cache-echo/cut",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "oauth2call.StreamedWords(response, name), err)",
+        "replacement": "name, err)"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-directory",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/directory",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.entryFailure: a write that failed on a path names the operation and the system's reason, never the path, which holds the entry's name as it came"
+    },
+    {
+      "id": "workspace-cache-echo-fsck",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/fsck",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache: fsck's stderr, which names the refs the cache streamed, with each run of the cache token redacted",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.verifyCache",
+      "capture": "workspace.cache-echo/fsck",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "oauth2call.Tokens(result.Stderr, -1, request.CacheToken)",
+        "replacement": "result.Stderr"
+      }
+    },
+    {
+      "id": "workspace-cache-echo-log",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheThatEchoesItsTokenIntoWhatItStreamsPrintsNoneOfIt/log",
+      "production": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch: every line it logs with a cache has each run of the cache token redacted, a ref the feed drops among them (pruneToGitHub)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.Fetch",
+      "capture": "workspace.cache-echo/log",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "log(oauth2call.Tokens(line, -1, request.CacheToken))",
+        "replacement": "log(line)"
+      }
     },
     {
       "id": "sandbox-status-line-repository-status",

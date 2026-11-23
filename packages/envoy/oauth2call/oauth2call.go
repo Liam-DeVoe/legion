@@ -106,3 +106,24 @@ func StatusLine(code int) string { return redact.StatusLine(code) }
 // Header is redact.Header: the first value of an answer's header as another party's words, held
 // with the record of the requests that led to the answer, printed only as the rule reads it.
 func Header(resp *http.Response, name string) RemoteText { return redact.Header(resp, name) }
+
+// StreamedWords is redact.StreamedWords: text read out of an answer's body streamed as data (a tar
+// entry's name) as another party's words, held with the record of the requests that led to the
+// answer, printed only as the rule reads it.
+func StreamedWords(resp *http.Response, text string) RemoteText {
+	return redact.StreamedWords(resp, text)
+}
+
+// TokenPiece is redact.TokenPiece: the shortest run of a credential's characters Tokens redacts
+// wherever it stands.
+const TokenPiece = redact.TokenPiece
+
+// Tokens is redact.Tokens: text with each run of at least TokenPiece characters of any of tokens
+// redacted, for text another party wrote that can echo a credential this process sent it.
+func Tokens(text string, limit int, tokens ...string) string {
+	return redact.Tokens(text, limit, tokens...)
+}
+
+// Field is redact.Field: a remote field as a message may print it, the rule's reading on one line,
+// or redact.WordsNotReadable where the rule cannot read it. The rule fails closed.
+func Field(field string) string { return redact.Field(field) }
