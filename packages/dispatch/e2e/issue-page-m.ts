@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page, type Request } from "@playwright/test";
+import { expect, type Locator, type Page, type Request, type Response } from "@playwright/test";
 
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { gotoIssue, marginShell, openDetails } from "./issue-page";
@@ -39,6 +39,26 @@ import { settledState } from "./settled";
 /** The issue's history, in Details. */
 export function historyPanel(page: Page): Locator {
   return page.getByTestId("issue-history");
+}
+
+/** The history's heading, "History", in Details. */
+export function historyHeading(page: Page): Locator {
+  return historyPanel(page).getByRole("heading", { exact: true, name: CONTROL_LABELS.history });
+}
+
+/** The history's Load older control, which reads the log's next page. */
+export function historyLoadOlder(page: Page): Locator {
+  return historyPanel(page).getByRole("button", { exact: true, name: CONTROL_LABELS.load_older });
+}
+
+/** The answer to the history's read of a page of issue `key`'s log older than the first, the
+ *  read Load older sends (`GET /api/v1/issues/<key>/events` with `before`), waited for from the
+ *  call on: a row calls it before the press that sends that read. */
+export function olderPageAnswered(page: Page, key: string): Promise<Response> {
+  return page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === `/api/v1/issues/${key}/events` && url.searchParams.has("before");
+  });
 }
 
 /** One turn of an agents' thread in the history, by the comment's or the message's id. */

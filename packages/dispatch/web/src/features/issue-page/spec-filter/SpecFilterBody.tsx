@@ -43,7 +43,13 @@ import { CutWords } from "../CutWords";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { useSetFocusedNode } from "../focused-node";
 import { IssueThreeThings } from "../IssueThreeThings";
-import { focusedNodeOf, landOnRow, type OutlineRequest, useReleaseFocus } from "../IssueTree";
+import {
+  focusedNodeOf,
+  holdInPlaceOf,
+  landOnRow,
+  type OutlineRequest,
+  useReleaseFocus,
+} from "../IssueTree";
 import { CLEARANCE } from "../identity-block";
 import type { TreeNode } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
@@ -484,6 +490,29 @@ export function SpecFilterBody({
     landOnRow(row, landingHold);
   }, [addressActs, following, readsSettled, reveal, statements]);
 
+  // The statement, the other row or the decision cell a key or a press leaves the reader on is
+  // held on screen until their next act (`holdOnScreen`), as the outline holds a row it takes
+  // the reader to: rows drawn above it - the statements, once the coverage or the spec's blocks
+  // answer - would otherwise push it out of view, since at the page's top the browser's scroll
+  // anchoring holds the header still and not the row. A key's own `keydown` is an act that ends
+  // the hold before it, so the hold starts once the key is done (its `keyup`), on the item that
+  // then holds the focus, which is the one it was pressed on where it moved nowhere (End on the
+  // last row). Only a key that went down in the tree is held after (`keyInTree`), and only where
+  // the focus is still in the tree: a key that takes the reader out of it holds nothing, and so
+  // does one that brings them into it from elsewhere, as Tab from the page does. A press is held
+  // once it is over (its `click`), on the item it landed on where that item holds the focus: a
+  // press on what is no item leaves the focus where it was, so it holds nothing rather than pull
+  // the page back to a row the reader did not press. A wheel, a swipe, which sends no click, and
+  // Tab start no hold, since each keeps the reader's place. The hold takes the landing's place
+  // in `landingHold`, so one item is held at a time (`holdInPlaceOf`).
+  const keyInTree = useRef<string | undefined>(undefined);
+  const holdFocusedItem = useCallback((pressed?: EventTarget) => {
+    const item = document.activeElement?.closest<HTMLElement>('[role="treeitem"]');
+    if (item == null || tree.current?.contains(item) !== true) return;
+    if (pressed instanceof Node && !item.contains(pressed)) return;
+    holdInPlaceOf(item, landingHold);
+  }, []);
+
   useTreeKeymap({
     container: tree,
     // No row of this filter is edited here (Enter goes to the conversation), so none is held.
@@ -627,6 +656,8 @@ export function SpecFilterBody({
         className="flex min-w-0 flex-col"
         data-spec-tree=""
         onBlur={releaseFocus}
+        // The end of a press in the tree, which holds the item it landed on (`holdFocusedItem`).
+        onClick={(event) => holdFocusedItem(event.target)}
         // A focus on the tree itself - the page's `t s` lands here - goes on to the tab-stop
         // row; where the view draws no row it stays here.
         onFocus={(event) => {
@@ -635,8 +666,10 @@ export function SpecFilterBody({
         }}
         // The keys a statement and a cell answer before the keymap does (`useTreeKeymap.ts`
         // listens on the window, after this): `w` on a statement, and `j`, `k` and the arrows
-        // on a cell, which the keymap finds no row on.
+        // on a cell, which the keymap finds no row on. Each key but Tab is noted as it goes
+        // down here, so the item it leaves the reader on is held once it is done (`onKeyUp`).
         onKeyDown={(event) => {
+          keyInTree.current = event.key === "Tab" ? undefined : event.key;
           const key = bareKey(event);
           if (key === "w") {
             if (toOwnCell()) event.preventDefault();
@@ -650,6 +683,13 @@ export function SpecFilterBody({
           if (step === undefined || cell === null) return;
           event.preventDefault();
           leaveCell(cell, step);
+        }}
+        // A key that went down in the tree, done with the focus still in it, holds the item it
+        // left the reader on (`holdFocusedItem`).
+        onKeyUp={(event) => {
+          if (event.key !== keyInTree.current) return;
+          keyInTree.current = undefined;
+          holdFocusedItem();
         }}
         // A press in the tree, whose focus a statement or a cell takes once the press is over
         // (`press`). A press on what is no item - a group's heading, the space between runs

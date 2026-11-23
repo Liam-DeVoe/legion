@@ -35,6 +35,7 @@ import { useKeymapScope } from "../shell/keymap";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
+import { DETAILS_ROW_ATTRIBUTE } from "./details-rows";
 import { type FocusedNode, FocusedNodeProvider, useSetFocusedNode } from "./focused-node";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -706,10 +707,10 @@ test("the subscribers' Retry taken away by a read the reader did not press for l
   }
 });
 
-// `/issues/<key>/collaborators` opens Details once per arrival at it (`DetailsHistory`), and
-// the collaborators' list with it: a reader who closed the list there and arrives at the same
+// `/issues/<key>/collaborators` opens Details once per following of it (`DetailsHistory`), and
+// the collaborators' list with it: a reader who closed the list there and follows the same
 // address again - `t o`, or a link to the address they are on - finds it open.
-test("each arrival at the collaborators' address opens their list, though the reader closed it", async () => {
+test("each following of the collaborators' address opens their list, though the reader closed it", async () => {
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
     agents: [],
@@ -742,7 +743,7 @@ test("each arrival at the collaborators' address opens their list, though the re
     act(() => navigate?.(address, { replace: true }));
     expect(
       collaborators.getAttribute("aria-expanded"),
-      "an arrival at the collaborators' address again left their list shut"
+      "following the collaborators' address again left their list shut"
     ).toBe("true");
   } finally {
     view.unmount();
@@ -1419,15 +1420,19 @@ const AGENTS_THREAD: MessageRead = {
 
 /** `readsHeld()`'s client with the agents' thread as the issue's one thread of messages
  *  (`AGENTS_THREAD`), and the issue's results and decisions, which the outline lands by too,
- *  held empty; and the spy that answers each read of the names the page's words reference with
- *  none, which the case restores. */
+ *  held empty; the spy that answers each read of the outline's coverage, which it lands by as
+ *  well, with none, and which a case can hold out instead; and the spy that answers each read of
+ *  the names the page's words reference with none. The case restores both spies. */
 function agentsThreadClient() {
+  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
+    requirements: [],
+  } as never);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const client = readsHeld();
   client.setQueryData(["issue-messages", KEY], [AGENTS_THREAD]);
   client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
   client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  return { client, names };
+  return { client, getIssueCoverage, names };
 }
 
 // The address of a turn only agents wrote in opens Details at the history with that turn marked
@@ -1438,11 +1443,9 @@ function agentsThreadClient() {
 // while the outline still waited.
 test("an agents' turn's address opens Details at it once every read the outline lands by has answered", async () => {
   const coverage = Promise.withResolvers<IssueCoverage>();
-  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockImplementation(
-    () => coverage.promise
-  );
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
-  const { client, names } = agentsThreadClient();
+  const { client, getIssueCoverage, names } = agentsThreadClient();
+  getIssueCoverage.mockImplementation(() => coverage.promise);
   const id = AGENTS_THREAD.message.id;
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ id, key: KEY, kind: "message" })]}>
@@ -1517,8 +1520,8 @@ async function readMessagesAgainFromNothing(
 // Every entry the browser makes has the key "default", a load and a fragment typed in the address
 // bar alike, so a fragment typed at `/issues/<key>/activity` is a following of its own though the
 // key stays one (`useFollowing`): Details opens again at it, though the reader closed it. Details
-// counted an arrival by the key and the address without its fragment, took the typed fragment for
-// the arrival it had opened at, and stayed shut.
+// told followings apart by the key and the address without its fragment, took the typed fragment
+// for the following it had opened at, and stayed shut.
 test("a fragment typed at the history's address opens Details again, though the reader closed it", async () => {
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
   const hold: DrawerHold = {};
@@ -1550,60 +1553,20 @@ test("a fragment typed at the history's address opens Details again, though the 
 
 // The address of an agents' turn opens Details at it once per following, and the reader's Close
 // stands for the rest of that following. The outline's read of the messages going out again with
-// nothing held takes the turn back until it answers, and the turn is then told again for the same
-// following: Details stays shut. Details forgot the arrival it had opened for as the turn was taken
-// back, and opened again at the same arrival when the read answered.
-test("a closed Details stays closed when the outline's reads answer again for the same following of an agents' turn's address", async () => {
-  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
-    requirements: [],
-  } as never);
+// nothing held takes the turn back until it answers, and the turn told again for the same
+// following leaves Details shut. A fragment typed at the address is a following of its own: typed
+// while a read the outline lands by is out, the outline lets go of the turn until that read
+// answers, Details then opens at the turn once, and a later answer of the outline's reads leaves it
+// shut. Details told followings apart without the fragment and forgot the one it had opened for
+// as the turn was taken back, so it opened again at each answer of the reads.
+test("a closed Details stays closed when the outline's reads answer again for the same following of an agents' turn's address, and after a fragment typed there while a read the outline lands by is out, opens once at the turn and stays closed at a later answer of the reads", async () => {
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
-  const messages = Promise.withResolvers<MessageRead[]>();
-  const listIssueMessages = spyOn(api, "listIssueMessages").mockReturnValue(messages.promise);
-  const { client, names } = agentsThreadClient();
-  const hold: DrawerHold = {};
-  const id = AGENTS_THREAD.message.id;
-  const view = render(
-    <MemoryRouter initialEntries={[buildIssuePath({ id, key: KEY, kind: "message" })]}>
-      <QueryClientProvider client={client}>
-        <HistoryInDrawer hold={hold} of={{ ...issueDetails(), artifacts: [] }} />
-      </QueryClientProvider>
-    </MemoryRouter>
+  // Each read of the outline's messages is answered through the resolver it finds here.
+  let messages = Promise.withResolvers<MessageRead[]>();
+  const listIssueMessages = spyOn(api, "listIssueMessages").mockImplementation(
+    () => messages.promise
   );
-  try {
-    await waitFor(() => {
-      expect(turnMarked(id), "the agents' turn's address marked no turn in the history").toBe(true);
-      expect(hold.isOpen, "the agents' turn's address left Details shut").toBe(true);
-    });
-    act(() => hold.open?.(false));
-
-    await readMessagesAgainFromNothing(client, messages.resolve);
-    expect(
-      hold.isOpen,
-      "the outline's reads answered again for the same following of the agents' turn's address, and Details opened again after the reader closed it"
-    ).toBe(false);
-  } finally {
-    view.unmount();
-    for (const spy of [getIssueCoverage, getIssueEvents, listIssueMessages, names]) {
-      spy.mockRestore();
-    }
-  }
-});
-
-// A fragment typed at an agents' turn's address is a following of its own. Typed while a read the
-// outline lands by is out, the outline lets go of the turn until that read answers, and Details
-// then opens at the turn, once: the reader's Close stands for the rest of that following, and a
-// later answer of the outline's reads, which takes the turn back and tells it again, leaves it
-// shut. Details counted an arrival without the fragment and forgot it as the turn was taken back,
-// so it opened again at each answer.
-test("after a fragment typed at an agents' turn's address while a read the outline lands by is out, Details opens once at the turn, and a later answer of the reads leaves it closed", async () => {
-  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
-    requirements: [],
-  } as never);
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
-  const messages = Promise.withResolvers<MessageRead[]>();
-  const listIssueMessages = spyOn(api, "listIssueMessages").mockReturnValue(messages.promise);
-  const { client, names } = agentsThreadClient();
+  const { client, getIssueCoverage, names } = agentsThreadClient();
   const hold: DrawerHold = {};
   const id = AGENTS_THREAD.message.id;
   const address = buildIssuePath({ id, key: KEY, kind: "message" });
@@ -1619,6 +1582,12 @@ test("after a fragment typed at an agents' turn's address while a read the outli
       expect(hold.isOpen, "the agents' turn's address left Details shut").toBe(true);
     });
     act(() => hold.open?.(false));
+
+    await readMessagesAgainFromNothing(client, messages.resolve);
+    expect(
+      hold.isOpen,
+      "the outline's reads answered again for the same following of the agents' turn's address, and Details opened again after the reader closed it"
+    ).toBe(false);
 
     // The outline's coverage goes out again with nothing held, and the fragment is typed while it
     // is out.
@@ -1649,6 +1618,7 @@ test("after a fragment typed at an agents' turn's address while a read the outli
       "Details opened again at the turn the fragment's following told, after the reader closed it"
     ).toBe(false);
 
+    messages = Promise.withResolvers<MessageRead[]>();
     await readMessagesAgainFromNothing(client, messages.resolve);
     expect(
       hold.isOpen,
@@ -1697,18 +1667,13 @@ test("Back to the history's address from the issue's own address opens Details a
   }
 });
 
-// The address of a comment that has a row of the outline opens no Details: the outline lands on
-// that row. Back from it to an earlier entry of `/issues/<key>/activity` is that entry's following
-// again, and Details opens again there, though the reader closed it at the comment. An address
-// that names an item keeps the arrival Details last opened for only where that arrival is its own
-// following, so the history's address's arrival is forgotten at the comment's, and Back to it
-// opens Details again.
+// Back to an earlier entry of `/issues/<key>/activity` is that entry's following again. A
+// comment's address with a row of the outline opens no Details, so Details forgets the following
+// it last opened for there, and Back to the history's address opens it again, though the reader
+// closed it at the comment.
 test("Back to the history's address from a comment's address with a row of the outline opens Details again, though the reader closed it there", async () => {
-  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
-    requirements: [],
-  } as never);
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
-  const { client, names } = agentsThreadClient();
+  const { client, getIssueCoverage, names } = agentsThreadClient();
   const hold: DrawerHold = {};
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: KEY, kind: "activity" })]}>
@@ -1836,17 +1801,21 @@ async function nextFrames(count: number): Promise<void> {
 /**
  * `PeopleInDrawer` at `path`, laid out as Details stacks its rows: each row of the box's content
  * under the one before, from the box's top, moved up by the box's scroll, and each element as
- * the row it stands in. The history's block is laid out inside its row as blocks stack: each
+ * the row it stands in, but for the control at the head of a row a control elsewhere opens
+ * Details at (`data-details-row`): the first element of what the row holds, as `WideRow` draws
+ * the Collaborators control above the list it opens, stands at the row's top, as tall as a row
+ * the case does not size. The history's block is laid out inside its row as blocks stack: each
  * entry of the history under the one before (`HISTORY_UNITS`), everything inside an entry as the
  * entry, and each line outside them one `HISTORY_LINE` tall. The box's view is `BOX_HEIGHT`
  * tall (`clientHeight`), what it scrolls is its content's height (`scrollHeight`), a point of
  * the page names what is drawn there (`elementFromPoint`), and `scrollIntoView` scrolls the box
  * as the browser does. happy-dom lays nothing out, never calls a resize observer back and raises
- * no scroll event, so `grow` sets a row's height, or an entry's by its `data-history-entry`, and
- * `resized` calls every observer back, as the browser does once a row's height has changed;
- * `heightsChanged` calls back only the observers of an element whose height changed, as the
- * browser does; and `frame` is the next frame: the box's scroll event, where the box moved since
- * the last one, then the observers of what changed height.
+ * no scroll event, so `grow` sets a row's height, by its `data-testid` or its `data-details-row`,
+ * or an entry's by its `data-history-entry`, and `resized` calls every observer back, as the
+ * browser does once a row's height has changed; `heightsChanged` calls back only the observers of
+ * an element whose height changed, as the browser does; and `frame` is the next frame: the box's
+ * scroll event, where the box moved since the last one, then the observers of what changed
+ * height.
  */
 function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
   const log = drawn.log ?? Promise.resolve([]);
@@ -1914,7 +1883,9 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
   const rowHeight = (row: Element) =>
     row.matches(HISTORY_BLOCK)
       ? heightIn(row)
-      : (heights.get(row.getAttribute("data-testid") ?? "") ?? ROW_HEIGHT);
+      : (heights.get(
+          row.getAttribute("data-testid") ?? row.getAttribute(DETAILS_ROW_ATTRIBUTE) ?? ""
+        ) ?? ROW_HEIGHT);
   /** The top and height of `target` in `block`, whose top is `top`, where `block` holds it. */
   const placeIn = (block: Element, top: number, target: Element): DOMRect => {
     if (block === target || block.matches(HISTORY_UNITS)) return rectOf(top, heightIn(block));
@@ -1947,7 +1918,13 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
     let top = start;
     for (const row of box.firstElementChild?.children ?? []) {
       if (row.contains(this)) {
-        return row.matches(HISTORY_BLOCK) ? placeIn(row, top, this) : rectOf(top, rowHeight(row));
+        if (row.matches(HISTORY_BLOCK)) return placeIn(row, top, this);
+        const head = row.matches(`[${DETAILS_ROW_ATTRIBUTE}]`)
+          ? row.firstElementChild?.firstElementChild
+          : null;
+        return head?.contains(this) === true
+          ? rectOf(top, ROW_HEIGHT)
+          : rectOf(top, rowHeight(row));
       }
       top += rowHeight(row);
     }
@@ -1976,11 +1953,18 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
     const bottom = BOX_TOP + BOX_HEIGHT;
     const block =
       typeof how === "object" ? (how.block ?? "start") : how === false ? "end" : "start";
-    // `nearest` leaves an element wholly in the view, or over all of it, where it is.
+    // `nearest` leaves an element wholly in the view, or over all of it, where it is; else it
+    // scrolls by the smaller of the two moves that line an edge of the element up with the same
+    // edge of the view: an element above the view no taller than it comes in by its top, and a
+    // taller one by its foot, and an element below the view the other way about.
     const over = at.top < BOX_TOP;
     const under = at.bottom > bottom;
     const nearest =
-      over === under ? 0 : over ? at.top - BOX_TOP : Math.min(at.bottom - bottom, at.top - BOX_TOP);
+      over === under
+        ? 0
+        : over
+          ? Math.max(at.top - BOX_TOP, at.bottom - bottom)
+          : Math.min(at.bottom - bottom, at.top - BOX_TOP);
     const by: Record<ScrollLogicalPosition, number> = {
       center: at.top + at.height / 2 - (BOX_TOP + BOX_HEIGHT / 2),
       end: at.bottom - bottom,
@@ -2054,9 +2038,14 @@ function drawPeopleInDrawer(path: string, drawn: DetailsDrawn = {}) {
       );
       await nextFrames(2);
     },
-    /** Sets the height of `row` - a row of the box by its `data-testid`, or an entry of the
-     *  history by its `data-history-entry` - `by` taller, and moves the box as the browser's own
-     *  scroll anchoring does across that change, where the case draws it (`browserAnchoring`). */
+    /** Waits for the history to draw `count` entries. */
+    async historyDrawn(count: number): Promise<void> {
+      await waitFor(() => expect(box.querySelectorAll("[data-history-entry]")).toHaveLength(count));
+    },
+    /** Sets the height of `row` - a row of the box by its `data-testid` or its
+     *  `data-details-row`, or an entry of the history by its `data-history-entry` - `by` taller,
+     *  and moves the box as the browser's own scroll anchoring does across that change, where the
+     *  case draws it (`browserAnchoring`). */
     grow(row: string, by: number): void {
       const entry = box.querySelector(`[data-history-entry="${CSS.escape(row)}"]`) !== null;
       const anchoring =
@@ -2209,6 +2198,47 @@ test("a load of /collaborators keeps the focused Collaborators control's place a
   }
 });
 
+// `t o` pressed again at `/collaborators`, once the reader has read far down Details below a
+// collaborators' row taller than Details' view - its list open - leaves the focused Collaborators
+// control wholly in the view. The opener brings the whole row into the view (`nearest`), which
+// from below shows the row's foot, the control at its head still above the view; the hold then
+// found the control wholly outside the view and yielded, so nothing brought it back. The hold
+// brings the focused control into the view as the focus lands. Found by the tester on a running
+// build after the history's Load older was pressed until it went: the control 151 px above
+// Details' view at 1440 px, and 435 px at 390.
+test("t o pressed again at /collaborators with Details read far below a collaborators' row taller than its view leaves the focused Collaborators control wholly in the view", async () => {
+  const log = claimsNewestFirst(30);
+  const page = drawPeopleInDrawer(buildIssuePath({ key: KEY, kind: "collaborators" }), {
+    log: Promise.resolve(log),
+  });
+  try {
+    await page.focused("a load of /collaborators");
+    await page.historyDrawn(log.length);
+    // The list the address opened, drawn under the control, makes its row taller than the view.
+    page.grow("collaborators", 2 * BOX_HEIGHT);
+    page.heightsChanged();
+    // The reader leaves the control and reads down to the end of Details.
+    act(() => page.control().blur());
+    readerScrollsToEnd(page.box);
+    expect(
+      page.control().getBoundingClientRect().bottom,
+      "the reader's place left the Collaborators control in Details' view, so the case proves nothing"
+    ).toBeLessThan(BOX_TOP);
+
+    await userEvent.keyboard("to");
+    await page.focused("t o");
+    await nextFrames(2);
+    page.frame();
+    const at = page.control().getBoundingClientRect();
+    expect(
+      whollyInBox(at),
+      `t o left the focused Collaborators control at ${at.top} px, out of Details' view (${BOX_TOP} to ${BOX_TOP + BOX_HEIGHT})`
+    ).toBe(true);
+  } finally {
+    page.restore();
+  }
+});
+
 // `t v` puts the focus on the history once Details draws it, and the history keeps the place it
 // landed at in the same way when a row above it grows after the landing.
 test("after t v, a row above the focused history that grows scrolls Details by as much, and the history keeps its place", async () => {
@@ -2285,6 +2315,51 @@ test("after t v, the history's landing at the top of Details is the place held a
   }
 });
 
+// `t v` pressed again at `/activity`, once the reader has read far down Details, brings the
+// history's heading back to the top of Details' view: each press is a following of the address of
+// its own (`useFollowing`), and each following lands the heading. The landing once told one
+// following from the next by the address alone, the same for every following of `/activity`, so
+// after the load's landing the key landed nothing and the heading stayed far above the view.
+// Found by the tester on a running build after the history's Load older was pressed until it
+// went: the heading 39,585 px above Details' view at 1440 px, and 121 px at 390.
+test("t v pressed again at /activity with Details read far down lands the history's heading at the top of Details' view", async () => {
+  const log = claimsNewestFirst(30);
+  const page = drawPeopleInDrawer(buildIssuePath({ key: KEY, kind: "activity" }), {
+    log: Promise.resolve(log),
+  });
+  try {
+    await page.historyDrawn(log.length);
+    const history = screen.getByTestId("issue-history");
+    const heading = history.querySelector<HTMLElement>("h2");
+    if (heading === null) throw new Error("the history drew no heading");
+    await waitFor(() =>
+      expect(
+        heading.getBoundingClientRect().top,
+        "the load of /activity did not land the history's heading"
+      ).toBe(BOX_TOP)
+    );
+    // The reader reads down to the end of Details.
+    readerScrollsToEnd(page.box);
+    expect(
+      heading.getBoundingClientRect().bottom,
+      "the reader's place left the history's heading in Details' view, so the case proves nothing"
+    ).toBeLessThan(BOX_TOP);
+
+    await userEvent.keyboard("tv");
+    await waitFor(() =>
+      expect(document.activeElement, "t v did not focus the history").toBe(history)
+    );
+    await nextFrames(2);
+    page.frame();
+    expect(
+      heading.getBoundingClientRect().top,
+      "t v at /activity left the history's heading out of the top of Details' view"
+    ).toBe(BOX_TOP);
+  } finally {
+    page.restore();
+  }
+});
+
 // The hold lasts while the focus stays on the control: a key or a turn of the wheel that leaves it
 // there leaves the hold on, and a row above that grows later scrolls Details by as much.
 test("the hold survives a key and a turn of the wheel, and a later growth above the control scrolls Details by as much", async () => {
@@ -2333,6 +2408,11 @@ function readerScrolls(box: HTMLElement, by: number): void {
     box.scrollTop += by;
     box.dispatchEvent(new Event("scroll"));
   });
+}
+
+/** The reader scrolling Details' box down to the end of what it holds (`readerScrolls`). */
+function readerScrollsToEnd(box: HTMLElement): void {
+  readerScrolls(box, box.scrollHeight - BOX_HEIGHT - box.scrollTop);
 }
 
 /** The pointer coming to rest on `entry` at `point` of the page: the `pointerover` and the
@@ -2522,11 +2602,11 @@ type EarlierPlace = "older" | "pin" | "pointer" | "scroll";
  * the reader looked at: that entry's middle.
  */
 async function readerLeftAPlace(place: EarlierPlace) {
-  const { client, names } = agentsThreadClient();
+  const { client, getIssueCoverage, names } = agentsThreadClient();
   const log = claimsNewestFirst(place === "older" ? 200 : 30);
   const older = Promise.withResolvers<DispatchEvent[]>();
   const reads = [
-    spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
+    getIssueCoverage,
     names,
     // A pin reads the reader's state of the issue, and writes it with the line pinned.
     spyOn(api, "getMyState").mockResolvedValue(READ_THROUGH_TWO),
@@ -2553,9 +2633,7 @@ async function readerLeftAPlace(place: EarlierPlace) {
   try {
     act(() => page.hold.open?.(true));
     // Each claim is an entry, and so is the agents' thread.
-    await waitFor(() =>
-      expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length + 1)
-    );
+    await page.historyDrawn(log.length + 1);
     const entries = [...page.box.querySelectorAll<HTMLElement>("[data-history-entry]")];
     const entry =
       place === "older"
@@ -2664,7 +2742,7 @@ for (const [landing, landingName] of SWEEP_LANDINGS) {
               if (heading === null) throw new Error("the history drew no heading");
               landed = heading;
             } else {
-              // The address arrives a while after the reader's last act: its landing's scroll
+              // The address is followed a while after the reader's last act: its landing's scroll
               // is no scroll of theirs.
               page.later(READER_ACT_PASSED_MS);
               const id = AGENTS_THREAD.message.id;
@@ -2774,9 +2852,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
       });
       try {
         act(() => page.hold.open?.(true));
-        await waitFor(() =>
-          expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length)
-        );
+        await page.historyDrawn(log.length);
         await userEvent.keyboard("tv");
         const history = screen.getByTestId("issue-history");
         await waitFor(() =>
@@ -2807,9 +2883,7 @@ for (const [reader, readerName] of READER_ON_ENTRY) {
 
         if (above === "arrives") {
           act(() => prependEventToLog(client, claimMade(log.length + 1, 1)));
-          await waitFor(() =>
-            expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length + 1)
-          );
+          await page.historyDrawn(log.length + 1);
         } else {
           growEntryAbove(page, entry);
         }
@@ -2835,9 +2909,7 @@ test("after t o and the pointer resting on an entry of the history, the reader's
   const page = drawPeopleInDrawer(`/issues/${KEY}`, { heldClock: true, log: Promise.resolve(log) });
   try {
     act(() => page.hold.open?.(true));
-    await waitFor(() =>
-      expect(page.box.querySelectorAll("[data-history-entry]")).toHaveLength(log.length)
-    );
+    await page.historyDrawn(log.length);
     await userEvent.keyboard("to");
     await page.focused("t o");
     page.frame();

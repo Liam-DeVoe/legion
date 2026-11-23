@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { installResizeObserver } from "../../__tests__/scroll-box";
 import { api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { Artifact, DispatchEvent, Handoff, IssueDetails, MessageRead } from "../../api/types";
@@ -132,7 +133,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <IssueHistory
-            activityAddress={undefined}
+            activityFollowing={undefined}
             issue={issue}
             item={undefined}
             state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
@@ -193,7 +194,7 @@ test("an event arriving just after midnight leaves the entry the reader reads wh
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <IssueHistory
-            activityAddress={undefined}
+            activityFollowing={undefined}
             issue={issue}
             item={undefined}
             state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
@@ -354,7 +355,7 @@ test("a reader on one of two threads whose events are unread keeps their entry w
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <IssueHistory
-            activityAddress={undefined}
+            activityFollowing={undefined}
             issue={issue}
             item={undefined}
             state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
@@ -410,7 +411,7 @@ test("a turn's Reply sets the writer to reply to that turn", async () => {
   }
   const history = (
     <IssueHistory
-      activityAddress={undefined}
+      activityFollowing={undefined}
       issue={issue}
       item={undefined}
       state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
@@ -513,7 +514,7 @@ test("a day the address opened closes when the reader presses its line", async (
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
           <IssueHistory
-            activityAddress={undefined}
+            activityFollowing={undefined}
             issue={issue}
             item="m-earlier"
             state={{ [KEY]: { dismissed: [], last_read_seq: 99, pinned: false, seq: 0 } }}
@@ -607,7 +608,7 @@ function drawHistory(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <IssueHistory
-          activityAddress={undefined}
+          activityFollowing={undefined}
           issue={issue}
           item={item}
           state={{ [KEY]: { dismissed: [], last_read_seq: 99999, pinned: false, seq: 0 } }}
@@ -1588,6 +1589,65 @@ test("Load older whose last page adds no control hands the focus to the control 
 /** How tall the box the history scrolls in is: Details' view. */
 const VIEW_HEIGHT = 600;
 
+/** Lays out the history drawn in `box`, Details' own box, for the geometry `ViewportAnchor` and
+ *  the landing read: `box` is Details' view, `VIEW_HEIGHT` tall at the top of the window, and
+ *  every entry stacks from `LIST_TOP` in DOM order, `heightOf` tall, moved up by the box's
+ *  scroll. Where the case gives `turnHeight`, a thread's turns stack inside its entry, each
+ *  `turnHeight` tall, and anything inside a turn measures as the turn. Anything else inside an
+ *  entry, a control among them, measures as the entry, and anything else as the whole list. The
+ *  point the anchor probes at hits the entry drawn there. Returns what restores the measures. */
+function installDetailsLayout(
+  box: HTMLElement,
+  heightOf: (row: Element) => number,
+  turnHeight?: (turn: Element) => number
+): () => void {
+  const rows = () => [...box.querySelectorAll<HTMLElement>("[data-event-seq]")];
+  const rectOf = (top: number, height: number) =>
+    ({
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 100,
+      toJSON: () => ({}),
+      top,
+      width: 100,
+      x: 0,
+      y: top,
+    }) as DOMRect;
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this === box) return rectOf(0, VIEW_HEIGHT);
+    const row = this.closest("[data-event-seq]");
+    const turn = this.closest("[data-history-item]");
+    const start = LIST_TOP - box.scrollTop;
+    let top = start;
+    for (const one of rows()) {
+      if (one === row) {
+        if (turn === null || turnHeight === undefined) return rectOf(top, heightOf(one));
+        for (const other of one.querySelectorAll("[data-history-item]")) {
+          if (other === turn) return rectOf(top, turnHeight(other));
+          top += turnHeight(other);
+        }
+      }
+      top += heightOf(one);
+    }
+    return rectOf(start, top - start);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    let top = LIST_TOP - box.scrollTop;
+    for (const one of rows()) {
+      if (y >= top && y < top + heightOf(one)) return one;
+      top += heightOf(one);
+    }
+    return null;
+  });
+  return () => {
+    rect.mockRestore();
+    point.mockRestore();
+  };
+}
+
 // Load older hands the focus on with no scroll, and `ViewportAnchor` took the reader's place
 // only from what the reader did - the pointer over the rows, or a scroll they made - so it held
 // no entry then: long agents' turns just above Load older, drawn whole until they near the
@@ -1620,58 +1680,10 @@ test("the entry Load older hands the focus to keeps its place in Details' view a
   const rows = () => [...box.querySelectorAll<HTMLElement>("[data-event-seq]")];
   const heightOf = (row: Element) =>
     heights.get(row.getAttribute("data-history-entry") ?? "") ?? ROW_HEIGHT;
-  const rectOf = (top: number, height: number) =>
-    ({
-      bottom: top + height,
-      height,
-      left: 0,
-      right: 100,
-      toJSON: () => ({}),
-      top,
-      width: 100,
-      x: 0,
-      y: top,
-    }) as DOMRect;
-  // Every entry stacks from `LIST_TOP` in DOM order, moved up by the box's scroll; a control
-  // measures as the entry it is in, and anything else as the whole list.
-  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    if (this === box) return rectOf(0, VIEW_HEIGHT);
-    const row = this.closest("[data-event-seq]");
-    const start = LIST_TOP - box.scrollTop;
-    let top = start;
-    for (const one of rows()) {
-      if (one === row) return rectOf(top, heightOf(one));
-      top += heightOf(one);
-    }
-    return rectOf(start, top - start);
-  });
-  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
-    let top = LIST_TOP - box.scrollTop;
-    for (const one of rows()) {
-      if (y >= top && y < top + heightOf(one)) return one;
-      top += heightOf(one);
-    }
-    return null;
-  });
+  const restoreLayout = installDetailsLayout(box, heightOf);
   // The anchor hears a change of height outside its commits from a resize observer of its root,
   // which happy-dom never calls back: the case calls it back once the entries are cut.
-  const observing = new Set<{ readonly callback: ResizeObserverCallback; observer: unknown }>();
-  const RealResizeObserver = globalThis.ResizeObserver;
-  globalThis.ResizeObserver = class {
-    readonly #held: { readonly callback: ResizeObserverCallback; observer: unknown };
-    constructor(callback: ResizeObserverCallback) {
-      this.#held = { callback, observer: this };
-    }
-    observe() {
-      observing.add(this.#held);
-    }
-    unobserve() {}
-    disconnect() {
-      observing.delete(this.#held);
-    }
-  } as unknown as typeof ResizeObserver;
+  const sizes = installResizeObserver();
   let unmount: (() => void) | undefined;
 
   try {
@@ -1703,9 +1715,7 @@ test("the entry Load older hands the focus to keeps its place in Details' view a
     // its root resized.
     heights.set("event:202", 120);
     heights.set("event:201", 120);
-    act(() => {
-      for (const { callback, observer } of observing) callback([], observer as ResizeObserver);
-    });
+    sizes.resize();
 
     expect(
       entry.getBoundingClientRect().top,
@@ -1713,9 +1723,8 @@ test("the entry Load older hands the focus to keeps its place in Details' view a
     ).toBe(handed);
   } finally {
     unmount?.();
-    globalThis.ResizeObserver = RealResizeObserver;
-    rect.mockRestore();
-    point.mockRestore();
+    sizes.restore();
+    restoreLayout();
     box.remove();
     for (const read of reads) read.mockRestore();
   }
@@ -1751,41 +1760,7 @@ test("Load older keeps the place of the entry above it from the press, as its pa
     if (row.getAttribute("data-history-entry") !== "event:202") return ROW_HEIGHT;
     return box.querySelector('[data-history-entry="event:10"]') === null ? 1000 : 120;
   };
-  const rectOf = (top: number, height: number) =>
-    ({
-      bottom: top + height,
-      height,
-      left: 0,
-      right: 100,
-      toJSON: () => ({}),
-      top,
-      width: 100,
-      x: 0,
-      y: top,
-    }) as DOMRect;
-  // Every entry stacks from `LIST_TOP` in DOM order, moved up by the box's scroll; a control
-  // measures as the entry it is in, and anything else as the whole list.
-  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: Element
-  ) {
-    if (this === box) return rectOf(0, VIEW_HEIGHT);
-    const row = this.closest("[data-event-seq]");
-    const start = LIST_TOP - box.scrollTop;
-    let top = start;
-    for (const one of rows()) {
-      if (one === row) return rectOf(top, heightOf(one));
-      top += heightOf(one);
-    }
-    return rectOf(start, top - start);
-  });
-  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
-    let top = LIST_TOP - box.scrollTop;
-    for (const one of rows()) {
-      if (y >= top && y < top + heightOf(one)) return one;
-      top += heightOf(one);
-    }
-    return null;
-  });
+  const restoreLayout = installDetailsLayout(box, heightOf);
   let unmount: (() => void) | undefined;
 
   try {
@@ -1829,10 +1804,96 @@ test("Load older keeps the place of the entry above it from the press, as its pa
     ).toBe(true);
   } finally {
     unmount?.();
-    rect.mockRestore();
-    point.mockRestore();
+    restoreLayout();
     box.remove();
     for (const read of reads) read.mockRestore();
+  }
+});
+
+// The address of a short reply under a long root turn lands the reply in the middle of Details'
+// view, its root turn drawn whole above it as the landing scrolls. The root turn is then cut, in
+// the microtask after the landing's scroll (`CutWords`), which moves the reply up by the cut and
+// leaves the top of the thread's entry where it was. The history's anchor kept that entry's top,
+// so the reply went up by the cut, out of Details' view. Found by the tester on a running build at
+// 1440 px: a root turn of 1,980 px cut to 190 px took the reply 1,790 px up. The anchor now keeps
+// the landed turn's own place inside its entry (`keepRow`'s `element`). The browser row "the
+// address of a short reply under a long agents' turn keeps the reply in Details' view as the turn
+// above it is cut" (`e2e/issue-page-m.e2e.ts`) draws the real turns.
+test("the address of a short reply under a long root turn keeps the reply where it landed as the root turn is cut", async () => {
+  // Ten claims newer than the thread and ten older, so Details scrolls on both sides of it.
+  const log = [
+    ...Array.from({ length: 10 }, (_, index) => claimAgo(20 - index, index + 1)),
+    ...Array.from({ length: 10 }, (_, index) => claimAgo(10 - index, 300 + index)),
+  ];
+  const root = agentMessage("m-root", 120);
+  const reply = { ...agentMessage("m-reply", 60).message, in_reply_to: "m-root" };
+  const restoreReads = stubHistoryReads(log, [{ ...root, replies: [reply] }]);
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  Object.defineProperty(box, "clientHeight", { configurable: true, value: VIEW_HEIGHT });
+  // The root turn is drawn whole, 2,000 px tall, until the case cuts it; the reply is 100 px.
+  const turnHeights = new Map([
+    ["m-root", 2000],
+    ["m-reply", 100],
+  ]);
+  const turnHeight = (turn: Element) =>
+    turnHeights.get(turn.getAttribute("data-history-item") ?? "") ?? ROW_HEIGHT;
+  const heightOf = (row: Element) => {
+    const turns = [...row.querySelectorAll("[data-history-item]")];
+    return turns.length === 0 ? ROW_HEIGHT : turns.reduce((sum, turn) => sum + turnHeight(turn), 0);
+  };
+  // A thread's turns stack inside its entry.
+  const restoreLayout = installDetailsLayout(box, heightOf, turnHeight);
+  // The landing scrolls Details as the browser does.
+  const intoView = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+    how?: boolean | ScrollIntoViewOptions
+  ) {
+    const at = this.getBoundingClientRect();
+    const block = typeof how === "object" ? how.block : "start";
+    box.scrollTop += block === "center" ? at.top + at.height / 2 - VIEW_HEIGHT / 2 : at.top;
+  });
+  // The anchor hears a change of height outside its commits from resize observers, which
+  // happy-dom never calls back: the case calls them back as the frame after the cut does.
+  const sizes = installResizeObserver();
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory("m-reply", box).unmount;
+    const marked = await waitFor(() => {
+      const turn = box.querySelector<HTMLElement>('[data-history-item="m-reply"]');
+      expect(turn?.getAttribute("aria-current"), "the reply's address marked no turn").toBe("true");
+      return turn as HTMLElement;
+    });
+    // The reply is no taller than Details' view, so it lands in the middle of it.
+    const landed = (VIEW_HEIGHT - 100) / 2;
+    await waitFor(() =>
+      expect(marked.getBoundingClientRect().top, "the address did not land the reply").toBe(landed)
+    );
+
+    // The root turn is cut to 200 px in the microtask after the landing's scroll, which the
+    // anchor sees only as content resized. The next frame raises the landing scroll's own event,
+    // then observes the cut.
+    turnHeights.set("m-root", 200);
+    act(() => {
+      box.dispatchEvent(new Event("scroll"));
+      sizes.resize();
+    });
+
+    const at = marked.getBoundingClientRect();
+    expect(at.top, "the cut of the root turn above the landed reply moved the reply").toBe(landed);
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the reply stood at ${at.top} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+  } finally {
+    unmount?.();
+    sizes.restore();
+    restoreLayout();
+    intoView.mockRestore();
+    box.remove();
+    restoreReads();
   }
 });
 
