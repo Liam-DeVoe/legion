@@ -138,7 +138,7 @@ func (e *Engine) defaultRows(issue record.Issue, earlier []record.PlanStep, sess
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskWaiting}
-	return version, []record.PlanTask{task}, record.NameAgents(earlier, sessions, planSteps(plan.RolesOf(plan.Plan{}, e.cfg.Deployment), issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
+	return version, []record.PlanTask{task}, record.NameAgents(earlier, sessions, planSteps(e.cfg.Deployment.Roles, issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
 }
 
 // planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its

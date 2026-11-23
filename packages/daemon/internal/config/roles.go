@@ -277,7 +277,7 @@ func checkDefaultSteps(cfg *Config) error {
 // the answer is a copy where any key is left out.
 func oneAgentOneModel(project string, steps []plan.Step, d plan.Deployment) ([]plan.Step, []string) {
 	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-	mismatches := plan.KeyMismatches(task, plan.RolesOf(task, d))
+	mismatches := plan.KeyMismatches(task, d.Roles)
 	if len(mismatches) == 0 {
 		return steps, nil
 	}
