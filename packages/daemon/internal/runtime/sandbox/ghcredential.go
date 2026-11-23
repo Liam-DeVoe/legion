@@ -52,9 +52,11 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 }
 
 // refreshGitHubCredentials brings the slot Secrets of every live pod to the current render of the
-// GitHub credential each slot holds — the App of the role its process was launched as, which that
-// launch recorded on the Secret, else of the stored claim's role, and its own name's App where no
-// stored claim runs in it (slotAppRole) — so the gh files its container projects (GHConfigDir)
+// GitHub credential each slot holds — the App of the role runtime.SlotRole answers for it: the
+// role the runtime's ActsAs gives the claim in it, the step's while the architect there does a
+// step of its own, else the role its process was launched as, which that launch recorded on the
+// Secret, else the stored claim's role, and its own name's App where no stored claim runs in it
+// (slotAppRole) — so the gh files its container projects (GHConfigDir)
 // carry the tokens the daemon holds now: the kubelet rewrites the projection in place once the
 // Secret changes. It walks the pod store for the pods of this project (every launcher slot holds
 // an App's gh bundle, the controller's included; a repository cache's pod names no kind and holds
@@ -112,9 +114,11 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		mints[key] = mint{token: token, ok: err == nil}
 		return token, err == nil
 	}
-	// Each slot holds the App of the role its process was launched as, which that launch recorded
-	// on the slot's Secret, else of the step its claim does now, read from the stored claims once a
-	// tick (slotAppRole); the role is judged on the Secret each write reads (refreshGitHubCredential).
+	// Each slot holds the App of the role the runtime's ActsAs gives its claim (the step's, while
+	// the architect does a step of its own), else of the role its process was launched as, which
+	// that launch recorded on the slot's Secret, else of the step its claim does now, read from the
+	// stored claims once a tick (slotAppRole); the role is judged on the Secret each write reads
+	// (refreshGitHubCredential).
 	// A tick that cannot read the stored claims refreshes no slot of an issue pod, each of which
 	// keeps its last tokens until the next tick, rather than mint a slot for its name.
 	held, heldErr := r.slotHolders(ctx)
@@ -211,9 +215,11 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // every slot of the pod.
 //
 // That role is judged on the Secret the write reads, under its resourceVersion (slotAppRole):
-// the role the slot's process was launched as, which the launch's own write of the Secret
-// recorded (launchedRoleAnnotation), and, on a Secret no launch into this pod wrote, the stored
-// role the tick read of the claim in the slot, held. A launch of a re-roled claim into the pod
+// the role the runtime's ActsAs gives the claim in the slot where it gives one (runtime.SlotRole,
+// the step's role while the architect does a step of its own), else the role the slot's process
+// was launched as, which the launch's own write of the Secret recorded (launchedRoleAnnotation),
+// and, on a Secret no launch into this pod wrote, the stored role the tick read of the claim in
+// the slot, held. A launch of a re-roled claim into the pod
 // writes the slot for its new role's App at once and waits for that token (writeLaunchCredential),
 // so a refresh that read the stored claims before the re-role must not write the old role's App
 // over it: the launch's write lands before this one reads the Secret, and records the role, or
@@ -336,12 +342,13 @@ type slotWrite struct {
 // launchedRoleAnnotation records, on a slot's Secret, the role the slot's process runs as and the
 // generation of its claim whose launch started the claim in that role (launchedRecord). A process
 // runs its role for its whole life, since a claim takes another role only while it runs nothing
-// (supervise.Machine.Rerole). A launch into a pod it keeps writes the record with the slot's
-// credential, in the one update, where it starts the claim in another role than the record names
-// (writeLaunchCredential, writeSlotCredential), and the build of a pod writes it for the launching
-// claim's slot and clears it on every other, whose process the build ends (writeLauncherSecrets).
-// The refresher renders a slot for it while it is of the stored claim's latest generation or a
-// later one (slotAppRole).
+// (supervise.Machine.Rerole), though its slot holds the App of another role while the architect in
+// it does a step of its own (runtime.ActsAs). A launch into a pod it keeps writes the record with
+// the slot's credential, in the one update, where it starts the claim in another role than the
+// record names (writeLaunchCredential, writeSlotCredential), and the build of a pod writes it for
+// the launching claim's slot and clears it on every other, whose process the build ends
+// (writeLauncherSecrets). The refresher renders a slot for it while it is of the stored claim's
+// latest generation or a later one and the runtime's ActsAs gives no other role (slotAppRole).
 const launchedRoleAnnotation = "legion.dev/launched-role"
 
 // launchedRecord is the record a launch of generation, as role, leaves on its slot's Secret
@@ -484,7 +491,8 @@ func (r *Runtime) renderSlot(ctx context.Context, pod *corev1.Pod, slot claim.Ro
 // writeLaunchCredential writes the slot of spec's claim in pod, a pod the launch keeps, for the App
 // of the step the claim does now (runtime.SlotRole), at once and with the one-slot write
 // (writeSlotCredential), records on the Secret in that write the role the launch's process runs
-// as (launchedRoleAnnotation), which the refresher renders the slot for from then on, and answers
+// as (launchedRoleAnnotation), which the refresher renders the slot for from then on unless the
+// runtime's ActsAs gives another role (runtime.SlotRole), and answers
 // what the slot's gh files must hold before the child starts: the default owner's hosts.yml and
 // the digest of its token. A slot whose gh acts as nobody needs nothing. The kubelet projects the
 // Secret anew within its sync period, and the launcher waits for it; so that no wait is silent,
