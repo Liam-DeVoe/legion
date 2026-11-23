@@ -10,12 +10,16 @@ package daemon
 // roles (startRoles), the rule a claim's entries are held to (claimEntries, entryRefusal), the read
 // of a told row, in the seed's transaction or in a savepoint of it (heldTold, toldInSavepoint), and
 // the write of a told row by hand, checked against the row the start path writes (seedToldRow).
+// Part one's requests to Dispatch are here too (dispatchAs, dispatchAgent, setDefaultRepository),
+// which the boot's setup makes before the seed, and the seed and the steps after it.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"slices"
@@ -431,3 +435,105 @@ func (r *versionNewsLive) toldByStartPath(ctx context.Context, tx pgx.Tx, engine
 
 // versionNewsHead is the head of key's pull request.
 func versionNewsHead(key string) string { return "head-" + strings.ToLower(key) }
+
+// dispatchAs sends one request to Dispatch as the person login (dispatchUser), requires a 2xx
+// answer and decodes it into into when it is not nil.
+func (r *versionNewsLive) dispatchAs(login, method, path string, body, into any) {
+	r.t.Helper()
+	r.dispatchCall(method, path, body, 0, into, dispatchUser(login))
+}
+
+// dispatchAgent sends one request to Dispatch with the agent bearer, as a session or the daemon
+// reaches it, requires want and decodes the answer into into when it is not nil.
+func (r *versionNewsLive) dispatchAgent(method, path string, body any, want int, into any) {
+	r.t.Helper()
+	r.dispatchCall(method, path, body, want, into, func(request *http.Request) { request.Header.Set("Authorization", "Bearer "+r.dispatch.token) })
+}
+
+// setDefaultRepository makes repo, an owner/name, the default repository of the Dispatch project
+// project, as the person, and answers the route that set it. It asks PUT
+// /api/v1/projects/{key}/default-repository first. A Dispatch from before #4457, such as the one
+// of the base commit that part one's negative control runs against, serves no such route and
+// answers 404, so it then asks PUT /api/v1/settings/repo-projects/{owner}/{name} to make project
+// the repository's default one, the route that Dispatch serves. Any other answer that is not 2xx
+// fails the run, as dispatchCall fails it, and so does a second route's answer that is not 2xx,
+// whose FAIL line names the first route's 404 and its body after its own.
+func (r *versionNewsLive) setDefaultRepository(project, repo string) string {
+	r.t.Helper()
+	person := dispatchUser(versionNewsPerson)
+	path := "/api/v1/projects/" + project + "/default-repository"
+	status, answer := r.dispatchSend(http.MethodPut, path, map[string]any{"repo": repo}, person)
+	refused := dispatchRefused(http.MethodPut, path, 0, status, answer)
+	if status != http.StatusNotFound {
+		if refused != "" {
+			r.fail("%s", refused)
+		}
+		return http.MethodPut + " " + path
+	}
+	fallback := "/api/v1/settings/repo-projects/" + repo
+	status, answer = r.dispatchSend(http.MethodPut, fallback, map[string]any{"project": project, "default": true}, person)
+	if again := dispatchRefused(http.MethodPut, fallback, 0, status, answer); again != "" {
+		r.fail("%s, after %s", again, refused)
+	}
+	return http.MethodPut + " " + fallback
+}
+
+// dispatchCall is one request to Dispatch: want 0 takes any 2xx answer (dispatchRefused).
+func (r *versionNewsLive) dispatchCall(method, path string, body any, want int, into any, identify func(*http.Request)) {
+	r.t.Helper()
+	status, answer := r.dispatchSend(method, path, body, identify)
+	if refused := dispatchRefused(method, path, want, status, answer); refused != "" {
+		r.fail("%s", refused)
+	}
+	if into != nil {
+		if err := json.Unmarshal(answer, into); err != nil {
+			r.fail("decode Dispatch's answer to %s %s (%s): %v", method, path, answer, err)
+		}
+	}
+}
+
+// dispatchSend sends one request to Dispatch, identified by identify, and answers its status and
+// its body, whatever the status.
+func (r *versionNewsLive) dispatchSend(method, path string, body any, identify func(*http.Request)) (int, []byte) {
+	r.t.Helper()
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	request, err := http.NewRequest(method, r.dispatch.base+path, reader)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	identify(request)
+	response, err := r.client.Do(request)
+	if err != nil {
+		r.fail("Dispatch %s %s: %v", method, path, err)
+	}
+	defer response.Body.Close()
+	answer, err := io.ReadAll(response.Body)
+	if err != nil {
+		r.fail("read Dispatch's answer to %s %s: %v", method, path, err)
+	}
+	return response.StatusCode, answer
+}
+
+// dispatchUser identifies a request to Dispatch as the person login, through the trusted identity
+// header the scratch server takes.
+func dispatchUser(login string) func(*http.Request) {
+	return func(request *http.Request) { request.Header.Set("X-Dispatch-User", login) }
+}
+
+// dispatchRefused is "" where Dispatch answered method path with want, or with any 2xx where want
+// is 0, and otherwise the words a FAIL line names that answer in: the request, its status and its
+// body.
+func dispatchRefused(method, path string, want, status int, answer []byte) string {
+	if (want != 0 && status == want) || (want == 0 && status/100 == 2) {
+		return ""
+	}
+	return fmt.Sprintf("Dispatch %s %s = %d %s", method, path, status, answer)
+}

@@ -615,7 +615,7 @@ func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifac
 		s.writeFailure(w, r, http.StatusNotFound, "ARTIFACT_NOT_ON_ISSUE", fmt.Sprintf("%s is not a document of %s", artifactID, issue))
 		return dispatch.Approval{}, false
 	case err != nil:
-		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("Dispatch read of %s failed; retry %s", artifactID, operation))
+		s.refuseDispatchRead(w, r, artifactID, operation)
 		return dispatch.Approval{}, false
 	}
 	return approval, true

@@ -442,26 +442,35 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 	})
 }
 
-// mainsAppliedSequence is main's newest migration at this branch's merge of main 77eac01e35d0: the
-// applied sequence of the copy of Dispatch's issues. dispatch://INFRA-3320's gate basis
-// (20261114064234) and phase awaiting_children (20261114232555) stand below it, and its kind list
-// with the two basis seeds (20261122154643), this branch's newest before that merge, above it.
+// mainsAppliedSequence is main's newest migration at each of this branch's merges of main from
+// 77eac01e35d0 to 4a8d82bfd090: the applied sequence of the copy of Dispatch's issues.
+// dispatch://INFRA-3320's gate basis (20261114064234) and phase awaiting_children (20261114232555)
+// stand below it, and its kind list with the two basis seeds (20261122154643), this branch's
+// newest, above it.
 const mainsAppliedSequence = 20261121170714
 
-// At the merge of main 77eac01e35d0 each side has recorded a migration the other has not, and this
-// branch's daemon meets a database of either. One that main migrated holds main's applied sequence
-// (20261121170714) and none of INFRA-3320's three versions, two of which stand below it; one that
-// this branch's head before the merge (10e98a85ef53) migrated holds the three and lacks
-// 20261121170714, which stands below its newest, 20261122154643. Store.Migrate asks each embedded
-// migration whether its own version is recorded (apply) and never compares it with the newest, so
-// each upgrade applies the versions that database lacks, below its newest and above it alike, and
-// leaves every embedded version recorded once.
+// At each merge of main since 77eac01e35d0 each side has recorded a migration the other has not,
+// and this branch's daemon meets a database that either side left. One that main at 4a8d82bfd090,
+// this head's merge of main, migrated holds main's applied sequence (20261121170714) and the plan
+// of an issue (20261117034837), which main took after 77eac01e35d0, and none of INFRA-3320's three
+// versions, two of which stand below its newest. One that this branch's head before its merge of
+// 77eac01e35d0 (10e98a85ef53) migrated holds the three and lacks both of main's, which stand below
+// its newest, 20261122154643. One that this branch's head before its merge of a7fae897a408
+// (03ac783258da), the merge that brought it the plan of an issue, migrated holds main's applied
+// sequence too and lacks the plan of an issue alone. No merge since brought this branch a
+// migration, so a database its head migrated after that merge holds every version this head
+// embeds. Store.Migrate asks each embedded migration whether its own version is recorded (apply)
+// and never compares it with the newest, so each upgrade applies the versions that database lacks,
+// below its newest and above it alike, and leaves every embedded version recorded once.
 //
 // Main's database holds an outbox row of each kind its own kind check admits, read off that check:
 // the basis seeds' list rewrites the check, which validates every row the table holds, so a kind
 // main's daemon can queue that the list leaves out fails the upgrade. After it the outbox takes the
-// two basis seeds as well. This branch's database holds a row of the copy of Dispatch's issues as
-// the release before 20261121170714 writes one, and the upgrade gives it applied_seq at 0.
+// two basis seeds as well. This branch's database at 10e98a85ef53 holds a row of the copy of
+// Dispatch's issues as the release before 20261121170714 writes one, and the upgrade gives it
+// applied_seq at 0. Its database at 03ac783258da holds a phases row as the release before
+// 20261117034837 writes one, and the upgrade leaves the row as it was, running no step
+// (migration_20261117034837_test.go).
 //
 // Each database is built from the migrations numbered up to its own newest alone, so a migration
 // added after this test still finds the database that release left, and the upgrade applies it
@@ -470,7 +479,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 	ctx := context.Background()
 	for _, release := range []releaseDatabase{
 		{
-			name:   "main at 77eac01e35d0",
+			name:   "main at 4a8d82bfd090",
 			newest: mainsAppliedSequence,
 			lacks:  []int{20261114064234, 20261114232555},
 			seed: func(t *testing.T, store *Store) {
@@ -501,7 +510,7 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "this branch at 10e98a85ef53",
 			newest: 20261122154643,
-			lacks:  []int{mainsAppliedSequence},
+			lacks:  []int{issuePlansVersion, mainsAppliedSequence},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261121170714 names these columns and no other (record's
 				// PutDispatchIssue).
@@ -515,6 +524,30 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 				const applied = `select row(key, dispatch_seq, applied_seq)::text from dispatch_issues order by key`
 				if got, want := rowsAsText(t, store, applied), []string{"(ACME-1,5,0)"}; !slices.Equal(got, want) {
 					t.Errorf("the copy after the upgrade (key, dispatch_seq, applied_seq) = %v, want %v: the row it held, at 0", got, want)
+				}
+			},
+		},
+		{
+			name:   "this branch at 03ac783258da",
+			newest: 20261122154643,
+			lacks:  []int{issuePlansVersion},
+			seed: func(t *testing.T, store *Store) {
+				// The release before 20261117034837 names no step of a phases row.
+				for _, seed := range []string{
+					`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+						values ('LEGION-208', 'LEGION-208', 'LEGION', 'root', 'reviewing', 1, 'needs_review', 'A', 1)`,
+					`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, entry, entry_task)
+						values ('LEGION-208', 'implementer', 'legion-LEGION-208-implementer', 'abc123', 2, '', 3, 'Continue root. Issue: LEGION-208. Phase: implementing.')`,
+				} {
+					if _, err := store.pool.Exec(ctx, seed); err != nil {
+						t.Fatalf("write a phases row as this branch's daemon did before the plan of an issue: %v", err)
+					}
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				const steps = `select row(issue, role, handoff_commit, entry, step_task, step_place)::text from phases order by issue, role`
+				if got, want := rowsAsText(t, store, steps), []string{`(LEGION-208,implementer,abc123,3,"",0)`}; !slices.Equal(got, want) {
+					t.Errorf("the phases rows after the upgrade (issue, role, handoff_commit, entry, step_task, step_place) = %v, want %v: the row it held, running no step", got, want)
 				}
 			},
 		},

@@ -207,9 +207,9 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 driver_file=packages/daemon/internal/daemon/approved_version_news_live_test.go
-# Part one's driver is three files: the test and its harness, its steps, and its seed and setup
-# checks, which the control copies into the base tree together, since the test runs the steps and
-# the steps call the seed.
+# Part one's driver is three files: the test and its harness, its steps, and its seed, setup
+# checks and requests to Dispatch, which the control copies into the base tree together, since
+# the test runs the steps and both call the seed's file.
 steps_file=packages/daemon/internal/daemon/approved_version_news_part_one_steps_live_test.go
 seed_file=packages/daemon/internal/daemon/approved_version_news_seed_live_test.go
 # Part two's driver, whose sessions…Mark constants are the news marks news_base finds the base by,
@@ -403,22 +403,29 @@ check_jj() {
 # news_base sets base_sha to the base where no --base-commit names one: the first parent of the
 # first commit, in HEAD's history, that adds a news mark to prompts_dir, which is the newest commit
 # that carries none. The news marks are the text between the quotes of every sessions…Mark
-# constant of sessions_file, part two's driver; a driver that names none, or writes one with a
-# backslash or a quote in its text, fails the run. `git log -S<mark>` names each commit that adds
-# or removes a mark and skips merge commits, so a forward merge that brings a mark in from main is
-# never the commit found. Of those commits, the first in `git rev-list --topo-order --reverse HEAD`,
-# where each commit comes after its parents, has none of the others before it in its history. A
-# history in which no commit adds a mark, and a first such commit whose parent the clone lacks, as
-# at the edge of a shallow clone, are refused with exit 2, naming the remedies.
+# constant of sessions_file, part two's driver; a driver that names none, writes one with a
+# backslash or a quote in its text, or assigns one in another form than its name, = and its text
+# in double quotes alone on the line, such as with a comment after it, fails the run, the last
+# naming the line, since a mark left unread would move the base later. `git log -S<mark>` names
+# each commit that adds or removes a mark and skips merge commits, so a forward merge that brings
+# a mark in from main is never the commit found. Of those commits, the first in
+# `git rev-list --topo-order --reverse HEAD`, where each commit comes after its parents, has none
+# of the others before it in its history. A history in which no commit adds a mark, and a first
+# such commit whose parent the clone lacks, as at the edge of a shallow clone, are refused with
+# exit 2, naming the remedies.
 news_base() {
-  local line marks=() mark found sha adders=() order first remedy
+  local line number=0 marks=() mark found sha adders=() order first remedy
   remedy="a shallow clone lacks that history: fetch it (git fetch --unshallow), or, for part one's control alone, name its base with --base-commit <rev>"
   [ -r "$root/$sessions_file" ] || fail "this checkout holds no $sessions_file to read the news marks from"
   while IFS= read -r line; do
-    [[ "$line" =~ ^[[:space:]]*(sessions[A-Za-z0-9_]*Mark)[[:space:]]*=[[:space:]]*\"(.*)\"[[:space:]]*$ ]] || continue
-    [[ "${BASH_REMATCH[2]}" != *[\\\"]* ]] ||
-      fail "$sessions_file writes the news mark ${BASH_REMATCH[1]} with a backslash or a quote in its text, which this script does not read"
-    marks+=("${BASH_REMATCH[2]}")
+    number=$((number + 1))
+    if [[ "$line" =~ ^[[:space:]]*(sessions[A-Za-z0-9_]*Mark)[[:space:]]*=[[:space:]]*\"(.*)\"[[:space:]]*$ ]]; then
+      [[ "${BASH_REMATCH[2]}" != *[\\\"]* ]] ||
+        fail "$sessions_file writes the news mark ${BASH_REMATCH[1]} with a backslash or a quote in its text, which this script does not read"
+      marks+=("${BASH_REMATCH[2]}")
+    elif [[ "$line" =~ (^|[^A-Za-z0-9_])(sessions[A-Za-z0-9_]*Mark)([[:space:]]+[A-Za-z_][A-Za-z0-9_.]*)?[[:space:]]*=([^=]|$) ]]; then
+      fail "$sessions_file line $number assigns the news mark ${BASH_REMATCH[2]} in a form this script does not read, so the run would find the base without that mark: write it as ${BASH_REMATCH[2]} = \"<text>\", alone on its line; the line reads: ${line#"${line%%[![:space:]]*}"}"
+    fi
   done <"$root/$sessions_file"
   [ "${#marks[@]}" -gt 0 ] ||
     fail "$sessions_file names no news mark (no sessions…Mark constant), so this run cannot find the base, the parent of the first commit that adds one"

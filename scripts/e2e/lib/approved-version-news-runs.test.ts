@@ -15,6 +15,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import {
   a4,
   answers,
+  controlFailure,
   driverTest,
   failed,
   fullPlan,
@@ -240,6 +241,44 @@ const shallowAtMark: History = (scratch, base) => {
   const commits = markAdded(scratch, base);
   writeFileSync(join(scratch.checkout, ".git", "shallow"), `${commits.mark}\n`);
   return commits;
+};
+
+/** A history whose first commit that adds a news mark adds the second mark sessions_file names
+ * alone (c1), and whose next commit adds the rest (c2), which is HEAD. The real history adds them
+ * the other way round (b537812fb5 the architect's, then 843864d305 the worker's), so this one shows
+ * that the base follows the first adder of any mark, not the first mark's adder, whose parent here
+ * is c1. */
+const secondMarkFirst: History = ({ commit }, c0) => {
+  const c1 = commit("the change adds the second news mark", {
+    [workerPrompt]: `${unmarked}${newsMarks[1]}\n`,
+  });
+  const c2 = commit("the change adds the other news marks", { [workerPrompt]: marked });
+  return { c0, c1, c2 };
+};
+
+/** This checkout's sessions_file, line by line, and its first line that assigns a news mark in the
+ * form the script reads (unreadLine), numbered from 1, with the name of the constant it assigns. */
+const sessionsLines = readFileSync(join(repoRoot, sessionsFile), "utf8").split("\n");
+const firstMarkIndex = sessionsLines.findIndex((line) =>
+  /^\s*sessions\w*Mark\s*=\s*".*"$/.test(line)
+);
+const unreadLine = {
+  number: firstMarkIndex + 1,
+  name: sessionsLines[firstMarkIndex]?.match(/sessions\w*Mark/)?.[0] ?? "",
+};
+
+/** markAdded's history, whose HEAD also writes sessions_file with a comment after the news mark of
+ * unreadLine, a form the script's read of that file does not take. A read that skipped the line
+ * would still find the base, by the other marks, and pass. */
+const unreadMark: History = (scratch, base) => {
+  const commits = markAdded(scratch, base);
+  const driver = sessionsLines
+    .map((line, index) => (index === firstMarkIndex ? `${line} // a comment` : line))
+    .join("\n");
+  return {
+    ...commits,
+    driver: scratch.commit("a comment after a news mark", { [sessionsFile]: driver }),
+  };
 };
 
 /** A branch merged forward: main adds the news marks after c0 (c1) and moves on (c2), which
@@ -797,7 +836,7 @@ const controlDriver = [
     { length: Number(scriptValue("control_setup_checks")) },
     (_, n) => `   assert ${controlStep}: setup check ${n + 1} held`
   ),
-  `FAIL ${controlStep}: waited 2m0s for a task queued for the reviewer of AVQ1-1 behind its open turn; last seen: its claim holds no task`,
+  controlFailure(controlStep),
   `--- FAIL: ${driverTest} (191.40s)`,
   "FAIL",
 ];
@@ -823,9 +862,12 @@ function controlRun(history: History) {
 // --base-commit names one: the first parent of the first commit in HEAD's history that adds a news
 // mark. In a branch merged forward past main's commit that adds the marks, the base is that
 // commit's parent, which carries none, while the merge base of HEAD and origin/main, the base
-// before this rule, carries them: the first test shows both, so it fails on the old rule. A
+// before this rule, carries them: the first test shows both, so it fails on the old rule. Where
+// the first commit that adds a mark adds the second mark sessions_file names, and a later one the
+// first, the base is the first one's parent, and not the parent of the first mark's adder. A
 // history in which no commit adds a mark, and one cut where a shallow clone cuts it, are refused
-// with exit 2, naming the remedies.
+// with exit 2, naming the remedies. A driver line that assigns a news mark in a form the script
+// does not read fails the run with exit 1, naming the line, where a read that skipped it passed.
 describe.skipIf(withoutGit)("the base", () => {
   /** Each prompt file part two's stand-in driver was given as the base's, by its path in the copy
    * it kept, with its text. */
@@ -858,6 +900,40 @@ describe.skipIf(withoutGit)("the base", () => {
       for (const mark of newsMarks) expect(text).not.toContain(mark);
     }
     expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
+  }, 60_000);
+
+  test("is the parent of the first commit that adds any news mark, where that commit adds the second mark", () => {
+    expect(newsMarks.length).toBeGreaterThanOrEqual(2);
+    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, secondMarkFirst);
+    const { c0, c1, c2 } = run.commits;
+    // The test's own control: the first mark's own adder is c2, whose parent, c1, carries the
+    // second mark, so a base read from the first mark alone fails every check below.
+    expect(
+      git(run.checkout, "log", "--format=%H", `-S${newsMarks[0]}`, "HEAD", "--", promptsDir)
+    ).toBe(c2);
+    expect(git(run.checkout, "show", `${c1}:${workerPrompt}`)).toContain(newsMarks[1]);
+    expect(run.code).toBe(0);
+    expect(run.out).toContain(
+      `\n   the base: ${c0}, the parent of ${c1}, the first commit that adds a news mark\n`
+    );
+    expect(seen(run.dir, "base-commit")).toBe(`${c0}\n`);
+    for (const text of Object.values(basePrompts(run.dir))) {
+      for (const mark of newsMarks) expect(text).not.toContain(mark);
+    }
+    expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
+  }, 60_000);
+
+  test("fails the run with exit 1, naming the line, where the driver assigns a news mark in a form the script does not read", () => {
+    expect(unreadLine.name).not.toBe("");
+    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, unreadMark);
+    const line = `${sessionsLines[firstMarkIndex]?.trimStart()} // a comment`;
+    expect(run.code).toBe(1);
+    expect(run.out).toContain(
+      `FAIL arguments: ${sessionsFile} line ${unreadLine.number} assigns the news mark ${unreadLine.name} in a form this script does not read, so the run would find the base without that mark: write it as ${unreadLine.name} = "<text>", alone on its line; the line reads: ${line}\n`
+    );
+    expect(run.out).not.toContain("the base: ");
+    expect(run.out).not.toContain("== plan");
+    expect(run.last).toMatch(/^approved version news e2e: FAIL at arguments after \d+s \(/);
   }, 60_000);
 
   test("is refused with exit 2 where no commit in HEAD's history adds a news mark, naming the remedies", () => {

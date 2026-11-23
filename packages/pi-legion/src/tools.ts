@@ -548,6 +548,35 @@ async function lookUpDocument<T>(
   }
 }
 
+/** Each operation's document id, as its request to the daemon takes it. */
+const DOCUMENT_ID = {
+  register_gate: LegionGateRegisterRequest.shape.artifactId,
+  register_plan: LegionPlanRegisterRequest.shape.artifactId,
+} as const;
+
+/** The id of the document `reference` names on `issue`, as `operation` sends it to the daemon:
+ * `reference` itself where it is an id, and otherwise the id the pane's Dispatch looks it up as.
+ * `spec`, a slug or a filename, the references a `dispatch` command's --artifact accepts, is looked
+ * up there, so the architect's first call names the document however it knows it. A pane with no
+ * Dispatch, and a lookup that fails, refuse the call in `operation`'s words. */
+async function documentIdOf(
+  operation: keyof typeof DOCUMENT_ID,
+  dispatch: () => DispatchClient | undefined,
+  issue: string,
+  reference: string
+): Promise<string> {
+  if (DOCUMENT_ID[operation].safeParse(reference).success) return reference;
+  const board = dispatch();
+  if (board === undefined) {
+    throw new Error(
+      `${operation} cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
+    );
+  }
+  return lookUpDocument(operation, issue, reference, () =>
+    resolveIssueDocumentId(board, issue, reference)
+  );
+}
+
 /** register_gate's words around the open decision blocks of the root's own document, which it
  * refuses a basis over as `dispatch request-approval` refuses an approval request
  * (`refuseOpenDecisionBlocks`). */
@@ -908,24 +937,12 @@ export function createLegionTool(deps: {
             const step = named.data;
             // A basis is checked whole before anything is read, Dispatch or the daemon.
             const basis = registrationBasis(parameters);
-            let artifactId = reference;
+            let artifactId: string;
             let basisFields: { basisArtifactId?: string; basisVersion?: number; reason?: string } =
               {};
             if (basis === undefined) {
-              // The daemon takes the document's id alone; `spec`, a slug or a filename, the
-              // references a `dispatch` command's --artifact accepts, is looked up first, so the
-              // architect's first call names the document however it knows it.
-              if (!LegionGateRegisterRequest.shape.artifactId.safeParse(reference).success) {
-                const board = dispatch();
-                if (board === undefined) {
-                  throw new Error(
-                    `register_gate cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
-                  );
-                }
-                artifactId = await lookUpDocument("register_gate", issue, reference, () =>
-                  resolveIssueDocumentId(board, issue, reference)
-                );
-              }
+              // The daemon takes the document's id alone, which a reference is looked up as.
+              artifactId = await documentIdOf("register_gate", dispatch, issue, reference);
             } else {
               const board = dispatch();
               if (board === undefined) {
@@ -981,18 +998,7 @@ export function createLegionTool(deps: {
             }
             // The document is named as register_gate's is: its id, or a reference looked up in the
             // pane's Dispatch.
-            let artifactId = reference;
-            if (!LegionPlanRegisterRequest.shape.artifactId.safeParse(reference).success) {
-              const board = dispatch();
-              if (board === undefined) {
-                throw new Error(
-                  `register_plan cannot look up document "${reference}" on ${issue}: this pane has no Dispatch configured; pass the document's id`
-                );
-              }
-              artifactId = await lookUpDocument("register_plan", issue, reference, () =>
-                resolveIssueDocumentId(board, issue, reference)
-              );
-            }
+            const artifactId = await documentIdOf("register_plan", dispatch, issue, reference);
             // The fact is keyed by the issue, its generation, the document and the version, so a
             // repeat is the registration again, answered the same.
             const taken = await retryWhileDaemonRestarts(

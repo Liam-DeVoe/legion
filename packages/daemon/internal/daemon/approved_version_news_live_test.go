@@ -68,11 +68,9 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -941,85 +939,4 @@ func (r *versionNewsLive) stateIssue(key string) api.Issue {
 		r.fail("GET /legion/v1/state records no issue %s", key)
 	}
 	return issue
-}
-
-// dispatchAs sends one request to Dispatch as the person login, through the trusted identity
-// header the scratch server takes, requires a 2xx answer and decodes it into into when it is not
-// nil.
-func (r *versionNewsLive) dispatchAs(login, method, path string, body, into any) {
-	r.t.Helper()
-	r.dispatchCall(method, path, body, 0, into, func(request *http.Request) { request.Header.Set("X-Dispatch-User", login) })
-}
-
-// dispatchAgent sends one request to Dispatch with the agent bearer, as a session or the daemon
-// reaches it, requires want and decodes the answer into into when it is not nil.
-func (r *versionNewsLive) dispatchAgent(method, path string, body any, want int, into any) {
-	r.t.Helper()
-	r.dispatchCall(method, path, body, want, into, func(request *http.Request) { request.Header.Set("Authorization", "Bearer "+r.dispatch.token) })
-}
-
-// setDefaultRepository makes repo, an owner/name, the default repository of the Dispatch project
-// project, as the person, and answers the route that set it. It asks PUT
-// /api/v1/projects/{key}/default-repository first. A Dispatch from before #4457, such as the one
-// of the base commit that part one's negative control runs against, serves no such route and
-// answers 404, so it then asks PUT /api/v1/settings/repo-projects/{owner}/{name} to make project
-// the repository's default one, the route that Dispatch serves. Any other answer that is not 2xx
-// fails the run, as dispatchCall fails it.
-func (r *versionNewsLive) setDefaultRepository(project, repo string) string {
-	r.t.Helper()
-	person := func(request *http.Request) { request.Header.Set("X-Dispatch-User", versionNewsPerson) }
-	path := "/api/v1/projects/" + project + "/default-repository"
-	status, answer := r.dispatchSend(http.MethodPut, path, map[string]any{"repo": repo}, person)
-	switch {
-	case status == http.StatusNotFound:
-		path = "/api/v1/settings/repo-projects/" + repo
-		r.dispatchAs(versionNewsPerson, http.MethodPut, path, map[string]any{"project": project, "default": true}, nil)
-	case status/100 != 2:
-		r.fail("Dispatch %s %s = %d %s", http.MethodPut, path, status, answer)
-	}
-	return http.MethodPut + " " + path
-}
-
-// dispatchCall is one request to Dispatch: want 0 takes any 2xx answer.
-func (r *versionNewsLive) dispatchCall(method, path string, body any, want int, into any, identify func(*http.Request)) {
-	r.t.Helper()
-	status, answer := r.dispatchSend(method, path, body, identify)
-	if (want != 0 && status != want) || (want == 0 && status/100 != 2) {
-		r.fail("Dispatch %s %s = %d %s", method, path, status, answer)
-	}
-	if into != nil {
-		if err := json.Unmarshal(answer, into); err != nil {
-			r.fail("decode Dispatch's answer to %s %s (%s): %v", method, path, answer, err)
-		}
-	}
-}
-
-// dispatchSend sends one request to Dispatch, identified by identify, and answers its status and
-// its body, whatever the status.
-func (r *versionNewsLive) dispatchSend(method, path string, body any, identify func(*http.Request)) (int, []byte) {
-	r.t.Helper()
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			r.t.Fatal(err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-	request, err := http.NewRequest(method, r.dispatch.base+path, reader)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	identify(request)
-	response, err := r.client.Do(request)
-	if err != nil {
-		r.fail("Dispatch %s %s: %v", method, path, err)
-	}
-	defer response.Body.Close()
-	answer, err := io.ReadAll(response.Body)
-	if err != nil {
-		r.fail("read Dispatch's answer to %s %s: %v", method, path, err)
-	}
-	return response.StatusCode, answer
 }
