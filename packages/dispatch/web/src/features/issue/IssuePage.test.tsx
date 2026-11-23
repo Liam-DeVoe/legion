@@ -559,6 +559,46 @@ test("IssuePage says a refused Details write under the header while Details is c
   }
 });
 
+// The route's warnings speak for the saved route: they hide only while a route save is in
+// flight, and a refused save leaves the saved route, so its warning is back at once, with Details
+// open or closed.
+test("IssuePage hides the route's warning only while a route save is in flight, and shows it again when the save is refused", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
+  const save = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const view = renderIssuePage();
+  try {
+    const stateRow = await screen.findByTestId("issue-state-actions");
+    await openIssueDetails(user);
+    await user.click(await screen.findByRole("button", { name: "Messages default to role:sre" }));
+    const routeInput = await screen.findByLabelText("Message route");
+    await user.clear(routeInput);
+    await user.type(routeInput, "role:other");
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Save route" }));
+    await waitFor(() =>
+      expect(within(stateRow).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument()
+    );
+
+    save.reject(new Error("The route was refused."));
+    await waitFor(() =>
+      expect(within(stateRow).getByTestId("issue-route-unreachable")).toBeDefined()
+    );
+    await user.click(
+      within(screen.getByTestId("issue-header")).getByRole("button", { name: "Details" })
+    );
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toHaveTextContent(
+      "Nobody holds it right now"
+    );
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
 // The route editor lives in Details. Closing Details over an edit not saved gives the edit up,
 // as Cancel does: the header shows the saved route's warning again, and nothing is written.
 test("IssuePage's Details, closed over a route edit not saved, gives the edit up and shows the route's warning again", async () => {
