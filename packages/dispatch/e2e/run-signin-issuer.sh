@@ -13,7 +13,9 @@ set -euo pipefail
 #
 # DISPATCH_E2E_SIGNIN_CLIENT_ID and DISPATCH_E2E_SIGNIN_CLIENT_SECRET are the client both servers
 # are handed; the issuer reads the secret from a file once, at its start, here a pipe this script
-# writes it to, so the secret never reaches an argv or the disk.
+# writes it to, so the secret never reaches an argv or the disk. The client's one callback is the
+# servers' /auth/callback on the loopback dashboard origin, which the issuer takes at whatever
+# port that origin is on.
 #
 # DISPATCH_E2E_SIGNIN_ISSUER_BIN names a prebuilt dev-oidc-issuer this script executes instead of
 # building one from this checkout, as run-server.sh reads DISPATCH_E2E_SERVER_BIN for the server.
@@ -55,6 +57,6 @@ if [ -z "$issuer_bin" ]; then
   issuer_bin=./dev-oidc-issuer-e2e
 fi
 exec "$issuer_bin" \
-  --code-flow "$client_id="<(printf '%s' "$secret") \
+  --code-flow "$client_id="<(printf '%s' "$secret")"=http://127.0.0.1/auth/callback" \
   --sign-in-as "$person" \
   --sign-in-group "$group"
