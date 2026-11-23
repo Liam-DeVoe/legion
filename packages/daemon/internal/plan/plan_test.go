@@ -100,7 +100,7 @@ func TestAStoredStepNamesItsAgent(t *testing.T) {
 		{Step{Role: "tester", Key: "a"}, "implementer", "implementer"},
 		{Step{Role: "implementer"}, "implementer-2", "implementer-2"},
 	} {
-		if got := StoredAgentName("t", 3, tc.step, tc.stored); got != tc.want {
+		if got := StoredAgentName(tc.step.Key, tc.stored); got != tc.want {
 			t.Errorf("StoredAgentName(%s, %q) = %q, want %q", tc.step, tc.stored, got, tc.want)
 		}
 	}

@@ -200,7 +200,7 @@ func (s PlanStep) PlanAgent() plan.Agent {
 // none for a step of the key owner, since its agent is the tree's architect, whose token names the
 // tree and no name on the issue, and the stored name otherwise.
 func (s PlanStep) AgentName() claim.Agent {
-	return claim.Agent(plan.StoredAgentName(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}, string(s.Agent)))
+	return claim.Agent(plan.StoredAgentName(s.AgentKey, string(s.Agent)))
 }
 
 // StepToken is the claim token of the agent of step, a step of issue, whose tree is tree, in
