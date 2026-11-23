@@ -17,12 +17,28 @@
  *  template's row holds from the start; the stack's sets the hold as the stack's data directory
  *  appears, so the template is made by the real psql first. The third hands the provider a
  *  binaries directory whose `pg_ctl` refuses to stop the template's server and runs the real one
- *  for everything else. They need `DISPATCH_E2E_PG_BIN`, the binaries that make the databases, and
- *  a psql on PATH, and are skipped without them, saying so. A start that never ends is ended by
- *  the child's `oneDatabase` bound, which names it. */
+ *  for everything else; the child then stops that server with the real `pg_ctl` before it exits,
+ *  and the row requires the server's own log to say it shut down. They need
+ *  `DISPATCH_E2E_PG_BIN`, the binaries that make the databases, and a psql on PATH, and are
+ *  skipped without them, saying so. A start that never ends is ended by the child's `oneDatabase`
+ *  bound, which names it.
+ *
+ *  Each provider row removes the clusters it made in its own `finally`, within its own limit. The
+ *  file's `temporaryDirectory` removes the rest in an `afterAll`, which runs under Bun's 5 s hook
+ *  default: a hook that removed several clusters there failed at 6.5 s under 36 busy loops on 6
+ *  CPUs (Tester4958-2's run of 2026-11-23). */
 
 import { beforeAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -49,11 +65,14 @@ beforeAll(() => {
     child,
     `// Starts stack 0 of the binaries provider and prints what the start answered. For the
 // \`template\` and \`stack\` targets it SIGKILLs the held server's postmaster once its pid is
-// written and a held psql was refused; for \`stopfails\` it kills nothing.
+// written and a held psql was refused. For \`stopfails\` it kills nothing, and stops the template's
+// server with the real pg_ctl (the last argument) once the start has settled, before it exits: the
+// bound the row puts on this child would otherwise take that server with SIGKILL.
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const [module, target, dir, hold, calls] = process.argv.slice(2);
+const [module, target, dir, hold, calls, realPgCtl] = process.argv.slice(2);
 const { stackPostgres } = await import(module);
 const provider = stackPostgres({ dir, run: "ends-" + target });
 let settled = false;
@@ -87,7 +106,18 @@ if (target !== "stopfails") {
     process.kill(killed, "SIGKILL");
   }
 }
-console.log(JSON.stringify({ killed, ...(await starting) }));
+const answer = await starting;
+if (target === "stopfails" && realPgCtl !== undefined && realPgCtl !== "") {
+  const template = join(dir, "template", "pgdata");
+  if (existsSync(join(template, "postmaster.pid"))) {
+    try {
+      execFileSync(realPgCtl, ["-D", template, "-m", "immediate", "-w", "stop"], { stdio: "pipe" });
+    } catch (error) {
+      console.error("the child's stop of the template's server failed: " + error.message);
+    }
+  }
+}
+console.log(JSON.stringify({ killed, ...answer }));
 `
   );
 });
@@ -132,10 +162,11 @@ for (const row of [
       const hold = join(stubs, `${row.target}-hold`);
       const calls = join(stubs, `${row.target}-held-calls`);
       mkdirSync(dir);
-      mkdirSync(shims);
-      writeFileSync(
-        join(shims, "psql"),
-        `#!/bin/sh
+      try {
+        mkdirSync(shims);
+        writeFileSync(
+          join(shims, "psql"),
+          `#!/bin/sh
 if [ -e "${hold}" ]; then
   echo held >> "${calls}"
   echo 'psql: error: connection to server at "127.0.0.1" failed: FATAL:  the database system is starting up' >&2
@@ -143,30 +174,34 @@ if [ -e "${hold}" ]; then
 fi
 exec "${realPsql}" "$@"
 `
-      );
-      chmodSync(join(shims, "psql"), 0o755);
-      if (row.target === "template") writeFileSync(hold, "");
-      const { code, named, stderr, stdout } = await runBounded({
-        argv: [process.execPath, child, harnessPostgres, row.target, dir, hold, calls],
-        bound: "oneDatabase",
-        env: {
-          DISPATCH_E2E_PG_BIN: bin,
-          HOME: process.env.HOME ?? "",
-          PATH: `${shims}:${process.env.PATH ?? ""}`,
-          TMPDIR: stubs,
-        },
-        from: import.meta.url,
-      });
-      expect(code, `${named} exited ${code}:\n${stderr}`).toBe(0);
-      const read = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as {
-        killed?: number | null;
-        message?: string;
-        started?: true;
-      };
-      expect(read.killed, `${named} printed ${stdout}:\n${stderr}`).toBeGreaterThan(0);
-      expect(read.message, `${named} printed ${stdout}:\n${stderr}`).toStartWith(
-        `The Dispatch e2e harness cannot start: ${row.what} stopped before it answered select 1: `
-      );
+        );
+        chmodSync(join(shims, "psql"), 0o755);
+        if (row.target === "template") writeFileSync(hold, "");
+        const { code, named, stderr, stdout } = await runBounded({
+          argv: [process.execPath, child, harnessPostgres, row.target, dir, hold, calls],
+          bound: "oneDatabase",
+          env: {
+            DISPATCH_E2E_PG_BIN: bin,
+            HOME: process.env.HOME ?? "",
+            PATH: `${shims}:${process.env.PATH ?? ""}`,
+            TMPDIR: stubs,
+          },
+          from: import.meta.url,
+        });
+        expect(code, `${named} exited ${code}:\n${stderr}`).toBe(0);
+        const read = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as {
+          killed?: number | null;
+          message?: string;
+          started?: true;
+        };
+        expect(read.killed, `${named} printed ${stdout}:\n${stderr}`).toBeGreaterThan(0);
+        expect(read.message, `${named} printed ${stdout}:\n${stderr}`).toStartWith(
+          `The Dispatch e2e harness cannot start: ${row.what} stopped before it answered select 1: `
+        );
+      } finally {
+        // The bounded child's end has taken every server it started; its clusters go with the row.
+        rmSync(dir, { force: true, recursive: true });
+      }
     },
     rowLimit("oneDatabase")
   );
@@ -174,10 +209,12 @@ exec "${realPsql}" "$@"
 
 // The template is copied only once its server has stopped. A `pg_ctl` that refuses that stop -
 // exit 1, the server left running - must refuse the start by name rather than let a stack start
-// from a copy of a running server. That refusal leaves the template's real server running. On
-// Linux the bounded child's own kill takes it, since its environment keeps the child's token; the
-// row does not rest on that kill, and stops the server with the real `pg_ctl` however it ends, then
-// requires `pg_ctl status` to find no server.
+// from a copy of a running server. That refusal leaves the template's real server running, and on
+// Linux the bounded child's own kill would take it with SIGKILL, which tells nothing of a clean
+// stop. So the child stops it with the real `pg_ctl` before it exits, and the row requires the
+// server's own log to end its last run with "database system is shut down", which PostgreSQL
+// writes on a stop and not on a SIGKILL, and `pg_ctl status` to find no server. The row's own
+// `finally` stops a server still running, for a child that never reached its stop.
 test.skipIf(withoutBinaries)(
   "the stacks' Postgres template whose server will not stop refuses the start by name",
   async () => {
@@ -185,13 +222,14 @@ test.skipIf(withoutBinaries)(
     const binaries = join(stubs, "stopfails-bin");
     const refused = join(stubs, "stopfails-refused");
     mkdirSync(dir);
-    mkdirSync(binaries);
-    for (const tool of readdirSync(bin)) {
-      if (tool !== "pg_ctl") symlinkSync(join(bin, tool), join(binaries, tool));
-    }
-    writeFileSync(
-      join(binaries, "pg_ctl"),
-      `#!/bin/sh
+    try {
+      mkdirSync(binaries);
+      for (const tool of readdirSync(bin)) {
+        if (tool !== "pg_ctl") symlinkSync(join(bin, tool), join(binaries, tool));
+      }
+      writeFileSync(
+        join(binaries, "pg_ctl"),
+        `#!/bin/sh
 case " $* " in
   *" stop "*)
     case " $* " in
@@ -205,53 +243,74 @@ case " $* " in
 esac
 exec "${join(bin, "pg_ctl")}" "$@"
 `
-    );
-    chmodSync(join(binaries, "pg_ctl"), 0o755);
-    const templateData = join(dir, "template", "pgdata");
-    try {
-      const { code, named, stderr, stdout } = await runBounded({
-        argv: [process.execPath, child, harnessPostgres, "stopfails", dir, "", ""],
-        bound: "oneDatabase",
-        env: {
-          DISPATCH_E2E_PG_BIN: binaries,
-          HOME: process.env.HOME ?? "",
-          PATH: process.env.PATH ?? "",
-          TMPDIR: stubs,
-        },
-        from: import.meta.url,
-      });
-      expect(code, `${named} exited ${code}:\n${stderr}`).toBe(0);
-      expect(
-        existsSync(refused),
-        `the stand-in pg_ctl was never asked to stop the template:\n${stdout}`
-      ).toBe(true);
-      const read = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as {
-        message?: string;
-        started?: true;
-      };
-      expect(read.message, `${named} printed ${stdout}:\n${stderr}`).toStartWith(
-        "The Dispatch e2e harness cannot start: the stacks' Postgres template's server would not " +
-          "stop, and no stack starts from a copy of a running server: "
       );
-    } finally {
-      // No postmaster.pid: pg_ctl never started a server. A file that is left names a server still
-      // running, or one the bounded child's kill has already taken, whose stop then fails; the
-      // status check below, not that stop's exit, is the row's verdict.
-      if (existsSync(join(templateData, "postmaster.pid"))) {
-        await runBounded({
-          argv: [join(bin, "pg_ctl"), "-D", templateData, "-m", "immediate", "-w", "stop"],
-          bound: "short",
+      chmodSync(join(binaries, "pg_ctl"), 0o755);
+      const templateData = join(dir, "template", "pgdata");
+      try {
+        const { code, named, stderr, stdout } = await runBounded({
+          argv: [
+            process.execPath,
+            child,
+            harnessPostgres,
+            "stopfails",
+            dir,
+            "",
+            "",
+            join(bin, "pg_ctl"),
+          ],
+          bound: "oneDatabase",
+          env: {
+            DISPATCH_E2E_PG_BIN: binaries,
+            HOME: process.env.HOME ?? "",
+            PATH: process.env.PATH ?? "",
+            TMPDIR: stubs,
+          },
           from: import.meta.url,
         });
+        expect(code, `${named} exited ${code}:\n${stderr}`).toBe(0);
+        expect(
+          existsSync(refused),
+          `the stand-in pg_ctl was never asked to stop the template:\n${stdout}`
+        ).toBe(true);
+        const read = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as {
+          message?: string;
+          started?: true;
+        };
+        expect(read.message, `${named} printed ${stdout}:\n${stderr}`).toStartWith(
+          "The Dispatch e2e harness cannot start: the stacks' Postgres template's server would " +
+            "not stop, and no stack starts from a copy of a running server: "
+        );
+        // The server's last run, from its last start, ended in a stop.
+        const log = readFileSync(join(dir, "template", "postgres.log"), "utf8");
+        const lastRun = log.slice(
+          log.lastIndexOf("database system is ready to accept connections")
+        );
+        expect(
+          lastRun,
+          `the template's server was not stopped cleanly; its log after its last start:\n${lastRun}`
+        ).toContain("database system is shut down");
+      } finally {
+        // No postmaster.pid: no server is running. A file that is left names a server the child
+        // never stopped, or one the bounded child's kill has already taken, whose stop then fails;
+        // the checks above and below, not this stop's exit, are the row's verdict.
+        if (existsSync(join(templateData, "postmaster.pid"))) {
+          await runBounded({
+            argv: [join(bin, "pg_ctl"), "-D", templateData, "-m", "immediate", "-w", "stop"],
+            bound: "short",
+            from: import.meta.url,
+          });
+        }
       }
+      // `pg_ctl status` exits 3 where no server runs on that data directory.
+      const status = await runBounded({
+        argv: [join(bin, "pg_ctl"), "-D", templateData, "status"],
+        bound: "short",
+        from: import.meta.url,
+      });
+      expect(status.code, `the template's server outlived the row:\n${status.stdout}`).toBe(3);
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
     }
-    // `pg_ctl status` exits 3 where no server runs on that data directory.
-    const status = await runBounded({
-      argv: [join(bin, "pg_ctl"), "-D", templateData, "status"],
-      bound: "short",
-      from: import.meta.url,
-    });
-    expect(status.code, `the template's server outlived the row:\n${status.stdout}`).toBe(3);
   },
   rowLimit("oneDatabase", "short", "short")
 );
