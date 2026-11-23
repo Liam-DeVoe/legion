@@ -171,14 +171,23 @@ type tasksRig struct {
 	pulls map[string]int
 }
 
-// newTasksRig sets up a running Dispatch with the run's project and its repository mapping, one
-// issue created with a spec and seeded at admitted with no design gate and no pull request
-// (seedAdmitted), and boots the daemon at it over the fake GitHub of a real repository, with the
-// issue's architect registered. Nothing of the issue starts until its gate opens (firstStep).
+// newTasksRig is newTasksRigWith for one issue over the package's broker and a Dispatch of this
+// checkout, which the package's own tests run.
 func newTasksRig(t *testing.T) *tasksRig {
 	t.Helper()
+	return newTasksRigWith(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), "One change split in several tasks")
+}
+
+// newTasksRigWith sets up dispatch, a running Dispatch, with the run's project and its repository
+// mapping, one issue of each of titles created with a spec and seeded at admitted with no design
+// gate and no pull request (seedAdmitted), and boots the daemon of proof at it over the fake GitHub
+// of a real repository, with each issue's architect registered. Nothing of an issue starts until
+// its gate opens (firstStep). The steps act on the first issue until on moves them. Dispatch
+// refuses an issue whose title is a near copy of an open one's, so no two titles share a word
+// that counts.
+func newTasksRigWith(t *testing.T, proof liveProof, dispatch *scratchDispatch, titles ...string) *tasksRig {
+	t.Helper()
 	gh := newTasksGitHub(t)
-	proof := newLiveProofOn(t, workflowNATS(t))
 	// A Dispatch project key is at most ten characters, and the daemon's project is its Dispatch
 	// project, so the run's project is a short one of its own.
 	proof.cfg.Project = "TK" + randomSuffix(t)[:6]
@@ -190,7 +199,7 @@ func newTasksRig(t *testing.T) *tasksRig {
 	}
 	// The boot reads the GitHub it is given from the walk's stand-in (stepRecordsRig.boot); every
 	// read of this rig's GitHub goes to gh.
-	r := &tasksRig{ownerStepsRig: &ownerStepsRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: startScratchDispatchOn(t, scratchDispatchOptions{}),
+	r := &tasksRig{ownerStepsRig: &ownerStepsRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: dispatch,
 		github: &stepRecordsGitHub{t: t, url: gh.url}, claims: map[claim.Token]*stepClaimant{}, waits: make(chan claim.Token, 16)},
 		specs: map[string]string{}}, gh: gh, pulls: map[string]int{}}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
@@ -199,24 +208,29 @@ func newTasksRig(t *testing.T) *tasksRig {
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Several tasks"}, http.StatusCreated, nil)
 	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
-	var spec struct {
-		createdIssue
-		PrimaryArtifactID string `json:"primary_artifact_id"`
+	for _, title := range titles {
+		var spec struct {
+			createdIssue
+			PrimaryArtifactID string `json:"primary_artifact_id"`
+		}
+		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": title,
+			"spec": "The issue's change, as its owner states it.\n"}, http.StatusCreated, &spec)
+		if spec.PrimaryArtifactID == "" {
+			t.Fatalf("Dispatch created %s with no primary document", spec.Key)
+		}
+		created := spec.createdIssue
+		r.person(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &created)
+		r.specs[created.Key] = spec.PrimaryArtifactID
+		r.issues = append(r.issues, walkIssue{key: created.Key, title: title})
+		r.on(created.Key)
+		r.seedAdmitted(created.Rank, created.LastSeq)
 	}
-	const title = "One change split in several tasks"
-	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": title,
-		"spec": "The issue's change, as its owner states it.\n"}, http.StatusCreated, &spec)
-	if spec.PrimaryArtifactID == "" {
-		t.Fatalf("Dispatch created %s with no primary document", spec.Key)
-	}
-	created := spec.createdIssue
-	r.person(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &created)
-	r.specs[created.Key] = spec.PrimaryArtifactID
-	r.issues = append(r.issues, walkIssue{key: created.Key, title: title})
-	r.on(created.Key)
-	r.seedAdmitted(created.Rank, created.LastSeq)
 	r.boot()
-	r.worker(claim.RoleArchitect)
+	for _, issue := range r.issues {
+		r.on(issue.key)
+		r.worker(claim.RoleArchitect)
+	}
+	r.on(r.issues[0].key)
 	return r
 }
 
