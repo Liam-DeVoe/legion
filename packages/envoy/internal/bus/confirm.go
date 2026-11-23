@@ -25,12 +25,32 @@ var ErrPublishDenied = errors.New("NATS denied the publish")
 // did not acknowledge, from one that is not known to have reached the server at all.
 var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted")
 
+// ErrWindowEndedBeforePublish is also the error of a publish whose window had already ended when
+// publishConfirmed came to make it, its deadline spent or its context cancelled, so that nothing
+// was sent. Its text is no part of that error's, which stays the spent window's (errWindowElapsed)
+// for whatever matches it. A caller reads it with errors.Is to tell a publish that never left this
+// process from one whose window ended after it was made (a flush or an acknowledgement that did not
+// come in time), which may have reached its subscribers; the listener marks a role forward that
+// failed so (finishRoleForward).
+var ErrWindowEndedBeforePublish = errors.New("the window ended before the publish was made")
+
+// windowEndedBeforePublish is publishConfirmed's error for a window that ended before the publish:
+// err's text alone, and both err and ErrWindowEndedBeforePublish to errors.Is.
+type windowEndedBeforePublish struct{ err error }
+
+func (e windowEndedBeforePublish) Error() string { return e.err.Error() }
+
+func (e windowEndedBeforePublish) Unwrap() []error {
+	return []error{e.err, ErrWindowEndedBeforePublish}
+}
+
 // publishConfirmed publishes msg on conn with publish, flushes it with what is left of ctx's
 // deadline as the flush's timeout, and confirms the server accepted it (confirmPublished). A nil
 // error means the server accepted the publish; otherwise the error is a window already spent
-// (errWindowElapsed), a read of conn's state before the publish that ctx ended
-// (reconnectWaitEnded), nats.go's refusal before sending (refused), a flush that failed or ran out
-// of the window, ErrPublishDenied, or one wrapping ErrPublishUnconfirmed. publish is
+// (errWindowElapsed, and before the publish ErrWindowEndedBeforePublish as well), a read of conn's
+// state before the publish that ctx ended (reconnectWaitEnded, with ErrWindowEndedBeforePublish
+// too, since nothing was sent), nats.go's refusal before sending (refused), a flush that failed or
+// ran out of the window, ErrPublishDenied, or one wrapping ErrPublishUnconfirmed. publish is
 // conn.PublishMsg, bound to the same conn: every caller reads its connection once and passes it and
 // its PublishMsg, so publish publishes on the connection observe and confirmPublished judge. It is
 // a parameter so a test can make the server's answer arrive before publish returns, which is the
@@ -61,14 +81,14 @@ var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted"
 func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nats.Msg, publish func(*nats.Msg) error) error {
 	deadline, _ := ctx.Deadline()
 	if err := windowSpent(ctx, deadline); err != nil {
-		return fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)
+		return windowEndedBeforePublish{fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)}
 	}
 	before, answered := observeWithin(ctx, conn)
 	if !answered {
-		return reconnectWaitEnded(ctx)
+		return windowEndedBeforePublish{reconnectWaitEnded(ctx)}
 	}
 	if err := windowSpent(ctx, deadline); err != nil {
-		return fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)
+		return windowEndedBeforePublish{fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)}
 	}
 	if err := publish(msg); err != nil {
 		return c.refused(err, len(msg.Data))

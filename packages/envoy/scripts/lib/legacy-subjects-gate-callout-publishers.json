@@ -1,0 +1,11 @@
+{
+  "kinds": {
+    "daemon": false,
+    "dispatch": true,
+    "edge-listener": true,
+    "listener": true,
+    "measure": false,
+    "webhook-listener": true
+  },
+  "session": false
+}
