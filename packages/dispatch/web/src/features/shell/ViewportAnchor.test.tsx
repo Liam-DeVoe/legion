@@ -635,7 +635,8 @@ test("a live update that takes rows away above the view keeps the rows in view w
 // view against that row's going, which is the shift this component lets happen - measured in the
 // Inbox at 390x664, a thread's Dismiss moved the window from 437 px to 0 in Chromium, Firefox
 // and WebKit - so it is turned off for that commit as it is for a row above, and back on two
-// frames later. The anchor makes nothing up for a row that has gone, so it scrolls nothing.
+// frames later. Nothing else changed above the row's place, so the row after it moves up into
+// that place and nothing scrolls.
 test("the row the host names as leaving being the focused row itself turns the browser's scroll anchoring off for that commit", async () => {
   const going = (id: string) => id === "r6";
   const view = render(<List leaving={going} rows={ids(12)} />);
@@ -659,19 +660,82 @@ test("the row the host names as leaving being the focused row itself turns the b
 
 // The reader's press takes the last rows of a kind away, and a control the page offers only while
 // such rows are listed goes with them: below `sm` the Inbox's header loses the line its Mark all
-// read stood on. That shrink is the press's doing as much as the rows' going, so the rows move up
-// by both and the view does not scroll.
-test("content above the list that shrinks in the commit in which named rows leave moves the rows up too, with no scroll", () => {
+// read stood on. The rows free their space, and the line that closed above the list is made up for
+// as any other change above it is: the row after the rows moves up into their place, and the
+// window scrolls up by the line.
+test("content above the list that shrinks in the commit in which named rows leave is made up for, and the row after them stands at their place", () => {
   const going = (id: string) => id === "r3" || id === "r4";
   const view = render(<List banner leaving={going} rows={ids(12)} />);
   try {
     setScrollY(100);
     buttonOf("r6").focus();
+    const place = viewportTop("r3");
     const before = viewportTop("r6") ?? 0;
 
     view.rerender(<List leaving={going} rows={ids(12).filter((id) => !going(id))} />);
+    expect(viewportTop("r5")).toBe(place);
+    expect(viewportTop("r6")).toBe(before - 2 * ROW_HEIGHT);
+    expect(window.scrollY).toBe(100 - BANNER_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The reader's own Dismiss takes away the row their hand is on, and the line above the list goes
+// with it, as Mark all read's goes with the last unread thread. The row after it moves up into its
+// place, and the line is made up for: that row stands where the row the press took away stood.
+test("a focused row named as leaving, taken in a commit in which content above the list shrinks, leaves the row after it standing at its place", () => {
+  const going = (id: string) => id === "r6";
+  const view = render(<List banner leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r6").focus();
+    const place = viewportTop("r6");
+
+    view.rerender(<List leaving={going} rows={ids(12).filter((id) => !going(id))} />);
+    expect(viewportTop("r7")).toBe(place);
+    expect(window.scrollY).toBe(100 - BANNER_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The same on the list's last row: no row moves up into its place, so the row before it keeps
+// where it stood, and the line above the list is made up for.
+test("the last row, focused and named as leaving, taken in a commit in which content above the list shrinks, leaves the row before it where it stood", () => {
+  const going = (id: string) => id === "r8";
+  const view = render(<List banner leaving={going} rows={ids(8)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r8").focus();
+    const stood = viewportTop("r7");
+
+    view.rerender(<List leaving={going} rows={ids(7)} />);
+    expect(viewportTop("r7")).toBe(stood);
+    expect(window.scrollY).toBe(100 - BANNER_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The focused row the press takes away is the last of its group, whose heading goes with it: the
+// next group's heading and rows move up into the place the heading and the row held, and nothing
+// scrolls.
+test("a focused row named as leaving, the last of its group, lets the next group's heading and rows move up into the place it and its heading held", () => {
+  const going = (id: string) => id === "r5";
+  const headingTop = (id: string) =>
+    document.querySelector(`[data-heading="${id}"]`)?.getBoundingClientRect().top;
+  const view = render(<List headings={["r5", "r6"]} leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r5").focus();
+    const place = headingTop("r5");
+
+    const kept = ids(12).filter((id) => !going(id));
+    view.rerender(<List headings={["r6"]} leaving={going} rows={kept} />);
+    expect(headingTop("r6")).toBe(place);
+    expect(viewportTop("r6")).toBe((place ?? 0) + ROW_HEIGHT);
     expect(window.scrollY).toBe(100);
-    expect(viewportTop("r6")).toBe(before - 2 * ROW_HEIGHT - BANNER_HEIGHT);
   } finally {
     view.unmount();
   }
@@ -697,9 +761,8 @@ test("content above the list that shrinks with no named row leaving above the fo
 });
 
 // Rows above the focused row are named as leaving for the whole time the press's write is out, so
-// a commit can name them while none of them goes. In such a commit the banner goes, by a live
-// update: no named row went, so the shrink is no doing of the press's. It is compensated, and the
-// rows in view stay where they were.
+// a commit can name them while none of them goes. In such a commit the banner goes: the shrink is
+// compensated as any change above the list is, and the rows in view stay where they were.
 test("content above the list that shrinks while named rows above the focused row stay is compensated, and the rows in view stay", () => {
   const going = (id: string) => id === "r3" || id === "r4";
   const view = render(<List banner leaving={going} rows={ids(12)} />);
@@ -717,8 +780,8 @@ test("content above the list that shrinks while named rows above the focused row
   }
 });
 
-// Content that grows above the list in the commit in which named rows leave is no going of the
-// press's: it is compensated, so the rows move up by the named rows' space alone.
+// Content that grows above the list in the commit in which named rows leave is compensated, as a
+// shrink is: the rows move up by the named rows' space alone.
 test("content above the list that grows in the commit in which named rows leave is still compensated", () => {
   const going = (id: string) => id === "r3" || id === "r4";
   const view = render(<List leaving={going} rows={ids(12)} />);

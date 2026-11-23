@@ -56,7 +56,10 @@
  * WHICH VIEW IT READS. The landing is computed in the view the reader had: every box that moved
  * since the record is put back where it stood while the landing is computed, and then where the
  * page left it, so a page that scrolled to a control does not bring into sight a control that was
- * out of it. Every move is then judged as the page left it.
+ * out of it. A box whose move kept the view of the landing the page gives as it stands, after the
+ * height above that landing changed (`view kept (drawn above)`, `view kept (shrunk above)`
+ * below), already shows the view the reader had, and is left where it stands. Every move is then
+ * judged as the page left it.
  *
  * HOW IT READS A SCROLL. Every box that moved by more than half a pixel since the record is listed
  * with the reason its move is allowed, or none. `clamped`: the box stands within a pixel of the
@@ -66,12 +69,15 @@
  * as it stood before that box's move - its box and every clipping box inside the moved one moved
  * back - was partly but not wholly in sight, the move went the way that shows it and no further
  * than the least distance that does, plus a pixel, and the landing now stands wholly in sight. One
- * box at most makes that move. `view kept (drawn above)`, for a loss the reader caused: the box
- * holds the landing, or is the window; the landing's top stands where it stood at the record,
- * within a pixel; and the box moved down, not sideways, by the height drawn above the landing,
- * within a pixel. That height is how much the elements before the landing, and before each
- * element around it up to the body, that stand above its top grew in the flow since the record,
- * box and margins - a notice drawn inside the box or outside it. Rows taken away count nothing.
+ * box at most makes that move. `view kept (drawn above)` and `view kept (shrunk above)`, for a
+ * loss the reader caused: the box holds the landing, or is the window; the landing stands where
+ * the reader saw its place at the record, within a pixel - where it stood itself, or, where its
+ * row moved up into the place of a row the press took away, where that row stood; and the box
+ * moved, not sideways, by the height that changed above the landing, within a pixel: down by the
+ * height drawn above it, or up by the height that closed above it. That height is how much the
+ * elements before the landing, and before each element around it up to the body, that stand
+ * above its top grew or shrank in the flow since the record, box and margins - a notice drawn
+ * inside the box or outside it, a control row's line that goes. Rows taken away count nothing.
  *
  * WHILE A HELD PRESS IS OUT (`judgeHeld`). The held control is the lost control where it stands in
  * the Tab order, else, where its dialog has gone, the control that dialog was opened from.
@@ -96,12 +102,13 @@ export type Rule =
   | "own-stop";
 
 /** Why a box that moved is allowed to: the page clamped it, it kept its view, it kept the
- *  landing's view after content was drawn above it, it showed a landing that was partly in sight,
- *  or it moved by no more than the rounding of a box's place. */
+ *  landing's view after content was drawn above it or closed above it, it showed a landing that
+ *  was partly in sight, or it moved by no more than the rounding of a box's place. */
 export type MoveReason =
   | "clamped"
   | "view kept"
   | "view kept (drawn above)"
+  | "view kept (shrunk above)"
   | "nearest edge"
   | "under 1 px";
 
@@ -1046,25 +1053,49 @@ export async function installLanding(page: Page): Promise<void> {
       const margins = Number.parseFloat(style.marginTop) + Number.parseFloat(style.marginBottom);
       return element.getBoundingClientRect().height + (Number.isNaN(margins) ? 0 : margins);
     };
-    /** Whether a box's move by `dx`, `dy` kept what the reader sees where it stood after content
-     *  was drawn above `landing`: the landing's top stands on screen where it stood at the record,
-     *  within a pixel, and the box moved down, not sideways, by the height drawn above the
-     *  landing, within a pixel. That height is how much the elements before the landing and
-     *  before each element around it, up to the body, grew in the flow since the record - one
-     *  that arrived grew from nothing - counting those that stand above the landing's top: a
-     *  notice drawn inside the box or outside it. Rows the press took away above the landing
-     *  count nothing, so a move after them does not match. */
-    const drawnAbove = (
+    /** Whether `landing` stands on screen where the reader saw its place at the record, within a
+     *  pixel: where it stood itself, or, where its row moved up into the place of a row the press
+     *  took away - a row around the lost control, or the selection bar's row marked last - where
+     *  that row stood. Its row there is the one around it that stands in the parent the row taken
+     *  away stood in. */
+    const placeKept = (record: Snapshot, landing: Element): boolean => {
+      const top = landing.getBoundingClientRect().top;
+      const stood = record.places.get(landing);
+      if (stood !== undefined && Math.abs(top - stood.top) <= 1) return true;
+      const taken = [
+        ...record.subject.rows.map((place) => place.spot),
+        ...(record.bar?.marked?.slice(0, 1) ?? []),
+      ];
+      return taken.some((spot) => {
+        const was = record.places.get(spot.node);
+        if (was === undefined || !leftPlace(spot, record.existing)) return false;
+        let row = landing.closest(rowSelector);
+        while (row !== null && row.parentElement !== spot.parent) {
+          row = row.parentElement?.closest(rowSelector) ?? null;
+        }
+        return row !== null && Math.abs(row.getBoundingClientRect().top - was.top) <= 1;
+      });
+    };
+    /** Why a box's move by `dx`, `dy` kept what the reader sees where it stood after the height
+     *  above `landing` changed, or null where it did not: the landing stands where the reader saw
+     *  its place (`placeKept`), and the box moved, not sideways, by the height that changed above
+     *  the landing, within a pixel - down by the height drawn above it, as a notice drawn inside
+     *  the box or outside it (`view kept (drawn above)`), or up by the height that closed above
+     *  it, as a control row's line that goes (`view kept (shrunk above)`). That height is how much
+     *  the elements before the landing and before each element around it, up to the body, grew
+     *  or shrank in the flow since the record - one that arrived grew from nothing - counting
+     *  those that stand above the landing's top. Rows the press took away count nothing, so a
+     *  move after them does not match. */
+    const keptAbove = (
       record: Snapshot,
       box: Element | null,
       dx: number,
       dy: number,
       landing: Element
-    ): boolean => {
-      if (Math.abs(dx) > 1 || (box !== null && !box.contains(landing))) return false;
-      const stood = record.places.get(landing);
+    ): MoveReason | null => {
+      if (Math.abs(dx) > 1 || (box !== null && !box.contains(landing))) return null;
+      if (!placeKept(record, landing)) return null;
       const top = landing.getBoundingClientRect().top;
-      if (stood === undefined || Math.abs(top - stood.top) > 1) return false;
       let height = 0;
       for (let node: Element | null = landing; node !== null && node !== document.body; ) {
         for (let sibling = node.previousElementSibling; sibling !== null; ) {
@@ -1076,11 +1107,13 @@ export async function installLanding(page: Page): Promise<void> {
         }
         node = node.parentElement;
       }
-      return height > 0.5 && Math.abs(dy - height) <= 1;
+      if (Math.abs(height) <= 0.5 || Math.abs(dy - height) > 1) return null;
+      return height > 0 ? "view kept (drawn above)" : "view kept (shrunk above)";
     };
     /** Every box that moved by more than half a pixel since the record, each with why its move is
      *  allowed: by the clamp, the rounding, a kept view where `keptAllowed`, the nearest-edge
-     *  scroll that shows `edge` whole, or a view `landing` keeps after content drawn above it. */
+     *  scroll that shows `edge` whole, or a view `landing` keeps after the height above it changed
+     *  (`keptAbove`). */
     const movesSince = (
       record: Snapshot,
       keptAllowed: boolean,
@@ -1141,8 +1174,8 @@ export async function installLanding(page: Page): Promise<void> {
             edgeTaken = true;
           }
         }
-        if (reason === null && landing !== null && drawnAbove(record, entry.box, dx, dy, landing)) {
-          reason = "view kept (drawn above)";
+        if (reason === null && landing !== null) {
+          reason = keptAbove(record, entry.box, dx, dy, landing);
         }
         moves.push({ box: entry.name, reason, x: dx, y: dy });
       }
@@ -1315,7 +1348,10 @@ export async function installLanding(page: Page): Promise<void> {
         // The landing is computed in the view the reader had: every box that moved since the
         // record is put back where it stood for the computation, and then where it stands now,
         // so a box the page scrolled to its landing does not bring a control into sight that was
-        // out of it. The moves themselves are read after, as the page left them.
+        // out of it. A box whose move kept what the reader sees where it stood after the height
+        // above the landing changed (`keptAbove`) shows that view as it stands, and stays: the
+        // landing the page gives as it stands is read for that first. The moves themselves are
+        // read after, as the page left them.
         const moved = record.boxes.flatMap((entry) => {
           if (entry.box !== null && !entry.box.isConnected) return [];
           const now = scrollOf(entry.box);
@@ -1325,9 +1361,15 @@ export async function installLanding(page: Page): Promise<void> {
         });
         const scrollTo = (box: Element | null, [left, top]: readonly [number, number]) =>
           (box ?? window).scrollTo({ behavior: "instant", left, top });
-        for (const { entry } of moved) scrollTo(entry.box, [entry.x, entry.y]);
+        const asIs = caused && moved.length > 0 ? causedLanding(record, notes()).element : null;
+        const back = moved.filter(
+          ({ entry, now }) =>
+            asIs === null ||
+            keptAbove(record, entry.box, now[0] - entry.x, now[1] - entry.y, asIs) === null
+        );
+        for (const { entry } of back) scrollTo(entry.box, [entry.x, entry.y]);
         const landing = caused ? causedLanding(record, passed) : uncausedLanding(record, active);
-        for (const { entry, now } of [...moved].reverse()) scrollTo(entry.box, now);
+        for (const { entry, now } of [...back].reverse()) scrollTo(entry.box, now);
         const moves = movesSince(
           record,
           !caused,

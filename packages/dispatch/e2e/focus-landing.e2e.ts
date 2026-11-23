@@ -64,15 +64,17 @@
  *  landing, in the direction that shows it, by no more than that distance and a pixel (`nearest
  *  edge`). A box that keeps its view after the reader's press took rows away above it scrolled:
  *  the press frees the whole height of the rows it takes away. A box may move for a loss the
- *  reader caused only to keep what the reader sees where it stood when content was drawn above
- *  the landing: the box moved by exactly the height drawn above the landing, inside the box or
- *  outside it, and the landing's top stands on screen where it stood before the press, each
- *  within a pixel (`view kept (drawn above)`). For a loss the reader did not
- *  cause, a box that moved by what the layout moved, keeping an element of its view where it
- *  stood on screen, did not scroll (`view kept`). For every cause a box the page clamped - its
- *  content grew shorter than its scroll - did not scroll (`clamped`), and neither did one that
- *  moved a pixel or less (`under 1 px`). A selection bar's hand-off and a region's own stop allow
- *  no scroll, and neither does a held press while its write is out.
+ *  reader caused only to keep what the reader sees where it stood when the height above the
+ *  landing changed: the box moved by exactly the height drawn above the landing or closed above
+ *  it, inside the box or outside it, and the landing stands on screen where the reader saw its
+ *  place before the press - where it stood, or where the row it moved up into the place of stood
+ *  - each within a pixel (`view kept (drawn above)`, `view kept (shrunk above)`). For a loss the
+ *  reader did not cause, a box that moved by what the layout moved, keeping an element of its
+ *  view where it stood on screen, did not scroll (`view kept`). For every cause a box the page
+ *  clamped - its content grew shorter than its scroll - did not scroll (`clamped`), and neither
+ *  did one that moved a pixel or less (`under 1 px`). A selection bar's hand-off and a region's
+ *  own stop scroll nothing of their own, and no box moves for a held press while its write is
+ *  out.
  *
  *  Each case prints one line, `LANDING <page> <case> <width> <engine> expected=<...> rule=<...>`
  *  and, where the case has them, `named=<...>` (whether a landing named by hand agrees),
