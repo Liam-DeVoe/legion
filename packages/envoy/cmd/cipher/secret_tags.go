@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -63,8 +64,8 @@ func ruleOf(err error, rules ...error) string {
 }
 
 // tagNone is the value of --type, --github-owners, --requesters, --scopes, --admin, --project,
-// --project-channels, --max-grant and --default-grant that removes the tag, the one the broker
-// refuses as a github-owners login (policy.TagRemoved).
+// --project-channels, --max-grant, --default-grant, --judge and --guidance that removes the tag,
+// the one the broker refuses as a github-owners login (policy.TagRemoved).
 const tagNone = policy.TagRemoved
 
 // checkType is --type's rule: a type the broker mints (policy.ValidType), or none.
@@ -262,9 +263,51 @@ func checkProjectChannels(channels string, orNone bool) error {
 	return usageErr{fmt.Errorf("--project-channels is %s %s, or the broker refuses the secret as %s; leave --project-channels off for a secret no project's owner limits", policy.ProjectChannelsSlack, valueNotPrinted, policy.ReasonProjectChannelsMalformed)}
 }
 
+// checkJudge is --judge's rule, the broker's own (policy.ParseJudge): whole seconds from 1 to
+// policy.MaxJudgeSeconds, in digits alone, or none where orNone allows it (retag) to remove the
+// tag. Any other value — 1800, 0, 15m, a sign, and on create the word none — is refused here,
+// before anything is read or written, as the broker refuses it on the reread,
+// policy.ReasonJudgeOutOfRange, named as the broker names it: a judge tag the broker cannot read as
+// such a bound refuses the secret to everyone. The value it refuses is not printed
+// (valueNotPrinted).
+func checkJudge(judge string, orNone bool) error {
+	if judge == "" || (orNone && judge == tagNone) {
+		return nil
+	}
+	if _, err := policy.ParseJudge(judge); err == nil {
+		return nil
+	}
+	if orNone {
+		return usageErr{fmt.Errorf("--judge is whole seconds from 1 to %d or %s %s, or the broker refuses the secret as %s", policy.MaxJudgeSeconds, tagNone, valueNotPrinted, policy.ReasonJudgeOutOfRange)}
+	}
+	return usageErr{fmt.Errorf("--judge is whole seconds from 1 to %d %s, or the broker refuses the secret as %s; leave --judge off for a secret a person decides", policy.MaxJudgeSeconds, valueNotPrinted, policy.ReasonJudgeOutOfRange)}
+}
+
+// checkGuidance is --guidance's rule: text of at most policy.MaxGuidanceRunes runes, the whole of
+// what the model judge shows its model, as the broker refuses a longer one on the reread
+// (policy.ReasonGuidanceTooLong), or none where orNone allows it (retag) to remove the tag. On
+// create the word none is refused, since it would be written as the guidance itself. A guidance
+// tag the secret already holds is weighed with its other tags (checkTagsFor), which a retag of
+// another flag reaches.
+func checkGuidance(guidance string, orNone bool) error {
+	switch {
+	case guidance == tagNone && !orNone:
+		return usageErr{fmt.Errorf("--guidance %s removes the guidance tag, in a retag; leave --guidance off for a secret that carries none", tagNone)}
+	case utf8.RuneCountInString(guidance) > policy.MaxGuidanceRunes:
+		return guidanceTooLong(guidance)
+	}
+	return nil
+}
+
+// guidanceTooLong is the refusal of a guidance past policy.MaxGuidanceRunes, which counts its
+// runes and never prints it.
+func guidanceTooLong(guidance string) error {
+	return usageErr{fmt.Errorf("--guidance is at most %d characters, the whole text the model judge shows its model, and this one is %d: shorten it, or the broker refuses the secret as %s", policy.MaxGuidanceRunes, utf8.RuneCountInString(guidance), policy.ReasonGuidanceTooLong)}
+}
+
 // checkTagsFor applies the broker's cross-tag rules (policy.TagRules) to the tags a secret will
-// hold once a write lands — its type, owner, tier, requesters, scopes, admin mark and
-// max grant — so create (cmdSecretCreate) and retag (cmdSecretRetag) refuse, before any write,
+// hold once a write lands — its type, owner, tier, requesters, scopes, admin mark, max grant and
+// guidance — so create (cmdSecretCreate) and retag (cmdSecretRetag) refuse, before any write,
 // a secret the broker would then refuse to load. It builds the one policy.TagSet those rules
 // weigh and hands it, beside the reason they answered and the map it was built from, to
 // tagRefusal, which says that refusal as the flag that fixes it.
@@ -305,6 +348,7 @@ func checkTagsFor(tags map[string]string) error {
 		BoundAccount: "",
 		Admin:        tags[policy.TagAdmin] == adminTrue,
 		MaxGrant:     duration,
+		Guidance:     tags[policy.TagGuidance],
 	}
 	return tagRefusal(policy.TagRules(set), set, tags)
 }
@@ -341,7 +385,8 @@ func guardRequesters(tags map[string]string) {
 // "", the answer for a secret the rules allow, and a usage error for every other reason, so it
 // is this CLI's whole mirror of TagRules: an arm for
 // policy.ReasonScopesType, policy.ReasonAdminTier, policy.ReasonAdminRequesters,
-// policy.ReasonTypeHumanTier, policy.ReasonMaxGrantRequired and policy.ReasonRequestersNotOwner,
+// policy.ReasonTypeHumanTier, policy.ReasonMaxGrantRequired, policy.ReasonRequestersNotOwner and
+// policy.ReasonGuidanceTooLong,
 // and one fallback refusal
 // after the switch, which quotes the reason TagRules gave. That reason is this binary's own
 // TagRules answer, so a reason, or a requesters fault, with no arm here is a gap in this build
@@ -412,6 +457,8 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 			}
 			return usageErr{fmt.Errorf("%s secret is served to the one person who owns it, beside the registered services a %s-tier one may list, so its requesters name %s once%s: write --requesters %q, or the broker refuses it as %s", withArticle(set.Type), policy.TierHuman, set.Owner, held, wanted, policy.ReasonRequestersNotOwner)}
 		}
+	case policy.ReasonGuidanceTooLong:
+		return guidanceTooLong(set.Guidance)
 	}
 	// Two things reach here: a reason no case above names, and a policy.RequesterFault no case of
 	// the inner switch names, policy.RequesterFaultServiceOnDevAccount among them. That fault
@@ -422,7 +469,7 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 }
 
 // tagFlags is the value of each tag flag a create or a retag names, one field per flag. It is a
-// struct rather than ten string parameters for the reason policy.TagSet is one: a caller
+// struct rather than eleven string parameters for the reason policy.TagSet is one: a caller
 // passing that many values in order would transpose two of them, and every transposition
 // compiles and writes each value as another tag.
 type tagFlags struct {
@@ -435,11 +482,14 @@ type tagFlags struct {
 	ProjectChannels string
 	MaxGrant        string
 	DefaultGrant    string
+	Judge           string
+	Guidance        string
 }
 
 // optionalTags is the type, github-owners, requesters, scopes, admin, dispatch-project,
-// project-channels, max-grant and default-grant tags the flags set: each flag's value when it
-// names one, and nothing for one left unset or set to none. A type brings the rollback guard with
+// project-channels, max-grant, default-grant, judge and guidance tags the flags set: each flag's
+// value when it names one, and nothing for one left unset or set to none. A type brings the
+// rollback guard with
 // it (policy.TagRollbackGuard), which only the brokers from legion-envoy-v13.19.0 to the release
 // before v16.0.0 read, and refuse: every broker from v16.0.0 to the release before the type tag
 // ignores it and serves a secret that carries type alone as a stored secret. What keeps a type
@@ -475,6 +525,12 @@ func optionalTags(f tagFlags) map[string]string {
 	}
 	if named(f.DefaultGrant) {
 		tags[policy.TagDefaultGrant] = f.DefaultGrant
+	}
+	if named(f.Judge) {
+		tags[policy.TagJudge] = f.Judge
+	}
+	if named(f.Guidance) {
+		tags[policy.TagGuidance] = f.Guidance
 	}
 	return tags
 }

@@ -1603,10 +1603,11 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 
 // TestSecretShowSaysWhoDecidesAndOnWhatGuidance: show prints who decides a request for the key and
 // the guidance the judge decides it on, so an agent can meet the guidance on its first request.
-// The model judge for a key the broker's rules give a judge entry (GET /v1/settings's judge_keys),
-// whoever owns it, with its seconds and its guidance; a person, on the broker page, for a key with
-// no entry, and for an administrator's key even where the rules name it; and, for an agent-tier
-// key, nobody for a session its tags allow, since only another session's request waits at all.
+// The model judge for a key whose judge tag gives the judge seconds of it (GET /v1/settings's
+// judge_keys), whoever owns it, with its seconds and its guidance; a person, on the broker page,
+// for a key with no judge tag, and for an administrator's key even where its judge tag names it;
+// and, for an agent-tier key, nobody for a session its tags allow, since only another session's
+// request waits at all.
 func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
 	admin := policytest.Secret("ADMIN_JUDGED_KEY", "ada@example.com", policy.TierHuman, "a")
 	admin.Tags[policy.TagAdmin] = "true"

@@ -205,7 +205,7 @@ const (
 const (
 	standInAnsweredAsk = "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b"
 	standInAskQuestion = "Let the judge spend the judged token on this issue's own runs?"
-	standInAskAnswer   = "Yes, for the runs this issue names, up to the seconds the rules give the judge."
+	standInAskAnswer   = "Yes, for the runs this issue names, up to the seconds the key's judge tag gives the judge."
 )
 
 // defaultAskAnsweredBy is who answered that ask when no flag names a login. A local stack passes
@@ -221,8 +221,8 @@ granted in the place of the person who decides it today.
 
 ## Requirements
 
-- The judge decides a request for a key the airlock rules give it seconds for, with the key's
-  guidance, and a person decides every other.
+- The judge decides a request for a key whose judge tag gives it seconds of it, with the key's
+  guidance tag, and a person decides every other.
 - The judge grants or denies, and a denial is final; a request it cannot decide goes to its
   person once.
 - Every verdict is recorded against the request, with what the model was asked and answered.

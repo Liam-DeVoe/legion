@@ -47,7 +47,7 @@ func rulesProfiles(t *testing.T, rules proxyrules.Rules, apps ...string) string 
 	var entries []string
 	named := map[string]bool{}
 	for _, rule := range rules.Secrets {
-		proxy, err := json.Marshal(policy.ProxyBlock{Hosts: rule.Hosts, Headers: rule.Headers, Allow: rule.Allow, Kind: rule.Kind, Judge: rule.Judge, Guidance: rule.Guidance})
+		proxy, err := json.Marshal(policy.ProxyBlock{Hosts: rule.Hosts, Headers: rule.Headers, Allow: rule.Allow, Kind: rule.Kind})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -332,7 +332,7 @@ func TestTheModelReadsEachKeysGuidanceAndWhatTheReasonPointsAt(t *testing.T) {
 
 // TestAKeyGrantedAtOnceBesideAJudgeKeyIsNoKeyTheJudgeDecides: a request for a judge key and a
 // key its session gets at once is decided on the judge key alone. Every check passes — the key
-// granted at once has no judge entry and the policy answers automatic for it, neither of which
+// granted at once carries no judge tag and the policy answers automatic for it, neither of which
 // is a failure for a key that needs no decision — the model is shown the judge key and nothing
 // of the other, and its grant is applied.
 func TestAKeyGrantedAtOnceBesideAJudgeKeyIsNoKeyTheJudgeDecides(t *testing.T) {

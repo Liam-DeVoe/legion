@@ -1,7 +1,7 @@
 // packages/envoy/internal/cipher/requests/judge_decision_test.go
 // The model judge's own decisions against the real database: what an approval of its leaves on
-// the record, the request and the grant, what a verdict that decides nothing leaves, what the
-// airlock rules refuse it, and what happens when a person and the judge both answer one request.
+// the record, the request and the grant, what a verdict that decides nothing leaves, what its
+// keys' judge tags refuse it, and what happens when a person and the judge both answer one request.
 package requests
 
 import (
@@ -26,54 +26,52 @@ const judgeModel = "claude-opus-4-6"
 // adminSecretName is the administrator's credential these tests ask for, and adminSecret the
 // secret itself: human tier and the operator's own, carrying the requesters list and the hour's
 // cap the admin tag demands of a secret beside the tag (policy.TagRules, which refuses an admin
-// secret that is agent tier, lists nobody or caps nothing). A test that wants it puts it into
-// its own fixture's store rather than fixtureSecrets holding it, so every other test's policy
-// is the one it has always been.
+// secret that is agent tier, lists nobody or caps nothing), and a judge tag of 900 seconds, which
+// a person approving every release of it outranks. A test that wants it puts it into its own
+// fixture's store rather than fixtureSecrets holding it, so every other test's policy is the one
+// it has always been.
 const adminSecretName = "ADMIN_CONSOLE_KEY"
 
 func adminSecret() secrets.LocalSecret {
 	s := policytest.ListedSecret(adminSecretName, fixtureOperator, policy.TierHuman, fixtureOperator, "admin-v1")
 	s.Tags[policy.TagAdmin] = policy.AdminTrue
-	return s
+	return policytest.Judged(s, 900, "")
 }
 
 // federationSecretName is the operator's human-tier anthropic-federation secret with no admin tag,
-// which the judge fixture's rules give the judge seconds of, and which a person approves every
-// release of all the same.
+// whose judge tag gives the judge 900 seconds of it, and which a person approves every release of
+// all the same.
 const federationSecretName = "FEDERATION_ADMIN_KEY"
 
 func federationSecret() secrets.LocalSecret {
-	return policytest.TypeSecret(federationSecretName, fixtureOperator, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
+	return policytest.Judged(policytest.TypeSecret(federationSecretName, fixtureOperator, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation)), 900, "")
 }
 
-// newJudgeFixture is newFixture with airlock rules behind it that let the judge decide up to 900
-// seconds of DEEL_API_KEY, the operator's own human-tier secret, of SHARED_KEY, the shared one,
-// of adminSecretName, the administrator's, and of federationSecretName, the Anthropic federation
-// key: the first two records' approvers are a person's login and record.AnyoneApprover, which is
-// the difference the grant's approver turns on, and the last two are the entries a deployment must
-// not be able to write its way past, since the rules file is the one thing a secret whose release
-// a person approves (policy.Secret.PersonApprovesEveryRelease) does not answer to. The chain
-// verifier is rebuilt against those rules, since it holds a judge's approval to the same bound
-// (record.ChainVerifier.JudgeSeconds). A judge is wired, a hook that does nothing, so a request
-// for a judge key is held for it; a test of a broker that runs no judge sets m.Judge to nil.
+// newJudgeFixture is newFixture with judge tags that let the judge decide up to 900 seconds of
+// DEEL_API_KEY, the operator's own human-tier secret, and of SHARED_KEY, the shared one, each
+// behind a proxy entry: the two records' approvers are a person's login and record.AnyoneApprover,
+// which is the difference the grant's approver turns on. adminSecret and federationSecret carry a
+// judge tag of their own, the tags no owner must be able to write past, since a secret whose
+// release a person approves (policy.Secret.PersonApprovesEveryRelease) does not answer to its
+// judge tag. The chain verifier reads the same live policy (record.ChainVerifier.JudgeSeconds). A
+// judge is wired, a hook that does nothing, so a request for a judge key is held for it; a test of
+// a broker that runs no judge sets m.Judge to nil.
 func newJudgeFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
 	t.Helper()
 	m, enrollmentID, key, _ := newFixture(t)
 	m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(900))},
-		{Name: "SHARED_KEY", Hosts: []string{"shared.example"}, Judge: new(uint32(900))},
-		{Name: adminSecretName, Hosts: []string{"admin.example"}, Judge: new(uint32(900))},
-		{Name: federationSecretName, Hosts: []string{"api.anthropic.example"}, Judge: new(uint32(900))},
+		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}},
+		{Name: "SHARED_KEY", Hosts: []string{"shared.example"}},
 	}}
-	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
+	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "DEEL_API_KEY", 900, "")
+	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "SHARED_KEY", 900, "")
 	m.Judge = func(PendingRequest) {}
 	return m, enrollmentID, key
 }
 
 // signJudgeable signs an agent_secret request object over names with the reason and the lifetime
-// the judge's rules read: a reason naming a Dispatch issue and a lifetime inside the entry's
-// judge bound are two of the three things record.MayJudge asks for, and the tests below move each
-// of them.
+// the judge reads: a reason naming a Dispatch issue and a lifetime inside the key's judge tag are
+// two of the three things record.MayJudge asks for, and the tests below move each of them.
 func signJudgeable(t *testing.T, m *Machine, key *ecdsa.PrivateKey, reason string, lifetime int, names ...string) string {
 	t.Helper()
 	details := make([]record.AuthorizationDetail, len(names))
@@ -255,22 +253,24 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	}
 }
 
-// TestApplyJudgeDecisionRefusesARecordTheRulesDoNotAdmit drives each reason record.MayJudge
-// refuses the judge's grant of a record — a key the rules give the judge nothing of beside its
-// judge key, and rules that moved under a request the judge holds, past its lifetime or off its
-// key — and each comes back to the caller as a refusal it can test and leaves the request exactly
-// as it found it.
-func TestApplyJudgeDecisionRefusesARecordTheRulesDoNotAdmit(t *testing.T) {
+// TestApplyJudgeDecisionRefusesARecordTheTagsDoNotAdmit drives each reason record.MayJudge
+// refuses the judge's grant of a record — a key carrying no judge tag beside its judge key, and a
+// judge tag that moved under a request the judge holds, past its lifetime or off its key — and
+// each comes back to the caller as a refusal it can test and leaves the request exactly as it
+// found it.
+func TestApplyJudgeDecisionRefusesARecordTheTagsDoNotAdmit(t *testing.T) {
 	for name, c := range map[string]struct {
 		names []string
-		// rulesAfter moves the rules once the request is written, as a reload does.
-		rulesAfter func(m *Machine)
+		// tagsAfter moves the judge tag once the request is written, as its owner's retag does.
+		tagsAfter func(t *testing.T, m *Machine)
 	}{
-		"a judge key beside a key the rules give the judge nothing of": {names: []string{"DEEL_API_KEY", "DEEL_OTHER_KEY"}},
-		"a judge entry lowered below the request's lifetime": {names: []string{"DEEL_API_KEY"}, rulesAfter: func(m *Machine) {
-			m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(300))}}}
+		"a judge key beside a key carrying no judge tag": {names: []string{"DEEL_API_KEY", "DEEL_OTHER_KEY"}},
+		"a judge tag lowered below the request's lifetime": {names: []string{"DEEL_API_KEY"}, tagsAfter: func(t *testing.T, m *Machine) {
+			policytest.JudgeTags(t, fixtureStore(m), m.Policy, "DEEL_API_KEY", 300, "")
 		}},
-		"a judge entry taken away": {names: []string{"DEEL_API_KEY"}, rulesAfter: func(m *Machine) { m.Airlock = proxyrules.Rules{} }},
+		"a judge tag taken away": {names: []string{"DEEL_API_KEY"}, tagsAfter: func(t *testing.T, m *Machine) {
+			retag(t, m, policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"))
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
@@ -279,8 +279,8 @@ func TestApplyJudgeDecisionRefusesARecordTheRulesDoNotAdmit(t *testing.T) {
 			// for ErrMixedApprovers.
 			retag(t, m, policytest.Secret("DEEL_OTHER_KEY", fixtureOperator, policy.TierHuman, "other-v1"))
 			req := pendingJudgeable(t, m, enr, key, "ACME-1353 wants the key", 600, c.names...)
-			if c.rulesAfter != nil {
-				c.rulesAfter(m)
+			if c.tagsAfter != nil {
+				c.tagsAfter(t, m)
 			}
 
 			_, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
@@ -383,7 +383,7 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 		"a requesters list that dropped the session": {
 			before: func(t *testing.T, m *Machine, _ string) {
 				t.Helper()
-				retag(t, m, listedSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, otherPerson))
+				retag(t, m, policytest.Judged(listedSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, otherPerson), 900, ""))
 			},
 			wantState: "denied", wantApplied: "false",
 			wantDetail: "DEEL_API_KEY: " + policy.ReasonRequesterNotListed,
@@ -459,14 +459,14 @@ func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
 // TestTheJudgeSettlesNoAdminSecret: an admin-tagged secret promises that a person approves every
 // release of it, and the judge is no person. Its run checks the tag itself before it asks a
 // model anything (judge's admin check) and then spends up to twenty seconds on the model call,
-// in which the tag can be added or a rules entry written for a name that already carries it, so
+// in which the tag can be added or a judge tag written for a name that already carries it, so
 // the decision transaction checks it again: the judge's approval of such a name is refused,
 // neither granted nor denied, and the request waits for the person who decides it.
 //
-// The rules entry is the point. This fixture's rules give the judge 900 seconds of the name
-// (newJudgeFixture), which is exactly the deployment the defect allowed — a judge entry written
-// for an administrator's secret — and the transaction refuses it all the same: the tag's promise
-// is the secret's, and the author of the rules file cannot undo it.
+// The judge tag is the point. This fixture's tags give the judge 900 seconds of the name
+// (adminSecret), which is exactly the deployment the defect allowed — a judge tag written on an
+// administrator's secret — and the transaction refuses it all the same: the admin tag's promise
+// outranks the judge tag, and whoever writes the judge tag cannot undo it.
 //
 // The guard is the judge's alone: the same admin secret, on the same request, is still the
 // owner's to approve, which is the path a person has had all along.
@@ -495,7 +495,7 @@ func TestTheJudgeSettlesNoAdminSecret(t *testing.T) {
 
 // TestTheJudgeDecidesNoFederationSecret: an Anthropic federation secret's token can be an
 // organization administrator's, so a person approves every release of one, as of an admin secret,
-// whatever seconds the airlock rules give the judge — and this fixture's rules give it 900. The
+// whatever seconds its judge tag gives the judge — and this fixture's tag gives it 900. The
 // judge does not hold a request for it, the hook is not called, and the judge's approval is refused
 // and leaves the request pending with no request.judged row; the owner's approval grants it.
 func TestTheJudgeDecidesNoFederationSecret(t *testing.T) {

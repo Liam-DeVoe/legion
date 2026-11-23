@@ -100,12 +100,12 @@ const notFound = "not found"
 // last, before the reads of what the reason points at, so that a private project's request costs
 // no Dispatch read of its issue or its ask: the judge leaves every such request to a person.
 const (
-	checkJudgeTag   = "judge-tag"
-	checkLifetime   = "lifetime"
-	checkPolicy     = "policy"
-	checkAdmin      = "admin"
-	checkWithheld   = "withheld"
-	checkProject    = "project"
+	checkJudgeTag = "judge-tag"
+	checkLifetime = "lifetime"
+	checkPolicy   = "policy"
+	checkAdmin    = "admin"
+	checkWithheld = "withheld"
+	checkProject  = "project"
 	// checkDispatch is no check of the request: it is the run's read of what the reason points
 	// at, recorded as a failed check when a read fails, so the row says why the request went to
 	// its person.

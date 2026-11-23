@@ -30,7 +30,7 @@ func newAirlockFixture(t *testing.T, file string) (m *Machine, enrollmentID stri
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
 	}
-	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
+	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
 	return m, enrollmentID, requesterKey
 }
 

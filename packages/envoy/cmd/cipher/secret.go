@@ -55,12 +55,12 @@ func init() {
 			"List every agent secret, under the environment's cloud credential: its name, owner, tier, type,\nproject, project channels, max grant, default grant, whether it has a value, and its deletion\nonce it is deleted, with the earliest purge beside it on Secrets Manager; --json also prints\neach one's store, secret name, github-owners, requesters, scopes, admin mark and whether it\ncarries the project tags' rollback guard, and its created and last-changed times where the\nstore gives them. Name the store the rows are in."}, cmdSecretList},
 		{command{"secret show", "agent-secrets secret show NAME [--json]",
 			"Print an agent secret's name, store, secret name, owner, tier, type, github-owners,\nrequesters, scopes, admin mark, project, project channels, whether it carries the project\ntags' rollback guard, max grant, default grant, its created and last-changed times, its deletion\nonce it is deleted, with the earliest purge beside it on Secrets Manager, and its versions;\n--json prints those and whether it has a value. Never print its value."}, cmdSecretShow},
-		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL|group:EMAIL --tier agent|human [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--project KEY] [--project-channels slack] [--max-grant DURATION] [--default-grant session]",
-			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email; --owner group:EMAIL names the owning\nGoogle group by its lowercase email. --project KEY makes it a secret of that\nDispatch project: a private project's secret goes only to a session that names the project.\n--project-channels slack marks a Slack bot token: a session whose credential names a private\nproject posts with it only to the Slack channels that project's owner named. Beside either,\nthe requesters tag also holds " + policy.RequestersRollbackGuard + ", which a broker from before\nthose tags refuses rather than serve the secret to every session.\nRead its value from standard input, or type it at a prompt with echo off."}, cmdSecretCreate},
+		{command{"secret create", "agent-secrets secret create NAME --owner me|shared|EMAIL|group:EMAIL --tier agent|human [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS] [--requesters LIST] [--scopes LIST] [--admin true] [--project KEY] [--project-channels slack] [--max-grant DURATION] [--default-grant session] [--judge SECONDS] [--guidance TEXT]",
+			"Create an agent secret under the environment's cloud credential, then ask the broker to serve it.\n--owner me is the email of the person that credential names, and is refused where it names\nnone; --owner EMAIL names the owning person by email; --owner group:EMAIL names the owning\nGoogle group by its lowercase email. --project KEY makes it a secret of that\nDispatch project: a private project's secret goes only to a session that names the project.\n--project-channels slack marks a Slack bot token: a session whose credential names a private\nproject posts with it only to the Slack channels that project's owner named. Beside either,\nthe requesters tag also holds " + policy.RequestersRollbackGuard + ", which a broker from before\nthose tags refuses rather than serve the secret to every session. --judge SECONDS (1 to 900)\nlets the model judge decide a request for it, granting at most that long, against --guidance\nTEXT; a person decides any other. Read its value from standard input, or type it at a prompt\nwith echo off."}, cmdSecretCreate},
 		{command{"secret set", "agent-secrets secret set NAME",
 			"Set a new agent-secret value under the environment's cloud credential. Then ask the broker to\nserve it. Read the value from standard input, or type it at a prompt with echo off."}, cmdSecretSet},
-		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL|group:EMAIL] [--tier agent|human] [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--project KEY|none] [--project-channels slack|none] [--max-grant DURATION|none] [--default-grant session|none]",
-			"Change an agent secret's owner, tier, type, GitHub owners, requesters, scopes, admin mark,\nproject, project channels, max grant or default grant under the environment's cloud credential.\nThen ask the broker to reread it. none removes a type, GitHub owners, requesters, scopes, the\nadmin mark, a project, project channels, a max grant or a default grant, in a retag of its own.\nWhile the secret carries a project or project channels, the requesters tag holds\n" + policy.RequestersRollbackGuard + " after its list, and --requesters none keeps it; it goes with\nthe last of those two tags. An administrator changes a shared secret's owner and tier. This\nCLI cannot tell whether a requesters entry naming a service is one the deployment registers: it\nholds no list of them, so the broker's answer to the reread is what catches an unregistered name,\nprinting its refusal and its reason, and the retag exits 1 with the tag written."}, cmdSecretRetag},
+		{command{"secret retag", "agent-secrets secret retag NAME [--owner me|shared|EMAIL|group:EMAIL] [--tier agent|human] [--type " + strings.Join(policy.Types, "|") + "|none] [--github-owners LOGINS|none] [--requesters LIST|none] [--scopes LIST|none] [--admin true|none] [--project KEY|none] [--project-channels slack|none] [--max-grant DURATION|none] [--default-grant session|none] [--judge SECONDS|none] [--guidance TEXT|none]",
+			"Change an agent secret's owner, tier, type, GitHub owners, requesters, scopes, admin mark,\nproject, project channels, max grant, default grant, judge or guidance under the environment's\ncloud credential. Then ask the broker to reread it. none removes a type, GitHub owners,\nrequesters, scopes, the admin mark, a project, project channels, a max grant, a default grant,\nthe judge or the guidance, in a retag of its own.\nWhile the secret carries a project or project channels, the requesters tag holds\n" + policy.RequestersRollbackGuard + " after its list, and --requesters none keeps it; it goes with\nthe last of those two tags. An administrator changes a shared secret's owner and tier. This\nCLI cannot tell whether a requesters entry naming a service is one the deployment registers: it\nholds no list of them, so the broker's answer to the reread is what catches an unregistered name,\nprinting its refusal and its reason, and the retag exits 1 with the tag written."}, cmdSecretRetag},
 		{command{"secret delete", "agent-secrets secret delete NAME",
 			"Schedule the agent secret NAME's deletion, restorable for 30 days, under the environment's\ncloud credential, then ask the broker to stop serving it at once."}, cmdSecretDelete},
 		{command{"secret restore", "agent-secrets secret restore NAME",
@@ -183,7 +183,7 @@ func secretFail(stderr io.Writer, form string, err error) int {
 }
 
 // secretFlagValues are the secret forms' flags that take a value.
-var secretFlagValues = map[string]bool{"owner": true, "tier": true, "type": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "project": true, "project-channels": true, "max-grant": true, "default-grant": true}
+var secretFlagValues = map[string]bool{"owner": true, "tier": true, "type": true, "github-owners": true, "requesters": true, "scopes": true, "admin": true, "project": true, "project-channels": true, "max-grant": true, "default-grant": true, "judge": true, "guidance": true}
 
 // secretFlags is form's flag set. The store credential comes from the environment, never a flag
 // (cmdSecret refuses --profile), so no form registers one for it.
@@ -798,13 +798,13 @@ func proofFailed(err error) bool {
 
 // whoDecides is secret show's decides and guidance lines: who decides a request for the key, and
 // the guidance the model judge decides it on, so an agent can meet the guidance on its first
-// request. It reads the key's own tags and the broker's judge_keys (GET /v1/settings), the rules'
-// answer, which holds while the rules and the tags are unchanged:
+// request. It reads the key's own tags and the broker's judge_keys (GET /v1/settings), the live
+// policy's answer, which holds while the tags are unchanged:
 //
-//   - an administrator's key is a person's, on the broker page, whatever the rules say, since a
-//     person approves every release of one;
-//   - a key the rules give a judge entry is the model judge's, up to its seconds, against its
-//     guidance, and its person's only if the judge cannot decide;
+//   - an administrator's key is a person's, on the broker page, whatever its judge tag says,
+//     since a person approves every release of one;
+//   - a key whose judge tag gives the judge seconds of it is the model judge's, up to those
+//     seconds, against its guidance, and its person's only if the judge cannot decide;
 //   - any other key is a person's, on the broker page.
 //
 // An agent-tier key is granted at once to a session its tags allow, so for one of those the line
@@ -1397,6 +1397,8 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	projectChannels := flags.String("project-channels", "", "slack: the secret is a Slack bot token, which a session or pod whose credential names a private Dispatch project spends only through the airlock, on a Slack post to a channel that project's owner named. Unset, no project's owner limits it")
 	maxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows")
 	defaultGrant := flags.String("default-grant", "", "session: a request with no --ttl lasts until its session ends, not 12 hours")
+	judge := flags.String("judge", "", "whole seconds from 1 to 900: the model judge decides a request for this secret, granting at most that long, against its --guidance. Unset, a person decides it")
+	guidance := flags.String("guidance", "", "the instruction the model judge follows when it decides a request for this secret: when to grant it, in at most 2000 characters")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -1437,6 +1439,12 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	if err == nil {
 		err = checkDefaultGrant(*defaultGrant, false)
 	}
+	if err == nil {
+		err = checkJudge(*judge, false)
+	}
+	if err == nil {
+		err = checkGuidance(*guidance, false)
+	}
 	if err != nil {
 		return secretFail(stderr, form, err)
 	}
@@ -1450,6 +1458,8 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		ProjectChannels: *projectChannels,
 		MaxGrant:        *maxGrant,
 		DefaultGrant:    *defaultGrant,
+		Judge:           *judge,
+		Guidance:        *guidance,
 	})
 	s, err := openSession(context.Background(), stderr, form)
 	if err != nil {
@@ -1501,6 +1511,12 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	if *defaultGrant != "" {
 		command = append(command, "--default-grant", *defaultGrant)
+	}
+	if *judge != "" {
+		command = append(command, "--judge", *judge)
+	}
+	if *guidance != "" {
+		command = append(command, "--guidance", *guidance)
 	}
 	// Install cleanup before the first store call: a signal can arrive after the store has
 	// created the empty secret but before its answer reaches the form.

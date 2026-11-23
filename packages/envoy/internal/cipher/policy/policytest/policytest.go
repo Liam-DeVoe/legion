@@ -21,6 +21,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -55,6 +56,27 @@ func Judged(s secrets.LocalSecret, seconds int, guidance string) secrets.LocalSe
 		s.Tags[policy.TagGuidance] = guidance
 	}
 	return s
+}
+
+// JudgeTags puts a judge tag of seconds on the secret store holds as name, and a guidance tag of
+// guidance unless it is "", as its owner's `agent-secrets secret retag --judge --guidance` does,
+// and has cur read the namespace again, so the policy a test's broker holds gives the judge that
+// key from here on.
+func JudgeTags(t testing.TB, store *secrets.Local, cur *policy.Current, name string, seconds int, guidance string) {
+	t.Helper()
+	tags := []smtypes.Tag{{Key: aws.String(policy.TagJudge), Value: aws.String(strconv.Itoa(seconds))}}
+	if guidance != "" {
+		tags = append(tags, smtypes.Tag{Key: aws.String(policy.TagGuidance), Value: aws.String(guidance)})
+	}
+	if _, err := store.TagResource(t.Context(), &secretsmanager.TagResourceInput{SecretId: aws.String(ID(name)), Tags: tags}); err != nil {
+		t.Fatalf("tag %s with judge %d: %v", name, seconds, err)
+	}
+	if err := cur.Refresh(t.Context()); err != nil {
+		t.Fatalf("policy.Current.Refresh after tagging %s: %v", name, err)
+	}
+	if got, judged := cur.Get().JudgeSeconds(name); !judged || got != uint32(seconds) {
+		t.Fatalf("after tagging %s with judge %d the policy judges it %d, %v", name, seconds, got, judged)
+	}
 }
 
 // FixtureGitHubOwners is the github-owners tag TypeSecret gives a github-app secret, in the

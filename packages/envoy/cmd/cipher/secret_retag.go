@@ -86,11 +86,12 @@ func tagPairs(tags map[string]string) string {
 }
 
 // cmdSecretRetag changes a secret's owner, tier, type, GitHub owners, requesters, scopes, admin
-// mark, project, project channels, max grant or default grant, in one cloud write; a removal that
-// moves the project tags' rollback guard writes the requesters tag in a second write after it
-// (guardRetag, writeGuardRewrite). A retag that names none (--type none, --github-owners none,
-// --requesters none, --scopes none, --admin none, --project none, --project-channels none,
-// --max-grant none, --default-grant none) removes those tags and sets none of the user's; --type
+// mark, project, project channels, max grant, default grant, judge or guidance, in one cloud
+// write; a removal that moves the project tags' rollback guard writes the requesters tag in a
+// second write after it (guardRetag, writeGuardRewrite). A retag that names none (--type none,
+// --github-owners none, --requesters none, --scopes none, --admin none, --project none,
+// --project-channels none, --max-grant none, --default-grant none, --judge none, --guidance none)
+// removes those tags and sets none of the user's; --type
 // none also removes the old kind tag and the rollback guard written with the type. Any other retag
 // sets tags. A retag that does both is refused before anything is read or written: AWS removes
 // tags only with UntagResource, so it would be two calls, and a refused second call would leave it
@@ -140,12 +141,14 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	newProjectChannels := flags.String("project-channels", "", "slack (a session or pod whose credential names a private Dispatch project spends the secret only through the airlock, on a Slack post to a channel that project's owner named) or none")
 	newMaxGrant := flags.String("max-grant", "", "the longest grant duration this secret allows, or none")
 	newDefaultGrant := flags.String("default-grant", "", "session (no --ttl lasts until the session ends) or none (12 hours)")
+	newJudge := flags.String("judge", "", "whole seconds from 1 to 900, the longest grant the model judge makes of this secret when it decides a request for it against its guidance, or none: a person decides it")
+	newGuidance := flags.String("guidance", "", "the instruction the model judge follows when it decides a request for this secret, in at most 2000 characters, or none")
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
 	name, slug, err := secretName(positional)
-	if err == nil && *newOwner == "" && *newTier == "" && *newType == "" && *newGitHubOwners == "" && *newRequesters == "" && *newScopes == "" && *newAdmin == "" && *newProject == "" && *newProjectChannels == "" && *newMaxGrant == "" && *newDefaultGrant == "" {
-		err = usageErr{errors.New("--owner, --tier, --type, --github-owners, --requesters, --scopes, --admin, --project, --project-channels, --max-grant, --default-grant or a combination is required")}
+	if err == nil && *newOwner == "" && *newTier == "" && *newType == "" && *newGitHubOwners == "" && *newRequesters == "" && *newScopes == "" && *newAdmin == "" && *newProject == "" && *newProjectChannels == "" && *newMaxGrant == "" && *newDefaultGrant == "" && *newJudge == "" && *newGuidance == "" {
+		err = usageErr{errors.New("--owner, --tier, --type, --github-owners, --requesters, --scopes, --admin, --project, --project-channels, --max-grant, --default-grant, --judge, --guidance or a combination is required")}
 	}
 	if err == nil {
 		*newOwner, err = checkOwnerTier(*newOwner, *newTier)
@@ -177,6 +180,12 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if err == nil {
 		err = checkDefaultGrant(*newDefaultGrant, true)
 	}
+	if err == nil {
+		err = checkJudge(*newJudge, true)
+	}
+	if err == nil {
+		err = checkGuidance(*newGuidance, true)
+	}
 	var remove []string
 	if *newType == tagNone {
 		// The rollback guard goes with the type: a stored secret is safe on every broker.
@@ -206,6 +215,12 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if *newDefaultGrant == tagNone {
 		remove = append(remove, policy.TagDefaultGrant)
 	}
+	if *newJudge == tagNone {
+		remove = append(remove, policy.TagJudge)
+	}
+	if *newGuidance == tagNone {
+		remove = append(remove, policy.TagGuidance)
+	}
 	set := optionalTags(tagFlags{
 		Type:            *newType,
 		GitHubOwners:    *newGitHubOwners,
@@ -216,6 +231,8 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		ProjectChannels: *newProjectChannels,
 		MaxGrant:        *newMaxGrant,
 		DefaultGrant:    *newDefaultGrant,
+		Judge:           *newJudge,
+		Guidance:        *newGuidance,
 	})
 	if err == nil && len(remove) > 0 && (*newOwner != "" || *newTier != "" || len(set) > 0) {
 		err = usageErr{errors.New("none removes a tag in a retag of its own: run the removal and the other changes as two retags")}

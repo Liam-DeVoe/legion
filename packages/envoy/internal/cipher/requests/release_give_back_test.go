@@ -98,7 +98,7 @@ func newGiveBackFixtureOf(t *testing.T, rules proxyrules.Rules, file string) *gi
 		GiveBacks:  map[string]requests.GiveBack{policy.TypeGitHubApp: app.GiveBack},
 		Airlock:    rules,
 	}
-	f.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, f.Airlock)
+	f.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, f.Policy)
 	session := &profileFixture{Machine: f.Machine, enrollmentID: enrollmentID, key: key}
 	request, err := session.create(t, "APP_KEY", "ZED_KEY")
 	if err != nil || request.State != "granted" || request.GrantID == nil {

@@ -11,7 +11,7 @@ import (
 
 // TestTheJudgeLeavesARequestWhoseReasonNamesAPrivateIssueToAPerson is round 2's B6 on
 // cybermonklabs/legion#4135: a session naming no project asks for SHARED_KEY, an untagged secret
-// the rules let the judge decide, with the reason "INFRA-12: rotate the key PRIV-3 uses". INFRA is
+// whose judge tag lets the judge decide it, with the reason "INFRA-12: rotate the key PRIV-3 uses". INFRA is
 // public and PRIV private, so the person rule makes this PRIV's request (HideUnseen hides it from
 // an outsider, the control showing that rule sees the reason), and the judge must leave it to a
 // person too: deciding it would grant in the name of an approver who can see neither the request
