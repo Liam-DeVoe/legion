@@ -187,7 +187,7 @@ const (
 func codeFlowIssuer(t *testing.T) *Issuer {
 	t.Helper()
 	issuer := New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), testClientID, testClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), testClientID, testClientSecret, testRedirect)
 	return issuer
 }
 

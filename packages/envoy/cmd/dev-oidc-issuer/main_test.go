@@ -449,7 +449,7 @@ func refreshAt(t *testing.T, tokenEndpoint, refreshToken string) (int, []byte) {
 // refresh token she already held.
 func TestTheRefreshRefusalControlRefusesOnePersonsRefresh(t *testing.T) {
 	ctx := context.Background()
-	issuerURL := startRun(t, "--code-flow", testClientID+"="+secretFile(t, testClientSecret), "--sign-in-as", "alice@d.example")
+	issuerURL := startRun(t, "--code-flow", testClientID+"="+secretFile(t, testClientSecret)+"="+testCallback, "--sign-in-as", "alice@d.example")
 	_, tokenEndpoint := discoveryEndpoints(t, issuerURL)
 	flow := oidc.NewCodeFlow(issuerURL, testClientID, testClientSecret, testDomain)
 	signIn := func(state string) oidc.Session {
@@ -527,7 +527,7 @@ func TestTheRefreshRefusalControlRefusesOnePersonsRefresh(t *testing.T) {
 // nobody, so the person it names still refreshes.
 func TestTheRefreshRefusalControlRefusesACallerOffLoopback(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), testClientID, testClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), testClientID, testClientSecret, testCallback)
 	issuer.SignInByDefault(map[string]any{"sub": "alice", "email": "alice@d.example"})
 	code := authorize(t, authorizeURL(issuer.URL()+"/authorize", testClientID, "state", "nonce"), "state")
 	status, body := exchangeCode(t, issuer.URL()+"/token", testClientID, code, testClientSecret)

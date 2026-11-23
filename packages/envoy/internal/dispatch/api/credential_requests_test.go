@@ -344,11 +344,11 @@ func TestAnApproveCarriesTheSessionGenerationItsCheckRead(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	database := storetest.Open(t)
 	seedPeople(t, database, "alice")
-	deps, err := NewDeps(DepsInput{
+	deps, err := NewDeps(withDocumentService(t, DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example", Events: events.NewBroker(),
 		AgentSecretsURL: rig.server.URL, AgentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}

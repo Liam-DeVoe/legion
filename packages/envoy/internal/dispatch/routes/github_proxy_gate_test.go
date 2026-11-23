@@ -29,14 +29,14 @@ func TestTheGitHubProxyOfARouterWithNoDatabaseHidesEveryRepository(t *testing.T)
 	fake := &gateGitHub{installed: []string{"acme/web"}}
 	_, pem := githubapptest.Key(t)
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:    testSigningKey,
 		People:        people,
 		Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		App:           &auth.AppConfig{ClientID: "Iv1.gate", PEM: pem},
 		GitHubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.serve}),
 		Lifetime:      t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -202,7 +202,7 @@ func gateRouter(t *testing.T, database *store.Store, fake *gateGitHub) http.Hand
 	t.Helper()
 	_, pem := githubapptest.Key(t)
 	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:    testSigningKey,
 		People:        people,
 		Identity:      identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
@@ -210,7 +210,7 @@ func gateRouter(t *testing.T, database *store.Store, fake *gateGitHub) http.Hand
 		App:           &auth.AppConfig{ClientID: "Iv1.gate", PEM: pem},
 		GitHubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.serve}),
 		Lifetime:      t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
