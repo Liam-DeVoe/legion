@@ -360,8 +360,25 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 // digest is taken over each statement's words joined by single spaces, so a statement's layout -
 // its line breaks and indentation, which the text it splices in from another place gives it -
 // moves no digest, and a change of any word does.
+//
+// Rule 1's digest was re-recorded when the node store's project columns joined these statements:
+// they read and write each comment's and each block's project beside what they read before
+// (refs.CommentsNamingNoNode, graphcensus.BlockRowsStatement, the node write of
+// refs.CommentWrite.Queue). Those columns move no row in or out of what a pass owes, and no build
+// of rule 1 has shipped with the statements before them, so the rule stays 1 and its digest is
+// re-recorded rather than raised.
+//
+// It was re-recorded again when main's #4883 made store.LatestEventID a scalar subquery,
+// `(select currval(...))`, which the node write of refs.CommentWrite.Queue names as each comment
+// node's cause: the statement reads the same event id, only through events' primary key, so it
+// moves no row in or out of what a pass owes, and no build of rule 1 has shipped. With the old
+// text of LatestEventID the statements give the digest recorded before.
+//
+// It was re-recorded once more when the digest came to fold each statement's whitespace and to
+// cover OwedMarkListed and the revision fence's statement, which both read store_owed_rule: no
+// statement moved a row in or out of what a pass owes.
 var markingStatementDigests = map[int]string{
-	1: "127c62eb231428cab90c580dacb6d4ceda4f8137e4ac91b2924e982e7e5357ea",
+	1: "62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -414,7 +431,7 @@ func markingStatements(t *testing.T) []namedStatement {
 	statements = append(statements, namedStatement{"refs.CommentsNamingNoNode", read.sql[0]})
 	author := model.Actor{Kind: "user", ID: "alice"}
 	at := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	node, tuples := graphstore.CommentFacts(nil, "00000000-0000-0000-0000-000000000001", author, at, 1, "CORE-1", "CORE-1")
+	node, tuples := graphstore.CommentFacts(nil, "00000000-0000-0000-0000-000000000001", author, at, 1, "CORE-1", "CORE-1", "CORE", nil)
 	write := refs.CommentWrite{Nodes: []graphstore.Node{node}, Tuples: tuples}
 	if authors, facts, named := graphstore.AuthorFacts(graphstore.KindComment, node.ID, author, at, 1); named {
 		write.Nodes = append(write.Nodes, authors...)

@@ -869,7 +869,12 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// node write appends nothing (graphstore.QueueNodes): every fact of this write, the two base
 	// attributes it states among them, is appended under that event, which is appended after the
 	// row. A comment left out of the store (unprojected) has no node to write.
-	stored, err := commentStored(r.Context(), tx, rowID, actor, comment.CreatedAt, anchor, owner.ArtifactID)
+	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	stored, err := commentStored(r.Context(), tx, rowID, actor, comment.CreatedAt, anchor, owner.ArtifactID, project, parties)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1195,10 +1200,11 @@ type commentStoreWrite struct {
 }
 
 // commentStored is what the comment rowID states (graphstore.CommentFacts): its node,
-// project-visible and live, made by its author at the row's own created_at, and the artifact it
-// is anchored to and the artifact that owns it, each stated only where the comment has one.
-// Both relations name the artifact by its address, which is its ref_key, so the two artifacts'
-// addresses are read here, in the caller's read phase, in one statement.
+// project-visible and live, in project or between parties (graphstore.ScopeOf of what it belongs
+// to), made by its author at the row's own created_at, and the artifact it is anchored to and the
+// artifact that owns it, each stated only where the comment has one. Both relations name the
+// artifact by its address, which is its ref_key, so the two artifacts' addresses are read here, in
+// the caller's read phase, in one statement.
 func commentStored(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1207,6 +1213,8 @@ func commentStored(
 	at time.Time,
 	anchor *model.Anchor,
 	ownerArtifactID *string,
+	project string,
+	parties []string,
 ) (commentStoreWrite, error) {
 	var artifacts []string
 	if anchor != nil {
@@ -1236,7 +1244,7 @@ func commentStored(
 		(ownerAddress != "" && !graphstore.AddressFits(ownerAddress)) {
 		return commentStoreWrite{unprojected: true}, nil
 	}
-	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress)
+	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress, project, parties)
 	return commentStoreWrite{written: graphstore.PlanUncaused([]graphstore.Node{node}, tuples)}, nil
 }
 
