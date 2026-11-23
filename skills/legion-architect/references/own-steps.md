@@ -29,7 +29,8 @@ Read it when a step of your issue's plan has the key `owner`, when its task has 
   While you do the step, your slot acts on GitHub as that App, so an implementer step opens its pull request as the implement App.
   At the step's end Legion writes your own App back to your slot, unless your next step, of another App, already runs; a notice that comes after the end waits for that write.
 
-- While the step runs, Legion tells it to you again in the same words when you stay idle past the silence bound, and at each launch of your session.
+- While the step runs, Legion tells it to you again in the same words when you stay idle past the silence bound.
+  It tells it again at a launch only where your session has not had it, as a fresh session after a lost one has not; a launch that resumes the session that had it is told nothing more.
 
 - A retry of your claim at your step (`legion claims retry`) relaunches your session, and Legion tells you the step again; it starts no worker.
 

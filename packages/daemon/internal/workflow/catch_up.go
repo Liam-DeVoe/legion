@@ -33,7 +33,7 @@ import (
 // same generation is told again: it may be an architect that died during the turn a catch-up
 // started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either
 // but the owner-step of a step of its own that started and has not ended, which is told again
-// after the catch-up (owedOwnersStep).
+// after the catch-up to a session that was not given it (owedOwnersStep, toldThisSession).
 // The ready is one fact per launch (workflowRuntime.applyTerminal keys it by the claim's launch
 // generation), so the boot's replay of a ready already applied tells nothing more, and one never
 // applied tells it once. The catch-up a root architect's ready writes names every decision nobody
@@ -93,11 +93,14 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 		return intake.Result{}, err
 	}
 	// The catch-up names the owner's own step (treeCatchUp) and points at its owner-step notice,
-	// which a launch's agent may never have read: the step is told again after it, once for the
-	// launch, where it started and has not ended and no owner-step of it is still queued
-	// (owedOwnersStep).
+	// which the session ready now may never have been given: the step is told again after it,
+	// where it started and has not ended, no owner-step of it is still queued (owedOwnersStep), and
+	// no owner-step of its run reached this launch or the session it runs in (toldThisSession).
 	owed, ok, err := e.owedOwnersStep(ctx, tx, *issue)
 	if err != nil || !ok {
+		return intake.Result{}, err
+	}
+	if told, err := e.toldThisSession(ctx, tx, *issue, owed, fact.Launch); err != nil || told {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.tellOwedStep(ctx, tx, *issue, owed, "the owner's catch-up at its launch")
@@ -320,8 +323,9 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // a step acceptance:owner among them — went to an architect that may have failed or lost its
 // session since, so an architect that comes back learns of it from its catch-up, which a revived
 // architect reads as its issues already running, and of a step of its own also from that step's
-// owner-step: the one still queued for it, or else one told again after the catch-up (claimReady,
-// owedOwnersStep). The keys, in key order, of the listed
+// owner-step: the one still queued for it, or else one told again after the catch-up where the
+// session ready now has not had it (claimReady, owedOwnersStep, toldThisSession). The keys, in
+// key order, of the listed
 // issues waiting in accepting for this architect's acceptance (awaitingAcceptance): an issue with
 // no plan rows, or a step `acceptance:owner`, whose sign_off an architect above takes as well.
 // And, where issue's own task stands at another step of its owner's or at the owner's retro, which

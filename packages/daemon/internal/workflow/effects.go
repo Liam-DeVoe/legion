@@ -531,7 +531,8 @@ func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // which the stranded list names (restartFailedOwner). Until it runs again its child's notices go
 // to the architect above it (record.OwningArchitect), all but an owner-step, which goes to that
 // architect alone (record.OwnerClaim): when its claim has failed, it is told that step again when
-// it runs again (claimReady's owedOwnersStep, where no owner-step of it is still queued). The
+// it runs again, where no owner-step of it is still queued and the session it runs in has not had
+// one (claimReady's owedOwnersStep and toldThisSession). The
 // outbox's start retries a failed claim with fresh budgets (supervise.RequestRetry), in the
 // session it recorded, or a new one once supervise's Machine.forgetSession has dropped it. This
 // start asks for no new session itself. A tree root's architect is admission's, started with its
@@ -652,11 +653,11 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		if !ok || !step.owner {
 			return nil
 		}
-		at, err := e.standingPart(ctx, tx, issue, w)
-		if err != nil {
+		if err := e.store.ResetOwnerRestarts(ctx, tx, issue.Key, step.place); err != nil {
 			return err
 		}
-		if err := e.store.ResetOwnerRestarts(ctx, tx, issue.Key, step.place); err != nil {
+		at, err := e.standingPart(ctx, tx, issue, w)
+		if err != nil {
 			return err
 		}
 		if pending, err := e.store.NoticePending(ctx, tx, issue.Key, record.OwnerStepNotice); err != nil || pending {

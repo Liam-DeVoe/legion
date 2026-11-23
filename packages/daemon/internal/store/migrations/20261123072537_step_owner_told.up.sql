@@ -1,0 +1,41 @@
+-- 20261123072537_step_owner_told.up.sql — the launch and the session of the owner's claim that
+-- the owner-step of a step's run reached (record's step_starts.go).
+--
+-- step_starts.owner_told_launch and step_starts.owner_told_session are the launch generation and
+-- the session id of the owner's claim as the outbox read it when the owner-step of the place's
+-- open run was last published (the daemon's deliverNotice, record.Postgres.MarkOwnerStepTold),
+-- written only for the run the notice names. A published notice row is deleted, so nothing else
+-- records that a session got it. The owner's catch-up at a launch tells the step again only where
+-- the claim that is ready now is neither that launch nor that session (workflow's claimReady): a
+-- ready of the launch it reached, or of a later launch that resumed the session it reached, holds
+-- the notice in that session's transcript, and a fresh session after a loss holds none. Each start
+-- of the place begins a run no owner-step has reached (record.Postgres.RaiseStepStarts,
+-- OpenUncountedStep), 0 and ''.
+--
+-- Every row the table already holds takes the defaults, 0 and '': no publish was recorded, so the
+-- next launch of each owner at a step of its own tells it the step again, once, as every launch
+-- did before this release.
+--
+-- The release before this one names each column it reads and writes of step_starts, so it
+-- neither reads nor writes these, and every row it inserts takes the defaults. After a rollback
+-- its starts of a place leave them where this release left them, so at the roll-forward a run it
+-- started may name the launch and the session an earlier run of the place reached: a launch in
+-- that session is not told the newer run's step at its ready, and the owner hears of it from its
+-- catch-up, which names the step, and from the periodic pass over an owner idle past the silence
+-- bound (workflow's ownerSilent).
+--
+-- There is no down file. This directory keeps none, so the way back is the one transaction that
+-- closes this header, its last paragraph (migrations.WayBack), run with this release's daemon
+-- stopped and before the release before starts, through psql '<postgres_dsn>' -X -v
+-- ON_ERROR_STOP=1. The release before needs neither statement to run, since it never names the
+-- columns: the delete of this migration's row is what makes the version the store reports that
+-- release's own again, and the drop is what lets this file run again at the roll-forward, which
+-- then adds the columns at their defaults. What the drop costs is the marks: after the
+-- roll-forward the next launch of each owner at a step of its own tells it the step once more.
+--
+-- begin;
+-- alter table step_starts drop column if exists owner_told_launch, drop column if exists owner_told_session;
+-- delete from schema_version where version = 20261123072537;
+-- commit;
+alter table step_starts add column owner_told_launch bigint not null default 0,
+  add column owner_told_session text not null default '';

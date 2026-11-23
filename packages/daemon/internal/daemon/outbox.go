@@ -1753,8 +1753,10 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
 // earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). An
 // owner-step is published only while the run it tells is open, and finishes undelivered once that
-// run has ended (ownerStepRuns). It waits besides until its architect's slot's gh files hold the
-// App of its step, the owner's own App among them, under either runtime: the review App, which the
+// run has ended (ownerStepRuns); one the listener takes records on its run the launch and the
+// session of the owner it reached (ownerStepTold). It waits besides until its architect's slot's
+// gh files hold the App of its step, the owner's own App among them, under either runtime: the
+// review App, which the
 // steps of the planner, the tester, the reviewer and acceptance, a role of the deployment or of the
 // plan that acts as that App, and the owner's retro act as (ownApp). The slot is written first
 // only for a step of another role's App, and the runtime judges the App it writes as it writes it
@@ -1963,14 +1965,42 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		return fmt.Errorf("%w: %s's notice row %d waits for the write of its slot back to its own App", errNoticeWaits, architect, row.ID)
 	}
 	// An owner's step is told once the owner's slot holds the App of the step's role, so the
-	// owner's gh acts as that App for the whole step (ownerSlotHolds).
+	// owner's gh acts as that App for the whole step (ownerSlotHolds). The owner's claim is read
+	// before the publish, so a relaunch during it is recorded as the launch before it, which a
+	// ready of the new launch tells the step again rather than never.
+	var told supervise.Claim
 	if payload.Kind == record.OwnerStepNotice {
 		if holds, err := r.ownerSlotHolds(ctx, row, payload, architect); err != nil || !holds {
 			return err
 		}
+		told = r.supervisedClaim(architect).Claim
 	}
 	published := r.publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
+	if published == nil && payload.OwnerStep != nil {
+		if err := r.ownerStepTold(ctx, row.Issue, *payload.OwnerStep, told); err != nil {
+			return err
+		}
+	}
 	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
+}
+
+// ownerStepTold records on the run step names that its owner-step reached told, the owner's claim
+// at its launch and in its session (record.Store.MarkOwnerStepTold), in a transaction of its own
+// before the row is finished. A published row is deleted, so this is what the owner's catch-up at
+// a later ready reads to tell the step only to a session that was not given it (workflow's
+// claimReady): between the publish and the row's deletion the row itself is still queued, which
+// that ready reads as the step being told already. A claim this daemon does not supervise records
+// no launch, and its next ready tells the step again.
+func (r *outbox) ownerStepTold(ctx context.Context, issue string, step record.NoticeStep, told supervise.Claim) error {
+	if told.Generation == 0 {
+		return nil
+	}
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		return r.records.MarkOwnerStepTold(ctx, tx, issue, step, record.OwnerTold{Launch: told.Generation, Session: told.Session})
+	}); err != nil {
+		return fmt.Errorf("record whom the owner-step of %s reached: %w", issue, err)
+	}
+	return nil
 }
 
 // ownerSlotHolds is the hold of a notice owner-step, told to owner, the issue's own architect: it

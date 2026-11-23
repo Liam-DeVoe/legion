@@ -773,7 +773,8 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 // phase's restart then tells it its step again, with one more owner-step where none is still
 // queued, and the answer is that restart's 202. A restart refused after the relaunch is logged
 // and the relaunch answered: the claim runs again, and is told the step it owes when it does
-// (workflow's owedOwnersStep, where no owner-step of it is still queued). It is how an operator
+// (workflow's owedOwnersStep, where no owner-step of it is still queued and its session has not
+// had one). It is how an operator
 // relaunches the claims a runtime failed to launch — every failed claim in turn, with
 // `legion claims retry --failed` — once the cause is gone.
 //
