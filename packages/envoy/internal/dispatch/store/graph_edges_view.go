@@ -831,7 +831,7 @@ const artifactRowTuples = `
 // (graphstore.ArtifactRow), a mention dated by its own tuple, whose writers date it as the refs row
 // of the pair (graphstore.QueueMentionsDated), and an attached_to at the row's created_at with no
 // sequence, as the arm over the artifacts row answered it. A read of a document's edges by its
-// uuid binds graph_nodes_artifact_id (migration 20261123110000), then graph_tuples_current.
+// uuid binds graph_nodes_artifact_id (migration 20261123185607), then graph_tuples_current.
 const artifactStoreTuples = `
       union all
       select 'artifact', ` + ArtifactNodeUUID + `, tuple.from_id, 'artifact', tuple.kind, tuple.to_kind, tuple.to_id,
@@ -850,7 +850,7 @@ const artifactStoreTuples = `
 // ArtifactNodeUUID is the SQL expression artifactStoreTuples names a document by, over the
 // document's node aliased holder: the row's uuid its node holds (graphstore.ArtifactRow), held to
 // graphstore.AttributeArtifactID by graphstore's TestTheViewReadsTheRowADocumentsNodeNames, since
-// graphstore imports this package. Migration 20261123110000 indexes the same expression.
+// graphstore imports this package. Migration 20261123185607 indexes the same expression.
 const ArtifactNodeUUID = `holder.attributes->>'artifact_id'`
 
 // ArtifactNodeCreatedAt is the SQL expression artifactStoreTuples dates a document's attached_to

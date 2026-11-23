@@ -134,6 +134,13 @@ type Node struct {
 	// so that the tuple is dated and signed otherwise than the node, names it through
 	// PlanChangedForRun instead. No read answers it.
 	Changed bool
+	// Projection says the write writes the node's row as the projection alone of facts that reach
+	// the store as tuples of their own: it states none of the node's base attributes, whatever its
+	// node write makes or moves of the row, and marks no row it writes for them. The move of the
+	// priority store and the workflow store (internal/dispatch/storesmove, dispatch://INFRA-1098's
+	// R32) writes each node row so, again and again, from the row the old tables hold, beside the
+	// tuples it copies, each of which is one of those facts.
+	Projection bool
 }
 
 // AsStateWrite sets each of nodes, in place, to be written again at state by who at at, as a

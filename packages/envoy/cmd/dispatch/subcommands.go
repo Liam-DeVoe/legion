@@ -52,7 +52,12 @@ var subcommands = []subcommand{
 		return redeliverWebhooks(ctx, args, env, stdout)
 	}},
 	{"census", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
-		return census(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
+		rehearsal, err := storesRehearsalOptions(env)
+		if err != nil {
+			fmt.Fprintf(stderr, "census: %v\n", err)
+			return 2
+		}
+		return censusWith(ctx, args, env.get("DATABASE_URL"), rehearsal, stdout, stderr)
 	}},
 	{"versions", func(ctx context.Context, _ []string, env settingValues, stdout, stderr io.Writer) int {
 		return versions(ctx, env.get("DATABASE_URL"), stdout, stderr)

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"io/fs"
+	"slices"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -27,3 +28,36 @@ func CensusOf(ctx context.Context, databaseURL string, fsys fs.FS) (*pgmigrate.R
 
 // HealthPool is the health probe's pool (healthPool), which no caller is handed, for the same test.
 func (p *Pool) HealthPool() (*pgxpool.Pool, error) { return p.healthPool() }
+
+// CensusOfEveryMigration is the pre-deploy census over every migration this binary embeds, under
+// options, for TestStoresMovedPassesTheCensusAtAOneByteLimit, which reads the stores' move's list of
+// this issue's own migrations (storesmove.OwnMigrations) and so is an external test.
+func CensusOfEveryMigration(ctx context.Context, databaseURL string, options pgmigrate.CensusOptions) (*pgmigrate.Report, error) {
+	return census(ctx, databaseURL, migrationFiles, options)
+}
+
+// MigrateWithout is Migrate over every embedded migration but those named, which it leaves
+// pending, through the runner, which records each version it applies.
+func (s *Store) MigrateWithout(ctx context.Context, names []string) error {
+	return s.migrate(ctx, migrationsWithout{FS: migrationFiles, names: names})
+}
+
+// migrationsWithout is the embedded set less the files of names and theirs (a migration's census
+// and rollback script share its version and name).
+type migrationsWithout struct {
+	fs.FS
+	names []string
+}
+
+func (m migrationsWithout) ReadDir(name string) ([]fs.DirEntry, error) {
+	entries, err := fs.ReadDir(m.FS, name)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(entries, func(entry fs.DirEntry) bool {
+		return slices.ContainsFunc(m.names, func(left string) bool {
+			stem := left[:len(left)-len(".up.sql")]
+			return entry.Name() == left || entry.Name() == stem+".census.sql" || entry.Name() == stem+".down.sql"
+		})
+	}), nil
+}

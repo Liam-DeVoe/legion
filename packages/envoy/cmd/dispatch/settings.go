@@ -226,6 +226,22 @@ var settings = []setting{
 		Description: "How often a test process's maintenance sweep runs - the Idempotency-Keys and spent DPoP proofs past their windows, and the deliveries a process that died left owed - in place of the minute a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_PROCESS_HEARTBEAT", Default: "`5s`", Required: "no",
 		Description: "How often a test process stamps its row in the registry of live server processes, in place of the five seconds a deployment runs it at; the live window a heartbeat is judged by stays three of it, so no run can set a window shorter than its own heartbeat, and a process refused at boot waits that window and one heartbeat for its refuser to lapse. A positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_STORES_MOVE_BATCH", Default: "`200`", Required: "no",
+		Description: "How many tuples one batch of a test process's boot copies when it moves the priority store and the workflow store into the graph store, in place of the 200 a deployment copies; a positive whole number, for a test whose few rows the copy spreads over many batches. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_STORES_MOVE_STOP_AFTER", Required: "no",
+		Description: "The number of the batch of that copy after whose commit a test process's boot exits non-zero, before any other statement, so a test can read a move that stopped partway and the boot that resumes it from its record; a positive whole number. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_STORES_MOVE_HOLD_FILE", Required: "no",
+		Description: "A file a test process's move holds the advisory lock `stores-moved` for, before its first batch, until the file exists, so a test can read a second process wait on that lock. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_STORES_MOVE_SWAP_ATTEMPTS", Default: "`120`", Required: "no",
+		Description: "How many attempts a test process's boot makes of the move's swap, each giving up after half a second's wait for a lock and the next after a pause of 2 seconds, before the boot exits non-zero, in place of the 120 a deployment makes; a positive whole number. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_STORES_REHEARSAL_HOLD_FILE", Required: "no",
+		Description: "A file `census` holds its rehearsal of the stores' move open for once its copy has ended, its transaction kept busy with `select pg_sleep(1)` each second, until the file exists, so a test can write through the serving release while the rehearsal stands. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_STORES_MOVE_EXPLAIN", Required: "no",
+		Description: "Set to `1` so `census` prints the plan of each statement of its rehearsal's census before the drop. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_STORES_REHEARSAL_STOP", Default: "`5m0s`", Required: "no",
+		Description: "How long `census` lets its rehearsal of the stores' move run before it stops wherever it is, prints its report so far and refuses, in place of the 300 seconds a deployment allows; a positive Go duration. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_STORES_REHEARSAL_EXTRA_MIGRATION", Required: "no",
+		Description: "A file `census`'s rehearsal of the stores' move reads as one more pending migration of another tree, after the others, so a test can read how the rehearsal judges a migration no release ships. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is

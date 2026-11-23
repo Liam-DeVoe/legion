@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/storesmove"
 )
 
 // census is `envoy-dispatch census`, in three forms, each reading DATABASE_URL and each
@@ -19,7 +20,12 @@ import (
 //
 //   - with no flag, the pre-deploy migration census (store.Census). A deployment runs it, as a
 //     one-off task under the service's own database credentials, before it rolls the service to
-//     this binary's image.
+//     this binary's image. While priority_nodes is a table, it then rehearses the boot's move of
+//     the priority store and the workflow store into the graph store (storesmove.Rehearse): the
+//     copy and the census before the drop, in one transaction it rolls back, so a difference stops
+//     the deploy before the image moves. The rehearsal refuses on a line that starts `census:
+//     REFUSED rehearsal:`, and a pending migration it neither runs nor leaves out on the line
+//     `census: the rehearsal refuses the pending migration <name>`.
 //   - `--store`, the node and tuple store held against the tables that project it
 //     (graphcensus.StoreCensus), in both directions and for every kind, refusing a kind it
 //     checked no row of but a tie kind of decisions, readings and asks that holds no row and no
@@ -46,10 +52,17 @@ import (
 //     schema the store declares.
 //
 // Each keeps the one exit convention: 0 when nothing refuses, 1 when the report refuses (every
-// reason is in the report), 2 when the census could not be taken (errOut says why). Each prints
-// counts, sizes, versions, file names, digests, node addresses, session metadata and SQLSTATEs
-// only; no row leaves the database.
+// reason is in the report), the rehearsal's refusals of its own among them, 2 when the census could
+// not be taken (errOut says why), a pending migration that refuses the rehearsal among them. Each
+// prints counts, sizes, versions, file names, digests, node addresses, session metadata and
+// SQLSTATEs only; no row leaves the database.
 func census(ctx context.Context, args []string, databaseURL string, out, errOut io.Writer) int {
+	return censusWith(ctx, args, databaseURL, storesmove.RehearsalOptions{}, out, errOut)
+}
+
+// censusWith is census with the test settings of its rehearsal (storesRehearsalOptions), which
+// the subcommand reads from its environment.
+func censusWith(ctx context.Context, args []string, databaseURL string, rehearsal storesmove.RehearsalOptions, out, errOut io.Writer) int {
 	flags := flag.NewFlagSet("census", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	storeSide := flags.Bool("store", false,
@@ -86,10 +99,21 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 		return 2
 	}
 	report.Write(out)
+	code := 0
 	if report.Refused() {
+		code = 1
+	}
+	rehearsed, err := storesmove.Rehearse(ctx, databaseURL, out, rehearsal)
+	switch {
+	case err != nil:
+		writeCensusFailure(errOut, err)
+		return 2
+	case rehearsed.Refused():
+		return 2
+	case rehearsed.Differs():
 		return 1
 	}
-	return 0
+	return code
 }
 
 // storeCensus runs `census --store`: it migrates nothing and writes nothing, reading one

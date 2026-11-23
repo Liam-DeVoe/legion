@@ -68,19 +68,45 @@ func CheckVersions(ctx context.Context, databaseURL string) (*pgmigrate.VersionC
 // so a reader that needs a database migrated to this build - the store census - asks it in its own
 // read-only snapshot rather than probing a table or a column of one migration.
 func UnappliedMigrations(ctx context.Context, tx pgx.Tx) ([]int, error) {
-	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
+	pending, err := PendingMigrations(ctx, tx)
 	if err != nil {
-		return nil, fmt.Errorf("migrations refused: %w", err)
+		return nil, err
+	}
+	versions := make([]int, len(pending))
+	for index, migration := range pending {
+		versions[index] = migration.Version
+	}
+	return versions, nil
+}
+
+// PendingMigrations answers every migration this binary embeds that schema_migrations, read in tx,
+// records no row of, whole, in the order the runner applies them (UnappliedMigrations): what the
+// pre-deploy census's rehearsal of the stores' move reads to know which it may run
+// (storesmove.Rehearse).
+func PendingMigrations(ctx context.Context, tx pgx.Tx) ([]pgmigrate.Migration, error) {
+	migrations, err := Migrations()
+	if err != nil {
+		return nil, err
 	}
 	recorded, err := pgmigrate.RecordedVersions(ctx, tx, versionTable)
 	if err != nil {
 		return nil, err
 	}
-	var unapplied []int
+	var pending []pgmigrate.Migration
 	for _, migration := range migrations {
 		if !recorded[migration.Version] {
-			unapplied = append(unapplied, migration.Version)
+			pending = append(pending, migration)
 		}
 	}
-	return unapplied, nil
+	return pending, nil
+}
+
+// Migrations is every migration this binary embeds, in the order the runner applies them
+// (pgmigrate.Load).
+func Migrations() ([]pgmigrate.Migration, error) {
+	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("migrations refused: %w", err)
+	}
+	return migrations, nil
 }

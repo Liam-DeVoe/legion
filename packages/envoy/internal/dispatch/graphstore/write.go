@@ -922,8 +922,8 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64, stated int, tuple
 		}
 		for index := range nodes {
 			node := &nodes[index]
-			skip := ownedAttributes(own, node.Kind, node.ID)
-			restates[index], states[index] = node.Restates, skip != 0
+			skip := skippedAttributes(own, node)
+			restates[index], states[index] = node.Restates, skip != 0 && !node.Projection
 			if keepsCause {
 				keeps[index], skips[index] = node.KeepsCause, skip
 			}
@@ -1411,7 +1411,7 @@ func appendedNodeParams(nodes []Node, cause *int64, own map[baseAttribute]struct
 		visibilities[index], states[index] = node.Visibility, node.State
 		projects[index], parties[index] = node.Project, value
 		madeAts[index], madeBys[index] = node.MadeAt, madeBy
-		causes[index], skips[index] = node.SourceEvent, ownedAttributes(own, node.Kind, node.ID)
+		causes[index], skips[index] = node.SourceEvent, skippedAttributes(own, &node)
 		if cause != nil {
 			causes[index] = *cause
 		}
@@ -1453,6 +1453,17 @@ func ownedAttributes(own map[baseAttribute]struct{}, kind, id string) int32 {
 		}
 	}
 	return bits
+}
+
+// skippedAttributes is the base attributes of node that a node write's statements state nothing
+// of, each at its bit in mark order: every one for a node the write writes as a projection alone
+// (Node.Projection), whose facts reach the store as tuples of their own, and otherwise each one the
+// writer states itself (ownedAttributes).
+func skippedAttributes(own map[baseAttribute]struct{}, node *Node) int32 {
+	if node.Projection {
+		return markVisibility | markState | markProject | markParties
+	}
+	return ownedAttributes(own, node.Kind, node.ID)
 }
 
 // valueTupleOf is one value tuple of a node as the write that made the node states it, carrying

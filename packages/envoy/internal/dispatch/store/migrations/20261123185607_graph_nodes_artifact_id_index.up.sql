@@ -1,5 +1,5 @@
 -- pgmigrate:non-transactional
--- 20261123110000_graph_nodes_artifact_id_index.up.sql — the index a read of a document's edges by
+-- 20261123185607_graph_nodes_artifact_id_index.up.sql — the index a read of a document's edges by
 -- its uuid takes once graph_edges reads that uuid off the document's node.
 --
 -- A document's node holds the id of the artifacts row that projects it, its `artifact_id`
@@ -18,5 +18,12 @@
 -- It is a performance index: no constraint and no later migration depends on it. A failed
 -- concurrent build leaves an INVALID index of this name, which the runner drops with DROP INDEX
 -- CONCURRENTLY and builds again on the next attempt.
+--
+-- Its version stands after 20261123134318_stores_moved, whose supertag nodes are bounded inserts
+-- into graph_nodes: the census admits such an insert into a table above its limit only where no
+-- earlier pending migration touches that table with more than bounded writes, and a concurrent
+-- index build is more. It also stands after every migration of this tree's children that a
+-- deployment of this tree applies with it. No deployment recorded the version it first took, so
+-- it moved to this one with no `replaces` line.
 create index concurrently if not exists graph_nodes_artifact_id
     on graph_nodes ((attributes->>'artifact_id')) where (attributes->>'artifact_id') is not null;

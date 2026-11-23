@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/storesmove"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -2100,6 +2101,58 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_STORES_MOVE_BATCH": storesMoveCountCase("DISPATCH_TEST_STORES_MOVE_BATCH",
+			func(options storesmove.Options) int { return options.Batch }),
+		"DISPATCH_TEST_STORES_MOVE_STOP_AFTER": storesMoveCountCase("DISPATCH_TEST_STORES_MOVE_STOP_AFTER",
+			func(options storesmove.Options) int { return options.StopAfter }),
+		"DISPATCH_TEST_STORES_MOVE_SWAP_ATTEMPTS": storesMoveCountCase("DISPATCH_TEST_STORES_MOVE_SWAP_ATTEMPTS",
+			func(options storesmove.Options) int { return options.SwapAttempts }),
+		"DISPATCH_TEST_STORES_MOVE_HOLD_FILE": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.StoresMove.HoldFile != "" {
+				t.Errorf("DISPATCH_TEST_STORES_MOVE_HOLD_FILE unset: HoldFile = %q, want none", boot.StoresMove.HoldFile)
+			}
+			const path = "/tmp/hold-the-move"
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_STORES_MOVE_HOLD_FILE": path}); boot.StoresMove.HoldFile != path {
+				t.Errorf("DISPATCH_TEST_STORES_MOVE_HOLD_FILE: HoldFile = %q, want %q", boot.StoresMove.HoldFile, path)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_STORES_MOVE_HOLD_FILE": path}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_STORES_REHEARSAL_HOLD_FILE": func(t *testing.T) {
+			const path = "/tmp/hold-the-rehearsal"
+			if options := rehearsalOptionsWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_STORES_REHEARSAL_HOLD_FILE": path}); options.HoldFile != path {
+				t.Errorf("DISPATCH_TEST_STORES_REHEARSAL_HOLD_FILE: HoldFile = %q, want %q", options.HoldFile, path)
+			}
+			rehearsalRefusedWith(t, map[string]string{"DISPATCH_TEST_STORES_REHEARSAL_HOLD_FILE": path}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_STORES_REHEARSAL_EXTRA_MIGRATION": func(t *testing.T) {
+			const path = "/tmp/extra.up.sql"
+			if options := rehearsalOptionsWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_STORES_REHEARSAL_EXTRA_MIGRATION": path}); options.ExtraMigration != path {
+				t.Errorf("DISPATCH_TEST_STORES_REHEARSAL_EXTRA_MIGRATION: ExtraMigration = %q, want %q", options.ExtraMigration, path)
+			}
+			rehearsalRefusedWith(t, map[string]string{"DISPATCH_TEST_STORES_REHEARSAL_EXTRA_MIGRATION": path}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_STORES_MOVE_EXPLAIN": func(t *testing.T) {
+			if options := rehearsalOptionsWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_STORES_MOVE_EXPLAIN": "1"}); !options.Explain {
+				t.Error("DISPATCH_TEST_STORES_MOVE_EXPLAIN=1: Explain false")
+			}
+			if options := rehearsalOptionsWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_STORES_MOVE_EXPLAIN": "true"}); options.Explain {
+				t.Error("DISPATCH_TEST_STORES_MOVE_EXPLAIN=true: Explain true, want only 1 to set it")
+			}
+			rehearsalRefusedWith(t, map[string]string{"DISPATCH_TEST_STORES_MOVE_EXPLAIN": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_STORES_REHEARSAL_STOP": func(t *testing.T) {
+			if options := rehearsalOptionsWith(t, map[string]string{}); options.Stop != 0 {
+				t.Errorf("DISPATCH_TEST_STORES_REHEARSAL_STOP unset: Stop = %v, want 0 (storesmove.RehearsalBound)", options.Stop)
+			}
+			if options := rehearsalOptionsWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_STORES_REHEARSAL_STOP": "2s"}); options.Stop != 2*time.Second {
+				t.Errorf("DISPATCH_TEST_STORES_REHEARSAL_STOP=2s: Stop = %v, want 2s", options.Stop)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				rehearsalRefusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_STORES_REHEARSAL_STOP": invalid},
+					fmt.Sprintf("DISPATCH_TEST_STORES_REHEARSAL_STOP=%q (expected a positive Go duration)", invalid))
+			}
+			rehearsalRefusedWith(t, map[string]string{"DISPATCH_TEST_STORES_REHEARSAL_STOP": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=1: ListenerRosterUncached false")
@@ -2185,6 +2238,45 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 	}
 	for name := range cases {
 		t.Errorf("a case for %s, which the settings table does not list", name)
+	}
+}
+
+// storesMoveCountCase is the case of a count setting of the boot's move (storesMoveOptions): unset,
+// it reads 0, the move's own default; set under the hooks, the count it names; refused for a value
+// that is no positive whole number, and without DISPATCH_TEST_HOOKS=1.
+func storesMoveCountCase(name string, read func(storesmove.Options) int) func(t *testing.T) {
+	return func(t *testing.T) {
+		if got := read(resolveWith(t, map[string]string{}).StoresMove); got != 0 {
+			t.Errorf("%s unset: %d, want 0, the move's own default", name, got)
+		}
+		if got := read(resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "3"}).StoresMove); got != 3 {
+			t.Errorf("%s=3: %d, want 3", name, got)
+		}
+		for _, invalid := range []string{"none", "-1", "0", "1.5"} {
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+				fmt.Sprintf("%s=%q (expected a positive whole number)", name, invalid))
+		}
+		refusedWith(t, map[string]string{name: "3"}, "DISPATCH_TEST_HOOKS=1 required")
+	}
+}
+
+// rehearsalOptionsWith reads the census's rehearsal settings (storesRehearsalOptions) from
+// overrides, as `census` reads them, failing t on a refusal.
+func rehearsalOptionsWith(t *testing.T, overrides map[string]string) storesmove.RehearsalOptions {
+	t.Helper()
+	options, err := storesRehearsalOptions(bootEnvironment(overrides))
+	if err != nil {
+		t.Fatalf("storesRehearsalOptions(%v): %v", overrides, err)
+	}
+	return options
+}
+
+// rehearsalRefusedWith fails t unless the census's rehearsal settings refuse overrides, naming
+// naming.
+func rehearsalRefusedWith(t *testing.T, overrides map[string]string, naming string) {
+	t.Helper()
+	if _, err := storesRehearsalOptions(bootEnvironment(overrides)); err == nil || !strings.Contains(err.Error(), naming) {
+		t.Errorf("storesRehearsalOptions(%v): err = %v, want a refusal naming %s", overrides, err, naming)
 	}
 }
 

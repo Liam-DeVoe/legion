@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/storesmove"
 )
 
 // rowQuerier is what each opener hands out a connection through: a pool of this package's, a
@@ -68,10 +69,12 @@ func requireMarked(t *testing.T, q rowQuerier, opener string) {
 // migration wait. A connection that carries no startup parameter, pgx's own, reads null, so the
 // read is no constant.
 //
-// The other half of the check, that a step row a marked connection inserts takes no visibility or
-// state tuple from graph_nodes_workflow_state while one an unmarked connection inserts takes one
-// of each, comes with those triggers, which the move at boot creates; this tree does not hold them
-// yet.
+// The other half of the check reads the triggers the move at boot leaves on graph_nodes for the
+// release before (graphstore.StoresMovedTriggers): once storesmove.Move has swapped the database's
+// four tables for the views, a step row inserted on a connection of the shared pool, which carries
+// the mark, takes no visibility or state tuple from graph_nodes_workflow_state, while the same
+// insert on pgx's own connection, which carries none, takes one of each
+// (requireTheTriggersPassOverMarkedWrites).
 func TestEveryConnectionOfThePoolCarriesTheStoresMovedWriterMark(t *testing.T) {
 	ctx := context.Background()
 	database := store.OpenEmptyTestStore(t)
@@ -142,6 +145,51 @@ func TestEveryConnectionOfThePoolCarriesTheStoresMovedWriterMark(t *testing.T) {
 	requireMarked(t, conn, "store.Connect")
 
 	requireTheCensusConnectionMarked(t, ctx)
+	requireTheTriggersPassOverMarkedWrites(t, ctx, database, unmarked)
+}
+
+// requireTheTriggersPassOverMarkedWrites moves the stores of database (storesmove.Move), whose four
+// tables hold no row, so the swap creates the two triggers, then inserts one step row on a
+// connection of the shared pool, which carries the writer mark, and one on unmarked, which carries
+// none, each as the release before's putNode inserts one. It fails unless the marked row takes no
+// visibility or state tuple and the unmarked row takes one of each.
+func requireTheTriggersPassOverMarkedWrites(t *testing.T, ctx context.Context, database *store.Store, unmarked *pgx.Conn) {
+	t.Helper()
+	if _, err := storesmove.Move(ctx, database.Pool.Config().ConnString(), storesmove.Options{}); err != nil {
+		t.Fatalf("move the stores, which creates the triggers: %v", err)
+	}
+	const insert = `
+		insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+		values ('step', $1, 'step', 'project', 'live', '{}', now(), '{"kind":"session","id":"session-0123456789abcdef"}', 0)`
+	stated := func(id string) map[string]int {
+		rows, err := database.Pool.Query(ctx, `select kind from graph_tuples where from_kind = 'step' and from_id = $1`, id)
+		if err != nil {
+			t.Fatalf("read the tuples of %s: %v", id, err)
+		}
+		kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the tuples of %s: %v", id, err)
+		}
+		counted := map[string]int{}
+		for _, kind := range kinds {
+			counted[kind]++
+		}
+		return counted
+	}
+	const markedRun, unmarkedRun = "0f1e2d3c-0000-4000-8000-00000000aa01", "0f1e2d3c-0000-4000-8000-00000000aa02"
+	if _, err := database.Pool.Exec(ctx, insert, markedRun); err != nil {
+		t.Fatalf("insert a step row on the shared pool: %v", err)
+	}
+	if _, err := unmarked.Exec(ctx, insert, unmarkedRun); err != nil {
+		t.Fatalf("insert a step row with no mark: %v", err)
+	}
+	if got := stated(markedRun); len(got) != 0 {
+		t.Errorf("a step row the shared pool inserts takes the tuples %v from the triggers, want none: they pass over a marked write", got)
+	}
+	if got := stated(unmarkedRun); got["visibility"] != 1 || got["state"] != 1 || len(got) != 2 {
+		t.Errorf("a step row a connection with no mark inserts takes the tuples %v from the triggers, want one visibility and one state", got)
+	}
+	t.Logf("a step row the shared pool inserts takes no tuple from the triggers, and one with no mark takes %v", stated(unmarkedRun))
 }
 
 // requireTheRegistryPoolMarked registers a process through processes.Register, whose pool of one

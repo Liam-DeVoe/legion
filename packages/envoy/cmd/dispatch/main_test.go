@@ -1454,7 +1454,10 @@ func TestCensusSubcommandExitCodes(t *testing.T) {
 	if code := census(ctx, nil, database.Pool.Config().ConnString(), &out, &errOut); code != 0 {
 		t.Fatalf("migrated database: exit %d, stderr %q, stdout %q", code, errOut.String(), out.String())
 	}
-	if !strings.Contains(out.String(), "no pending migration") || !strings.HasSuffix(strings.TrimSpace(out.String()), "census: ok") {
+	// The store's four tables of the priority store and the workflow store are still tables in a
+	// database this tree's migrations built, so the census rehearses their move after its report.
+	if !strings.Contains(out.String(), "no pending migration") || !strings.Contains(out.String(), "\ncensus: ok\n") ||
+		!strings.HasSuffix(strings.TrimSpace(out.String()), "census: rehearsal: no difference; it rolled back, so it changed nothing") {
 		t.Errorf("stdout:\n%s", out.String())
 	}
 }
@@ -1482,9 +1485,12 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 		alter table asks drop constraint asks_approval_kind_check;
 		delete from schema_migrations where version >= 53;
 		-- The template already applied 0068, which dropped users, and 0111, which dropped
-		-- delivery_settings.production_job_name; a database at 52 still has both.
+		-- delivery_settings.production_job_name; a database at 52 still has both, and holds
+		-- neither the priority store's tables nor the workflow store's, which later migrations
+		-- create.
 		create table users (login text primary key);
 		alter table delivery_settings add column production_job_name text;
+		drop table priority_nodes, priority_tuples, workflow_nodes, workflow_tuples;
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Spec', '{"kind":"session","id":"s"}', 'U');

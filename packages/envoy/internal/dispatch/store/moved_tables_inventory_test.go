@@ -33,6 +33,14 @@ type movedTablesNamer struct {
 // change: the runner keeps the text of every migration it applied, so the file stays as it was.
 const historyKeeps = "a migration that created or edited the table before dispatch://INFRA-1098's R32; the runner keeps an applied migration's text as it was"
 
+// theMove is the reason of the move at boot's own code: it reads the four tables, copies them,
+// drops them and creates the views of their names, for one release.
+const theMove = "the move at boot (storesmove), which reads, copies and drops the four tables and creates the views of their names"
+
+// beforeTheMove is the reason of a test or a test helper that writes the four tables as the
+// release before wrote them, before the move it holds to what it must do.
+const beforeTheMove = "a test of the move, or its helper, which writes the old tables in the release before's shapes before the move"
+
 // movedTablesNamers is every file of the checkout that may name a moved table, each with why. A
 // file joins it in the commit that writes what it names a table for, and leaves it in the commit
 // that takes that out, so it holds only files that stand and name a table.
@@ -42,6 +50,18 @@ var movedTablesNamers = []movedTablesNamer{
 	{"packages/envoy/internal/dispatch/store/migrations/20261116235202_workflow_nodes.up.sql", historyKeeps},
 	{"packages/envoy/internal/dispatch/store/migrations/20261116235202_workflow_nodes.census.sql", historyKeeps + " (its census)"},
 	{"packages/envoy/internal/dispatch/store/moved_tables_inventory_test.go", "this test, which names the four tables it looks for (movedTables)"},
+	{"packages/envoy/internal/dispatch/storesmove/storesmove.go", theMove},
+	{"packages/envoy/internal/dispatch/storesmove/copy.go", theMove + ": its copy"},
+	{"packages/envoy/internal/dispatch/storesmove/swap.go", theMove + ": its swap and the views"},
+	{"packages/envoy/internal/dispatch/storesmove/census.go", theMove + ": its census before the drop"},
+	{"packages/envoy/internal/dispatch/storesmove/rehearse.go", theMove + ": the pre-deploy census's rehearsal of it"},
+	{"packages/envoy/cmd/dispatch/census.go", "the pre-deploy census, which rehearses the move while priority_nodes is a table"},
+	{"packages/envoy/internal/dispatch/graphstore/stores_moved.go", "the two triggers that complete what the release before writes through the views workflow_nodes and workflow_tuples, kept for one release"},
+	{"packages/envoy/internal/dispatch/storesmove/storesmovetest/storesmovetest.go", beforeTheMove},
+	{"packages/envoy/internal/dispatch/storesmove/storesmove_test.go", beforeTheMove},
+	{"packages/envoy/internal/dispatch/api/stores_moved_revision_test.go", beforeTheMove + " (TestARevisionReadBeforeTheMoveIsRefusedAfterIt)"},
+	{"packages/envoy/cmd/dispatch/stores_rehearsal_test.go", beforeTheMove + " (TestThePreDeployCensusRehearsesTheMoveAndChangesNothing)"},
+	{"packages/envoy/cmd/dispatch/main_test.go", "a test that brings a database back to migration 52, before the migrations that create the four tables, so it drops them as that version held none (TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows)"},
 }
 
 // TestNoFileAtTheHeadNamesTheMovedTablesOutsideItsList is the inventory of the move of the priority

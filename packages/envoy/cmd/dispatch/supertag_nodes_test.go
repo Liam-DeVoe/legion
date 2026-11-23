@@ -543,10 +543,11 @@ func (d *schemaDrift) report(t *testing.T) {
 // literalTypeMigrations are the type migrations of store.TypeMigrations written after the store's
 // backfill, by file name, each with the writer its rows carry. Each runs where graph_nodes and
 // graph_tuples can be past pgmigrate.CensusTableLimit, on which the pre-deploy census admits only
-// an insert of literal rows and an update of literals by primary key, so it has no `not exists`
-// and no `on conflict` to skip what an earlier run wrote: run again over its own rows, its insert
-// into graph_nodes fails on the primary key, and its seed tuples at source_event 0 would be
-// appended again. The runner applies a version once, so no store runs one twice.
+// an insert of literal rows, with no `on conflict` or with `on conflict do nothing`, and an update
+// of literals by primary key, so it has no `not exists` to skip what an earlier run wrote: run
+// again over its own rows, its seed tuples at source_event 0 would be appended again, and
+// 20261116082319's insert into graph_nodes fails on the primary key, where 20261123134318's skips
+// each node it holds. The runner applies a version once, so no store runs one twice.
 var literalTypeMigrations = []struct{ name, writer string }{
 	{"20261116082319_graph_supertags_decision_reading.up.sql", `{"kind": "system", "id": "block-schema-decision-reading"}`},
 	// The supertags of the moved stores' kinds and their attribute nodes. Its record table is

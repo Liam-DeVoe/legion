@@ -57,6 +57,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/storesmove"
 	"github.com/sjawhar/envoy/internal/dispatch/texttreefill"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/envconf"
@@ -212,6 +213,11 @@ type bootConfig struct {
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
 	ArchitectureImportAtStart bool
+	// StoresMove are the test settings of the boot's move of the priority store and the workflow
+	// store into the graph store (storesmove.Options): DISPATCH_TEST_STORES_MOVE_BATCH,
+	// DISPATCH_TEST_STORES_MOVE_STOP_AFTER, DISPATCH_TEST_STORES_MOVE_SWAP_ATTEMPTS and
+	// DISPATCH_TEST_STORES_MOVE_HOLD_FILE, each only under the test hooks; zero in a deployment.
+	StoresMove storesmove.Options
 	// OIDCIssuer and OIDCAudience configure verification of projected
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
@@ -424,6 +430,20 @@ func main() {
 	}
 	if err := database.Migrate(ctx); err != nil {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
+		os.Exit(1)
+	}
+
+	// The move of the priority store and the workflow store into the graph store (storesmove,
+	// dispatch://INFRA-1098's R32): after the migrations, which create its record and the three
+	// supertags it writes under, and before this process listens, so /livez and /healthz answer
+	// only once it ends. A boot over stores already moved finds the four names as views and moves
+	// nothing. A move that fails, or whose census before the drop reads a difference, ends the boot
+	// as a failed migration does, with the four tables standing and what its committed batches
+	// copied kept for the next boot, which resumes from its record. The boot's retirements run
+	// after it (startup.Retire), so a step that drops what the move left for the release before
+	// meets it in the same boot.
+	if _, err := storesmove.Move(ctx, boot.DatabaseURL, boot.StoresMove); err != nil {
+		slog.Error("dispatch: move the priority store and the workflow store into the graph store", "error", err)
 		os.Exit(1)
 	}
 
@@ -1575,6 +1595,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
+	if boot.StoresMove, err = storesMoveOptions(env, boot.TestHooksEnabled); err != nil {
+		return bootConfig{}, err
+	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
 		return bootConfig{}, err
@@ -2561,6 +2584,88 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 	}
 	*target = raw == "1"
 	return nil
+}
+
+// testHookCount reads the test-only count setting name into target, leaving target as it is when
+// the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so is any
+// value that is not a positive whole number.
+func testHookCount(env settingValues, name string, testHooksEnabled bool, target *int) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fmt.Errorf("%s=%q (expected a positive whole number)", name, raw)
+	}
+	*target = value
+	return nil
+}
+
+// testHookPath reads the test-only file setting name into target, leaving target as it is when
+// the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1; the file itself is
+// read where the hook uses it, since a test may create it only later.
+func testHookPath(env settingValues, name string, testHooksEnabled bool, target *string) error {
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return nil
+	}
+	if !testHooksEnabled {
+		return fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	*target = raw
+	return nil
+}
+
+// storesMoveOptions reads the boot's move's test settings (storesmove.Options), each refused
+// without DISPATCH_TEST_HOOKS=1.
+func storesMoveOptions(env settingValues, testHooksEnabled bool) (storesmove.Options, error) {
+	var options storesmove.Options
+	for _, setting := range []struct {
+		name   string
+		target *int
+	}{
+		{"DISPATCH_TEST_STORES_MOVE_BATCH", &options.Batch},
+		{"DISPATCH_TEST_STORES_MOVE_STOP_AFTER", &options.StopAfter},
+		{"DISPATCH_TEST_STORES_MOVE_SWAP_ATTEMPTS", &options.SwapAttempts},
+	} {
+		if err := testHookCount(env, setting.name, testHooksEnabled, setting.target); err != nil {
+			return storesmove.Options{}, err
+		}
+	}
+	if err := testHookPath(env, "DISPATCH_TEST_STORES_MOVE_HOLD_FILE", testHooksEnabled, &options.HoldFile); err != nil {
+		return storesmove.Options{}, err
+	}
+	return options, nil
+}
+
+// storesRehearsalOptions reads the test settings of the census's rehearsal of the stores' move
+// (storesmove.RehearsalOptions), each refused without DISPATCH_TEST_HOOKS=1, which `census` reads
+// as the server does.
+func storesRehearsalOptions(env settingValues) (storesmove.RehearsalOptions, error) {
+	testHooksEnabled := env.get("DISPATCH_TEST_HOOKS") == "1"
+	var options storesmove.RehearsalOptions
+	if err := testHookDuration(env, "DISPATCH_TEST_STORES_REHEARSAL_STOP", testHooksEnabled, &options.Stop); err != nil {
+		return storesmove.RehearsalOptions{}, err
+	}
+	for _, setting := range []struct {
+		name   string
+		target *string
+	}{
+		{"DISPATCH_TEST_STORES_REHEARSAL_HOLD_FILE", &options.HoldFile},
+		{"DISPATCH_TEST_STORES_REHEARSAL_EXTRA_MIGRATION", &options.ExtraMigration},
+	} {
+		if err := testHookPath(env, setting.name, testHooksEnabled, setting.target); err != nil {
+			return storesmove.RehearsalOptions{}, err
+		}
+	}
+	if err := testHookBool(env, "DISPATCH_TEST_STORES_MOVE_EXPLAIN", testHooksEnabled, &options.Explain); err != nil {
+		return storesmove.RehearsalOptions{}, err
+	}
+	return options, nil
 }
 
 // roleHolderWindows are the session windows Dispatch judges a role route's holder by, read

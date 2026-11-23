@@ -428,6 +428,16 @@ var storeWriteCallSites = map[string]string{
 	// write is one call of Write after the rows its path already holds, so the order to prove is
 	// Write's.
 	"workflowstore/write.go#putNode": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// The move of the priority store and the workflow store into the graph store at boot (R32 too,
+	// storesmove): each batch of its copy, in a transaction of its own, and its swap, under the
+	// swap's table locks, writes the node rows its tuples name as projections alone in ascending
+	// (kind, id), with the visibility and state it states of each run and plan entering the store,
+	// then the moved tuples in runs of one class, relations or values, all as one write phase of
+	// QueueWrite calls at the sentinel, under no owner row, and records the old seqs after them.
+	// No writer of this build writes those kinds while the move runs, since the boot listens only
+	// once it ends, and the release before writes the old tables alone until the swap. Its store
+	// write is QueueWrite's after the rows its path holds, so the order to prove is Write's.
+	"storesmove/copy.go#writeBatch": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The test corpus loader's roles (dispatch://INFRA-1098's T8): the nodes of two roles and their
 	// pages, the pages' part_of, each role's held_by and its holder's part_of, through one Write
 	// in a transaction of its own that holds no row before it, at the sentinel and under no owner

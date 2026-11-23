@@ -39,18 +39,20 @@
 -- Every statement is one of the two shapes the pre-deploy census admits of a table past
 -- pgmigrate.CensusTableLimit, which graph_nodes and graph_tuples are once the node store's
 -- backfill has filled them: an `insert … values` of at most 1,000 literal rows, with no `on
--- conflict` (boundedWrites in pgmigrate/exempt.go). So no statement reads a row to write one: each
--- node and each tuple is written out below as the row it is, and a tuple states the value the node
--- row above it carries, as a string itself and any other value as its JSON text. Every row carries
--- the migration's own stamp, 2026-11-23 13:43:18 UTC, and a writer of its own, so the file writes
--- the same rows on every store and a reader can tell them from every other type migration's. The
--- migration records no event, so every tuple carries the `source_event` sentinel 0.
+-- conflict` or with `on conflict do nothing` (boundedWrites in pgmigrate/exempt.go). So no
+-- statement reads a row to write one: each node and each tuple is written out below as the row it
+-- is, and a tuple states the value the node row above it carries, as a string itself and any other
+-- value as its JSON text. Every row carries the migration's own stamp, 2026-11-23 13:43:18 UTC, and
+-- a writer of its own, so the file writes the same rows on every store and a reader can tell them
+-- from every other type migration's. The migration records no event, so every tuple carries the
+-- `source_event` sentinel 0.
 --
--- The runner applies each version once and records it, so nothing here guards a second run of the
--- type nodes: run again, the insert into graph_nodes meets the primary key of a row the first run
--- wrote, the statement fails and the file's transaction rolls back. The triggers of 20261109051232
--- announce the supertag and attribute rows once, at commit, and the server installs the block
--- schema those nodes build, which is the one it installed before.
+-- The insert into graph_nodes takes `on conflict do nothing`, so a database that already holds one
+-- of the three supertags, or one of their attribute nodes, takes the migration and keeps the row it
+-- holds. The runner applies each version once and records it, so nothing else here guards a second
+-- run: the tuples carry the sentinel, which no repeat key of graph_tuples drops. The triggers of
+-- 20261109051232 announce the supertag and attribute rows once, at commit, and the server installs
+-- the block schema those nodes build, which is the one it installed before.
 
 create table if not exists stores_moved_seqs (
   store text not null check (store in ('priority', 'workflow')),
@@ -91,7 +93,8 @@ values
   ('attribute', 'plan/source', 'attribute', 'project', 'live', '{"kind": "string", "name": "source", "store_name": "source", "position": 2}', '2026-11-23 13:43:18+00', '{"kind": "system", "id": "stores-moved"}', 0),
   ('attribute', 'plan/artifact_id', 'attribute', 'project', 'live', '{"kind": "string", "name": "artifact_id", "store_name": "artifact_id", "position": 3}', '2026-11-23 13:43:18+00', '{"kind": "system", "id": "stores-moved"}', 0),
   ('attribute', 'plan/version', 'attribute', 'project', 'live', '{"kind": "integer", "name": "version", "store_name": "version", "position": 4}', '2026-11-23 13:43:18+00', '{"kind": "system", "id": "stores-moved"}', 0),
-  ('attribute', 'plan/tasks', 'attribute', 'project', 'live', '{"kind": "json", "name": "tasks", "store_name": "tasks", "position": 5}', '2026-11-23 13:43:18+00', '{"kind": "system", "id": "stores-moved"}', 0);
+  ('attribute', 'plan/tasks', 'attribute', 'project', 'live', '{"kind": "json", "name": "tasks", "store_name": "tasks", "position": 5}', '2026-11-23 13:43:18+00', '{"kind": "system", "id": "stores-moved"}', 0)
+on conflict do nothing;
 
 -- The two base attributes each node carries, as the tuples they are, at the time and by the
 -- writer of the node's row.
