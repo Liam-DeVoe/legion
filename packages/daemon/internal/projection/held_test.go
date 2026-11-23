@@ -157,7 +157,6 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 			{Issue: "LEGION-175", Index: 3, AdmittedAt: projectedAt},
 			{Issue: "LEGION-190", Index: 5, AdmittedAt: projectedAt},
 		},
-		lifecycles: []string{"LEGION-141", "LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-190"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-150": openGate("LEGION-150", opened),
 			"LEGION-160": shutGate("LEGION-160"),
@@ -433,10 +432,9 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			// stands as well, and the todo it waits for is read first, as its gate is.
 			name: "a new run a link holds under a running root",
 			store: projectionStore{
-				issues:     []record.Issue{openRoot, newRunUnder("LEGION-1")},
-				slots:      slotted,
-				lifecycles: []string{"LEGION-1"},
-				gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": openGate("LEGION-1", opened)},
+				issues: []record.Issue{openRoot, newRunUnder("LEGION-1")},
+				slots:  slotted,
+				gates:  map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": openGate("LEGION-1", opened)},
 				mirror: []record.DispatchIssueRow{
 					{Key: "LEGION-2", Project: "LEGION", Status: "in_progress", Blockers: []string{"LEGION-900"}, Parent: "LEGION-1"},
 					{Key: "LEGION-900", Project: "LEGION", Status: "todo"},
@@ -454,9 +452,8 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 				issues: []record.Issue{openRoot,
 					treeMember("LEGION-2", "LEGION-1", "LEGION-1", "needs_review", phase.Merging),
 					treeMember("LEGION-3", "LEGION-1", "LEGION-2", "todo", phase.Admitted)},
-				slots:      slotted,
-				lifecycles: []string{"LEGION-1"},
-				gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": openGate("LEGION-1", opened)},
+				slots: slotted,
+				gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": openGate("LEGION-1", opened)},
 				mirror: []record.DispatchIssueRow{
 					{Key: "LEGION-3", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900"}, Parent: "LEGION-2"},
 					{Key: "LEGION-900", Project: "LEGION", Status: "todo"},
@@ -473,9 +470,8 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			store: projectionStore{
 				issues: []record.Issue{openRoot,
 					treeMember("LEGION-2", "LEGION-1", "LEGION-1", "todo", phase.Admitted)},
-				slots:      slotted,
-				lifecycles: []string{"LEGION-1"},
-				gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": openGate("LEGION-1", opened)},
+				slots: slotted,
+				gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": openGate("LEGION-1", opened)},
 				mirror: []record.DispatchIssueRow{
 					{Key: "LEGION-2", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900"}, Parent: "LEGION-1"},
 					{Key: "LEGION-3", Project: "LEGION", Status: "backlog", Parent: "LEGION-2"},
@@ -493,9 +489,8 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			store: projectionStore{
 				issues: []record.Issue{openRoot,
 					treeMember("LEGION-2", "LEGION-1", "LEGION-1", "in_progress", phase.Implementing)},
-				slots:      slotted,
-				lifecycles: []string{"LEGION-1"},
-				gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": openGate("LEGION-1", opened)},
+				slots: slotted,
+				gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": openGate("LEGION-1", opened)},
 			},
 			issue: "LEGION-2",
 			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldUnclassified},
@@ -509,9 +504,8 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			store: projectionStore{
 				issues: []record.Issue{treeRoot("LEGION-1", "todo", phase.Admitted),
 					treeMember("LEGION-2", "LEGION-1", "LEGION-1", "todo", phase.Admitted)},
-				slots:      slotted,
-				lifecycles: []string{"LEGION-1"},
-				gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": shutGate("LEGION-1")},
+				slots: slotted,
+				gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-1": shutGate("LEGION-1")},
 			},
 			issue: "LEGION-2",
 			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldDesignGate, HeldBy: []string{"LEGION-1"}},

@@ -280,8 +280,8 @@ func TestARefusedBranchCreateHoldsTheArchitectBackUntilACreatePasses(t *testing.
 
 // A branch row of a generation the issue has left asks GitHub for nothing and finishes: a refused
 // create of an earlier run never retries forever, and the starts it held back meet their own
-// fences. The branch is the run's (R17 of dispatch://INFRA-3320), so a row of the run the issue
-// stands in is no left run whatever the issue's parent does.
+// fences. The branch is the run's (R17 of dispatch://INFRA-3320), so the row is fenced by its
+// issue's own generation alone.
 func TestAnIssueBranchRowOfALeftRunFinishesWithoutACreate(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

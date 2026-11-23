@@ -37,14 +37,8 @@ func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 	}
 	rootIs := func(wantStatus string, wantPhase phase.Phase) {
 		t.Helper()
-		var status string
-		var rootPhase phase.Phase
-		var until *time.Time
-		if err := pool.QueryRow(context.Background(), "select status, phase, linger_until from issues where key = 'LEGION-1'").Scan(&status, &rootPhase, &until); err != nil {
-			t.Fatalf("read the root: %v", err)
-		}
-		if status != wantStatus || rootPhase != wantPhase || until != nil {
-			t.Fatalf("root status=%s phase=%s linger=%v; want %s, %s, no linger", status, rootPhase, until, wantStatus, wantPhase)
+		if root := storedIssue(t, pool, "LEGION-1"); root.Status != wantStatus || root.Phase != wantPhase {
+			t.Fatalf("root status=%s phase=%s; want %s, %s", root.Status, root.Phase, wantStatus, wantPhase)
 		}
 	}
 
@@ -59,7 +53,6 @@ func TestAnArchitectClosesItsAdmittedRootBeforeItsFirstPhase(t *testing.T) {
 
 	apply("done-event", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: "Root", Rank: "U"})
 	rootIs("done", phase.Done)
-	assertOutboxCount(t, pool, "linger_close", 0)
 	assertOutboxCount(t, pool, "issue_suspend", 1)
 	want := []string{
 		`msg="workflow: the daemon's close of an issue is queued" issue=LEGION-1 kind=close_root generation=2 entry=1`,
@@ -104,7 +97,6 @@ func TestAnArchitectClosesItsRootThatWaitsOnAPerson(t *testing.T) {
 	if root := storedIssue(t, pool, "LEGION-1"); root.Phase != phase.Done || root.Status != "done" || root.Awaiting != nil {
 		t.Fatalf("the root once Dispatch shows done = phase %s, status %s, awaiting %+v; want done with no wait", root.Phase, root.Status, root.Awaiting)
 	}
-	assertOutboxCount(t, pool, "linger_close", 0)
 }
 
 // close_root ends a root only while it has started no phase, and only a root: past that the root
@@ -132,7 +124,6 @@ func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
 				t.Fatalf("close = %+v, %v; want refused %s", result.Refusal, err, tc.code)
 			}
 			assertOutboxCount(t, pool, "dispatch_status", 0)
-			assertOutboxCount(t, pool, "linger_close", 0)
 		})
 	}
 }
@@ -143,7 +134,6 @@ func TestCloseRootIsRefusedOnceATreeHasStartedOrForAChild(t *testing.T) {
 func TestAPhaseChangeIsOneJournalLine(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
-	seedTreeLifecycle(t, pool, "LEGION-1")
 	var logged bytes.Buffer
 	engine := testEngine(config.DesignGateOff, slog.New(slog.NewTextHandler(&logged, nil)))
 	if _, err := intake.ApplyFact(context.Background(), pool, "api", "gate", intake.GateRegistered{Issue: "LEGION-1", ArtifactID: "art-1", Version: 1}, engine, admissionStub{}); err != nil {

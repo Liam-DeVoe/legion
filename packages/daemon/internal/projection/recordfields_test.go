@@ -194,6 +194,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	lingerUntil := projectedAt.Add(90 * time.Minute)
 	answeredAt := projectedAt.Add(-time.Minute)
 	declaredAt := projectedAt.Add(-2 * time.Hour)
+	retainedUntil := projectedAt.Add(48 * time.Hour)
 	parent := "LEGION-400"
 	// The issue record with every field set. It stands in another project than the pass's, so
 	// the admission line — which is no part of the issue record — puts nothing of its own on the
@@ -212,6 +213,11 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
 		},
 		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt,
+		HoldsGate: true, RetainedUntil: &retainedUntil, CarriedGeneration: 2, CarriedGate: true,
+		PendingClose: &record.PendingClose{Generation: 3, Entry: 4, Kind: "close", Reason: "the person closed it", Refused: true},
+		SeenSeq:      90,
+		HeldSessionWrites: []record.HeldSessionWrite{{Session: "ses_planner_LEGION-501", Status: "done", Seq: 87,
+			At: projectedAt.Add(-3 * time.Hour)}},
 	}
 	// The root of the issue's stored tree, which holds the draw the child took its copy of.
 	tree := record.Issue{

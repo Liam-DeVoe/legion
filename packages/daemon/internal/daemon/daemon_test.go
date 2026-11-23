@@ -2032,13 +2032,8 @@ func TestABootDecidesWithAChildTheStreamHasNotApplied(t *testing.T) {
 	if result.Refusal == nil || !strings.Contains(result.Refusal.Message, child) {
 		t.Fatalf("the sign-off of %s answered %+v, want it refused naming the open child %s the listing put in the copy", parent, result.Refusal, child)
 	}
-	var issue *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		var err error
-		issue, err = record.NewStore().Issue(ctx, tx, parent)
-		return err
-	}); err != nil || issue == nil || (issue.Phase != phase.Accepting && issue.Phase != phase.AwaitingChildren) {
-		t.Fatalf("%s after the refused sign-off = %+v (%v), want it accepting or waiting on its open child", parent, issue, err)
+	if issue := readIssue(t, pool, parent); issue == nil || issue.Phase != phase.AwaitingChildren {
+		t.Fatalf("%s after the refused sign-off = %+v, want it waiting on its open child", parent, issue)
 	}
 	if err := pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`, parent).Scan(&rows); err != nil || rows != 0 {
 		t.Fatalf("the boot queued %d starts for %s (%v), want none while its child is open", rows, parent, err)

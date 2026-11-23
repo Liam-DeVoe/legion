@@ -63,26 +63,16 @@ func TestAChildLeavingTheWorkflowNeverClosesItsTree(t *testing.T) {
 			if tc.check {
 				landClose(t, pool, engine, "LEGION-209")
 			}
-			var rootPhase phase.Phase
-			var lingering bool
-			if err := pool.QueryRow(context.Background(), "select phase, linger_until is not null from issues where key = 'LEGION-208'").Scan(&rootPhase, &lingering); err != nil {
-				t.Fatalf("read root: %v", err)
-			}
-			if rootPhase != phase.Implementing || lingering {
-				t.Fatalf("root phase=%s lingering=%t, want implementing and no linger", rootPhase, lingering)
-			}
-			var childPhase phase.Phase
-			if err := pool.QueryRow(context.Background(), "select phase from issues where key = 'LEGION-209'").Scan(&childPhase); err != nil {
-				t.Fatalf("read child: %v", err)
+			if got := issueAt(t, pool, "LEGION-208"); got != phase.Implementing {
+				t.Fatalf("root phase=%s, want implementing", got)
 			}
 			wantPhase := phase.Merging
 			if tc.check {
 				wantPhase = phase.Done
 			}
-			if childPhase != wantPhase {
-				t.Fatalf("child phase = %s, want %s: a stop keeps the phase, the merge's close ends the run", childPhase, wantPhase)
+			if got := issueAt(t, pool, "LEGION-209"); got != wantPhase {
+				t.Fatalf("child phase = %s, want %s: a stop keeps the phase, the merge's close ends the run", got, wantPhase)
 			}
-			assertOutboxCount(t, pool, "linger_close", 0)
 			stopped := superviseRequests(t, pool, tc.op)
 			for _, role := range claim.Roles {
 				want := 1

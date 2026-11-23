@@ -68,9 +68,6 @@ func seedGatedTree(t *testing.T, pool *pgxpool.Pool) {
 		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U",
 		HandedOver: true, LastDispatchSeq: 1})
 	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
-	// The tree lifecycle is opened beside the slot, as admission's promotion opens it: the shadow
-	// the release before reads (R22 of dispatch://INFRA-3320).
-	seedTreeLifecycle(t, pool, gatedRoot)
 	seedArchitectClaim(t, pool, gatedRoot)
 }
 
@@ -681,7 +678,6 @@ func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
 			Tree: "LEGION-209", Project: "LEGION", Title: "the carried root", Parent: new(gatedRoot), Phase: phase.Admitted,
 			Generation: 2, Status: "in_progress", Rank: "V", HandedOver: true, HandedOverFrom: gatedRoot, LastDispatchSeq: 1})
 		seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
-		seedTreeLifecycle(t, pool, "LEGION-209")
 		for _, issue := range []string{gatedRoot, "LEGION-209"} {
 			seedGate(t, pool, record.DesignGate{Issue: issue, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(3)})
 		}
@@ -790,7 +786,6 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 		LatestVersion: 1, ApprovedVersion: new(1)})
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc,
 		LatestVersion: 3, ApprovedVersion: new(3)})
-	seedTreeLifecycle(t, pool, gatedRoot)
 	took := map[record.DesignStep]int{record.DesignStepCriteria: 1, record.DesignStepSpec: 3}
 	seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
 	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)

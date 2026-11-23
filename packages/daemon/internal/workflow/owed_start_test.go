@@ -249,7 +249,6 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 		t.Helper()
 		seedIssue(t, pool, record.Issue{Key: returnIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 			Tree: returnIssue, Project: "LEGION", Title: "root", Phase: at, Generation: 1, Status: status, Rank: "U", HandedOver: true})
-		seedTreeLifecycle(t, pool, returnIssue)
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: returnIssue, Repo: "sjawhar/legion",
 			Number: 42, Branch: "legion/" + returnIssue, HeadSHA: "head"})
 		seedPhase(t, pool, record.PhaseRow{Issue: returnIssue, Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "head", Summary: "READY #42 at head"})
@@ -307,7 +306,6 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 				seedIssue(t, pool, record.Issue{Key: returnIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 					Tree: returnIssue, Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing},
 					Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
-				seedTreeLifecycle(t, pool, returnIssue)
 				seedPhase(t, pool, record.PhaseRow{Issue: returnIssue, Role: claim.RoleTester, Claim: "test-claim", Entry: servedEntry})
 			},
 			fact:   intake.RetryOrEscalate{Issue: returnIssue, Decision: intake.RetryDecision},

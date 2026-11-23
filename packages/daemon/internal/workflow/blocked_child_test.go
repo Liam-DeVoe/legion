@@ -9,12 +9,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // seedMirror writes what Dispatch says of key — its status and, in order, the keys it waits on —
@@ -45,20 +43,6 @@ func applyMirrored(t *testing.T, pool *pgxpool.Pool, engine *Engine, eventID str
 func startUnblockedChildren(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	t.Helper()
 	admissionPass(t, pool, engine)
-}
-
-// seedTreeLifecycle opens key's tree lifecycle under the workflow's authority, as promotion's own
-// admission of the root does: that lifecycle, not a slot row, is what says the tree runs.
-func seedTreeLifecycle(t *testing.T, pool *pgxpool.Pool, key string) {
-	t.Helper()
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		project, err := claim.ProjectToken("LEGION")
-		if err != nil {
-			return err
-		}
-		_, err = record.NewStore().OpenTreeLifecycle(t.Context(), tx, project, key, treelifecycle.AuthorityWorkflow)
-		return err
-	})
 }
 
 // seedHeldTree records a running root whose design gate is gate, admitted at the engine's own
@@ -324,7 +308,6 @@ func TestTheGateOpeningLeavesARootWaitingOnItsBlockerWithItsSlotGivenBack(t *tes
 				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 4, Status: "in_progress", Rank: "U",
 				HandedOver: true, TakenBack: tc.takenBack, LastDispatchSeq: 1})
 			seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
-			seedTreeLifecycle(t, pool, "LEGION-208")
 			seedMirror(t, pool, "LEGION-208", "in_progress", "LEGION-300")
 			seedMirror(t, pool, "LEGION-300", "backlog")
 			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: time.Date(2026, 11, 13, 7, 0, 0, 0, time.UTC)})
@@ -368,7 +351,6 @@ func TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole(t *testing.T) {
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 4, Status: "in_progress", Rank: "U",
 		LastDispatchSeq: 1})
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
-	seedTreeLifecycle(t, pool, "LEGION-208")
 	seedMirror(t, pool, "LEGION-208", "in_progress")
 
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -405,7 +387,6 @@ func TestTheRunMarkIsWrittenAsAPhaseStartsAndBelongsToThatRun(t *testing.T) {
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 4, Status: "in_progress", Rank: "U",
 		HandedOver: true, LastDispatchSeq: 1})
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
-	seedTreeLifecycle(t, pool, "LEGION-208")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	marked := func(key string) bool {
 		t.Helper()

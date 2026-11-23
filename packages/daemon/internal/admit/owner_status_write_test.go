@@ -414,9 +414,9 @@ func childNotices(rows []effect) []record.Notice {
 func (r *ownerRig) assertLeft(key, status string) {
 	r.t.Helper()
 	got, root := issue(r.t, r.pool, key), issue(r.t, r.pool, ownerRoot)
-	if record.InLegionsWork(got) || got.Phase != r.before[key] || got.Status != status || got.LingerUntil != nil {
-		r.t.Fatalf("%s after the move to %s = phase %s, status %s, linger %v: want it out of Legion's work with status %s, its phase %s kept",
-			key, status, got.Phase, got.Status, got.LingerUntil, status, r.before[key])
+	if record.InLegionsWork(got) || got.Phase != r.before[key] || got.Status != status {
+		r.t.Fatalf("%s after the move to %s = phase %s, status %s: want it out of Legion's work with status %s, its phase %s kept",
+			key, status, got.Phase, got.Status, status, r.before[key])
 	}
 	rows := rowsFor(r.sinceSettle(), key)
 	if writes := payloadsOf[record.StatusWrite](rows); len(writes) != 0 {
@@ -457,9 +457,9 @@ func (r *ownerRig) assertSetBack(before record.Issue, status string, fact intake
 	r.t.Helper()
 	key := before.Key
 	got := issue(r.t, r.pool, key)
-	if got.Phase != before.Phase || got.Status != before.Status || got.Generation != before.Generation || got.LingerUntil != nil || got.LastDispatchSeq != fact.Seq {
-		r.t.Fatalf("%s after the write of %s = phase %s, status %s, generation %d, linger %v, seq %d: want phase %s, status %s and generation %d kept, no linger, seq %d",
-			key, status, got.Phase, got.Status, got.Generation, got.LingerUntil, got.LastDispatchSeq, before.Phase, before.Status, before.Generation, fact.Seq)
+	if got.Phase != before.Phase || got.Status != before.Status || got.Generation != before.Generation || got.LastDispatchSeq != fact.Seq {
+		r.t.Fatalf("%s after the write of %s = phase %s, status %s, generation %d, seq %d: want phase %s, status %s and generation %d kept, seq %d",
+			key, status, got.Phase, got.Status, got.Generation, got.LastDispatchSeq, before.Phase, before.Status, before.Generation, fact.Seq)
 	}
 	rows := r.sinceSettle()
 	if writes, want := payloadsOf[record.StatusWrite](rowsFor(rows, key)), []record.StatusWrite{record.ReassertStatusWrite(before.Status, status, fact.Seq)}; !reflect.DeepEqual(writes, want) {

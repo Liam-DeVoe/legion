@@ -164,7 +164,7 @@ func TestReconcileLeavesSlotStateUnchangedWhenALevelSnapshotEchoesAnAgentsOutOfW
 	}, 10, 10, true)
 
 	got := issue(t, pool, "LEGION-AGENT")
-	if got.Status != "in_progress" || got.Phase != phase.Implementing || got.LingerUntil != nil {
+	if got.Status != "in_progress" || got.Phase != phase.Implementing {
 		t.Fatalf("reconciled LEGION-AGENT = %#v, want its slot state unchanged: the engine never applied this level-sequence status", got)
 	}
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-AGENT", Index: 0, AdmittedAt: fixedNow}})
@@ -216,8 +216,8 @@ func TestABootListingOfASetBackBacklogLeavesTheTreeRunning(t *testing.T) {
 			}
 
 			got := issue(t, pool, "LEGION-RUN")
-			if got.Status != "in_progress" || got.Phase != phase.Implementing || got.LingerUntil != nil || got.LastDispatchSeq != 7 {
-				t.Fatalf("LEGION-RUN after the held listing = %#v, want status in_progress kept, still implementing, not lingering, at the listing's sequence", got)
+			if got.Status != "in_progress" || got.Phase != phase.Implementing || got.LastDispatchSeq != 7 {
+				t.Fatalf("LEGION-RUN after the held listing = %#v, want status in_progress kept, still implementing, at the listing's sequence", got)
 			}
 			assertSlots(t, pool, []record.Slot{{Issue: "LEGION-RUN", Index: 0, AdmittedAt: fixedNow}})
 		})

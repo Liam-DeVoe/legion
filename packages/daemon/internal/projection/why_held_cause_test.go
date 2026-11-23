@@ -334,8 +334,7 @@ func TestABlockedIssueWhoseWordIsDispatchBlockerReadsItsLinks(t *testing.T) {
 	store := projectionStore{
 		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
 			treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
-		slots:      []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
-		lifecycles: []string{"LEGION-100"},
+		slots: []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-100": openGate("LEGION-100", projectedAt.Add(-time.Hour))},
 		mirror: []record.DispatchIssueRow{

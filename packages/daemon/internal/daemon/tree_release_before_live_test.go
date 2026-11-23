@@ -66,7 +66,8 @@ import (
 const treeWorldEnv = "LEGION_E2E_TREE_WORLD"
 
 // treeOldToolRootEnv names the root of the oldest plugin contract's checkout in the fleet, with
-// its `bun install` run and treeOldPluginDriver copied in (scripts/e2e/lib/old-plugin-root.sh).
+// its `bun install` run and this checkout's drivers (treeOldPluginDriver, memberRootDriver) copied
+// in (scripts/e2e/lib/old-plugin-root.sh).
 const treeOldToolRootEnv = "LEGION_E2E_OLD_TOOL_ROOT"
 
 // treeOldPluginDriver runs one call of the plugin's own daemon client under bun, relative to a
@@ -660,38 +661,54 @@ type oldPluginAnswer struct {
 
 // oldPluginCall runs method of the daemon client of the oldest plugin contract in the fleet
 // against d with input, through treeOldPluginDriver under bun in that contract's root, and answers
-// what it printed. Nothing of the caller's environment reaches bun but PATH.
+// what it printed.
 func oldPluginCall(t *testing.T, d *daemon, method string, input any) oldPluginAnswer {
+	t.Helper()
+	encoded, err := json.Marshal(map[string]any{"daemonUrl": d.base, "method": method, "input": input})
+	if err != nil {
+		t.Fatalf("encode the old plugin's %s: %v", method, err)
+	}
+	stdout, stderr := runBunDriver(t, "the old plugin's "+method, oldToolRoot(t), treeOldPluginDriver, t.TempDir(), 2*time.Minute, encoded)
+	var answer oldPluginAnswer
+	if err := json.Unmarshal(stdout, &answer); err != nil {
+		t.Fatalf("decode the old plugin's %s answer %s: %v\nstderr %s", method, stdout, err, stderr)
+	}
+	t.Logf("the oldest contract's plugin: %s answered %s", method, stdout)
+	return answer
+}
+
+// oldToolRoot is the root of the oldest plugin contract's checkout the script names
+// (treeOldToolRootEnv), failing t where it names none.
+func oldToolRoot(t *testing.T) string {
 	t.Helper()
 	root := os.Getenv(treeOldToolRootEnv)
 	if root == "" {
 		t.Fatalf("%s is unset; the script makes the oldest contract's plugin root and names it there", treeOldToolRootEnv)
 	}
-	encoded, err := json.Marshal(map[string]any{"daemonUrl": d.base, "method": method, "input": input})
-	if err != nil {
-		t.Fatalf("encode the old plugin's %s: %v", method, err)
-	}
-	home := t.TempDir()
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	return root
+}
+
+// runBunDriver runs driver, a script under root, with bun in root's packages/pi-legion, input on
+// its stdin, within deadline, and answers what it printed on stdout and on stderr. Nothing of the
+// caller's environment reaches bun but PATH: its home and temporary directory are home. what names
+// the run in a failure.
+func runBunDriver(t *testing.T, what, root, driver, home string, deadline time.Duration, input []byte) ([]byte, []byte) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), deadline)
 	defer cancel()
-	command := exec.CommandContext(ctx, "bun", filepath.Join(root, treeOldPluginDriver))
+	command := exec.CommandContext(ctx, "bun", filepath.Join(root, driver))
 	command.WaitDelay = time.Second
 	command.Dir = filepath.Join(root, "packages", "pi-legion")
 	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + home,
 		"XDG_CONFIG_HOME=" + filepath.Join(home, "config"), "XDG_STATE_HOME=" + filepath.Join(home, "state"),
 		"XDG_CACHE_HOME=" + filepath.Join(home, "cache")}
-	command.Stdin = bytes.NewReader(encoded)
+	command.Stdin = bytes.NewReader(input)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
-		t.Fatalf("the old plugin's %s failed: %v\nstdout %s\nstderr %s", method, err, stdout.Bytes(), stderr.Bytes())
+		t.Fatalf("%s failed: %v\nstdout %s\nstderr %s", what, err, stdout.Bytes(), stderr.Bytes())
 	}
-	var answer oldPluginAnswer
-	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
-		t.Fatalf("decode the old plugin's %s answer %s: %v\nstderr %s", method, stdout.Bytes(), err, stderr.Bytes())
-	}
-	t.Logf("the oldest contract's plugin: %s answered %s", method, stdout.Bytes())
-	return answer
+	return stdout.Bytes(), stderr.Bytes()
 }
 
 // oldPluginRegister registers launch's session through the oldest contract's plugin, as that

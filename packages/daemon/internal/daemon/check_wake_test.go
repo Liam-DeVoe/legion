@@ -126,7 +126,6 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	until := time.Now().Add(time.Hour)
 	opened := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
 	rig := &checkWakeRig{cfg: cfg, root: root, implementer: implementer, github: newCheckWakeGitHub(t),
 		rt: fake.NewRuntime(), built: &built{}, records: record.NewStore(), pool: pool, logs: &syncBuffer{}}
@@ -139,7 +138,7 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 	defer st.Close()
 	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
 		if err := rig.records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: cfg.Project, Tree: root, Title: "Closed root", Phase: phase.Done,
-			Generation: 1, Status: "done", HandedOver: true, Rank: "U", LingerUntil: &until}); err != nil {
+			Generation: 1, Status: "done", HandedOver: true, Rank: "U"}); err != nil {
 			return err
 		}
 		return rig.records.PutProductionCheck(ctx, tx, record.ProductionCheck{

@@ -531,17 +531,16 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	}
 }
 
-// R8: a linger, a park and a close each take the issue out of the workflow or stop its tree, and
-// a wake of any kind then does nothing.
+// R8: a park and a close each take the issue out of the workflow, and a record at phase done stays
+// out of it though Dispatch shows it at work; a wake of any kind then does nothing.
 func TestAWakeDoesNothingOnceTheIssueHasLeftTheWorkflow(t *testing.T) {
-	lingerUntil := wakeAt.Add(time.Hour)
 	for _, tc := range []struct {
 		name  string
 		issue record.Issue
 	}{
 		{name: "a park", issue: record.Issue{Status: "backlog", Phase: phase.Implementing}},
 		{name: "a close", issue: record.Issue{Status: "done", Phase: phase.Done}},
-		{name: "a linger", issue: record.Issue{Status: "in_progress", Phase: phase.Done, LingerUntil: &lingerUntil}},
+		{name: "a record at done shown at work", issue: record.Issue{Status: "in_progress", Phase: phase.Done}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newWakeRig(t)

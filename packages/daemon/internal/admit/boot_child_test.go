@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -148,10 +147,10 @@ func TestTheBootReadRecordsNothingOfAChildOnAnUnknownChain(t *testing.T) {
 	assertSlots(t, pool, nil)
 }
 
-// A child whose parent is recorded but whose tree is not live is no member of it at boot either:
-// the workflow records nothing of it, so one without the label stays unrecorded and a labelled one
-// is admitted as a root of its own, as its live event leaves it.
-func TestTheBootReadRecordsNoChildOfATreeThatIsNotLive(t *testing.T) {
+// A child whose recorded parent is closed, at phase done, is no member of it at boot: the workflow
+// records nothing of it, so one without the label stays unrecorded and a labelled one is admitted
+// as a root of its own, as its live event leaves it.
+func TestTheBootReadRecordsNoChildOfAClosedParent(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		labelled bool
@@ -162,9 +161,8 @@ func TestTheBootReadRecordsNoChildOfATreeThatIsNotLive(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmissionWithGate(t, 2, config.DesignGateRootIssues, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			until := fixedNow.Add(time.Hour)
 			putIssue(t, pool, record.Issue{Key: bootRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
-				Title: bootRoot, Tree: bootRoot, Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", HandedOver: true, LingerUntil: &until, LastDispatchSeq: 1})
+				Title: bootRoot, Tree: bootRoot, Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", HandedOver: true, LastDispatchSeq: 1})
 			root := bootRoot
 			reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
 				{Key: bootChild, ResolvedRepo: "acme/widgets", Title: "child", Status: "todo", Parent: &root, Rank: "B", HandedOver: tc.labelled, LastSeq: 7},
@@ -173,7 +171,7 @@ func TestTheBootReadRecordsNoChildOfATreeThatIsNotLive(t *testing.T) {
 			got := maybeIssue(t, pool, bootChild)
 			if !tc.labelled {
 				if got != nil {
-					t.Fatalf("%s after the boot read = %#v, want no record: its tree lingers", bootChild, *got)
+					t.Fatalf("%s after the boot read = %#v, want no record: its parent is closed", bootChild, *got)
 				}
 				assertSlots(t, pool, nil)
 				return

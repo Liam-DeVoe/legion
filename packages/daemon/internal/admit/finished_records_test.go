@@ -35,8 +35,8 @@ func runningChild(i int) string { return fmt.Sprintf("LEGION-%d", 2000+i) }
 // seedRunningProject records runningTrees slotted roots, each implementing with a live child
 // implementing beside it, stillWaiting labelled todo roots waiting for a slot and stillWaiting
 // children held at admitted in the first trees, the roots and the children all waiting on
-// waitedOn, which Dispatch shows unfinished; and, when finished, finishedTrees done roots, one in
-// four still lingering, each with its done children, every one with a mirror row.
+// waitedOn, which Dispatch shows unfinished; and, when finished, finishedTrees done roots, each
+// with its done children, every one with a mirror row.
 func seedRunningProject(t *testing.T, pool *pgxpool.Pool, finished bool) {
 	t.Helper()
 	ctx := context.Background()
@@ -79,14 +79,9 @@ func seedRunningProject(t *testing.T, pool *pgxpool.Pool, finished bool) {
 		if !finished {
 			return
 		}
-		lingering := fixedNow.Add(time.Hour)
 		for i := range finishedTrees {
 			root := fmt.Sprintf("LEGION-%d", 10000+i*(1+finishedChildren))
-			done := record.Issue{Key: root, Tree: root, Phase: phase.Done, Status: "done"}
-			if i%4 == 0 {
-				done.LingerUntil = &lingering
-			}
-			put(done)
+			put(record.Issue{Key: root, Tree: root, Phase: phase.Done, Status: "done"})
 			for c := 1; c <= finishedChildren; c++ {
 				child := fmt.Sprintf("LEGION-%d", 10000+i*(1+finishedChildren)+c)
 				put(record.Issue{Key: child, Tree: root, Parent: record.ParentOf(root), Phase: phase.Done, Status: "done"})

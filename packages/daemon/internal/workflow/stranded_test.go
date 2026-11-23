@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // strandedStore is the issue record, the admission slots and the queued supervise rows Stranded
@@ -33,19 +32,6 @@ type strandedStore struct {
 func (s *strandedStore) Issues(context.Context, pgx.Tx) ([]record.Issue, error) { return s.issues, nil }
 
 func (s *strandedStore) Slots(context.Context, pgx.Tx) ([]record.Slot, error) { return s.slots, nil }
-
-// TreeLifecycles reports a lifecycle open under the workflow for each tree the fixture gave a
-// slot, the shadow the release before reads (R22 of dispatch://INFRA-3320), so the fixture's
-// slots stand for the trees this store has open.
-func (s *strandedStore) TreeLifecycles(_ context.Context, _ pgx.Tx, _ string, trees []string) (map[string]treelifecycle.Lifecycle, error) {
-	open := make(map[string]treelifecycle.Lifecycle, len(trees))
-	for _, slot := range s.slots {
-		if slices.Contains(trees, slot.Issue) {
-			open[slot.Issue] = treelifecycle.Lifecycle{Tree: slot.Issue, Authority: treelifecycle.AuthorityWorkflow}
-		}
-	}
-	return open, nil
-}
 
 // Gates and OwedStarts answer nothing: Stranded reads the live trees of the line facts and no
 // other part of them.

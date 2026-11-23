@@ -164,7 +164,9 @@ type chainRow struct {
 	// no notice; place is where the state lists it after an admission pass and starts whether
 	// that pass starts it; repairs is the answer to a session's write of backlog on it, by the
 	// session of the architect claim of the issue each key names, or by a session no claim holds
-	// (outsideWriter); calls are the architect operations on it.
+	// (outsideWriter); calls are the architect operations on it. The repair's judgment of a done
+	// and of a write by another role's session is k41's
+	// (admit's TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain), not this fixture's.
 	notice, noticeAbove string
 	place               string
 	starts              bool
@@ -627,10 +629,8 @@ func (p rolledBack) QueryRow(ctx context.Context, sql string, args ...any) pgx.R
 	return p.tx.QueryRow(ctx, sql, args...)
 }
 
-// fixtureDispatch is Dispatch as the fixture holds it: every issue of the project, the design
-// document of each, approved at its one version, and a status write that answers the issue at the
-// written status and the next sequence. It keeps nothing of a write, as the store is put back
-// after every architect call (keepFixture).
+// fixtureDispatch is Dispatch as the fixture holds it: every issue of the project and the design
+// document of each, approved at its one version.
 type fixtureDispatch struct {
 	outboxDispatch
 	issues    map[string]dispatch.Issue
@@ -640,7 +640,7 @@ type fixtureDispatch struct {
 func newFixtureDispatch(rows []chainRow) *fixtureDispatch {
 	d := &fixtureDispatch{issues: map[string]dispatch.Issue{}, documents: map[string]string{}}
 	for _, row := range rows {
-		issue := dispatch.Issue{Key: row.key, Project: projectOf(row.key), Title: row.key, Status: row.status, Rank: rankOf(row.key),
+		issue := dispatch.Issue{Key: row.key, Project: projectOf(row.key), Title: row.key, Status: row.status, Rank: rankOf(rows, row.key),
 			HandedOver: row.labelled, LastSeq: chainSeq, ResolvedRepo: chainRepo, BlockedBy: row.blockedBy}
 		if row.parent != "" {
 			issue.Parent = new(row.parent)
@@ -675,15 +675,6 @@ func (d *fixtureDispatch) GetIssue(_ context.Context, key string) (dispatch.Issu
 	return issue, nil
 }
 
-func (d *fixtureDispatch) SetStatus(ctx context.Context, key, status string) (dispatch.Issue, error) {
-	issue, err := d.GetIssue(ctx, key)
-	if err != nil {
-		return dispatch.Issue{}, err
-	}
-	issue.Status, issue.LastSeq = status, issue.LastSeq+1
-	return issue, nil
-}
-
 func (d *fixtureDispatch) Approval(_ context.Context, artifactID string) (dispatch.Approval, error) {
 	issue, ok := d.documents[artifactID]
 	if !ok {
@@ -693,9 +684,9 @@ func (d *fixtureDispatch) Approval(_ context.Context, artifactID string) (dispat
 	return dispatch.Approval{IssueKey: issue, State: "approved", LatestVersion: 1, Version: &approved, Seq: chainSeq, Primary: true}, nil
 }
 
-// rankOf is key's board rank: the fixture's own order.
-func rankOf(key string) string {
-	return fmt.Sprintf("r%03d", slices.IndexFunc(chainRows, func(row chainRow) bool { return row.key == key }))
+// rankOf is key's board rank: its place among rows, the fixture's own order.
+func rankOf(rows []chainRow, key string) string {
+	return fmt.Sprintf("r%03d", slices.IndexFunc(rows, func(row chainRow) bool { return row.key == key }))
 }
 
 // keepFixture copies every table of the store as the fixture left it into a schema of its own,
@@ -869,7 +860,7 @@ func newChainDaemonOver(t *testing.T, project string, rows []chainRow, wrong boo
 
 	steps := config.DesignGateRootIssues.Steps()
 	engine := workflow.New(d.records, workflow.Config{Project: project, Repositories: testRepositories, Steps: steps}, quietLogger())
-	admission := admit.New(d.records, engine, len(chainRows), project, quietLogger())
+	admission := admit.New(d.records, engine, len(rows), project, quietLogger())
 	d.handlers = []intake.Handler{blockers.NewMirror(d.records, project), engine, admission}
 	// The supervisor holds the claims the store holds, as a daemon's boot restores them: with
 	// every stored tree wrong, each claim's tree is the wrong one.
@@ -920,7 +911,7 @@ func (d *chainDaemon) seed(token string) {
 				continue
 			}
 			issue := record.Issue{Key: row.key, Tree: row.tree, Project: d.project, Title: row.key, Phase: row.phase, Generation: 1,
-				Status: row.status, DispatchStatus: row.status, Rank: rankOf(row.key), LastDispatchSeq: chainSeq, HandedOver: row.labelled,
+				Status: row.status, DispatchStatus: row.status, Rank: rankOf(d.rows, row.key), LastDispatchSeq: chainSeq, HandedOver: row.labelled,
 				Repo: chainRepo, DefaultBranch: "main", GitHubRepo: chainRepo, HoldsGate: row.tree == row.key}
 			issue.TakenBack = issue.CarriesRun()
 			if row.parent != "" {
@@ -1088,7 +1079,7 @@ func (d *chainDaemon) repairs(answer func(key, label, value string)) {
 				labels = []string{dispatch.LegionLabel}
 			}
 			fact := intake.DispatchIssue{Key: row.key, Seq: chainSeq + 1, Type: "issue.updated", Status: "backlog", Title: row.key, Parent: row.parent,
-				Rank: rankOf(row.key), HandedOver: row.labelled, Labels: labels, ActorSession: sessionOf(writer), ResolvedRepo: chainRepo, Blockers: row.blockedBy,
+				Rank: rankOf(d.rows, row.key), HandedOver: row.labelled, Labels: labels, ActorSession: sessionOf(writer), ResolvedRepo: chainRepo, Blockers: row.blockedBy,
 				At: d.writtenAt}
 			answer(row.key, repairLabel(writer), d.undone(func(tx pgx.Tx) string {
 				if _, err := intake.ApplyFact(ctx, rolledBack{tx}, "chain-decisions", "repair:"+row.key+":"+writer, fact, d.handlers...); err != nil {

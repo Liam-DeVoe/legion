@@ -59,9 +59,8 @@ func TestTheDesignGateWhyGivesAStepOnAnAncestorsApprovalItsOwnWords(t *testing.T
 			store := projectionStore{
 				issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
 					treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
-				slots:      []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
-				lifecycles: []string{"LEGION-100"},
-				gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": tc.gates},
+				slots: []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
+				gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": tc.gates},
 			}
 			projected, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Steps: tc.steps, Now: projectedAt})
 			if err != nil {

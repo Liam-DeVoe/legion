@@ -184,10 +184,9 @@ func TestARootStoppedInAwaitingChildrenKeepsItsHeldStart(t *testing.T) {
 
 	apply(t, pool, admission, "moved-to-backlog", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 		Status: "backlog", Title: spParent, Rank: spParent, HandedOver: true}, engine)
-	if onBacklog := issue(t, pool, spParent); onBacklog.Phase != phase.AwaitingChildren || !sameHeldStart(onBacklog.ChildrenWait, held.ChildrenWait) ||
-		onBacklog.LingerUntil != nil {
-		t.Fatalf("the root on the backlog = phase %s, held start %+v, linger %v; want awaiting_children holding %+v, no linger",
-			onBacklog.Phase, onBacklog.ChildrenWait, onBacklog.LingerUntil, held.ChildrenWait)
+	if onBacklog := issue(t, pool, spParent); onBacklog.Phase != phase.AwaitingChildren || !sameHeldStart(onBacklog.ChildrenWait, held.ChildrenWait) {
+		t.Fatalf("the root on the backlog = phase %s, held start %+v; want awaiting_children holding %+v",
+			onBacklog.Phase, onBacklog.ChildrenWait, held.ChildrenWait)
 	}
 
 	apply(t, pool, admission, "returned", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",

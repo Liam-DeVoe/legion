@@ -94,8 +94,6 @@ func TestAnOperatorsTreeLeavesNoStepRecord(t *testing.T) {
 			stepChild(t, pool, "LEGION-209", phase.Testing, nil)
 			if tc.operator {
 				seedOperatorTree(t, pool, root.Tree)
-			} else {
-				seedTreeLifecycle(t, pool, root.Tree)
 			}
 			applyFacts(t, pool, stepEngine(nil))("backlog", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
 				Status: "backlog", Title: "root", Rank: "U"})

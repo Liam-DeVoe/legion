@@ -350,7 +350,6 @@ func TestAnIssueReachingMergingWithItsPullRequestMergedCloses(t *testing.T) {
 	}
 	landClose(t, pool, engine, "LEGION-208")
 	assertPhase(t, pool, phase.Done)
-	assertOutboxCount(t, pool, "linger_close", 0)
 	if started := superviseRequests(t, pool, "start"); len(started) != 1 || started["LEGION-208/tester"] != 1 {
 		t.Fatalf("the close started %v, want the tester's check look alone and no merger", started)
 	}

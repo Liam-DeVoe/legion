@@ -32,7 +32,6 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 		issue := record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key, Project: "LEGION",
 			Title: name, Phase: row.From, Generation: 1, Status: PhaseStatus(row.From), Rank: "U", LastDispatchSeq: 1}
 		seedIssue(t, pool, issue)
-		seedTreeLifecycle(t, pool, key)
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: 400 + i,
 			Branch: "legion/" + key, HeadSHA: "head", Failing: []string{}})
 		target := phase.Phase("")
@@ -97,7 +96,6 @@ func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
 		issue := record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key, Project: "LEGION",
 			Title: name, Phase: row.From, Generation: 1, Status: PhaseStatus(row.From), Rank: "U", LastDispatchSeq: 1}
 		seedIssue(t, pool, issue)
-		seedTreeLifecycle(t, pool, key)
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: 600 + i,
 			Branch: "legion/" + key, HeadSHA: "head", Failing: []string{}})
 		seedMirrorChild(t, pool, child, "todo", key)

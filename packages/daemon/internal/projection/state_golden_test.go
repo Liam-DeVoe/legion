@@ -63,9 +63,6 @@ func TestTheStateWithTheControllersClaimGolden(t *testing.T) {
 		},
 		phases: map[string][]record.PhaseRow{issue: {{Issue: issue, Role: claim.RoleArchitect, Claim: architect}}},
 		slots:  []record.Slot{{Issue: issue, Index: 0, AdmittedAt: admitted}},
-		// The tree the architect runs stands open under the workflow, which is what makes it a
-		// live tree now that its slot no longer says so.
-		lifecycles: []string{issue},
 		mirror: []record.DispatchIssueRow{
 			{Key: issue, Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 4},
 			{Key: "LEGION-209", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-300"}, Seq: 5, Parent: issue},

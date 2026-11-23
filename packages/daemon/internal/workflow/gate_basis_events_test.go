@@ -216,7 +216,6 @@ func TestTheAncestorsMoveIntoMergingEndsAPendingBasis(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "T",
 		HandedOver: true, LastDispatchSeq: 1})
-	seedTreeLifecycle(t, pool, basisAncestor)
 	seedPhase(t, pool, record.PhaseRow{Issue: basisAncestor, Role: claim.RoleImplementer, Claim: "claim"})
 	waiting := pendingBasis()
 	waiting.RegisteredAt = basisEngineNow

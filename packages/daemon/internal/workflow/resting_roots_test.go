@@ -50,7 +50,6 @@ func seedAcceptingAncestor(t *testing.T, pool *pgxpool.Pool) {
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Accepting, Generation: 1, Status: "needs_review", Rank: "T",
 		HandedOver: true, LastDispatchSeq: 1})
-	seedTreeLifecycle(t, pool, basisAncestor)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: basisAncestor, Repo: "sjawhar/legion", Number: 41,
 		Branch: "legion/" + basisAncestor, HeadSHA: "head", CheckedHead: "head", CheckRuns: []record.AttemptRun{{Name: acceptingCheck, ID: 1}}, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: basisAncestor, Role: claim.RoleImplementer, Claim: "implement-claim", HandoffCommit: "implement-1"})
@@ -269,7 +268,6 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 			Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "T",
 			HandedOver: true, LastDispatchSeq: 1})
-		seedTreeLifecycle(t, pool, basisAncestor)
 		registerResting(t, pool, applyFacts(t, pool, engine))
 		mirrorChild(t, pool, gatedRoot, basisAncestor, "in_progress", 20)
 
@@ -506,7 +504,6 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		seedIssue(t, pool, record.Issue{Key: restingAncestorsOf, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 			Tree: restingAncestorsOf, Project: "LEGION", Title: "tree root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "R",
 			HandedOver: true, LastDispatchSeq: 1})
-		seedTreeLifecycle(t, pool, restingAncestorsOf)
 		seedBeneath(t, pool, basisAncestor, restingAncestorsOf, restingAncestorsOf, phase.Implementing, "in_progress")
 		registerResting(t, pool, applyFacts(t, pool, engine))
 		closeIssue(t, pool, engine, gatedRoot, "", "done", 20)

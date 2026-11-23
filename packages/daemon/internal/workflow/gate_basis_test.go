@@ -61,18 +61,16 @@ func seedLiveAncestor(t *testing.T, pool *pgxpool.Pool) {
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "T",
 		HandedOver: true, LastDispatchSeq: 1})
-	seedTreeLifecycle(t, pool, basisAncestor)
 }
 
-// seedAncestorOnTheBacklog records LEGION-100 as a move to the backlog leaves a root (workflow's
-// leave, beginLinger): at phase done with its tree lingering, and with the status Dispatch showed,
-// backlog. R1 counts such an ancestor as not accepted.
+// seedAncestorOnTheBacklog records LEGION-100 as a root a person moved to the backlog after its
+// run closed: at phase done, with the status Dispatch showed, backlog. R1 counts such an ancestor
+// as not accepted.
 func seedAncestorOnTheBacklog(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	until := basisEngineNow.Add(time.Hour)
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Done, Generation: 1, Status: "backlog", DispatchStatus: "backlog",
-		Rank: "T", HandedOver: true, LastDispatchSeq: 1, LingerUntil: &until})
+		Rank: "T", HandedOver: true, LastDispatchSeq: 1})
 }
 
 // pendingSeeds is every pending-basis seed the outbox holds for issue, in order.
@@ -283,7 +281,6 @@ func TestARegistrationOnAnAncestorClosedSinceItsReadIsRefused(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Admitted, Generation: 1, Status: "in_progress",
 		DispatchStatus: "in_progress", Rank: "T", HandedOver: true, LastDispatchSeq: 1})
-	seedTreeLifecycle(t, pool, basisAncestor)
 	if result := closeRootNow(t, pool, "close", basisAncestor); result.Refusal != nil {
 		t.Fatalf("the ancestor's close_root = %+v, want it closed", result.Refusal)
 	}

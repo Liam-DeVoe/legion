@@ -160,14 +160,13 @@ func TestAPassOrFailOfAChildsCheckClosesItAndDeletesItsSandbox(t *testing.T) {
 			if got := issueSuspensions(t, rig.pool, "LEGION-209"); len(got) != 1 || got[0].Generation != 7 || got[0].TreeGeneration != 7 {
 				t.Fatalf("issue suspensions = %+v, want one row of the check's run", got)
 			}
-			assertOutboxCount(t, rig.pool, "linger_close", 0)
 		})
 	}
 }
 
 // A pass of a root's check closes the tester's claim, the one the root's close spared for the
 // check, and writes the suspension that deletes its Sandbox: every claim of the root is then
-// retired once, and nothing lingers.
+// retired once.
 func TestAPassOfARootsCheckClosesItsTesterAndSuspendsTheIssue(t *testing.T) {
 	rig := rootCheckRig(t)
 	rig.apply("pass", intake.CheckReport{Issue: "LEGION-208", Look: 1, Verdict: "pass", Summary: "seen"})
@@ -180,7 +179,6 @@ func TestAPassOfARootsCheckClosesItsTesterAndSuspendsTheIssue(t *testing.T) {
 	if got := issueSuspensions(t, rig.pool, "LEGION-208"); len(got) != 1 {
 		t.Fatalf("the root's issue suspensions = %+v, want the check's one row", got)
 	}
-	assertOutboxCount(t, rig.pool, "linger_close", 0)
 }
 
 // A report is refused, and changes nothing, on an issue with no open check (none, or one closed),
@@ -375,15 +373,15 @@ func TestACheckOpenedUnderTheTesterKeepsItWhenTheSettingGoesOff(t *testing.T) {
 	}
 }
 
-// A root reopened inside its linger runs again from the reopen: admit's readmit stands it in
-// `admitted` with the reopen's status, no role's phase, and its production check untouched. Nothing
+// A closed root a person reopens runs again from the reopen: the fixture stands it in `admitted`
+// with the reopen's status, no role's phase, and its production check untouched. Nothing
 // of the check moves the tree while it runs again: the implementer's failed claim takes the live
 // phase's path rather than ending the look (the look's own bound ends it, and that end starts no
 // look and suspends nothing, since the implementer and pod are the run's), and the bound closes
 // the check as not run without an issue_close of the implementer the run reuses.
 func TestAReopenedRootsCheckStartsNoLookWhileItRunsAgain(t *testing.T) {
 	rig := rootCheckRig(t)
-	if _, err := rig.pool.Exec(context.Background(), "update issues set phase = 'admitted', status = 'todo', linger_until = null where key = 'LEGION-208'"); err != nil {
+	if _, err := rig.pool.Exec(context.Background(), "update issues set phase = 'admitted', status = 'todo' where key = 'LEGION-208'"); err != nil {
 		t.Fatal(err)
 	}
 	before := len(superviseRowsOf(t, rig.pool, "LEGION-208", "suspend"))
@@ -585,25 +583,9 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-305", Repo: "sjawhar/legion", Number: 5, Branch: "legion/LEGION-305", HeadSHA: "h5", Failing: []string{}})
 
 	rig.apply("boot", intake.DaemonBooted{Boot: 1})
-	phases := map[string]phase.Phase{}
-	lingering := map[string]bool{}
-	rows, err := rig.pool.Query(context.Background(), "select key, phase, linger_until is not null from issues")
-	if err != nil {
-		t.Fatalf("read issues: %v", err)
-	}
-	for rows.Next() {
-		var key string
-		var p phase.Phase
-		var lingers bool
-		if err := rows.Scan(&key, &p, &lingers); err != nil {
-			t.Fatalf("scan issue: %v", err)
-		}
-		phases[key], lingering[key] = p, lingers
-	}
-	rows.Close()
 	for key, want := range map[string]phase.Phase{"LEGION-301": phase.Merging, "LEGION-302": phase.Merging, "LEGION-303": phase.Implementing, "LEGION-304": phase.Merging, "LEGION-305": phase.Merging} {
-		if phases[key] != want || lingering[key] {
-			t.Fatalf("%s after the boot = %s lingering %t, want %s and no linger", key, phases[key], lingering[key], want)
+		if got := issueAt(t, rig.pool, key); got != want {
+			t.Fatalf("%s after the boot = %s, want %s", key, got, want)
 		}
 	}
 	for key, queued := range map[string]bool{"LEGION-301": true, "LEGION-302": false, "LEGION-304": true, "LEGION-305": false} {
@@ -649,10 +631,8 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 
 	landClose(t, rig.pool, rig.engine, "LEGION-303")
 	landClose(t, rig.pool, rig.engine, "LEGION-302")
-	var rootPhase phase.Phase
-	var rootLingers bool
-	if err := rig.pool.QueryRow(context.Background(), "select phase, linger_until is not null from issues where key = 'LEGION-302'").Scan(&rootPhase, &rootLingers); err != nil || rootPhase != phase.Done || rootLingers {
-		t.Fatalf("the parent once its last child is done and so is its close = %s lingering %t, %v; want done and no linger", rootPhase, rootLingers, err)
+	if got := issueAt(t, rig.pool, "LEGION-302"); got != phase.Done {
+		t.Fatalf("the parent once its last child is done and so is its close = %s, want done", got)
 	}
 	if check := productionCheck(t, rig.pool, "LEGION-302"); check == nil || !check.Open() || check.MergeSHA != "m2" {
 		t.Fatalf("the parent's check = %+v, want it open on m2", check)

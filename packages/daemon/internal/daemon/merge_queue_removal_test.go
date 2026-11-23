@@ -281,8 +281,13 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		ended := slices.DeleteFunc(rig.logged(t, dequeueFenced, issue.key), func(line map[string]any) bool {
 			return line["kind"] != string(record.OutboxKindMergeQueueRemoval)
 		})
-		if len(ended) != 1 || fmt.Sprint(ended[0]["entry"]) == fmt.Sprint(ended[0]["current_entry"]) {
+		if len(ended) != 1 {
 			t.Fatalf("the row's lines %q = %v, want one naming the entry it was queued at and a later one the issue stands at", dequeueFenced, ended)
+		}
+		queuedAt, queuedOK := ended[0]["entry"].(float64)
+		standsAt, standsOK := ended[0]["current_entry"].(float64)
+		if !queuedOK || !standsOK || standsAt <= queuedAt {
+			t.Fatalf("the row's line %q = %v, want it naming the entry it was queued at and a later one the issue stands at", dequeueFenced, ended[0])
 		}
 		if delivered := rig.listener.accepted(issue.topic); len(delivered) != 0 {
 			t.Fatalf("the merger's topic was delivered %v, want nothing: the issue left merging before its merger held the role", delivered)

@@ -2,8 +2,8 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 )
 
@@ -219,7 +220,7 @@ func TestEachKindOfIssueReadsTheFixAsR25Says(t *testing.T) {
 	}
 
 	// The unlabelled todo waits for a person's handover: nothing of it is in work or in the line.
-	if inLine(after, unlabelled.Key) || r.recorded(unlabelled.Key) != nil && record.InLegionsWork(*r.recorded(unlabelled.Key)) {
+	if rec := r.recorded(unlabelled.Key); inLine(after, unlabelled.Key) || rec != nil && record.InLegionsWork(*rec) {
 		t.Fatalf("the unlabelled todo made a root is in Legion's work or its line: %s", body)
 	}
 	if shown := r.issue(unlabelled.Key).Status; shown != "todo" {
@@ -233,7 +234,7 @@ func TestEachKindOfIssueReadsTheFixAsR25Says(t *testing.T) {
 	}
 
 	// The unrecorded issue moved to in_progress starts nothing.
-	if inLine(after, unrecordedAncestor.Key) || r.recorded(unrecordedAncestor.Key) != nil && record.InLegionsWork(*r.recorded(unrecordedAncestor.Key)) {
+	if rec := r.recorded(unrecordedAncestor.Key); inLine(after, unrecordedAncestor.Key) || rec != nil && record.InLegionsWork(*rec) {
 		t.Fatalf("the unrecorded issue moved to in_progress is in Legion's work or its line: %s", body)
 	}
 	if claims := r.claimsOf(unrecordedAncestor.Key); len(claims) != 0 {
@@ -274,21 +275,16 @@ func (r *personHandoverRig) recorded(key string) *record.Issue {
 	return issue
 }
 
-// claimsOf is every claim the daemon holds of key, as role and state.
+// claimsOf is every claim the daemon holds of key, as role and state, by role.
 func (r *personHandoverRig) claimsOf(key string) []string {
 	r.t.Helper()
-	rows, err := r.pool.Query(context.Background(), "select role, state from claims where issue = $1 order by role", key)
+	rows, err := r.pool.Query(context.Background(), "select role || ' ' || state from claims where issue = $1 order by role", key)
 	if err != nil {
 		r.t.Fatalf("read the claims of %s: %v", key, err)
 	}
-	defer rows.Close()
-	var claims []string
-	for rows.Next() {
-		var role, state string
-		if err := rows.Scan(&role, &state); err != nil {
-			r.t.Fatalf("scan a claim of %s: %v", key, err)
-		}
-		claims = append(claims, fmt.Sprintf("%s %s", role, state))
+	claims, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("read the claims of %s: %v", key, err)
 	}
 	return claims
 }
@@ -296,18 +292,7 @@ func (r *personHandoverRig) claimsOf(key string) []string {
 // stoppedClaims is every claim of key the daemon stopped or closed: suspended or retired.
 func (r *personHandoverRig) stoppedClaims(key string) []string {
 	r.t.Helper()
-	var stopped []string
-	rows, err := r.pool.Query(context.Background(), "select role, state from claims where issue = $1 and state in ('suspended', 'retired')", key)
-	if err != nil {
-		r.t.Fatalf("read the stopped claims of %s: %v", key, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var role, state string
-		if err := rows.Scan(&role, &state); err != nil {
-			r.t.Fatalf("scan a stopped claim of %s: %v", key, err)
-		}
-		stopped = append(stopped, role+" "+state)
-	}
-	return stopped
+	return slices.DeleteFunc(r.claimsOf(key), func(held string) bool {
+		return !strings.HasSuffix(held, " "+string(supervise.StateSuspended)) && !strings.HasSuffix(held, " "+string(supervise.StateRetired))
+	})
 }

@@ -180,9 +180,9 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if got.Status != root.Status || got.Phase != root.Phase || got.LingerUntil != nil || got.Repo != "acme/widgets" {
-				t.Fatalf("after the session's backlog: status %s, phase %s, linger %v, repo %s; want the root running on acme/widgets",
-					got.Status, got.Phase, got.LingerUntil, got.Repo)
+			if got.Status != root.Status || got.Phase != root.Phase || got.Repo != "acme/widgets" {
+				t.Fatalf("after the session's backlog: status %s, phase %s, repo %s; want the root running on acme/widgets",
+					got.Status, got.Phase, got.Repo)
 			}
 			if reads := client.readCount(); reads != 0 {
 				t.Fatalf("Dispatch was read %d times for a recorded issue, want none", reads)

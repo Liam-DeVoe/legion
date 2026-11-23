@@ -185,7 +185,6 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldUnrecorded(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "needs_review", Rank: "U"})
-	seedTreeLifecycle(t, pool, "LEGION-208")
 	seedBeneath(t, pool, "LEGION-209", "LEGION-208", "LEGION-208", phase.Done, "done")
 	// The daemon's copy takes the event before the engine reads it (the daemon's handler order).
 	mirrorChild(t, pool, "LEGION-300", "LEGION-209", "todo", 3)

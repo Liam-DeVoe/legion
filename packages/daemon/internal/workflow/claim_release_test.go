@@ -124,8 +124,6 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: child.Key, Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 			if tc.operator {
 				seedOperatorTree(t, pool, root.Tree)
-			} else {
-				seedTreeLifecycle(t, pool, root.Tree)
 			}
 			engine := testEngine(config.DesignGateRootIssues, nil)
 
@@ -187,11 +185,11 @@ func factTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx con
 	factLeft(t, pool)
 }
 
-// seedOperatorTree opens key's tree lifecycle under the operator's authority, as an operator root
-// spawn under the root's key does, and the issue lifecycle of each issue recorded in that tree
-// under it too: an operator's hold of a tree is a hold of each issue of it (R22 of
-// dispatch://INFRA-3320), and the workflow records nothing that acts on the claims of an issue the
-// operator holds (record.OperatorHolds). The tree's issues are recorded before it is seeded.
+// seedOperatorTree opens, under the operator's authority, the issue lifecycle of each issue
+// recorded in key's tree, as an operator root spawn under the root's key leaves them: an
+// operator's hold of a tree is a hold of each issue of it (R22 of dispatch://INFRA-3320), and the
+// workflow records nothing that acts on the claims of an issue the operator holds
+// (record.OperatorHolds). The tree's issues are recorded before it is seeded.
 func seedOperatorTree(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
@@ -200,9 +198,6 @@ func seedOperatorTree(t *testing.T, pool *pgxpool.Pool, key string) {
 			return err
 		}
 		records := record.NewStore()
-		if _, err := records.OpenTreeLifecycle(t.Context(), tx, project, key, treelifecycle.AuthorityOperator); err != nil {
-			return err
-		}
 		rows, err := tx.Query(t.Context(), `select key from issues where tree = $1 order by key`, key)
 		if err != nil {
 			return err

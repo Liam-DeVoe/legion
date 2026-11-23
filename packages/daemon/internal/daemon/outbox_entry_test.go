@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -949,7 +950,22 @@ type cleanupRuntime struct {
 	*fake.Runtime
 	project string
 	mu      sync.Mutex
+	// trees is the tree label (legion.dev/tree) of each issue's pod a case launched: the gate root
+	// the pod was made under, which the release before's cleanup selected pods by and this
+	// release's reads for nothing.
+	trees   map[string]string
 	deleted []string
+}
+
+// launched gives issue's Sandbox the pod pod, made under the gate root tree.
+func (r *cleanupRuntime) launched(issue, pod, tree string) {
+	r.ScriptIssuePod(issue, pod)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.trees == nil {
+		r.trees = map[string]string{}
+	}
+	r.trees[issue] = tree
 }
 
 func (r *cleanupRuntime) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
@@ -977,18 +993,26 @@ func (r *cleanupRuntime) deletions() []string {
 // claims ran in and at the run and phase entry the issue stood at. Run against that pod, it
 // deletes it. Run once the issue's Sandbox holds a later pod — the issue came back and was
 // stopped again, its next launch making a pod of its own — it deletes nothing, and nothing either
-// once the issue stands at a later phase entry, as a return raises it.
+// once the issue stands at a later phase entry, as a return raises it. A former parent's close
+// deletes its own pod and cleans up its own lifecycle alone: its child, launched under its gate
+// root — the child's pod carries the parent's key as its tree label, and its record the parent
+// as its tree — and since moved out from under it, runs on with its pod and its lifecycle.
 func TestACleanupDeletesOnlyItsOwnIssuesPod(t *testing.T) {
 	ctx := context.Background()
+	const child = "LEGION-209"
 	for _, tc := range []struct {
 		name    string
 		pod     string
 		entered bool
-		want    []string
+		// child closes the issue at done while child, launched under it, still runs.
+		child bool
+		want  []string
 	}{
 		{name: "the pod it was queued for", pod: "pod-of-the-stop", want: []string{"legion/LEGION-208/pod-of-the-stop"}},
 		{name: "a later pod of the issue", pod: "pod-of-a-later-launch"},
 		{name: "the same pod at a later phase entry", pod: "pod-of-the-stop", entered: true},
+		{name: "a former parent's close, while the child launched under its gate root runs", pod: "pod-of-the-stop", child: true,
+			want: []string{"legion/LEGION-208/pod-of-the-stop"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
@@ -1000,6 +1024,9 @@ func TestACleanupDeletesOnlyItsOwnIssuesPod(t *testing.T) {
 			records := record.NewStore()
 			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 				Tree: "LEGION-208", Title: "stopped", Phase: phase.Implementing, Generation: 1, Status: "backlog", DispatchStatus: "backlog"}
+			if tc.child {
+				issue.Status, issue.DispatchStatus = record.DoneStatus, record.DoneStatus
+			}
 			putOutboxIssue(t, pool, records, issue)
 			implementer := record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Entry: 2}
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.PutPhase(ctx, tx, implementer) }); err != nil {
@@ -1009,12 +1036,26 @@ func TestACleanupDeletesOnlyItsOwnIssuesPod(t *testing.T) {
 			cleanup := &cleanupRuntime{Runtime: rt, project: "legion"}
 			sup.deps.Runtime = cleanup
 			runner := &outbox{log: quietLogger(), pool: pool, records: records, supervisor: sup, trees: st, project: "legion", dispatchProject: "LEGION", now: time.Now}
+			if tc.child {
+				// The child stands at work as a root of its own now, its record still naming the
+				// tree it was launched in, and both issues' lifecycles stand open as their
+				// admissions left them.
+				putOutboxIssue(t, pool, records, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+					Project: "LEGION", Tree: issue.Key, Title: "moved out", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
+					DispatchStatus: "in_progress"})
+				for _, key := range []string{issue.Key, child} {
+					if _, err := st.OpenIssueLifecycle(ctx, "legion", key, treelifecycle.AuthorityWorkflow); err != nil {
+						t.Fatal(err)
+					}
+				}
+				cleanup.launched(child, "pod-of-the-child", issue.Key)
+			}
 
 			// The stop queued the suspension while its roles ran in the pod of the stop.
 			row := mustOutboxRow(t, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: 1, TreeGeneration: 1, PodUID: "pod-of-the-stop"}, time.Now())
 			enqueueOutbox(t, pool, records, row)
 			queued := claimDueOutboxRowOf(t, pool, record.OutboxKindIssueSuspend)
-			cleanup.ScriptIssuePod(issue.Key, tc.pod)
+			cleanup.launched(issue.Key, tc.pod, issue.Key)
 			if tc.entered {
 				implementer.Entry++
 				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return records.PutPhase(ctx, tx, implementer) }); err != nil {
@@ -1027,6 +1068,22 @@ func TestACleanupDeletesOnlyItsOwnIssuesPod(t *testing.T) {
 			}
 			if got := cleanup.deletions(); !slices.Equal(got, tc.want) {
 				t.Fatalf("the suspension deleted %v, want %v: a cleanup deletes only the pod of its own issue it was queued for, at the run and entry it was queued at", got, tc.want)
+			}
+			if !tc.child {
+				return
+			}
+			var cleaned []string
+			for _, call := range cleanup.CallsOf("CleanupIssue") {
+				cleaned = append(cleaned, call.Issue)
+			}
+			if want := []string{issue.Key}; !slices.Equal(cleaned, want) {
+				t.Fatalf("the close cleaned up %v, want %v: the closed issue's own lifecycle alone", cleaned, want)
+			}
+			if live, err := st.IssueLive(ctx, "legion", child); err != nil || !live {
+				t.Fatalf("%s's own lifecycle is live: %t (%v) after its former parent's close, want it open", child, live, err)
+			}
+			if pod, _ := cleanup.IssuePod(child); pod != "pod-of-the-child" {
+				t.Fatalf("%s's Sandbox holds pod %q after its former parent's close, want pod-of-the-child still running", child, pod)
 			}
 		})
 	}

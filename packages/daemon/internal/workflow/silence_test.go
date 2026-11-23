@@ -111,8 +111,6 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 	seedIssue(t, pool, issue)
 	if record.KeepsSlot(issue) {
 		seedSlot(t, pool, record.Slot{Issue: silenceIssue, Index: 0, AdmittedAt: silenceClock()})
-	} else {
-		seedTreeLifecycle(t, pool, silenceIssue)
 	}
 	token := silenceToken(t, claim.RoleTester)
 	seedPhase(t, pool, record.PhaseRow{Issue: silenceIssue, Role: claim.RoleTester, Claim: token,

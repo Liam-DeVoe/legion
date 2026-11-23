@@ -143,12 +143,18 @@ func TestAReparentTellsTheOwnOldAndNewArchitectOnce(t *testing.T) {
 	if got := slices.Sorted(maps.Keys(told)); !slices.Equal(got, []string{reparentOldParent, reparentNewParent, reparentIssue}) {
 		t.Fatalf("the reparented notices reached the architects of %v, want those of %s, %s and %s", got, reparentIssue, reparentOldParent, reparentNewParent)
 	}
+	var words string
 	for key, reasons := range told {
 		if len(reasons) != 1 {
 			t.Fatalf("the architect of %s was told %d times, want once: %q", key, len(reasons), reasons)
 		}
 		if !strings.Contains(reasons[0], "changed from LEGION-208 to LEGION-300") || !strings.Contains(reasons[0], "phase implementing") {
 			t.Fatalf("the architect of %s read %q, want the old and the new parent and the phase", key, reasons[0])
+		}
+		if words == "" {
+			words = reasons[0]
+		} else if reasons[0] != words {
+			t.Fatalf("the architects read %q, want each the same words", told)
 		}
 	}
 
@@ -263,8 +269,11 @@ func TestAReparentNoticeNamesR1sPathUnderAnApprovedParent(t *testing.T) {
 				t.Fatalf("the reparented notices reached %d architects, want 3: %v", len(told), told)
 			}
 			for key, reasons := range told {
-				if len(reasons) != 1 || strings.Contains(reasons[0], path) != tc.opens {
-					t.Fatalf("the architect of %s read %q; R1's path named %t, want %t", key, reasons, !tc.opens, tc.opens)
+				if len(reasons) != 1 {
+					t.Fatalf("the architect of %s was told %d times, want once: %q", key, len(reasons), reasons)
+				}
+				if strings.Contains(reasons[0], path) != tc.opens {
+					t.Fatalf("the architect of %s read %q; R1's path named %t, want %t", key, reasons[0], !tc.opens, tc.opens)
 				}
 			}
 		})

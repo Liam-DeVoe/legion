@@ -15,9 +15,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// Admission's unslotted repair is narrow: the running-tree statuses are the only statuses where
-// a slotless root has definitely left its queue. An unknown Dispatch status must remain recorded
-// for its own handler rather than being silently taken out of Legion's workflow.
+// An unknown Dispatch status on a recorded root that holds no slot leaves the record where it
+// stands, the status recorded for its own handler, rather than taking the root out of Legion's
+// work, and tells the controller nothing.
 func TestAnUnknownStatusDoesNotReleaseAnUnslottedRoot(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -29,8 +29,8 @@ func TestAnUnknownStatusDoesNotReleaseAnUnslottedRoot(t *testing.T) {
 	apply(t, pool, admission, "unknown-status", intake.DispatchIssue{Key: stranded.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "blocked", Title: stranded.Title, Rank: stranded.Rank, HandedOver: true}, engine)
 
 	got := issue(t, pool, stranded.Key)
-	if got.Phase != phase.Admitted || got.LingerUntil != nil || got.Status != "blocked" {
-		t.Fatalf("unknown-status root = %#v, want it left admitted without a linger", got)
+	if got.Phase != phase.Admitted || got.Status != "blocked" {
+		t.Fatalf("unknown-status root = %#v, want it left admitted with the status recorded", got)
 	}
 	if notices := controllerNotices(t, pool); len(notices) != 0 {
 		t.Fatalf("controller notices = %#v, want none for an unknown status", notices)

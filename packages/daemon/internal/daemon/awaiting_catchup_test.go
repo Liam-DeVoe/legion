@@ -1244,19 +1244,17 @@ func TestARootRecordedBeforeTheCursorGetsOneAtItsFirstHandout(t *testing.T) {
 	}
 }
 
-// A re-admission starts the root's catch-up cursor again: the new generation's next boot reads
-// from the re-admission's handout, never the old generation's tail, so a changes request a person
-// gave in the old generation is not told to the new one's architect, whose processed marker is
-// per generation.
+// A new run starts the root's catch-up cursor again: the new generation's next boot reads from the
+// new run's handout, never the old generation's tail, so a changes request a person gave in the
+// old generation is not told to the new one's architect, whose processed marker is per generation.
 func TestAReadmittedRootsCatchUpReadsFromItsReadmission(t *testing.T) {
 	const readmittedAt int64 = 50
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: readmittedAt + 1},
 		events: []json.RawMessage{specChanges(20, 3, "name the rollback path")}}
 	pool, w := catchUpRig(t, client, 1)
-	lingers := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
 		root := captureRoot(phase.Done, nil)
-		root.Status, root.DispatchStatus, root.LingerUntil = "done", "done", &lingers
+		root.Status, root.DispatchStatus = "done", "done"
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}

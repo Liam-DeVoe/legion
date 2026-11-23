@@ -109,18 +109,17 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 			}
 			switch tc.outcome {
 			case takesTheTreeOut:
-				if got.Phase != phase.Merging || got.LingerUntil != nil || got.Status != tc.status || reasserted != 0 || len(told) != 0 {
-					t.Fatalf("root after %s = %#v with %d re-asserted status writes and notices %+v, want it out of Legion's work at %s, still merging, nothing lingering, re-asserted or told", tc.name, got, reasserted, told, tc.status)
+				if got.Phase != phase.Merging || got.Status != tc.status || reasserted != 0 || len(told) != 0 {
+					t.Fatalf("root after %s = %#v with %d re-asserted status writes and notices %+v, want it out of Legion's work at %s, still merging, nothing re-asserted or told", tc.name, got, reasserted, told, tc.status)
 				}
 				assertSlots(t, pool, []record.Slot{{Issue: "LEGION-9", Index: 1, AdmittedAt: fixedNow}})
 			case setBack, setBackAndTold:
-				if got.Phase != phase.Merging || got.LingerUntil != nil || got.Status != "retro" || got.LastDispatchSeq != 2 || reasserted != 1 {
-					t.Fatalf("root after %s = %#v with %d re-asserted status writes, want merging, not lingering, status retro kept, seq 2, and retro re-asserted over %s once", tc.name, got, reasserted, tc.status)
+				if got.Phase != phase.Merging || got.Status != "retro" || got.LastDispatchSeq != 2 || reasserted != 1 {
+					t.Fatalf("root after %s = %#v with %d re-asserted status writes, want merging, status retro kept, seq 2, and retro re-asserted over %s once", tc.name, got, reasserted, tc.status)
 				}
 				// The root stands in merging, which is past its own review, so it holds none of
-				// the cap's rows whoever wrote on it; what the write must not do is end its
-				// tree, which the kept phase, the absent linger and LEGION-9's slot beside it
-				// say.
+				// the cap's rows whoever wrote on it; what the write must not do is end its run,
+				// which the kept phase and status and LEGION-9's slot beside it say.
 				assertSlots(t, pool, []record.Slot{{Issue: "LEGION-9", Index: 1, AdmittedAt: fixedNow}})
 				wantTold := 0
 				if tc.outcome == setBackAndTold {
@@ -358,15 +357,15 @@ func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) 
 				t.Fatalf("queued status writes %+v and %d status-reasserted notices, want %+v and %d", rows, notices, tc.rows, tc.notices)
 			}
 			if tc.ends {
-				if got.Phase != wantPhase || got.LingerUntil != nil || got.Status != "backlog" {
+				if got.Phase != wantPhase || got.Status != "backlog" {
 					t.Fatalf("root after the person's park = %#v, want it out of Legion's work at backlog, its phase %s kept", got, wantPhase)
 				}
 				assertSlots(t, pool, nil)
 				return
 			}
 			last := tc.steps[len(tc.steps)-1]
-			if got.Phase != wantPhase || got.LingerUntil != nil || got.Status != wantStatus || got.LastDispatchSeq != int64(len(tc.steps)+2) || got.Title != last.title {
-				t.Fatalf("root after the events = %#v, want phase %s, not lingering, status %s kept, and the last event's seq and title", got, wantPhase, wantStatus)
+			if got.Phase != wantPhase || got.Status != wantStatus || got.LastDispatchSeq != int64(len(tc.steps)+2) || got.Title != last.title {
+				t.Fatalf("root after the events = %#v, want phase %s, status %s kept, and the last event's seq and title", got, wantPhase, wantStatus)
 			}
 			assertSlots(t, pool, []record.Slot{{Issue: "LEGION-1", Index: 0, AdmittedAt: fixedNow}})
 		})
@@ -410,7 +409,7 @@ func TestAnEditReachesTheSameOutcomeWhetherOrNotTheSetBackHasFinished(t *testing
 				return got
 			}
 			queued, finished := run(false), run(true)
-			if queued.root.Phase != phase.Admitted || queued.root.LingerUntil != nil || queued.root.Status != "in_progress" || queued.notices != 1 {
+			if queued.root.Phase != phase.Admitted || queued.root.Status != "in_progress" || queued.notices != 1 {
 				t.Fatalf("with the set-back queued, the edit left %+v, want the tree running at in_progress and one notice", queued)
 			}
 			if !reflect.DeepEqual(finished, queued) {
@@ -439,7 +438,7 @@ func TestAParkAndATodoWhileThePromotionsWriteIsOnItsWayRunTheTreeAgain(t *testin
 	write(3, "backlog")
 	write(4, "todo")
 	got := issue(t, pool, "LEGION-1")
-	if got.Generation != 1 || got.LingerUntil != nil || got.Phase != phase.Admitted || !record.InLegionsWork(got) {
+	if got.Generation != 1 || got.Phase != phase.Admitted || !record.InLegionsWork(got) {
 		t.Fatalf("root after the park and todo = %#v, want it back in Legion's work at admitted on generation 1", got)
 	}
 	var writes []record.StatusWrite

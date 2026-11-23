@@ -28,7 +28,6 @@ package daemon
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -146,29 +145,14 @@ func (r *treeDaemon) oldToolCall(token claim.Token, call map[string]any) registe
 	input := map[string]any{"daemonUrl": r.d.base, "dispatchUrl": r.world.DispatchURL, "dispatchToken": scratchAgentToken,
 		"claim": map[string]any{"sessionID": held.Session, "tree": held.Tree, "issue": held.Issue, "role": "architect",
 			"secret": held.Secret, "claimToken": string(token), "generation": held.Generation}, "call": call}
-	root := os.Getenv(treeOldToolRootEnv)
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		t.Fatalf("encode the old tool's input: %v", err)
 	}
-	home := t.TempDir()
-	ctx, cancel := context.WithTimeout(t.Context(), registerGateToolDeadline)
-	defer cancel()
-	command := exec.CommandContext(ctx, "bun", filepath.Join(root, memberRootDriver))
-	command.WaitDelay = time.Second
-	command.Dir = filepath.Join(root, "packages", "pi-legion")
-	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + home,
-		"XDG_CONFIG_HOME=" + filepath.Join(home, "config"), "XDG_STATE_HOME=" + filepath.Join(home, "state"),
-		"XDG_CACHE_HOME=" + filepath.Join(home, "cache")}
-	command.Stdin = bytes.NewReader(encoded)
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
-		t.Fatalf("the old tool's driver failed: %v\nstdout %s\nstderr %s", err, stdout.Bytes(), stderr.Bytes())
-	}
+	stdout, stderr := runBunDriver(t, "the old tool's driver", oldToolRoot(t), memberRootDriver, t.TempDir(), registerGateToolDeadline, encoded)
 	var answer registerGateAnswer
-	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
-		t.Fatalf("decode the old tool's answer %s: %v\nstderr %s", stdout.Bytes(), err, stderr.Bytes())
+	if err := json.Unmarshal(stdout, &answer); err != nil {
+		t.Fatalf("decode the old tool's answer %s: %v\nstderr %s", stdout, err, stderr)
 	}
 	return answer
 }
@@ -261,15 +245,16 @@ type guideBlock struct {
 // section ends at the next heading of its level or above.
 func guideSection(guide, heading string) []guideBlock {
 	var blocks []guideBlock
+	level := len(heading) - len(strings.TrimLeft(heading, "#"))
 	inSection, fence, lead := false, false, ""
 	var block guideBlock
 	var text strings.Builder
 	for line := range strings.SplitSeq(guide, "\n") {
+		rest := strings.TrimLeft(line, "#")
 		switch {
 		case !fence && line == heading:
 			inSection = true
-		case !fence && inSection && strings.HasPrefix(line, "#") && strings.TrimLeft(line, "#") != line &&
-			len(line)-len(strings.TrimLeft(line, "#")) <= 4 && strings.HasPrefix(strings.TrimLeft(line, "#"), " "):
+		case !fence && inSection && rest != line && len(line)-len(rest) <= level && strings.HasPrefix(rest, " "):
 			inSection = false
 		case inSection && strings.HasPrefix(line, "```"):
 			if fence {
@@ -428,6 +413,9 @@ func (r *treeDaemon) rollbackStep() []string {
 		}
 		r.world.Labels[issue] = tree
 		treeNote("kubectl %s", scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read the kubectl calls the step's relabel loop made: %v", err)
 	}
 	if len(r.world.Migrations) == 0 {
 		t.Fatal("the release before recorded no migration of its own, so the proof cannot tell which steps the rollback crosses")

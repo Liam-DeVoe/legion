@@ -176,7 +176,6 @@ func TestAHeldPhasesRetryRaisesNoEntry(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing}, Generation: 1,
 		Status: "testing", Rank: "U", HandedOver: true})
-	seedTreeLifecycle(t, pool, entryIssue)
 	seedEntryRow(t, pool, claim.RoleTester, "test-claim")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
@@ -222,7 +221,6 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "U"}
 	seedIssue(t, pool, issue)
-	seedTreeLifecycle(t, pool, entryIssue)
 	// The row a re-admission leaves: the entry where it stood, with no task of its own, and the
 	// move back that raised it still on it, which the promotion's own entry writes over.
 	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleImplementer, Claim: "implement-claim",
@@ -314,7 +312,6 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedIssue(t, pool, issue)
-			seedTreeLifecycle(t, pool, entryIssue)
 			seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleReviewer, Claim: "review-claim"})
 			merger := record.PhaseRow{Issue: entryIssue, Role: claim.RoleMerger, Claim: "merge-claim",
 				Entry: seededEntry, EntryTask: tc.held, EntryRaisedAt: seededRaisedAt}

@@ -175,13 +175,13 @@ func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
 	}
 }
 
-// reopenTheIssue is a person's reopen as a re-admission leaves it: the issue back in the workflow
-// in a generation of its own, which is what tells a close of the run before it from the record's.
+// reopenTheIssue is a person's reopen as a new run leaves it (workflow's NewRun): the issue back in
+// the workflow in a generation of its own, which is what tells a close of the run before it from
+// the record's.
 func reopenTheIssue(t *testing.T, pool *store.Pool, records record.Store, issue string) {
 	t.Helper()
 	reopened := recordOf(t, pool, records, issue)
 	reopened.Generation, reopened.Phase, reopened.Status = reopened.Generation+1, phase.Implementing, "in_progress"
-	reopened.LingerUntil = nil
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return records.PutIssue(context.Background(), tx, reopened)
 	}); err != nil {

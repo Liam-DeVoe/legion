@@ -56,9 +56,9 @@ func TestAWaitingParentThatLeavesTheWorkflowKeepsItsHeldStart(t *testing.T) {
 			intake.DispatchIssue{Key: cwParent, Seq: 2, Type: "issue.updated", Status: "backlog", Title: "parent", Rank: "U"})
 
 		got := storedIssue(t, pool, cwParent)
-		if got.Phase != phase.AwaitingChildren || !sameChildrenWait(got.ChildrenWait, waiting.ChildrenWait) || got.LingerUntil != nil || got.Status != "backlog" {
-			t.Fatalf("the root on the backlog = phase %s, status %s, held start %+v, linger %v; want awaiting_children at backlog holding %+v, no linger",
-				got.Phase, got.Status, got.ChildrenWait, got.LingerUntil, waiting.ChildrenWait)
+		if got.Phase != phase.AwaitingChildren || !sameChildrenWait(got.ChildrenWait, waiting.ChildrenWait) || got.Status != "backlog" {
+			t.Fatalf("the root on the backlog = phase %s, status %s, held start %+v; want awaiting_children at backlog holding %+v",
+				got.Phase, got.Status, got.ChildrenWait, waiting.ChildrenWait)
 		}
 		if got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(*waiting.ChildrenWaitedAt) {
 			t.Fatalf("the root on the backlog = waited at %v; want it kept from %v", got.ChildrenWaitedAt, waiting.ChildrenWaitedAt)

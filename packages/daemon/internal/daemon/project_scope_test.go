@@ -604,8 +604,8 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 		t.Fatalf("%s after the boot = %+v with %d close rows queued, want it in merging with its close pending and its done queued once: its merge was reported",
 			ownIssue.Key, own, closes)
 	}
-	if theirs == nil || theirs.Project != "OTHER" || theirs.Phase != phase.Merging || theirs.Status != "retro" || theirs.LingerUntil != nil {
-		t.Errorf("%s after the boot = %+v, want OTHER's record merging and lingering nowhere, as OTHER's daemon left it", theirIssue.Key, theirs)
+	if theirs == nil || theirs.Project != "OTHER" || theirs.Phase != phase.Merging || theirs.Status != "retro" {
+		t.Errorf("%s after the boot = %+v, want OTHER's record merging, as OTHER's daemon left it", theirIssue.Key, theirs)
 	}
 	if check != nil {
 		t.Errorf("%s's production check after the boot = %+v, want none: the issue is OTHER's", theirIssue.Key, check)

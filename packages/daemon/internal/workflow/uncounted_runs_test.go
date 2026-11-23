@@ -37,7 +37,6 @@ func TestNoRunTheEndRuleHoldsOverOrNoStartBeganIsOpenedOrRecorded(t *testing.T) 
 				root.Status = "backlog"
 			}
 			seedIssue(t, pool, root)
-			seedTreeLifecycle(t, pool, root.Key)
 			stepChild(t, pool, "LEGION-209", phase.Testing, nil)
 			engine := stepEngine(nil)
 			// The member's run is open either way; the root's own run of implementing only while it
@@ -81,7 +80,6 @@ func TestNoRunTheEndRuleHoldsOverOrNoStartBeganIsOpenedOrRecorded(t *testing.T) 
 					carried.Status = "in_progress"
 				}
 				seedIssue(t, pool, carried)
-				seedTreeLifecycle(t, pool, "LEGION-300")
 				if tc.promoted {
 					seedRecord(t, pool, func(tx pgx.Tx) error {
 						return record.NewStore().PutSlot(t.Context(), tx, record.Slot{Issue: "LEGION-300", Index: 0, AdmittedAt: stepClock})

@@ -44,7 +44,6 @@ func stepRoot(t *testing.T, pool *pgxpool.Pool, at phase.Phase) record.Issue {
 	root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
 		Project: "LEGION", Title: "root", Phase: at, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
 	seedIssue(t, pool, root)
-	seedTreeLifecycle(t, pool, root.Key)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 42,
 		Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
 	return root

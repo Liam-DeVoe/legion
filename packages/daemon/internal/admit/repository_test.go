@@ -101,15 +101,15 @@ func TestARootOnARepositoryLegionDoesNotServeIsNotAdmittedAndSaysWhy(t *testing.
 }
 
 // An admitted root keeps the repository it was recorded with: a later event, or the boot listing,
-// resolving it to another is not applied, which the daemon says once for that resolution, and a
-// re-admission of the root keeps the recorded repository and default branch.
+// resolving it to another is not applied, which the daemon says once for that resolution, and the
+// new run a person's todo opens on the closed root keeps the recorded repository and default
+// branch.
 func TestARecordedRootKeepsItsRepositoryAcrossAnEditAndAReadmission(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Steps: config.DesignGateRootIssues.Steps(), Repositories: testRepositories, Clock: func() time.Time { return fixedNow }}, nil)
-	until := fixedNow.Add(time.Hour)
-	putIssue(t, pool, record.Issue{Key: "LEGION-LINGER", Repo: "acme/tools", DefaultBranch: "release/v7.1", GitHubRepo: "acme/tools", Project: testProject, Title: "lingering", Tree: "LEGION-LINGER",
-		Phase: phase.Done, Generation: 3, Status: "done", DispatchStatus: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1, HandedOver: true})
+	putIssue(t, pool, record.Issue{Key: "LEGION-LINGER", Repo: "acme/tools", DefaultBranch: "release/v7.1", GitHubRepo: "acme/tools", Project: testProject, Title: "closed", Tree: "LEGION-LINGER",
+		Phase: phase.Done, Generation: 3, Status: "done", DispatchStatus: "done", Rank: "A", LastDispatchSeq: 1, HandedOver: true})
 
 	moved := rootTodo("LEGION-LINGER", 2, "acme/widgets")
 	moved.Status = "done"

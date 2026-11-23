@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 type projectionStore struct {
@@ -32,14 +31,12 @@ type projectionStore struct {
 	// key, which is the order the state's `blocked` is judged from. DispatchIssuesOf serves the rows
 	// of the keys asked for and of what they wait on, as the real store does.
 	mirror []record.DispatchIssueRow
-	// lifecycles names the trees whose lifecycle stands open under the workflow, the shadow the
-	// release before reads (R22 of dispatch://INFRA-3320); gates is each issue's design gates by
-	// step, as record.Store.GatesOf and record.Store.Gates answer them; owed is the start each
-	// issue owes a worker of it, which is a returning issue's place in the waiting line. The gates
-	// and the owed starts are what record.ReadLineFacts reads for the line.
-	lifecycles []string
-	gates      map[string]map[record.DesignStep]record.DesignGate
-	owed       []record.OwedStart
+	// gates is each issue's design gates by step, as record.Store.GatesOf and record.Store.Gates
+	// answer them; owed is the start each issue owes a worker of it, which is a returning issue's
+	// place in the waiting line. The gates and the owed starts are what record.ReadLineFacts reads
+	// for the line.
+	gates map[string]map[record.DesignStep]record.DesignGate
+	owed  []record.OwedStart
 	// assignments is every experiment answer the store holds, by the key of the unit it covers,
 	// in experiment order, as record.Store.Assignments answers them.
 	assignments map[string][]record.Assignment
@@ -47,16 +44,6 @@ type projectionStore struct {
 
 func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {
 	return s.assignments, nil
-}
-
-func (s projectionStore) TreeLifecycles(_ context.Context, _ pgx.Tx, project string, trees []string) (map[string]treelifecycle.Lifecycle, error) {
-	open := make(map[string]treelifecycle.Lifecycle, len(s.lifecycles))
-	for _, tree := range s.lifecycles {
-		if slices.Contains(trees, tree) {
-			open[tree] = treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: treelifecycle.AuthorityWorkflow}
-		}
-	}
-	return open, nil
 }
 
 func (s projectionStore) Gates(_ context.Context, _ pgx.Tx, trees []string) (map[string]map[record.DesignStep]record.DesignGate, error) {
@@ -966,7 +953,6 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 			lineIssue("LEGION-12", "LEGION-10", "retro", phase.Merging, "C"),
 			lineIssue("LEGION-13", "LEGION-10", "done", phase.Done, "D"),
 		},
-		lifecycles: []string{"LEGION-10"},
 		slots: []record.Slot{
 			{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt},
 			{Issue: "LEGION-11", Index: 1, AdmittedAt: projectedAt},
@@ -1048,10 +1034,7 @@ func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
 	left.MovedAt = projectedAt.Add(-10 * time.Minute)
 	store := projectionStore{
 		issues: []record.Issue{root, child, left},
-		// The one tree whose lifecycle stands open under the workflow, which is what makes it
-		// live; LEGION-20's closed with its issue, so no root of it is among the live ones.
-		lifecycles: []string{"LEGION-10"},
-		slots:      []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt.Add(-4 * time.Hour)}},
+		slots:  []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt.Add(-4 * time.Hour)}},
 	}
 
 	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
@@ -1120,7 +1103,6 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 			},
 			"LEGION-221": {{Issue: "LEGION-221", Role: claim.RoleImplementer, Claim: lingering}},
 		},
-		lifecycles: []string{"LEGION-220"},
 	}
 	// The implementer of the running tree failed and nothing has launched it since; the
 	// implementer of the lingering tree failed and an operator retired it after, which clears

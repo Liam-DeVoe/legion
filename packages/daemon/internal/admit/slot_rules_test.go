@@ -333,8 +333,7 @@ func TestSlotPerPhase(t *testing.T) {
 	parked.Status, parked.DispatchStatus = "backlog", "backlog"
 	putIssue(t, pool, parked)
 	closed := issue(t, pool, "LEGION-20")
-	lingers := fixedNow.Add(time.Hour)
-	closed.Phase, closed.Status, closed.DispatchStatus, closed.LingerUntil = phase.Done, "done", "done", &lingers
+	closed.Phase, closed.Status, closed.DispatchStatus = phase.Done, "done", "done"
 	putIssue(t, pool, closed)
 
 	pass("the second reading", "rows-after-the-three-deletions")

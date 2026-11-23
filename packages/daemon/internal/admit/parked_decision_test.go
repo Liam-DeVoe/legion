@@ -26,12 +26,11 @@ import (
 // scrum is a session outside every tree; alice, the person, is awaiting_person_answers_test.go's.
 var scrum = dispatch.Actor{Kind: "session", ID: "scrum"}
 
-// parkedRoot records LEGION-ROOT as a root a person parked: out of the workflow, lingering.
+// parkedRoot records LEGION-ROOT as a root a person parked: out of the workflow.
 func parkedRoot(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	until := fixedNow.Add(72 * time.Hour)
 	putIssue(t, pool, record.Issue{Key: "LEGION-ROOT", Tree: "LEGION-ROOT", Project: testProject, Title: "root", Phase: phase.Done,
-		Generation: 1, Status: "backlog", Rank: "A", HandedOver: true, LingerUntil: &until, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
+		Generation: 1, Status: "backlog", Rank: "A", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
 }
 
 // parkedDecisionNotices is every parked-decision controller notice in the outbox, oldest first.

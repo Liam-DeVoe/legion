@@ -42,8 +42,8 @@ func TestAWaitingRootLeavingTheWorkflowLeavesTheOperatorsTreeUnderItsKeyAlone(t 
 			})
 
 			apply(t, pool, admission, "moved", intake.DispatchIssue{Key: "LEGION-OPS", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: tc.status, Title: "LEGION-OPS", Rank: "B", HandedOver: true, ActorSession: tc.actor}, engine)
-			if got := issue(t, pool, "LEGION-OPS"); got.Phase != phase.Admitted || got.LingerUntil != nil || got.Status != tc.status {
-				t.Fatalf("LEGION-OPS after the %s = %#v, want it at %s, its phase admitted kept, not lingering", tc.status, got, tc.status)
+			if got := issue(t, pool, "LEGION-OPS"); got.Phase != phase.Admitted || got.Status != tc.status {
+				t.Fatalf("LEGION-OPS after the %s = %#v, want it at %s, its phase admitted kept", tc.status, got, tc.status)
 			}
 			for _, effect := range effects(t, pool) {
 				if effect.issue != "LEGION-OPS" {

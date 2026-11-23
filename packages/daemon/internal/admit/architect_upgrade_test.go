@@ -316,9 +316,8 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 	// The root as the park left it, with the architect claim of the run that was parked: the
 	// shape parkedRoot records, under a key a claim token can be minted from, since the sweep
 	// reads no run of an issue whose key yields none.
-	until := fixedNow.Add(72 * time.Hour)
 	putIssue(t, pool, record.Issue{Key: root, Tree: root, Project: testProject, Title: "root", Phase: phase.Done,
-		Generation: 1, Status: "backlog", Rank: "A", HandedOver: true, LingerUntil: &until,
+		Generation: 1, Status: "backlog", Rank: "A", HandedOver: true,
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
 	putWorkerClaim(t, pool, root, root, claim.RoleArchitect, 1, supervise.StateIdle, "")
 	applyArchitectUpgrade(t, pool)

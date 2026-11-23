@@ -738,9 +738,8 @@ func populatedState(t *testing.T) State {
 				Tree:          "LEGION-207",
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
-				// Its work finished, so its tree lingers: until this moment a todo on it takes the
-				// tree back without a re-admission. It is what a reader of a held issue of this
-				// tree would read an absent `holdReason` by, the suppression being the linger's.
+				// The key the type keeps for an older strict reader (Issue.LingerUntil), which no
+				// writer of this release sets: the golden holds its shape, not a linger.
 				LingerUntil: &lingerUntil,
 				Workers: map[claim.Role]PhaseView{
 					// The pacing holds this claim's relaunch onto this daemon's plugin, which the

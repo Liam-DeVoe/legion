@@ -149,15 +149,14 @@ func TestOnlyAPersonsApprovalOfAParkedLabelledRootsPrimaryDocumentQueuesIt(t *te
 	}
 }
 
-// lingeringRoot is LEGION-208 recorded where a root's leaving the workflow leaves it: its phase
-// done, its tree lingering, in status.
-func lingeringRoot(status string) record.Issue {
-	until := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
+// closedRoot is LEGION-208 recorded where a root's leaving the workflow leaves it: its phase done,
+// in status.
+func closedRoot(status string) record.Issue {
 	return record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
-		Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 1, Status: status, Rank: "U", HandedOver: true, LingerUntil: &until}
+		Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 1, Status: status, Rank: "U", HandedOver: true}
 }
 
-// A parked labelled root the daemon recorded — one that ran and was parked, its tree lingering —
+// A parked labelled root the daemon recorded — one that ran and was parked —
 // is queued by a person's approval of its spec as an unrecorded one is: the write re-admits it as a
 // new generation, as a person's todo does. The gate its earlier run registered records the approved
 // version and nothing else: no design-approved notice is written for a tree with no architect, and
@@ -165,7 +164,7 @@ func lingeringRoot(status string) record.Issue {
 // architect's register_gate reads the approval from Dispatch.
 func TestAPersonsApprovalOfARecordedParkedRootsSpecQueuesItAndRecordsItQuietly(t *testing.T) {
 	pool := migratedPool(t)
-	seedIssue(t, pool, lingeringRoot("backlog"))
+	seedIssue(t, pool, closedRoot("backlog"))
 	gate := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
 	seedGate(t, pool, gate)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -207,7 +206,7 @@ func TestAHandoverApprovalTheGateWouldNotTakeLeavesItAsItWas(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			seedIssue(t, pool, lingeringRoot("backlog"))
+			seedIssue(t, pool, closedRoot("backlog"))
 			seedGate(t, pool, tc.gate)
 			apply := applyFacts(t, pool, testEngine(tc.policy, nil))
 
@@ -240,8 +239,8 @@ func TestAnApprovalOfALiveOrClosedRootsSpecIsAppliedToItsGateAsToday(t *testing.
 				Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U", HandedOver: true})
 			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
 		}, parkedRootView("backlog")},
-		{"a lingering root closed as done", func(t *testing.T, pool *pgxpool.Pool) {
-			seedIssue(t, pool, lingeringRoot("done"))
+		{"a recorded root closed as done", func(t *testing.T, pool *pgxpool.Pool) {
+			seedIssue(t, pool, closedRoot("done"))
 		}, parkedRootView("done")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -271,7 +270,7 @@ func TestAnApprovalOfALiveOrClosedRootsSpecIsAppliedToItsGateAsToday(t *testing.
 // own gate records the approval with no notice.
 func TestACarriedCopyOfAParkedRootsGateTakesTheApprovalWhileTheOwnerIsQueued(t *testing.T) {
 	pool := migratedPool(t)
-	seedIssue(t, pool, lingeringRoot("backlog"))
+	seedIssue(t, pool, closedRoot("backlog"))
 	parent := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-209", Project: "LEGION",
 		Title: "carried child", Parent: &parent, Phase: phase.Merging, Generation: 2, Status: "retro", Rank: "V", HandedOver: true})

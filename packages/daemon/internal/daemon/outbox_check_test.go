@@ -138,15 +138,15 @@ func TestACheckStartFinishesWithoutActingWhenItsLookIsNotOpen(t *testing.T) {
 	}
 }
 
-// A check start of an issue that runs again finishes without acting: a root reopened inside its
-// linger (admit's readmit) stands in `admitted` with the status of the reopen, and the look its
-// row would start would resume the implementer and relaunch the Sandbox under the run. The row's
-// check is still open at its look, so the check alone would let it start.
+// A check start of an issue that runs again finishes without acting: a closed root a person
+// reopened stands in `admitted` with the status of the reopen, and the look its row would start
+// would resume the implementer and relaunch the Sandbox under the run. The row's check is still
+// open at its look, so the check alone would let it start.
 func TestACheckStartOfAnIssueRunningAgainFinishesWithoutActing(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	root := checkRoot()
-	root.Phase, root.Status, root.LingerUntil = phase.Admitted, "todo", nil
+	root.Phase, root.Status = phase.Admitted, "todo"
 	putOutboxIssue(t, pool, records, root)
 	putProductionCheck(t, pool, records, openCheck(root, "a1b2c3d4"))
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())

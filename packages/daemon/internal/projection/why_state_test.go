@@ -121,7 +121,6 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		// first phase of theirs a member of the line the children-first wait then holds back.
 		// LEGION-700 runs on its own record alone, since every member under it carries a run
 		// already.
-		lifecycles: []string{"LEGION-300", "LEGION-600", "LEGION-700"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			// A root at accepting has opened its gate; without this row LEGION-110 would read
 			// design_gate's sentence.

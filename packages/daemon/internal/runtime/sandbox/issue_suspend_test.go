@@ -52,8 +52,8 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.Pool().Exec(g.ctx, `insert into issues
-		(key, tree, project, title, phase, generation, status, rank, linger_until, last_dispatch_seq)
-		values ($1, $1, 'LEGION', 'root', 'done', 1, 'done', 'A', now() + interval '1 hour', 1)`, testTree); err != nil {
+		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ($1, $1, 'LEGION', 'root', 'done', 1, 'done', 'A', 1)`, testTree); err != nil {
 		t.Fatal(err)
 	}
 	g.issueLaunchers(rootToken)
@@ -90,7 +90,7 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 	if g.pod(name) != nil {
 		t.Fatal("issue suspension returned while its pod remained")
 	}
-	if _, err := st.Pool().Exec(g.ctx, `update issues set generation = 2, phase = 'admitted', status = 'todo', linger_until = null where key = $1`, testTree); err != nil {
+	if _, err := st.Pool().Exec(g.ctx, `update issues set generation = 2, phase = 'admitted', status = 'todo' where key = $1`, testTree); err != nil {
 		t.Fatal(err)
 	}
 	spec.Generation = 2

@@ -348,7 +348,6 @@ func TestAStoppedRootKeepsItsHoldAndItsEscalation(t *testing.T) {
 	if got, reason := projectedHold(t, pool, "LEGION-208"); got != phase.Held || reason != "escalated" {
 		t.Fatalf("after the backlog move the state reads phase %s hold reason %q, want held and escalated", got, reason)
 	}
-	assertOutboxCount(t, pool, "linger_close", 0)
 }
 
 // A held child keeps its hold when its root stops, escalation included: a stop of the issue above

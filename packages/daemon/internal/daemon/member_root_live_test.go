@@ -20,8 +20,6 @@
 package daemon
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,10 +39,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
-
-// memberRootOldToolRootEnv names the root of the oldest plugin contract's checkout, with its
-// `bun install` run and this checkout's driver copied in (scripts/e2e/lib/old-plugin-root.sh).
-const memberRootOldToolRootEnv = "LEGION_E2E_OLD_TOOL_ROOT"
 
 // memberRootDriver is the driver every tool root runs, relative to the root.
 const memberRootDriver = "packages/pi-legion/test/gate-holder-driver.ts"
@@ -67,9 +61,9 @@ func memberRootTools(t *testing.T) (string, string, []memberTool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldRoot := os.Getenv(memberRootOldToolRootEnv)
+	oldRoot := os.Getenv(treeOldToolRootEnv)
 	if oldRoot == "" {
-		t.Fatalf("%s is unset; scripts/e2e/member-becomes-root.sh makes the oldest contract's plugin root and names it there", memberRootOldToolRootEnv)
+		t.Fatalf("%s is unset; scripts/e2e/member-becomes-root.sh makes the oldest contract's plugin root and names it there", treeOldToolRootEnv)
 	}
 	if _, err := exec.LookPath("bun"); err != nil {
 		t.Fatalf("bun is not on PATH, and the legion tool runs under it: %v", err)
@@ -289,26 +283,10 @@ func memberToolCall(t *testing.T, tool memberTool, home string, r *personHandove
 	if err != nil {
 		t.Fatalf("encode the tool's input: %v", err)
 	}
-	pane := filepath.Join(tool.root, "packages", "pi-legion")
-	ctx, cancel := context.WithTimeout(t.Context(), registerGateToolDeadline)
-	defer cancel()
-	command := exec.CommandContext(ctx, "bun", filepath.Join(tool.root, memberRootDriver))
-	command.WaitDelay = time.Second
-	command.Dir = pane
-	command.Env = []string{
-		"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + home,
-		"XDG_CONFIG_HOME=" + filepath.Join(home, "config"), "XDG_STATE_HOME=" + filepath.Join(home, "state"),
-		"XDG_CACHE_HOME=" + filepath.Join(home, "cache"),
-	}
-	command.Stdin = bytes.NewReader(input)
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
-		t.Fatalf("%s's driver failed: %v\nstdout %s\nstderr %s", tool.name, err, stdout.Bytes(), stderr.Bytes())
-	}
+	stdout, stderr := runBunDriver(t, tool.name+"'s driver", tool.root, memberRootDriver, home, registerGateToolDeadline, input)
 	var answer registerGateAnswer
-	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
-		t.Fatalf("decode %s's driver's answer %s: %v\nstderr %s", tool.name, stdout.Bytes(), err, stderr.Bytes())
+	if err := json.Unmarshal(stdout, &answer); err != nil {
+		t.Fatalf("decode %s's driver's answer %s: %v\nstderr %s", tool.name, stdout, err, stderr)
 	}
 	t.Logf("%s, holding the claim under tree %s, answered (isError %t): %s; daemon requests %q", tool.name, registered.Tree, answer.IsError, answer.Text, answer.DaemonRequests)
 	return answer

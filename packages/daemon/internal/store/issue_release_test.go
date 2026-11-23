@@ -19,14 +19,14 @@ import (
 )
 
 // seedRunningRoot is the state an idle release binds to, and the opposite of a close's: the
-// root's issue row in the workflow at generation, not lingering.
+// root's issue row in the workflow at generation.
 func seedRunningRoot(t *testing.T, store *Store, generation int) {
 	t.Helper()
 	_, err := store.Pool().Exec(context.Background(), `insert into issues
 		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 		values ($1, $1, 'LEGION', 'root', 'implementing', $2, 'in_progress', 'A', 1)
 		on conflict (key) do update set generation = excluded.generation, status = excluded.status,
-			phase = excluded.phase, linger_until = null`, rootIssue, generation)
+			phase = excluded.phase`, rootIssue, generation)
 	if err != nil {
 		t.Fatalf("seed running root: %v", err)
 	}

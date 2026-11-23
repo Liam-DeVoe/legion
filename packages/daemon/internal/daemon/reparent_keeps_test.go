@@ -102,11 +102,18 @@ func reparentKept(t *testing.T, rig *reparentRig, token claim.Token) string {
 		}
 		spec := gates[record.DesignStepSpec]
 		pr, err := rig.records.PullRequest(ctx, tx, reparentIssue)
-		if err != nil || pr == nil {
-			return fmt.Errorf("read the pull request: %v", err)
+		if err != nil {
+			return fmt.Errorf("read the pull request: %w", err)
 		}
-		kept += fmt.Sprintf("; phase %s fence %+v; slot %+v; spec gate v%d approved %v basis %+v; pull request #%d on %s",
-			issue.Phase, fence, slot, spec.LatestVersion, spec.ApprovedVersion != nil, spec.Basis, pr.Number, pr.Branch)
+		if pr == nil {
+			return fmt.Errorf("%s holds no pull request", reparentIssue)
+		}
+		approved := "none"
+		if spec.ApprovedVersion != nil {
+			approved = fmt.Sprintf("v%d", *spec.ApprovedVersion)
+		}
+		kept += fmt.Sprintf("; phase %s fence %+v; slot %+v; spec gate v%d approved %s ever opened %t basis %+v; pull request #%d on %s",
+			issue.Phase, fence, slot, spec.LatestVersion, approved, spec.EverOpened, spec.Basis, pr.Number, pr.Branch)
 		return nil
 	}); err != nil {
 		t.Fatalf("read what the issue holds: %v", err)

@@ -489,8 +489,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	if err := treelifecycle.Serialize(ctx, park); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := park.Exec(ctx, `update issues set phase = 'done', status = 'backlog',
-		linger_until = now() + interval '1 hour' where key = $1`, rootIssue); err != nil {
+	if _, err := park.Exec(ctx, `update issues set phase = 'done', status = 'backlog' where key = $1`, rootIssue); err != nil {
 		t.Fatalf("park the root: %v", err)
 	}
 	var closeRow int64

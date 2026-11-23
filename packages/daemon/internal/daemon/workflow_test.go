@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +18,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 )
+
+// A decimal production_check_hours reaches the engine as the duration it names
+// (engineConfig): the bound of a production check's look is the file's, not a default.
+func TestProductionCheckHoursReachesTheEngineAsItsDuration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legion.yaml")
+	body := "project: demo\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nproduction_check_hours: 0.1\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadForValidation(path, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("LoadForValidation: %v", err)
+	}
+	if engine := engineConfig(cfg, "legion-reviewer[bot]", nil); engine.ProductionCheckBound != 6*time.Minute {
+		t.Errorf("the engine's production check bound = %s, want 6m0s", engine.ProductionCheckBound)
+	}
+}
 
 // loginTokens answers each App role's lease, and its login, with the bot login named for it.
 type loginTokens map[appauth.AppRole]string

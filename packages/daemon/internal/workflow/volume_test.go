@@ -402,8 +402,8 @@ func TestTheBoundsHoldAcrossARestartOfTheDaemon(t *testing.T) {
 	}
 }
 
-// An issue the daemon does not record, and one whose tree lingers after leaving the workflow,
-// write nothing: there is nobody in such a tree to act on the notice.
+// An issue the daemon does not record, and one out of Legion's work, closed at done, write
+// nothing: there is nobody running the issue to act on the notice.
 func TestAVolumeReportOfAnIssueNobodyRunsWritesNothing(t *testing.T) {
 	rig := newVolumeRig(t)
 	rig.reports++
@@ -412,15 +412,14 @@ func TestAVolumeReportOfAnIssueNobodyRunsWritesNothing(t *testing.T) {
 		t.Fatalf("the outbox holds %d rows for an issue the daemon does not record, want none", rows)
 	}
 
-	// The tree's own linger, as the close writes it: the root is done and holds a linger_until,
-	// which is what record.TreeLingers reads.
-	if _, err := rig.pool.Exec(context.Background(), `update issues set phase = 'done', status = 'done',
-		linger_until = $1 where key = 'LEGION-208'`, volumeAt.Add(time.Hour)); err != nil {
-		t.Fatalf("linger the tree: %v", err)
+	// The issue's own close, as the done of Dispatch leaves its record: at phase done, out of
+	// Legion's work (record.InLegionsWork).
+	if _, err := rig.pool.Exec(context.Background(), `update issues set phase = 'done', status = 'done' where key = 'LEGION-208'`); err != nil {
+		t.Fatalf("close the issue: %v", err)
 	}
 	rig.report(t, fullSweep())
 	if rows := outboxRows(t, rig.pool); rows != 0 {
-		t.Fatalf("the outbox holds %d rows for a lingering tree, want none", rows)
+		t.Fatalf("the outbox holds %d rows for an issue out of Legion's work, want none", rows)
 	}
 }
 
