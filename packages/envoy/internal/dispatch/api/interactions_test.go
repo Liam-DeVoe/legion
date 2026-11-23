@@ -41,6 +41,8 @@ func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API, conf
 
 // newInteractionServer is newInteractionDeps, answering also the server it registered, for a test
 // that waits out the writes its requests leave running past their answers (awaitBackgroundWrites).
+// A nil makeDocs serves the document service withDocumentService builds, from the input as
+// configure left it.
 func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API, configure ...func(*DepsInput)) (http.Handler, *store.Store, Deps, *server) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -58,6 +60,9 @@ func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API, co
 	}
 	for _, set := range configure {
 		set(&input)
+	}
+	if docsAPI == nil {
+		input = withDocumentService(t, input)
 	}
 	deps, err := NewDeps(input)
 	if err != nil {
