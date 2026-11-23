@@ -4,7 +4,7 @@ import { act, renderHook } from "@testing-library/react";
 
 import { onFakeClock, realClock, settle, tick } from "../__tests__/fake-clock";
 import { REQUEST_DEADLINE_MS } from "./client";
-import { DispatchQueryClient } from "./query-client";
+import { DispatchQueryClient, waitingForPausedReads } from "./query-client";
 import { readWithinBound, useReadBound } from "./read-bound";
 
 /** What `answer` holds so far: its value once it has settled, else `"waiting"`. */
@@ -74,6 +74,78 @@ test("an invalidation paused offline is let go at the request deadline, saying D
         answer: "Dispatch could not be reached",
         invalidation: "waiting",
       });
+    });
+  } finally {
+    onlineManager.setOnline(true);
+    unsubscribe();
+    queryClient.unmount();
+  }
+});
+
+// A query whose own fetch the network has already paused is read again no sooner for a caller
+// that waits on it (`waitingForPausedReads`): the invalidation after a write is answered when
+// that fetch is, as for a query that was idle, so a hold through it waits out its bound rather
+// than ending at once. The project List's offline Take out of epic ended its hold about 0.3 s
+// after the press where the list's read was already paused, and the bar went with nothing said
+// (INFRA-3135, round 24).
+test("a read waiting on a paused fetch is let go at the request deadline, not at once", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.mount();
+  const observer = new QueryObserver(queryClient, {
+    queryFn: () => Promise.resolve("listed"),
+    queryKey: ["issues"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await onFakeClock(async () => {
+      await settle();
+      onlineManager.setOnline(false);
+      // The read the live feed asked for before the action, which the network paused.
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      await settle();
+      expect(queryClient.getQueryState(["issues"])?.fetchStatus).toBe("paused");
+
+      // The action's own read of the list, asked while that fetch is still paused.
+      const invalidation = waitingForPausedReads(queryClient, () =>
+        queryClient.invalidateQueries({ queryKey: ["issues"] })
+      );
+      const answer = watch(readWithinBound(invalidation));
+      await tick(REQUEST_DEADLINE_MS - 2);
+      expect(answer()).toBe("waiting");
+
+      await tick(1);
+      expect(answer()).toBe("Dispatch could not be reached");
+    });
+  } finally {
+    onlineManager.setOnline(true);
+    unsubscribe();
+    queryClient.unmount();
+  }
+});
+
+// Every other caller keeps TanStack's own answer for a query whose fetch is already paused: the
+// invalidation resolves at once, so a hold with no bound of its own - the ones the architect's
+// ruling of 2026-11-21 19:4xZ leaves as main has them - never waits for the network to come
+// back. Only the call that asks waits (`waitingForPausedReads`).
+test("an invalidation that does not ask to wait resolves at once for a query whose fetch is paused", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.mount();
+  const observer = new QueryObserver(queryClient, {
+    queryFn: () => Promise.resolve("listed"),
+    queryKey: ["issues"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await onFakeClock(async () => {
+      await settle();
+      onlineManager.setOnline(false);
+      void queryClient.invalidateQueries({ queryKey: ["issues"] });
+      await settle();
+      expect(queryClient.getQueryState(["issues"])?.fetchStatus).toBe("paused");
+
+      const invalidated = watch(queryClient.invalidateQueries({ queryKey: ["issues"] }));
+      await settle();
+      expect(invalidated()).toBeUndefined();
     });
   } finally {
     onlineManager.setOnline(true);

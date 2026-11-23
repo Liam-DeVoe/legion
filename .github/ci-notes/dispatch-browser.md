@@ -354,19 +354,6 @@ head it was measured at: each rebuild of the image is other bytes (layers 8 to 1
 builds of 47a222cd differ, 344 bytes apart over 1.16 GB), so the census's own legs, on the
 digest each pinned, are the reading.
 
-This pull request's rows are not in that census: the shared search, sort and filter controls'
-rows of dispatch://INFRA-3135 (e2e/table-controls.e2e.ts and the rows beside them) run in this
-job too, and so do its generated landing rows (e2e/focus-landing.e2e.ts, 16 a project in
-Chromium, Firefox and WebKit). At that pull request's head 08dd2b41, with main 143b57a76c
-merged, full-lane run 45010081248 took 399, 548, 437 and 808 s over the four legs' browser
-steps under the count split, so the browser step's maximum there was 808 s, inside the 1,080 s
-of the step's 18-minute hang guard, which its section reads from main's legs without these
-rows. Shard 4 held the tail of the listing, the Firefox and WebKit rows: of its 3,010 s
-of rows, the landing rows took 572 s. Its earlier heads measured 607 s (da0804df, full-lane run
-44892576846, before main's 143b57a76c and the landing rows) and 593 s (run 44740043506); at
-5b8a3463 shard 4 reached 12 minutes with 132 of its 441 rows to run (run 45007913349). Main's
-531 s is read again here once the census holds these rows.
-
 THE TWO NETWORK READS, AT A BUSY HOUR. The sum before this census read the binaries download at 5 s and the
 image pull, `Initialize containers`, at 45 s, from quiet runs, and on 2026-11-18 a leg of
 each job stalled on one of them while its siblings did not: in run 44228250420 shard (4)'s

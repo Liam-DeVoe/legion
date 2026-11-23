@@ -9,10 +9,13 @@ import { NETWORK_ERROR_MESSAGE, REQUEST_DEADLINE_MS, requestTimeoutMessage } fro
  * at the most. The timer starts at this call, whatever state the query is in. TanStack pauses a
  * fetch the browser starts offline until the network returns, and no request deadline runs while
  * a fetch is paused, so a paused read alone does not settle for as long as the browser is
- * offline. Answers `undefined` once the read settles, either way. At the bound it answers why the
- * read has not settled, in the words of the error a read that failed for that reason ends with:
- * a `NetworkError`'s while the browser is offline (`onlineManager`), and a `RequestTimeoutError`'s
- * otherwise.
+ * offline. A read of a query whose fetch the network had already paused is the one that does
+ * settle at once, since TanStack answers its refetch there and then: a caller that waits on such
+ * a read reads again through `query-client.ts`'s `waitingForPausedReads`, which has it answered
+ * when the fetch is, and this bound ends the wait either way. Answers `undefined` once the read
+ * settles, either way. At the bound it answers why the read has not settled, in the words of the
+ * error a read that failed for that reason ends with: a `NetworkError`'s while the browser is
+ * offline (`onlineManager`), and a `RequestTimeoutError`'s otherwise.
  */
 export function readWithinBound(read: Promise<unknown>): Promise<string | undefined> {
   const { promise, resolve } = Promise.withResolvers<string | undefined>();

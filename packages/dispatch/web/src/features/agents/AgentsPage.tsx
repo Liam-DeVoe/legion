@@ -19,6 +19,7 @@ import {
   userAgentStateQuery,
   whoAmIQuery,
 } from "../../api/queries";
+import { waitingForPausedReads } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type {
   Agent,
@@ -32,7 +33,12 @@ import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
 import { EmptyState } from "../../components/EmptyState";
 import { filterChips } from "../../components/filter-chips";
-import { useFocusPlace } from "../../components/focus-place";
+import {
+  controlsLikeRow,
+  focusNoScroll,
+  inSightWhole,
+  useFocusPlace,
+} from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -395,7 +401,13 @@ function AgentMessageList({
   const [unsettled, holdThrough] = useReadBound();
   const holdThroughRead = () =>
     holdThrough(
-      queryClient.invalidateQueries({ queryKey: agentConversationQuery(agent.session_id).queryKey })
+      // Read again waiting on a fetch the network has paused: this hold has a bound of its own
+      // (`waitingForPausedReads`, `useReadBound`).
+      waitingForPausedReads(queryClient, () =>
+        queryClient.invalidateQueries({
+          queryKey: agentConversationQuery(agent.session_id).queryKey,
+        })
+      )
     );
   const clearedBefore = agentState.data?.[agent.session_id]?.cleared_before;
   const all = messages.data ?? [];
@@ -959,8 +971,8 @@ const GROUP_FILTER_LABELS: ReadonlyMap<string, string> = new Map(
 /**
  * The one row the page's controls sit in: the search box, the one trigger over the three
  * narrowings that are no column of a table here - group, machine and role - and the chips of
- * the values that are on (INFRA-3135, R1 and R3). Each narrowing is still a multi-select whose
- * panel holds a text box that narrows its own options (R7: never a dropdown), because forty
+ * the values that are on. Each narrowing is still a multi-select whose panel holds a text box
+ * that narrows its own options, because forty
  * machines cannot be read in a list that does not search; all three now sit behind one trigger
  * rather than three of their own.
  */
@@ -1078,7 +1090,8 @@ function AgentFilterBar({
  * session missing from a list that is not `current` is counted as of unknown state, not as gone,
  * as the composer's chip names it. Clear selection goes with the selection it empties, and the
  * focus it held goes to the select-all checkbox before it, else, while no row matches and that
- * checkbox is disabled, to the search box (`useFocusPlace`).
+ * checkbox is disabled, to the search box, each only while the reader can see it, else to the
+ * main content's own stop with no scroll (`useFocusPlace`).
  */
 function SelectionHeader({
   current,
@@ -1163,6 +1176,14 @@ function rowNode(list: HTMLElement | null, sessionID: string): HTMLElement | nul
     [...(list?.querySelectorAll<HTMLElement>(AGENT_ROW_SELECTOR) ?? [])].find(
       (node) => node.dataset.agentRow === sessionID
     ) ?? null
+  );
+}
+
+/** The rows `list` draws now, in the order the page shows them: a row kept mounted but hidden in
+ *  a collapsed group is none of them. */
+function drawnRows(list: HTMLElement | null): HTMLElement[] {
+  return [...(list?.querySelectorAll<HTMLElement>(AGENT_ROW_SELECTOR) ?? [])].filter(
+    (node) => !node.hidden
   );
 }
 
@@ -1443,11 +1464,18 @@ export function AgentsPage(): ReactNode {
    *  `IssueBoard`'s `focusAfterMove` lands on a collapsed rail, so the next `j`/`k` go on from
    *  the reader's place rather than from the top (`useAgentsKeymap` steps from a heading too). */
   const focusAfterPin = useRef<string | null>(null);
+  /** Where that row stood among the rows the list drew, until the render that moves it: the
+   *  place the row after it moves into, which takes the focus where the moved row's own control
+   *  ends out of the reader's sight. -1 while no pin is waiting. */
+  const pinnedFromPlace = useRef(-1);
   const togglePin = (sessionID: string) => {
     if (
       closestMatching(document.activeElement, AGENT_ROW_SELECTOR)?.dataset.agentRow === sessionID
     ) {
       focusAfterPin.current = sessionID;
+      pinnedFromPlace.current = drawnRows(listRef.current).findIndex(
+        (node) => node.dataset.agentRow === sessionID
+      );
     }
     writePin(sessionID, !pinned.includes(sessionID));
   };
@@ -1550,6 +1578,8 @@ export function AgentsPage(): ReactNode {
     const sessionID = focusAfterPin.current;
     if (sessionID === null) return;
     focusAfterPin.current = null;
+    const place = pinnedFromPlace.current;
+    pinnedFromPlace.current = -1;
     const row = rowNode(listRef.current, sessionID);
     if (row === null) return;
     // A row the pin leaves hidden is in a collapsed group: it held focus, so the filters match
@@ -1558,6 +1588,22 @@ export function AgentsPage(): ReactNode {
     // Only the focus the move took is the page's to give back: still on the row, now hidden, or
     // dropped to the document.
     const focused = document.activeElement;
+    // The move can leave the focus on a control of the row itself, which the browser puts back
+    // where the row now stands: measured in WebKit at 390x664, Unpin on the first of three
+    // pinned agents left the focus on that row's Pin at 816 px in a 664 px window. A landing is
+    // one the reader can see, and nothing scrolls to reach it, so the focus goes with no scroll
+    // to the control standing where this one does in the row now at the moved row's place
+    // (`controlsLikeRow`), else that row's first control. A control the reader can see whole
+    // keeps the focus, so the page still follows the row wherever it stays in sight.
+    if (focused instanceof HTMLElement && focused !== row && row.contains(focused)) {
+      if (inSightWhole(focused, new Map())) return;
+      const at = drawnRows(listRef.current)[place];
+      if (at === undefined || at === row) return;
+      for (const control of controlsLikeRow(at, focused, row)) {
+        if (focusNoScroll(control)) return;
+      }
+      return;
+    }
     if (focused !== row && !focusOnDocument()) return;
     if (focused !== target) target?.focus();
   }, [pinned]);

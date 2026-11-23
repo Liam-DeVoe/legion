@@ -114,7 +114,7 @@ type ToolbarPanel = "flags" | "view";
  * The one row the List's controls sit in: the search box, the trigger over the three flags that
  * narrow no column of the table, the chips of every narrowing that is on - the issues a link
  * names (`only=`), the flags, and every column's filter - **Clear filters** (which the row
- * draws), the columns menu, and the display menu carrying the grouping (INFRA-3135, R1 and R3).
+ * draws), the columns menu, and the display menu carrying the grouping.
  * A column's filter is set on that column's header, where `ColumnFilter` draws it, and its chip
  * is drawn here as well, so a column the reader hid keeps its narrowing in sight.
  */
@@ -342,7 +342,7 @@ export function IssueTableSelection({
   const [picking, setPicking] = useState(false);
   const epicTitles = new Map(epics.map((option) => [option.key, option.title]));
   return (
-    // Over the list, not in it: selecting a row moves no row (INFRA-3135, R4).
+    // Over the list, not in it: selecting a row moves no row.
     <SelectionBar
       count={selectedKeys.length}
       label="Selected issues"

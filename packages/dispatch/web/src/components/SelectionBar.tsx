@@ -320,9 +320,9 @@ function markShown(
  * The one bar a page shows while rows are marked: how many, what one press does to all of them,
  * and the way out.
  *
- * It is `fixed`, over the list rather than in it, which is what keeps the height rule
- * (INFRA-3135, R1): selecting a row must leave the top of the list's first row where it was, and
- * a bar drawn in the page would push every row down the moment the first one was marked. It sits
+ * It is `fixed`, over the list rather than in it, which is what keeps the list's height:
+ * selecting a row leaves the top of the list's first row where it was, and a bar drawn in the
+ * page would push every row down the moment the first one was marked. It sits
  * under the header on a narrow screen and at the foot of the screen from `sm`, so the rows a
  * reader is marking stay in sight at either width.
  *

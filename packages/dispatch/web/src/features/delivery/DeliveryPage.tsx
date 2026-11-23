@@ -357,7 +357,7 @@ function OwnColourPicker({
 }
 
 /** The four facets that are no column of the list, so the one trigger of the control row holds
- *  them in both views (INFRA-3135, R3). */
+ *  them in both views. */
 const PANEL_FACETS: { key: PanelFacet; label: string }[] = [
   { key: "repo", label: "Repository" },
   { key: "session", label: "Session" },
@@ -432,7 +432,7 @@ function Facet({
 
 /**
  * The one row the page's controls sit in: the search box, the one trigger over the facets, and
- * a chip for every value that is on (INFRA-3135, R1 and R3), so every facet can be set and taken
+ * a chip for every value that is on, so every facet can be set and taken
  * off from this row in either view.
  *
  * The panel holds the four facets that are no column of the list. While the list is drawn

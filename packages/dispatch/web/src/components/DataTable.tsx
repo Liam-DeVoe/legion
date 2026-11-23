@@ -525,11 +525,13 @@ function TableHeaderCell<TData>({
  *
  * A focused control a commit takes out of a drawn row that stays - the List's Start next once
  * its issue starts next - hands the focus to the control now at its place in that row, else to
- * the one before it, else to the row itself, which takes the focus as the row keys' `focusRow`
- * gives it. A row that leaves altogether is no case of this: the selection bar and the page's
- * own hand-offs answer for it. Nor is a focused row the box scrolls out of its drawn window: it
- * goes with the focus, which the shell's focus rescue leaves on the page rather than pull the
- * box back to where the row was (`useFocusRescue`).
+ * the one before it, passing over every control that takes typed text, else to the row itself,
+ * which takes the focus as the row keys' `focusRow` gives it, each only while the reader can see
+ * it, else to the main content's own stop with no scroll (`useFocusPlace`). A row that leaves
+ * altogether is no case of this: the selection bar and the page's own hand-offs answer for it.
+ * Nor is a focused row the box scrolls out of its drawn window: it goes with the focus, which the
+ * shell's focus rescue leaves on the page rather than pull the box back to where the row was
+ * (`useFocusRescue`).
  *
  * The table says how many rows it has (`aria-rowcount`) and each drawn line where it sits among
  * them (`aria-rowindex`), so a screen reader hears the whole page's rows rather than the drawn

@@ -8,6 +8,7 @@ import {
   isArtifactNotFound,
   removedEvenIfGone,
 } from "../../api/client";
+import { waitingForPausedReads } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -245,7 +246,8 @@ export function RemoveDocument({
     // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
     // it go then, and the row says why the list is not read yet (`useReadBound`).
     onSuccess: (_result, removed) => {
-      const list = refreshArtifact(queryClient, removed);
+      // The read waits on a fetch the network had already paused, which that deadline ends too.
+      const list = waitingForPausedReads(queryClient, () => refreshArtifact(queryClient, removed));
       onRemoved?.(removed);
       return holdThrough(list);
     },

@@ -327,9 +327,10 @@ export function IssuesTable({
   // the toolbar goes with the notice it answers - the interrupted action's Finish and Dismiss, the
   // possible duplicate's Create anyway and Cancel new epic, the unanswered epic's Dismiss - and its
   // focus goes to the control now at its place among the notices, else the one before it, else
-  // the search box. Only the head and the notices are counted: the selection bar, the rows and
-  // the dialogs each hand the focus on themselves. The handler sits on the List's section, which
-  // stays in every branch.
+  // the search box. Each of these takes the focus only while the reader can see it; where none
+  // is in sight, the main content's own stop takes it with no scroll (`useFocusPlace`). Only the
+  // head and the notices are counted: the selection bar, the rows and the dialogs each hand the
+  // focus on themselves. The handler sits on the List's section, which stays in every branch.
   const sectionRef = useRef<HTMLElement>(null);
   const noticesRef = useRef<HTMLDivElement>(null);
   const noteFocus = useFocusPlace(

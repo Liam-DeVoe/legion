@@ -1411,6 +1411,57 @@ test("Take out of epic whose issues stay listed keeps the bar held until the lis
   expect(focusedName()).toBe("Select CORE-2");
 });
 
+/** React's switch for its warning about an update outside `act`, which Testing Library's own
+ *  waits turn off while they let the page's tasks run. */
+const reactGlobals = globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+
+// INFRA-3135 round 24 (the tester's, measured offline in builds Jobs infra-3135-d-h and -d-b at
+// 1440x900): the action's last step runs outside any event of the reader's - the turn a write's
+// answer takes, or the read's own bound - so React committed the bar's going at normal priority
+// and ran the bar's hand-off, a passive effect, in a later task: the bar went with the focus on
+// the page's body, and the next frame still showed the body. The going and the hand-off are one
+// render instead, committed in the turn the action ends in, so the focus is on the checkbox of
+// the issue marked last the moment the bar goes. Read in that turn alone: the read's answer is
+// let through and only the turns it takes are awaited, with no animation frame and no task of
+// React's scheduler, which is where a commit at normal priority and its passive effects would
+// run. React's own act queue is off for it, so these turns are the page's own.
+test("the bar's going and its hand-off are one render when the action ends outside the reader's event", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockImplementation(
+    async (request) => savedIssue(request.path.split("/").at(-1) ?? "") as never
+  );
+  restores.push(() => send.mockRestore());
+  const epic = issue("CORE-1", { labels: ["epic"], title: "Table epic" });
+  const { listing } = table(
+    [epic, issue("CORE-2", { parent: "CORE-1" }), issue("CORE-3", { parent: "CORE-1" })],
+    "",
+    { rescued: true }
+  );
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-3" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
+  const reread = Promise.withResolvers<IssueSummary[]>();
+  const reads = listing.mock.calls.length;
+  listing.mockImplementation(() => reread.promise);
+  const bar = screen.getByRole("toolbar", { name: "Selected issues" });
+  const takeOut = within(bar).getByRole("button", { name: "Take out of epic" });
+  act(() => takeOut.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+  const acting = reactGlobals.IS_REACT_ACT_ENVIRONMENT;
+  reactGlobals.IS_REACT_ACT_ENVIRONMENT = false;
+  try {
+    reread.resolve([epic, issue("CORE-2"), issue("CORE-3")]);
+    // Only the turns the read's own answer takes, and no more.
+    for (const _ of Array.from({ length: 40 })) await Promise.resolve();
+    expect(screen.queryByRole("toolbar", { name: "Selected issues" })).toBeNull();
+    expect(focusedName()).toBe("Select CORE-2");
+  } finally {
+    reactGlobals.IS_REACT_ACT_ENVIRONMENT = acting;
+  }
+  await act(async () => undefined);
+});
+
 // Start next over three queued issues writes one step at a time, and each step starts only once
 // the one before it is answered, long after the press that began the action. The whole action is
 // still that press's, so once the list read after it settles and the bar goes, the bar's hand-off

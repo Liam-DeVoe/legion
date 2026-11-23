@@ -1737,8 +1737,9 @@ function signedInWrites(): Writes {
 }
 
 /** A write `writes` makes at the reader's press, as a press's handler makes one, out until the
- *  case lands it: `land` answers it and waits until the press that awaits it has its answer. */
-function writeOf(writes: Writes): { land: () => Promise<void> } {
+ *  case answers it: `land` answers it and `refuse` has the server refuse it, each waiting until
+ *  the press that awaits it has its answer. */
+function writeOf(writes: Writes): { land: () => Promise<void>; refuse: () => Promise<void> } {
   const answer = Promise.withResolvers<object>();
   const made = writes.run({
     detail: null,
@@ -1754,6 +1755,10 @@ function writeOf(writes: Writes): { land: () => Promise<void> } {
     land: async () => {
       answer.resolve({});
       await made;
+    },
+    refuse: async () => {
+      answer.reject(new Error("Dispatch refused the write"));
+      await made.catch(() => undefined);
     },
   };
 }
@@ -2650,14 +2655,15 @@ test("a caused walk-back with only text boxes before the lost place lands on the
 });
 
 // (cb) A caused walk-back (ak) passes over every control out of the reader's sight, as it passes
-// over a text box (bz): a landing scrolls its control into view, and the nearest control before
-// the lost place can lie far from where the press put the reader. Jump to latest went once it had
-// scrolled an agent's transcript to its end, and the walk landed on the transcript's last control,
-// which scrolled the transcript back from its end, 2515 px down, to 1146 px, measured in Chromium.
-// The nearest control in sight before the lost place takes the focus, past one its
-// scroll box holds above that box's top edge and one the page holds above the window; where none
-// is in sight, the region's own stop takes it and nothing scrolls. By Enter, with Chromium's
-// `focusout` and without.
+// over a text box (bz): a landing may scroll its control to its nearest edge, and the nearest
+// control before the lost place can lie far from where the press put the reader. Jump to latest
+// went once it had scrolled an agent's transcript to its end, and the walk landed on the
+// transcript's last control, which scrolled the transcript back from its end, 2515 px down, to
+// 1146 px, measured in Chromium. The nearest control in sight before the lost place takes the
+// focus, past one its scroll box holds above that box's top edge and one the page holds above
+// the window; where none is in sight, the region's own stop takes it. Nothing scrolls either
+// way: the header the walk lands on stands wholly in sight, and only a landing partly in sight
+// is scrolled, to its nearest edge (`land`). By Enter, with Chromium's `focusout` and without.
 test("a caused walk-back passes over the controls out of sight to the nearest in sight, else the region's own stop", async () => {
   // Where each press landed and what it scrolled, and where it belongs.
   const landed: Record<string, string | null> = {};
@@ -2700,7 +2706,7 @@ test("a caused walk-back passes over the controls out of sight to the nearest in
             `${at}, scrolling ${scrolled.length === 0 ? "nothing" : scrolled.map((element) => element.textContent).join(", ")}`;
         });
         belongs[named] = headerShown
-          ? "Header, scrolling Header"
+          ? "Header, scrolling nothing"
           : "the region's own stop, scrolling nothing";
       }
     }
@@ -3923,9 +3929,11 @@ test("a component's hand-off with nothing in sight lands on its region's own sto
 });
 
 // (cf) A control any part of which is in the reader's sight is one a component's hand-off lands
-// on (`land`): focused, then scrolled to its nearest edge, the least distance that shows it whole.
-// The control before the lost one, cut by the window's top edge or by its bottom edge, takes the
-// focus and is scrolled by that edge alone.
+// on (`land`): focused with no scroll of the engine's own, then scrolled to its nearest edge, the
+// least distance that shows it whole. The control before the lost one, cut by the window's top
+// edge or by its bottom edge, takes the focus and is scrolled by that edge alone. The focus asks
+// for `preventScroll`, so the engine's own rule for a focused control - Chromium's and Firefox's
+// centring - moves nothing, and every engine shows the landing the same way.
 test("a component's hand-off lands on a control partly in sight and scrolls it to its nearest edge", () => {
   // What each hand-off asked of the page, and what it belongs to ask.
   const moved: Record<string, Move[]> = {};
@@ -3946,7 +3954,7 @@ test("a component's hand-off lands on a control partly in sight and scrolls it t
         }).moves
     );
     belongs[named] = [
-      { move: "focus", of: "One", options: undefined },
+      { move: "focus", of: "One", options: { preventScroll: true } },
       { move: "scroll", of: "One", options: NEAREST_EDGE },
     ];
   }
@@ -3956,9 +3964,9 @@ test("a component's hand-off lands on a control partly in sight and scrolls it t
 // (cg) A control wholly in the reader's sight takes the focus where a component's hand-off has
 // always put it: the control before the lost one, else, where the line holds no other control, the
 // line's fallback, as the Delivery page's Window list's trigger takes it from clear brush window.
-// Its landing asks for no scroll but the one to its nearest edge, which moves a control wholly in
-// sight not at all.
-test("a component's hand-off lands on a control wholly in sight where it always did, by a scroll that moves nothing", () => {
+// It asks for no scroll at all: the focus is taken with `preventScroll`, and a control wholly in
+// sight needs no scroll to its nearest edge.
+test("a component's hand-off lands on a control wholly in sight where it always did, and scrolls nothing", () => {
   // Where each hand-off landed and what it asked of the page, and where it belongs.
   const landed: Record<string, object> = {};
   const belongs: Record<string, object> = {};
@@ -3977,11 +3985,481 @@ test("a component's hand-off lands on a control wholly in sight where it always 
     );
     belongs[named] = {
       landed: target,
-      moves: [
-        { move: "focus", of: target, options: undefined },
-        { move: "scroll", of: target, options: NEAREST_EDGE },
-      ],
+      moves: [{ move: "focus", of: target, options: { preventScroll: true } }],
     };
+  }
+  expect(landed).toEqual(belongs);
+});
+
+/** The Inbox's Decline shape: a list of rows, each an `<li>` holding an ask card, with the first
+ *  card's **Decline to answer** opening a modal dialog at the end of the body, as `useDialog`
+ *  portals one, and the focus moved into the dialog's note box from that trigger, so the rescue
+ *  notes the trigger as the dialog's opener. */
+function declineDialogIn(main: HTMLElement): {
+  cancel: HTMLButtonElement;
+  decline: HTMLButtonElement;
+  dialog: HTMLElement;
+  rows: HTMLLIElement[];
+  trigger: HTMLButtonElement;
+} {
+  const list = document.createElement("ul");
+  main.append(list);
+  const rows = ["the lease format", "the rollout order"].map((question) => {
+    const row = document.createElement("li");
+    const card = document.createElement("article");
+    card.setAttribute("aria-label", `Which ${question}?`);
+    row.append(card);
+    list.append(row);
+    return { card, row };
+  });
+  const [first, second] = rows as [{ card: HTMLElement; row: HTMLLIElement }, (typeof rows)[0]];
+  buttonIn(first.card, "Reaches 1");
+  const trigger = buttonIn(first.card, "Decline to answer");
+  buttonIn(second.card, "Ship");
+  const { buttons, dialog } = modalOf("Cancel", "Decline the question");
+  const [cancel, decline] = buttons as [HTMLButtonElement, HTMLButtonElement];
+  trigger.focus();
+  enterPress(trigger);
+  cancel.focus();
+  return { cancel, decline, dialog, rows: rows.map(({ row }) => row), trigger };
+}
+
+// (cv) A Tab inside the region a press was made in, while that press's own write is out, leaves
+// the press live (`notePress`): the region's later going is the press's own doing. The Inbox's
+// Decline to answer opens its dialog, the reader presses the dialog's own Decline, and that
+// decline's write is out with the button held. The reader Tabs to Cancel, inside the dialog, and
+// then the decline lands: the dialog goes, and the row the question was asked in goes with it.
+// That loss is the reader's, so the focus is handed on from the place the dialog was opened from
+// (`handOn`'s opener), and lands on the next question's Ship, the first control of the row that
+// moved up into the place of the question's row (`controlsOfRowMovedUp`). Where the Tab ended the
+// press, the loss read as one the reader did not cause, and the focus stayed on the page
+// (measured at 390x664 in three engines). With Chromium's `focusout` for the control the dialog
+// took away, and with none.
+test("a Tab inside the region a press was made in leaves the press the cause of that region's going", async () => {
+  for (const withFocusout of [true, false]) {
+    const writes = signedInWrites();
+    await withRescue(async () => {
+      const { main } = mainOf("Before");
+      const { cancel, decline, dialog, rows, trigger } = declineDialogIn(main);
+      decline.focus();
+      enterPress(decline);
+      const write = writeOf(writes);
+      // Held while the decline is out, never disabled, so it keeps its Tab stop.
+      decline.setAttribute("aria-disabled", "true");
+      await settled();
+      // The reader's Tab, and the engine's move of the focus to the dialog's Cancel.
+      decline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
+      cancel.focus();
+      cancel.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Tab" }));
+      expect(cancel).toHaveFocus();
+      // The decline is still out several frames after the Tab, as the reader's wait is.
+      for (const _ of [0, 1, 2]) await settled();
+      await write.land();
+      // The commit the decline's answer makes: the dialog goes, and the question's row with it.
+      const goes = () => {
+        dialog.remove();
+        rows[0]?.remove();
+      };
+      if (withFocusout) lose(cancel, goes);
+      else goes();
+      await settled();
+      expect(trigger.isConnected).toBe(false);
+      expect(document.activeElement).not.toBe(document.body);
+      expect(focusedName()).toBe("Ship");
+    }, writes);
+  }
+});
+
+// (cw) The Tab still ends the rescue's wait for the control the press disabled, whoever caused
+// the loss (`readerMoved`, `noteKey`): the press stays live only to class a later loss in its
+// region as caused. A page control disabled under its own press drops the focus to the page, the
+// reader Tabs to the control before it, and the write is then refused and the control enabled
+// again: the focus stays where the reader put it. The wait's own settle asks the same twice over,
+// since it moves nothing while the focus is not lost (`focusLost`). The refused write ends the
+// press the Tab left live, so a control taken away after that is a loss the reader did not
+// cause, and the focus stays on the page.
+test("a Tab inside the press's region still ends the give-back to a control the write's refusal enables again", async () => {
+  const writes = signedInWrites();
+  await withRescue(async () => {
+    const [before, saving, after] = mainOf("Before", "Save", "After").buttons;
+    const save = saving as HTMLButtonElement;
+    save.focus();
+    enterPress(save);
+    const write = writeOf(writes);
+    // Chromium fires the `focusout` just after the disable; happy-dom blurs no disabled button.
+    save.blur();
+    save.disabled = true;
+    await settled();
+    expect(document.activeElement).toBe(document.body);
+    // The reader's Tab from the page to the control before the one that was disabled.
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
+    before?.focus();
+    document.body.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Tab" }));
+    await write.refuse();
+    save.disabled = false;
+    await settled();
+    await settled();
+    expect(before).toHaveFocus();
+    expect(save).not.toHaveFocus();
+    expect(after).not.toHaveFocus();
+    // A live update takes the control the reader Tabbed to away, after their press is answered.
+    before?.remove();
+    await settled();
+    expect(document.activeElement).toBe(document.body);
+    expect(save).not.toHaveFocus();
+  }, writes);
+});
+
+// (cx) The control now at the lost control's place is one that moved into that place from the
+// lost control's own row, card or toolbar (`atPlaceOf`). A control that only takes its index in
+// the region's Tab order, from another row or item, stands at no place of its: the walk back
+// passes it and goes on to the nearest control before the place, which is the lost control's own
+// card. An Inbox card lists Unfollow and Unsubscribe for the question's recipients, and the next
+// question's row draws its own Select checkbox after them. The reader's Unsubscribe takes its own
+// chip away: the focus lands on Unfollow, in the card, and never on the next question's checkbox,
+// which at the head took Unsubscribe's index (measured at 390x664 in three engines, INFRA-3135
+// round 24). With Chromium's `focusout` and without.
+test("a control lost from a card lands on the card's control before the place, not on the next row's control at its index", async () => {
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const { main } = mainOf("Before");
+      const list = document.createElement("ul");
+      main.append(list);
+      const row = document.createElement("li");
+      const card = document.createElement("article");
+      row.append(card);
+      list.append(row);
+      const recipients = document.createElement("ul");
+      card.append(recipients);
+      const chips = ["Unfollow", "Unsubscribe"].map((label) => {
+        const chip = document.createElement("li");
+        recipients.append(chip);
+        return { button: buttonIn(chip, label), chip };
+      });
+      const next = document.createElement("li");
+      list.append(next);
+      const mark = document.createElement("input");
+      mark.type = "checkbox";
+      mark.setAttribute("aria-label", "Select CORE-3");
+      next.append(mark);
+      const [unfollow, unsubscribe] = chips as [(typeof chips)[0], (typeof chips)[0]];
+      unsubscribe.button.focus();
+      enterPress(unsubscribe.button);
+      // The write lands and the subscriber's chip goes with it.
+      if (withFocusout) lose(unsubscribe.button, () => unsubscribe.chip.remove());
+      else unsubscribe.chip.remove();
+      await settled();
+      expect(focusedName()).toBe("Unfollow");
+      expect(unfollow.button).toHaveFocus();
+      expect(mark).not.toHaveFocus();
+    });
+  }
+});
+
+// (cy) A landing the reader caused is focused with no scroll of the engine's own and is shown at
+// its nearest edge where the reader can see a part of it but not the whole: the least distance
+// that shows it whole (`land`). One wholly in sight is not scrolled at all. Without
+// `preventScroll` the engine's own rule decides: Chromium and Firefox centre a control that is
+// not wholly in view, and Firefox moved a landing half cut by a dialog's top edge 405 px
+// (INFRA-3135, test handoff v21).
+test("a caused landing partly in sight is shown at its nearest edge and no further, and one wholly in sight scrolls nothing", async () => {
+  // What the rescue asked of the page for each landing, and what it belongs to ask.
+  const moved: Record<string, Move[]> = {};
+  const belongs: Record<string, Move[]> = {};
+  for (const [named, top] of [
+    ["partly in sight", -20],
+    ["wholly in sight", 300],
+  ] as const) {
+    const moves: Move[] = [];
+    const realFocus = HTMLElement.prototype.focus;
+    const focus = spyOn(HTMLElement.prototype, "focus").mockImplementation(function (
+      this: HTMLElement,
+      options?: FocusOptions
+    ) {
+      moves.push({ move: "focus", of: nameOf(this), options });
+      realFocus.call(this, options);
+    });
+    const scroll = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+      this: Element,
+      options?: boolean | ScrollIntoViewOptions
+    ) {
+      moves.push({ move: "scroll", of: nameOf(this), options });
+    });
+    try {
+      await withRescue(async () => {
+        const [first, second] = mainOf("One", "Two").buttons;
+        placeAt(first as HTMLElement, top);
+        second?.focus();
+        enterPress(second as HTMLElement);
+        lose(second as HTMLElement);
+        await settled();
+        expect(first).toHaveFocus();
+      });
+    } finally {
+      focus.mockRestore();
+      scroll.mockRestore();
+    }
+    moved[named] = moves.filter((move) => move.of === "One");
+    belongs[named] = [
+      { move: "focus", of: "One", options: { preventScroll: true } },
+      ...(top < 0 ? [{ move: "scroll" as const, of: "One", options: NEAREST_EDGE }] : []),
+    ];
+  }
+  expect(moved).toEqual(belongs);
+});
+
+/** An Inbox list in `main`, built by hand: a question's row holding its card, whose recipients are
+ *  drawn as one list of chips per group - each chip the session's name link, then its remove
+ *  button - for a follower's Unfollow and a subscriber's Unsubscribe, and the next question's row
+ *  with its Select checkbox. Answers the subscribers' list and its Unsubscribe. */
+function recipientsCard(main: HTMLElement): { chips: HTMLElement; remove: HTMLButtonElement } {
+  const list = document.createElement("ul");
+  main.append(list);
+  const row = document.createElement("li");
+  const card = document.createElement("article");
+  row.append(card);
+  list.append(row);
+  // A list of one chip: the session's name link, then its remove button.
+  const chipList = (name: string, label: string) => {
+    const chips = document.createElement("ul");
+    card.append(chips);
+    const chip = document.createElement("li");
+    chips.append(chip);
+    const link = document.createElement("a");
+    link.href = `/agents/${name}`;
+    link.textContent = name;
+    chip.append(link);
+    return { chips, remove: buttonIn(chip, label) };
+  };
+  chipList("Replier", "Unfollow");
+  const subscribers = chipList("Watcher", "Unsubscribe");
+  const next = document.createElement("li");
+  list.append(next);
+  const mark = document.createElement("input");
+  mark.type = "checkbox";
+  mark.setAttribute("aria-label", "Select CORE-3");
+  next.append(mark);
+  return subscribers;
+}
+
+// (cz) The place of a control a commit takes away is counted off the spot it went from, in
+// Chromium as in Firefox and WebKit. An Inbox card's subscriber chip draws the subscriber's name
+// link before its Unsubscribe, and the chip's list goes with both once the write lands. Chromium
+// fires the Unsubscribe's `focusout` while the link still stands before it: counted there, the
+// place lies one past the place the list left, and the walk back starts at the next question's
+// Select checkbox, which now stands after that place (measured at 390x664 in Chromium alone).
+// Counted off the spot the list went from, the control now at the place is that checkbox, of
+// another row, so the walk goes back to the card's Unfollow (`atPlaceOf`). With Chromium's
+// `focusout` and without.
+test("a control taken away with a control before it in its chip lands on the card's control before the place, not on the next row's control", async () => {
+  const landed: Record<string, string | null> = {};
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const subscribers = recipientsCard(mainOf("Before").main);
+      subscribers.remove.focus();
+      enterPress(subscribers.remove);
+      // The write lands, and the subscribers' list goes with the name link and the Unsubscribe.
+      if (withFocusout) lose(subscribers.remove, () => subscribers.chips.remove());
+      else subscribers.chips.remove();
+      await settled();
+      landed[withFocusout ? "with Chromium's focusout" : "without"] = focusedName();
+    });
+  }
+  expect(landed).toEqual({ "with Chromium's focusout": "Unfollow", without: "Unfollow" });
+});
+
+// (da) The same place for a control disabled under the focus and then taken away. Its loss is
+// noted at a `focusout` while it still stands in the page: every engine's at the disable, or
+// Chromium's at the removal where that comes before the disable's own. Counted there, the place
+// takes in the name link that goes with it, and the walk back starts at the next question's
+// Select checkbox. Counted again off the removal that takes the control while the loss's check or
+// its wait on the held control is out, the focus lands on the card's Unfollow, as for a control
+// taken away with no `focusout`.
+test("a control disabled under the focus and then taken away with a control before it lands on the card's control before the place", async () => {
+  const ways = [
+    "focusout at the disable",
+    "Chromium's focusout at the removal",
+    "no focusout",
+  ] as const;
+  const landed: Record<string, string | null> = {};
+  for (const way of ways) {
+    await withRescue(async () => {
+      const subscribers = recipientsCard(mainOf("Before").main);
+      const unsubscribe = subscribers.remove;
+      unsubscribe.focus();
+      enterPress(unsubscribe);
+      if (way === "focusout at the disable") {
+        // happy-dom blurs no disabled button, so the `focusout` comes just before the disable, as
+        // in (c). The rescue then waits on the held control, until the write's answer takes the
+        // subscribers' list away.
+        unsubscribe.blur();
+        unsubscribe.disabled = true;
+        await settled();
+        subscribers.chips.remove();
+        await settled();
+      } else {
+        unsubscribe.disabled = true;
+        if (way === "no focusout") subscribers.chips.remove();
+        else lose(unsubscribe, () => subscribers.chips.remove());
+      }
+      await settled();
+      landed[way] = focusedName();
+    });
+  }
+  expect(landed).toEqual(Object.fromEntries(ways.map((way) => [way, "Unfollow"])));
+});
+
+/** The card of `recipientsCard`, drawn by React inside a list that hands its own focus off
+ *  (`useFocusPlace`), the list its container. Drawn again without `subscribers`, it takes the
+ *  subscribers' list away with the name link and the Unsubscribe. */
+function RecipientsList(props: { readonly subscribers: boolean }): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  const noteFocus = useFocusPlace(
+    (element) => (list.current?.contains(element) ? list.current : null),
+    () => null
+  );
+  // A list of one chip: the session's name link, then its remove button.
+  const chipList = (name: string, label: string) =>
+    createElement(
+      "ul",
+      { key: name },
+      createElement(
+        "li",
+        null,
+        createElement("a", { href: `/agents/${name}` }, name),
+        createElement("button", { type: "button" }, label)
+      )
+    );
+  return createElement(
+    "ul",
+    { onFocus: noteFocus, ref: list },
+    createElement(
+      "li",
+      null,
+      createElement(
+        "article",
+        null,
+        chipList("Replier", "Unfollow"),
+        props.subscribers ? chipList("Watcher", "Unsubscribe") : null
+      )
+    ),
+    createElement(
+      "li",
+      null,
+      createElement("input", { "aria-label": "Select CORE-3", type: "checkbox" })
+    )
+  );
+}
+
+// (db) A component's own hand-off counts the same place off the spot the control went from in
+// its container (`useFocusPlace`). Counted while the Unsubscribe still stood there, the place takes
+// in the name link that went with it, and the walk back starts at the next question's Select
+// checkbox. With the page's rescue mounted, and with Chromium's `focusout` and without: the
+// component's hand-off answers in the commit that takes the list away, before the rescue's check.
+test("a component's hand-off for a control taken away with a control before it lands on the card's control before the place", async () => {
+  const landed: Record<string, string | null> = {};
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const { main } = mainOf();
+      const view = render(createElement(RecipientsList, { subscribers: true }), {
+        container: main,
+      });
+      try {
+        const unsubscribe = [...main.querySelectorAll("button")].find(
+          (button) => button.textContent === "Unsubscribe"
+        ) as HTMLButtonElement;
+        unsubscribe.focus();
+        enterPress(unsubscribe);
+        // The write lands, and the commit takes the subscribers' list away.
+        const answer = () => view.rerender(createElement(RecipientsList, { subscribers: false }));
+        if (withFocusout) lose(unsubscribe, answer);
+        else answer();
+        await settled();
+        landed[withFocusout ? "with Chromium's focusout" : "without"] = focusedName();
+      } finally {
+        view.unmount();
+      }
+    });
+  }
+  expect(landed).toEqual({ "with Chromium's focusout": "Unfollow", without: "Unfollow" });
+});
+
+// (dc) The same place for a control hidden under the focus with the name link before it, its list
+// hidden rather than taken away. Its loss can be noted at a `focusout` while the list still
+// stands: one at a `blur()` before the hide, or at a disable before the list is hidden while the
+// rescue waits on the held control. Counted there, the place takes in the name link hidden with
+// it, and the walk back starts at the next question's Select checkbox. Counted where the control
+// still stands as the loss is answered, the focus lands on the card's Unfollow, as it does for a
+// `focusout` that comes once the list is hidden, as an engine's focus fixup fires it.
+test("a control hidden under the focus with a control before it lands on the card's control before the place", async () => {
+  const ways = [
+    "focusout before the hide",
+    "focusout at the disable, hidden in the wait",
+    "focusout after the hide",
+  ] as const;
+  const landed: Record<string, string | null> = {};
+  for (const way of ways) {
+    await withRescue(async () => {
+      const subscribers = recipientsCard(mainOf("Before").main);
+      const unsubscribe = subscribers.remove;
+      unsubscribe.focus();
+      enterPress(unsubscribe);
+      if (way === "focusout before the hide") {
+        unsubscribe.blur();
+        subscribers.chips.hidden = true;
+      } else if (way === "focusout after the hide") {
+        subscribers.chips.hidden = true;
+        unsubscribe.blur();
+      } else {
+        // happy-dom blurs no disabled button, so the `focusout` comes just before the disable, as
+        // in (c). The rescue then waits on the held control, until the write's answer hides the
+        // subscribers' list.
+        unsubscribe.blur();
+        unsubscribe.disabled = true;
+        await settled();
+        subscribers.chips.hidden = true;
+        await settled();
+      }
+      await settled();
+      landed[way] = focusedName();
+    });
+  }
+  expect(landed).toEqual(Object.fromEntries(ways.map((way) => [way, "Unfollow"])));
+});
+
+// (dd) The same place for the control a dialog was opened from. The reader opens a confirm
+// dialog from the subscriber's Unsubscribe and presses its Confirm, which takes the dialog away,
+// and the same commit takes the subscribers' list away with the name link and the Unsubscribe,
+// or hides it. The focus goes back to where the dialog was opened from (`handOn`). The opener's
+// place was counted as the focus left it for the dialog, with the name link standing before it,
+// so the walk back would start at the next question's Select checkbox. Counted off the spot the
+// opener went from, or where it still stands while hidden (`openerPlace`), the focus lands on the
+// card's Unfollow. With Chromium's `focusout` for the dialog's Confirm and without.
+test("a walk back from a dialog's opener that went or was hidden with a control before it lands on the card's control before the place", async () => {
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const way of ["taken away", "hidden"] as const) {
+    for (const withFocusout of [true, false]) {
+      const named = `${way}, ${withFocusout ? "with Chromium's focusout" : "without"}`;
+      await withRescue(async () => {
+        const subscribers = recipientsCard(mainOf("Before").main);
+        const { buttons, dialog } = modalOf("Confirm");
+        const confirm = buttons[0] as HTMLButtonElement;
+        subscribers.remove.focus();
+        confirm.focus();
+        enterPress(confirm);
+        const answer = () => {
+          dialog.remove();
+          if (way === "hidden") subscribers.chips.hidden = true;
+          else subscribers.chips.remove();
+        };
+        if (withFocusout) lose(confirm, answer);
+        else answer();
+        await settled();
+        landed[named] = focusedName();
+      });
+      belongs[named] = "Unfollow";
+    }
   }
   expect(landed).toEqual(belongs);
 });

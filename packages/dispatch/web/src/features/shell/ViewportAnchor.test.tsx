@@ -577,6 +577,34 @@ test("a live update that takes rows away above the view keeps the rows in view w
   }
 });
 
+// The reader's own Dismiss takes away the row their hand is on, not one above it: the row the
+// host names as leaving is the current row. The browser's own scroll anchoring would hold the
+// view against that row's going, which is the shift this component lets happen - measured in the
+// Inbox at 390x664, a thread's Dismiss moved the window from 437 px to 0 in Chromium, Firefox
+// and WebKit - so it is turned off for that commit as it is for a row above, and back on two
+// frames later. The anchor makes nothing up for a row that has gone, so it scrolls nothing.
+test("the row the host names as leaving being the focused row itself turns the browser's scroll anchoring off for that commit", async () => {
+  const going = (id: string) => id === "r6";
+  const view = render(<List leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r6").focus();
+    expect(chosen()).toEqual({ id: "r6", via: "focus" });
+
+    view.rerender(<List leaving={going} rows={ids(12).filter((id) => !going(id))} />);
+    expect(document.querySelector('[data-row="r6"]')).toBeNull();
+    expect(window.scrollY).toBe(100);
+    expect(anchoringSeen.at(-1)).toBe("none");
+    expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("none");
+    await frames(1);
+    expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("none");
+    await frames(1);
+    expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
 // The reader's press takes the last rows of a kind away, and a control the page offers only while
 // such rows are listed goes with them: below `sm` the Inbox's header loses the line its Mark all
 // read stood on. That shrink is the press's doing as much as the rows' going, so the rows move up

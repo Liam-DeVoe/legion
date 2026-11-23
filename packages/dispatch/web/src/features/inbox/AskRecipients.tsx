@@ -10,6 +10,7 @@ import {
 } from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
+import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { textMutedOnSurface } from "../../theme/classes";
@@ -220,11 +221,17 @@ type Confirming =
  * a subscriber's Unsubscribe each confirm first, name what still reaches the session (a
  * subscription, the claim or the route, or that a role route nobody is known to hold may, while
  * its reach is unknown), and then cut the route that actually delivers; the claim and route rows
- * have no control, since both change on the issue. A subscriber whose only matching topic is
- * wider than this owner (e.g. `notifications.dispatch.>`) names that topic and has no control,
- * as the header's Subscribed agents panel does. When the subscribers fetch fails, the card says
- * so with a retry - the shared refilling notice while Envoy's agent list refills - and counts
- * nobody, instead of passing the follower count off as the whole set.
+ * have no control, since both change on the issue. Every Unfollow is held from the press that
+ * confirms one until the commit after its write's answer, and every Unsubscribe the same way
+ * (`useHeldThroughAnswer`), never disabled: the dialog hands the focus back to the one that
+ * opened it, which keeps it, and a press of a held one opens nothing. A write stays pending
+ * until the read its landing starts has answered, which is the read that takes the session's
+ * chip away, so the page's rescue reads the chip's going as the press's doing
+ * (`causedByReader`). A subscriber whose only matching topic is wider than this owner (e.g.
+ * `notifications.dispatch.>`) names that topic and has no control, as the header's Subscribed
+ * agents panel does. When the subscribers fetch fails, the card says so with a retry - the
+ * shared refilling notice while Envoy's agent list refills - and counts nobody, instead of
+ * passing the follower count off as the whole set.
  */
 export function AskRecipients({
   askId,
@@ -307,6 +314,8 @@ export function AskRecipients({
     onSuccess: (_result, press) =>
       queryClient.invalidateQueries({ queryKey: ["subscribers", press.subscription?.id] }),
   });
+  const unfollowHeld = useHeldThroughAnswer(unfollow.isPending);
+  const unsubscribeHeld = useHeldThroughAnswer(unsubscribe.isPending);
 
   if (
     followers.length === 0 &&
@@ -362,10 +371,9 @@ export function AskRecipients({
                   </span>
                   <button
                     className={sessionRemoveButtonClassName}
-                    disabled={unfollow.isPending}
-                    onClick={() =>
+                    {...heldPress(unfollowHeld, () =>
                       setConfirming({ kind: "follower", sessionId: follower.session_id })
-                    }
+                    )}
                     type="button"
                   >
                     Unfollow
@@ -417,10 +425,9 @@ export function AskRecipients({
                     {subscriber.removable ? (
                       <button
                         className={sessionRemoveButtonClassName}
-                        disabled={unsubscribe.isPending}
-                        onClick={() =>
+                        {...heldPress(unsubscribeHeld, () =>
                           setConfirming({ kind: "subscriber", sessionId: subscriber.session_id })
-                        }
+                        )}
                         type="button"
                       >
                         Unsubscribe
