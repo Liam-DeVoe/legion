@@ -1196,7 +1196,9 @@ func FeedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.
 // that succeeded. Each attempt's stderr is scrubbed of every token held (fetchCredential.scrub),
 // and the classifiers decide on that, git's phrases as git wrote them; what leaves the process of
 // it, the error this answers and the line a retry logs, is read once more by the fail-closed rule
-// (oauth2call.Field), which prints a stderr it cannot read as clean as WordsNotReadable.
+// (oauth2call.Field), which prints a stderr it cannot read as clean as WordsNotReadable, and on one
+// line. It reads the text after the URL rule, as remote.shown does and for its reason: a redirect
+// refusal read before it would print as WordsNotReadable.
 func transferWithRetries(ctx context.Context, run Runner, request FetchRequest, transfer feedTransfer, held *fetchCredential, deadline time.Time) (Result, error) {
 	now := request.Clock.Now()
 	if _, err := remaining(request, deadline, "the "+transfer.verb+" from GitHub"); err != nil {

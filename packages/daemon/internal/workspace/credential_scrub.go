@@ -12,7 +12,12 @@ import (
 // fetch's (ensureFetchConfiguration), which Provision returns to the daemon's outbox
 // (outbox.provisionIn) and to workspace-init's caller. It is scrub's text read once more by the
 // fail-closed rule (oauth2call.Field), which prints it as WordsNotReadable where it cannot read a
-// URL in it as clean, and on one line.
+// URL in it as clean, and on one line (Go-quoted where git wrote more than one). The rule reads the
+// text after the URL rule, by design: git's refusal of a redirect names the asked-for URL with its
+// query and more text after it, which the rule cannot read as clean, so read before the URL rule
+// every such refusal would print as WordsNotReadable. What that order gives up is a query value
+// whitespace parts from its URL (`?access_token= <value>`): the URL rule takes its `?…=` away, and
+// the fail-closed rule then reads the value as a word.
 func (r remote) shown(text string) string {
 	return oauth2call.Field(strings.TrimSpace(r.scrub(text)))
 }
