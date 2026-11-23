@@ -6,9 +6,10 @@ import type { EvalListResponse } from "../../api/types";
 import { EvalsHeader } from "./EvalsHeader";
 import { EvalsSection } from "./EvalsSection";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
+import { LegionSection } from "./LegionSection";
 import { TargetCards } from "./TargetCards";
 import { useEvalsScope } from "./useEvalsScope";
-import type { EvalsScope } from "./useEvalsViews";
+import type { EvalsScope, EvalsViewState } from "./useEvalsViews";
 
 /** The views each section reads, by kind: the target cards read the delivery and the Legion evals
  *  (plan D3), the Deploys and lead time section the same delivery view as the cards, and the
@@ -71,6 +72,24 @@ function LiveHeader({
   );
 }
 
+/** What a section draws of its views: its own charts and lists, or, for a section that has none
+ *  of its own, `EvalsSection`'s list of its evals. */
+function drawSection(
+  id: string,
+  project: string,
+  scope: EvalsScope,
+  delivery: boolean
+): ((views: readonly EvalsViewState[]) => ReactNode) | undefined {
+  switch (id) {
+    case "cards":
+      return (views) => <TargetCards delivery={delivery} project={project} views={views} />;
+    case "legion":
+      return (views) => <LegionSection project={project} repos={scope.repos} views={views} />;
+    default:
+      return undefined;
+  }
+}
+
 /**
  * A project's Evals tab (`/projects/<KEY>/evals`, dispatch://INFRA-2918/spec R1, R2, R3, R5): its
  * one page of numbers, every project's alike, under one header. It is a subscriber: it opens one
@@ -103,9 +122,7 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
           scope={scope}
           title={section.title}
         >
-          {section.id === "cards"
-            ? (views) => <TargetCards delivery={delivery} project={project} views={views} />
-            : undefined}
+          {drawSection(section.id, project, scope, delivery)}
         </EvalsSection>
       ))}
     </div>

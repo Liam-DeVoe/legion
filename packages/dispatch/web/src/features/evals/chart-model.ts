@@ -365,3 +365,107 @@ export function chartSeries(
     target: context.target,
   };
 }
+
+/** One series a section's chart draws of an eval: its name in the eval, and how it shows. */
+export interface ChartSeriesSpec {
+  readonly name: string;
+  readonly spec: SeriesSpec;
+}
+
+/** What names a section's chart of one eval: its name (`data-chart`, the eval's slug), its
+ *  renderer's kind and its title. */
+export interface ChartHead {
+  readonly name: string;
+  readonly kind: string;
+  readonly title: string;
+}
+
+/** A section's chart of `item`, one eval of `answer`, a day at a time: each of `series` the eval
+ *  holds, judged by its verdict, over the answer's window and compare range; null where it holds
+ *  none of them. */
+export function dayChartModel(
+  answer: EvalListResponse,
+  item: EvalListItem,
+  head: ChartHead,
+  series: readonly ChartSeriesSpec[],
+  nowMs: number
+): ChartModel | null {
+  const context = {
+    compare: answer.compare,
+    nowMs,
+    target: targetOf(item.verdict),
+    window: answer.window,
+  };
+  const drawn = series.flatMap(({ name, spec }) => {
+    const values = item.series?.find((candidate) => candidate.series === name);
+    return values === undefined ? [] : [chartSeries(values, spec, context)];
+  });
+  if (drawn.length === 0) return null;
+  return {
+    axis: DAY_AXIS,
+    comparable: true,
+    compareRange: answer.compare,
+    kind: head.kind,
+    name: head.name,
+    series: drawn,
+    title: head.title,
+  };
+}
+
+/** One place of a category chart: the eval's series it is (a Legion role's), and its label. */
+export interface Category {
+  readonly name: string;
+  readonly label: string;
+}
+
+/**
+ * A section's chart of `item` with one place per category over the whole window, each category one
+ * series of the eval (a Legion role's bar), its window figures, compare values and changes as that
+ * series states them (`chartSeries`'s window point), each statistic of `spec`. The chart draws them
+ * as one series named `series`, whose places are named by the eval's series (`data-x`); what the
+ * categories' series say of their input and of the rows counted by default repository is the
+ * first's they share. Null where the eval holds none of the categories.
+ */
+export function categoryChartModel(
+  answer: EvalListResponse,
+  item: EvalListItem,
+  head: ChartHead & { readonly axis: ChartAxis; readonly series: string },
+  categories: readonly Category[],
+  spec: SeriesSpec,
+  nowMs: number
+): ChartModel | null {
+  const context = { compare: answer.compare, nowMs, target: null, window: answer.window };
+  const drawn = categories.flatMap(({ name, label }) => {
+    const values = item.series?.find((candidate) => candidate.series === name);
+    if (values === undefined) return [];
+    const one = chartSeries(values, spec, context);
+    return [{ one, point: { ...one.window, x: name, label } }];
+  });
+  const first = drawn[0]?.one;
+  if (first === undefined) return null;
+  return {
+    axis: head.axis,
+    comparable: true,
+    compareRange: answer.compare,
+    kind: head.kind,
+    name: head.name,
+    series: [
+      {
+        ...first,
+        headline: [],
+        label: head.title,
+        name: head.series,
+        points: drawn.map(({ point }) => point),
+        window: {
+          change: null,
+          compare: null,
+          label: "Window",
+          partial: false,
+          values: {},
+          x: "window",
+        },
+      },
+    ],
+    title: head.title,
+  };
+}

@@ -140,9 +140,22 @@ function TableValue(props: {
   );
 }
 
+/** What each row of a chart's table holds after its values, in a column of its own: a Legion
+ *  day's or role's link to the issues it counts. */
+export interface RowLink {
+  readonly header: string;
+  /** The row's cell, by the row's place on the chart's axis. */
+  readonly cell: (x: string) => ReactNode;
+}
+
 /** The table's columns: the axis, then each statistic of each series, and with the compare range
- *  shown, each one's compare value and its change beside it. */
-function tableColumns(model: ChartModel, compare: boolean): ColumnDef<TableRow>[] {
+ *  shown, each one's compare value and its change beside it; then the row's link, where the chart
+ *  has one. */
+function tableColumns(
+  model: ChartModel,
+  compare: boolean,
+  rowLink: RowLink | undefined
+): ColumnDef<TableRow>[] {
   const several = model.series.length > 1;
   const columns: ColumnDef<TableRow>[] = [
     {
@@ -178,13 +191,29 @@ function tableColumns(model: ChartModel, compare: boolean): ColumnDef<TableRow>[
         columns.push(column("compare", `${name} compare`), column("change", `${name} change`));
     }
   });
+  if (rowLink !== undefined)
+    columns.push({
+      cell: ({ row }) => rowLink.cell(row.original.id),
+      enableColumnFilter: false,
+      enableSorting: false,
+      header: rowLink.header,
+      id: "link",
+    });
   return columns;
 }
 
 /** A chart's table: one row per place on the chart's axis, every row drawn (`EvalTable`), so the
  *  table holds every number the graph draws in the page, as well as on the screen. */
-function ChartTable({ compare, model }: { compare: boolean; model: ChartModel }): ReactNode {
-  const columns = useMemo(() => tableColumns(model, compare), [model, compare]);
+function ChartTable({
+  compare,
+  model,
+  rowLink,
+}: {
+  compare: boolean;
+  model: ChartModel;
+  rowLink: RowLink | undefined;
+}): ReactNode {
+  const columns = useMemo(() => tableColumns(model, compare, rowLink), [model, compare, rowLink]);
   const rows = useMemo(
     (): TableRow[] =>
       (model.series[0]?.points ?? []).map((point, index) => ({
@@ -223,11 +252,14 @@ export function EvalChart({
   beside,
   model,
   renderer: Renderer,
+  rowLink,
 }: {
   /** What stands beside the chart's title: a card's verdict. */
   beside?: ReactNode;
   model: ChartModel;
   renderer: ChartRenderer;
+  /** What each row of the table holds after its values, where the chart's rows link anywhere. */
+  rowLink?: RowLink;
 }): ReactNode {
   const titleId = useId();
   const [mode, setMode] = useState<Mode>("graph");
@@ -280,7 +312,12 @@ export function EvalChart({
       {mode === "graph" ? (
         <Renderer compare={compare} model={model} />
       ) : (
-        <ChartTable compare={compare} key={compare ? "compare" : "window"} model={model} />
+        <ChartTable
+          compare={compare}
+          key={compare ? "compare" : "window"}
+          model={model}
+          rowLink={rowLink}
+        />
       )}
     </figure>
   );

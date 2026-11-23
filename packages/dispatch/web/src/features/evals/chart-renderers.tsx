@@ -1,12 +1,13 @@
 // The built-in renderers of `EvalChart` (dispatch://INFRA-2918/artifact/plan-md, D4): per-day bars
 // through the delivery pages' `Sparkbars`, the per-day spread of a median and its p90 through
-// `SpreadBars`, a per-day line, and a job's timing (its median and p90 a day, and how often it
-// succeeded). Each draws every series of its model, names every value it draws in the DOM
-// (`data-chart`, `data-series`, `data-x`, `data-value`), and, while the compare range is shown,
-// draws it as a muted second series at the same places, empty where the range has no data.
+// `SpreadBars`, a per-day line, a job's timing (its median and p90 a day, and how often it
+// succeeded), and one bar per category (a Legion role) over the whole window. Each draws every
+// series of its model, names every value it draws in the DOM (`data-chart`, `data-series`,
+// `data-x`, `data-value`), and, while the compare range is shown, draws it as a muted second
+// series at the same places, empty where the range has no data.
 import type { ReactNode } from "react";
 
-import { chartLine } from "../../theme/classes";
+import { chartBar, chartLine, chartSegment } from "../../theme/classes";
 import { barScale } from "../delivery/lib/barScale";
 import { Sparkbars, type ValueMarks, valueMarks } from "../delivery/Sparkbars";
 import { SpreadBars } from "../delivery/SpreadBars";
@@ -14,7 +15,9 @@ import {
   type ChartModel,
   type ChartRendererProps,
   type ChartSeries,
+  type ChartStatistic,
   judgeOf,
+  NO_DATA,
   writerOf,
 } from "./chart-model";
 
@@ -224,4 +227,119 @@ export function Timing({ model, compare }: ChartRendererProps): ReactNode {
       />
     </div>
   ));
+}
+
+/** The five segments a phase-time bar splits a role's hours into (legion-phase-time's statistics,
+ *  metrics.Segments), in the order `CategoryBars` draws them. */
+export const PHASE_SEGMENTS: readonly (ChartStatistic & { id: keyof typeof chartSegment })[] = [
+  { id: "in_a_turn", label: "In a turn" },
+  { id: "ci_wait", label: "CI wait" },
+  { id: "waiting_on_person", label: "Waiting on a person" },
+  { id: "waiting_on_children", label: "Waiting on children" },
+  { id: "idle", label: "Idle" },
+];
+
+/** One bar per place on the axis (a Legion role) of each series' first statistic over the whole
+ *  window, as long as its share of the longest bar, its value written after it. A series whose
+ *  statistics hold the phase-time segments (`PHASE_SEGMENTS`) splits each bar into them, each
+ *  segment its own value; the compare range's value is a muted bar behind it. */
+export function CategoryBars({ model, compare }: ChartRendererProps): ReactNode {
+  return model.series.map((series) => {
+    const statistic = series.statistics[0]?.id;
+    if (statistic === undefined) return null;
+    const segments = PHASE_SEGMENTS.filter((segment) =>
+      series.statistics.some(({ id }) => id === segment.id)
+    );
+    const values = valuesOf(series, statistic, "values");
+    const compared = compare ? valuesOf(series, statistic, "compare") : [];
+    const longest = Math.max(
+      0,
+      ...[...values, ...compared].filter((value): value is number => value !== null)
+    );
+    const length = (value: number) => (longest > 0 ? (value / longest) * 100 : 0);
+    const write = writerOf(series.unit, statistic);
+    const marks = marksOf(model, series, statistic);
+    return (
+      <div className="flex flex-col gap-1" key={series.name}>
+        {series.points.map((point, index) => {
+          const value = values[index] ?? null;
+          const before = compared[index] ?? null;
+          let offset = 0;
+          return (
+            <div
+              className="grid grid-cols-[8rem_minmax(0,1fr)_4rem] items-center gap-2 text-xs"
+              key={point.x}
+            >
+              <span>{point.label}</span>
+              <svg
+                aria-label={`${point.label} bar`}
+                className="block h-3 w-full"
+                preserveAspectRatio="none"
+                role="img"
+                viewBox="0 0 100 10"
+              >
+                {before === null ? null : (
+                  <rect
+                    className={chartBar.compare}
+                    height={10}
+                    width={length(before)}
+                    {...valueMarks(marks, index, before, "compare")}
+                  >
+                    <title>{`${point.label}, compare: ${write(before)(0)}`}</title>
+                  </rect>
+                )}
+                {value === null || segments.length > 0 ? null : (
+                  <rect className={chartBar.neutral} height={6} width={length(value)} y={2} />
+                )}
+                {value === null
+                  ? null
+                  : segments.map((segment) => {
+                      const hours = point.values[segment.id]?.value ?? null;
+                      if (hours === null) return null;
+                      const x = offset;
+                      offset += length(hours);
+                      return (
+                        <rect
+                          className={chartSegment[segment.id]}
+                          height={6}
+                          key={segment.id}
+                          width={length(hours)}
+                          x={x}
+                          y={2}
+                          {...valueMarks(
+                            marksOf(model, series, segment.id),
+                            index,
+                            hours,
+                            "window"
+                          )}
+                        >
+                          <title>{`${point.label}, ${segment.label.toLowerCase()}: ${writerOf(series.unit, segment.id)(hours)(0)}`}</title>
+                        </rect>
+                      );
+                    })}
+              </svg>
+              <span
+                className="text-right tabular-nums"
+                {...(value === null ? {} : valueMarks(marks, index, value, "window"))}
+              >
+                {value === null ? NO_DATA : write(value)(0)}
+              </span>
+            </div>
+          );
+        })}
+        {segments.length === 0 ? null : (
+          <ul className="flex flex-wrap gap-x-3 text-[11px]">
+            {segments.map((segment) => (
+              <li className="flex items-center gap-1" key={segment.id}>
+                <svg aria-hidden="true" className="h-2 w-2" viewBox="0 0 2 2">
+                  <rect className={chartSegment[segment.id]} height={2} width={2} />
+                </svg>
+                {segment.label}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  });
 }

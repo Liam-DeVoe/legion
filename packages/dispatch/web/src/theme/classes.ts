@@ -1216,6 +1216,16 @@ export const chartLine = {
   comparePoint: "fill-slate-300 dark:fill-slate-600",
 } as const;
 
+/** The Evals tab's phase-time bars: the fill of each of the five segments a role's hours split
+ *  into, by the segment's name (legion-phase-time), one hue each so the legend reads them apart. */
+export const chartSegment = {
+  in_a_turn: "fill-sky-500 dark:fill-sky-400",
+  ci_wait: "fill-violet-500 dark:fill-violet-400",
+  waiting_on_person: "fill-amber-500 dark:fill-amber-400",
+  waiting_on_children: "fill-teal-500 dark:fill-teal-400",
+  idle: "fill-slate-400 dark:fill-slate-500",
+} as const;
+
 // ---------------------------------------------------------------------------------------------
 // Sizing-agnostic composites the components import directly
 // ---------------------------------------------------------------------------------------------

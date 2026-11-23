@@ -1,14 +1,10 @@
-import { type ReactNode, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { type ReactNode, useMemo } from "react";
 
-import { api } from "../../api/client";
 import type { EvalKind } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { borderDefault, linkText, surfaceBg, textMutedOnSurface } from "../../theme/classes";
 import { targetLabel } from "../delivery/lib/target";
 import { TargetBadge } from "../delivery/TargetBadge";
-import { selectIssues } from "../project/issues-table-model";
-import { buildProjectPath } from "../refs/routes";
 import {
   type ChartModel,
   type ChartStatistic,
@@ -19,6 +15,7 @@ import {
 } from "./chart-model";
 import { PerDayBars, PerDaySpread } from "./chart-renderers";
 import { EvalChart } from "./EvalChart";
+import { openWords, readIssueKeys, useIssuesLink } from "./issue-links";
 import type { EvalsViewState } from "./useEvalsViews";
 
 /** One target card: the eval it draws, the view it reads, its chart, and the statistics of the
@@ -147,48 +144,6 @@ export const TARGET_CARDS: readonly CardSpec[] = [
 /** The words the issue table names the unowned P0 card's issues by. */
 const UNOWNED_P0_LABEL = "P0 with no owner";
 
-/** Every issue key unowned-p0's rows name now (the items route, `row_kind=issue`), page by page:
- *  the issues the card counts, so its link and its count are one set (plan D13). */
-async function unownedIssueKeys(project: string): Promise<string[]> {
-  const keys: string[] = [];
-  for (;;) {
-    const page = await api.listEvalItems(project, UNOWNED_P0, {
-      limit: 200,
-      offset: keys.length,
-      row_kind: "issue",
-    });
-    const rows = page.items ?? [];
-    keys.push(...rows.map((row) => row.row_key));
-    if (rows.length === 0 || keys.length >= page.total) return keys;
-  }
-}
-
-/** Where the P0 card's link stands: idle, reading the issues it opens, or refused that read. */
-type LinkState =
-  | { readonly kind: "idle" }
-  | { readonly kind: "resolving" }
-  | { readonly kind: "failed"; readonly error: unknown };
-
-/** The P0 card's link (the state table of the drill-down's controls and the P0 link): pressed, it
- *  reads the issues unowned-p0 counts now and opens the project's issue table on exactly those,
- *  `only=<keys>`; while it reads, the card is busy; a refused read shows its error and a retry. */
-function useUnownedIssuesLink(project: string): { state: LinkState; open: () => void } {
-  const navigate = useNavigate();
-  const [state, setState] = useState<LinkState>({ kind: "idle" });
-  const open = () => {
-    setState({ kind: "resolving" });
-    unownedIssueKeys(project).then(
-      (keys) => {
-        const query = selectIssues(new URLSearchParams(), keys, UNOWNED_P0_LABEL);
-        navigate(`${buildProjectPath({ kind: "issues", project })}?${query.toString()}`);
-        setState({ kind: "idle" });
-      },
-      (error: unknown) => setState({ error, kind: "failed" })
-    );
-  };
-  return { open, state };
-}
-
 /** One target card: its eval's primary series as a chart (`EvalChart`), its verdict's badge
  *  beside the title, and its target. A card whose eval the view does not hold, or whose series it
  *  holds no row of, reads "no data", never 0 (spec R5). */
@@ -229,7 +184,13 @@ function TargetCard({
       title: spec.title,
     };
   }, [answer, series, spec, target]);
-  const link = useUnownedIssuesLink(project);
+  // The P0 card's link: every issue key unowned-p0's rows name now, the issues the card counts,
+  // so its link and its count are one set (plan D13).
+  const link = useIssuesLink(
+    project,
+    () => readIssueKeys(project, UNOWNED_P0, {}),
+    UNOWNED_P0_LABEL
+  );
   const state = view.status;
   const badge =
     verdict === null ? null : (
@@ -288,9 +249,7 @@ function TargetCard({
               onClick={link.open}
               type="button"
             >
-              {link.state.kind === "resolving"
-                ? "Reading the issues\u2026"
-                : `Open the ${unowned === 1 ? "issue" : `${unowned} issues`}`}
+              {link.state.kind === "resolving" ? "Reading the issues\u2026" : openWords(unowned)}
             </button>
           )}
         </div>
