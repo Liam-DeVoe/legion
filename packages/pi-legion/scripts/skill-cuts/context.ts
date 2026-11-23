@@ -2110,11 +2110,11 @@ export async function buildContext(
   mkdirSync(skillsDir, { recursive: true });
   mkdirSync(workspace, { recursive: true });
 
-  // Each copy of the case's skill's source, under its own name or a namespace, is the arm's
-  // directory (arms.ts's `installedFromArm`); every other skill is its repository's. An arm with
-  // no skill directory (`none`) installs no copy from it: a copy it lists under the case's skill's
-  // name is another source's (arms.ts's `Arm.relisted`).
-  const tested = installedFromArm(arm);
+  // Each copy of the case's skill's source, under its own name or a namespace, is installed from
+  // the arm's directory (arms.ts's `installedFromArm`); every other skill is its repository's. An
+  // arm with no skill directory (`none`) installs no copy from it: a copy it lists under the case's
+  // skill's name is another source's (arms.ts's `Arm.relisted`).
+  const fromArm = installedFromArm(arm);
   // The repository skills the cache lacks, read ahead per repository and commit: one tree and a
   // GraphQL batch per BLOB_BATCH blobs, where each file would take a call of its own. Each is read
   // at the directory `skillReadDir` gives, kept by its cache key: its own, or the one its link
@@ -2123,7 +2123,9 @@ export async function buildContext(
   const readDirs = new Map<string, Extract<LinkedPath, { path: string }>>();
   for (const skill of arm.profileSkills) {
     const key = cacheKey(skill.repo, skill.commit, skill.path);
-    if (tested(skill) || existsSync(path.join(options.cacheDir, "skills", key))) continue;
+    if (fromArm(skill) !== undefined || existsSync(path.join(options.cacheDir, "skills", key))) {
+      continue;
+    }
     const read = await skillReadDir(c, source, skill);
     readDirs.set(key, read);
     const id = `${skill.repo}@${skill.commit}`;
@@ -2156,11 +2158,9 @@ export async function buildContext(
         mkdirSync(parent, { recursive: true });
         if (!namespacedDirs.includes(parent)) namespacedDirs.push(parent);
       }
-      if (tested(skill)) {
-        if (arm.skillDir === undefined) {
-          throw new Error(`case ${c.id}: arm ${arm.name} has no skill`);
-        }
-        cpSync(arm.skillDir, dir, { recursive: true, verbatimSymlinks: true });
+      const armDir = fromArm(skill);
+      if (armDir !== undefined) {
+        cpSync(armDir, dir, { recursive: true, verbatimSymlinks: true });
         skillRecords.push({ name: listed, from: "arm" });
       } else {
         const key = cacheKey(skill.repo, skill.commit, skill.path);

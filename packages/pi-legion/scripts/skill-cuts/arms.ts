@@ -14,7 +14,8 @@
  * holds bare and some copy holds under a namespace, the copy whose namespace's skills directory
  * Oh My Pi reads first loses its namespace (`relistedSkills`; context.ts gives Oh My Pi `skills/`
  * first, then each namespace's directory in the order of its first copy in the profile). The arm
- * records each listed name it changed (`relisted`), and every other copy keeps its namespace.
+ * records the name the profile lists each such copy under (`relisted`, as `tools/alpha`), and
+ * every other copy keeps its namespace.
  *
  * In each arm but `none`, each read result of a `skill://` read of the skill (in the case's
  * `skillReads`) is answered from the arm's file the way the pinned Oh My Pi 18.18.6 answers one: one
@@ -145,6 +146,7 @@ import {
   resolvedReadPath,
   skillReadFile,
   testedCopy,
+  testedSource,
   textLines,
   URL_TARGET,
   wholeReadTarget,
@@ -243,9 +245,10 @@ export interface Arm {
    * source for `none` (cases.ts's `testedCopy`), where a copy of another source can lose its
    * namespace (`relisted`). Each copy of the source is installed from `skillDir`. */
   readonly profileSkills: ProfileSkill[];
-  /** Each listed name the arm changed from the case's profile, which `none` changes where it
-   *  lists a copy under its bare name (`relistedSkills`). Absent where it changed none. */
-  readonly relisted?: readonly Relisted[];
+  /** The name the case's profile lists each copy under that the arm lists under its bare name
+   *  (`tools/alpha` for a copy `none` lists as `alpha`; `relistedSkills`). Absent where the arm
+   *  lists every copy as the profile does. */
+  readonly relisted?: readonly string[];
   /** Each block of the skill that reaches the session beside its listing line and its reads, and
    *  where this arm holds it (Injection). Absent, or empty, when the case has none. */
   readonly injections?: readonly Injection[];
@@ -262,13 +265,6 @@ export interface Arm {
    *  reads of it show (the first `[Skill file: …]` line of a read of it), by the name the profile
    *  lists it under (`skillDirsOf`). Absent, or without a name, where the case shows none. */
   readonly skillDirs?: Readonly<Record<string, string>>;
-}
-
-/** A listed name an arm changed (`Arm.relisted`): the name the case's profile lists the copy
- *  under (`tools/alpha`), and the one the arm's lists it under (`alpha`). */
-export interface Relisted {
-  readonly from: string;
-  readonly to: string;
 }
 
 /** The directories the arms are built from: each is the skill's own directory, SKILL.md at its
@@ -682,40 +678,54 @@ export interface OtherSkillRead {
   readonly isError: boolean;
 }
 
-/** Which skills of the arm's profile are installed from the arm's own directory: each copy of the
- *  case's skill's source (cases.ts's `testedCopy`), or none in an arm with no skill directory
- *  (`none`), where a copy listed under the case's skill's name is another source's
- *  (`Arm.relisted`). context.ts installs each skill by this rule. */
+/** For a skill of the arm's profile, the arm's directory it is installed from, or undefined when
+ *  it is not: the arm's `skillDir` for each copy of the case's skill's source (cases.ts's
+ *  `testedCopy`), and undefined for every skill in an arm with no skill directory (`none`), where
+ *  a copy listed under the case's skill's name is another source's (`Arm.relisted`). context.ts
+ *  installs each skill by this rule. */
 export function installedFromArm(
   arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">
-): (skill: Pick<ProfileSkill, "repo" | "path">) => boolean {
-  if (arm.skillDir === undefined) return () => false;
-  return testedCopy(arm.profileSkills, arm.skill);
+): (skill: Pick<ProfileSkill, "repo" | "path">) => string | undefined {
+  const { skillDir } = arm;
+  if (skillDir === undefined) return () => undefined;
+  const tested = testedCopy(arm.profileSkills, arm.skill);
+  return (skill) => (tested(skill) ? skillDir : undefined);
 }
 
 /** The copy of another source that an arm with no skill directory (`none`) lists under the case's
- *  skill's name (`Arm.relisted`), or undefined when it lists none or the arm has the skill's
- *  directory. A `skill://` read of the case's skill in such an arm reads that copy. */
+ *  skill's name (cases.ts's `testedSource`; `Arm.relisted`), or undefined when it lists none or
+ *  the arm has the skill's directory. A `skill://` read of the case's skill in such an arm reads
+ *  that copy. */
 export function caseNameCopy(
   arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">
 ): ProfileSkill | undefined {
   if (arm.skillDir !== undefined) return undefined;
-  return arm.profileSkills.find((skill) => listedName(skill) === arm.skill);
+  return testedSource(arm.profileSkills, arm.skill);
 }
 
-/** The directory a read of `skill`, a skill of the arm's profile other than the case's or the
+/** The file of the case's skill that a `skill://` read of `target` reads from the arm's own files
+ *  (cases.ts's `skillReadFile`), or undefined when it reads none: always in an arm whose profile
+ *  lists a copy of another source under the case's skill's name (`caseNameCopy`), which a read of
+ *  that name reads instead. */
+export function ownSkillReadFile(
+  arm: Pick<Arm, "skill" | "skillDir" | "profileSkills">,
+  target: string
+): string | undefined {
+  return caseNameCopy(arm) === undefined ? skillReadFile(arm.skill, target) : undefined;
+}
+
+/** The directory a read of `skill`, a skill of the arm's profile other than the case's, or the
  *  copy `caseNameCopy` gives, is answered from, and which one it is: the arm's directory for a
- *  copy of the case's skill's source under another name (cases.ts's `testedCopy`), else its
- *  installed copy in `copies`. Throws naming the skill when `copies` holds no copy of it, or its
- *  copy's directory is gone, so that no read of it is answered as not found. */
+ *  copy of the case's skill's source under another name (`installedFromArm`), else its installed
+ *  copy in `copies`. Throws naming the skill when `copies` holds no copy of it, or its copy's
+ *  directory is gone, so that no read of it is answered as not found. */
 function sourceOf(
   arm: Arm,
   copies: readonly InstalledCopy[],
   skill: ProfileSkill
 ): { dir: string; from: "arm" | "copy" } {
-  if (arm.skillDir !== undefined && testedCopy(arm.profileSkills, arm.skill)(skill)) {
-    return { dir: arm.skillDir, from: "arm" };
-  }
+  const armDir = installedFromArm(arm)(skill);
+  if (armDir !== undefined) return { dir: armDir, from: "arm" };
   const name = listedName(skill);
   const copy = copies.find((each) => each.name === name);
   if (copy === undefined) {
@@ -749,7 +759,7 @@ function shownPath(
 }
 
 /** A `skill://` read of `target` answered when it reads a file of a skill of `others`, the
- *  profile's skills other than the case's and the copy `caseNameCopy` gives, or of a skill the
+ *  profile's skills other than the case's, or the copy `caseNameCopy` gives, or of a skill the
  *  profile does not list (see the file's header). Oh My Pi's resolver tries `<name>/<first part
  *  of the path>` before `<name>`, so the longest listed name is tried first. */
 function otherSkillUrlRead(
@@ -789,9 +799,9 @@ function otherSkillPathRead(
   target: string
 ): OtherSkillRead | undefined {
   if (!wholeReadTarget(target)) return undefined;
-  const tested = installedFromArm(arm);
+  const fromArm = installedFromArm(arm);
   const taken = new Set([arm.skill, path.posix.basename(arm.skill)]);
-  for (const skill of arm.profileSkills) if (tested(skill)) taken.add(skill.name);
+  for (const skill of arm.profileSkills) if (fromArm(skill) !== undefined) taken.add(skill.name);
   const byName = new Map<string, ProfileSkill | null>();
   for (const skill of others) {
     if (!taken.has(skill.name)) byName.set(skill.name, byName.has(skill.name) ? null : skill);
@@ -847,7 +857,7 @@ export function otherSkillRead(
   target: string
 ): OtherSkillRead | undefined {
   const own = caseNameCopy(arm);
-  if (own === undefined && skillReadFile(arm.skill, target) !== undefined) return undefined;
+  if (ownSkillReadFile(arm, target) !== undefined) return undefined;
   const others = arm.profileSkills.filter(
     (skill) => skill === own || listedName(skill) !== arm.skill
   );
@@ -1311,23 +1321,23 @@ function withInjections(
 }
 
 /** `skills`, the profile of `none` once each copy of the case's skill's source is gone, as Oh My
- *  Pi lists them, and each listed name that changed (see the file's header). Oh My Pi reads
- *  `skills/` first, then each `namespaced/<namespace>/skills` in the order of each namespace's
- *  first copy in `skills` (context.ts's `namespacedDirs`), and lists the first copy of a name it
- *  finds under the bare name. So for each name that no copy holds bare and some copy holds under
- *  a namespace, the copy whose namespace comes first in that order loses its namespace; every
- *  other copy keeps it. */
+ *  Pi lists them, and, for each copy that lost its namespace, the name `skills` lists it under
+ *  (see the file's header). Oh My Pi reads `skills/` first, then each
+ *  `namespaced/<namespace>/skills` in the order of each namespace's first copy in `skills`
+ *  (context.ts's `namespacedDirs`), and lists the first copy of a name it finds under the bare
+ *  name. So for each name that no copy holds bare and some copy holds under a namespace, the copy
+ *  whose namespace comes first in that order loses its namespace; every other copy keeps it. */
 function relistedSkills(skills: readonly ProfileSkill[]): {
   skills: ProfileSkill[];
-  relisted: Relisted[];
+  relisted: string[];
 } {
   // The names some copy holds bare, and the namespaces in the order Oh My Pi reads their
   // directories.
   const bare = new Set<string>();
-  const order: string[] = [];
+  const order = new Set<string>();
   for (const skill of skills) {
     if (skill.namespace === undefined) bare.add(skill.name);
-    else if (!order.includes(skill.namespace)) order.push(skill.namespace);
+    else order.add(skill.namespace);
   }
   // By name, the first copy of each name no copy holds bare that Oh My Pi finds, reading each
   // namespace's directory in that order.
@@ -1344,7 +1354,7 @@ function relistedSkills(skills: readonly ProfileSkill[]): {
       const { namespace: _, ...listedBare } = skill;
       return structuredClone(listedBare);
     }),
-    relisted: [...first.values()].map((skill) => ({ from: listedName(skill), to: skill.name })),
+    relisted: [...first.values()].map((skill) => listedName(skill)),
   };
 }
 

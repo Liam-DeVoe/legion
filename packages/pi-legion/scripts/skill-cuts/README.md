@@ -843,16 +843,16 @@ other copy of that name, so for each name that no copy left in `none` holds bare
 holds under a namespace, `none` lists under the bare name the copy whose namespace's skills
 directory Oh My Pi reads first (a capture gives Oh My Pi `skills/` first, then each namespace's
 directory in the order of its first copy in the profile); every other copy keeps its namespace.
-The arm records each name it changed (`relisted`). A `skill://<name>` read in `none` is then
-answered from that copy, and a subagent's recorded prompt in `none` sends the `<name>` line under
-that copy's hint and leaves out the `<namespace>/<name>` line. A load task's profile leaves out
-every copy of the tested source, which the load test installs once under `--name`, and keeps the
-other sources' copies; load reads a namespaced skill as `<namespace>/<name>` in every name check,
-and refuses one on Claude Code, whose layout places skills by their bare name. A profile holds
-each copy once, since it reads a
-repository at one commit: where the session's host had the tested source at a second install path
-too (Oh My Pi lists that one as `<namespace>/<name>` when its text there differs), the task's
-evidence says so (`held once`), and the listing measure counts such a recorded name missing.
+The arm records the name the profile lists each such copy under (`relisted`). A `skill://<name>`
+read in `none` is then answered from that copy, and a subagent's recorded prompt in `none` sends
+the `<name>` line under that copy's hint and leaves out the `<namespace>/<name>` line. A load
+task's profile leaves out every copy of the tested source, which the load test installs once under
+`--name`, and keeps the other sources' copies; load reads a namespaced skill as
+`<namespace>/<name>` in every name check, and refuses one on Claude Code, whose layout places
+skills by their bare name. A profile holds each copy once, since it reads a repository at one
+commit: where the session's host had the tested source at a second install path too (Oh My Pi
+lists that one as `<namespace>/<name>` when its text there differs), the task's evidence says so
+(`held once`), and the listing measure counts such a recorded name missing.
 In a load run, a read of another source's copy of the name (`skill://<namespace>/<name>`, or a
 path under `namespaced/<namespace>/skills/`, where a capture installs it) is no load of the tested
 skill; a read of `skill://<name>` or of the tested copy's path is.
@@ -1108,9 +1108,8 @@ session's
 role comes from the daemon's first message to it, its catch-up notice, or the claim it holds
 beside its workspace; a subagent's session (`subagent:<agent>`) keeps the system prompt and tools
 its `session_init` line recorded, and its capture sends that prompt with only the skill's
-listing line changed per arm (and, in a `none` that lists another source's copy under its bare
-name, that copy's `<namespace>/<name>` line left out). Once a step is found, two more readers
-decide whether the case is
+listing line changed per arm (in a `none` that lists another source's copy bare, less its
+`<namespace>/<name>` line). Once a step is found, two more readers decide whether the case is
 kept. The `restate` reader reads every message the case keeps before the step, back to its first
 and less the skill's own read results, whole (a long message in overlapping parts), in windows of
 at most 100,000 characters and at most 10 windows; a restatement of the line in any window drops

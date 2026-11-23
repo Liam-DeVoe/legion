@@ -479,7 +479,7 @@ test("each copy of the case's skill's source, a namespaced one at another commit
     path: "skills/alpha",
     key: cacheKey("acme/tools", COMMIT, "skills/alpha"),
   });
-  expect(none.relisted).toEqual([{ from: "tools/alpha", to: "alpha" }]);
+  expect(none.relisted).toEqual(["tools/alpha"]);
 });
 
 test("a devbox profile's user-level .claude/CLAUDE.md (user: true) goes in the Claude Code config directory, and the root CLAUDE.md or AGENTS.md of its session's repository in the working directory; two user-level files are refused", async () => {

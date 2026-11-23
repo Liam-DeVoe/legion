@@ -1069,7 +1069,7 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
         session: SESSION,
       });
       // acme/tools' alpha is listed under the bare name, and its hint was written for that name.
-      expect(none.relisted).toEqual([{ from: "tools/alpha", to: "alpha" }]);
+      expect(none.relisted).toEqual(["tools/alpha"]);
       expect(record.context.skills.map((skill) => skill.name)).toEqual(["beta", "delta", "alpha"]);
       expect(record.hintCalls.map((call) => call.skill)).toEqual(["alpha"]);
       const hint = record.hints.find((each) => each.skill === "alpha")?.hint;

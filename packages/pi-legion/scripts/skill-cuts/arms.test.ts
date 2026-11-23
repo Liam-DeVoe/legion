@@ -224,7 +224,7 @@ test("none removes each read call of the skill and its result, and leaves the sk
 
 /** acme/tools' alpha, a copy of another source that shares the case skill's name, as the cache
  *  holds the copy a capture installed. */
-const TOOLS_ALPHA =
+const TOOLS_ALPHA_MD =
   "---\nname: alpha\ndescription: Use for the tools' own alpha list.\n---\n\n# Alpha of tools\n\nOne line.\n";
 
 // Catches: none listing another source's copy of the name as `<namespace>/<name>`, which Oh My Pi
@@ -255,11 +255,11 @@ test("none leaves out every copy of the skill's source, a namespaced one too, an
   expect(
     none.profileSkills.map((skill) => `${skill.repo} ${skill.namespace ?? ""}/${skill.name}`)
   ).toEqual(["acme/skills /beta", "acme/tools /alpha"]);
-  expect(none.relisted).toEqual([{ from: "tools/alpha", to: "alpha" }]);
+  expect(none.relisted).toEqual(["tools/alpha"]);
   // A skill://alpha read is answered from acme/tools' installed copy, at the directory beside
   // the case's other skills, as a read of another listed skill is.
   const copies = [
-    { name: "alpha", dir: skillDir("cache-tools-alpha", { "SKILL.md": TOOLS_ALPHA }) },
+    { name: "alpha", dir: skillDir("cache-tools-alpha", { "SKILL.md": TOOLS_ALPHA_MD }) },
   ];
   const shown = path.join(path.dirname(INSTALLED), "alpha");
   expect(otherSkillRead(none, copies, "skill://alpha")).toEqual({
@@ -267,7 +267,7 @@ test("none leaves out every copy of the skill's source, a namespaced one too, an
     file: "SKILL.md",
     by: "skill",
     from: "copy",
-    text: `[Skill file: ${shown}/SKILL.md]\n${TOOLS_ALPHA.replace(/\n$/, "")}`,
+    text: `[Skill file: ${shown}/SKILL.md]\n${TOOLS_ALPHA_MD.replace(/\n$/, "")}`,
     isError: false,
   });
   expect(otherSkillRead(none, copies, "skill://alpha/references/x.md")).toMatchObject({
@@ -315,7 +315,7 @@ test("of two copies of other sources under two namespaces, none lists bare the o
     "acme/tools tools/alpha",
     "acme/kit /alpha",
   ]);
-  expect(none.relisted).toEqual([{ from: "kit/alpha", to: "alpha" }]);
+  expect(none.relisted).toEqual(["kit/alpha"]);
   // The case's profile is as it was.
   expect(c.profile.skills.at(-1)?.namespace).toBe("kit");
 });

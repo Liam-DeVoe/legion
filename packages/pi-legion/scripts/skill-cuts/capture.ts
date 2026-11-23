@@ -112,10 +112,9 @@
  * line of `<namespace>/<name>`, as Oh My Pi lists that copy under the bare name alone; where that
  * name is the case skill's, the case skill's line is that copy's hint, in the recorded line's
  * place, which is where Oh My Pi's listing, sorted by name, puts it. Every other byte is sent as
- * recorded. `--tools` restricts Oh My Pi's tools to the recorded names.
- * The body's system prompt must be those blocks byte for byte, or the capture is refused; a
- * recorded tool the body does not define, or one it defines beyond them, is kept in the record
- * (`tools`).
+ * recorded. `--tools` restricts Oh My Pi's tools to the recorded names. The body's system prompt
+ * must be those blocks byte for byte, or the capture is refused; a recorded tool the body does not
+ * define, or one it defines beyond them, is kept in the record (`tools`).
  *
  * **An injected skill.** A skill that reaches the session other than by its listing line and its
  * reads (arms.ts's `Injection`) reaches the capture in the arm's messages, which carry each
@@ -866,10 +865,13 @@ export function renamedListingBlocks(
 
 /** The recorded system prompt `blocks` less the first `<skills>` listing line of each name of
  *  `names`, every other byte as recorded. An arm that lists a copy under its bare name in place of
- *  `<namespace>/<name>` (arms.ts's `Arm.relisted`) sends its recording less the line of
- *  `<namespace>/<name>`, as Oh My Pi lists that copy under the bare name alone. */
-function withoutListingLines(blocks: readonly string[], names: readonly string[]): string[] {
-  let kept = [...blocks];
+ *  `<namespace>/<name>` (arms.ts's `Arm.relisted`, which holds `<namespace>/<name>`) sends its
+ *  recording less that line, as Oh My Pi lists that copy under the bare name alone. */
+function withoutListingLines(
+  blocks: readonly string[],
+  names: readonly string[]
+): readonly string[] {
+  let kept = blocks;
   for (const name of names) kept = changedListingLine(kept, name, () => undefined) ?? kept;
   return kept;
 }
@@ -2001,10 +2003,7 @@ export async function captureBody(
       c.profile.systemPrompt === undefined
         ? undefined
         : armPromptBlocks(
-            withoutListingLines(
-              c.profile.systemPrompt,
-              (arm.relisted ?? []).map((each) => each.from)
-            ),
+            withoutListingLines(c.profile.systemPrompt, arm.relisted ?? []),
             c.skill,
             listedText(hints.find((entry) => entry.skill.name === c.skill))
           );

@@ -70,13 +70,13 @@ import { z } from "zod";
 import {
   type Arm,
   type ArmName,
-  caseNameCopy,
   type InstalledCopy,
   otherSkillRead,
+  ownSkillReadFile,
   pathFile,
   skillFile,
 } from "./arms";
-import { pathReadFile, skillReadFile } from "./cases";
+import { pathReadFile } from "./cases";
 import {
   type ContentBlock,
   freshIdentity,
@@ -251,10 +251,10 @@ export interface SkillRead {
 /** The read `target` the tool call `id` makes, answered, or undefined when it reads no skill file
  *  (see the file's header). In an arm with no skill directory whose profile lists a copy of
  *  another source under the case's skill's name (arms.ts's `caseNameCopy`), a `skill://` read of
- *  the case's skill is a read of that copy, which `otherSkillRead` answers. A read of a directory
- *  of the case's skill is none: Oh My Pi answers it with a listing, which the arm does not
- *  rebuild; nor is a read by path that `pathFile` does not answer, nor one `otherSkillRead` does
- *  not. */
+ *  the case's skill is a read of that copy (`ownSkillReadFile` gives no file), which
+ *  `otherSkillRead` answers. A read of a directory of the case's skill is none: Oh My Pi answers
+ *  it with a listing, which the arm does not rebuild; nor is a read by path that `pathFile` does
+ *  not answer, nor one `otherSkillRead` does not. */
 function skillRead(
   id: string,
   target: string,
@@ -262,7 +262,7 @@ function skillRead(
   copies: readonly InstalledCopy[]
 ): SkillRead | undefined {
   const from = arm.skillDir === undefined ? "absent" : "arm";
-  const file = caseNameCopy(arm) === undefined ? skillReadFile(arm.skill, target) : undefined;
+  const file = ownSkillReadFile(arm, target);
   if (file !== undefined) {
     if (arm.skillDir !== undefined) {
       const stats = statSync(path.resolve(arm.skillDir, file), { throwIfNoEntry: false });
