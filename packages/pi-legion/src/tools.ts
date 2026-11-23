@@ -419,11 +419,11 @@ function toolSchema(pi: PiApi): unknown {
       .regex(/^[a-z][a-z0-9-]{0,31}$/)
       .optional(),
     // A claim's token (contract 222), for fresh_session and compact: two claims of one issue can
-    // hold one role, and issue and role reach the one that works the role's step.
+    // hold one role, and issue and role reach the one that works the role's step that started last.
     claim: z
       .string()
       .describe(
-        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role that does not work the role's step; leave it out to reach the claim that does"
+        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role other than the one that works the role's step that started last; leave it out to reach that claim"
       )
       .optional(),
   });
@@ -578,7 +578,8 @@ export function createLegionTool(deps: {
         "controller's report issue's icebox, because that issue holds no work. " +
         "fresh_session (issue, role, and optionally claim) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. " +
-        "issue and role reach the claim that works the role's step; two claims of one issue can hold one role, so name the " +
+        "issue and role reach the claim that works the role's step that started last (the step the task stands at, where it is " +
+        "that role's); two claims of one issue can hold one role, so name the " +
         "other one by the token a notice gives (claim), which the daemon refuses for a token of another issue (INVALID_CLAIM) " +
         "and for a claim that holds another role (CLAIM_NOT_OF_ROLE); compact takes claim the same way. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +

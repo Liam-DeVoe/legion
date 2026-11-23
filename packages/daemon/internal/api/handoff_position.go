@@ -39,8 +39,8 @@ type completionPosition struct {
 // that run is on (record.PhaseRow.Entry, 0 on a row no start has stamped), whether the start that
 // raised it moved the issue back (record.PhaseRow.EntryMovedBack), the highest entry another row
 // of that role holds, another step's or the implementer's retro row (record.OtherStepsEntry), the
-// claim of that run's agent
-// (record.PhaseRow.Claim, holder) and the claim of the run the served entry is of
+// claim of that run's agent (record.PhaseRow.Claim, holder) and the task of the step its row runs
+// (record.PhaseRow.StepTask, "" for a row of no step), the claim of the run the served entry is of
 // (record.ServedClaim, served), and the place of its step where the task names the role at two
 // places (0 otherwise), which the completion's key names.
 type completingRun struct {
@@ -48,6 +48,7 @@ type completingRun struct {
 	entryMovedBack  bool
 	otherStepsEntry int64
 	holder, served  claim.Token
+	stepTask        string
 	place           int
 }
 
@@ -59,7 +60,7 @@ type completingRun struct {
 func (p completionPosition) run(role claim.Role, entry int64, works bool) completingRun {
 	row := record.CompletionRow(p.rows, role, entry, works, p.task, p.at, p.steps)
 	run := completingRun{entry: row.Entry, entryMovedBack: row.EntryMovedBack, otherStepsEntry: record.OtherStepsEntry(p.rows, row), holder: row.Claim,
-		served: record.ServedClaim(p.rows, role, entry)}
+		served: record.ServedClaim(p.rows, role, entry), stepTask: row.StepTask}
 	if record.StandsTwice(role, p.steps) {
 		run.place = row.StepPlace
 		if row.StepTask == "" {
