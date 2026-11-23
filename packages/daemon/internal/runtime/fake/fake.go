@@ -127,9 +127,6 @@ type Runtime struct {
 	keptVolumes  map[string]time.Time
 	sessions     map[claim.Token]string
 	work         map[string]runtime.WorkspaceWork
-	// olderShim is whether AdoptWorkingCopy answers as a shim built before an adoption named a
-	// fix's commit and the task's move (AnswerAdoptionsAsAnOlderShim).
-	olderShim    bool
 	holdReplace  func()
 	replaceNoPod bool
 	holdIssue    func()
@@ -149,6 +146,9 @@ type Runtime struct {
 	holdResume func()
 	queue      []runtime.Observation
 	minted     int
+	// olderShim is whether AdoptWorkingCopy answers as a shim built before an adoption named a
+	// fix's commit and the task's move (AnswerAdoptionsAsAnOlderShim).
+	olderShim bool
 }
 
 // NewRuntime is a fake ready to record: no script, controller launched by the daemon, real time.
