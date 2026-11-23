@@ -35,7 +35,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
    Run it again when a push-back or a review changes what the design is for.
 
 3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since any new version closes the gate.
-   A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
+   A child: after step 4, for the part that stays.
 
 4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says, red-team check first.
 
