@@ -187,10 +187,13 @@ checks.
 
 The table is the line of the **default steps**. Each architect of a tree, the root's or a
 sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
-**plan** that picks which of these steps it runs: one task whose steps are
-some of `planner implementer tester reviewer acceptance:owner`, in that order, with `implementer`
-among them, where `acceptance:owner` is the architect's own acceptance in `accepting`. It writes
-the plan as the issue's `plan.md` document, with one `plan_task` block such as
+**plan** that picks which of these steps it runs: one task whose steps name the table's roles in
+the order the owner chooses, with `implementer` among them and each `tester`, `reviewer` and
+`acceptance:owner` step after an `implementer` step, whose pull request it reads, where
+`acceptance:owner` is the architect's own acceptance in `accepting`. A role may stand at two
+steps, of one agent or of two: `implementer reviewer implementer` runs step 3 in a second agent of
+the role implementer, `implementer-2`, in a session of its own. The architect writes the plan as
+the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
 starts: for a child, before `release_children` releases it, since a released child can start its
