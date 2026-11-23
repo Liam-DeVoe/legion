@@ -1092,8 +1092,9 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // migrated applies a version left out of the list before the list's own rewrites of that check,
 // which do not name the later kind, so the row seeded of that kind fails the upgrade. So does one
 // that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
-// column. So does a migration that builds on a table only a version of the list creates, as
+// claims.abandoned_session (20261029121200) and 20261123060645 writes pull_requests.merge_forward
+// (20261119003157): applied before that version, it fails on the missing column. So does a
+// migration that builds on a table only a version of the list creates, as
 // 20261117201743's foreign key on issue_plans does: the case of a database main migrated would
 // apply it before 20261117034837 creates that table. So does a migration that changes a table a
 // version of the list creates, as 20261117213545 adds a column to 20261117034837's plan_steps and
@@ -1109,7 +1110,7 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261117201743: true, 20261117213545: true,
-	20261119003157: true, 20261122062637: true,
+	20261119003157: true, 20261122062637: true, 20261123060645: true,
 }
 
 const idleRelease = 20261101222956
