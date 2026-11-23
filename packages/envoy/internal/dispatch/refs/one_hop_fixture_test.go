@@ -550,7 +550,7 @@ func newOneHopFixture(t *testing.T, whole bool) oneHopFixture {
 		if key[0] == "artifact" {
 			for _, doc := range first {
 				if doc.id.String() == key[1] {
-					fixture.members = append(fixture.members, documentMember(t, database.Pool, doc.refKey, 1, row.via))
+					fixture.members = append(fixture.members, documentMember(t, database.Pool, doc.refKey, row.via))
 				}
 			}
 		}

@@ -29,12 +29,12 @@ func writeStateAs(t *testing.T, handler http.Handler, issue, address, state, log
 	return dispatchRequest(t, handler, http.MethodPost, statePath(issue, address, "state"), map[string]any{"state": state}, login)
 }
 
-// writeState writes state on the node address names as login, failing on anything but 200.
-func (r reasoningRig) writeState(address, state, login string) nodeStateWritten {
+// writeState writes state on the node address names as alice, failing on anything but 200.
+func (r reasoningRig) writeState(address, state string) nodeStateWritten {
 	r.t.Helper()
-	response := writeStateAs(r.t, r.handler, r.issue, address, state, login)
+	response := writeStateAs(r.t, r.handler, r.issue, address, state, "alice")
 	if response.Code != http.StatusOK {
-		r.t.Fatalf("write %s on %s as %s: status=%d body=%s", state, address, login, response.Code, response.Body.String())
+		r.t.Fatalf("write %s on %s as alice: status=%d body=%s", state, address, response.Code, response.Body.String())
 	}
 	return decodeBody[nodeStateWritten](r.t, response)
 }
@@ -50,18 +50,18 @@ func nodeStateRead(t *testing.T, handler http.Handler, address, login string) st
 	return decodeBody[model.GraphReferences](t, response).Node.State
 }
 
-// requireNodeState fails unless every read of the node address names answers want.
-func requireNodeState(t *testing.T, handler http.Handler, address, login, want string) {
+// requireNodeState fails unless every read of the node address names answers want, as alice reads it.
+func requireNodeState(t *testing.T, handler http.Handler, address, want string) {
 	t.Helper()
-	if got := nodeStateRead(t, handler, address, login); got != want {
+	if got := nodeStateRead(t, handler, address, "alice"); got != want {
 		t.Fatalf("%s reads node state %q, want %q", address, got, want)
 	}
 }
 
-// proposedRead is GET /api/v1/issues/{key}/proposed as login, failing on anything but 200.
-func proposedRead(t *testing.T, handler http.Handler, issue, login string) issueProposed {
+// proposedRead is GET /api/v1/issues/{key}/proposed as alice, failing on anything but 200.
+func proposedRead(t *testing.T, handler http.Handler, issue string) issueProposed {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/proposed", nil, login)
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/proposed", nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("read the proposed nodes of %s: status=%d body=%s", issue, response.Code, response.Body.String())
 	}
@@ -111,7 +111,7 @@ func TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest(t *testi
 
 	for _, state := range []string{graphstore.StateProposed, graphstore.StateOvertaken, graphstore.StateLive, graphstore.StateGone} {
 		before := nodeStateRead(t, rig.handler, lens.Address, "alice")
-		written := rig.writeState(lens.Address, state, "alice")
+		written := rig.writeState(lens.Address, state)
 		if written.Node.State != state || written.Previous != before || written.Node.Kind != graphstore.KindLens {
 			t.Fatalf("the write of %s on the lens answers %+v, want the lens at %s from %s", state, written, state, before)
 		}
@@ -120,7 +120,7 @@ func TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest(t *testi
 			t.Fatalf("the lens's newest state tuple is %+v, want %s written by alice at no event", newest, state)
 		}
 		if state != graphstore.StateGone {
-			requireNodeState(t, rig.handler, lens.Address, "alice", state)
+			requireNodeState(t, rig.handler, lens.Address, state)
 		}
 	}
 	if node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindLens, lens.ID); err != nil || !held || node.State != graphstore.StateGone {
@@ -135,12 +135,12 @@ func TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest(t *testi
 	}
 
 	for _, state := range []string{graphstore.StateProposed, graphstore.StateOvertaken, graphstore.StateLive} {
-		rig.writeState(rig.requirement, state, "alice")
-		requireNodeState(t, rig.handler, rig.requirement, "alice", state)
+		rig.writeState(rig.requirement, state)
+		requireNodeState(t, rig.handler, rig.requirement, state)
 	}
 	requireRefused(t, "gone on the requirement", writeStateAs(t, rig.handler, rig.issue, rig.requirement, graphstore.StateGone, "alice"),
 		http.StatusConflict, codeStateNotWritable, refs.BlockNodeKind, rig.requirement, graphstore.StateLive, graphstore.StateGone)
-	requireNodeState(t, rig.handler, rig.requirement, "alice", graphstore.StateLive)
+	requireNodeState(t, rig.handler, rig.requirement, graphstore.StateLive)
 	requireRefused(t, "settled through the state route", writeStateAs(t, rig.handler, rig.issue, rig.requirement, graphstore.StateSettled, "alice"),
 		http.StatusConflict, codeStateNotWritable, refs.BlockNodeKind, rig.requirement, graphstore.StateLive, graphstore.StateSettled)
 
@@ -151,7 +151,7 @@ func TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest(t *testi
 	if after := stateTupleCount(t, rig.database); misspelled != 0 || after != before {
 		t.Fatalf("the refused write stored %d tuples at propsed and moved the state tuples from %d to %d", misspelled, before, after)
 	}
-	requireNodeState(t, rig.handler, rig.requirement, "alice", graphstore.StateLive)
+	requireNodeState(t, rig.handler, rig.requirement, graphstore.StateLive)
 
 	hidden := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
 	nobody := graphstore.KindLens + "/" + uuid.NewString()
@@ -217,7 +217,7 @@ func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 	}
 	settle := func(address string) {
 		t.Helper()
-		rig.writeState(address, graphstore.StateProposed, "alice")
+		rig.writeState(address, graphstore.StateProposed)
 		if response := dispatchRequest(t, rig.handler, http.MethodPost, statePath(rig.issue, address, "settle"), nil, "alice"); response.Code != http.StatusOK {
 			t.Fatalf("alice settles %s: status=%d body=%s", address, response.Code, response.Body.String())
 		}
@@ -238,7 +238,7 @@ func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 	finding := lens.Findings[0]
 	held := risk(lens.Address)
 	settle(held.Address)
-	requireNodeState(t, rig.handler, held.Address, "alice", graphstore.StateSettled)
+	requireNodeState(t, rig.handler, held.Address, graphstore.StateSettled)
 
 	// A gone on the lens by a caller who is no person is refused naming the lens, in one body
 	// whatever the lens holds (goneNotPermitted): bob's refusal below reads as this one once each
@@ -249,9 +249,9 @@ func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 	if after := stateTupleCount(t, rig.database); after != before {
 		t.Fatalf("the shared bearer's refused gone moved the state tuples from %d to %d", before, after)
 	}
-	requireNodeState(t, rig.handler, lens.Address, "alice", graphstore.StateLive)
-	requireNodeState(t, rig.handler, finding.Address, "alice", graphstore.StateLive)
-	requireNodeState(t, rig.handler, held.Address, "alice", graphstore.StateSettled)
+	requireNodeState(t, rig.handler, lens.Address, graphstore.StateLive)
+	requireNodeState(t, rig.handler, finding.Address, graphstore.StateLive)
+	requireNodeState(t, rig.handler, held.Address, graphstore.StateSettled)
 
 	own := premortem("bob's own pre-mortem", asToken(bobToken, bobSession, "/lenses", map[string]any{
 		"on": rig.spec, "kind": graphstore.LensKindPreMortem, "findings": []string{"The bill doubles."},
@@ -297,7 +297,7 @@ func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 		}
 	}
 
-	written := rig.writeState(lens.Address, graphstore.StateGone, "alice")
+	written := rig.writeState(lens.Address, graphstore.StateGone)
 	if written.Previous != graphstore.StateLive || written.Node.State != graphstore.StateGone {
 		t.Fatalf("alice's gone on her lens answers %+v, want it moved from live to gone", written)
 	}
@@ -362,7 +362,7 @@ func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
 	}
 
 	hidden := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
-	rig.writeState(hidden.Address, graphstore.StateGone, "alice")
+	rig.writeState(hidden.Address, graphstore.StateGone)
 	nobody := graphstore.KindLens + "/" + uuid.NewString()
 	requireNobodysAnswer(t, "bob's write on alice's gone hidden lens",
 		writeStateAs(t, rig.handler, rig.issue, graphstore.KindLens+"/"+hidden.ID, graphstore.StateLive, "bob"),
@@ -416,7 +416,7 @@ func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T
 	write(r3, graphstore.StateOvertaken)
 
 	for address, want := range map[string]string{r1: graphstore.StateProposed, r2: graphstore.StateSettled, r3: graphstore.StateOvertaken} {
-		requireNodeState(t, handler, address, "alice", want)
+		requireNodeState(t, handler, address, want)
 	}
 
 	// requireCounted holds the coverage read and the approval request's answer to counting
@@ -459,14 +459,14 @@ func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T
 		}
 	}
 
-	if got := proposedRefs(proposedRead(t, handler, issue.Key, "alice")); !slices.Equal(got, []string{r1}) {
+	if got := proposedRefs(proposedRead(t, handler, issue.Key)); !slices.Equal(got, []string{r1}) {
 		t.Fatalf("the proposed read answers %v, want %s alone", got, r1)
 	}
 	requireCounted("before the settle", []string{"r2"}, "r1")
 
 	settle(r1)
-	requireNodeState(t, handler, r1, "alice", graphstore.StateSettled)
-	if got := proposedRead(t, handler, issue.Key, "alice"); len(got.Nodes) != 0 {
+	requireNodeState(t, handler, r1, graphstore.StateSettled)
+	if got := proposedRead(t, handler, issue.Key); len(got.Nodes) != 0 {
 		t.Fatalf("the proposed read answers %v after the settle, want none", proposedRefs(got))
 	}
 	coverage := readCoverage(t, handler, issue.Key)
@@ -549,7 +549,7 @@ func TestAStateWriteKeepsTheCauseOfTheBlockItMoves(t *testing.T) {
 
 	moves := []string{graphstore.StateProposed, graphstore.StateLive, graphstore.StateProposed}
 	for _, state := range moves {
-		rig.writeState(rig.requirement, state, "alice")
+		rig.writeState(rig.requirement, state)
 		if got := cause(); got != caused {
 			t.Fatalf("after the write of %s the requirement's row is caused by event %d, want %d, the event that caused it", state, got, caused)
 		}
@@ -587,7 +587,7 @@ func TestAStateWriteKeepsTheCauseOfTheBlockItMoves(t *testing.T) {
 	if got := cause(); got != caused {
 		t.Fatalf("after a version that rewrote another block the requirement's row is caused by event %d, want %d", got, caused)
 	}
-	requireNodeState(t, rig.handler, rig.requirement, "alice", graphstore.StateProposed)
+	requireNodeState(t, rig.handler, rig.requirement, graphstore.StateProposed)
 }
 
 // TestTheStateRouteRefusesABlockOfACommentInWordsThatAreTrue: the store keeps no node of a block
@@ -623,7 +623,7 @@ func TestTheStateRouteRefusesABlockOfACommentInWordsThatAreTrue(t *testing.T) {
 	if afterRows, afterTuples := stored(); afterRows != rows || afterTuples != tuples {
 		t.Fatalf("the refused writes moved the comment's block from %d rows and %d tuples to %d and %d", rows, tuples, afterRows, afterTuples)
 	}
-	requireNodeState(t, rig.handler, block, "alice", graphstore.StateLive)
+	requireNodeState(t, rig.handler, block, graphstore.StateLive)
 	requireRefused(t, "the settle of the comment's block",
 		dispatchRequest(t, rig.handler, http.MethodPost, statePath(rig.issue, block, "settle"), nil, "alice"),
 		http.StatusConflict, codeNotProposed, refs.BlockNodeKind, block, graphstore.StateLive)

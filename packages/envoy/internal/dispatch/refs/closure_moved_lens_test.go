@@ -12,10 +12,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// writeLensNode writes the lens id under the issue key, live or gone, through the store's writer
-// as the reasoning write stores one: the node and its part_of. A second call moves its state
-// alone, as the state route's write does.
-func writeLensNode(t *testing.T, database *store.Store, id, key, project, state string) {
+// movedLens is the lens writeLensNode writes.
+const movedLens = "00000000-0000-4000-8000-0000000003a1"
+
+// writeLensNode writes the lens movedLens under the issue OPS-1 of project OPS, live or gone,
+// through the store's writer as the reasoning write stores one: the node and its part_of. A second
+// call moves its state alone, as the state route's write does.
+func writeLensNode(t *testing.T, database *store.Store, state string) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -24,23 +27,23 @@ func writeLensNode(t *testing.T, database *store.Store, id, key, project, state 
 	}
 	defer tx.Rollback(ctx)
 	writer, at := model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC()
-	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindLens, id)
+	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindLens, movedLens)
 	if err != nil {
-		t.Fatalf("read the lens %s: %v", id, err)
+		t.Fatalf("read the lens %s: %v", movedLens, err)
 	}
 	var tuples []graphstore.Tuple
 	if !held {
-		node = graphstore.Node{Kind: graphstore.KindLens, ID: id, Supertag: graphstore.KindLens,
-			Visibility: graphstore.VisibilityProject, Project: project}
+		node = graphstore.Node{Kind: graphstore.KindLens, ID: movedLens, Supertag: graphstore.KindLens,
+			Visibility: graphstore.VisibilityProject, Project: "OPS"}
 		tuples = []graphstore.Tuple{{
-			FromKind: graphstore.KindLens, FromID: id, Kind: graphstore.TuplePartOf, ToKind: graphstore.KindIssue, ToID: key,
+			FromKind: graphstore.KindLens, FromID: movedLens, Kind: graphstore.TuplePartOf, ToKind: graphstore.KindIssue, ToID: "OPS-1",
 			At: at, Who: writer, SourceEvent: graphstore.NoEvent, Asserted: true,
 		}}
 	}
 	node.State, node.MadeAt, node.MadeBy, node.SourceEvent = state, at, writer, graphstore.NoEvent
 	node.Restates, node.KeepsCause, node.Changed = false, held, held
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
-		t.Fatalf("write the lens %s %s: %v", id, state, err)
+		t.Fatalf("write the lens %s %s: %v", movedLens, state, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the lens's write: %v", err)
@@ -77,15 +80,14 @@ func TestTheClosureAnswersTheLensACitedDocumentMovedTo(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the fixture: %v", err)
 	}
-	const lens = "00000000-0000-4000-8000-0000000003a1"
-	writeLensNode(t, database, lens, "OPS-1", "OPS", graphstore.StateLive)
+	writeLensNode(t, database, graphstore.StateLive)
 	moveTx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the move: %v", err)
 	}
 	defer moveTx.Rollback(ctx)
 	if err := graphstore.Write(ctx, moveTx, nil, []graphstore.Tuple{{
-		FromKind: graphstore.KindArtifact, FromID: movedRef, Kind: graphstore.TupleMovedTo, ToKind: graphstore.KindLens, ToID: lens,
+		FromKind: graphstore.KindArtifact, FromID: movedRef, Kind: graphstore.TupleMovedTo, ToKind: graphstore.KindLens, ToID: movedLens,
 		At: time.Now().UTC(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true,
 	}}); err != nil {
 		t.Fatalf("move %s to the lens: %v", movedRef, err)
@@ -102,9 +104,9 @@ func TestTheClosureAnswersTheLensACitedDocumentMovedTo(t *testing.T) {
 		}
 		return references.Members
 	}
-	movedDocument := documentMember(t, database.Pool, movedRef, 1, model.ReferenceVia{Kind: "comment", ID: addressCitation})
+	movedDocument := documentMember(t, database.Pool, movedRef, model.ReferenceVia{Kind: "comment", ID: addressCitation})
 	lensMember := movedDocument
-	lensMember.Kind, lensMember.Address = graphstore.KindLens, "dispatch://"+graphstore.KindLens+"/"+lens
+	lensMember.Kind, lensMember.Address = graphstore.KindLens, "dispatch://"+graphstore.KindLens+"/"+movedLens
 	byBlock := movedDocument
 	byBlock.Via.ID = blockCitation
 
@@ -115,7 +117,7 @@ func TestTheClosureAnswersTheLensACitedDocumentMovedTo(t *testing.T) {
 		t.Errorf("the closure of DOC-1, whose comment cites a block of the moved document, is %#v; want the document, %#v", got, byBlock)
 	}
 
-	writeLensNode(t, database, lens, "OPS-1", "OPS", graphstore.StateGone)
+	writeLensNode(t, database, graphstore.StateGone)
 	if got := closureOf("CORE-1"); !reflect.DeepEqual(got, []Member{movedDocument}) {
 		t.Errorf("once the lens is gone the closure of CORE-1 is %#v; want the document, %#v", got, movedDocument)
 	}

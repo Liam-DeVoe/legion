@@ -177,9 +177,9 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 }
 
 // documentMember is the member the references read answers for the document stored at refKey,
-// read through q, reached at depth through via: kind artifact at the document's own address
+// read through q, reached at depth 1 through via: kind artifact at the document's own address
 // (ArtifactRef).
-func documentMember(t *testing.T, q Queryer, refKey string, depth int, via model.ReferenceVia) Member {
+func documentMember(t *testing.T, q Queryer, refKey string, via model.ReferenceVia) Member {
 	t.Helper()
 	var issue, session *string
 	var project, slug, kind string
@@ -190,7 +190,7 @@ func documentMember(t *testing.T, q Queryer, refKey string, depth int, via model
 		t.Fatalf("read the document at %s: %v", refKey, err)
 	}
 	return Member{Kind: graphstore.KindArtifact, Address: ArtifactRef(issue, project, session, slug, kind, primary),
-		RefKey: refKey, Depth: depth, Via: via}
+		RefKey: refKey, Depth: 1, Via: via}
 }
 
 // Closure's members are main's rows of depth 1 over the same data, each at depth 1 with main's
@@ -521,7 +521,7 @@ func mainsDepthOneMembers(t *testing.T, database *store.Store, issueKey string) 
 	members := []Member{}
 	for _, row := range closureStatementRows(t, database, mainClosureQuery, issueKey) {
 		if row.depth == 1 {
-			members = append(members, documentMember(t, database.Pool, row.refKey, 1, model.ReferenceVia{Kind: row.viaKind, ID: row.viaID}))
+			members = append(members, documentMember(t, database.Pool, row.refKey, model.ReferenceVia{Kind: row.viaKind, ID: row.viaID}))
 		}
 	}
 	sort.Slice(members, func(left, right int) bool { return members[left].RefKey < members[right].RefKey })

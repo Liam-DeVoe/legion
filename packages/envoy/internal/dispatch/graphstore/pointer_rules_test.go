@@ -353,12 +353,12 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 			return tx.Commit(ctx)
 		}
 
-		placesBefore := len(readHistory(t, ctx, database, KindLens, lensTradeOff, TuplePartOf))
-		kindsBefore := len(readHistory(t, ctx, database, KindLens, lensTradeOff, TupleHasKind))
+		placesBefore := len(readHistory(t, ctx, database, lensTradeOff, TuplePartOf))
+		kindsBefore := len(readHistory(t, ctx, database, lensTradeOff, TupleHasKind))
 		if err := retarget(lensTradeOff, kindTradeOff, kindInversion); err != nil {
 			t.Fatalf("retarget the trade-off analysis at inversion: %v", err)
 		}
-		kinds := readHistory(t, ctx, database, KindLens, lensTradeOff, TupleHasKind)
+		kinds := readHistory(t, ctx, database, lensTradeOff, TupleHasKind)
 		if len(kinds) != kindsBefore+2 {
 			t.Fatalf("the retarget appended %d has_kind tuples, want a retraction and an assertion", len(kinds)-kindsBefore)
 		}
@@ -366,7 +366,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 			t.Errorf("the retarget appended %+v, want the retraction of %s then the assertion of %s", moved, kindTradeOff, kindInversion)
 		}
 		requireKinds(t, ctx, database, lensTradeOff, kindInversion)
-		if places := len(readHistory(t, ctx, database, KindLens, lensTradeOff, TuplePartOf)); places != placesBefore {
+		if places := len(readHistory(t, ctx, database, lensTradeOff, TuplePartOf)); places != placesBefore {
 			t.Errorf("the retarget moved the lens's part_of: %d tuples, %d before", places, placesBefore)
 		}
 
@@ -657,7 +657,7 @@ func TestTheStoreHoldsATriggerToALensInvokedBefore(t *testing.T) {
 		requireNoNode(t, ctx, database, KindLens, lens)
 	}
 	requireHolds(t, ctx, database, held)
-	if triggers := readHistory(t, ctx, database, KindLens, lensInversion, TupleTriggeredBy); len(triggers) != 0 {
+	if triggers := readHistory(t, ctx, database, lensInversion, TupleTriggeredBy); len(triggers) != 0 {
 		t.Errorf("the inversion holds the triggered_by tuples %+v after the refusals, want none", triggers)
 	}
 }
@@ -877,11 +877,13 @@ func requireKinds(t *testing.T, ctx context.Context, database *store.Store, lens
 	}
 }
 
-func readHistory(t *testing.T, ctx context.Context, database *store.Store, kind, id, tupleKind string) []Tuple {
+// readHistory is every tuple of tupleKind out of the lens id, in the order they were written
+// (History).
+func readHistory(t *testing.T, ctx context.Context, database *store.Store, id, tupleKind string) []Tuple {
 	t.Helper()
-	history, err := History(ctx, database.Pool, kind, id, tupleKind)
+	history, err := History(ctx, database.Pool, KindLens, id, tupleKind)
 	if err != nil {
-		t.Fatalf("read the %s history of %s/%s: %v", tupleKind, kind, id, err)
+		t.Fatalf("read the %s history of %s/%s: %v", tupleKind, KindLens, id, err)
 	}
 	return history
 }

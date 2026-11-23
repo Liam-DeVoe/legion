@@ -107,7 +107,7 @@ func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
 			}
 			requireReadsAsALensNobodyWrote(t, func(read, status, login string) string {
 				return fmt.Sprintf("after the removal of %s, %s's %s answers %s, want 404 NOT_FOUND as for a lens nobody wrote", removed, login, read, status)
-			}, lensReader{"alice", rig.as("alice"), lens})
+			}, lensReader{"alice", rig.as(), lens})
 		}
 	}
 	removedDocument(t, rig.handler, a.ID)

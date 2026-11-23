@@ -114,8 +114,8 @@ func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
 	ctx := context.Background()
 	tradeOff := rig.invoke(rig.spec, "trade-off", "alice", nil)
 	premortem := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "bob", map[string]any{"triggered_by": tradeOff.Address})
-	rig.writeState(graphstore.KindLens+"/"+tradeOff.ID, graphstore.StateProposed, "alice")
-	rig.writeState(graphstore.KindLens+"/"+tradeOff.ID, graphstore.StateLive, "alice")
+	rig.writeState(graphstore.KindLens+"/"+tradeOff.ID, graphstore.StateProposed)
+	rig.writeState(graphstore.KindLens+"/"+tradeOff.ID, graphstore.StateLive)
 
 	var placedFirst, placedSecond, rewritten int64
 	if err := rig.database.Pool.QueryRow(ctx, `
@@ -401,13 +401,13 @@ func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 		t.Fatalf("the lens on the finding reads %+v before the finding's lens is gone, want it on %s", read.Lens, finding)
 	}
 
-	rig.writeState(parent.Address, graphstore.StateGone, "alice")
+	rig.writeState(parent.Address, graphstore.StateGone)
 	if state := storedNodeOf(t, rig.database, onFinding.Address).State; state != graphstore.StateGone {
 		t.Errorf("the lens on the finding %s is %s once the finding's lens is gone, want gone with the finding", onFinding.Address, state)
 	}
 	requireReadsAsALensNobodyWrote(t, func(read, status, login string) string {
 		return fmt.Sprintf("%s's %s once the finding's lens is gone answers %s, want 404 NOT_FOUND as for a lens nobody wrote", login, read, status)
-	}, lensReader{"alice", rig.as("alice"), onFinding})
+	}, lensReader{"alice", rig.as(), onFinding})
 	requireGoneRefused(t, "overtaken on the lens on the gone finding",
 		writeStateAs(t, rig.handler, rig.issue, onFinding.Address, graphstore.StateOvertaken, "alice"), onFinding.Address)
 }

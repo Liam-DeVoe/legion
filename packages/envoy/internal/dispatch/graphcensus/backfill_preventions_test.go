@@ -32,7 +32,7 @@ type endedPreventions struct {
 	retiredCheck, goneCheck, keptCheck string
 }
 
-// seedEndedPreventions writes, under project and its issue <project>-1, what a process of the
+// seedEndedPreventions writes, under project PREV and its issue PREV-1, what a process of the
 // release before leaves of the prevented_by tuples this build wrote, during a roll or after a
 // rollback. This build wrote a risk prevented by a check of the document verification and two
 // risks prevented by the checks dropped and kept of the document notes, before the roll. The
@@ -40,8 +40,9 @@ type endedPreventions struct {
 // notes, as it does both: it set the document's retired_at, stated the dropped block's node gone,
 // and retracted neither prevented_by. Each of those rows is written by SQL as that process leaves
 // it; the nodes are this build's, written through the store's writer.
-func seedEndedPreventions(t *testing.T, database *store.Store, project string) endedPreventions {
+func seedEndedPreventions(t *testing.T, database *store.Store) endedPreventions {
 	t.Helper()
+	const project = "PREV"
 	ctx := context.Background()
 	exec := func(what, statement string, args ...any) {
 		t.Helper()
@@ -135,7 +136,7 @@ func retractedPreventions(t *testing.T, database *store.Store) int64 {
 func TestTheBackfillRetractsThePreventedByOfChecksNobodyRuns(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	seed := seedEndedPreventions(t, database, "PREV")
+	seed := seedEndedPreventions(t, database)
 
 	report, err := Backfill(ctx, database, io.Discard)
 	if err != nil {
@@ -199,7 +200,7 @@ func TestTheBackfillRetractsThePreventedByOfChecksNobodyRuns(t *testing.T) {
 // Backfill takes is not read as this batch's.
 func requireTheEndedPreventionsLockOrder(t *testing.T) {
 	database := storetest.Open(t)
-	seed := seedEndedPreventions(t, database, "PREV")
+	seed := seedEndedPreventions(t, database)
 	owner := lockstep.HoldOwner(t, database, &lockstep.Hold{
 		Name: "issue " + seed.issue + "'s owner lock", Step: lockstep.StepOwner, Taken: true,
 		Statement: lockstep.OwnerLockStatement,

@@ -71,8 +71,8 @@ func TestTheClosureAnswersANodeReservedForItsAuthorToThatAuthorAlone(t *testing.
 		t.Errorf("another person's closure = %#v; want no member, since one link is the private comment's and the other reaches the private document", got)
 	}
 	want := []Member{
-		documentMember(t, tx, privateDocument, 1, model.ReferenceVia{Kind: "comment", ID: publicComment}),
-		documentMember(t, tx, publicDocument, 1, model.ReferenceVia{Kind: "comment", ID: privateComment}),
+		documentMember(t, tx, privateDocument, model.ReferenceVia{Kind: "comment", ID: publicComment}),
+		documentMember(t, tx, publicDocument, model.ReferenceVia{Kind: "comment", ID: privateComment}),
 	}
 	sort.Slice(want, func(left, right int) bool { return want[left].RefKey < want[right].RefKey })
 	if got := closureOf(t, tx, privateAuthor); !reflect.DeepEqual(got, want) {
@@ -107,7 +107,7 @@ func TestTheClosureAnswersADocumentReservedForItsAuthorTwoHopsAwayToThatAuthorAl
 	insertReference(t, tx, "artifact", privateDocument, "comment", comment)
 	reserveForAuthor(t, tx, "artifact", privateDocumentKey)
 
-	firstHop := documentMember(t, tx, publicDocumentKey, 1, model.ReferenceVia{Kind: "comment", ID: comment})
+	firstHop := documentMember(t, tx, publicDocumentKey, model.ReferenceVia{Kind: "comment", ID: comment})
 	linkedFrom := func(references References) []string {
 		rows := []string{}
 		for _, row := range references.LinkedFrom {

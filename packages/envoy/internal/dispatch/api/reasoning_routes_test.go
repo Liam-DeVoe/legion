@@ -61,10 +61,10 @@ func (r reasoningRig) post(path string, body map[string]any, login string) *http
 	return dispatchRequest(r.t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+path, body, login)
 }
 
-// as is a sender of each request it is handed as login, a person's cookie.
-func (r reasoningRig) as(login string) sender {
+// as is a sender of each request it is handed as alice, a person's cookie.
+func (r reasoningRig) as() sender {
 	return func(method, path string, body any) *httptest.ResponseRecorder {
-		return dispatchRequest(r.t, r.handler, method, path, body, login)
+		return dispatchRequest(r.t, r.handler, method, path, body, "alice")
 	}
 }
 

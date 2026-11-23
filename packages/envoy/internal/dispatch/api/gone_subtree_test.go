@@ -56,7 +56,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	hidden := rig.invoke(first.Address, "trade-off", "bob", map[string]any{
 		"visibility": graphstore.VisibilityAuthor, "findings": []string{"Bob keeps this one."}})
 
-	rig.writeState(first.Address, graphstore.StateGone, "alice")
+	rig.writeState(first.Address, graphstore.StateGone)
 	under := map[string]string{
 		"the first lens's finding":                    finding,
 		"the lens on the first lens":                  onLens.Address,
@@ -88,8 +88,8 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 	constraint := decodeBody[riskWritten](t, constraintWrite).Address
 	onConstraint := rig.invoke(constraint, "trade-off", "alice", nil)
 
-	rig.writeState(risk.Address, graphstore.StateGone, "alice")
-	rig.writeState(constraint, graphstore.StateGone, "alice")
+	rig.writeState(risk.Address, graphstore.StateGone)
+	rig.writeState(constraint, graphstore.StateGone)
 	for name, address := range map[string]string{
 		"the lens on the risk": onRisk.Address, "that lens's finding": onRisk.Findings[0].Address,
 		"the lens on the constraint": onConstraint.Address,
@@ -460,7 +460,7 @@ func TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent(t *testing.T) {
 	if read := rig.lenses(onBlock.Address, "alice"); read.Lens == nil || read.Lens.On == nil || *read.Lens.On != pinned {
 		t.Errorf("the lens read of %s answers on=%v, want %s, the block at the last version that held it", onBlock.Address, lensOn(read), pinned)
 	}
-	requireNamedParent(t, rig, onBlock.Address, rig.secondCheck, 1)
+	requireNamedParent(t, rig, onBlock.Address, rig.secondCheck)
 
 	notes := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "notes.md", "# Notes\n\nOne paragraph.\n")
 	document := "dispatch://" + rig.issue + "/artifact/" + notes.Artifact.Slug
@@ -486,7 +486,7 @@ func TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent(t *testing.T) {
 		if read := rig.lenses(address, "alice"); read.Lens == nil || read.Lens.On == nil || *read.Lens.On != on+"@v1" {
 			t.Errorf("the lens read of %s answers on=%v, want %s@v1, at the last version of the retired document", address, lensOn(read), on)
 		}
-		requireNamedParent(t, rig, address, on, 1)
+		requireNamedParent(t, rig, address, on)
 	}
 }
 
@@ -499,19 +499,19 @@ func lensOn(read nodeLenses) string {
 }
 
 // requireNamedParent fails unless GET /api/v1/references of address answers its node's parent
-// naming want, bare or pinned at version, and parent_version version.
-func requireNamedParent(t *testing.T, rig reasoningRig, address, want string, version int) {
+// naming want, bare or pinned at version 1, and parent_version 1.
+func requireNamedParent(t *testing.T, rig reasoningRig, address, want string) {
 	t.Helper()
 	response := dispatchReferences(t, rig.handler, address, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("read %s: status=%d body=%s", address, response.Code, response.Body.String())
 	}
 	node := decodeBody[model.GraphReferences](t, response).Node
-	if node.Parent == nil || (node.Parent.Ref != want && node.Parent.Ref != fmt.Sprintf("%s@v%d", want, version)) {
+	if node.Parent == nil || (node.Parent.Ref != want && node.Parent.Ref != want+"@v1") {
 		t.Errorf("GET /api/v1/references of %s answers parent %+v, want one naming %s", address, node.Parent, want)
 	}
-	if node.ParentVersion == nil || *node.ParentVersion != version {
-		t.Errorf("GET /api/v1/references of %s answers parent_version %v, want %d, the last version that held its parent", address, node.ParentVersion, version)
+	if node.ParentVersion == nil || *node.ParentVersion != 1 {
+		t.Errorf("GET /api/v1/references of %s answers parent_version %v, want 1, the last version that held its parent", address, node.ParentVersion)
 	}
 }
 

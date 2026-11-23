@@ -319,7 +319,7 @@ func runAndCatalogueDrives(t *testing.T) []StoreDrive {
 	}, {
 		Name: endedPreventionsDrive, Sites: []string{"graphcensus/backfill.go#writeEndedPreventions"},
 		Database: database,
-		Ready:    func(t *testing.T) { seedEndedPreventions(t, database, "PREV") },
+		Ready:    func(t *testing.T) { seedEndedPreventions(t, database) },
 		Drive:    pass(backfillEndedPreventions),
 		Counts:   map[StoredKind][]string{{graphstore.KindRisk, graphstore.TuplePreventedBy}: {graphstore.KindRisk}},
 	}, {

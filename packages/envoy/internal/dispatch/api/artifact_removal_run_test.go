@@ -98,15 +98,15 @@ func (r runDocumentRig) storedNode(t *testing.T, what, refKey string) (string, [
 	return node.State, changed
 }
 
-// madeForRun makes a blank document named name on the issue under the run's header, and fails
+// madeForRun makes a blank document named notes.md on the issue under the run's header, and fails
 // unless the run is read in both directions as having made it: the run's ?to= lists the document
 // by its uuid and the document's ?from= lists the run, so what a test then reads of the document's
 // end proves something. The run's window is not moved ahead: this create is its one write, made
 // at once inside the window its record gave it, so the run's row keeps the ends_at its node
 // states and the census holds the two together.
-func (r runDocumentRig) madeForRun(t *testing.T, name string) model.Artifact {
+func (r runDocumentRig) madeForRun(t *testing.T) model.Artifact {
 	t.Helper()
-	made := requestForRun(t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{"name": name}, "alice", r.run)
+	made := requestForRun(t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts", map[string]any{"name": "notes.md"}, "alice", r.run)
 	if made.Code != http.StatusCreated {
 		t.Fatalf("make the blank document under the run's header: status=%d body=%s", made.Code, made.Body.String())
 	}
@@ -133,7 +133,7 @@ func (r runDocumentRig) madeForRun(t *testing.T, name string) model.Artifact {
 // changed_by_run asserted listed the new document under the run that made the old one, both ways.
 func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRemoved(t *testing.T) {
 	rig := newRunDocumentRig(t, "GONE")
-	document := rig.madeForRun(t, "notes.md")
+	document := rig.madeForRun(t)
 
 	removedDocument(t, rig.handler, document.ID)
 	if listed := rig.intoRun(t, "after the removal"); len(listed) != 0 {
@@ -176,7 +176,7 @@ func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRemoved(t *testing.
 // out, and its ?from= lists no run.
 func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRetired(t *testing.T) {
 	rig := newRunDocumentRig(t, "RETIRED")
-	document := rig.madeForRun(t, "notes.md")
+	document := rig.madeForRun(t)
 
 	retireTestDocument(t, rig.database, document.ID)
 	state, changed := rig.storedNode(t, "after the retirement", document.RefKey)

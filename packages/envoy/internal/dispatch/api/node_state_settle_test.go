@@ -255,7 +255,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s settles %s: status=%d body=%s, want 200", name, blockID, response.Code, response.Body.String())
 		}
-		requireNodeState(t, rig.handler, requirement(blockID), "alice", graphstore.StateSettled)
+		requireNodeState(t, rig.handler, requirement(blockID), graphstore.StateSettled)
 		if newest := newestStateTuple(t, rig.database, refs.BlockNodeKind, refKey+"#"+blockID); newest.ToID != graphstore.StateSettled || !newest.Who.SameAs(writer) {
 			t.Fatalf("%s's newest state tuple is %s written by %+v, want settled written by %+v", blockID, newest.ToID, newest.Who, writer)
 		}
@@ -281,7 +281,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	} else {
 		requireRefusedSettle("the first agent's settle of the second agent's proposal", "r-second-b", response, http.StatusForbidden, codeSettleNotPermitted)
 	}
-	requireNodeState(t, rig.handler, requirement("r-second-b"), "alice", graphstore.StateProposed)
+	requireNodeState(t, rig.handler, requirement("r-second-b"), graphstore.StateProposed)
 
 	requireSettled("alice's personal token", "r-second-b", asPersonalToken(http.MethodPost, settlePath(requirement("r-second-b"))), alice)
 
@@ -308,7 +308,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	requireRefusedSettle("another workload's pod token's settle of alice's token's proposal", "r-token",
 		asAliceToken(otherWorkload, "ses_another_workload", http.MethodPost, settlePath(requirement("r-token")), map[string]any{}),
 		http.StatusForbidden, codeSettleNotPermitted)
-	requireNodeState(t, rig.handler, requirement("r-token"), "alice", graphstore.StateProposed)
+	requireNodeState(t, rig.handler, requirement("r-token"), graphstore.StateProposed)
 	requireSettled("alice's second personal token without the person scope", "r-token",
 		asAliceToken(secondToken, secondTokenSession, http.MethodPost, settlePath(requirement("r-token")), map[string]any{}),
 		model.Actor{Kind: "session", ID: secondTokenSession})
@@ -319,7 +319,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 
 	requireRefusedSettle("the shared bearer's settle of its own proposal", "r-shared",
 		asBearer(http.MethodPost, settlePath(requirement("r-shared")), map[string]any{}), http.StatusForbidden, codeSettleNotPermitted)
-	requireNodeState(t, rig.handler, requirement("r-shared"), "alice", graphstore.StateProposed)
+	requireNodeState(t, rig.handler, requirement("r-shared"), graphstore.StateProposed)
 
 	nobody := graphstore.KindLens + "/" + uuid.NewString()
 	hiddenID := graphstore.KindLens + "/" + hidden.ID
@@ -332,7 +332,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		t.Fatalf("the hidden lens answers %d %s and a lens nobody wrote %d %s, want one 404 once the id is substituted",
 			seen.Code, seen.Body.String(), unwritten.Code, unwritten.Body.String())
 	}
-	requireNodeState(t, rig.handler, hidden.Address, "alice", graphstore.StateProposed)
+	requireNodeState(t, rig.handler, hidden.Address, graphstore.StateProposed)
 
 	// The second agent writes a third proposal of its own, moves it into proposed as its author,
 	// and settles it.
@@ -454,7 +454,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	if written := decodeBody[nodeStateWritten](t, moved); written.Previous != graphstore.StateSettled || written.Node.State != graphstore.StateLive {
 		t.Fatalf("the first agent's move of its own settled proposal answers %+v, want it moved from settled to live", written)
 	}
-	requireNodeState(t, rig.handler, requirement("r-first"), "alice", graphstore.StateLive)
+	requireNodeState(t, rig.handler, requirement("r-first"), graphstore.StateLive)
 	if newest := newestStateTuple(t, rig.database, refs.BlockNodeKind, refKey+"#r-first"); newest.ToID != graphstore.StateLive ||
 		!newest.Who.SameAs(model.Actor{Kind: "session", ID: firstSession}) {
 		t.Fatalf("r-first's newest state tuple is %s written by %+v, want live written by the first agent", newest.ToID, newest.Who)
