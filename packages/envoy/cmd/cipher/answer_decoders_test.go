@@ -44,8 +44,8 @@ func TestTheAnswerDecodersPrintTheAnswerOnlyAsTheAddressLetsItPrint(t *testing.T
 		// time.Parse's error quotes; else a JSON number, which the decoder refuses quoting
 		// nothing of it.
 		body string
-		// member is the member the decoder's error names: the top-level one that did not
-		// decode, or "value" for an answer that is no object.
+		// member is the member the decoder's error names: the one that did not decode, as the
+		// answer's type names it at its depth, or "value" for an answer that is no object.
 		member string
 		run    func(c *client) error
 	}{
@@ -77,11 +77,11 @@ func TestTheAnswerDecodersPrintTheAnswerOnlyAsTheAddressLetsItPrint(t *testing.T
 			_, err := c.RereadSecret(ctx, signer, "SCRATCH_TEST")
 			return err
 		}},
-		{"decode machine logins", `{"credentials":[{"credential_id":"lcred-1","issued_at":` + echo + `}]}`, `"credentials"`, func(c *client) error {
+		{"decode machine logins", `{"credentials":[{"credential_id":"lcred-1","issued_at":` + echo + `}]}`, `"credentials.(item).issued_at"`, func(c *client) error {
 			_, _, err := c.OperatorMachines(ctx, signer)
 			return err
 		}},
-		{"decode grants", `{"grants":[{"grant_id":"grant-1","created_at":` + echo + `}]}`, `"grants"`, func(c *client) error {
+		{"decode grants", `{"grants":[{"grant_id":"grant-1","created_at":` + echo + `}]}`, `"grants.(item).created_at"`, func(c *client) error {
 			_, _, err := c.OperatorGrants(ctx, signer)
 			return err
 		}},
