@@ -263,9 +263,10 @@ func TestTheReviewOfAMergeForwardReachesTheOwnerOnceItsSlotHoldsTheReviewApp(t *
 // While the owner's slot acts as the implementer for a merge forward asked of it, nothing asks the
 // owner for an act as another role. The owner's review step of `implementer:owner reviewer:owner`
 // and its acceptance of `implementer:owner acceptance:owner`, told while the ask is open, wait as a
-// notice held for its architect, with no stale line, since their runs go on. Once the merge forward
-// landed and the write-back wrote the slot, each is told once. The landed message the landing sends
-// the owner's review step, which tells it to go on at the new head, waits the same way.
+// notice held for its architect, with no stale line, since their runs go on; so does such a notice
+// that names no run, a row the release before wrote. Once the merge forward landed and the
+// write-back wrote the slot, each is told once. The landed message the landing sends the owner's
+// review step, which tells it to go on at the new head, waits the same way.
 func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -287,6 +288,15 @@ func TestTheOwnersStepsWaitWhileItsSlotActsForAMergeForward(t *testing.T) {
 			r.rt.ScriptSlotHolds(nil)
 			notice := record.Notice{Kind: record.OwnerStepNotice, Role: tc.role, Phase: tc.at, Reason: "Step 2 of 2.",
 				OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 2, Starts: 1}}
+			legacy := notice
+			legacy.OwnerStep = nil
+			before := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", legacy, r.now))
+			if err := r.runner.execute(ctx, before); !errors.Is(err, errNoticeWaits) {
+				t.Fatalf("the owner-step of step 2 that names no run, while the merge forward is open = %v, want a notice held for its architect", err)
+			}
+			if _, err := r.pool.Exec(ctx, "delete from outbox where id = $1", before.ID); err != nil {
+				t.Fatalf("drop the row that names no run: %v", err)
+			}
 			row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", notice, r.now))
 			if err := r.runner.execute(ctx, row); !errors.Is(err, errNoticeWaits) {
 				t.Fatalf("the owner-step of step 2 while the merge forward is open = %v, want a notice held for its architect", err)
