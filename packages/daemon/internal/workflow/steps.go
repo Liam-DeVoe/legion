@@ -222,7 +222,7 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, w 
 // identity, the moment the start wrote, the moment now, end's fields, and the session and the model
 // of one read of the start's agent now, the only write that names either (startStep).
 func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place record.StepPlace, end StepEnd, identity func(start record.StepStart) record.StepRecord) (bool, error) {
-	start, ended, err := e.store.EndStepStart(ctx, tx, issue, place)
+	start, ended, err := e.store.EndStepStart(ctx, tx, issue, place, "")
 	if err != nil || !ended {
 		return false, err
 	}

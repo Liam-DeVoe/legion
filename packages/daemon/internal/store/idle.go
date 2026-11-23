@@ -23,11 +23,13 @@ import (
 // (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
 // (record.MergeQueueRemoval), and each message of a merge forward, the ask to the implementer or,
 // in merging, the merger, and the word to the worker of the phase the issue stays in
-// (record.MergeForwardMessage). Two reads of GitHub reach no session themselves, but their
-// answers are what write a message, so each holds the pod as its message does: the read that
-// comes before a merge-queue removal's message (record.MergeQueueRead), and the second read of a
-// head a first read found conflicting, whose confirmation writes a merge forward's messages
-// (record.ConflictConfirm). The issue's board writes — its Dispatch status, its messages on the
+// (record.MergeForwardMessage). Three reads reach no session themselves, but their answers are
+// what write a message or a start, so each holds the pod as its message or its start does: the
+// read of GitHub that comes before a merge-queue removal's message (record.MergeQueueRead), the
+// second read of a head a first read found conflicting, whose confirmation writes a merge
+// forward's messages (record.ConflictConfirm), and the read from Dispatch of the CI job a fix
+// starts for, whose answer starts the fix (record.FixJobRead). The issue's board writes — its
+// Dispatch status, its messages on the
 // Dispatch issue — reach no session and hold no pod. The same set is what the release's boundary
 // is read over (IssueRelease), so the rule that holds a pod and the rule that cancels its release
 // never disagree about which row speaks to a role. Every kind of the role-message lane belongs
@@ -36,7 +38,7 @@ import (
 // never reads it. An update ask holds the pod only while its row is pending, which is one attempt
 // where the publish goes through or finds no holder.
 var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
-	"conflict_confirm", "merge_forward"}
+	"conflict_confirm", "merge_forward", "fix_job_read"}
 
 // idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2, of a row that
 // waits for a role of the pod, and so holds the pod and cancels its release at the boundary

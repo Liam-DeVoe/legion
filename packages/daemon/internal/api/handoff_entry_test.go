@@ -838,7 +838,7 @@ func holdPhases(h *harness) {
 		}); err != nil {
 			return false, err
 		}
-		return record.PhaseHolds(issue, queuedFor, generation), nil
+		return record.PhaseHolds(issue, queuedFor, generation, 0), nil
 	}
 }
 

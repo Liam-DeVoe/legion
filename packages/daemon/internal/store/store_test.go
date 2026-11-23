@@ -1097,12 +1097,16 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // outbox_kind_check with a kind of its own belongs in it too, as dispatch://INFRA-3274's
 // 20261114031356, the role-holders publication's 20261116165926, the step record's
 // 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
-// (conflict_confirm and merge_forward) and dispatch://INFRA-175's 20261119203047 do: the case of a
+// (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047 and the fix beside
+// the other steps of a task's 20261123134547 (fix_job_read) do: the case of a
 // database main migrated applies a version left out of the list before the list's own rewrites of
 // that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
-// column. 20261119203047 is the last migration that writes outbox_kind_check: it stands above
+// column; so would 20261123134547, which alters step_starts (20261117004117) and plan_tasks
+// (20261117034837).
+// 20261123134547 is the last migration that writes outbox_kind_check: it stands above the design
+// news's 20261119203047, which stands above
 // main's 20261119003157, which writes it too, and main's 20261111090000, 20261111091500 and
 // 20261116144907 write none. The cache trimmer's two, 20261111090000 and 20261111091500, read no
 // column a version of the list adds either, so neither is in the list. Any other version left out
@@ -1117,6 +1121,7 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261119003157: true, 20261119203047: true,
+	20261123134547: true,
 }
 
 const idleRelease = 20261101222956

@@ -171,8 +171,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt and
-// TreeStalledToldAt, for the reason its own entry gives.
+// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt,
+// TreeStalledToldAt and RunningFix, for the reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -215,6 +215,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
 	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
 		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
+	{Field: "RunningFix", Column: ColumnWithheld,
+		Reason: "the number of the fix that runs beside the issue's step, which the fences of a start and of a delivery read (record.PhaseHolds); no surface of the state serves a fix yet"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares
