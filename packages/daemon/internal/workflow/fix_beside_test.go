@@ -155,8 +155,9 @@ func TestAChangesRequestBesideTheFixGoesToItAndCountsItsRound(t *testing.T) {
 	assertToldOnceNaming(t, "the implementer's messages", r.told(claim.RoleImplementer), "reviewer", "step 3", reviewRecord, "the widget renders twice")
 	r.assertHeldForTheFix(phase.Reviewing)
 	r.assertRunEnded(3, 1, ResultFailed, 1)
-	if starts := r.startsOf(claim.RoleImplementer); len(starts) != 1 {
-		t.Fatalf("the implementer's starts = %+v, want its first alone", starts)
+	// The outbox keeps one pending phase start of an issue, the latest; none is the implementer's.
+	if starts := r.startsOf(claim.RoleImplementer); len(starts) != 0 {
+		t.Fatalf("the implementer's pending starts = %+v, want none", starts)
 	}
 	if counts := r.counts(); counts.Rounds != 1 || counts.Pass != 0 || len(counts.BackwardMoves) != 0 {
 		t.Fatalf("the task counts %+v, want one round and no return", counts)
@@ -190,8 +191,8 @@ func TestAReturnToThePlannerWaitsForTheFix(t *testing.T) {
 	}
 	r.assertHeldForTheFix(phase.Reviewing)
 	r.assertRunEnded(4, 1, ResultFailed, 1)
-	if starts := r.startsOf(claim.RolePlanner); len(starts) != 1 {
-		t.Fatalf("the planner's starts = %+v, want its first alone", starts)
+	if starts := r.startsOf(claim.RolePlanner); len(starts) != 0 {
+		t.Fatalf("the planner's pending starts = %+v, want none", starts)
 	}
 	if counts := r.counts(); counts.Pass != 0 {
 		t.Fatalf("the task counts %+v, want no return yet", counts)
@@ -209,8 +210,8 @@ func TestAReturnToTheTesterWaitsForTheFix(t *testing.T) {
 		t.Fatalf("the fix = %+v, want it running, returning the task to step 2", fix)
 	}
 	r.assertHeldForTheFix(phase.Reviewing)
-	if starts := r.startsOf(claim.RoleTester); len(starts) != 1 {
-		t.Fatalf("the tester's starts = %+v, want its first alone", starts)
+	if starts := r.startsOf(claim.RoleTester); len(starts) != 0 {
+		t.Fatalf("the tester's pending starts = %+v, want none", starts)
 	}
 	if counts := r.counts(); counts.Pass != 0 {
 		t.Fatalf("the task counts %+v, want no return yet", counts)

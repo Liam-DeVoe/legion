@@ -129,9 +129,6 @@ func TestRows3And4ForAnImplementerReviewerTask(t *testing.T) {
 			r.apply("fix-done", fixCompletion(end))
 
 			r.assertWay(2, phase.Reviewing, claim.RoleReviewer, end, 1, phase.Pair(phase.Implementing, phase.Reviewing))
-			if starts := r.startsOf(claim.RoleReviewer); len(starts) != 2 {
-				t.Fatalf("the reviewer's starts = %+v, want two", starts)
-			}
 			if got := stepStartCounts(t, r.pool, "LEGION-208"); !slices.Contains(got, "a/step/2=2") {
 				t.Fatalf("the starts of LEGION-208 = %v, want a/step/2=2: the review runs a second time", got)
 			}
@@ -155,8 +152,8 @@ func TestATesterThatPassedBesideTheFixRunsAgainAfterIt(t *testing.T) {
 	r.move(TriggerReviewApproved, "", reviewReport("approved"))
 
 	r.assertWay(2, phase.Testing, claim.RoleTester, headTwo, 1, reviewingTesting)
-	if starts := r.startsOf(claim.RoleTester); len(starts) != 2 {
-		t.Fatalf("the tester's starts = %+v, want two", starts)
+	if got := stepStartCounts(t, r.pool, "LEGION-208"); !slices.Contains(got, "a/step/2=2") {
+		t.Fatalf("the starts of LEGION-208 = %v, want a/step/2=2: the tester runs a second time", got)
 	}
 }
 
