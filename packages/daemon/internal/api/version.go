@@ -3260,7 +3260,7 @@ package api
 // is a reading and never the rule: read main's own number and every open head again at the next
 // forward merge rather than from this line.)
 //
-// 232: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
+// 223: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
 // The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
 // `legion_tasks` bucket, which the listener relays to the session holding that role, and the
 // worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
@@ -3308,22 +3308,22 @@ package api
 // carry `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, keys of legion.yaml
 // that no reader types, which move no contract of their own (answers.go's typedSettings).
 // This daemon serves each of these down through the shaping 193 brought, to a caller whose header
-// states a contract below 232 or, stating none, whose pod's claims record one. The state is served
+// states a contract below 223 or, stating none, whose pod's claims record one. The state is served
 // without `unseenTaskValues` (the last row of shaping.go's stateNarrowings, withoutUnseenTaskValues,
 // which follows the pod's highest contract as every band does). `never_reconnected` is declared at
-// 232 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
+// 223 in answers.go's failureCauses, beside the seven words recorded at 75, and the value strip
 // withoutNeverReconnected (a row of shaping.go's valueStrips, which follows the pod's lowest
 // contract) serves it as `never_registered` in `failure.cause` and `pendingCause`, since a plugin
-// from 75 up to 232 reads both through a strict enum and refuses the whole body for a word it does
+// from 75 up to 223 reads both through a strict enum and refuses the whole body for a word it does
 // not name; the word is rewritten rather than its key dropped, because a key gone would say the
 // claim's failure has no cause or that nothing failed its relaunching process, and
 // `never_registered` is the nearest cause such a reader knows. The registration's answer is served
 // without `task` and `finished` (shaping.go's withoutTaskReading, the registration's row of
 // shapeAnswer, which placedByPod places by the caller's pod). The task read's and the take's
-// answers are rows of answers.go's Answers from 232 (`task` and `take`), and `claims/task-seen`
+// answers are rows of answers.go's Answers from 223 (`task` and `take`), and `claims/task-seen`
 // answers the 204 every claim report answers (`no-content`); the take answer's `outcome` is the
 // discriminator of a union of literals and so no enumerated field. The three task routes' bodies
-// and the turn outcome's `task`, `providerError` and `held` are in the request records from 232
+// and the turn outcome's `task`, `providerError` and `held` are in the request records from 223
 // (`packages/contracts/fixtures/daemon-api/request-shapes.json`). This change carried its own two
 // rows of the state's narrowing table before 193 moved that table into shaping.go, and keeps none
 // of its own now: the band and the value strip above are those two rows in 193's tables, so the
@@ -3417,18 +3417,28 @@ package api
 // #4180, #4182, #4193, #4251, #4259, #4261, #4269, #4290, #4932 and #4984, 217 by #4273, #4590
 // and #4771, 218 by #3831, 219 by #4611, #4902 and #4948, 220 by #4930, 223 by #4805 and 224 by
 // #4960, and no open head declaring 221, so 221 was the lowest number above 213 that none
-// declared. It takes 232 at the forward merge of 2026-11-23 that brought main in at
+// declared. It took 232 at the forward merge of 2026-11-23 that brought main in at
 // 8f332682865955d5d11143285102225491547882, which carries 217, cybermonklabs/legion#4273's
-// INFRA-3531 and INFRA-4567, the entry right above and the number the base now carries: 221 is
+// INFRA-3531 and INFRA-4567, the entry right above and the number the base now carries: 221 was
 // still above it, but a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the
 // 525 open pull requests, made between 2026-11-23T01:15:21Z and 01:27:03Z, found 218 declared by
 // #3831, 219 by #4611, #4902 and #4948, 220 by #4930 and #5014, 221 by #4049, #4392, #4432, #4682,
 // #4771, #4940 and #4942 as well as by this change's own head before this merge, 222 by #4661,
 // 223 by #4805, 224 by #4960, 225 by #3712 and #4539, 226 by #4175 and #5017, 227 by #4065, 228
 // by #4590, 229 by #2230, 230 by #4580 and 231 by #4540, and no open head declaring 232, so 232
-// was the lowest number above 217 that no other open pull request declared.
+// was the lowest number above 217 that no other open pull request declared. It takes 223 at the
+// forward merge of 2026-11-23 that brought main in at 77eac01e35d094a36b2419a16a0c52dc5a1d6c47,
+// which still carries 217: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each
+// of the 502 open pull requests, made between 2026-11-23T02:28:04Z and 02:36:58Z with none left
+// unread, found 218 declared by #3831, 219 by #4611, #4902, #4948 and #5161, 220 by #4930 and
+// #5014, 221 by #4049, #4392, #4432, #4682, #4771, #4940, #4942 and #5164 as well as by this
+// change's pushed head, 222 by #4661, #5156, #5157, #5158 and #5160, 224 by #4960 and #5165, 225
+// by #3712 and #4539, 226 by #4175 and #5017, 227 by #4065 and #5162, 228 by #4590, 229 by #2230,
+// 230 by #4580, 231 by #4540 and 232 by #4173 and #4592, so 232 was no longer this change's alone,
+// and no open head declared 223 (#4805, which declared it, is closed), so 223 was the lowest
+// number above 217 that no open pull request declared.
 // Read the base's own number and every open pull request again at the next merge rather than from
 // this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 232
+const DaemonAPIVersion = 223

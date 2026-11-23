@@ -766,8 +766,7 @@ func TestAMergeForwardAskAndHoldNameGitHubsMergeStateAndWhenItWasRead(t *testing
 		" GitHub answered mergeState=dirty for head c0de at 2026-11-19T02:01:00Z." +
 		" The issue stays in testing. A check that main requires has not passed on this head, and GitHub runs no checks on a head that conflicts with its base." +
 		" Merge main forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace." +
-		" First do the working-copy check of skill://legion-worker/references/foreign-path.md." +
-		" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
+		" Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
 		" Write no handoff and make no completion for this forward merge."
 	if got := ask.Message("LEGION-208", "sjawhar/legion"); got != want {
 		t.Fatalf("Message of the ask =\n%q\nwant\n%q", got, want)
@@ -794,8 +793,7 @@ func TestAMergeForwardAskAndHoldNameGitHubsMergeStateAndWhenItWasRead(t *testing
 		" GitHub answered mergeState=dirty for head c0de at 2026-11-19T02:01:00Z." +
 		" The issue stays in merging. The next step of the issue is the merge, and GitHub cannot merge a head that conflicts with its base." +
 		" Merge main forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace." +
-		" First do the working-copy check of skill://legion-worker/references/foreign-path.md." +
-		" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
+		" Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
 		" Write no handoff and make no completion for this forward merge." +
 		" The merge and its conflict are yours to resolve, as your role says." +
 		" When your merge lands, the daemon asks the reviewer to read it and approve the new head."

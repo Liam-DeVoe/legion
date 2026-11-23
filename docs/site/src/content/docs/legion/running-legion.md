@@ -34,7 +34,14 @@ its default branch as GitHub names it, when it first records the issue, and keep
 change of the issue's repository in Dispatch is not applied, and the daemon says so on the issue.
 A change that sends no event of the issue, as a move of the project's default repository does,
 and that lands between that read and the record, is such a later change, said on the issue at
-its next event or the next boot's listing.
+its next event or the next boot's listing. A change of the issue's own repository sends an event,
+and once the daemon has applied that event, no listing read before it records the issue: when the
+daemon applies the edit's event before it records the issue, the edit is applied, and the issue is
+recorded where Dispatch resolves it at that event or later. The daemon prepares an event, GitHub's
+answers for its repository included, before it applies it, so a listing read before the edit can
+still record the issue while the edit's event is being prepared. Then the issue is recorded on the
+repository that listing showed, and the edit is a later change, said on the issue when its event
+applies.
 An issue whose repository resolves to none, or to one a role App is not installed on, is not
 admitted, and the daemon says why on the issue. A claim an operator starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
@@ -1311,7 +1318,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
    first move back after the upgrade.
 
-   **The first upgrade to a release where a worker takes its task** (daemon API contract 232)
+   **The first upgrade to a release where a worker takes its task** (daemon API contract 223)
    goes out in this order, so nothing is used before it exists: first the `envoy-infra` release
    whose grants carry the task bucket `legion_tasks` (the daemon's user may create, update, read,
    write and purge it, the listener's user may only read it, and no session user gets anything of

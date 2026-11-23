@@ -198,8 +198,8 @@
 -- block brought back are dropped again by this file's last statements. The missing row does not
 -- move the number the state read reports while the older image runs (Store.SchemaVersionTx, the
 -- highest row recorded): every database this release migrated records
--- 20261120055717_dispatch_issue_value_sequences, that older daemon's own newest migration, above
--- this version, so the number reads 20261120055717 before the delete and after it, which is the
+-- 20261121170714_dispatch_issue_applied_seq, that older daemon's own newest migration, above
+-- this version, so the number reads 20261121170714 before the delete and after it, which is the
 -- truth about the image that is running.
 --
 -- What that costs is the numbering, as the phase entry's second fill costs its own: the second
@@ -215,7 +215,7 @@
 --
 -- The re-arm asks nothing of the other rows. What it does need is that no migration recorded
 -- after this one builds on the fourteen columns it drops whose way back has not already run, and
--- at this release twenty of the twenty-one recorded after it touch none of them:
+-- at this release twenty-one of the twenty-two recorded after it touch none of them:
 -- 20261113181500_architect_stalled_notices adds the table
 -- architect_stalled_notices, 20261113182000_architect_entry_upgrade writes the root architects'
 -- phases rows, their claims' given_entry and served_entry and that table's marks,
@@ -248,18 +248,24 @@
 -- 20261120042902_claim_agent_resume_generation adds claims.agent_resume_generation at its default,
 -- 0, and rewrites no kind list,
 -- 20261120055717_dispatch_issue_value_sequences adds seven columns of dispatch_issues, an
--- index on dispatch_issues.parent and the table dispatch_issue_refills, and rewrites no kind list.
+-- index on dispatch_issues.parent and the table dispatch_issue_refills, and rewrites no kind list,
+-- 20261121170714_dispatch_issue_applied_seq (cybermonklabs/legion#4903) adds
+-- dispatch_issues.applied_seq at its default, 0, and rewrites no kind list.
 -- 20261119203047_design_news reads no column this block drops or puts back: its functions read
 -- pending_task_deliveries.confirmed_at, which both releases keep, and its four columns stand
 -- through the block, so this block reverses nothing of it, and the two hold in either order.
--- The twenty-first, 20261122160000_design_news_credit_at_turn_start, is this release's own: it
+-- The twenty-second, 20261122160000_design_news_credit_at_turn_start, is this release's own: it
 -- writes #3995's function design_news_told_in again, reading pending_task_deliveries.turn_started,
 -- which this block drops, so its way back, the last paragraph of its header, runs before this
 -- block and writes #3995's text of the function back; every rollback of this release starts with
--- it. The release before this one carries the other twenty: it is contract 213 as main releases it
--- with cybermonklabs/legion#3995, which changes no contract number, so the rollback to it runs
--- that way back and this block and leaves the twenty standing. A rollback to a release before
--- #3995, contract 213 without it or contract 205, runs those two and then #3995's four statements
+-- it. The release before this one carries the other twenty-one: it is contract 213 as main
+-- releases it with cybermonklabs/legion#3995 and cybermonklabs/legion#4903, neither of which
+-- changes the contract number, so the rollback to it runs that way back and this block and leaves
+-- the twenty-one standing. A rollback to a release before #4903 runs the way back in the header of
+-- 20261121170714_dispatch_issue_applied_seq, its last paragraph, between those two, after
+-- 20261122160000's way back and before this block, with every daemon of the database stopped: it
+-- drops dispatch_issues.applied_seq and deletes its version row. A rollback to a release before
+-- #3995, contract 213 without it or contract 205, runs those three and then #3995's four statements
 -- (docs/kubernetes.md, "Rolling back the release that tells a holder of an approved new
 -- version"), which read none of the fourteen columns. A rollback to contract 202, the release
 -- before 20261120012547_set_back_observed_seq, runs those, #3995's four statements and then
@@ -278,7 +284,9 @@
 -- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
 -- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
 -- them: 20261122160000_design_news_credit_at_turn_start's way back, which writes back #3995's
--- design_news_told_in; this block; #3995's four statements, which delete the queued news-only
+-- design_news_told_in; the way back in the header of 20261121170714_dispatch_issue_applied_seq,
+-- #4903's, which drops dispatch_issues.applied_seq and deletes its version row, with every daemon
+-- of the database stopped; this block; #3995's four statements, which delete the queued news-only
 -- starts and the
 -- news-only tasks and take the news off each pending task (docs/kubernetes.md, "Rolling back the
 -- release that tells a holder of an approved new version"); the statement in the header of
@@ -311,13 +319,14 @@
 -- pull_requests.statuses, and which clears for the roll-forward a list no earlier release keeps
 -- current; the reviewed commit's block, which takes the key roundNamed off each start row
 -- contract 87 decodes strictly; the role-holders publication's outbox delete, which leaves no row
--- of its kind behind; contract 146's block, which reverses the four of those twenty that are
+-- of its kind behind; contract 146's block, which reverses the four of those twenty-one that are
 -- the root architect's entry (all but the six kind lists, the five other migrations of contract
 -- 152, contract 160's 20261116144907_claim_sessions, contract 178's 20261115194357_project_pause,
 -- contract 188's 20261120055717_dispatch_issue_value_sequences, contract 189's
 -- 20261120042902_claim_agent_resume_generation, contract 205's
--- 20261120012547_set_back_observed_seq and #3995's 20261119203047_design_news, whose own four
--- statements are its way back);
+-- 20261120012547_set_back_observed_seq, #4903's 20261121170714_dispatch_issue_applied_seq, whose
+-- own way back has run, and #3995's 20261119203047_design_news, whose own four statements are its
+-- way back);
 -- the merge-queue removal's outbox delete; the
 -- five statements of the release whose update round ends at its bound, whose
 -- 20261113110610_drop_claim_update_answer_marks dropped two columns

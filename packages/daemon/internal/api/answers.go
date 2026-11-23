@@ -46,7 +46,7 @@ const ServingFloor = 46
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp (`version_test.go`) reads the entry
 // headers out of version.go and holds this list to them in both directions.
 //
-// 193, 202, 205, 213 and 232 are constants rather than their numbers, because the entries that
+// 193, 202, 205, 213 and 223 are constants rather than their numbers, because the entries that
 // added them name them (shapedAnswersContract, the shaped answers' entry;
 // repositoriesLiveContract, dispatch://INFRA-4401's; childRouteRemovedContract,
 // dispatch://INFRA-3178's; cachesSourceContract, dispatch://INFRA-4036's; and
@@ -158,7 +158,7 @@ var Answers = []Answer{
 	{ID: AnswerRegisterController, Routes: []string{"POST /legion/v1/claims/register"}, Since: ServingFloor},
 	// Older than the floor: 204 and nothing after the headers. Three of the five routes are newer
 	// — `claims/ready-for-update` is version.go's 46, `claims/activity` its 48 and
-	// `claims/task-seen` its 232 (supervise.TaskTakeContract) — but the answer they share is older
+	// `claims/task-seen` its 223 (supervise.TaskTakeContract) — but the answer they share is older
 	// than any of them.
 	{ID: AnswerNoContent, Routes: []string{
 		"POST /legion/v1/claims/ready",
@@ -207,11 +207,11 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 232: a worker's read of its claim's task value, the value the task bucket holds
+	// version.go's 223: a worker's read of its claim's task value, the value the task bucket holds
 	// and the number of the last task the claim finished (`claim.TaskResponse`). The route arrives
-	// with the answer, so no contract below 232 records either.
+	// with the answer, so no contract below 223 records either.
 	{ID: AnswerTask, Routes: []string{"POST /legion/v1/claims/task"}, Since: supervise.TaskTakeContract},
-	// version.go's 232: the answer to a worker's take of the task its value names, accepted with
+	// version.go's 223: the answer to a worker's take of the task its value names, accepted with
 	// the text, refused naming the hold or dropped (`claim.TakeResponse`), arrived with its route
 	// as the task read's answer did.
 	{ID: AnswerTake, Routes: []string{"POST /legion/v1/claims/take"}, Since: supervise.TaskTakeContract},
@@ -273,7 +273,7 @@ type EnumeratedValue struct {
 // `declined` at 68, `strandedClaims[].state`, which gained `retired` at 56,
 // `waitingLine.kind`, which gained `waiting_on_issue` at 132, `capabilities.*.source`, which
 // gained `caches` at dispatch://INFRA-4036's contract (cachesSourceContract), and a claim's
-// failure cause, which gained `never_reconnected` at 232, so every other list is recorded whole at
+// failure cause, which gained `never_reconnected` at 223, so every other list is recorded whole at
 // its own field's arrival. (`suspendedBy` gained `released` at 48 and is no row here: the operator
 // claim answers carry it and no plugin parses them.)
 var EnumeratedFields = enumeratedFields()
@@ -368,7 +368,7 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "paused.waitsOn.*.role", Values: pauseStopRoles},
 	// `role` of one claim whose task value nobody reported seeing (api.UnseenTaskValue.Role). It
 	// arrived with `unseenTaskValues`, which is served down below that contract whole
-	// (shaping.go's withoutUnseenTaskValues), so no body below 232 carries a value of it.
+	// (shaping.go's withoutUnseenTaskValues), so no body below 223 carries a value of it.
 	{Answer: AnswerState, KeyPath: "unseenTaskValues.*.role", Values: unseenTaskRoles},
 	// `runtime` of the registered controller's locator, the runtime this daemon runs under
 	// (api.ControllerLocator.Runtime).
@@ -398,7 +398,7 @@ var stateEnumeratedFields = []EnumeratedField{
 	// failed the claim chose (api.ClaimFailureView.Cause, supervise.FailureCause). Both arrived
 	// with the decided record and are served down below that contract whole
 	// (shaping.go's withoutRecordFields), and the architect's view and each worker's carry the
-	// one field. Their list grew: `never_reconnected` arrived at 232, after the field, and is
+	// one field. Their list grew: `never_reconnected` arrived at 223, after the field, and is
 	// served as `never_registered` below that contract (shaping.go's withoutNeverReconnected).
 	{Answer: AnswerState, KeyPath: "issues.*.architect.failure.cause", Values: failureCauses},
 	{Answer: AnswerState, KeyPath: "issues.*.workers.*.claim.failure.cause", Values: failureCauses},
@@ -511,8 +511,8 @@ var workflowPhases = valuesFrom(recordFieldsContract,
 // later arrives at its own contract and not at this one, and the list grew once:
 // `never_reconnected`, a claim whose shim never said hello again within the reconnect deadline,
 // after a daemon start restored it or after its connection closed over a pending task, arrived at
-// supervise.TaskTakeContract (version.go's 232). So it is written out value by value, sorted by
-// value, as waitAnswers is, and a caller below 232 is served the word as `never_registered`
+// supervise.TaskTakeContract (version.go's 223). So it is written out value by value, sorted by
+// value, as waitAnswers is, and a caller below 223 is served the word as `never_registered`
 // (shaping.go's withoutNeverReconnected).
 var failureCauses = []EnumeratedValue{
 	{Value: string(supervise.CauseDied), Since: recordFieldsContract},

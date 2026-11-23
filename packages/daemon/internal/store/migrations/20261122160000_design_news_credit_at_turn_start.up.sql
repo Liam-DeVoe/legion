@@ -33,7 +33,9 @@
 -- says the same to whoever reads the schema.
 --
 -- The way back is the block below, run with the daemon stopped before the earlier image is pinned,
--- and before the way back of 20261113175649_task_numbers, which drops turn_started: it writes
+-- and before the way back of 20261113175649_task_numbers, which drops turn_started (at a rollback
+-- to a release before cybermonklabs/legion#4903, the way back in the header of
+-- 20261121170714_dispatch_issue_applied_seq runs between the two): it writes
 -- design_news_told_in back as 20261119203047 wrote it, drops the comment this file set (that
 -- migration set none), and deletes this migration's version row, so the roll forward runs this file
 -- again. The release before this one, which carries 20261119203047 and not the task numbers, then
