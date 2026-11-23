@@ -1512,6 +1512,8 @@ function boxWords(box: Box): string {
  *  the band from the top of the mark or the key, whichever is higher, to the bottom of the lower:
  *  what a card draws under them stands on neither. A failure prints the row and every box. */
 async function expectLineItemsApart(page: Page, row: PlacedMark): Promise<void> {
+  // Every caller reads each row's mark words with a waiting `expect` before this, so the list has
+  // settled; the `null` branch only stops a row with no mark or key, which the expect below fails.
   const read = await inboxRow(page, row.id).evaluate(
     (element, { key, selectors }) => {
       const boxOf = (part: Element): Box => {
