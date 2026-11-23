@@ -659,19 +659,20 @@ func cell(kind, base, input string, right placeRight) string {
 // it ranges over by their types (eachAnswer): the input's right, whether there is one and allowed nil
 // or a map; and at each place, the base's state, none or each state of its kind, the input's, none or
 // each value of judgedValues, and the value that a map names the place with, or none; the base's
-// answer and the input's go to judgeAnswer as replies of the reader's form (replyOf): each with a key,
-// as each reply of the reader has the key of the line that it answers, and with the text that the
-// reader's process writes for those states, which decodedBase holds to the reader's reply at each base,
-// byte for byte. It holds what judgeAnswer reports of each to the definition applied place by place
-// (definedAnswer), and an answer that the definition covers no reading of to the judgment's refusal, as
-// it holds a reply that gives no states (the reader's refusal, or a line of no form of the reader's) at
-// the base or the input to it. So a judgment of an answer that reads an answer by its shape (a place
-// that it lacks or holds, a right that names no place of it, or none at all), passes over a place whose
-// input reads a value that is no state of its kind, or reads another right at a place than the
-// input's, fails by the case, and so does one that tells the replies that it reads apart by whether
-// they have a key, or by the members or the order of their text. It fails by name where a right at a
-// place (placeRight) or a reply of the reader (readerReply) gains a field, or judgeAnswer an argument
-// or a type of one, that it does not range over. It does not show what sweepAgainst hands
+// answer and the input's go to judgeAnswer as replies of the reader's form (replyOf): each with a key
+// of random bytes (replyText), which no code can tell from the key of the line that a reply of the
+// reader answers, and with the text that the reader's process writes for those states, which
+// decodedBase holds to the reader's reply at each base, byte for byte. It holds what judgeAnswer
+// reports of each to the definition applied place by place (definedAnswer), and an answer that the
+// definition covers no reading of to the judgment's refusal, as it holds a reply that gives no states
+// (the reader's refusal, or a line of no form of the reader's) at the base or the input to it. So a
+// judgment of an answer that reads an answer by its shape (a place that it lacks or holds, a right
+// that names no place of it, or none at all), passes over a place whose input reads a value that is
+// no state of its kind, or reads another right at a place than the input's, fails by the case, and so
+// does one that tells the replies that it reads apart by their keys (whether they have one, or how it
+// relates to their text), or by the members or the order of their text. It fails by name where a
+// right at a place (placeRight) or a reply of the reader (readerReply) gains a field, or judgeAnswer
+// an argument or a type of one, that it does not range over. It does not show what sweepAgainst hands
 // judgeAnswer: that each of the two replies that it hands it for an input, the base's and the input's,
 // is the reader's reply to the line that it stands for is the sweeps' digests' (judgeAnswer gives back
 // the keys of both, by which the sweep counts the input), and that it hands it the input's right is the
@@ -710,9 +711,10 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 		}
 	}
 	stateMap, reply := reflect.TypeFor[map[string]string](), reflect.TypeFor[readerReply]()
-	// A reply of the reader holds the key of the line that it answers and its text, and the domain test
-	// writes both as the reader's process gives them (replyOf, decodedBase): a field that a reply
-	// gains, which it does not write, fails by name.
+	// A reply of the reader holds the key of the line that it answers and its text. The domain test
+	// writes the text as the reader's process gives it (replyOf, decodedBase), and the key from random
+	// bytes (replyText), which no code can tell from a line's key: a field that a reply gains, which
+	// it does not write, fails by name.
 	for _, f := range reflect.VisibleFields(reply) {
 		if f.Name != "line" && f.Name != "text" {
 			t.Errorf("a reply of the reader (readerReply) holds the field %s, which the domain test does not write as the reader's process does (replyOf)", f.Name)

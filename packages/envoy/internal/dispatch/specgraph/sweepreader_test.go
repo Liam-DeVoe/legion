@@ -2,6 +2,7 @@ package specgraph
 
 import (
 	"bufio"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json/v2"
 	"errors"
@@ -247,12 +248,15 @@ func replyOf(t *testing.T, states map[string]string) readerReply {
 	return replyText(string(data) + "\n")
 }
 
-// replyText is the reply whose text is text, with a key, the sha256 of text: it answers no line of the
-// reader's input, and has a key as each reply that ask returns has one, so a judgment that tells the
-// replies that it reads apart by whether they have a key reads the domain test's replies as it reads
-// the reader's.
+// replyText is the reply whose text is text, with a key of 32 bytes from crypto/rand: it answers no
+// line of the reader's input, and has a key as each reply that ask returns has one, the sha256 of the
+// line that it answers. No code can compute such a key from the reply, its text or anything else, so
+// a judgment that tells the replies that it reads apart by their keys, whether they have one or how
+// it relates to their text, reads the domain test's replies as it reads the reader's.
 func replyText(text string) readerReply {
-	return readerReply{line: sha256.Sum256([]byte(text)), text: text}
+	r := readerReply{text: text}
+	rand.Read(r.line[:])
+	return r
 }
 
 // ask writes line, a line of readerLine, to the process and reads its answer (answer): the reply as the
