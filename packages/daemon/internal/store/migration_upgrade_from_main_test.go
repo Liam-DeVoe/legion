@@ -193,6 +193,9 @@ import (
 // outbox_kind_check: it keeps the one open resume per role for the resumes that name no claim and
 // holds one per claim for the rest, and closes no row, so it needs no row of its own here
 // (migration_20261122074350_test.go).
+// The tasks each version of a plan added (20261123200630) are applied after all of these and touch
+// no outbox_kind_check: they add issue_plans.added at its default, the empty list, on every row they
+// find, so they need no row of their own here (migration_20261123200630_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -205,7 +208,7 @@ var thisBranchsMigrations = []int{
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117204629, 20261117213545, 20261117223524, 20261117224125, 20261119003157, 20261119203047,
 	20261120012547, 20261120042902, 20261120055717, 20261121165047, 20261121170714, 20261121183336,
-	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431,
+	20261122072945, 20261122074350, 20261122122826, 20261122131321, 20261123072431, 20261123200630,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -226,10 +229,11 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the claim
 // of each resume's 20261121183336, the claim of each backstop's 20261122072945, one open resume per
-// claim's 20261122074350, the branch of a pending delivery's 20261122131321, and the five the task
+// claim's 20261122074350, the branch of a pending delivery's 20261122131321, and the six the task
 // copies add, the working copies of a saved bundle (20261117204629), the held task
 // (20261117224125), the copies of a plan's tasks (20261121165047), the pull requests by task
-// (20261122122826) and the removal of a removed task's working copy (20261123072431). That is why
+// (20261122122826), the removal of a removed task's working copy (20261123072431) and the tasks
+// each version of a plan added (20261123200630). That is why
 // the loop below holds the list rather than counting it, so that a version added above any of them
 // is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
