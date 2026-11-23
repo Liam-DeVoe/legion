@@ -309,9 +309,10 @@ func reservedForAuthor(ends int, check func(map[[2]string]model.Actor) error) fu
 	}
 }
 
-// namesPerson is whether tuple is one of the three kinds ToPerson alone appends, naming a person
-// at the end its kind puts one.
-func namesPerson(tuple Tuple) bool {
+// NamesPerson is whether tuple is one of the three kinds ToPerson alone appends, naming a person
+// at the end its kind puts one: a writer that hands the store tuples of every kind parts them by
+// it, those to ToPerson and every other to Write.
+func NamesPerson(tuple Tuple) bool {
 	switch tuple.Kind {
 	case TupleDeliveredTo, TupleMentions:
 		return tuple.ToKind == KindPerson
@@ -344,7 +345,7 @@ func refusePersonTuples(tuples []Tuple, claims []Claim) error {
 // names as such in the refusal.
 func refusePersonTuple(what string, tuple Tuple) error {
 	switch {
-	case namesPerson(tuple):
+	case NamesPerson(tuple):
 		return fmt.Errorf("%s%s %s/%s -> %s/%s: %w", what, tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, ErrPersonTupleOutsideToPerson)
 	case marksFromPerson(tuple):
 		return fmt.Errorf("%s%s %s/%s -> %s/%s: %w", what, tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, ErrMarkOutsideFromPerson)

@@ -19,7 +19,7 @@ import (
 )
 
 // TestAPersonPageListsWhatWasDeliveredToTheirOwnNode holds the person page to the deliveries this
-// change writes to a person's own node: every write that reaches a person appends a delivered_to
+// release writes to a person's own node: every write that reaches a person appends a delivered_to
 // from its comment, ask or message to that person (inboxwrite.Record, through
 // graphstore.ToPerson), with no session of theirs in between. carol is reached by a mention alone
 // (dispatch://person/<login>, inboxwrite.Write.ReachesMentioned): she writes nothing and holds no

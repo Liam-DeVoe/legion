@@ -315,15 +315,27 @@ func (g *storeGrowth) wrote(ctx context.Context, database *store.Store, wrote in
 }
 
 // lockOwnersOf takes the owner row of each row read names `for no key update`, in ascending owner
-// key (events.LockOwnerRows), where read answers (id, issue, document) for the ids $1 - the issue
-// that owns a row, or the document no issue owns - as every writer of these rows takes its owner
-// first.
+// key (events.LockOwnerRows), where read is as readOwnersInto reads it, as every writer of these
+// rows takes its owner first.
 func lockOwnersOf(ctx context.Context, tx pgx.Tx, read string, ids []string) error {
+	owners := events.OwnerRows{}
+	if err := readOwnersInto(ctx, tx, owners, read, ids); err != nil {
+		return err
+	}
+	return events.LockOwnerRows(ctx, tx, owners)
+}
+
+// readOwnersInto adds to owners the owner of each row read names, where read answers (id, issue,
+// document) for the ids $1 - the issue that owns a row, or the document no issue owns. With no ids
+// there is no row to read, and it sends no statement.
+func readOwnersInto(ctx context.Context, tx pgx.Tx, owners events.OwnerRows, read string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
 	rows, err := tx.Query(ctx, read, ids)
 	if err != nil {
 		return fmt.Errorf("read the owners of a batch: %w", err)
 	}
-	owners := events.OwnerRows{}
 	var id, issue, document string
 	if _, err := pgx.ForEachRow(rows, []any{&id, &issue, &document}, func() error {
 		owners.Add(issue, document)
@@ -331,7 +343,7 @@ func lockOwnersOf(ctx context.Context, tx pgx.Tx, read string, ids []string) err
 	}); err != nil {
 		return fmt.Errorf("read the owners of a batch: %w", err)
 	}
-	return events.LockOwnerRows(ctx, tx, owners)
+	return nil
 }
 
 // The owner each item kind's row stands under, as (id, issue, document) for the ids $1: a comment's
@@ -381,14 +393,13 @@ func writeRelations(ctx context.Context, tx pgx.Tx, tuples []graphstore.Tuple) e
 }
 
 // personTuples parts tuples into those of the three kinds graphstore.ToPerson alone appends - a
-// mentions or a delivered_to to a person, and a person's participates_in - and every other.
+// mentions or a delivered_to to a person, and a person's participates_in (graphstore.NamesPerson) -
+// and every other.
 func personTuples(tuples []graphstore.Tuple) (people, others []graphstore.Tuple) {
 	for _, tuple := range tuples {
-		switch {
-		case (tuple.Kind == graphstore.TupleMentions || tuple.Kind == graphstore.TupleDeliveredTo) && tuple.ToKind == graphstore.KindPerson,
-			tuple.Kind == graphstore.TupleParticipatesIn && tuple.FromKind == graphstore.KindPerson:
+		if graphstore.NamesPerson(tuple) {
 			people = append(people, tuple)
-		default:
+		} else {
 			others = append(others, tuple)
 		}
 	}
