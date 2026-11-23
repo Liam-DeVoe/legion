@@ -169,53 +169,64 @@ func copySeedDatabase(t *testing.T, seedURL string) string {
 // the column the migration that makes it not null (20261111210103) refuses to leave empty.
 const defaultAssigneeMigration = 116
 
+// seedProofAssignee is the default assignee a project takes when nothing in the seed names a
+// person: the migration needs only a non-empty lower-case login, and no write of this test is
+// made as it.
+const seedProofAssignee = "seed-proof@example.invalid"
+
 // nameDefaultAssignees gives each project of database that names no default assignee one, printed:
-// the person its issues are assigned to most, or, for a project none of whose issues is assigned,
-// the person the seed's issues are assigned to most. It fails where no issue of the seed names an
-// assignee, since then no default can be read off the seed.
+// the person its issues are assigned to most; else the person who created most of its issues;
+// else the person the seed's issues are assigned to most; else seedProofAssignee. INFRA-639's
+// seed assigns no issue, so its project takes the person who created most of its issues.
 func nameDefaultAssignees(t *testing.T, ctx context.Context, database *store.Store) {
 	t.Helper()
 	rows, err := database.Pool.Query(ctx, `
 		with held as (
-			select project_key, lower(assignee) as assignee, count(*) as issues
+			select project_key, lower(assignee) as person, count(*) as issues
 			from issues where coalesce(assignee, '') <> ''
 			group by project_key, lower(assignee)
+		), made as (
+			select project_key, lower(created_by->>'id') as person, count(*) as issues
+			from issues where coalesce(created_by->>'id', '') <> ''
+			group by project_key, lower(created_by->>'id')
 		), overall as (
-			select assignee from held group by assignee order by sum(issues) desc, assignee limit 1
+			select person from held group by person order by sum(issues) desc, person limit 1
 		)
-		select p.key,
-		       coalesce((select h.assignee from held h where h.project_key = p.key order by h.issues desc, h.assignee limit 1),
-		                (select assignee from overall)),
-		       exists (select 1 from held h where h.project_key = p.key)
-		from projects p where p.default_assignee is null
+		select p.key, picked.person, picked.source
+		from projects p
+		cross join lateral (
+			select person, source from (
+				(select h.person, 'its issues'' most frequent assignee' as source, 1 as rank
+				 from held h where h.project_key = p.key order by h.issues desc, h.person limit 1)
+				union all
+				(select m.person, 'no issue of it is assigned, so the person who created most of its issues', 2
+				 from made m where m.project_key = p.key order by m.issues desc, m.person limit 1)
+				union all
+				(select o.person, 'nothing of it names a person, so the seed''s most frequent assignee', 3 from overall o)
+				union all
+				select $1::text, 'nothing in the seed names a person, so the test''s own placeholder', 4
+			) candidates order by rank limit 1
+		) picked
+		where p.default_assignee is null
 		order by p.key
-	`)
+	`, seedProofAssignee)
 	if err != nil {
 		t.Fatalf("read the projects that name no default assignee: %v", err)
 	}
 	type named struct {
-		project string
-		person  *string
-		own     bool
+		project, person, source string
 	}
 	projects, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (named, error) {
 		var each named
-		err := row.Scan(&each.project, &each.person, &each.own)
+		err := row.Scan(&each.project, &each.person, &each.source)
 		return each, err
 	})
 	if err != nil {
 		t.Fatalf("read the projects that name no default assignee: %v", err)
 	}
 	for _, each := range projects {
-		if each.person == nil {
-			t.Fatalf("project %s names no default assignee, and no issue of the seed names an assignee to give it", each.project)
-		}
-		from := "its issues' most frequent assignee"
-		if !each.own {
-			from = "no issue of it is assigned, so the seed's most frequent assignee"
-		}
-		t.Logf("seed proof: project %s takes the default assignee %s (%s)", each.project, *each.person, from)
-		if _, err := database.Pool.Exec(ctx, `update projects set default_assignee = $2 where key = $1`, each.project, *each.person); err != nil {
+		t.Logf("seed proof: project %s takes the default assignee %s (%s)", each.project, each.person, each.source)
+		if _, err := database.Pool.Exec(ctx, `update projects set default_assignee = $2 where key = $1`, each.project, each.person); err != nil {
 			t.Fatalf("name the default assignee of %s: %v", each.project, err)
 		}
 	}
