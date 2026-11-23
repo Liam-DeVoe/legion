@@ -6,6 +6,8 @@ import {
   type EvalsViewParams,
   evalsViewQuery,
   itemsViewQuery,
+  PROJECT_TIMELINE_PAGE,
+  projectTimelineViewQuery,
 } from "./queries";
 
 const KINDS: EvalKind[] = ["delivery", "legion", "ci", "experiment"];
@@ -114,4 +116,17 @@ test("an items view carries the project, the eval, the window, and the items rou
   expect(typeof filtered === "string" ? null : filtered?.query).toBe(
     "series=hours%3Aroots&row_kind=issue&row=ACME-7&limit=200&offset=200"
   );
+});
+
+// A project-timeline view grows by its limit on the one subscription (plan D8), so its key names
+// the project, the window, the facets and the search, and never the limit a growth raises.
+test("a project-timeline view is keyed by its window, facets and search, never its limit", () => {
+  const params = {
+    project: "ACME",
+    query: "q=widget&author=octocat",
+    window: { preset: 28 },
+  } as const;
+  expect(projectTimelineViewQuery(params).queryKey).toEqual(["evals", "timeline", params]);
+  expect(JSON.stringify(projectTimelineViewQuery(params).queryKey)).not.toContain("limit");
+  expect(PROJECT_TIMELINE_PAGE).toBe(200);
 });

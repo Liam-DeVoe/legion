@@ -327,6 +327,68 @@ test("a drop reconnects with backoff and resumes with seq and revs", async () =>
   }
 });
 
+test("a grown view is its one sub sent again with the view that holds more and a resume, which a reconnect resumes", async () => {
+  jest.useFakeTimers();
+  const random = spyOn(Math, "random").mockReturnValue(0.25);
+  const first: DeliveryLiveView = {
+    kind: "project-timeline",
+    project: "ACME",
+    window: { preset: 28 },
+    query: "limit=200",
+  };
+  const grown: DeliveryLiveView = { ...first, query: "limit=400" };
+  const timelineKey = ["evals", "timeline", "ACME"] as const;
+  const { unsubscribe } = observe(first, timelineKey);
+  try {
+    await settle();
+    const socket = sockets.latest();
+    socket.open();
+    const { sub } = socket.subscribed("project-timeline");
+    // Before its snapshot the view holds nothing to resume from, so it does not grow.
+    expect(live.grow(timelineKey, grown)).toBe(false);
+    expect(live.grow(["evals", "timeline", "OTHER"], grown)).toBe(false);
+    expect(socket.subscribes()).toHaveLength(1);
+
+    socket.receive(snapshot(sub));
+    await settle();
+    socket.receive(merged(sub, "41"));
+    await settle();
+    expect(live.grow(timelineKey, grown)).toBe(true);
+    const resume = {
+      seq: "41",
+      revs: {
+        ...revs,
+        items: { ...revs.items, prs: { "acme/widgets#1": "aaaaaaaaaaaaaaaa" } },
+        counts: { facet_counts: { repo: { "acme/widgets": "bbbbbbbbbbbbbbbb" } } },
+      },
+    };
+    expect(socket.subscribes()).toHaveLength(2);
+    expect(socket.subscribed("project-timeline")).toEqual({
+      type: "subscribe",
+      sub,
+      view: grown,
+      resume,
+    });
+    // The same subscription grew: nothing was unsubscribed, and the rows held stay in the cache.
+    expect(socket.unsubscribes()).toEqual([]);
+    expect(queryClient.getQueryData<DeliveryTimelineWithMeasures>(timelineKey)?.prs).toEqual([pr]);
+
+    socket.drop(1006);
+    jest.advanceTimersByTime(500);
+    const again = sockets.latest();
+    again.open();
+    expect(again.subscribed("project-timeline")).toEqual({
+      type: "subscribe",
+      sub,
+      view: grown,
+      resume,
+    });
+  } finally {
+    random.mockRestore();
+    unsubscribe();
+  }
+});
+
 test("a connection error before open reconnects with backoff", async () => {
   jest.useFakeTimers();
   const random = spyOn(Math, "random").mockReturnValue(0.75);

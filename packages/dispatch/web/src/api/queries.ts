@@ -3,6 +3,7 @@ import { INBOX_THREAD_KINDS } from "@legion/contracts";
 import {
   infiniteQueryOptions,
   keepPreviousData,
+  type QueryClient,
   type QueryFunctionContext,
   queryOptions,
   replaceEqualDeep,
@@ -26,6 +27,7 @@ import type {
   InboxRow,
   IssueDetails,
   MyRepliesResponse,
+  ProjectTimelineResponse,
 } from "./types";
 
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
@@ -494,11 +496,12 @@ interface DeliveryLiveBodies {
   readonly pipeline: DeliveryPipelineResponse;
   readonly evals: EvalListResponse;
   readonly items: EvalItemsResponse;
+  readonly "project-timeline": ProjectTimelineResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
- *  the pages subscribe - timeline, measures, pipeline, evals and items - are keyed here; the
- *  socket serves other kinds no page reads. */
+ *  the pages subscribe - timeline, measures, pipeline, evals, items and project-timeline - are
+ *  keyed here; the socket serves other kinds no page reads. */
 function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
   view: DeliveryLiveView & { readonly kind: K }
@@ -640,6 +643,59 @@ export const itemsViewQuery = (params: ItemsViewParams) => {
     queryFn: (context) => subscribeLive(context, view),
   });
 };
+
+/** How many rows a project-timeline view holds when it is opened, and how many more each growth
+ *  asks for (dispatch://INFRA-2918/artifact/plan-md, D8). */
+export const PROJECT_TIMELINE_PAGE = 200;
+
+/** One project-timeline view of a project's Evals tab: its window, and its facets and search as
+ *  `GET /api/v1/projects/{key}/timeline` takes them (`q` and each facet's key), without the
+ *  window and the limit, which the view names apart. */
+export interface ProjectTimelineViewParams {
+  readonly project: string;
+  readonly window: DeliveryLiveWindow;
+  readonly query: string;
+}
+
+/** The project-timeline view of `params` that holds its `limit` newest rows. */
+function projectTimelineView(params: ProjectTimelineViewParams, limit: number) {
+  const query = new URLSearchParams(params.query);
+  query.set("limit", String(limit));
+  return {
+    kind: "project-timeline",
+    project: params.project,
+    window: params.window,
+    query: query.toString(),
+  } as const;
+}
+
+/** A project's merge timeline, live (plan D8): the body of `GET /api/v1/projects/{key}/timeline`
+ *  for the window, its facets and search, holding the PROJECT_TIMELINE_PAGE newest rows when it
+ *  opens. Keyed by the view without its limit, so a growth (`growProjectTimelineView`) keeps the
+ *  one entry and its rows, and a change of the window, a facet or the search subscribes its own;
+ *  the rows on screen stay while its snapshot is out, as the Delivery page's timeline kept them. */
+export const projectTimelineViewQuery = (params: ProjectTimelineViewParams) =>
+  queryOptions({
+    ...LIVE,
+    placeholderData: keepPreviousData,
+    queryKey: ["evals", "timeline", params],
+    queryFn: (context) =>
+      subscribeLive(context, projectTimelineView(params, PROJECT_TIMELINE_PAGE)),
+  });
+
+/** Grows the project-timeline view of `params` to its `limit` newest rows: its one subscription
+ *  sent again with that limit and a resume of what it holds, so Dispatch sends only the rows it
+ *  lacks (`LiveSocket.grow`). False where the view has not answered yet. */
+export function growProjectTimelineView(
+  client: QueryClient,
+  params: ProjectTimelineViewParams,
+  limit: number
+): boolean {
+  return liveSocketFor(client).grow(
+    projectTimelineViewQuery(params).queryKey,
+    projectTimelineView(params, limit)
+  );
+}
 
 /** One eval's detail read at its `version` (`GET /api/v1/projects/{key}/evals/{slug}`, the newest
  *  version alone): its method (`doc_text`). Keyed by the version the evals view answers, so a

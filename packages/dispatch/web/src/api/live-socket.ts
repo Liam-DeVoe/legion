@@ -1,9 +1,11 @@
 // The page's one live socket: one websocket to `GET /ws/live` per query client, over which every
 // live subscription of the page runs. The live-owned queries (`meta.live`: `api/queries.ts`'s
-// three delivery reads and the Evals tab's evals views) subscribe to their views (LEGION-690):
-// Dispatch answers each with a snapshot, the matching GET route's body, and from then on sends only
-// what changed, and this client writes both into the query cache with `setQueryData`, so the page
-// renders them as any read. The event feed (`subscribeEvents`) and each agent live view
+// three delivery reads and the Evals tab's evals, items and timeline views) subscribe to their
+// views (LEGION-690): Dispatch answers each with a snapshot, the matching GET route's body, and
+// from then on sends only what changed, and this client writes both into the query cache with
+// `setQueryData`, so the page renders them as any read. A view that grows (the Evals tab's
+// timeline, by its limit) sends its subscription again with the view that holds more and a resume,
+// and Dispatch answers what it lacks. The event feed (`subscribeEvents`) and each agent live view
 // (`subscribeAgent`) ride the same socket with handlers of their own. Nothing here reads on a
 // timer: a lost socket reconnects and resumes every subscription, a delivery view from the last
 // change it applied with the revisions it holds and the event feed from the last event it applied,
@@ -146,6 +148,12 @@ export interface LiveSocket {
    *  Resolves with the snapshot's body, which is also written to the cache; every later change is
    *  written there. */
   subscribe(queryKey: QueryKey, view: DeliveryLiveView): Promise<DeliveryLiveBody>;
+  /** Grows `queryKey`'s subscription to `view`, a view that holds more of the same rows (a
+   *  project-timeline view's higher `limit`): the same `sub` is sent again with a resume of the
+   *  change it last applied and the revisions it holds, so Dispatch answers only what it lacks,
+   *  and every later resume names `view`. Returns false, and sends nothing, for a key with no
+   *  subscription or one whose snapshot has not landed. */
+  grow(queryKey: QueryKey, view: DeliveryLiveView): boolean;
   /** Subscribes the event feed; returns the unsubscribe. */
   subscribeEvents(handlers: EventsHandlers): () => void;
   /** Subscribes session `sessionId`'s agent stream; returns the unsubscribe. */
@@ -169,7 +177,8 @@ interface DeliverySubscription {
   readonly id: string;
   readonly hash: string;
   readonly queryKey: QueryKey;
-  readonly view: DeliveryLiveView;
+  /** The view it shows, which `grow` replaces with one that holds more. */
+  view: DeliveryLiveView;
   /** The last change applied, and what the page holds, once a snapshot arrived. */
   seq: string | null;
   revs: DeliveryLiveRevs | null;
@@ -743,6 +752,13 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
       byHash.set(hash, sub);
       add(sub);
       return pending.promise;
+    },
+    grow(queryKey, view) {
+      const sub = byHash.get(hashKey(queryKey));
+      if (sub === undefined || sub.seq === null || sub.revs === null) return false;
+      sub.view = view;
+      sendSubscribe(sub);
+      return true;
     },
     subscribeEvents(handlers) {
       const sub: EventsSubscription = {
