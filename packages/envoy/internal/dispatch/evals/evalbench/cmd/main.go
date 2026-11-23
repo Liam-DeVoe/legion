@@ -6,10 +6,13 @@
 //	  -built-by "$COMMIT" -seed 2916 -now 2026-11-13T00:00:00Z
 //
 // -base writes the base head's tables alone (no reading) into a database the base head
-// 02a7b3c6 migrated, for k8's and k13's negative controls; -scale multiplies every count (0.02
-// loads in a pod in a few minutes); -ten-times writes ten times the stated run rate. Every time is
-// relative to -now, the current UTC midnight by default, so a load of the base and one of this
-// head with one -now and one -seed hold the same history at the same times.
+// 02a7b3c6 migrated, for k8's and k13's negative controls; -one-project writes the one-project
+// fixture of the Evals tab's k22 and k24 (INFRA alone, its pull requests in two repositories, no
+// reading) into a database this head or the base head 82380570f8 migrated, and prints the checks
+// it holds the rows to; -scale multiplies every count (0.02 loads in a pod in a few minutes);
+// -ten-times writes ten times the stated run rate. Every time is relative to -now, the current
+// UTC midnight by default, so a load of the base and one of this head with one -now and one
+// -seed hold the same history at the same times.
 //
 // -failure-day writes a failure day (evalbench.AddFailureDay) into a database this command has
 // loaded, and nothing else: -failure-day-runs failed deploy runs with -failure-day-jobs failed
@@ -40,6 +43,7 @@ func main() {
 	flag.Float64Var(&spec.Scale, "scale", 1, "the share of INFRA's stated rate to write, above 0 and at most 1")
 	flag.BoolVar(&spec.TenTimes, "ten-times", false, "write ten times the stated run rate")
 	flag.BoolVar(&spec.Base, "base", false, "write only the tables of the base head 02a7b3c6, and no reading")
+	flag.BoolVar(&spec.OneProject, "one-project", false, "write the one-project fixture of the Evals tab's k22 and k24 (INFRA alone, its pull requests in the deploy repository and one other, no reading), into a database of this head or of the base head 82380570f8")
 	flag.StringVar(&spec.BuiltBy, "built-by", "", "the build the logged evals' day rows record: the server's stamped commit")
 	flag.StringVar(&now, "now", "", "the moment every history ends at, RFC 3339; the current UTC midnight by default")
 	flag.IntVar(&day.DaysAgo, "failure-day", 0, "write only a failure day into the loaded database, on the UTC day this many days before -now's, 1 to 84; 0 loads the fixture")
@@ -55,7 +59,7 @@ func main() {
 		spec.Now = at.UTC()
 	}
 	if database == "" {
-		fmt.Fprintln(os.Stderr, "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-base] [-now <RFC 3339>] [-failure-day <days> [-failure-day-runs <n>] [-failure-day-jobs <m>]]")
+		fmt.Fprintln(os.Stderr, "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-base | -one-project] [-now <RFC 3339>] [-failure-day <days> [-failure-day-runs <n>] [-failure-day-jobs <m>]]")
 		os.Exit(2)
 	}
 	ctx := context.Background()
@@ -79,14 +83,23 @@ func main() {
 			added.Day.Format(time.DateOnly), added.Runs, added.Jobs, added.FailedJobs, time.Since(started).Seconds())
 		return
 	}
-	logf("loading seed %d at scale %g (ten times the run rate: %t, base: %t), ending at %s",
-		spec.Seed, spec.Scale, spec.TenTimes, spec.Base, spec.Now.Format(time.RFC3339))
+	logf("loading seed %d at scale %g (ten times the run rate: %t, base: %t, one project: %t), ending at %s",
+		spec.Seed, spec.Scale, spec.TenTimes, spec.Base, spec.OneProject, spec.Now.Format(time.RFC3339))
 	counts, err := evalbench.Load(ctx, opened, spec, logf)
 	if err != nil {
 		fail(err)
 	}
 	for _, line := range counts.Lines() {
 		fmt.Printf("RESULT load %s\n", line)
+	}
+	if spec.OneProject {
+		checks, err := evalbench.CheckOneProject(ctx, opened.Pool, spec.Now)
+		if err != nil {
+			fail(err)
+		}
+		for _, line := range checks.Lines() {
+			fmt.Printf("RESULT one-project %s\n", line)
+		}
 	}
 	fmt.Printf("RESULT load seconds=%.0f\n", time.Since(started).Seconds())
 }
