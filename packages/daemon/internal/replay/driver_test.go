@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -38,11 +39,7 @@ func replayDSN(t *testing.T) string {
 // mainRule is the rule main, which every recorded fixture window ran.
 func mainRule(t *testing.T) record.SlotRule {
 	t.Helper()
-	rule, ok := record.SlotRuleNamed(record.MainRule.Name)
-	if !ok {
-		t.Fatal("no slot rule is named main")
-	}
-	return rule
+	return replayedRule(t, record.MainRule.Name)
 }
 
 // fixtureWindow reads the fixture window name.
@@ -57,12 +54,14 @@ func fixtureWindow(t *testing.T, name string) Window {
 
 // replayLine is one line of a replay's log, by the attributes the tests read of it.
 type replayLine struct {
-	Time  time.Time `json:"time"`
-	Msg   string    `json:"msg"`
-	Issue string    `json:"issue"`
-	Claim string    `json:"claim"`
-	From  string    `json:"from"`
-	To    string    `json:"to"`
+	Time    time.Time            `json:"time"`
+	Msg     string               `json:"msg"`
+	Issue   string               `json:"issue"`
+	Claim   string               `json:"claim"`
+	Role    string               `json:"role"`
+	From    string               `json:"from"`
+	To      string               `json:"to"`
+	Trigger workflow.TriggerKind `json:"trigger"`
 }
 
 // replayLog is every line of the replay log in out, in order.
@@ -72,6 +71,12 @@ func replayLog(t *testing.T, out string) []replayLine {
 	if err != nil {
 		t.Fatalf("read the replay's log: %v", err)
 	}
+	return replayLines(t, data)
+}
+
+// replayLines is every line of the replay log data, in order.
+func replayLines(t *testing.T, data []byte) []replayLine {
+	t.Helper()
 	var lines []replayLine
 	for i, text := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
 		if text == "" {
@@ -84,6 +89,18 @@ func replayLog(t *testing.T, out string) []replayLine {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+// replayedMoves is each issue's sequence of moves in a replay's log, in the order the log holds its
+// `workflow: phase changed` lines.
+func replayedMoves(log []replayLine) map[string][]fixtureMove {
+	moves := make(map[string][]fixtureMove)
+	for _, line := range log {
+		if line.Msg == phaseChangedLine {
+			moves[line.Issue] = append(moves[line.Issue], fixtureMove{From: phase.Phase(line.From), To: phase.Phase(line.To), Trigger: line.Trigger})
+		}
+	}
+	return moves
 }
 
 // stopsPhaseRule is main with a wait that stops the phase under way (record.SlotRule.WaitStopsPhase),
@@ -113,8 +130,7 @@ func linkDuringImplementingWindow(t *testing.T) Window {
 	b.edit(clock(10, 0), "ACME-1", func(issue *builtIssue) { issue.BlockedBy = []string{"ACME-3"} })
 	b.slotReleased(clock(10, 0), "ACME-1")
 	b.edit(clock(10, 30), "ACME-3", setStatus(record.DoneStatus))
-	b.info(clock(10, 30), "admission gives a slot back to an issue whose wait ended", "issue", "ACME-1", "phase", string(phase.Implementing))
-	b.slotTaken(clock(10, 30), "ACME-1")
+	b.waitEnded(clock(10, 30), "ACME-1", phase.Implementing)
 	b.segmentEnds(clock(11, 0), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
 	return b.build()
 }
@@ -131,7 +147,7 @@ func linkDuringImplementingWindow(t *testing.T) Window {
 func TestARuleThatStopsThePhaseStopsIt(t *testing.T) {
 	dsn := replayDSN(t)
 	window := linkDuringImplementingWindow(t)
-	implementer := "legion-acme-acme-1-implementer"
+	implementer := string(builtToken(t, "ACME-1", claim.RoleImplementer))
 	for _, c := range []struct {
 		rule      record.SlotRule
 		moved     time.Time
@@ -200,46 +216,46 @@ func recordedStarts(t *testing.T, window Window) map[string][]time.Time {
 	return starts
 }
 
+// checkRecordedStarts fails for each issue of window whose work segments in result, a replay of it
+// under the rule it recorded with every segment traced, start otherwise than the recorded starts of
+// its pieces of work (recordedStarts).
+func checkRecordedStarts(t *testing.T, window Window, result RunResult) {
+	t.Helper()
+	replayed := map[string][]time.Time{}
+	for _, segment := range result.Segments {
+		replayed[segment.Issue] = append(replayed[segment.Issue], segment.Start)
+	}
+	recorded := recordedStarts(t, window)
+	for _, issue := range slices.Sorted(maps.Keys(unionKeys(replayed, recorded))) {
+		got, want := replayed[issue], recorded[issue]
+		slices.SortFunc(got, time.Time.Compare)
+		slices.SortFunc(want, time.Time.Compare)
+		if !slices.EqualFunc(got, want, time.Time.Equal) {
+			t.Errorf("%s's segments start at %s in the replay, and its work starts at %s in the record", issue, describeTimes(got), describeTimes(want))
+		}
+	}
+}
+
 // Every hold applies in a replay at the times the window records it (spec R2, assumption 7), so
-// under the recorded rule every piece of every issue's work starts where the record started it:
-// a design gate holds a child's first phase until a person's approval, an ancestor's live tree
+// under the recorded rule every piece of every issue's work starts where the record started it. The
+// test replays the fixture gate-holds-child-first-phase, whose design gate holds a child's first
+// phase until a person's approval, under main with every segment traced, and fails for each issue
+// whose segment starts differ from the recorded starts of its pieces of work (checkRecordedStarts).
+// The windows of four more holds (holds_test.go) are held to the same check on
+// TestEveryHoldHasASourceInTheReplay's replays of them (holdCase.pieces): an ancestor's live tree
 // holds an orphan, an accepted ancestor holds a child filed under it, a closed tree's linger holds
 // its member until it hands it over, and a held phase holds its worker until the architect retries
-// it. The test replays the fixture gate-holds-child-first-phase and the windows of those four holds
-// (holds_test.go) under main with every segment traced, and fails for each issue whose segment
-// starts differ from the recorded starts of its pieces of work.
+// it.
 func TestHoldsApplyAtTheirRecordedTimes(t *testing.T) {
 	dsn := replayDSN(t)
-	windows := map[string]func(t *testing.T) Window{
-		"gate-holds-child-first-phase":      func(t *testing.T) Window { return fixtureWindow(t, "gate-holds-child-first-phase") },
-		string(record.HeldAncestry):         ancestryWindow,
-		string(record.HeldAcceptedAncestor): acceptedAncestorWindow,
-		string(record.HeldTreeClosed):       treeClosedWindow,
-		holdHeldPhase:                       heldPhaseWindow,
+	const name = "gate-holds-child-first-phase"
+	window := fixtureWindow(t, name)
+	result, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: MainBranch, Seed: 1, Slowdown: 1,
+		PGDSN: dsn, Out: t.TempDir(), TraceSegments: true})
+	if err != nil {
+		t.Fatalf("replay the window %s under main: %v", name, err)
 	}
-	for _, name := range slices.Sorted(maps.Keys(windows)) {
-		t.Run(name, func(t *testing.T) {
-			window := windows[name](t)
-			result, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: MainBranch, Seed: 1, Slowdown: 1,
-				PGDSN: dsn, Out: t.TempDir(), TraceSegments: true})
-			if err != nil {
-				t.Fatalf("replay the window %s under main: %v", name, err)
-			}
-			replayed := map[string][]time.Time{}
-			for _, segment := range result.Segments {
-				replayed[segment.Issue] = append(replayed[segment.Issue], segment.Start)
-			}
-			recorded := recordedStarts(t, window)
-			for _, issue := range slices.Sorted(maps.Keys(union(replayed, recorded))) {
-				got, want := replayed[issue], recorded[issue]
-				slices.SortFunc(got, time.Time.Compare)
-				slices.SortFunc(want, time.Time.Compare)
-				if !slices.EqualFunc(got, want, time.Time.Equal) {
-					t.Errorf("%s's segments start at %s in the replay, and its work starts at %s in the record", issue, describeTimes(got), describeTimes(want))
-				}
-			}
-		})
-	}
+	checkRecordedStarts(t, window, result)
 }
 
 // describeTimes is times as a failure prints them.
@@ -249,37 +265,6 @@ func describeTimes(times []time.Time) string {
 		parts[i] = at.UTC().Format("15:04:05")
 	}
 	return "[" + strings.Join(parts, " ") + "]"
-}
-
-// A replay asks nothing outside its own database (spec R1): no Dispatch, no GitHub and no NATS. The
-// test points every address a daemon's clients read — DISPATCH_URL, the GitHub API's and the
-// proxies every HTTP client of Go asks first — at a stub that records each request it is sent,
-// replays the fixture every-trigger, whose run starts and stops workers, writes statuses, signs
-// off, merges and closes a linger, and fails for each request the stub saw.
-func TestReplayRequestsNothingOutside(t *testing.T) {
-	dsn := replayDSN(t)
-	var mu sync.Mutex
-	var seen []string
-	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		seen = append(seen, r.Method+" "+r.URL.String())
-		mu.Unlock()
-		http.Error(w, "the replay asked something outside", http.StatusTeapot)
-	}))
-	defer stub.Close()
-	for _, name := range []string{"DISPATCH_URL", "GITHUB_API_URL", "GH_HOST", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
-		t.Setenv(name, stub.URL)
-	}
-	t.Setenv("NO_PROXY", "")
-	if _, err := Run(context.Background(), RunConfig{Window: fixtureWindow(t, "every-trigger"), Rule: mainRule(t), Branch: MainBranch,
-		Seed: 1, Slowdown: 1, PGDSN: dsn, Out: t.TempDir()}); err != nil {
-		t.Fatalf("replay the window every-trigger: %v", err)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(seen) > 0 {
-		t.Errorf("the replay sent %d requests outside its database: %s", len(seen), strings.Join(seen, "; "))
-	}
 }
 
 // recordedMoves is each issue's recorded moves from the window's start on, as the trace reads them:
@@ -302,14 +287,31 @@ func recordedMoves(t *testing.T, window Window) map[string][]fixtureMove {
 }
 
 // A replay under the rule a window recorded makes the moves the record made (design 10.11, the
-// review's first early test): the fixture every-trigger takes a root and two children through
-// every trigger — a failed test, a review asking for changes, an architect's send-back from
-// accepting, a sign-off held behind a child, the merges and the linger's expiry. The test replays
-// it under main and fails for each issue whose sequence of (from, to, trigger) in the replay's own
-// log differs from the trace's, for a move the replay refused, and for a start that re-sent an
+// review's first early test), and asks nothing outside its own database (spec R1): no Dispatch, no
+// GitHub and no NATS. The fixture every-trigger takes a root and two children through every trigger
+// — a failed test, a review asking for changes, an architect's send-back from accepting, a sign-off
+// held behind a child, the merges and the linger's expiry — so its run starts and stops workers,
+// writes statuses, signs off, merges and closes a linger. The test points every address a daemon's
+// clients read — DISPATCH_URL, the GitHub API's and the proxies every HTTP client of Go asks first —
+// at a stub that records each request it is sent, and replays the window under main. It fails for
+// each request the stub saw; for each issue whose sequence of (from, to, trigger) in the replay's
+// own log differs from the trace's; for a move the replay refused; and for a start that re-sent an
 // entry its claim had been given already.
-func TestTheEveryTriggerWindowReplaysItsRecordedMoves(t *testing.T) {
+func TestTheEveryTriggerWindowReplaysItsRecordedMovesAndAsksNothingOutside(t *testing.T) {
 	dsn := replayDSN(t)
+	var mu sync.Mutex
+	var seen []string
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.String())
+		mu.Unlock()
+		http.Error(w, "the replay asked something outside", http.StatusTeapot)
+	}))
+	defer stub.Close()
+	for _, name := range []string{"DISPATCH_URL", "GITHUB_API_URL", "GH_HOST", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+		t.Setenv(name, stub.URL)
+	}
+	t.Setenv("NO_PROXY", "")
 	window := fixtureWindow(t, "every-trigger")
 	out := t.TempDir()
 	result, err := Run(context.Background(), RunConfig{Window: window, Rule: mainRule(t), Branch: MainBranch, Seed: 1, Slowdown: 1,
@@ -317,12 +319,14 @@ func TestTheEveryTriggerWindowReplaysItsRecordedMoves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay the window every-trigger: %v", err)
 	}
-	moved, err := replayedMoves(filepath.Join(out, logFile))
-	if err != nil {
-		t.Fatal(err)
+	mu.Lock()
+	if len(seen) > 0 {
+		t.Errorf("the replay sent %d requests outside its database: %s", len(seen), strings.Join(seen, "; "))
 	}
+	mu.Unlock()
+	moved := replayedMoves(replayLog(t, out))
 	recorded := recordedMoves(t, window)
-	for _, issue := range slices.Sorted(maps.Keys(union(moved, recorded))) {
+	for _, issue := range slices.Sorted(maps.Keys(unionKeys(moved, recorded))) {
 		if got, want := moved[issue], recorded[issue]; !slices.Equal(got, want) {
 			t.Errorf("%s moved %s in the replay, and the record moved it %s", issue, describeMoves(got), describeMoves(want))
 		}
@@ -385,10 +389,10 @@ func TestTheShadowMatchesTheMirrorAfterEveryFact(t *testing.T) {
 						failures = append(failures, fmt.Sprintf("after fact %d, dispatch_issues holds %s, which the shadow holds no payload of", facts, row.Key))
 						continue
 					}
-					mirrored := mirrorRow{Status: row.Status, Blockers: sortedStrings(row.Blockers), Parent: row.Parent, Labels: sortedStrings(row.Labels),
-						Rank: row.Rank}
-					shadowed := mirrorRow{Status: iss.status(), Blockers: sortedStrings(iss.blockers()), Parent: iss.parent(),
-						Labels: sortedStrings(iss.labels()), Rank: s.rank(iss)}
+					mirrored := mirrorRow{Status: row.Status, Blockers: slices.Sorted(slices.Values(row.Blockers)), Parent: row.Parent,
+						Labels: slices.Sorted(slices.Values(row.Labels)), Rank: row.Rank}
+					shadowed := mirrorRow{Status: iss.status(), Blockers: slices.Sorted(slices.Values(iss.blockers())), Parent: iss.parent(),
+						Labels: slices.Sorted(slices.Values(iss.labels())), Rank: s.rank(iss)}
 					if fmt.Sprint(mirrored) != fmt.Sprint(shadowed) {
 						failures = append(failures, fmt.Sprintf("after fact %d, %s's dispatch_issues row is %+v and the shadow shows %+v", facts, row.Key, mirrored, shadowed))
 					}
@@ -439,13 +443,6 @@ func logRun(t *testing.T, name, out string) {
 	counted, _ := json.Marshal(ran.Divergence)
 	t.Logf("window %s: %d facts, %d passes, mean pass %.2f ms, wall %.2f s; divergence %s", name, ran.Facts, ran.Passes,
 		ran.MeanPassMillis, ran.WallSeconds, counted)
-}
-
-// sortedStrings is a sorted copy of values, empty for none, so two lists of one set compare equal.
-func sortedStrings(values []string) []string {
-	sorted := append([]string{}, values...)
-	slices.Sort(sorted)
-	return sorted
 }
 
 // startState is what the test of a warm start reads of one issue at a moment: its phase, whether
@@ -541,7 +538,7 @@ func TestAWarmStartMatchesTheSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replay every-trigger to %s: %v", at.Format(time.RFC3339), err)
 	}
-	keptDatabase(t, dsn, result.Database).Close(ctx)
+	dropKeptDatabase(t, dsn, result.Database)
 	warmURL, err := testdb.DatabaseURL(dsn, result.Database)
 	if err != nil {
 		t.Fatal(err)
@@ -551,15 +548,7 @@ func TestAWarmStartMatchesTheSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build every-trigger's trace: %v", err)
 	}
-	cold, st, err := openReplayDatabase(ctx, dsn)
-	if err != nil {
-		t.Fatalf("make the start state's database: %v", err)
-	}
-	defer func() {
-		if err := cold.drop(ctx); err != nil {
-			t.Errorf("drop the start state's database: %v", err)
-		}
-	}()
+	cold, st := replayStore(t, dsn)
 	simulated := newSimClock(at)
 	st.UseClock(simulated.Now)
 	err = store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
@@ -579,7 +568,7 @@ func TestAWarmStartMatchesTheSeed(t *testing.T) {
 	if len(seeded) == 0 {
 		t.Fatalf("the start state at %s holds no issue in the workflow, so nothing was compared", at.Format(time.RFC3339))
 	}
-	for _, issue := range slices.Sorted(maps.Keys(union(replayed, seeded))) {
+	for _, issue := range slices.Sorted(maps.Keys(unionKeys(replayed, seeded))) {
 		if got, want := replayed[issue], seeded[issue]; got != want {
 			t.Errorf("at %s %s stands %+v in the replay and %+v in the start state", at.Format(time.RFC3339), issue, got, want)
 		}

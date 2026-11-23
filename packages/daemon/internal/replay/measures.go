@@ -573,7 +573,7 @@ func Gaps(snapshot, line Scorecard) []MeasureGap {
 }
 
 // unionKeys is the keys of a and b together, each once.
-func unionKeys(a, b map[string]time.Time) map[string]struct{} {
+func unionKeys[V any](a, b map[string]V) map[string]struct{} {
 	keys := make(map[string]struct{}, len(a)+len(b))
 	for key := range a {
 		keys[key] = struct{}{}

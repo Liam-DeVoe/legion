@@ -3,15 +3,12 @@ package replay
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
@@ -45,18 +42,9 @@ var notSimulated = map[string]string{
 // before the mark.
 func TestReplayWritesNoWallClockTime(t *testing.T) {
 	ctx := context.Background()
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip(testdb.SkipMessage)
-	}
-	window, err := ReadWindow(filepath.Join("testdata", "windows", clockWindow))
-	if err != nil {
-		t.Fatalf("read the window %s: %v", clockWindow, err)
-	}
-	rule, ok := record.SlotRuleNamed("main")
-	if !ok {
-		t.Fatal("no slot rule is named main")
-	}
+	dsn := replayDSN(t)
+	window := fixtureWindow(t, clockWindow)
+	rule := mainRule(t)
 	result, err := Run(ctx, RunConfig{Window: window, Rule: rule, Branch: MainBranch, Seed: 1, Slowdown: 1,
 		PGDSN: dsn, Out: t.TempDir(), KeepDB: true})
 	if err != nil {
@@ -162,25 +150,11 @@ func timeColumns(t *testing.T, conn *pgx.Conn) []timeColumn {
 
 // keptDatabase connects to the database the replay kept, database on dsn's server, with the
 // session's time zone UTC so a timestamp column reads as the UTC time it was written as, and drops
-// the database when the test ends.
+// the database when the test ends (dropKeptDatabase).
 func keptDatabase(t *testing.T, dsn, database string) *pgx.Conn {
 	t.Helper()
 	ctx := context.Background()
-	admin, err := testdb.DatabaseURL(dsn, "postgres")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		conn, err := pgx.Connect(ctx, admin)
-		if err != nil {
-			t.Errorf("connect to drop the replay's database %s: %v", database, err)
-			return
-		}
-		defer conn.Close(ctx)
-		if err := testdb.Drop(ctx, conn, pgx.Identifier{database}.Sanitize()); err != nil {
-			t.Errorf("drop the replay's database %s: %v", database, err)
-		}
-	})
+	dropKeptDatabase(t, dsn, database)
 	url, err := testdb.DatabaseURL(dsn, database)
 	if err != nil {
 		t.Fatal(err)
@@ -194,4 +168,25 @@ func keptDatabase(t *testing.T, dsn, database string) *pgx.Conn {
 		t.Fatalf("set the session's time zone: %v", err)
 	}
 	return conn
+}
+
+// dropKeptDatabase drops the database the replay kept, database on dsn's server, when the test ends.
+func dropKeptDatabase(t *testing.T, dsn, database string) {
+	t.Helper()
+	admin, err := testdb.DatabaseURL(dsn, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		conn, err := pgx.Connect(ctx, admin)
+		if err != nil {
+			t.Errorf("connect to drop the replay's database %s: %v", database, err)
+			return
+		}
+		defer conn.Close(ctx)
+		if err := testdb.Drop(ctx, conn, pgx.Identifier{database}.Sanitize()); err != nil {
+			t.Errorf("drop the replay's database %s: %v", database, err)
+		}
+	})
 }

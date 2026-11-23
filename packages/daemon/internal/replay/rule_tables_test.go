@@ -16,11 +16,43 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // errRolledBack ends a transaction of a test that must leave nothing behind it.
 var errRolledBack = errors.New("the test's transaction is rolled back")
+
+// replayStore makes a replay's own database on dsn's server (openReplayDatabase) and answers it
+// with the store opened on it, the store closed and the database dropped when the test ends.
+func replayStore(t *testing.T, dsn string) (replayDatabase, *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	db, st, err := openReplayDatabase(ctx, dsn)
+	if err != nil {
+		t.Fatalf("make a replay's database: %v", err)
+	}
+	t.Cleanup(func() {
+		st.Close()
+		if err := db.drop(ctx); err != nil {
+			t.Errorf("drop the replay's database: %v", err)
+		}
+	})
+	return db, st
+}
+
+// inRolledBackTx runs fn in a transaction of st's, which it then rolls back, so fn leaves nothing
+// behind it.
+func inRolledBackTx(t *testing.T, st *store.Store, fn func(tx pgx.Tx)) {
+	t.Helper()
+	err := pgx.BeginTxFunc(context.Background(), st.Pool(), pgx.TxOptions{}, func(tx pgx.Tx) error {
+		fn(tx)
+		return errRolledBack
+	})
+	if !errors.Is(err, errRolledBack) {
+		t.Fatalf("the test's transaction: %v", err)
+	}
+}
 
 // The merger's ready mark of the release at 9542c6fb reaches the admission pass through its facts
 // under the rule that reads it alone, and only for the visit to merging it fell in; and the covers
@@ -35,19 +67,10 @@ var errRolledBack = errors.New("the test's transaction is rolled back")
 func TestTheReadyMarkAndTheCoversReadThroughTheFacts(t *testing.T) {
 	dsn := replayDSN(t)
 	ctx := context.Background()
-	db, st, err := openReplayDatabase(ctx, dsn)
-	if err != nil {
-		t.Fatalf("make a replay's database: %v", err)
-	}
-	defer func() {
-		st.Close()
-		if err := db.drop(ctx); err != nil {
-			t.Errorf("drop the replay's database: %v", err)
-		}
-	}()
+	_, st := replayStore(t, dsn)
 	records := record.NewStore()
-	issue := record.Issue{Key: "ACME-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "ACME-1",
-		Project: "ACME", Title: "ACME-1", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "a0", LastDispatchSeq: 1}
+	issue := record.Issue{Key: "ACME-1", Repo: builtRepository, DefaultBranch: "main", GitHubRepo: builtRepository, Tree: "ACME-1",
+		Project: builtProject, Title: "ACME-1", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "a0", LastDispatchSeq: 1}
 	merger := func(entry int64) record.PhaseRow {
 		return record.PhaseRow{Issue: issue.Key, Role: claim.RoleMerger, Claim: "acme-1-merger", Entry: entry}
 	}
@@ -61,14 +84,14 @@ func TestTheReadyMarkAndTheCoversReadThroughTheFacts(t *testing.T) {
 	}
 	for _, rule := range record.SlotRules() {
 		t.Run(rule.Name, func(t *testing.T) {
-			err := pgx.BeginTxFunc(ctx, st.Pool(), pgx.TxOptions{}, func(tx pgx.Tx) error {
+			inRolledBackTx(t, st, func(tx pgx.Tx) {
 				if err := records.PutIssue(ctx, tx, issue); err != nil {
 					t.Fatalf("record %s: %v", issue.Key, err)
 				}
 				if err := records.PutPhase(ctx, tx, merger(3)); err != nil {
 					t.Fatalf("record the merger's phases row of %s: %v", issue.Key, err)
 				}
-				handler := replayHandler{clock: func() time.Time { return time.Date(2001, 3, 5, 9, 0, 0, 0, time.UTC) }, rule: rule}
+				handler := replayHandler{clock: func() time.Time { return clock(9, 0) }, rule: rule}
 				if _, err := handler.Apply(ctx, tx, ReadyMark{Issue: issue.Key, Generation: issue.Generation}); err != nil {
 					t.Fatalf("apply the ready mark of %s: %v", issue.Key, err)
 				}
@@ -113,11 +136,7 @@ func TestTheReadyMarkAndTheCoversReadThroughTheFacts(t *testing.T) {
 						t.Errorf("the covers read are %v, and the pass kept %v", covers, kept)
 					}
 				}
-				return errRolledBack
 			})
-			if !errors.Is(err, errRolledBack) {
-				t.Fatalf("the test's transaction: %v", err)
-			}
 		})
 	}
 }
@@ -138,35 +157,22 @@ func TestTheReadyMarkAndTheCoversReadThroughTheFacts(t *testing.T) {
 func TestTheFirstSlotsPlaceTheReturnedPart(t *testing.T) {
 	dsn := replayDSN(t)
 	ctx := context.Background()
-	db, st, err := openReplayDatabase(ctx, dsn)
-	if err != nil {
-		t.Fatalf("make a replay's database: %v", err)
-	}
-	defer func() {
-		st.Close()
-		if err := db.drop(ctx); err != nil {
-			t.Errorf("drop the replay's database: %v", err)
-		}
-	}()
+	_, st := replayStore(t, dsn)
 	records := record.NewStore()
-	token, err := claim.ProjectToken("ACME")
+	token, err := claim.ProjectToken(builtProject)
 	if err != nil {
 		t.Fatal(err)
 	}
-	at := func(hour, minute int) time.Time { return time.Date(2001, 3, 5, hour, minute, 0, 0, time.UTC) }
 	root := func(key, rank string, generation uint64) record.Issue {
-		return record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key, Project: "ACME",
+		return record.Issue{Key: key, Repo: builtRepository, DefaultBranch: "main", GitHubRepo: builtRepository, Tree: key, Project: builtProject,
 			Title: key, Phase: phase.Implementing, Generation: generation, Status: "in_progress", DispatchStatus: "in_progress", Rank: rank,
 			HandedOver: true, LastDispatchSeq: 1}
 	}
 	for _, name := range []string{record.MainRule.Name, "returned-by-first-slot"} {
-		rule, kept := record.SlotRuleNamed(name)
-		if !kept {
-			t.Fatalf("the repository keeps no rule named %q", name)
-		}
+		rule := replayedRule(t, name)
 		byFirstSlot := name != record.MainRule.Name
 		t.Run(name, func(t *testing.T) {
-			err := pgx.BeginTxFunc(ctx, st.Pool(), pgx.TxOptions{}, func(tx pgx.Tx) error {
+			inRolledBackTx(t, st, func(tx pgx.Tx) {
 				must := func(err error, what string) {
 					t.Helper()
 					if err != nil {
@@ -182,14 +188,14 @@ func TestTheFirstSlotsPlaceTheReturnedPart(t *testing.T) {
 				// the replay's rule tables) and judges the line at now over them.
 				pass := func(now time.Time) ([]record.LineEntry, record.LineFacts) {
 					t.Helper()
-					issues, err := records.LiveIssues(ctx, tx, "ACME")
+					issues, err := records.LiveIssues(ctx, tx, builtProject)
 					must(err, "read the live issues")
 					slots, err := records.Slots(ctx, tx)
 					must(err, "read the slots")
-					facts, err := record.ReadLineFactsUnder(ctx, tx, records, "ACME", issues, nil, rule)
+					facts, err := record.ReadLineFactsUnder(ctx, tx, records, builtProject, issues, nil, rule)
 					must(err, "read the line facts")
 					must((ruleTables{}).ReadRuleFacts(ctx, tx, issues, &facts), "read the facts the rule keeps")
-					_, facts, line, _, err := blockers.JudgeLine(ctx, tx, records, "ACME", issues, slots, facts, nil, now)
+					_, facts, line, _, err := blockers.JudgeLine(ctx, tx, records, builtProject, issues, slots, facts, nil, now)
 					must(err, "judge the line")
 					return line, facts
 				}
@@ -198,16 +204,16 @@ func TestTheFirstSlotsPlaceTheReturnedPart(t *testing.T) {
 					must(records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: index, AdmittedAt: now}), "give "+key+" a slot")
 					pass(now)
 				}
-				slot("ACME-1", 0, at(9, 0))
-				slot("ACME-2", 1, at(9, 20))
-				slot("ACME-3", 2, at(9, 30))
+				slot("ACME-1", 0, clock(9, 0))
+				slot("ACME-2", 1, clock(9, 20))
+				slot("ACME-3", 2, clock(9, 30))
 				for _, release := range []struct {
 					key string
 					at  time.Time
-				}{{"ACME-2", at(10, 0)}, {"ACME-3", at(10, 10)}, {"ACME-1", at(10, 20)}} {
+				}{{"ACME-2", clock(10, 0)}, {"ACME-3", clock(10, 10)}, {"ACME-1", clock(10, 20)}} {
 					must(records.ReleaseSlotForWait(ctx, tx, release.key, release.at), "release "+release.key+" for a wait")
 				}
-				line, facts := pass(at(10, 30))
+				line, facts := pass(clock(10, 30))
 				order, firsts := lineWordOf(line), "the first slots are "+firstSlotsWord(facts.FirstSlots)
 				want, wantFirsts := "[ACME-2 ACME-3 ACME-1]", "the first slots are none"
 				if byFirstSlot {
@@ -222,19 +228,19 @@ func TestTheFirstSlotsPlaceTheReturnedPart(t *testing.T) {
 					}
 				}
 
-				slot("ACME-1", 0, at(10, 40))
-				if _, facts := pass(at(10, 45)); byFirstSlot && !facts.FirstSlots["ACME-1"].Equal(at(9, 0)) {
+				slot("ACME-1", 0, clock(10, 40))
+				if _, facts := pass(clock(10, 45)); byFirstSlot && !facts.FirstSlots["ACME-1"].Equal(clock(9, 0)) {
 					t.Errorf("after ACME-1's slot again at 10:40 its first slot reads %v, want 09:00", facts.FirstSlots["ACME-1"])
 				}
 				must(records.PutIssue(ctx, tx, root("ACME-1", "a1", 2)), "move ACME-1 to its next generation")
-				issues, err := records.LiveIssues(ctx, tx, "ACME")
+				issues, err := records.LiveIssues(ctx, tx, builtProject)
 				must(err, "read the live issues")
 				read, err := readFirstSlots(ctx, tx, issues)
 				must(err, "read the first slots before a pass")
 				if first, kept := read["ACME-1"]; kept {
 					t.Errorf("ACME-1's next generation reads the first slot %v before any pass read a slot of it", first)
 				}
-				if _, facts := pass(at(11, 0)); byFirstSlot && !facts.FirstSlots["ACME-1"].Equal(at(10, 40)) {
+				if _, facts := pass(clock(11, 0)); byFirstSlot && !facts.FirstSlots["ACME-1"].Equal(clock(10, 40)) {
 					t.Errorf("ACME-1's next generation reads the first slot %v, want the slot it holds, 10:40", facts.FirstSlots["ACME-1"])
 				}
 				var count int
@@ -242,11 +248,7 @@ func TestTheFirstSlotsPlaceTheReturnedPart(t *testing.T) {
 				if want := map[bool]int{false: 0, true: 4}[byFirstSlot]; count != want {
 					t.Errorf("the table keeps %d first slots under %s, want %d", count, name, want)
 				}
-				return errRolledBack
 			})
-			if !errors.Is(err, errRolledBack) {
-				t.Fatalf("the test's transaction: %v", err)
-			}
 		})
 	}
 }

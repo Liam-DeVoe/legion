@@ -18,7 +18,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -97,69 +96,63 @@ type fixtureRun struct {
 	want   Scorecard
 }
 
+// refusingNoMove is, by fixture window, the rule under which TestFixtureWindows also fails for each
+// move the replay of that window refused: under legion-v20.42.5, whose conflicting head moves back,
+// conflict-from-fitted-rate's drawn conflict moves ACME-1 back to implementing by the rule's
+// trigger through the daemon's own path, and its loop's work is drawn from the window's recorded
+// loops (spec R2; the fixture windows' README, "Conflicts").
+var refusingNoMove = map[string]string{"conflict-from-fitted-rate": "legion-v20.42.5"}
+
 // Every fact of a window that a slot rule does not decide is replayed as the window records it, and
 // each measure of R4 is read the way the windows' README.md defines it (spec R1, R2, R4; check k1).
 // The test reads the directory of fixture windows, so a window added there is run with no change
 // here, and runs every window — not a sample — under every rule its expect.json names (every
 // never-started scenario, for never-starts), through Run on a database of its own on
 // LEGION_TEST_PG_DSN's server. It fails naming the window, the rule and each measure whose value
-// differs from the one worked out by hand, floats compared to within fixtureTolerance; and, for a
+// differs from the one worked out by hand, floats compared to within fixtureTolerance; for a
 // window whose expect.json holds moves, each issue whose sequence of (from, to, trigger) in the
 // replay's own log differs from the recorded one under the window's recorded rule, which a move
-// the replay refused breaks. Each window is read with ReadWindow first, so a window whose files do
-// not match the sha256 its window.json records fails before it is replayed.
+// the replay refused breaks; for a run refusingNoMove names, each move its replay refused; and, for
+// a run under main, each measure in which its two timelines part by more than
+// TestSnapshotAndLineTimelinesAgree allows (checkTimelines). Each window is read with ReadWindow
+// first, so a window whose files do not match the sha256 its window.json records fails before it
+// is replayed.
 func TestFixtureWindows(t *testing.T) {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip(testdb.SkipMessage)
-	}
+	dsn := replayDSN(t)
 	names := fixtureWindowNames(t)
 	if len(names) == 0 {
 		t.Fatalf("%s holds no fixture window, so nothing was replayed", fixtureWindowsDir)
 	}
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
-			dir := filepath.Join(fixtureWindowsDir, name)
-			window, err := ReadWindow(dir)
-			if err != nil {
-				t.Fatalf("window %s: %v", name, err)
-			}
-			expect, err := readFixtureExpect(dir)
-			if err != nil {
-				t.Fatalf("window %s: %v", name, err)
-			}
+			window, expect := readFixture(t, name)
 			runs, err := expect.runs()
 			if err != nil {
 				t.Fatalf("window %s: %v", name, err)
 			}
-			recorded := recordedRule(window)
+			recorded := partsRule(window.Parts)
 			for _, run := range runs {
 				t.Run(run.name, func(t *testing.T) {
-					rule, ok := record.SlotRuleNamed(run.rule)
-					if !ok {
-						t.Fatalf("window %s, rule %s: the repository keeps no slot rule of that name (record.SlotRules)", name, run.rule)
-					}
-					slowdown := run.want.Slowdown
-					if slowdown == 0 {
-						slowdown = 1
-					}
 					out := t.TempDir()
-					result, err := Run(context.Background(), RunConfig{Window: window, Rule: rule, Branch: run.branch,
-						Seed: run.want.Seed, Slowdown: slowdown, PGDSN: dsn, Out: out})
+					result, err := Run(context.Background(), RunConfig{Window: window, Rule: replayedRule(t, run.rule), Branch: run.branch,
+						Seed: run.want.Seed, Slowdown: cmp.Or(run.want.Slowdown, 1), PGDSN: dsn, Out: out})
 					if err != nil {
 						t.Fatalf("window %s, rule %s, branch %s: the replay failed: %v", name, run.rule, run.branch.Name, err)
 					}
 					for _, diff := range scorecardDiffs(result.Scorecard, run.want) {
 						t.Errorf("window %s, rule %s, branch %s: %s", name, run.rule, run.branch.Name, diff)
 					}
+					if refused := result.Divergence.Refused; refusingNoMove[name] == run.rule && len(refused) > 0 {
+						t.Errorf("window %s, rule %s, branch %s: the replay refused %+v", name, run.rule, run.branch.Name, refused)
+					}
+					if run.rule == record.MainRule.Name {
+						checkTimelines(t, result)
+					}
 					if len(expect.Moves) == 0 || run.rule != recorded || run.branch.Name != MainBranch.Name {
 						return
 					}
-					moved, err := replayedMoves(filepath.Join(out, logFile))
-					if err != nil {
-						t.Fatalf("window %s, rule %s: %v", name, run.rule, err)
-					}
-					for _, issue := range slices.Sorted(maps.Keys(union(moved, expect.Moves))) {
+					moved := replayedMoves(replayLog(t, out))
+					for _, issue := range slices.Sorted(maps.Keys(unionKeys(moved, expect.Moves))) {
 						if got, want := moved[issue], expect.Moves[issue]; !slices.Equal(got, want) {
 							t.Errorf("window %s, rule %s: %s moved %s in the replay, and the record moved it %s",
 								name, run.rule, issue, describeMoves(got), describeMoves(want))
@@ -203,6 +196,22 @@ func TestTheFixtureWindowsCoverK1(t *testing.T) {
 	}
 }
 
+// readFixture reads the fixture window name and its expect.json, and fails the test where it reads
+// either not.
+func readFixture(t *testing.T, name string) (Window, fixtureExpect) {
+	t.Helper()
+	dir := filepath.Join(fixtureWindowsDir, name)
+	window, err := ReadWindow(dir)
+	if err != nil {
+		t.Fatalf("window %s: %v", name, err)
+	}
+	expect, err := readFixtureExpect(dir)
+	if err != nil {
+		t.Fatalf("window %s: %v", name, err)
+	}
+	return window, expect
+}
+
 // fixtureWindowNames is the name of every directory in fixtureWindowsDir, in order.
 func fixtureWindowNames(t *testing.T) []string {
 	t.Helper()
@@ -239,7 +248,7 @@ func readFixtureExpect(dir string) (fixtureExpect, error) {
 // each never-started scenario of Scenarios on the main branch with that scenario.
 func (e fixtureExpect) runs() ([]fixtureRun, error) {
 	var runs []fixtureRun
-	branch, err := branchNamed(cmp.Or(e.Branch, MainBranch.Name))
+	branch, err := BranchNamed(cmp.Or(e.Branch, MainBranch.Name))
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +260,7 @@ func (e fixtureExpect) runs() ([]fixtureRun, error) {
 		if scenario != MainBranch.NeverStarted {
 			name = MainBranch.Name + "+neverStarted=" + scenario
 		}
-		branch, err := branchNamed(name)
+		branch, err := BranchNamed(name)
 		if err != nil {
 			return nil, err
 		}
@@ -265,70 +274,6 @@ func (e fixtureExpect) runs() ([]fixtureRun, error) {
 	return runs, nil
 }
 
-// branchNamed is the branch a name says: "main", the main branch, or "main+<knob>=<value>", the
-// main branch with the one knob whose JSON name is <knob> set to <value>.
-func branchNamed(name string) (Branch, error) {
-	branch := MainBranch
-	branch.Name = name
-	if name == MainBranch.Name {
-		return branch, nil
-	}
-	change, ok := strings.CutPrefix(name, MainBranch.Name+"+")
-	knob, value, set := strings.Cut(change, "=")
-	if !ok || !set || value == "" {
-		return Branch{}, fmt.Errorf("the branch %q is neither main nor main+<knob>=<value>", name)
-	}
-	fields := reflect.ValueOf(&branch).Elem()
-	for i := range fields.NumField() {
-		field := fields.Type().Field(i)
-		if tag, _, _ := strings.Cut(field.Tag.Get("json"), ","); tag == knob && knob != "name" && field.Type.Kind() == reflect.String {
-			fields.Field(i).SetString(value)
-			return branch, nil
-		}
-	}
-	return Branch{}, fmt.Errorf("the branch %q names no knob of a replay.Branch", name)
-}
-
-// recordedRule is the rule the daemon that recorded w ran: its parts' rule, or "" where its parts
-// name more than one.
-func recordedRule(w Window) string {
-	rule := ""
-	for i, part := range w.Parts {
-		if i > 0 && part.Rule != rule {
-			return ""
-		}
-		rule = part.Rule
-	}
-	return rule
-}
-
-// replayedMoves is each issue's sequence of moves in the replay log at path, in the order the log
-// holds its `workflow: phase changed` lines.
-func replayedMoves(path string) (map[string][]fixtureMove, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read the replay's log: %w", err)
-	}
-	moves := make(map[string][]fixtureMove)
-	for i, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
-		if line == "" {
-			continue
-		}
-		var moved struct {
-			Msg   string `json:"msg"`
-			Issue string `json:"issue"`
-			fixtureMove
-		}
-		if err := json.Unmarshal([]byte(line), &moved); err != nil {
-			return nil, fmt.Errorf("read the replay's log line %d: %w", i+1, err)
-		}
-		if moved.Msg == "workflow: phase changed" {
-			moves[moved.Issue] = append(moves[moved.Issue], moved.fixtureMove)
-		}
-	}
-	return moves, nil
-}
-
 // describeMoves is a sequence of moves as a failure prints it.
 func describeMoves(moves []fixtureMove) string {
 	parts := make([]string, len(moves))
@@ -336,18 +281,6 @@ func describeMoves(moves []fixtureMove) string {
 		parts[i] = fmt.Sprintf("%s→%s by %s", move.From, move.To, move.Trigger)
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
-}
-
-// union is the keys of a and b together, each once.
-func union[V any](a, b map[string]V) map[string]struct{} {
-	keys := make(map[string]struct{}, len(a)+len(b))
-	for key := range a {
-		keys[key] = struct{}{}
-	}
-	for key := range b {
-		keys[key] = struct{}{}
-	}
-	return keys
 }
 
 // scorecardDiffs is every measure in which got differs from want, each named by its JSON path in the

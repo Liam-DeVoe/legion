@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -111,6 +112,18 @@ func linesAt(log []replayLine, match func(replayLine) bool) []time.Time {
 	return at
 }
 
+// slotsGiven is each slot a replay's log gives, in its order, as the issue and the minute: KEY at
+// 15:04.
+func slotsGiven(log []replayLine) []string {
+	var given []string
+	for _, line := range log {
+		if line.Msg == slotTakenLine {
+			given = append(given, line.Issue+" at "+line.Time.UTC().Format("15:04"))
+		}
+	}
+	return given
+}
+
 // pastReviewKept is the record of a daemon that keeps the slot past the review: key's segment in
 // from ends at at and it moves to to by trigger, its slot kept, and the role of to starts its turn.
 func (b *windowBuilder) pastReviewKept(at time.Time, key string, from, to phase.Phase, trigger workflow.TriggerKind) {
@@ -171,63 +184,55 @@ func laterStartWindow(t *testing.T) Window {
 	b.turnEnds(clock(11, 15), "ACME-2", claim.RoleArchitect)
 	b.registered(clock(11, 15), "ACME-2", false)
 	b.approves(clock(11, 40), "ACME-2", "")
-	b.info(clock(11, 40), "workflow: design gate opened", "issue", "ACME-2", "artifact", b.artifact("ACME-2"), "event", "artifact.approved",
-		"version", 1)
+	b.gateOpened(clock(11, 40), "ACME-2", intake.DispatchArtifactApproved, 1)
 	b.rootFirstPhase(clock(11, 40), "ACME-2")
-	planner := eventActor{Kind: "session", ID: string(b.token("ACME-2", claim.RolePlanner))}
+	planner := b.session("ACME-2", claim.RolePlanner)
 	b.changed(clock(11, 50), "ACME-2", planner, func(issue *builtIssue) { issue.BlockedBy = []string{"ACME-3"} })
 	b.slotReleased(clock(11, 50), "ACME-2")
 	b.edit(clock(12, 10), "ACME-3", setStatus(record.DoneStatus))
-	b.info(clock(12, 10), "admission gives a slot back to an issue whose wait ended", "issue", "ACME-2", "phase", string(phase.Planning))
-	b.slotTaken(clock(12, 10), "ACME-2")
+	b.waitEnded(clock(12, 10), "ACME-2", phase.Planning)
 	b.segmentEnds(clock(12, 20), "ACME-2", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
 	return b.build()
 }
 
-// Timing places the close of an outside blocker that ended a wait (assumption 4): under offset at
-// the replay's start of the wait plus its recorded offset from the record's, under wall at its
-// recorded time. The test replays laterStartWindow under main, where ACME-2's planning, and with
-// it its planner's link to ACME-3, comes 45 minutes sooner than in the record: the link at 11:05.
-// On the main branch ACME-3 is closed 20 minutes after the link, at 11:25, and ACME-2 takes its
-// slot back then; on main+timing=wall ACME-3 is closed at its recorded 12:10, and ACME-2 takes
-// its slot back at 12:10.
-func TestTheTimingKnobPlacesAWaitsEndByItsAnchor(t *testing.T) {
+// Timing places the close of an outside blocker that ended a wait (assumption 4), and answer a
+// person's review of a spec version (assumption 5): under offset at the replay's moment of the
+// wait's start, or of the version, plus its recorded offset from the record's, under wall at its
+// recorded time. The test replays laterStartWindow under main, where ACME-2's architect writes its
+// spec's version 1 at 10:25, 45 minutes sooner than in the record, and its planning, and with it
+// its planner's link to ACME-3, comes 45 minutes sooner too: the link at 11:05. On the main branch
+// ACME-3 is closed 20 minutes after the link, at 11:25, and ACME-2 takes its slot back then, and
+// the person approves the version 30 minutes after it, at 10:55, and the open gate moves ACME-2 into
+// planning then. On main+timing=wall ACME-3 is closed at its recorded 12:10, and ACME-2 takes its
+// slot back at 12:10; on main+answer=wall the approval comes at its recorded 11:40, and ACME-2 moves
+// into planning at 11:40.
+func TestTheTimingAndAnswerKnobsPlaceTheirEventsByTheirAnchors(t *testing.T) {
 	window := laterStartWindow(t)
 	for _, c := range []struct {
 		branch string
 		back   time.Time
-	}{{"main", clock(11, 25)}, {"main+timing=wall", clock(12, 10)}} {
-		t.Run(c.branch, func(t *testing.T) {
-			_, log := knobRun(t, window, mainRule(t), c.branch)
-			taken := linesAt(log, func(line replayLine) bool { return line.Msg == "admission: slot taken" && line.Issue == "ACME-2" })
-			want := []time.Time{clock(10, 15), c.back}
-			if !slices.EqualFunc(taken, want, time.Time.Equal) {
-				t.Errorf("ACME-2 took a slot at %s, want at %s: its promotion and its wait's end", describeTimes(taken), describeTimes(want))
-			}
-		})
-	}
-}
-
-// Answer places a person's review of a spec version (assumption 5): under offset at the replay's
-// moment of the version plus its recorded offset from the record's, under wall at its recorded
-// time. The test replays laterStartWindow under main, where ACME-2's architect writes its spec's
-// version 1 at 10:25, 45 minutes sooner than in the record. On the main branch the person approves
-// it 30 minutes later, at 10:55, and the open gate moves ACME-2 into planning then; on
-// main+answer=wall the approval comes at its recorded 11:40, and ACME-2 moves into planning at
-// 11:40.
-func TestTheAnswerKnobPlacesAnAnswerByItsQuestion(t *testing.T) {
-	window := laterStartWindow(t)
-	for _, c := range []struct {
-		branch string
 		moved  time.Time
-	}{{"main", clock(10, 55)}, {"main+answer=wall", clock(11, 40)}} {
+	}{
+		{branch: "main", back: clock(11, 25), moved: clock(10, 55)},
+		{branch: "main+timing=wall", back: clock(12, 10)},
+		{branch: "main+answer=wall", moved: clock(11, 40)},
+	} {
 		t.Run(c.branch, func(t *testing.T) {
 			_, log := knobRun(t, window, mainRule(t), c.branch)
-			moved := linesAt(log, func(line replayLine) bool {
-				return line.Msg == phaseChangedLine && line.Issue == "ACME-2" && line.From == string(phase.Admitted) && line.To == string(phase.Planning)
-			})
-			if len(moved) != 1 || !moved[0].Equal(c.moved) {
-				t.Errorf("ACME-2 moved into planning at %s, want once at %s", describeTimes(moved), describeTimes([]time.Time{c.moved}))
+			if !c.back.IsZero() {
+				taken := linesAt(log, func(line replayLine) bool { return line.Msg == "admission: slot taken" && line.Issue == "ACME-2" })
+				want := []time.Time{clock(10, 15), c.back}
+				if !slices.EqualFunc(taken, want, time.Time.Equal) {
+					t.Errorf("ACME-2 took a slot at %s, want at %s: its promotion and its wait's end", describeTimes(taken), describeTimes(want))
+				}
+			}
+			if !c.moved.IsZero() {
+				moved := linesAt(log, func(line replayLine) bool {
+					return line.Msg == phaseChangedLine && line.Issue == "ACME-2" && line.From == string(phase.Admitted) && line.To == string(phase.Planning)
+				})
+				if len(moved) != 1 || !moved[0].Equal(c.moved) {
+					t.Errorf("ACME-2 moved into planning at %s, want once at %s", describeTimes(moved), describeTimes([]time.Time{c.moved}))
+				}
 			}
 		})
 	}
@@ -253,8 +258,7 @@ func sendBackWindow(t *testing.T) Window {
 	b.moved(clock(10, 45), "ACME-1", phase.Accepting, phase.Implementing, workflow.TriggerBackward)
 	b.edit(clock(11, 5), "ACME-2", setStatus(record.DoneStatus))
 	b.leaves(clock(11, 5), "ACME-2", record.DoneStatus)
-	b.info(clock(11, 5), "admission gives a slot back to an issue whose work came back", "issue", "ACME-1", "phase", string(phase.Implementing))
-	b.slotTaken(clock(11, 5), "ACME-1")
+	b.workCameBack(clock(11, 5), "ACME-1", phase.Implementing)
 	b.turnStarts(clock(11, 5), "ACME-1", claim.RoleImplementer)
 	b.segmentEnds(clock(11, 35), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
 	return b.build()
@@ -400,11 +404,7 @@ func inFlightTreeWindow(t *testing.T) Window {
 	b.file(clock(9, 5), "ACME-3", filing{Title: "Name the header row's columns", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a3",
 		BlockedBy: []string{"ACME-4"}})
 	b.file(clock(9, 30), "ACME-5", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a5", Labels: handedToLegion})
-	b.turnEnds(clock(10, 10), "ACME-1", claim.RoleArchitect)
-	b.registered(clock(10, 10), "ACME-1", true)
-	b.info(clock(10, 10), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-1", "tree", "ACME-1",
-		"generation", 1, "children", 2)
-	b.slotReleased(clock(10, 10), "ACME-1")
+	b.rootWaitsForChildren(clock(10, 10), "ACME-1", 2)
 	b.childStarts(clock(10, 10), "ACME-2")
 	b.segmentEnds(clock(10, 25), "ACME-2", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
 	b.segmentEnds(clock(10, 40), "ACME-2", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
@@ -431,31 +431,24 @@ func TestATreeInFlightAtTheStartRanksByItsFirstChildsStart(t *testing.T) {
 		"ACME-2 at 10:10", "ACME-5 at 11:10", "ACME-3 at 12:25")
 }
 
-// checkRecordedFirstStarts reads window's trace, which must place every fact, and checks the ranks
-// firstStartRanks shows its issues at at the window's start against ranks, and each slot a replay of
-// it under main gives, as the issue and the minute, against taken.
+// checkRecordedFirstStarts checks the ranks firstStartRanks shows window's issues at at the
+// window's start against ranks (checkFirstStartRanks), and each slot a replay of it under main
+// gives, as the issue and the minute, against taken.
 func checkRecordedFirstStarts(t *testing.T, window Window, ranks map[string]string, taken ...string) {
 	t.Helper()
-	trace, err := BuildTrace(window)
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	if len(trace.Unplaced) != 0 {
-		t.Errorf("the trace could not place %+v", trace.Unplaced)
-	}
-	if got := firstStartRanks(trace).ranks(); !reflect.DeepEqual(got, ranks) {
-		t.Errorf("the recorded first starts rank %v, want %v", got, ranks)
-	}
-
+	checkFirstStartRanks(t, window, ranks)
 	_, log := knobRun(t, window, mainRule(t), "main")
-	var given []string
-	for _, line := range log {
-		if line.Msg == "admission: slot taken" {
-			given = append(given, line.Issue+" at "+line.Time.UTC().Format("15:04"))
-		}
-	}
-	if !slices.Equal(given, taken) {
+	if given := slotsGiven(log); !slices.Equal(given, taken) {
 		t.Errorf("the replay gave the slot to %v, want %v", given, taken)
+	}
+}
+
+// checkFirstStartRanks reads window's trace, which must place every fact, and checks the ranks
+// firstStartRanks shows its issues at at the window's start against ranks.
+func checkFirstStartRanks(t *testing.T, window Window, ranks map[string]string) {
+	t.Helper()
+	if got := firstStartRanks(placedTrace(t, window)).ranks(); !reflect.DeepEqual(got, ranks) {
+		t.Errorf("the recorded first starts rank %v at the window's start, want %v", got, ranks)
 	}
 }
 
@@ -488,15 +481,9 @@ func interleavedTreesWindow(t *testing.T) Window {
 	for _, child := range children {
 		b.file(clock(7, 10), child.key, filing{Title: child.title, Parent: child.root, Tree: child.root, Status: "backlog", Rank: child.rank})
 	}
-	waitsForChildren := func(at time.Time, key string, open int) {
-		b.turnEnds(at, key, claim.RoleArchitect)
-		b.registered(at, key, true)
-		b.info(at, "admission: an issue waits for the Dispatch children under it", "issue", key, "tree", key, "generation", 1, "children", open)
-		b.slotReleased(at, key)
-	}
-	waitsForChildren(clock(7, 20), "ACME-1", 3)
+	b.rootWaitsForChildren(clock(7, 20), "ACME-1", 3)
 	b.rootPromoted(clock(7, 20), "ACME-2")
-	waitsForChildren(clock(7, 40), "ACME-2", 1)
+	b.rootWaitsForChildren(clock(7, 40), "ACME-2", 1)
 	b.rootPromoted(clock(7, 40), "ACME-3")
 	b.rootDesigned(clock(7, 55), "ACME-3")
 	b.segmentEnds(clock(8, 30), "ACME-3", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
@@ -535,17 +522,7 @@ func interleavedTreesWindow(t *testing.T) Window {
 // work to the window's end.
 func TestTheRecordedOrderStartsTheChildrenOfTwoTreesInTurn(t *testing.T) {
 	window := interleavedTreesWindow(t)
-	trace, err := BuildTrace(window)
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	if len(trace.Unplaced) != 0 {
-		t.Errorf("the trace could not place %+v", trace.Unplaced)
-	}
-	atStart := map[string]string{"ACME-1": "01", "ACME-2": "02", "ACME-4": "01", "ACME-5": "03", "ACME-7": "02", "ACME-8": "04"}
-	if got := firstStartRanks(trace).ranks(); !reflect.DeepEqual(got, atStart) {
-		t.Errorf("the recorded first starts rank %v at the window's start, want %v", got, atStart)
-	}
+	checkFirstStartRanks(t, window, map[string]string{"ACME-1": "01", "ACME-2": "02", "ACME-4": "01", "ACME-5": "03", "ACME-7": "02", "ACME-8": "04"})
 	want := []string{"ACME-4 at 10:00", "ACME-7 at 10:20", "ACME-5 at 10:40", "ACME-8 at 11:00"}
 	for seed := int64(1); seed <= 3; seed++ {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
@@ -555,13 +532,7 @@ func TestTheRecordedOrderStartsTheChildrenOfTwoTreesInTurn(t *testing.T) {
 			if err != nil {
 				t.Fatalf("replay the window under main at seed %d: %v", seed, err)
 			}
-			var given []string
-			for _, line := range replayLog(t, out) {
-				if line.Msg == "admission: slot taken" {
-					given = append(given, line.Issue+" at "+line.Time.UTC().Format("15:04"))
-				}
-			}
-			if !slices.Equal(given, want) {
+			if given := slotsGiven(replayLog(t, out)); !slices.Equal(given, want) {
 				t.Errorf("the replay gave the slot to %v, want %v", given, want)
 			}
 			if !slices.Contains(result.Assumptions, assumeRootRanksByNextStart) {
@@ -595,8 +566,7 @@ func returnAfterConflictWindow(t *testing.T) Window {
 	b.segmentEnds(clock(10, 20), "ACME-5", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
 	b.turnEnds(clock(10, 20), "ACME-1", claim.RoleArchitect)
 	b.moved(clock(10, 20), "ACME-1", phase.Accepting, phase.Implementing, workflow.TriggerConflict)
-	b.info(clock(10, 20), "admission gives a slot back to an issue whose work came back", "issue", "ACME-1", "phase", string(phase.Implementing))
-	b.slotTaken(clock(10, 20), "ACME-1")
+	b.workCameBack(clock(10, 20), "ACME-1", phase.Implementing)
 	b.turnStarts(clock(10, 20), "ACME-1", claim.RoleImplementer)
 	b.segmentEnds(clock(10, 40), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
 	b.segmentEnds(clock(10, 50), "ACME-1", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
@@ -636,11 +606,7 @@ func leftBeforeItsStartWindow(t *testing.T) Window {
 	b.file(clock(7, 6), "ACME-5", filing{Title: "Rotate the warehouse keys", Status: "todo", Rank: "a5", Labels: handedToLegion})
 	b.file(clock(7, 10), "ACME-2", filing{Title: "Write the export's header row", Parent: "ACME-1", Tree: "ACME-1", Status: "backlog", Rank: "b2"})
 	b.file(clock(7, 10), "ACME-6", filing{Title: "Sort the export by shelf", Parent: "ACME-1", Tree: "ACME-1", Status: "backlog", Rank: "b6"})
-	b.turnEnds(clock(7, 20), "ACME-1", claim.RoleArchitect)
-	b.registered(clock(7, 20), "ACME-1", true)
-	b.info(clock(7, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-1", "tree", "ACME-1",
-		"generation", 1, "children", 2)
-	b.slotReleased(clock(7, 20), "ACME-1")
+	b.rootWaitsForChildren(clock(7, 20), "ACME-1", 2)
 	b.rootThroughReview(clock(7, 20), "ACME-5")
 	b.edit(clock(9, 10), "ACME-2", setStatus("todo"))
 	b.edit(clock(9, 10), "ACME-6", setStatus("todo"))
@@ -668,25 +634,9 @@ func leftBeforeItsStartWindow(t *testing.T) Window {
 // for the rest of the window, ACME-6 took the slot at 11:15 and held it with no work.
 func TestAnIssueThatLeavesBeforeItsStartPinsNoTree(t *testing.T) {
 	window := leftBeforeItsStartWindow(t)
-	trace, err := BuildTrace(window)
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	if len(trace.Unplaced) != 0 {
-		t.Errorf("the trace could not place %+v", trace.Unplaced)
-	}
-	atStart := map[string]string{"ACME-1": "01", "ACME-2": "01", "ACME-3": "02"}
-	if got := firstStartRanks(trace).ranks(); !reflect.DeepEqual(got, atStart) {
-		t.Errorf("the recorded first starts rank %v at the window's start, want %v", got, atStart)
-	}
+	checkFirstStartRanks(t, window, map[string]string{"ACME-1": "01", "ACME-2": "01", "ACME-3": "02"})
 	result, log := knobRun(t, window, replayedRule(t, "keep-past-review"), "main")
-	var given []string
-	for _, line := range log {
-		if line.Msg == "admission: slot taken" {
-			given = append(given, line.Issue+" at "+line.Time.UTC().Format("15:04"))
-		}
-	}
-	if want := []string{"ACME-3 at 11:15"}; !slices.Equal(given, want) {
+	if given, want := slotsGiven(log), []string{"ACME-3 at 11:15"}; !slices.Equal(given, want) {
 		t.Errorf("the replay gave the slot to %v, want %v", given, want)
 	}
 	if !slices.Contains(result.Assumptions, assumeRootRanksByNextStart) {
@@ -786,7 +736,7 @@ func TestTheNeverStartedKnobGivesAnUnstartedIssueItsScenario(t *testing.T) {
 				t.Errorf("ACME-3's first slot is %s, want 11:30", stamp(first))
 			}
 			turns := func(role claim.Role) []time.Time {
-				token := "legion-acme-acme-3-" + string(role)
+				token := string(builtToken(t, "ACME-3", role))
 				return linesAt(log, func(line replayLine) bool { return line.Msg == "supervise: a turn started" && line.Claim == token })
 			}
 			if got := turns(claim.RoleArchitect); !slices.EqualFunc(got, c.architect, time.Time.Equal) {

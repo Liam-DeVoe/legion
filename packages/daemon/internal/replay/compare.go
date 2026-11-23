@@ -405,11 +405,16 @@ func compareRules(named []record.SlotRule, names []string, heads []Window) ([]re
 
 // ruleNames is rules' names, separated by commas.
 func ruleNames(rules []record.SlotRule) string {
+	return strings.Join(namesOf(rules), ", ")
+}
+
+// namesOf is the name of each of rules.
+func namesOf(rules []record.SlotRule) []string {
 	names := make([]string, 0, len(rules))
 	for _, rule := range rules {
 		names = append(names, rule.Name)
 	}
-	return strings.Join(names, ", ")
+	return names
 }
 
 // distinctNames refuses two windows that go by one name, before's and after's: a window goes by its

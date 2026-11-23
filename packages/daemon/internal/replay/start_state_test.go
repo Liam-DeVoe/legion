@@ -13,34 +13,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
-
-// seedReported builds w's trace, writes its start state at at in a transaction of st's with
-// SeedAndReport and hands the transaction to read, which reads back what it wrote; the transaction
-// is then rolled back. It answers the trace and the start state's report.
-func seedReported(t *testing.T, st *store.Store, w Window, at time.Time, read func(tx pgx.Tx)) (Trace, SeedReport) {
-	t.Helper()
-	ctx := context.Background()
-	trace, err := BuildTrace(w)
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		t.Fatalf("begin the seed's transaction: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	report, err := SeedAndReport(ctx, tx, record.NewStore(), st, trace, at)
-	if err != nil {
-		t.Fatalf("seed the state at %s: %v", at.Format(time.RFC3339), err)
-	}
-	if read != nil {
-		read(tx)
-	}
-	return trace, report
-}
 
 // mergedRoot files key at filed as a root handed to Legion at rank and runs it through every phase,
 // one every five minutes from its promotion, to its merge forty minutes after its filing, which
@@ -125,13 +99,7 @@ func TestAProductionChecksTurnEndsWhereTheCheckCloses(t *testing.T) {
 	if !TraceReads(checkClosedLine) {
 		t.Errorf("the trace does not read %q, which ends a production check's turn", checkClosedLine)
 	}
-	trace, err := BuildTrace(checkedWindow(t))
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	if len(trace.Unplaced) != 0 {
-		t.Errorf("the trace could not place %+v", trace.Unplaced)
-	}
+	trace := placedTrace(t, checkedWindow(t))
 	for _, want := range []struct {
 		key        string
 		start, end time.Time
@@ -166,11 +134,7 @@ func TestSeedLeavesOutTheTurnOfAnIssueOutsideTheWorkflow(t *testing.T) {
 		for _, c := range claims {
 			written = append(written, string(c.Token))
 		}
-		tester, err := claim.NewToken(builtTokenProject, "ACME-3", claim.RoleTester)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !slices.Equal(written, []string{string(tester)}) {
+		if tester := builtToken(t, "ACME-3", claim.RoleTester); !slices.Equal(written, []string{string(tester)}) {
 			t.Errorf("the seeded claims are %v, want ACME-3's tester's alone", written)
 		}
 	})
@@ -216,7 +180,7 @@ func TestSeedNamesALingerItDoesNotHoldOnlyWhereItStandsAtTheStart(t *testing.T) 
 		!strings.Contains(report.Unplaced[0].Reason, "stands at the window's start") {
 		t.Errorf("seeded at 10:00, the seed names %+v; want ACME-2 alone, for the linger that stands then", report.Unplaced)
 	}
-	if _, later := seedReported(t, st, window, clock(11, 0), nil); len(later.Unplaced) != 0 {
+	if later := seedTrace(t, st, trace, clock(11, 0), nil); len(later.Unplaced) != 0 {
 		t.Errorf("seeded at 11:00, the seed names %+v; want none, both lingers having closed", later.Unplaced)
 	}
 }
@@ -232,14 +196,13 @@ func heldFromBeforeTheReach(t *testing.T, recorded ...string) Window {
 	b.reaches(2 * time.Hour)
 	b.boot(clock(8, 0))
 	for _, key := range recorded {
-		b.slots[key] = true
+		b.heldWithNoLine(key)
 	}
 	b.file(clock(7, 0), "ACME-1", filing{Title: "Ship the ACME-1 change", Status: "todo", Rank: "a1", Labels: handedToLegion})
 	b.daemonWrites(clock(7, 5), "ACME-1", "in_progress")
 	b.turnStarts(clock(8, 30), "ACME-1", claim.RoleImplementer)
 	b.segmentEnds(clock(9, 0), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
-	b.file(clock(8, 10), "ACME-2", filing{Title: "Ship the ACME-2 change", Status: "todo", Rank: "a2", Labels: handedToLegion})
-	b.rootPromoted(clock(8, 10), "ACME-2")
+	promotedRoot(b, clock(8, 10), "ACME-2", "a2")
 	b.rootDesigned(clock(8, 20), "ACME-2")
 	return b.build()
 }
@@ -266,16 +229,7 @@ func TestTheTraceInfersASlotHeldFromBeforeTheReach(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			window := heldFromBeforeTheReach(t, tc.recorded...)
 			trace, report := seedReported(t, st, window, window.From, func(tx pgx.Tx) {
-				slots, err := record.NewStore().Slots(context.Background(), tx)
-				if err != nil {
-					t.Fatalf("read the seeded slots: %v", err)
-				}
-				slices.SortFunc(slots, func(x, y record.Slot) int { return x.Index - y.Index })
-				var holders []string
-				for _, slot := range slots {
-					holders = append(holders, slot.Issue+"@"+slot.AdmittedAt.UTC().Format("15:04"))
-				}
-				if want := []string{"ACME-1@08:00", "ACME-2@08:10"}; !slices.Equal(holders, want) {
+				if holders, want := seededSlots(t, tx), []string{"ACME-1@08:00", "ACME-2@08:10"}; !slices.Equal(holders, want) {
 					t.Errorf("the seeded slots are %v, want %v", holders, want)
 				}
 			})

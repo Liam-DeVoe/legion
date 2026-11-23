@@ -14,10 +14,14 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
+
+// listsAssumption says whether the tool's list of assumptions (Assumptions) holds the one numbered
+// number.
+func listsAssumption(number int) bool {
+	return slices.ContainsFunc(Assumptions, func(a Assumption) bool { return a.Number == number })
+}
 
 // specAssumptions is the list a replay's assumptions start from: the eighteen of the tool's spec
 // (its Design, "The assumptions"), each with what it assumes and the direction it moves a result if
@@ -200,7 +204,7 @@ func TestTheDocsPageGivesEveryAssumption(t *testing.T) {
 		}
 	}
 	for number := range sections {
-		if !slices.ContainsFunc(Assumptions, func(a Assumption) bool { return a.Number == number }) {
+		if !listsAssumption(number) {
 			t.Errorf("%s gives a section of assumption %d, which Assumptions lacks", replayPage, number)
 		}
 	}
@@ -327,16 +331,12 @@ var boundWord = regexp.MustCompile(`(?i)\bbounds?\b`)
 // or another scenario than the result; and for a file of the output other than the daemon's own
 // log lines and the traced segments that calls anything a bound.
 func TestEveryRunNamesItsAssumptionsAndScenario(t *testing.T) {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip(testdb.SkipMessage)
+	dsn := replayDSN(t)
+	rule := mainRule(t)
+	branch, err := BranchNamed("main+neverStarted=drawn")
+	if err != nil {
+		t.Fatal(err)
 	}
-	rule, ok := record.SlotRuleNamed(record.MainRule.Name)
-	if !ok {
-		t.Fatal("no slot rule is named main")
-	}
-	branch := MainBranch
-	branch.Name, branch.NeverStarted = "main+neverStarted=drawn", "drawn"
 	out := t.TempDir()
 	result, err := Run(context.Background(), RunConfig{Window: namedRunWindow(t), Rule: rule, Branch: branch, Seed: 1, Slowdown: 1,
 		PGDSN: dsn, Out: out})
@@ -348,7 +348,7 @@ func TestEveryRunNamesItsAssumptionsAndScenario(t *testing.T) {
 		t.Errorf("the run names the scenario %q, want %q, its branch's", card.Scenario, branch.NeverStarted)
 	}
 	for _, number := range card.Assumptions {
-		if !slices.ContainsFunc(Assumptions, func(a Assumption) bool { return a.Number == number }) {
+		if !listsAssumption(number) {
 			t.Errorf("the run names assumption %d, which Assumptions lacks", number)
 		}
 	}
@@ -358,7 +358,7 @@ func TestEveryRunNamesItsAssumptionsAndScenario(t *testing.T) {
 		}
 	}
 
-	written, err := os.ReadFile(filepath.Join(out, "scorecard.json"))
+	written, err := os.ReadFile(filepath.Join(out, scorecardFile))
 	if err != nil {
 		t.Fatalf("read the run's scorecard.json: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestEveryRunNamesItsAssumptionsAndScenario(t *testing.T) {
 			printed.Scenario, printed.Assumptions, card.Scenario, card.Assumptions)
 	}
 	err = filepath.WalkDir(out, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || entry.Name() == logFile || entry.Name() == "segments.jsonl" {
+		if err != nil || entry.IsDir() || entry.Name() == logFile || entry.Name() == segmentsFile {
 			return err
 		}
 		text, err := os.ReadFile(path)

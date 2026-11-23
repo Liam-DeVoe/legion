@@ -68,15 +68,17 @@ type windowBuilder struct {
 	deliveries int
 	// slots is every issue that holds a slot in the record now.
 	slots map[string]bool
-	// claims is the incarnation of every claim the record has launched, and turns the delivery
-	// of each claim's open turn.
-	claims map[claim.Token]int
-	turns  map[claim.Token]int
+	// claims is the incarnation of every claim the record has launched, numbered by its launch among
+	// all of them (launches), and turns the delivery of each claim's open turn.
+	claims   map[claim.Token]int
+	launches int
+	turns    map[claim.Token]int
 }
 
-// builtLine is one line of the record's log at its moment.
+// builtLine is one line of the record's log at its moment, with the msg it was written under.
 type builtLine struct {
 	at   time.Time
+	msg  string
 	line json.RawMessage
 }
 
@@ -148,10 +150,14 @@ type eventOrigin struct {
 }
 
 // recordedSession is the session id running key's role's claim, as Dispatch records a worker's
-// session: by an id of its own, under the title Legion gives the role's session,
-// `Legion <role> · <KEY>`.
+// session: by an id of its own, under the title Legion gives the role's session (sessionTitle).
 func recordedSession(key string, role claim.Role, id string) eventActor {
-	return eventActor{Kind: "session", ID: id, Origin: &eventOrigin{Host: "omp", SessionTitle: fmt.Sprintf("Legion %s · %s", role, key)}}
+	return eventActor{Kind: "session", ID: id, Origin: &eventOrigin{Host: "omp", SessionTitle: sessionTitle(role, key)}}
+}
+
+// sessionTitle is the title Legion gives the session of key's role, `Legion <role> · <KEY>`.
+func sessionTitle(role claim.Role, key string) string {
+	return fmt.Sprintf("Legion %s · %s", role, key)
 }
 
 // newWindowBuilder starts the window of project ACME over [from, to): its inputs reach an hour
@@ -200,18 +206,6 @@ func (b *windowBuilder) gated(steps ...record.DesignStep) {
 	b.window.GateSteps = steps
 }
 
-// capAt is the cap the window's daemon ran with at at: the last change at or before it, or the
-// first where at is before every change.
-func (b *windowBuilder) capAt(at time.Time) int {
-	limit := b.window.Caps[0].Cap
-	for _, change := range b.window.Caps {
-		if !change.At.After(at) {
-			limit = change.Cap
-		}
-	}
-	return limit
-}
-
 // build is the window: written into a directory of the test's own with Window.Write and read back
 // with ReadWindow, so it is exactly the value a replay of a collected window is given, and every
 // Dispatch event decoded with intake.DecodeDispatchEvent first, so an event the daemon would refuse
@@ -224,13 +218,7 @@ func (b *windowBuilder) build() Window {
 	window.Log = make([]json.RawMessage, 0, len(b.lines))
 	for _, line := range b.lines {
 		window.Log = append(window.Log, line.line)
-		var head struct {
-			Msg string `json:"msg"`
-		}
-		if err := json.Unmarshal(line.line, &head); err != nil {
-			b.t.Fatalf("read the msg of the built line %s: %v", line.line, err)
-		}
-		seen[head.Msg] = true
+		seen[line.msg] = true
 	}
 	window.Lines = make([]string, 0, len(seen))
 	for msg := range seen {
@@ -275,16 +263,22 @@ func (b *windowBuilder) build() Window {
 	return read
 }
 
-// line is one line of the record's log at at, as the daemon's JSON handler writes it.
-func (b *windowBuilder) line(at time.Time, level slog.Level, msg string, args ...any) {
-	b.t.Helper()
+// jsonLine is one line of a daemon's log at at, as the daemon's JSON handler writes it.
+func jsonLine(t *testing.T, at time.Time, level slog.Level, msg string, args ...any) json.RawMessage {
+	t.Helper()
 	var written bytes.Buffer
 	entry := slog.NewRecord(at, level, msg, 0)
 	entry.Add(args...)
 	if err := slog.NewJSONHandler(&written, &slog.HandlerOptions{Level: slog.LevelDebug}).Handle(context.Background(), entry); err != nil {
-		b.t.Fatalf("write the line %q: %v", msg, err)
+		t.Fatalf("write the line %q: %v", msg, err)
 	}
-	b.lines = append(b.lines, builtLine{at: at, line: json.RawMessage(bytes.TrimSuffix(written.Bytes(), []byte("\n")))})
+	return bytes.TrimSuffix(written.Bytes(), []byte("\n"))
+}
+
+// line is one line of the record's log at at, as the daemon's JSON handler writes it.
+func (b *windowBuilder) line(at time.Time, level slog.Level, msg string, args ...any) {
+	b.t.Helper()
+	b.lines = append(b.lines, builtLine{at: at, msg: msg, line: jsonLine(b.t, at, level, msg, args...)})
 }
 
 // info is line at level Info, the level of nearly every line a window holds.
@@ -371,32 +365,32 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 	// The issue's next sequence is the one this event takes, which the payload's last_seq names.
 	next := issue.seq + 1
 	payload := struct {
-		Assignee      *string    `json:"assignee"`
-		BlockedBy     []string   `json:"blocked_by"`
-		Claim         any        `json:"claim"`
-		ClosedAt      *time.Time `json:"closed_at"`
-		Components    any        `json:"components"`
-		CreatedAt     time.Time  `json:"created_at"`
-		CreatedBy     any        `json:"created_by"`
-		ExternalLinks []string   `json:"external_links"`
-		Key           string     `json:"key"`
-		Labels        []string   `json:"labels"`
-		LastSeq       int64      `json:"last_seq"`
-		Number        int        `json:"number"`
-		Parent        *string    `json:"parent"`
-		Primary       string     `json:"primary_artifact_id"`
-		Priority      *string    `json:"priority"`
-		Project       string     `json:"project"`
-		Rank          string     `json:"rank"`
-		Repo          *string    `json:"repo"`
-		ResolvedRepo  string     `json:"resolved_repo"`
-		Route         *string    `json:"route"`
-		Status        string     `json:"status"`
-		Title         string     `json:"title"`
-		UpdatedAt     time.Time  `json:"updated_at"`
+		Assignee      *string     `json:"assignee"`
+		BlockedBy     []string    `json:"blocked_by"`
+		Claim         *builtClaim `json:"claim"`
+		ClosedAt      *time.Time  `json:"closed_at"`
+		Components    any         `json:"components"`
+		CreatedAt     time.Time   `json:"created_at"`
+		CreatedBy     any         `json:"created_by"`
+		ExternalLinks []string    `json:"external_links"`
+		Key           string      `json:"key"`
+		Labels        []string    `json:"labels"`
+		LastSeq       int64       `json:"last_seq"`
+		Number        int         `json:"number"`
+		Parent        *string     `json:"parent"`
+		Primary       string      `json:"primary_artifact_id"`
+		Priority      *string     `json:"priority"`
+		Project       string      `json:"project"`
+		Rank          string      `json:"rank"`
+		Repo          *string     `json:"repo"`
+		ResolvedRepo  string      `json:"resolved_repo"`
+		Route         *string     `json:"route"`
+		Status        string      `json:"status"`
+		Title         string      `json:"title"`
+		UpdatedAt     time.Time   `json:"updated_at"`
 	}{
 		BlockedBy: append([]string{}, issue.BlockedBy...),
-		Claim:     payloadClaim(issue),
+		Claim:     issue.Claim,
 		ClosedAt:  closed,
 		Components: map[string]any{"ids": []string{}, "inherited_from": nil, "mode": "inherit", "reason": nil,
 			"unknown": []string{}},
@@ -417,14 +411,6 @@ func (b *windowBuilder) issueEvent(at time.Time, key, kind string, actor eventAc
 		UpdatedAt:     at,
 	}
 	b.event(at, key, kind, actor, payload)
-}
-
-// payloadClaim is issue's Dispatch claim as an issue event's payload carries it, nil for none.
-func payloadClaim(issue *builtIssue) any {
-	if issue.Claim == nil {
-		return nil
-	}
-	return *issue.Claim
 }
 
 // claimedBy is actor taking key's Dispatch claim at at (issue.claimed), which each later issue
@@ -495,7 +481,8 @@ func (b *windowBuilder) changed(at time.Time, key string, actor eventActor, chan
 // labelled is a change that puts the legion label on an issue, and unlabelled one that takes it
 // off.
 func labelled(issue *builtIssue) {
-	issue.Labels = append(slices.DeleteFunc(slices.Clone(issue.Labels), func(label string) bool { return label == dispatch.LegionLabel }), dispatch.LegionLabel)
+	unlabelled(issue)
+	issue.Labels = append(issue.Labels, dispatch.LegionLabel)
 }
 
 func unlabelled(issue *builtIssue) {
@@ -535,7 +522,7 @@ func (b *windowBuilder) slotTaken(at time.Time, key string) {
 		b.t.Fatalf("%s takes a slot at %s while it holds one", key, at.Format(time.RFC3339))
 	}
 	b.slots[key] = true
-	b.info(at, "admission: slot taken", "issue", key, "slots", len(b.slots), "cap", b.capAt(at))
+	b.info(at, "admission: slot taken", "issue", key, "slots", len(b.slots), "cap", capAt(b.window, at))
 }
 
 func (b *windowBuilder) slotReleased(at time.Time, key string) {
@@ -544,17 +531,61 @@ func (b *windowBuilder) slotReleased(at time.Time, key string) {
 		b.t.Fatalf("%s gives a slot back at %s while it holds none", key, at.Format(time.RFC3339))
 	}
 	delete(b.slots, key)
-	b.info(at, "admission: slot released", "issue", key, "slots", len(b.slots), "cap", b.capAt(at))
+	b.info(at, "admission: slot released", "issue", key, "slots", len(b.slots), "cap", capAt(b.window, at))
+}
+
+// heldWithNoLine is key holding a slot the record writes no slot line of (assumption 34): one it
+// took by a way that writes none, or one held from before the window's inputs reach.
+func (b *windowBuilder) heldWithNoLine(key string) {
+	b.t.Helper()
+	if b.slots[key] {
+		b.t.Fatalf("%s holds a slot with no line while it holds one", key)
+	}
+	b.slots[key] = true
+}
+
+// waitEnded and workCameBack are the admission pass giving key a slot back at at in the phase in,
+// for a wait of it that ended or for its work that came back.
+func (b *windowBuilder) waitEnded(at time.Time, key string, in phase.Phase) {
+	b.t.Helper()
+	b.info(at, "admission gives a slot back to an issue whose wait ended", "issue", key, "phase", string(in))
+	b.slotTaken(at, key)
+}
+
+func (b *windowBuilder) workCameBack(at time.Time, key string, in phase.Phase) {
+	b.t.Helper()
+	b.info(at, "admission gives a slot back to an issue whose work came back", "issue", key, "phase", string(in))
+	b.slotTaken(at, key)
+}
+
+// waitsForChildren is the admission pass's line of key waiting at at for the children open under
+// it (admit's tellChildrenFirst), at the tree and generation the record holds key at.
+func (b *windowBuilder) waitsForChildren(at time.Time, key string, children int) {
+	b.t.Helper()
+	b.info(at, waitsForChildrenLine, "issue", key, "tree", b.tree(key), "generation", b.generation(key), "children", children)
+}
+
+// builtToken is the claim token of key's role in a built window.
+func builtToken(t *testing.T, key string, role claim.Role) claim.Token {
+	t.Helper()
+	token, err := claim.NewToken(builtTokenProject, key, role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
 }
 
 // token is the claim token of key's role.
 func (b *windowBuilder) token(key string, role claim.Role) claim.Token {
 	b.t.Helper()
-	token, err := claim.NewToken(builtTokenProject, key, role)
-	if err != nil {
-		b.t.Fatal(err)
-	}
-	return token
+	return builtToken(b.t, key, role)
+}
+
+// session is the session of key's role's claim as the fixtures name a worker's session: by its claim
+// token.
+func (b *windowBuilder) session(key string, role claim.Role) eventActor {
+	b.t.Helper()
+	return eventActor{Kind: "session", ID: string(b.token(key, role))}
 }
 
 // launched is the first launch of key's role's claim at at (supervise's machine); a claim already
@@ -566,9 +597,10 @@ func (b *windowBuilder) launched(at time.Time, key string, role claim.Role, agai
 	if _, up := b.claims[token]; up && !again {
 		return
 	}
-	b.claims[token] = len(b.claims) + 1
+	b.launches++
+	b.claims[token] = b.launches
 	b.info(at, "supervise: launched", "claim", string(token), "generation", b.generation(key),
-		"incarnation", fmt.Sprintf("5e0c1a%02x", len(b.claims)), "resumed", false, "resumedBy", "none")
+		"incarnation", fmt.Sprintf("5e0c1a%02x", b.claims[token]), "resumed", false, "resumedBy", "none")
 }
 
 // turnStarts is a turn of key's role starting at at, its claim launched first where it has not
@@ -602,10 +634,21 @@ func (b *windowBuilder) turnEnds(at time.Time, key string, role claim.Role) {
 // machine): the open turn ends with it and writes no line of its own.
 func (b *windowBuilder) claimFailed(at time.Time, key string, role claim.Role) {
 	b.t.Helper()
+	b.claimFailedAs(at, key, role, "died", "the worker's process died three times")
+}
+
+// claimFailedAs is claimFailed written with cause and why, or, where cause is "", with no cause, as
+// the releases before 97519812 wrote it.
+func (b *windowBuilder) claimFailedAs(at time.Time, key string, role claim.Role, cause, why string) {
+	b.t.Helper()
 	token := b.token(key, role)
 	delete(b.turns, token)
-	b.line(at, slog.LevelError, "supervise: claim failed", "claim", string(token), "cause", "died",
-		"why", "the worker's process died three times", "launchFailures", 0, "deaths", 3, "promptFailures", 0, "promptRetires", 0)
+	args := []any{"claim", string(token)}
+	if cause != "" {
+		args = append(args, "cause", cause)
+	}
+	args = append(args, "why", why, "launchFailures", 0, "deaths", 3, "promptFailures", 0, "promptRetires", 0)
+	b.line(at, slog.LevelError, "supervise: claim failed", args...)
 }
 
 // moved is the record's move of key from one phase to another by trigger at at
@@ -619,7 +662,7 @@ func (b *windowBuilder) moved(at time.Time, key string, from, to phase.Phase, tr
 	if written == "" {
 		written = shown
 	}
-	b.info(at, "workflow: phase changed", "issue", key, "tree", issue.tree, "from", string(from), "to", string(to),
+	b.info(at, phaseChangedLine, "issue", key, "tree", issue.tree, "from", string(from), "to", string(to),
 		"trigger", string(trigger), "status", written)
 	if written != shown {
 		b.daemonWrites(at.Add(time.Second), key, written)
@@ -638,20 +681,49 @@ func (b *windowBuilder) registered(at time.Time, key string, open bool) {
 		"version", 1, "open", open, "changes_requested", false, "gated_steps", gated)
 }
 
+// gateOpened and gateClosed are the daemon's lines of key's design gate opening and closing at at
+// (workflow's applyArtifact), at the artifact event of kind on version of its spec that flipped it.
+func (b *windowBuilder) gateOpened(at time.Time, key string, kind intake.DispatchArtifactKind, version int) {
+	b.t.Helper()
+	b.info(at, gateOpenedLine, "issue", key, "artifact", b.artifact(key), "event", string(kind), "version", version)
+}
+
+func (b *windowBuilder) gateClosed(at time.Time, key string, kind intake.DispatchArtifactKind, version int) {
+	b.t.Helper()
+	b.info(at, gateClosedLine, "issue", key, "artifact", b.artifact(key), "event", string(kind), "version", version)
+}
+
 // specWritten is key's architect writing version 1 of its spec at at (artifact.version, by the
 // architect's session, named by its claim token).
 func (b *windowBuilder) specWritten(at time.Time, key string) {
 	b.t.Helper()
-	b.specWrittenBy(at, key, eventActor{Kind: "session", ID: string(b.token(key, claim.RoleArchitect))})
+	b.specVersionBy(at, key, b.session(key, claim.RoleArchitect), 1)
 }
 
 // specWrittenBy is specWritten by the architect's session architect.
 func (b *windowBuilder) specWrittenBy(at time.Time, key string, architect eventActor) {
 	b.t.Helper()
+	b.specVersionBy(at, key, architect, 1)
+}
+
+// specRevised is specWritten of version, a version after the first.
+func (b *windowBuilder) specRevised(at time.Time, key string, version int) {
+	b.t.Helper()
+	b.specVersionBy(at, key, b.session(key, claim.RoleArchitect), version)
+}
+
+// specVersionBy is the architect's session architect writing version of key's spec at at
+// (artifact.version), summarised as the first version or a later one.
+func (b *windowBuilder) specVersionBy(at time.Time, key string, architect eventActor, version int) {
+	b.t.Helper()
+	summary := "The first version of the spec"
+	if version > 1 {
+		summary = "A later version of the spec"
+	}
 	b.event(at, key, "artifact.version", architect, map[string]any{
 		"artifact_id": b.artifact(key), "diff": "", "name": "spec.md",
 		"version": map[string]any{"authors": []map[string]string{{"id": architect.ID, "kind": architect.Kind}}, "created_at": at,
-			"named": true, "number": 1, "summary": "The first version of the spec"},
+			"named": true, "number": version, "summary": summary},
 	})
 }
 
@@ -659,13 +731,19 @@ func (b *windowBuilder) specWrittenBy(at time.Time, key string, architect eventA
 // request ask answering it, "" for an approval no request asked for.
 func (b *windowBuilder) approves(at time.Time, key, ask string) {
 	b.t.Helper()
+	b.approvesVersion(at, key, ask, 1)
+}
+
+// approvesVersion is approves of version of key's spec.
+func (b *windowBuilder) approvesVersion(at time.Time, key, ask string, version int) {
+	b.t.Helper()
 	var askID any
 	if ask != "" {
 		askID = ask
 	}
 	b.event(at, key, "artifact.approved", builtPerson, map[string]any{
 		"actor": map[string]string{"id": builtPerson.ID, "kind": builtPerson.Kind}, "artifact_id": b.artifact(key),
-		"ask_id": askID, "name": "spec.md", "reason": nil, "version": 1,
+		"ask_id": askID, "name": "spec.md", "reason": nil, "version": version,
 	})
 }
 
@@ -673,7 +751,7 @@ func (b *windowBuilder) approves(at time.Time, key, ask string) {
 // (ask.opened of an approval request), with the ask's id, by its session named by its claim token.
 func (b *windowBuilder) asksApproval(at time.Time, key, ask string) {
 	b.t.Helper()
-	b.asksApprovalBy(at, key, ask, eventActor{Kind: "session", ID: string(b.token(key, claim.RoleArchitect))})
+	b.asksApprovalBy(at, key, ask, b.session(key, claim.RoleArchitect))
 }
 
 // asksApprovalBy is asksApproval by the architect's session architect.
@@ -702,6 +780,18 @@ func (b *windowBuilder) rootDesigned(at time.Time, key string) {
 	b.turnEnds(at, key, claim.RoleArchitect)
 	b.registered(at, key, true)
 	b.rootFirstPhase(at, key)
+}
+
+// rootWaitsForChildren is key's architect ending its first turn at at with its design registered
+// and its gate open, and the root, with children open under it, waiting for them and giving its
+// slot back (admit's tellChildrenFirst): the counterpart of rootDesigned for a root with open
+// children.
+func (b *windowBuilder) rootWaitsForChildren(at time.Time, key string, children int) {
+	b.t.Helper()
+	b.turnEnds(at, key, claim.RoleArchitect)
+	b.registered(at, key, true)
+	b.waitsForChildren(at, key, children)
+	b.slotReleased(at, key)
 }
 
 // rootFirstPhase is key, a root whose gate stands open, moving into planning at at by gate_opened
@@ -746,6 +836,16 @@ func (b *windowBuilder) segmentEnds(at time.Time, key string, from, to phase.Pha
 	}
 	if role := phase.RoleFor(to); role != "" {
 		b.turnStarts(at, key, role)
+	}
+}
+
+// through is the ends of key's work segments by moves in turn, the first in from: each ends the
+// segment of the phase the move before it entered (segmentEnds).
+func (b *windowBuilder) through(key string, from phase.Phase, moves ...builtMove) {
+	b.t.Helper()
+	for _, move := range moves {
+		b.segmentEnds(move.at, key, from, move.to, move.trigger)
+		from = move.to
 	}
 }
 

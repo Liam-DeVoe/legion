@@ -24,13 +24,13 @@ func processEnds(b *windowBuilder, at time.Time, key string, role claim.Role, by
 	incarnation := fmt.Sprintf("5e0c1a%02x", b.claims[token])
 	delete(b.turns, token)
 	ended := func(cause string) {
-		b.line(at, slog.LevelWarn, "supervise: the relaunch ended work the agent had running", "claim", string(token), "cause", cause,
+		b.line(at, slog.LevelWarn, workEndedLine, "claim", string(token), "cause", cause,
 			"generation", b.generation(key), "turn", true, "taskTurn", true, "background", false, "kinds", []string{}, "reported", false,
 			"delivery", delivery)
 	}
 	switch by {
 	case TurnEndDied:
-		b.line(at, slog.LevelWarn, "supervise: process died", "claim", string(token), "incarnation", incarnation, "observed", "gone",
+		b.line(at, slog.LevelWarn, processDiedLine, "claim", string(token), "incarnation", incarnation, "observed", "gone",
 			"detail", "the worker's container exited", "podEnd", "", "chargedBefore", false)
 		ended(`the process died: "gone"`)
 		b.line(at, slog.LevelWarn, "supervise: the process died in the task's turn; the task waits for the relaunch", "claim", string(token),
@@ -38,7 +38,7 @@ func processEnds(b *windowBuilder, at time.Time, key string, role claim.Role, by
 		b.line(at, slog.LevelWarn, "supervise: the agent died with work outstanding", "claim", string(token), "deaths", 1, "limit", 3,
 			"pending", delivery+"-r1", "turnOpen", true)
 	case TurnEndDisplaced:
-		b.line(at, slog.LevelWarn, "supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged",
+		b.line(at, slog.LevelWarn, processDisplacedLine,
 			"claim", string(token), "incarnation", incarnation, "process", "pod/"+string(token), "observed", "gone",
 			"detail", "the daemon replaced the worker's pod")
 		ended("its pod was replaced")
@@ -82,13 +82,7 @@ func TestATurnEndsWhereItsProcessEnds(t *testing.T) {
 		processEnds(b, end.at, end.key, claim.RoleImplementer, end.by)
 		b.turnStarts(end.at.Add(2*time.Minute), end.key, claim.RoleImplementer)
 	}
-	trace, err := BuildTrace(b.build())
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	if len(trace.Unplaced) != 0 {
-		t.Errorf("the trace could not place %+v", trace.Unplaced)
-	}
+	trace := placedTrace(t, b.build())
 	for _, end := range ends {
 		var turns []Turn
 		for _, turn := range trace.Issues[end.key].Turns {

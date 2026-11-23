@@ -100,7 +100,8 @@ func TestEveryBackwardMoveHasACause(t *testing.T) {
 			moves = append(moves, move)
 		}
 	}
-	for _, row := range recordedRows(t) {
+	rows := recordedRows(t)
+	for _, row := range rows {
 		from, to := fold(row.From), fold(row.To)
 		if phase.MovesBack(from, to) {
 			add(SendBack{Trigger: row.Trigger, From: from, To: to})
@@ -111,7 +112,7 @@ func TestEveryBackwardMoveHasACause(t *testing.T) {
 		if !strings.Contains(source, fmt.Sprintf("%q", line)) {
 			t.Errorf("package workflow's source writes no line %q: the drop from the merge queue the trace reads is gone or renamed", line)
 		}
-		for _, row := range recordedRows(t) {
+		for _, row := range rows {
 			if row.Trigger == workflow.TriggerBackward && fold(row.From) == phase.Merging {
 				add(SendBack{Trigger: row.Trigger, From: phase.Merging, To: fold(row.To), Drop: line})
 			}

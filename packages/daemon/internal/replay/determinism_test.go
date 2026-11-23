@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -107,10 +109,14 @@ func TestAReplayIsTheSameAtEveryRun(t *testing.T) {
 					t.Fatalf("window %s, replay %d: %v", c.name, i+1, err)
 				}
 			}
+			var logged []byte
 			for _, name := range []string{logFile, scorecardFile, lineScorecardFile, runFile} {
 				first, second := runOutput(t, outs[0], name), runOutput(t, outs[1], name)
 				if line, a, b, differ := firstDifference(first, second); differ {
 					t.Errorf("window %s: the two replays' %s differ first at line %d:\n  %s\n  %s", c.name, name, line, a, b)
+				}
+				if name == logFile {
+					logged = first
 				}
 			}
 			if c.name != "many-pairs" {
@@ -119,7 +125,7 @@ func TestAReplayIsTheSameAtEveryRun(t *testing.T) {
 			if results[0].Divergence.Retried == 0 {
 				t.Error("window many-pairs: the stub gave no row back to wait on its backoff, want each revised design's news-only start to wait behind its task")
 			}
-			if !drewConflict(t, outs[0]) {
+			if !drewConflict(replayLines(t, logged)) {
 				t.Error("window many-pairs: no stretch drew a conflict that moved its issue back")
 			}
 		})
@@ -177,27 +183,12 @@ func firstDifference(a, b []byte) (int, string, string, bool) {
 	return 0, "", "", false
 }
 
-// drewConflict says whether the replay log in out moves an issue back by a conflict, which a
-// replay under a rule whose conflicting head moves back writes only for a drawn conflict.
-func drewConflict(t *testing.T, out string) bool {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(out, logFile))
-	if err != nil {
-		t.Fatalf("read the replay's log: %v", err)
-	}
-	for _, text := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
-		var line struct {
-			Msg     string `json:"msg"`
-			Trigger string `json:"trigger"`
-		}
-		if err := json.Unmarshal([]byte(text), &line); err != nil {
-			t.Fatalf("read a line of the replay's log %q: %v", text, err)
-		}
-		if line.Msg == phaseChangedLine && line.Trigger == string(workflow.TriggerConflict) {
-			return true
-		}
-	}
-	return false
+// drewConflict says whether the replay log moves an issue back by a conflict, which a replay
+// under a rule whose conflicting head moves back writes only for a drawn conflict.
+func drewConflict(log []replayLine) bool {
+	return slices.ContainsFunc(log, func(line replayLine) bool {
+		return line.Msg == phaseChangedLine && line.Trigger == workflow.TriggerConflict
+	})
 }
 
 // manyPairsPairs is how many pairs of issues manyPairsWindow holds.
@@ -230,17 +221,10 @@ func manyPairsWindow(t *testing.T) Window {
 		at := func(minutes int) time.Time { return base.Add(time.Duration(minutes) * time.Minute) }
 		first, second := fmt.Sprintf("ACME-%d", 10+i), fmt.Sprintf("ACME-%d", 20+i)
 		designed := func(key, rank string, filed int) {
-			b.file(at(filed), key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion})
-			b.rootPromoted(at(filed), key)
+			promotedRoot(b, at(filed), key, rank)
 			b.specWritten(at(filed+5), key)
 			b.approves(at(filed+10), key, "")
 			b.rootDesigned(at(filed+15), key)
-		}
-		through := func(key string, from phase.Phase, moves ...builtMove) {
-			for _, move := range moves {
-				b.segmentEnds(move.at, key, from, move.to, move.trigger)
-				from = move.to
-			}
 		}
 		done := func(key string, merged int) {
 			b.leaves(at(merged), key, record.DoneStatus)
@@ -250,12 +234,12 @@ func manyPairsWindow(t *testing.T) Window {
 		}
 
 		designed(first, fmt.Sprintf("a%02d", 2*i), 0)
-		through(first, phase.Planning, builtMove{at(30), phase.Implementing, workflow.TriggerPlannerCompleted})
+		b.through(first, phase.Planning, builtMove{at(30), phase.Implementing, workflow.TriggerPlannerCompleted})
 		b.specRevised(at(35), first, 2)
-		b.info(at(35), "workflow: design gate closed", "issue", first, "artifact", b.artifact(first), "event", "artifact.version", "version", 2)
-		b.approvesVersion(at(40), first, 2)
-		b.info(at(40), "workflow: design gate opened", "issue", first, "artifact", b.artifact(first), "event", "artifact.approved", "version", 2)
-		through(first, phase.Implementing,
+		b.gateClosed(at(35), first, intake.DispatchArtifactVersion, 2)
+		b.approvesVersion(at(40), first, "", 2)
+		b.gateOpened(at(40), first, intake.DispatchArtifactApproved, 2)
+		b.through(first, phase.Implementing,
 			builtMove{at(45), phase.Testing, workflow.TriggerImplementationReady},
 			builtMove{at(60), phase.Reviewing, workflow.TriggerTesterPassed},
 			builtMove{at(75), phase.Accepting, workflow.TriggerReviewApproved},
@@ -271,7 +255,7 @@ func manyPairsWindow(t *testing.T) Window {
 		done(first, 225)
 
 		designed(second, fmt.Sprintf("a%02d", 2*i+1), 5)
-		through(second, phase.Planning,
+		b.through(second, phase.Planning,
 			builtMove{at(35), phase.Implementing, workflow.TriggerPlannerCompleted},
 			builtMove{at(50), phase.Testing, workflow.TriggerImplementationReady},
 			builtMove{at(65), phase.Reviewing, workflow.TriggerTesterPassed},
@@ -280,7 +264,7 @@ func manyPairsWindow(t *testing.T) Window {
 			builtMove{at(100), phase.Merging, workflow.TriggerRetroCompleted})
 		b.info(at(102), "workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once", "issue", second,
 			"pullRequest", 10+i, "head", fmt.Sprintf("%040x", 0xc0de00+i))
-		through(second, phase.Merging, builtMove{at(105), phase.Done, workflow.TriggerPullRequestMerged})
+		b.through(second, phase.Merging, builtMove{at(105), phase.Done, workflow.TriggerPullRequestMerged})
 		done(second, 105)
 		merges = append(merges, Merge{SHA: fmt.Sprintf("%040x", 0x5a0000+i), At: at(105), Branch: "main"})
 	}

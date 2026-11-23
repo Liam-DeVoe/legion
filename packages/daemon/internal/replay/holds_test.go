@@ -3,16 +3,15 @@ package replay
 import (
 	"context"
 	"maps"
-	"os"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -36,34 +35,54 @@ var handedToLegion = []string{dispatch.LegionLabel}
 // hold's recorded start (held) and then. worksOn is a hold that stops no work (at_work): the
 // issue's work goes on from the hold's start, and its next start is the end of that work's
 // segment. unplaced is a hold no word says the reason for (unclassified), at the window's start:
-// the replay names the issue in its report of the issues its start state could not place.
+// the replay names the issue in its report of the issues its start state could not place. pieces
+// is a hold whose replay also starts every issue's work segments where the record started its
+// pieces of work (TestHoldsApplyAtTheirRecordedTimes, checkRecordedStarts), and timelines, where
+// set, what the replay's two timelines must show beside agreeing (TestSnapshotAndLineTimelinesAgree,
+// checkTimelines).
 type holdCase struct {
-	issue    string
-	held     time.Time
-	starts   time.Time
-	worksOn  bool
-	unplaced bool
-	window   func(t *testing.T) Window
+	issue     string
+	held      time.Time
+	starts    time.Time
+	worksOn   bool
+	unplaced  bool
+	pieces    bool
+	timelines func(t *testing.T, window Window, result RunResult)
+	window    func(t *testing.T) Window
 }
 
 // holdCases is every hold this test replays, by the word or the name of the hold.
 func holdCases() map[string]holdCase {
 	return map[string]holdCase{
-		string(record.HeldTreeClosed):         {issue: "ACME-2", held: clock(9, 30), starts: clock(11, 30), window: treeClosedWindow},
-		string(record.HeldTreeParked):         {issue: "ACME-2", held: clock(11, 30), starts: clock(12, 30), window: treeParkedWindow},
-		string(record.HeldLabelOff):           {issue: "ACME-2", held: clock(9, 40), starts: clock(10, 40), window: labelOffWindow},
-		string(record.HeldAncestry):           {issue: "ACME-2", held: clock(9, 10), starts: clock(10, 10), window: ancestryWindow},
+		string(record.HeldTreeClosed): {issue: "ACME-2", held: clock(9, 30), starts: clock(11, 30), pieces: true, window: treeClosedWindow},
+		string(record.HeldTreeParked): {issue: "ACME-2", held: clock(11, 30), starts: clock(12, 30), window: treeParkedWindow},
+		string(record.HeldLabelOff):   {issue: "ACME-2", held: clock(9, 40), starts: clock(10, 40), window: labelOffWindow},
+		string(record.HeldAncestry): {issue: "ACME-2", held: clock(9, 10), starts: clock(10, 10), pieces: true, window: ancestryWindow,
+			timelines: func(t *testing.T, window Window, result RunResult) {
+				// ACME-2, a queued root, stands under ACME-1, a live root, from 09:10 to 10:10.
+				assertWaitsForNoSlot(t, window, result, "ACME-2", clock(9, 40))
+			}},
 		string(record.HeldRootAwaitingPerson): {issue: "ACME-2", held: clock(9, 20), starts: clock(10, 20), window: rootAwaitingPersonWindow},
 		string(record.HeldDesignGate):         {issue: "ACME-2", held: clock(9, 10), starts: clock(10, 20), window: designGateWindow},
 		string(record.HeldDispatchBlocker):    {issue: "ACME-2", held: clock(9, 30), starts: clock(10, 30), window: dispatchBlockerWindow},
-		string(record.HeldChildrenFirst):      {issue: "ACME-2", held: clock(9, 20), starts: clock(10, 20), window: childrenFirstWindow},
-		string(record.HeldAcceptedAncestor):   {issue: "ACME-2", held: clock(11, 30), starts: clock(12, 30), window: acceptedAncestorWindow},
-		string(record.HeldAtWork):             {issue: "ACME-1", held: clock(11, 0), starts: clock(11, 30), worksOn: true, window: atWorkWindow},
-		string(record.HeldUnclassified):       {issue: "ACME-1", unplaced: true, window: unclassifiedWindow},
-		holdHeldPhase:                         {issue: "ACME-1", held: clock(10, 20), starts: clock(11, 20), window: heldPhaseWindow},
-		holdPause:                             {issue: "ACME-1", held: clock(9, 40), starts: clock(10, 40), window: pauseWindow},
-		holdPending:                           {issue: "ACME-1", held: clock(10, 0), starts: clock(10, 10), window: pendingWindow},
-		holdCatchingUp:                        {issue: "ACME-1", held: clock(10, 0), starts: clock(10, 2), window: catchingUpWindow},
+		string(record.HeldChildrenFirst): {issue: "ACME-2", held: clock(9, 20), starts: clock(10, 20), window: childrenFirstWindow,
+			timelines: func(t *testing.T, window Window, result RunResult) {
+				// ACME-1, the root, waits on ACME-2 from 09:20 to the window's end at 15:00: one wait, open,
+				// of 5 hours 40 minutes. ACME-2 has not started while its child holds it (09:20 to 10:20).
+				assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitOpen: {Count: 1, Hours: 17.0 / 3}})
+				assertWaitsForNoSlot(t, window, result, "ACME-2", clock(9, 40))
+			}},
+		string(record.HeldAcceptedAncestor): {issue: "ACME-2", held: clock(11, 30), starts: clock(12, 30), pieces: true, window: acceptedAncestorWindow,
+			timelines: func(t *testing.T, window Window, result RunResult) {
+				// ACME-2 stands beneath ACME-1, accepted in its retro, from 11:30 to 12:30.
+				assertWaitsForNoSlot(t, window, result, "ACME-2", clock(12, 0))
+			}},
+		string(record.HeldAtWork):       {issue: "ACME-1", held: clock(11, 0), starts: clock(11, 30), worksOn: true, window: atWorkWindow},
+		string(record.HeldUnclassified): {issue: "ACME-1", unplaced: true, window: unclassifiedWindow},
+		holdHeldPhase:                   {issue: "ACME-1", held: clock(10, 20), starts: clock(11, 20), pieces: true, window: heldPhaseWindow},
+		holdPause:                       {issue: "ACME-1", held: clock(9, 40), starts: clock(10, 40), window: pauseWindow},
+		holdPending:                     {issue: "ACME-1", held: clock(10, 0), starts: clock(10, 10), window: pendingWindow},
+		holdCatchingUp:                  {issue: "ACME-1", held: clock(10, 0), starts: clock(10, 2), window: catchingUpWindow},
 	}
 }
 
@@ -77,7 +96,11 @@ func holdCases() map[string]holdCase {
 // holds no work: the issue's work goes on from the hold's start and its next start is the end of
 // that segment. unclassified is no hold any word explains: an issue that stands in it at the
 // window's start is one the start state cannot place, and the replay names it in that report. A
-// hold the trace or the driver gives no source fails here by its word.
+// hold the trace or the driver gives no source fails here by its word. The replays of the windows
+// of ancestry, accepted_ancestor, tree_closed and the phase held also start every piece of every
+// issue's work where the record started it (TestHoldsApplyAtTheirRecordedTimes), and those of
+// ancestry, children_first and accepted_ancestor keep their two timelines agreeing, with the waits
+// and the first starts their holds keep (TestSnapshotAndLineTimelinesAgree).
 func TestEveryHoldHasASourceInTheReplay(t *testing.T) {
 	cases := holdCases()
 	for _, word := range record.HeldReasons {
@@ -93,14 +116,8 @@ func TestEveryHoldHasASourceInTheReplay(t *testing.T) {
 		}
 	}
 
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip(testdb.SkipMessage)
-	}
-	rule, ok := record.SlotRuleNamed(record.MainRule.Name)
-	if !ok {
-		t.Fatal("no slot rule is named main")
-	}
+	dsn := replayDSN(t)
+	rule := mainRule(t)
 	for _, name := range slices.Sorted(maps.Keys(cases)) {
 		hold := cases[name]
 		t.Run(name, func(t *testing.T) {
@@ -111,6 +128,13 @@ func TestEveryHoldHasASourceInTheReplay(t *testing.T) {
 				t.Fatalf("replay the window of the hold %q under the rule main: %v", name, err)
 			}
 			hold.check(t, result)
+			if hold.pieces {
+				checkRecordedStarts(t, window, result)
+			}
+			if hold.timelines != nil {
+				checkTimelines(t, result)
+				hold.timelines(t, window, result)
+			}
 		})
 	}
 }
@@ -256,13 +280,26 @@ const approvalAsk = "00000000-0000-4000-8000-0000000000b1"
 // gate and answers the wait in one fact: the pass resumes the root's architect and starts ACME-2.
 func rootAwaitingPersonWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(15, 0))
+	rootAwaitingPerson(b, b.session("ACME-1", claim.RoleArchitect), false, nil)
+	return b.build()
+}
+
+// rootAwaitingPerson writes rootAwaitingPersonWindow's record into b, its root architect's session
+// named architect. Where claimed, that session claims ACME-1 in Dispatch at 09:06; and waiting,
+// where set, writes what comes while the root waits, after the wait's start at 09:20 and before the
+// person's approval at 10:20.
+func rootAwaitingPerson(b *windowBuilder, architect eventActor, claimed bool, waiting func()) {
+	b.t.Helper()
 	b.gated(record.DesignStepSpec)
 	b.boot(clock(9, 0))
 	b.file(clock(9, 5), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion})
 	b.rootPromoted(clock(9, 5), "ACME-1")
+	if claimed {
+		b.claimedBy(clock(9, 6), "ACME-1", architect)
+	}
 	b.file(clock(9, 10), "ACME-2", filing{Title: "Write the export's header row", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a1"})
-	b.specWritten(clock(9, 17), "ACME-1")
-	b.asksApproval(clock(9, 18), "ACME-1", approvalAsk)
+	b.specWrittenBy(clock(9, 17), "ACME-1", architect)
+	b.asksApprovalBy(clock(9, 18), "ACME-1", approvalAsk, architect)
 	b.turnEnds(clock(9, 20), "ACME-1", claim.RoleArchitect)
 	b.registered(clock(9, 20), "ACME-1", false)
 	since := b.seq("ACME-1")
@@ -270,14 +307,16 @@ func rootAwaitingPersonWindow(t *testing.T) Window {
 		"step", string(record.DesignStepSpec), "version", 1, "since_seq", since)
 	b.info(clock(9, 20), "workflow: root waits on a person and keeps its admission slot", "issue", "ACME-1", "tree", "ACME-1",
 		"reason", "spec version 1 is awaiting a person's review", "since_seq", since)
+	if waiting != nil {
+		waiting()
+	}
 	b.approves(clock(10, 20), "ACME-1", approvalAsk)
-	b.info(clock(10, 20), "workflow: design gate opened", "issue", "ACME-1", "artifact", b.artifact("ACME-1"), "event", "approved", "version", 1)
+	b.gateOpened(clock(10, 20), "ACME-1", intake.DispatchArtifactApproved, 1)
 	b.info(clock(10, 20), "workflow: a person's review or a newer spec version answered a root's wait", "issue", "ACME-1",
 		"version", 1, "event", "approved", "ask", "", "waited_version", 1)
 	b.turnStarts(clock(10, 20), "ACME-1", claim.RoleArchitect)
 	b.childStarts(clock(10, 20), "ACME-2")
 	b.turnEnds(clock(10, 35), "ACME-1", claim.RoleArchitect)
-	return b.build()
 }
 
 // designGateWindow holds design_gate, in a deployment that gates the spec. ACME-1 is promoted at
@@ -297,9 +336,8 @@ func designGateWindow(t *testing.T) Window {
 	b.turnEnds(clock(9, 20), "ACME-1", claim.RoleArchitect)
 	b.registered(clock(9, 20), "ACME-1", false)
 	b.approves(clock(10, 20), "ACME-1", "")
-	b.info(clock(10, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-1", "tree", "ACME-1",
-		"generation", 1, "children", 1)
-	b.info(clock(10, 20), "workflow: design gate opened", "issue", "ACME-1", "artifact", b.artifact("ACME-1"), "event", "approved", "version", 1)
+	b.waitsForChildren(clock(10, 20), "ACME-1", 1)
+	b.gateOpened(clock(10, 20), "ACME-1", intake.DispatchArtifactApproved, 1)
 	b.slotReleased(clock(10, 20), "ACME-1")
 	b.childStarts(clock(10, 20), "ACME-2")
 	b.turnStarts(clock(10, 20), "ACME-1", claim.RoleArchitect)
@@ -339,10 +377,8 @@ func childrenFirstWindow(t *testing.T) Window {
 	b.file(clock(9, 12), "ACME-3", filing{Title: "Name the header row's columns", Parent: "ACME-2", Tree: "ACME-1", Status: "todo", Rank: "a2"})
 	b.turnEnds(clock(9, 20), "ACME-1", claim.RoleArchitect)
 	b.registered(clock(9, 20), "ACME-1", true)
-	b.info(clock(9, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-1", "tree", "ACME-1",
-		"generation", 1, "children", 1)
-	b.info(clock(9, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-2", "tree", "ACME-1",
-		"generation", 1, "children", 1)
+	b.waitsForChildren(clock(9, 20), "ACME-1", 1)
+	b.waitsForChildren(clock(9, 20), "ACME-2", 1)
 	b.slotReleased(clock(9, 20), "ACME-1")
 	b.childStarts(clock(9, 20), "ACME-3")
 	b.edit(clock(10, 20), "ACME-3", setStatus("icebox"))
@@ -463,10 +499,8 @@ func pendingWindow(t *testing.T) Window {
 	b.stopped(clock(9, 30))
 	b.file(clock(9, 40), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion})
 	b.boot(clock(10, 0))
-	b.info(clock(10, 0), "admission reconcile: holding roots for the Dispatch consumer to reach a stream position",
-		"count", 1, "target", 2, "ack_floor", 1)
-	b.info(clock(10, 10), "admission: the Dispatch consumer has caught up; releasing held roots",
-		"count", 1, "ack_floor", 2, "idle", true, "admitted", 1)
+	b.info(clock(10, 0), reconcileHoldingLine, "count", 1, "target", 2, "ack_floor", 1)
+	b.info(clock(10, 10), consumerCaughtUpLine, "count", 1, "ack_floor", 2, "idle", true, "admitted", 1)
 	b.rootPromoted(clock(10, 10), "ACME-1")
 	return b.build()
 }
@@ -490,7 +524,7 @@ func catchingUpWindow(t *testing.T) Window {
 	b.stopped(clock(9, 30))
 	b.approves(clock(9, 40), "ACME-1", "")
 	b.boot(clock(10, 0))
-	b.info(clock(10, 2), "workflow: design gate opened", "issue", "ACME-1", "artifact", b.artifact("ACME-1"), "event", "approved", "version", 1)
+	b.gateOpened(clock(10, 2), "ACME-1", intake.DispatchArtifactApproved, 1)
 	b.rootFirstPhase(clock(10, 2), "ACME-1")
 	b.turnStarts(clock(10, 2), "ACME-1", claim.RoleArchitect)
 	b.turnEnds(clock(10, 10), "ACME-1", claim.RoleArchitect)

@@ -36,32 +36,13 @@ const releasedRootLine = "admission: released a root no tree of which runs and n
 // approves the version: the gate opens, the root's architect resumes and ACME-2, its child, starts.
 func sessionClaimWindow(t *testing.T, retitled bool) Window {
 	b := newWindowBuilder(t, clock(9, 30), clock(15, 0))
-	b.gated(record.DesignStepSpec)
-	b.boot(clock(9, 0))
-	b.file(clock(9, 5), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a0", Labels: handedToLegion})
-	b.rootPromoted(clock(9, 5), "ACME-1")
-	architect := recordedSession("ACME-1", claim.RoleArchitect, architectSession)
-	b.claimedBy(clock(9, 6), "ACME-1", architect)
-	b.file(clock(9, 10), "ACME-2", filing{Title: "Write the export's header row", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a1"})
-	b.specWrittenBy(clock(9, 17), "ACME-1", architect)
-	b.asksApprovalBy(clock(9, 18), "ACME-1", approvalAsk, architect)
-	b.turnEnds(clock(9, 20), "ACME-1", claim.RoleArchitect)
-	b.registered(clock(9, 20), "ACME-1", false)
-	since := b.seq("ACME-1")
-	b.info(clock(9, 20), "workflow: a registration hands a design document to the person", "issue", "ACME-1",
-		"step", string(record.DesignStepSpec), "version", 1, "since_seq", since)
-	b.info(clock(9, 20), "workflow: root waits on a person and keeps its admission slot", "issue", "ACME-1", "tree", "ACME-1",
-		"reason", "spec version 1 is awaiting a person's review", "since_seq", since)
+	var waiting func()
 	if retitled {
-		b.edit(clock(10, 0), "ACME-1", func(issue *builtIssue) { issue.Title = "Export the widget list as a sheet" })
+		waiting = func() {
+			b.edit(clock(10, 0), "ACME-1", func(issue *builtIssue) { issue.Title = "Export the widget list as a sheet" })
+		}
 	}
-	b.approves(clock(10, 20), "ACME-1", approvalAsk)
-	b.info(clock(10, 20), "workflow: design gate opened", "issue", "ACME-1", "artifact", b.artifact("ACME-1"), "event", "approved", "version", 1)
-	b.info(clock(10, 20), "workflow: a person's review or a newer spec version answered a root's wait", "issue", "ACME-1",
-		"version", 1, "event", "approved", "ask", "", "waited_version", 1)
-	b.turnStarts(clock(10, 20), "ACME-1", claim.RoleArchitect)
-	b.childStarts(clock(10, 20), "ACME-2")
-	b.turnEnds(clock(10, 35), "ACME-1", claim.RoleArchitect)
+	rootAwaitingPerson(b, recordedSession("ACME-1", claim.RoleArchitect, architectSession), true, waiting)
 	return b.build()
 }
 
@@ -86,7 +67,7 @@ func TestARootWaitingOnAPersonKeepsItsArchitectsSession(t *testing.T) {
 		return times
 	}
 	opened := seconds(linesAt(log, func(line replayLine) bool {
-		return line.Msg == "workflow: design gate opened" && line.Issue == "ACME-1"
+		return line.Msg == gateOpenedLine && line.Issue == "ACME-1"
 	}))
 	if want := []time.Time{clock(10, 20)}; !slices.EqualFunc(opened, want, time.Time.Equal) {
 		t.Errorf("ACME-1's gate opened at %s, want at %s, the person's approval", describeTimes(opened), describeTimes(want))
@@ -136,7 +117,7 @@ func TestTheStartStateMirrorsTheDispatchClaimTheRecordShows(t *testing.T) {
 		t.Errorf("the replay released ACME-1 at %s, which the record kept waiting on the person", describeTimes(released))
 	}
 	opened := linesAt(log, func(line replayLine) bool {
-		return line.Msg == "workflow: design gate opened" && line.Issue == "ACME-1"
+		return line.Msg == gateOpenedLine && line.Issue == "ACME-1"
 	})
 	if len(opened) != 1 || !opened[0].Truncate(time.Second).Equal(clock(10, 20)) {
 		t.Errorf("ACME-1's gate opened at %s, want once at 10:20:00, the person's approval", describeTimes(opened))
@@ -160,7 +141,7 @@ func withSessionsAsRecorded(t *testing.T, w Window) (Window, int) {
 				if ref, err := claimRefOf(claim.Token(id)); err == nil && ref.Issue != "" {
 					if _, seen := renamed[id]; !seen {
 						renamed[id] = map[string]any{"kind": "session", "id": fmt.Sprintf("00000000-0000-4000-8000-%012x", 0xc00+len(renamed)),
-							"origin": map[string]any{"host": "omp", "session_title": fmt.Sprintf("Legion %s · %s", ref.Role, ref.Issue)}}
+							"origin": map[string]any{"host": "omp", "session_title": sessionTitle(ref.Role, ref.Issue)}}
 					}
 					return renamed[id]
 				}
@@ -201,9 +182,9 @@ func withSessionsAsRecorded(t *testing.T, w Window) (Window, int) {
 // version 1 of the spec comes at 10:25, so the person's approval, 30 minutes after the version,
 // moves ACME-2 into planning at 10:55; and its planner's link to ACME-3 comes at 11:05, so ACME-3's
 // close, 20 minutes after the link, gives ACME-2 its slot back at 11:25 — the moments the window
-// with its sessions named by their tokens replays them at (TestTheAnswerKnobPlacesAnAnswerByItsQuestion,
-// TestTheTimingKnobPlacesAWaitsEndByItsAnchor). Placed at their recorded times instead, the version
-// would move ACME-2 into planning at 11:40 and the link its slot back at 12:10.
+// with its sessions named by their tokens replays them at (TestTheTimingAndAnswerKnobsPlaceTheirEventsByTheirAnchors).
+// Placed at their recorded times instead, the version would move ACME-2 into planning at 11:40 and
+// the link its slot back at 12:10.
 func TestAWorkersEventMovesWithItsWorkWhateverNamesItsSession(t *testing.T) {
 	window, renamed := withSessionsAsRecorded(t, laterStartWindow(t))
 	if renamed != 3 {

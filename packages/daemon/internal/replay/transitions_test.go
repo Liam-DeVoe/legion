@@ -24,9 +24,6 @@ const (
 	awaitingMergeRelease = "9542c6fbbecd184ccee73523ab3defa39d6cf23a"
 )
 
-// phaseChanged is the line every recorded phase move is read from (workflow.(*Engine).transition).
-const phaseChanged = "workflow: phase changed"
-
 // replayedRule is the rule the repository keeps under name (record.SlotRuleNamed), which the test
 // fails without.
 func replayedRule(t *testing.T, name string) record.SlotRule {
@@ -189,11 +186,11 @@ func TestEveryRowOfTheTableHasASourceInTheRecord(t *testing.T) {
 		if !triggers[trigger] {
 			t.Errorf("MoveSources holds an entry for %s, which names no row of a table a replay runs nor of a recorded release", trigger)
 		}
-		if source.Line != phaseChanged {
-			t.Errorf("MoveSources reads the moves of %s from the line %q, want %q, the line every phase move writes", trigger, source.Line, phaseChanged)
+		if source.Line != phaseChangedLine {
+			t.Errorf("MoveSources reads the moves of %s from the line %q, want %q, the line every phase move writes", trigger, source.Line, phaseChangedLine)
 		}
 		for _, number := range source.Assumptions {
-			if !slices.ContainsFunc(Assumptions, func(a Assumption) bool { return a.Number == number }) {
+			if !listsAssumption(number) {
 				t.Errorf("MoveSources maps the moves of %s under assumption %d, which Assumptions lacks", trigger, number)
 			}
 		}
@@ -292,7 +289,7 @@ func TestEveryFactANonDispatchProducerAppliesHasASource(t *testing.T) {
 				t.Errorf("FactSources %s intake.%s and names assumption %d, which only a fact left out is under", source.Way, name, source.Assumption)
 			}
 		case FactLeftOut:
-			if !slices.ContainsFunc(Assumptions, func(a Assumption) bool { return a.Number == source.Assumption }) {
+			if !listsAssumption(source.Assumption) {
 				t.Errorf("FactSources leaves intake.%s out under assumption %d, which Assumptions lacks", name, source.Assumption)
 			}
 		default:
@@ -336,16 +333,21 @@ func intakeFactTypes(t *testing.T) []string {
 	}
 	method := ""
 	for _, file := range parsed {
-		ast.Inspect(file, func(node ast.Node) bool {
-			spec, isType := node.(*ast.TypeSpec)
-			if !isType || spec.Name.Name != "Fact" {
-				return true
+		for _, decl := range file.Decls {
+			types, isGen := decl.(*ast.GenDecl)
+			if !isGen || types.Tok != token.TYPE {
+				continue
 			}
-			if fact, isInterface := spec.Type.(*ast.InterfaceType); isInterface && len(fact.Methods.List) == 1 && len(fact.Methods.List[0].Names) == 1 {
-				method = fact.Methods.List[0].Names[0].Name
+			for _, spec := range types.Specs {
+				spec := spec.(*ast.TypeSpec)
+				if spec.Name.Name != "Fact" {
+					continue
+				}
+				if fact, isInterface := spec.Type.(*ast.InterfaceType); isInterface && len(fact.Methods.List) == 1 && len(fact.Methods.List[0].Names) == 1 {
+					method = fact.Methods.List[0].Names[0].Name
+				}
 			}
-			return false
-		})
+		}
 	}
 	if method == "" {
 		t.Fatalf("package intake's source under %s declares no interface Fact of one method", intakeDir)

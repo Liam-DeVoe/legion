@@ -2,6 +2,7 @@ package replay
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -176,7 +177,7 @@ func capturedEvents(t *testing.T) map[string][]json.RawMessage {
 		events[head.Key] = append(events[head.Key], event)
 	}
 	for _, log := range events {
-		slices.SortFunc(log, func(a, b json.RawMessage) int { return int(seqOf(t, a) - seqOf(t, b)) })
+		slices.SortFunc(log, func(a, b json.RawMessage) int { return cmp.Compare(seqOf(t, a), seqOf(t, b)) })
 	}
 	return events
 }
@@ -249,6 +250,11 @@ const (
 	collectWaitsOn   = `{"time":"2026-11-19T01:00:00Z","level":"INFO","msg":"admission waits for what this issue waits on","issue":"ACME-27","blockers":["ACME-42"]}`
 )
 
+// collectChildAdded is the child.added event of ACME-32 naming the child ACME-60 that Dispatch
+// answers a collect of the captured samples with, beside the captured events.
+const collectChildAdded = `{"id":900001,"issue_key":"ACME-32","artifact_id":null,"project":"ACME","seq":5,"type":"child.added",` +
+	`"actor":{"kind":"session","id":"legion-daemon:ACME"},"notify":false,"created_at":"2026-11-20T10:00:00Z","payload":{"child_key":"ACME-60"}}`
+
 // collectRun is one collect and collect-merges of the captured samples against the stubs, and
 // what each stub saw.
 type collectRun struct {
@@ -316,8 +322,7 @@ func collectCaptured(t *testing.T) collectRun {
 	}
 
 	served := maps.Clone(run.events)
-	served["ACME-32"] = []json.RawMessage{json.RawMessage(`{"id":900001,"issue_key":"ACME-32","artifact_id":null,"project":"ACME","seq":5,` +
-		`"type":"child.added","actor":{"kind":"session","id":"legion-daemon:ACME"},"notify":false,"created_at":"2026-11-20T10:00:00Z","payload":{"child_key":"ACME-60"}}`)}
+	served["ACME-32"] = []json.RawMessage{json.RawMessage(collectChildAdded)}
 	served["ACME-29"] = append(slices.Clone(served["ACME-29"]), json.RawMessage(`{"id":900002,"issue_key":"ACME-29","artifact_id":null,"project":"ACME","seq":71,`+
 		`"type":"message.created","actor":{"kind":"session","id":"legion-daemon:ACME"},"notify":false,"created_at":"2026-11-21T10:00:00Z","payload":{"body":"after the span"}}`))
 	dispatchServer, dispatchSeen := dispatchStub(t, served, map[string]int{"ACME-29": http.StatusServiceUnavailable, "ACME-58": http.StatusTooManyRequests})
@@ -361,7 +366,7 @@ func collectCaptured(t *testing.T) collectRun {
 		t.Fatalf("Collect: %v", err)
 	}
 	run.merges, err = CollectMerges(context.Background(), MergesConfig{Repo: "acme/widgets", Branch: capturedBranch,
-		From: time.Date(2026, time.November, 20, 0, 0, 0, 0, time.UTC), To: time.Date(2026, time.November, 20, 6, 0, 0, 0, time.UTC),
+		From: collectFrom, To: time.Date(2026, time.November, 20, 6, 0, 0, 0, time.UTC),
 		Token: stubGitHubToken, API: githubServer.URL, Window: run.out, Wait: wait})
 	if err != nil {
 		t.Fatalf("CollectMerges: %v", err)
@@ -379,8 +384,11 @@ func collectCaptured(t *testing.T) collectRun {
 // 157), the kinds the log holds, the settings, the part and the collector; the events are each
 // captured issue's that a line names, up to the span's end, the blocker's and parent's those
 // events name, and the child a child.added names, every other key Dispatch did not have listed as
-// missing; and the merges are main's five first-parent commits, read over two pages.
-func TestCollectWritesAWindowThatReadsBack(t *testing.T) {
+// missing; and the merges are main's five first-parent commits, read over two pages. Every request
+// the collect and the collect-merges send is a GET: the stubs' record of what each served holds no
+// other method, and holds requests (a collect that read nothing would pass a check of its methods
+// alone).
+func TestCollectWritesAWindowThatReadsBackAndSendsGetAlone(t *testing.T) {
 	run := collectCaptured(t)
 	read, err := ReadWindow(run.out)
 	if err != nil {
@@ -456,8 +464,7 @@ func TestCollectWritesAWindowThatReadsBack(t *testing.T) {
 	}
 
 	wantEvents := map[string][]json.RawMessage{
-		"ACME-32": {compactJSON(t, []byte(`{"id":900001,"issue_key":"ACME-32","artifact_id":null,"project":"ACME","seq":5,"type":"child.added",`+
-			`"actor":{"kind":"session","id":"legion-daemon:ACME"},"notify":false,"created_at":"2026-11-20T10:00:00Z","payload":{"child_key":"ACME-60"}}`))},
+		"ACME-32": {compactJSON(t, []byte(collectChildAdded))},
 	}
 	for _, key := range []string{"ACME-29", "ACME-27", "ACME-58"} {
 		for _, event := range run.events[key] {
@@ -474,12 +481,10 @@ func TestCollectWritesAWindowThatReadsBack(t *testing.T) {
 		}
 	}
 	missing := map[string]bool{"ACME-24": true, "ACME-15": true, "ACME-52": true, "ACME-53": true, "ACME-60": true, "ACME-42": true, "ACME-41": true}
-	for _, n := range []int{1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 18, 22, 26, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 43, 44, 45, 46, 47, 48, 49, 50, 51, 56, 57} {
-		if key := fmt.Sprintf("ACME-%d", n); key != "ACME-32" && key != "ACME-29" {
-			missing[key] = true
-		}
+	for _, n := range []int{1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 18, 22, 26, 28, 30, 31, 33, 34, 35, 36, 37, 38, 39, 40, 43, 44, 45, 46, 47, 48, 49, 50, 51, 56, 57} {
+		missing[fmt.Sprintf("ACME-%d", n)] = true
 	}
-	wantMissing := slices.SortedFunc(maps.Keys(missing), strings.Compare)
+	wantMissing := slices.Sorted(maps.Keys(missing))
 	if !slices.Equal(run.collected.Missing, wantMissing) {
 		t.Errorf("the collect lists as missing %v, want %v", run.collected.Missing, wantMissing)
 	}
@@ -500,13 +505,7 @@ func TestCollectWritesAWindowThatReadsBack(t *testing.T) {
 	if len(run.github) != 2 {
 		t.Errorf("collect-merges read %d pages, want the listing's 2: %v", len(run.github), run.github)
 	}
-}
 
-// Every request a collect and a collect-merges send is a GET: the stubs' record of what each
-// served holds no other method, and holds requests (a collect that read nothing would pass a
-// check of its methods alone).
-func TestCollectSendsGetAlone(t *testing.T) {
-	run := collectCaptured(t)
 	if len(run.dispatch) == 0 || len(run.github) == 0 {
 		t.Fatalf("the stubs served %d Dispatch and %d GitHub requests; the collect read nothing", len(run.dispatch), len(run.github))
 	}

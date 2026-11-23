@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,48 +18,83 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // seedStore is a store on a database of its own carrying every migration, closed and dropped when
-// the test ends: the replay's own database, which a start state is written into.
+// the test ends (testpg.CloneStore): the replay's own database, which a start state is written
+// into.
 func seedStore(t *testing.T) *store.Store {
 	t.Helper()
-	st, err := store.Open(context.Background(), testdb.Database(t, "legion_replay_seed"))
-	if err != nil {
-		t.Fatalf("open the replay's database: %v", err)
-	}
-	t.Cleanup(st.Close)
-	if _, err := st.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate the replay's database: %v", err)
-	}
-	return st
+	return testpg.CloneStore(t, "legion_replay_seed")
 }
 
-// seeded builds w's trace, seeds its state at at in a transaction of st's and hands the transaction
-// to read, which reads back what the seed wrote; the transaction is then rolled back, so one
-// database serves every case of a test. It answers the trace and what the seed could not place.
-func seeded(t *testing.T, st *store.Store, w Window, at time.Time, read func(tx pgx.Tx)) (Trace, []Unplaced) {
+// placedTrace is w's trace, which must place every fact of w.
+func placedTrace(t *testing.T, w Window) Trace {
 	t.Helper()
-	ctx := context.Background()
 	trace, err := BuildTrace(w)
 	if err != nil {
 		t.Fatalf("build the trace: %v", err)
 	}
+	if len(trace.Unplaced) != 0 {
+		t.Errorf("the trace could not place %+v", trace.Unplaced)
+	}
+	return trace
+}
+
+// seedTrace writes trace's start state at at in a transaction of st's with SeedAndReport and hands
+// the transaction to read, which reads back what it wrote; the transaction is then rolled back, so
+// one database serves every case of a test. It answers the start state's report.
+func seedTrace(t *testing.T, st *store.Store, trace Trace, at time.Time, read func(tx pgx.Tx)) SeedReport {
+	t.Helper()
+	ctx := context.Background()
 	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the seed's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	unplaced, err := Seed(ctx, tx, record.NewStore(), st, trace, at)
+	report, err := SeedAndReport(ctx, tx, record.NewStore(), st, trace, at)
 	if err != nil {
 		t.Fatalf("seed the state at %s: %v", at.Format(time.RFC3339), err)
 	}
 	if read != nil {
 		read(tx)
 	}
-	return trace, unplaced
+	return report
+}
+
+// seedReported builds w's trace and writes its start state at at (seedTrace). It answers the trace
+// and the start state's report.
+func seedReported(t *testing.T, st *store.Store, w Window, at time.Time, read func(tx pgx.Tx)) (Trace, SeedReport) {
+	t.Helper()
+	trace, err := BuildTrace(w)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	return trace, seedTrace(t, st, trace, at, read)
+}
+
+// seededSlots is each slot a start state wrote, read in tx in its order, as its holder and the
+// minute it was given: KEY@15:04.
+func seededSlots(t *testing.T, tx pgx.Tx) []string {
+	t.Helper()
+	slots, err := record.NewStore().Slots(context.Background(), tx)
+	if err != nil {
+		t.Fatalf("read the seeded slots: %v", err)
+	}
+	var holders []string
+	for _, slot := range slots {
+		holders = append(holders, slot.Issue+"@"+slot.AdmittedAt.UTC().Format("15:04"))
+	}
+	return holders
+}
+
+// promotedRoot files key at at as a root handed to Legion at rank and promotes it there.
+func promotedRoot(b *windowBuilder, at time.Time, key, rank string) {
+	b.t.Helper()
+	b.file(at, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion})
+	b.rootPromoted(at, key)
 }
 
 // rootThrough files key at filed as a root handed to Legion at rank, promotes it there, ends its
@@ -68,14 +102,9 @@ func seeded(t *testing.T, st *store.Store, w Window, at time.Time, read func(tx 
 // ends each segment of moves in turn: the record of a root that runs from its filing.
 func rootThrough(b *windowBuilder, key, rank string, filed, designed time.Time, moves ...builtMove) {
 	b.t.Helper()
-	b.file(filed, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion})
-	b.rootPromoted(filed, key)
+	promotedRoot(b, filed, key, rank)
 	b.rootDesigned(designed, key)
-	from := phase.Planning
-	for _, move := range moves {
-		b.segmentEnds(move.at, key, from, move.to, move.trigger)
-		from = move.to
-	}
+	b.through(key, phase.Planning, moves...)
 }
 
 // builtMove is one recorded move a root makes in rootThrough: its moment, the phase it enters and
@@ -84,6 +113,11 @@ type builtMove struct {
 	at      time.Time
 	to      phase.Phase
 	trigger workflow.TriggerKind
+}
+
+// moveAt is the builtMove into to by trigger at hour:minute.
+func moveAt(hour, minute int, to phase.Phase, trigger workflow.TriggerKind) builtMove {
+	return builtMove{clock(hour, minute), to, trigger}
 }
 
 // startStateWindow is a window that opens at 13:00 with an issue in each phase: its inputs reach
@@ -124,9 +158,8 @@ func startStateWindow(t *testing.T) (Window, int64) {
 	rootThrough(b, "ACME-9", "a09", clock(10, 15), clock(10, 30), impl(clock(10, 50)))
 	b.claimFailed(clock(11, 10), "ACME-9", claim.RoleImplementer)
 
-	b.file(clock(10, 20), "ACME-10", filing{Title: "Ship the ACME-10 change", Status: "todo", Rank: "a10", Labels: handedToLegion})
-	b.rootPromoted(clock(10, 20), "ACME-10")
-	architect := eventActor{Kind: "session", ID: string(b.token("ACME-10", claim.RoleArchitect))}
+	promotedRoot(b, clock(10, 20), "ACME-10", "a10")
+	architect := b.session("ACME-10", claim.RoleArchitect)
 	b.event(clock(10, 40), "ACME-10", "ask.opened", architect, map[string]any{
 		"id": "ask-10", "issue_key": "ACME-10", "author": architect, "kind": record.AskQuestion, "state": "open"})
 	asked := b.seq("ACME-10")
@@ -139,8 +172,7 @@ func startStateWindow(t *testing.T) (Window, int64) {
 	rootThrough(b, "ACME-11", "a11", clock(11, 51), clock(12, 0), impl(clock(12, 10)), test(clock(12, 20)))
 	b.edit(clock(12, 25), "ACME-11", func(issue *builtIssue) { issue.BlockedBy = []string{"ACME-12"} })
 	b.slotReleased(clock(12, 25), "ACME-11")
-	b.file(clock(12, 30), "ACME-1", filing{Title: "Ship the ACME-1 change", Status: "todo", Rank: "a01", Labels: handedToLegion})
-	b.rootPromoted(clock(12, 30), "ACME-1")
+	promotedRoot(b, clock(12, 30), "ACME-1", "a01")
 	b.turnEnds(clock(12, 40), "ACME-11", claim.RoleTester)
 	b.moved(clock(12, 40), "ACME-11", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
 	b.file(clock(12, 40), "ACME-13", filing{Title: "Ship the ACME-13 change", Status: "todo", Rank: "a13", Labels: handedToLegion,
@@ -170,7 +202,7 @@ func TestSeedPlacesTheStartState(t *testing.T) {
 	at := window.From
 	records := record.NewStore()
 
-	trace, unplaced := seeded(t, st, window, at, func(tx pgx.Tx) {
+	trace, report := seedReported(t, st, window, at, func(tx pgx.Tx) {
 		wantPhases := map[string]phase.Phase{
 			"ACME-1": phase.Admitted, "ACME-2": phase.Planning, "ACME-3": phase.Implementing, "ACME-4": phase.Testing,
 			"ACME-5": phase.Reviewing, "ACME-6": phase.Accepting, "ACME-7": phase.Retro, "ACME-8": phase.Merging,
@@ -225,17 +257,8 @@ func TestSeedPlacesTheStartState(t *testing.T) {
 			t.Errorf("ACME-12, which Legion does not work, is seeded with the record %+v (%v), want none", issue, err)
 		}
 
-		slots, err := records.Slots(ctx, tx)
-		if err != nil {
-			t.Fatalf("read the seeded slots: %v", err)
-		}
-		slices.SortFunc(slots, func(x, y record.Slot) int { return x.Index - y.Index })
-		var holders []string
-		for _, slot := range slots {
-			holders = append(holders, fmt.Sprintf("%s@%s", slot.Issue, slot.AdmittedAt.UTC().Format("15:04")))
-		}
 		wantHolders := []string{"ACME-2@08:05", "ACME-3@08:10", "ACME-4@08:15", "ACME-5@08:20", "ACME-9@10:15", "ACME-10@10:20", "ACME-1@12:30"}
-		if !slices.Equal(holders, wantHolders) {
+		if holders := seededSlots(t, tx); !slices.Equal(holders, wantHolders) {
 			t.Errorf("the seeded slots are %v, want %v", holders, wantHolders)
 		}
 
@@ -276,19 +299,12 @@ func TestSeedPlacesTheStartState(t *testing.T) {
 			}
 		}
 
-		var trees []string
-		lifecycles, err := tx.Query(ctx, "select tree from tree_lifecycles order by tree")
+		lifecycles, err := tx.Query(ctx, "select tree from tree_lifecycles")
 		if err != nil {
 			t.Fatalf("read the seeded tree lifecycles: %v", err)
 		}
-		for lifecycles.Next() {
-			var tree string
-			if err := lifecycles.Scan(&tree); err != nil {
-				t.Fatalf("read a seeded tree lifecycle: %v", err)
-			}
-			trees = append(trees, tree)
-		}
-		if err := lifecycles.Err(); err != nil {
+		trees, err := pgx.CollectRows(lifecycles, pgx.RowTo[string])
+		if err != nil {
 			t.Fatalf("read the seeded tree lifecycles: %v", err)
 		}
 		slices.Sort(trees)
@@ -315,11 +331,7 @@ func TestSeedPlacesTheStartState(t *testing.T) {
 		for key, role := range map[string]claim.Role{"ACME-1": claim.RoleArchitect, "ACME-2": claim.RolePlanner, "ACME-3": claim.RoleImplementer,
 			"ACME-4": claim.RoleTester, "ACME-5": claim.RoleReviewer, "ACME-6": claim.RoleArchitect, "ACME-7": claim.RoleImplementer,
 			"ACME-8": claim.RoleMerger} {
-			token, err := claim.NewToken(builtTokenProject, key, role)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantWorking = append(wantWorking, string(token))
+			wantWorking = append(wantWorking, string(builtToken(t, key, role)))
 		}
 		slices.Sort(wantWorking)
 		if !slices.Equal(working, wantWorking) {
@@ -380,7 +392,7 @@ func TestSeedPlacesTheStartState(t *testing.T) {
 		sentBack.Visits[i].Out == nil || sentBack.Visits[i].Out.Cause != CauseSendBack {
 		t.Errorf("the trace holds ACME-14's visits %+v, want its segment in accepting from 11:50 to the send-back at 12:50", sentBack.Visits)
 	}
-	if len(unplaced) != 0 {
+	if unplaced := report.Unplaced; len(unplaced) != 0 {
 		t.Errorf("the seed could not place %+v", unplaced)
 	}
 }
@@ -430,8 +442,7 @@ func TestSeedNamesWhatItCannotPlace(t *testing.T) {
 			b.reaches(2 * time.Hour)
 			b.boot(clock(8, 0))
 			rootThrough(b, "ACME-1", "a0", clock(8, 5), clock(8, 20), builtMove{clock(9, 0), phase.Implementing, workflow.TriggerPlannerCompleted})
-			b.file(clock(8, 10), "ACME-2", filing{Title: "Ship the ACME-2 change", Status: "todo", Rank: "a1", Labels: handedToLegion})
-			b.rootPromoted(clock(8, 10), "ACME-2")
+			promotedRoot(b, clock(8, 10), "ACME-2", "a1")
 			return withoutRepository(t, b.build(), "ACME-1")
 		}},
 		{name: "a line the trace could not place before the start", issue: "ACME-1", reason: "the trace could not place",
@@ -457,7 +468,8 @@ func TestSeedNamesWhatItCannotPlace(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			window := tc.window(t)
-			_, unplaced := seeded(t, st, window, window.From, nil)
+			_, report := seedReported(t, st, window, window.From, nil)
+			unplaced := report.Unplaced
 			named := false
 			for _, issue := range unplaced {
 				switch {
@@ -477,17 +489,18 @@ func TestSeedNamesWhatItCannotPlace(t *testing.T) {
 
 	for _, name := range fixtureWindowNames(t) {
 		t.Run("the fixture window "+name, func(t *testing.T) {
-			window, err := ReadWindow(filepath.Join(fixtureWindowsDir, name))
+			window := fixtureWindow(t, name)
+			trace, err := BuildTrace(window)
 			if err != nil {
-				t.Fatalf("read the window: %v", err)
+				t.Fatalf("build the trace: %v", err)
 			}
 			for at := window.From; at.Before(window.To); at = at.Add(time.Hour) {
-				trace, unplaced := seeded(t, st, window, at, nil)
+				report := seedTrace(t, st, trace, at, nil)
 				if at.Equal(window.From) && len(trace.Unplaced) != 0 {
 					t.Errorf("the trace could not place %+v", trace.Unplaced)
 				}
-				if len(unplaced) != 0 {
-					t.Errorf("seeded at %s, the start state could not place %+v", at.Format("15:04"), unplaced)
+				if len(report.Unplaced) != 0 {
+					t.Errorf("seeded at %s, the start state could not place %+v", at.Format("15:04"), report.Unplaced)
 				}
 			}
 		})
@@ -513,7 +526,8 @@ func TestSeedNamesAnIssueOnlyForAFactItsStartStateRestsOn(t *testing.T) {
 		"delivery", "outbox:99")
 	b.info(clock(9, 30), "admission: slot taken", "issue", "ACME-2", "slots", 3, "cap", 4)
 	window := b.build()
-	trace, unplaced := seeded(t, st, window, window.From, nil)
+	trace, report := seedReported(t, st, window, window.From, nil)
+	unplaced := report.Unplaced
 
 	facts := make(map[string]UnplacedKind)
 	for _, fact := range trace.Unplaced {

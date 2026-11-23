@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -18,24 +16,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// handAt is the moment clock (15:04) of the day every hand-worked timeline of this file runs on.
-func handAt(t *testing.T, clock string) time.Time {
-	t.Helper()
-	at, err := time.Parse(time.RFC3339, "2001-03-05T"+clock+":00Z")
-	if err != nil {
-		t.Fatalf("read the moment %s: %v", clock, err)
-	}
-	return at
-}
-
-// handStint is the state an issue of a hand-worked timeline stands in from clock on.
-func handStint(t *testing.T, clock string, state IssueState) Stint {
-	t.Helper()
-	return Stint{At: handAt(t, clock), IssueState: state}
+// handStint is the state an issue of a hand-worked timeline stands in from at on.
+func handStint(at time.Time, state IssueState) Stint {
+	return Stint{At: at, IssueState: state}
 }
 
 // assertOccupancy fails where got is not want, floats to within fixtureTolerance.
@@ -81,15 +67,15 @@ func TestStartedWorkWithoutASlotTwoReadings(t *testing.T) {
 		return IssueState{InFlight: true, Part: record.PartReturned, Blocked: blocked, Waiting: !blocked}
 	}
 	holding := IssueState{InFlight: true, Holds: true}
-	tl := Timeline{From: handAt(t, "09:00"), To: handAt(t, "15:00"), Issues: map[string]*Course{
-		"ACME-6": {States: []Stint{handStint(t, "09:00", returned(false)), handStint(t, "10:00", holding)}},
-		"ACME-1": {States: []Stint{handStint(t, "09:00", holding), handStint(t, "10:00", returned(true)),
-			handStint(t, "11:00", returned(false)), handStint(t, "12:00", holding)}},
-		"ACME-2": {States: []Stint{handStint(t, "11:30", returned(false)), handStint(t, "13:00", holding)}},
-		"ACME-5": {States: []Stint{handStint(t, "09:00", IssueState{InFlight: true, Holds: true, Part: record.PartReturned})}},
-		"ACME-3": {States: []Stint{handStint(t, "13:00", IssueState{InFlight: true, Holds: true, PastReview: true}),
-			handStint(t, "14:00", IssueState{})}},
-		"ACME-4": {States: []Stint{handStint(t, "13:00", IssueState{InFlight: true, PastReview: true})}},
+	tl := Timeline{From: clock(9, 0), To: clock(15, 0), Issues: map[string]*Course{
+		"ACME-6": {States: []Stint{handStint(clock(9, 0), returned(false)), handStint(clock(10, 0), holding)}},
+		"ACME-1": {States: []Stint{handStint(clock(9, 0), holding), handStint(clock(10, 0), returned(true)),
+			handStint(clock(11, 0), returned(false)), handStint(clock(12, 0), holding)}},
+		"ACME-2": {States: []Stint{handStint(clock(11, 30), returned(false)), handStint(clock(13, 0), holding)}},
+		"ACME-5": {States: []Stint{handStint(clock(9, 0), IssueState{InFlight: true, Holds: true, Part: record.PartReturned})}},
+		"ACME-3": {States: []Stint{handStint(clock(13, 0), IssueState{InFlight: true, Holds: true, PastReview: true}),
+			handStint(clock(14, 0), IssueState{})}},
+		"ACME-4": {States: []Stint{handStint(clock(13, 0), IssueState{InFlight: true, PastReview: true})}},
 	}}
 	card := Measure(tl)
 	assertOccupancy(t, "startedWithoutSlot", card.StartedWithoutSlot, Occupancy{Average: 4.5 / 6, Max: 2, Hours: 4.5})
@@ -121,16 +107,16 @@ func TestPriorityInversionShare(t *testing.T) {
 	waiting := func(tree, rank, rootRank string, part record.LinePart) IssueState {
 		return IssueState{Tree: tree, Rank: rank, RootRank: rootRank, Part: part, Waiting: true}
 	}
-	tl := Timeline{From: handAt(t, "09:00"), To: handAt(t, "13:00"), Issues: map[string]*Course{
-		"ACME-1": {States: []Stint{handStint(t, "09:00", holder("ACME-1", "a2"))}},
-		"ACME-2": {States: []Stint{handStint(t, "09:00", holder("ACME-2", "a0")),
-			handStint(t, "11:00", IssueState{InFlight: true, PastReview: true}),
-			handStint(t, "12:00", holder("ACME-2", "a0"))}},
-		"ACME-3": {States: []Stint{handStint(t, "09:00", waiting("ACME-3", "a1", "a1", record.PartStarting)),
-			handStint(t, "11:00", IssueState{})}},
-		"ACME-4": {States: []Stint{handStint(t, "10:00", waiting("ACME-2", "z9", "a0", record.PartStarting))}},
-		"ACME-7": {States: []Stint{handStint(t, "09:00", IssueState{InFlight: true, Part: record.PartReturned, Blocked: true})}},
-		"ACME-8": {States: []Stint{handStint(t, "09:00", IssueState{Part: record.PartStarting, Blocked: true})}},
+	tl := Timeline{From: clock(9, 0), To: clock(13, 0), Issues: map[string]*Course{
+		"ACME-1": {States: []Stint{handStint(clock(9, 0), holder("ACME-1", "a2"))}},
+		"ACME-2": {States: []Stint{handStint(clock(9, 0), holder("ACME-2", "a0")),
+			handStint(clock(11, 0), IssueState{InFlight: true, PastReview: true}),
+			handStint(clock(12, 0), holder("ACME-2", "a0"))}},
+		"ACME-3": {States: []Stint{handStint(clock(9, 0), waiting("ACME-3", "a1", "a1", record.PartStarting)),
+			handStint(clock(11, 0), IssueState{})}},
+		"ACME-4": {States: []Stint{handStint(clock(10, 0), waiting("ACME-2", "z9", "a0", record.PartStarting))}},
+		"ACME-7": {States: []Stint{handStint(clock(9, 0), IssueState{InFlight: true, Part: record.PartReturned, Blocked: true})}},
+		"ACME-8": {States: []Stint{handStint(clock(9, 0), IssueState{Part: record.PartStarting, Blocked: true})}},
 	}}
 	assertNear(t, "priorityTaken", Measure(tl).PriorityTaken, 0.625)
 }
@@ -148,43 +134,43 @@ func TestPriorityInversionShare(t *testing.T) {
 // 15:00 (1 hour); and ACME-4's from 10:00 to 16:00, which still stands at 15:00 and so is open
 // whatever ended it later (5 hours).
 func TestLoopHoursByCause(t *testing.T) {
-	move := func(clock string, from, to phase.Phase, trigger workflow.TriggerKind) CourseMove {
-		return moveOf(handAt(t, clock), from, to, trigger, "")
+	move := func(at time.Time, from, to phase.Phase, trigger workflow.TriggerKind) CourseMove {
+		return moveOf(at, from, to, trigger, "")
 	}
-	tl := Timeline{From: handAt(t, "09:00"), To: handAt(t, "15:00"), Issues: map[string]*Course{
+	tl := Timeline{From: clock(9, 0), To: clock(15, 0), Issues: map[string]*Course{
 		"ACME-1": {
 			Moves: []CourseMove{
-				move("09:00", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed),
-				move("10:00", phase.Reviewing, phase.Implementing, workflow.TriggerReviewRejected),
-				move("11:00", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady),
-				move("11:30", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed),
-				move("12:00", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved),
-				move("13:00", phase.Accepting, phase.Implementing, workflow.TriggerBackward),
+				move(clock(9, 0), phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed),
+				move(clock(10, 0), phase.Reviewing, phase.Implementing, workflow.TriggerReviewRejected),
+				move(clock(11, 0), phase.Implementing, phase.Testing, workflow.TriggerImplementationReady),
+				move(clock(11, 30), phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed),
+				move(clock(12, 0), phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved),
+				move(clock(13, 0), phase.Accepting, phase.Implementing, workflow.TriggerBackward),
 			},
-			Waits: []CourseWait{{Start: handAt(t, "09:00"), End: handAt(t, "10:00"), EndedBy: WaitBlockerDone}},
+			Waits: []CourseWait{{Start: clock(9, 0), End: clock(10, 0), EndedBy: WaitBlockerDone}},
 		},
 		"ACME-2": {
 			Moves: []CourseMove{
-				move("12:00", phase.Testing, phase.Implementing, workflow.TriggerTesterFailed),
-				move("12:20", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady),
+				move(clock(12, 0), phase.Testing, phase.Implementing, workflow.TriggerTesterFailed),
+				move(clock(12, 20), phase.Implementing, phase.Testing, workflow.TriggerImplementationReady),
 			},
-			Waits: []CourseWait{{Start: handAt(t, "14:00"), EndedBy: WaitOpen}},
+			Waits: []CourseWait{{Start: clock(14, 0), EndedBy: WaitOpen}},
 		},
 		"ACME-3": {
 			Moves: []CourseMove{
-				move("09:30", phase.Accepting, phase.Implementing, workflow.TriggerBackward),
-				move("10:00", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady),
-				move("10:15", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed),
-				move("10:30", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved),
+				move(clock(9, 30), phase.Accepting, phase.Implementing, workflow.TriggerBackward),
+				move(clock(10, 0), phase.Implementing, phase.Testing, workflow.TriggerImplementationReady),
+				move(clock(10, 15), phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed),
+				move(clock(10, 30), phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved),
 			},
-			Waits: []CourseWait{{Start: handAt(t, "08:00"), End: handAt(t, "09:30"), EndedBy: WaitLinkRemoved}},
+			Waits: []CourseWait{{Start: clock(8, 0), End: clock(9, 30), EndedBy: WaitLinkRemoved}},
 		},
 		"ACME-4": {
 			Moves: []CourseMove{
-				move("08:00", phase.Reviewing, phase.Implementing, workflow.TriggerReviewRejected),
-				move("08:30", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady),
+				move(clock(8, 0), phase.Reviewing, phase.Implementing, workflow.TriggerReviewRejected),
+				move(clock(8, 30), phase.Implementing, phase.Testing, workflow.TriggerImplementationReady),
 			},
-			Waits: []CourseWait{{Start: handAt(t, "10:00"), End: handAt(t, "16:00"), EndedBy: WaitBlockerDone}},
+			Waits: []CourseWait{{Start: clock(10, 0), End: clock(16, 0), EndedBy: WaitBlockerDone}},
 		},
 	}}
 	card := Measure(tl)
@@ -210,11 +196,11 @@ func TestLoopHoursByCause(t *testing.T) {
 // 09:00 with no slot. In a turn: 1 + 2 = 3 hours; in none: 1 hour. The issues in flight, ACME-1
 // and ACME-3 for three hours and ACME-2 for two: 8 hours, an average of 8/3, at most 3.
 func TestSlotHoursByTurn(t *testing.T) {
-	tl := Timeline{From: handAt(t, "09:00"), To: handAt(t, "12:00"), Issues: map[string]*Course{
-		"ACME-1": {States: []Stint{handStint(t, "09:00", IssueState{InFlight: true, Holds: true, InTurn: true}),
-			handStint(t, "10:00", IssueState{InFlight: true, Holds: true}), handStint(t, "11:00", IssueState{InFlight: true, InTurn: true})}},
-		"ACME-2": {States: []Stint{handStint(t, "10:00", IssueState{InFlight: true, Holds: true, InTurn: true})}},
-		"ACME-3": {States: []Stint{handStint(t, "09:00", IssueState{InFlight: true, InTurn: true})}},
+	tl := Timeline{From: clock(9, 0), To: clock(12, 0), Issues: map[string]*Course{
+		"ACME-1": {States: []Stint{handStint(clock(9, 0), IssueState{InFlight: true, Holds: true, InTurn: true}),
+			handStint(clock(10, 0), IssueState{InFlight: true, Holds: true}), handStint(clock(11, 0), IssueState{InFlight: true, InTurn: true})}},
+		"ACME-2": {States: []Stint{handStint(clock(10, 0), IssueState{InFlight: true, Holds: true, InTurn: true})}},
+		"ACME-3": {States: []Stint{handStint(clock(9, 0), IssueState{InFlight: true, InTurn: true})}},
 	}}
 	card := Measure(tl)
 	assertNear(t, "slotHoursInTurn", card.SlotHoursInTurn, 3)
@@ -231,17 +217,9 @@ func TestSlotHoursByTurn(t *testing.T) {
 func TestScorecardOfTheRecord(t *testing.T) {
 	scored := 0
 	for _, name := range fixtureWindowNames(t) {
-		dir := filepath.Join(fixtureWindowsDir, name)
-		window, err := ReadWindow(dir)
-		if err != nil {
-			t.Fatalf("window %s: %v", name, err)
-		}
-		expect, err := readFixtureExpect(dir)
-		if err != nil {
-			t.Fatalf("window %s: %v", name, err)
-		}
+		window, expect := readFixture(t, name)
 		want, named := expect.Rules[record.MainRule.Name]
-		if recordedRule(window) != record.MainRule.Name || !named || expect.Branch != "" {
+		if partsRule(window.Parts) != record.MainRule.Name || !named || expect.Branch != "" {
 			continue
 		}
 		scored++
@@ -269,15 +247,9 @@ func TestScorecardOfTheRecord(t *testing.T) {
 // state: its claims, the claims nothing will wake (workflow.Stranded) and the holders' claims as
 // the tick reads them.
 func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip(testdb.SkipMessage)
-	}
+	dsn := replayDSN(t)
 	const name = "two-waiters-one-blocker"
-	window, err := ReadWindow(filepath.Join(fixtureWindowsDir, name))
-	if err != nil {
-		t.Fatalf("window %s: %v", name, err)
-	}
+	window := fixtureWindow(t, name)
 	token, err := claim.ProjectToken(window.Project)
 	if err != nil {
 		t.Fatalf("the claim token of %s: %v", window.Project, err)
@@ -392,46 +364,16 @@ func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
 // closed, and not at the approval of another document (gateVersionWindow, gateReader); a link
 // wait and a children wait that touch as one (touchingWaitsWindow, issueWaits); and a children
 // wait the record told before the start as one, its telling marked in the start state
-// (toldBeforeStartWindow, childrenToldMarks).
+// (toldBeforeStartWindow, childrenToldMarks). The fixture windows' runs under main are held to these
+// checks in TestFixtureWindows, and childrenFirstWindow, acceptedAncestorWindow and ancestryWindow
+// in TestEveryHoldHasASourceInTheReplay, on the replays those tests make (checkTimelines).
 func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip(testdb.SkipMessage)
-	}
-	for _, name := range fixtureWindowNames(t) {
-		t.Run(name, func(t *testing.T) {
-			dir := filepath.Join(fixtureWindowsDir, name)
-			window, err := ReadWindow(dir)
-			if err != nil {
-				t.Fatalf("window %s: %v", name, err)
-			}
-			expect, err := readFixtureExpect(dir)
-			if err != nil {
-				t.Fatalf("window %s: %v", name, err)
-			}
-			runs, err := expect.runs()
-			if err != nil {
-				t.Fatalf("window %s: %v", name, err)
-			}
-			for _, run := range runs {
-				if run.rule != record.MainRule.Name {
-					continue
-				}
-				t.Run(run.name, func(t *testing.T) {
-					slowdown := run.want.Slowdown
-					if slowdown == 0 {
-						slowdown = 1
-					}
-					timelinesAgree(t, dsn, window, record.MainRule, run.branch, run.want.Seed, slowdown)
-				})
-			}
-		})
-	}
+	dsn := replayDSN(t)
 	t.Run("deployment-shaped", func(t *testing.T) {
-		timelinesAgree(t, dsn, deploymentShapedWindow(t), record.MainRule, MainBranch, 1, 1)
+		timelinesAgree(t, dsn, deploymentShapedWindow(t), record.MainRule)
 	})
 	t.Run("queue-drop", func(t *testing.T) {
-		result := timelinesAgree(t, dsn, queueDropWindow(t), record.MainRule, MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, queueDropWindow(t), record.MainRule)
 		for _, timeline := range []struct {
 			name string
 			card Scorecard
@@ -444,65 +386,45 @@ func TestSnapshotAndLineTimelinesAgree(t *testing.T) {
 		}
 	})
 	t.Run("returned-part", func(t *testing.T) {
-		result := timelinesAgree(t, dsn, returnedPartWindow(t), record.MainRule, MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, returnedPartWindow(t), record.MainRule)
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1"}, {key: "ACME-2", b: 1, a: 1}, {key: "ACME-3", b: 2, a: 1.0 / 3}})
 	})
 	t.Run("restart-and-tree", func(t *testing.T) {
-		result := timelinesAgree(t, dsn, restartAndTreeWindow(t), record.MainRule, MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, restartAndTreeWindow(t), record.MainRule)
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 1.5, a: 1.5}, {key: "ACME-2", b: 2}, {key: "ACME-3", b: 4.0 / 3}})
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitLeft: {Count: 1, Hours: 2}, WaitBlockerDone: {Count: 1, Hours: 5.0 / 3}})
 	})
 	t.Run("lingering-parent", func(t *testing.T) {
-		result := timelinesAgree(t, dsn, lingeringParentWindow(t), stopsPhaseRule(), MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, lingeringParentWindow(t), stopsPhaseRule())
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 2}, {key: "ACME-2", b: 4.0 / 3}})
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitLeft: {Count: 1, Hours: 2}, WaitChildDone: {Count: 1, Hours: 5.0 / 3}})
 	})
 	t.Run("children-again", func(t *testing.T) {
-		result := timelinesAgree(t, dsn, childrenAgainWindow(t), stopsPhaseRule(), MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, childrenAgainWindow(t), stopsPhaseRule())
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 11.0 / 3}, {key: "ACME-2", b: 1}})
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitOpen: {Count: 1, Hours: 11.0 / 3}, WaitChildDone: {Count: 2, Hours: 1}})
 	})
-	t.Run("children-first", func(t *testing.T) {
-		// ACME-1, the root, waits on ACME-2 from 09:20 to the window's end at 15:00: one wait, open,
-		// of 5 hours 40 minutes. ACME-2 has not started while its child holds it (09:20 to 10:20).
-		window := childrenFirstWindow(t)
-		result := timelinesAgree(t, dsn, window, record.MainRule, MainBranch, 1, 1)
-		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitOpen: {Count: 1, Hours: 17.0 / 3}})
-		assertWaitsForNoSlot(t, window, result, "ACME-2", clock(9, 40))
-	})
 	t.Run("link-past-review", func(t *testing.T) {
-		result := timelinesAgree(t, dsn, linkPastReviewWindow(t), record.MainRule, MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, linkPastReviewWindow(t), record.MainRule)
 		assertSnapshotHours(t, result, []issueHours{{key: "ACME-1", b: 1.0 / 3}})
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitMovedOn: {Count: 1, Hours: 1.0 / 3}})
 	})
-	t.Run("accepted-ancestor", func(t *testing.T) {
-		// ACME-2 stands beneath ACME-1, accepted in its retro, from 11:30 to 12:30.
-		window := acceptedAncestorWindow(t)
-		result := timelinesAgree(t, dsn, window, record.MainRule, MainBranch, 1, 1)
-		assertWaitsForNoSlot(t, window, result, "ACME-2", clock(12, 0))
-	})
-	t.Run("ancestry", func(t *testing.T) {
-		// ACME-2, a queued root, stands under ACME-1, a live root, from 09:10 to 10:10.
-		window := ancestryWindow(t)
-		result := timelinesAgree(t, dsn, window, record.MainRule, MainBranch, 1, 1)
-		assertWaitsForNoSlot(t, window, result, "ACME-2", clock(9, 40))
-	})
 	t.Run("done-blocker", func(t *testing.T) {
-		result := timelinesAgree(t, dsn, doneBlockerWindow(t), record.MainRule, MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, doneBlockerWindow(t), record.MainRule)
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{})
 	})
 	t.Run("gate-version", func(t *testing.T) {
 		// ACME-1 waits on ACME-2 from the gate's opening at 10:20 to its closing at 11:00, and again
 		// from its opening at 12:00 to the window's end at 13:00.
-		result := timelinesAgree(t, dsn, gateVersionWindow(t), record.MainRule, MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, gateVersionWindow(t), record.MainRule)
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitGateClosed: {Count: 1, Hours: 2.0 / 3}, WaitOpen: {Count: 1, Hours: 1}})
 	})
 	t.Run("touching-waits", func(t *testing.T) {
-		result := timelinesAgree(t, dsn, touchingWaitsWindow(t), record.MainRule, MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, touchingWaitsWindow(t), record.MainRule)
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitChildDone: {Count: 1, Hours: 11.0 / 6}})
 	})
 	t.Run("told-before-start", func(t *testing.T) {
-		result := timelinesAgree(t, dsn, toldBeforeStartWindow(t), record.MainRule, MainBranch, 1, 1)
+		result := timelinesAgree(t, dsn, toldBeforeStartWindow(t), record.MainRule)
 		assertTimelineWaits(t, result, map[WaitEnd]WaitHours{WaitChildDone: {Count: 1, Hours: 1}})
 	})
 }
@@ -577,17 +499,24 @@ func queueDropWindow(t *testing.T) Window {
 	return b.build()
 }
 
-// timelinesAgree replays window under rule on branch, with seed and slowdown, and fails for each
-// measure in which the line timeline stands further from the snapshot timeline than a third of
-// R5's gap for it, and where the median gap of each issue's first slot and done is above a third
-// of R5's 60 minutes (TestSnapshotAndLineTimelinesAgree). It answers the replay's result.
-func timelinesAgree(t *testing.T, dsn string, window Window, rule record.SlotRule, branch Branch, seed int64, slowdown float64) RunResult {
+// timelinesAgree replays window under rule on the main branch, at seed 1 and f 1, holds its two
+// timelines to agree (checkTimelines) and answers the replay's result.
+func timelinesAgree(t *testing.T, dsn string, window Window, rule record.SlotRule) RunResult {
 	t.Helper()
-	result, err := Run(context.Background(), RunConfig{Window: window, Rule: rule, Branch: branch, Seed: seed,
-		Slowdown: slowdown, PGDSN: dsn, Out: t.TempDir()})
+	result, err := Run(context.Background(), RunConfig{Window: window, Rule: rule, Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: dsn,
+		Out: t.TempDir()})
 	if err != nil {
 		t.Fatalf("the replay failed: %v", err)
 	}
+	checkTimelines(t, result)
+	return result
+}
+
+// checkTimelines fails for each measure in which result's line timeline stands further from its
+// snapshot timeline than a third of R5's gap for it, and where the median gap of each issue's first
+// slot and done is above a third of R5's 60 minutes (TestSnapshotAndLineTimelinesAgree).
+func checkTimelines(t *testing.T, result RunResult) {
+	t.Helper()
 	var timeErrors []float64
 	for _, gap := range result.Gaps {
 		if strings.HasPrefix(gap.Measure, "firstSlot[") || strings.HasPrefix(gap.Measure, "doneAt[") {
@@ -603,20 +532,14 @@ func timelinesAgree(t *testing.T, dsn string, window Window, rule record.SlotRul
 		t.Errorf("the median gap of each issue's first slot and done between the two timelines is %v minutes, above a third of R5's 60",
 			errorMinutes)
 	}
-	return result
 }
 
-// validationGap is the gap R5 allows the replay of a measure whose recorded value is recorded: 10%
-// of the issues done and of the slots given out on a day, 0.05 of the share of priority taken, and
-// 30% of every other measure, the median wait for a slot and the hours of started work that waits
-// only for a slot among them.
+// validationGap is the gap R5 allows the replay of a measure whose recorded value is recorded
+// (R5Gap), and 30% of a number no test of R5 reads, as of every measure R5 does not name.
 func validationGap(measure string, recorded float64) float64 {
-	switch {
-	case measure == "done" || strings.HasPrefix(measure, "slotsGivenByDay["):
-		return 0.10 * math.Abs(recorded)
-	case measure == "priorityTaken":
-		return 0.05
-	default:
-		return 0.30 * math.Abs(recorded)
+	gap, tested := R5Gap(measure)
+	if !tested {
+		gap = gapThirty
 	}
+	return gap.Allowed(recorded)
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -32,11 +33,8 @@ func passedLoopWindow(t *testing.T) Window {
 	b.reaches(2 * time.Hour)
 	b.capped(3)
 	b.boot(clock(7, 0))
-	move := func(hour, minute int, to phase.Phase, trigger workflow.TriggerKind) builtMove {
-		return builtMove{clock(hour, minute), to, trigger}
-	}
-	rootThrough(b, "ACME-2", "a2", clock(7, 10), clock(7, 25), move(7, 40, phase.Implementing, workflow.TriggerPlannerCompleted),
-		move(8, 40, phase.Testing, workflow.TriggerImplementationReady), move(9, 20, phase.Implementing, workflow.TriggerConflict))
+	rootThrough(b, "ACME-2", "a2", clock(7, 10), clock(7, 25), moveAt(7, 40, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(8, 40, phase.Testing, workflow.TriggerImplementationReady), moveAt(9, 20, phase.Implementing, workflow.TriggerConflict))
 	architect := recordedSession("ACME-2", claim.RoleArchitect, "00000000-0000-4000-8000-0000000000c2")
 	b.filedBy(clock(9, 35), "ACME-4", filing{Title: "Ship the ACME-4 change", Parent: "ACME-2", Tree: "ACME-2", Status: "triage", Rank: "a4"},
 		architect)
@@ -45,11 +43,7 @@ func passedLoopWindow(t *testing.T) Window {
 	b.segmentEnds(clock(10, 20), "ACME-2", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
 	b.daemonWrites(clock(10, 30), "ACME-4", "todo")
 	b.childStarts(clock(10, 30), "ACME-4")
-	rootThrough(b, "ACME-3", "a3", clock(9, 0), clock(9, 15), move(9, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
-		move(9, 45, phase.Testing, workflow.TriggerImplementationReady), move(10, 0, phase.Implementing, workflow.TriggerTesterFailed),
-		move(10, 15, phase.Testing, workflow.TriggerImplementationReady), move(10, 30, phase.Reviewing, workflow.TriggerTesterPassed),
-		move(10, 45, phase.Implementing, workflow.TriggerConflict), move(11, 0, phase.Testing, workflow.TriggerImplementationReady),
-		move(11, 15, phase.Reviewing, workflow.TriggerTesterPassed))
+	reviewConflictLoop(b, "ACME-3", "a3")
 	window := b.build()
 	window.Merges = map[string][]Merge{builtRepository: {
 		{SHA: "7c4d2e9f1a3b5067b1c2d3e4f5a6b7c8d9e0f1a2", At: clock(10, 40), Branch: "main"},
@@ -94,37 +88,33 @@ func eventsApplied(t *testing.T, copied *shadow, key, kind string) []time.Time {
 	return applied
 }
 
-// A root's architect works between its root's phases, where the replay runs no work segment of
-// its own, so an event its session writes there is no act of a segment and enters as any other
-// event enters (placeEvents). The test replays passedLoopWindow under legion-v20.42.5: the
-// architect's filing of ACME-4 at 09:35 falls in ACME-2's conflict loop, a segment of its
-// implementer, which the replay passes over, ACME-2's stretch drawing no conflict. The filing
-// enters at 09:35, and the release at 10:30 starts ACME-4 then. Placed in the implementer's segment,
-// the filing never enters: the replay never creates ACME-4, and the release starts nothing.
-func TestAnArchitectsEventOutsideItsOwnWorkIsApplied(t *testing.T) {
-	_, log := knobRun(t, passedLoopWindow(t), replayedRule(t, "legion-v20.42.5"), "main")
-	started := linesAt(log, func(line replayLine) bool {
+// An event enters a replay where no work segment of the replay's own runs it, and enters once: an
+// architect's works between its root's phases, where the replay runs no work segment of its own,
+// so an event its session writes there is no act of a segment and enters as any other event enters
+// (placeEvents); and a worker's event inside a work segment of its role is an act of that segment,
+// which enters where the replay runs it, and where the replay passes over the segment, enters as
+// any other event enters, once (placeUnrun). The test replays passedLoopWindow under
+// legion-v20.42.5, where ACME-2's stretch draws no conflict and goes on past its recorded loop: the
+// replay passes over the loop's segment of the implementer at 09:20. The architect's filing of
+// ACME-4 at 09:35, in that loop, enters at 09:35, and the release at 10:30 starts ACME-4 then; and
+// the implementer's comment at 09:40, in the segment, enters the replay's copy of Dispatch once, at
+// 09:40. Placed in the implementer's segment, the filing never enters: the replay never creates
+// ACME-4, and the release starts nothing; and left with the segment, the comment never enters.
+func TestTheEventsOfAPassedOverLoopAreAppliedOnce(t *testing.T) {
+	var copied *shadow
+	out := t.TempDir()
+	cfg := RunConfig{Window: passedLoopWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: 1, Slowdown: 1,
+		PGDSN: replayDSN(t), Out: out}
+	cfg.atStart = func(s *shadow) { copied = s }
+	if _, err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("replay passedLoopWindow under legion-v20.42.5: %v", err)
+	}
+	started := linesAt(replayLog(t, out), func(line replayLine) bool {
 		return line.Msg == phaseChangedLine && line.Issue == "ACME-4" && line.From == string(phase.Admitted) && line.To == string(phase.Planning)
 	})
 	if want := []time.Time{clock(10, 30)}; !slices.EqualFunc(started, want, time.Time.Equal) {
 		t.Errorf("ACME-4 moved into planning at %s, want once at %s: its architect files it at 09:35 and releases it at 10:30",
 			describeTimes(started), describeTimes(want))
-	}
-}
-
-// A worker's event inside a work segment of its role is an act of that segment, and enters where
-// the replay runs it; where the replay passes over the segment, it enters as any other event
-// enters, once (placeUnrun). The test replays passedLoopWindow under legion-v20.42.5, where ACME-2's
-// stretch draws no conflict and goes on past its recorded loop: the replay passes over the loop's
-// segment of the implementer at 09:20, and the implementer's comment at 09:40 in it enters the
-// replay's copy of Dispatch once, at 09:40. Left with the segment, it never enters.
-func TestAnEventOfAPassedOverSegmentIsAppliedOnce(t *testing.T) {
-	var copied *shadow
-	cfg := RunConfig{Window: passedLoopWindow(t), Rule: replayedRule(t, "legion-v20.42.5"), Branch: MainBranch, Seed: 1, Slowdown: 1,
-		PGDSN: replayDSN(t), Out: t.TempDir()}
-	cfg.atStart = func(s *shadow) { copied = s }
-	if _, err := Run(context.Background(), cfg); err != nil {
-		t.Fatalf("replay passedLoopWindow under legion-v20.42.5: %v", err)
 	}
 	if applied, want := eventsApplied(t, copied, "ACME-2", "comment.created"), []time.Time{clock(9, 40)}; !slices.EqualFunc(applied, want, time.Time.Equal) {
 		t.Errorf("the copy of Dispatch holds the implementer's comment on ACME-2 applied at %s, want once, at %s",
@@ -150,19 +140,12 @@ func givenLoopWindow(t *testing.T) Window {
 	b.window.Parts[0].Rule = "legion-v20.42.5"
 	b.capped(4)
 	b.boot(clock(9, 0))
-	move := func(hour, minute int, to phase.Phase, trigger workflow.TriggerKind) builtMove {
-		return builtMove{clock(hour, minute), to, trigger}
-	}
-	rootThrough(b, "ACME-2", "a2", clock(9, 0), clock(9, 15), move(9, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
-		move(9, 45, phase.Testing, workflow.TriggerImplementationReady), move(10, 0, phase.Implementing, workflow.TriggerTesterFailed),
-		move(10, 15, phase.Testing, workflow.TriggerImplementationReady), move(10, 30, phase.Reviewing, workflow.TriggerTesterPassed),
-		move(10, 45, phase.Implementing, workflow.TriggerConflict), move(11, 0, phase.Testing, workflow.TriggerImplementationReady),
-		move(11, 15, phase.Reviewing, workflow.TriggerTesterPassed))
-	rootThrough(b, "ACME-4", "a4", clock(9, 30), clock(9, 45), move(10, 0, phase.Implementing, workflow.TriggerPlannerCompleted),
-		move(10, 15, phase.Testing, workflow.TriggerImplementationReady), move(10, 30, phase.Implementing, workflow.TriggerConflict),
-		move(10, 40, phase.Testing, workflow.TriggerImplementationReady))
-	rootThrough(b, "ACME-3", "a3", clock(11, 0), clock(11, 15), move(11, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
-		move(11, 45, phase.Testing, workflow.TriggerImplementationReady), move(12, 0, phase.Implementing, workflow.TriggerConflict))
+	reviewConflictLoop(b, "ACME-2", "a2")
+	rootThrough(b, "ACME-4", "a4", clock(9, 30), clock(9, 45), moveAt(10, 0, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(10, 15, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 30, phase.Implementing, workflow.TriggerConflict),
+		moveAt(10, 40, phase.Testing, workflow.TriggerImplementationReady))
+	rootThrough(b, "ACME-3", "a3", clock(11, 0), clock(11, 15), moveAt(11, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(11, 45, phase.Testing, workflow.TriggerImplementationReady), moveAt(12, 0, phase.Implementing, workflow.TriggerConflict))
 	b.commented(clock(12, 20), "ACME-3", recordedSession("ACME-3", claim.RoleImplementer, "00000000-0000-4000-8000-0000000000c5"))
 	b.segmentEnds(clock(12, 25), "ACME-3", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
 	window := b.build()
@@ -255,8 +238,7 @@ func cancelledQuestionWindow(t *testing.T) Window {
 	b.turnEnds(clock(10, 30), "ACME-2", claim.RoleArchitect)
 	b.registered(clock(10, 30), "ACME-2", false)
 	b.approves(clock(10, 55), "ACME-2", "")
-	b.info(clock(10, 55), "workflow: design gate opened", "issue", "ACME-2", "artifact", b.artifact("ACME-2"), "event", "artifact.approved",
-		"version", 1)
+	b.gateOpened(clock(10, 55), "ACME-2", intake.DispatchArtifactApproved, 1)
 	b.rootFirstPhase(clock(10, 55), "ACME-2")
 	b.edit(clock(11, 5), "ACME-2", setStatus(record.DoneStatus))
 	b.leaves(clock(11, 5), "ACME-2", record.DoneStatus)

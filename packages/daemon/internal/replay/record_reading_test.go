@@ -3,7 +3,6 @@ package replay
 import (
 	"context"
 	"maps"
-	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -26,11 +25,7 @@ func replayMoves(t *testing.T, w Window) (map[string][]fixtureMove, []RefusedMov
 	if err != nil {
 		t.Fatalf("replay the window under main: %v", err)
 	}
-	moved, err := replayedMoves(filepath.Join(out, logFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return moved, result.Divergence.Refused
+	return replayedMoves(replayLog(t, out)), result.Divergence.Refused
 }
 
 // checkMoves fails for each issue whose moves in a replay differ from want, and for each move the
@@ -40,7 +35,7 @@ func checkMoves(t *testing.T, moved, want map[string][]fixtureMove, refused []Re
 	if len(refused) != 0 {
 		t.Errorf("the replay refused the recorded moves %+v, want none", refused)
 	}
-	for _, issue := range slices.Sorted(maps.Keys(union(moved, want))) {
+	for _, issue := range slices.Sorted(maps.Keys(unionKeys(moved, want))) {
 		if !slices.Equal(moved[issue], want[issue]) {
 			t.Errorf("%s moved %s in the replay, and the record moved it %s", issue, describeMoves(moved[issue]), describeMoves(want[issue]))
 		}
@@ -97,13 +92,7 @@ func failedClaimsGoOnWindow(t *testing.T) Window {
 // their ends, and each makes its recorded move: no move is refused and none is left out.
 func TestAHoldTheRecordShowsGoingOnEndsWhereItGoesOn(t *testing.T) {
 	window := failedClaimsGoOnWindow(t)
-	trace, err := BuildTrace(window)
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	if len(trace.Unplaced) != 0 {
-		t.Errorf("the trace could not place %+v", trace.Unplaced)
-	}
+	trace := placedTrace(t, window)
 	for _, want := range []struct {
 		key        string
 		role       claim.Role
@@ -147,15 +136,11 @@ func childOfAReadmittedTreeWindow(t *testing.T) Window {
 	b.edit(clock(9, 0), "ACME-4", setStatus("todo"))
 	b.ownTree("ACME-4")
 	b.rootPromoted(clock(9, 0), "ACME-4")
-	architect := eventActor{Kind: "session", ID: string(b.token("ACME-4", claim.RoleArchitect))}
+	architect := b.session("ACME-4", claim.RoleArchitect)
 	b.filedBy(clock(10, 5), "ACME-5", filing{Title: "Write the export's header row", Parent: "ACME-4", Tree: "ACME-4", Status: "triage",
 		Rank: "a5"}, architect)
 	b.daemonWrites(clock(10, 6), "ACME-5", "todo")
-	b.turnEnds(clock(10, 10), "ACME-4", claim.RoleArchitect)
-	b.registered(clock(10, 10), "ACME-4", true)
-	b.info(clock(10, 10), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-4", "tree", "ACME-4",
-		"generation", b.generation("ACME-4"), "children", 1)
-	b.slotReleased(clock(10, 10), "ACME-4")
+	b.rootWaitsForChildren(clock(10, 10), "ACME-4", 1)
 	b.childStarts(clock(10, 10), "ACME-5")
 	b.changed(clock(10, 30), "ACME-5", architect, func(issue *builtIssue) { issue.Rank = "a3" })
 	b.segmentEnds(clock(11, 0), "ACME-5", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
@@ -169,19 +154,13 @@ func childOfAReadmittedTreeWindow(t *testing.T) Window {
 // a replay that the record did not raise: the replay's daemon enters ACME-5 of
 // childOfAReadmittedTreeWindow at the daemon's write of its todo, at its tree's second generation,
 // as the record's did, and the architect's later change of its rank alone writes no status. The
-// trace counted the child's generation from one instead, so each recorded move of it was refused
-// ("ACME-5 stands at generation 2, and the recorded move of planning by planner_completed is
-// generation 1's"). The trace holds ACME-5's entry at its tree's generation, 2, and a replay under
-// main makes each of its recorded moves and refuses none.
+// trace holds ACME-5's entry at its tree's generation, 2, and a replay under main makes each of its
+// recorded moves and refuses none. It fails where the trace counts the child's generation from
+// one, for which the replay refuses each recorded move of it ("ACME-5 stands at generation 2, and
+// the recorded move of planning by planner_completed is generation 1's").
 func TestAChildFiledInTheWindowMovesAtItsTreesGeneration(t *testing.T) {
 	window := childOfAReadmittedTreeWindow(t)
-	trace, err := BuildTrace(window)
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	if len(trace.Unplaced) != 0 {
-		t.Errorf("the trace could not place %+v", trace.Unplaced)
-	}
+	trace := placedTrace(t, window)
 	if root := trace.Issues["ACME-4"]; root.Generation() != 2 {
 		t.Errorf("the trace holds ACME-4 at generation %d, want 2: its tree was taken back at 09:00", root.Generation())
 	}
@@ -220,18 +199,14 @@ func adoptedRootWindow(t *testing.T) Window {
 	b.file(clock(7, 10), "ACME-6", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a6", Labels: handedToLegion})
 	b.edit(clock(9, 0), "ACME-6", setStatus("backlog"))
 	b.leaves(clock(9, 0), "ACME-6", "backlog")
-	architect := eventActor{Kind: "session", ID: string(b.token("ACME-4", claim.RoleArchitect))}
+	architect := b.session("ACME-4", claim.RoleArchitect)
 	b.changed(clock(10, 5), "ACME-6", architect, func(issue *builtIssue) { issue.Parent = "ACME-4" })
 	adopted := b.issue("ACME-6")
 	adopted.tree, adopted.generation = "ACME-4", adopted.generation+1
 	b.info(clock(10, 6), "workflow: a queued root joined a live tree", "issue", "ACME-6", "tree", "ACME-4", "generation", adopted.generation)
 	b.daemonWrites(clock(10, 6).Add(time.Second), "ACME-6", "todo")
 	adopted.generation++
-	b.turnEnds(clock(10, 10), "ACME-4", claim.RoleArchitect)
-	b.registered(clock(10, 10), "ACME-4", true)
-	b.info(clock(10, 10), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-4", "tree", "ACME-4",
-		"generation", b.generation("ACME-4"), "children", 1)
-	b.slotReleased(clock(10, 10), "ACME-4")
+	b.rootWaitsForChildren(clock(10, 10), "ACME-4", 1)
 	b.childStarts(clock(10, 10), "ACME-6")
 	b.segmentEnds(clock(11, 0), "ACME-6", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
 	b.segmentEnds(clock(11, 30), "ACME-6", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
@@ -242,20 +217,15 @@ func adoptedRootWindow(t *testing.T) Window {
 // gave it: the daemon writes the adopted record at its next generation, the one the line of the
 // adoption names, parked at done where it does not stand at todo (workflow's moveIntoTree), and the
 // release's own todo then runs it again at the next (ReenterChild). The replay's daemon does the
-// same with ACME-6 of adoptedRootWindow. The trace counted the todo's entry from the issue's run
-// before the adoption instead, one generation short, so each recorded move of it was refused
-// ("ACME-6 stands at generation 3, and the recorded move of planning by planner_completed is
-// generation 2's"), and it held its slot in planning with no turn. The trace holds ACME-6's entry at
-// its third generation, and a replay under main makes each of its recorded moves and refuses none.
+// same with ACME-6 of adoptedRootWindow. The trace holds ACME-6's entry at its third generation, and
+// a replay under main makes each of its recorded moves and refuses none. It fails where the trace
+// counts the todo's entry from the issue's run before the adoption, one generation short, for which
+// the replay refuses each recorded move of it ("ACME-6 stands at generation 3, and the recorded move
+// of planning by planner_completed is generation 2's") and ACME-6 holds its slot in planning with no
+// turn.
 func TestAnAdoptedRootMovesAtTheGenerationAfterItsAdoption(t *testing.T) {
 	window := adoptedRootWindow(t)
-	trace, err := BuildTrace(window)
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	if len(trace.Unplaced) != 0 {
-		t.Errorf("the trace could not place %+v", trace.Unplaced)
-	}
+	trace := placedTrace(t, window)
 	entries := trace.Issues["ACME-6"].Entries
 	if n := len(entries); n != 2 || entries[1].Tree != "ACME-4" || entries[1].Generation != 3 || !entries[1].At.Equal(clock(10, 6).Add(time.Second)) {
 		t.Errorf("ACME-6's entries are %s; want a second into ACME-4's tree at 10:06:01, at generation 3", describeReading(entries))
@@ -285,13 +255,9 @@ func slotTakenWithNoLineWindow(t *testing.T) Window {
 	b.reaches(2 * time.Hour)
 	b.capped(3)
 	b.boot(clock(8, 0))
-	promoted := func(at time.Time, key, rank string) {
-		b.file(at, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion})
-		b.rootPromoted(at, key)
-	}
-	promoted(clock(8, 5), "ACME-1", "a1")
-	promoted(clock(8, 10), "ACME-2", "a2")
-	promoted(clock(8, 15), "ACME-4", "a4")
+	promotedRoot(b, clock(8, 5), "ACME-1", "a1")
+	promotedRoot(b, clock(8, 10), "ACME-2", "a2")
+	promotedRoot(b, clock(8, 15), "ACME-4", "a4")
 	b.rootDesigned(clock(8, 20), "ACME-1")
 	b.rootDesigned(clock(8, 25), "ACME-2")
 	b.rootDesigned(clock(8, 30), "ACME-4")
@@ -308,7 +274,7 @@ func slotTakenWithNoLineWindow(t *testing.T) Window {
 	b.segmentEnds(clock(9, 45), "ACME-2", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
 	b.turnEnds(clock(9, 50), "ACME-2", claim.RoleArchitect)
 	b.moved(clock(9, 50), "ACME-2", phase.Accepting, phase.Implementing, workflow.TriggerBackward)
-	b.slots["ACME-2"] = true
+	b.heldWithNoLine("ACME-2")
 	b.turnStarts(clock(9, 52), "ACME-2", claim.RoleImplementer)
 	b.rootDesigned(clock(9, 55), "ACME-3")
 	b.turnEnds(clock(9, 58), "ACME-4", claim.RoleArchitect)
@@ -316,8 +282,7 @@ func slotTakenWithNoLineWindow(t *testing.T) Window {
 	b.segmentEnds(clock(10, 30), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
 	b.segmentEnds(clock(10, 50), "ACME-1", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
 	b.segmentEnds(clock(11, 10), "ACME-1", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
-	b.info(clock(11, 10), "admission gives a slot back to an issue whose work came back", "issue", "ACME-4", "phase", string(phase.Implementing))
-	b.slotTaken(clock(11, 10), "ACME-4")
+	b.workCameBack(clock(11, 10), "ACME-4", phase.Implementing)
 	b.turnStarts(clock(11, 10), "ACME-4", claim.RoleImplementer)
 	return b.build()
 }
@@ -335,13 +300,7 @@ func slotTakenWithNoLineWindow(t *testing.T) Window {
 // inferred, reports no difference, writes ACME-4's owed start, and names no issue.
 func TestTheTraceInfersASlotTakenWithNoLineAtTheStart(t *testing.T) {
 	window := slotTakenWithNoLineWindow(t)
-	trace, err := BuildTrace(window)
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	if len(trace.Unplaced) != 0 {
-		t.Errorf("the trace could not place %+v", trace.Unplaced)
-	}
+	trace := placedTrace(t, window)
 	sentBack := trace.Issues["ACME-2"].Slots
 	if n := len(sentBack); n != 2 || !sentBack[1].Inferred || sentBack[1].Before || !sentBack[1].Start.Equal(clock(9, 50)) || !sentBack[1].End.IsZero() {
 		t.Errorf("ACME-2's slots are %s; want its slot to 09:45, then one inferred from 09:50, open at the window's end", describeReading(sentBack))
@@ -358,22 +317,12 @@ func TestTheTraceInfersASlotTakenWithNoLineAtTheStart(t *testing.T) {
 	}
 
 	st := seedStore(t)
-	_, report := seedReported(t, st, window, window.From, func(tx pgx.Tx) {
+	report := seedTrace(t, st, trace, window.From, func(tx pgx.Tx) {
 		ctx := context.Background()
-		records := record.NewStore()
-		slots, err := records.Slots(ctx, tx)
-		if err != nil {
-			t.Fatalf("read the seeded slots: %v", err)
-		}
-		slices.SortFunc(slots, func(x, y record.Slot) int { return x.Index - y.Index })
-		var holders []string
-		for _, slot := range slots {
-			holders = append(holders, slot.Issue+"@"+slot.AdmittedAt.UTC().Format("15:04"))
-		}
-		if want := []string{"ACME-1@08:05", "ACME-3@09:40", "ACME-2@09:50"}; !slices.Equal(holders, want) {
+		if holders, want := seededSlots(t, tx), []string{"ACME-1@08:05", "ACME-3@09:40", "ACME-2@09:50"}; !slices.Equal(holders, want) {
 			t.Errorf("the seeded slots are %v, want %v", holders, want)
 		}
-		owed, err := records.OwedStarts(ctx, tx, builtProject)
+		owed, err := record.NewStore().OwedStarts(ctx, tx, builtProject)
 		if err != nil {
 			t.Fatalf("read the seeded owed starts: %v", err)
 		}
@@ -417,13 +366,9 @@ func deploymentShapedWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(10, 0), clock(16, 0))
 	b.reaches(3 * time.Hour)
 	b.boot(clock(7, 0))
-	promoted := func(at time.Time, key, rank string) {
-		b.file(at, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion})
-		b.rootPromoted(at, key)
-	}
-	promoted(clock(7, 5), "ACME-1", "a1")
-	promoted(clock(7, 10), "ACME-2", "a2")
-	promoted(clock(7, 15), "ACME-3", "a3")
+	promotedRoot(b, clock(7, 5), "ACME-1", "a1")
+	promotedRoot(b, clock(7, 10), "ACME-2", "a2")
+	promotedRoot(b, clock(7, 15), "ACME-3", "a3")
 	b.rootDesigned(clock(7, 20), "ACME-1")
 	b.rootDesigned(clock(7, 25), "ACME-2")
 	b.rootDesigned(clock(7, 30), "ACME-3")
@@ -438,27 +383,23 @@ func deploymentShapedWindow(t *testing.T) Window {
 	b.launched(clock(8, 41), "ACME-1", claim.RoleReviewer, true)
 	b.turnStarts(clock(8, 41), "ACME-1", claim.RoleReviewer)
 	b.segmentEnds(clock(8, 50), "ACME-3", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
-	promoted(clock(8, 55), "ACME-4", "a4")
+	promotedRoot(b, clock(8, 55), "ACME-4", "a4")
 	b.turnEnds(clock(9, 0), "ACME-3", claim.RoleArchitect)
 	b.moved(clock(9, 0), "ACME-3", phase.Accepting, phase.Implementing, workflow.TriggerBackward)
-	b.slots["ACME-3"] = true
+	b.heldWithNoLine("ACME-3")
 	b.turnStarts(clock(9, 2), "ACME-3", claim.RoleImplementer)
 	b.file(clock(9, 10), "ACME-6", filing{Title: "Ship the ACME-6 change", Status: "todo", Rank: "a6", Labels: handedToLegion})
 	b.file(clock(9, 15), "ACME-7", filing{Title: "Ship the ACME-7 change", Status: "todo", Rank: "a7", Labels: handedToLegion})
 	b.claimFailed(clock(9, 50), "ACME-2", claim.RoleImplementer)
 
-	architect := eventActor{Kind: "session", ID: string(b.token("ACME-4", claim.RoleArchitect))}
+	architect := b.session("ACME-4", claim.RoleArchitect)
 	child := func(filed time.Time, key, rank string) {
 		b.filedBy(filed, key, filing{Title: "Ship the " + key + " change", Parent: "ACME-4", Tree: "ACME-4", Status: "triage", Rank: rank},
 			architect)
 		b.daemonWrites(filed.Add(time.Minute), key, "todo")
 	}
 	child(clock(10, 5), "ACME-5", "a5")
-	b.turnEnds(clock(10, 10), "ACME-4", claim.RoleArchitect)
-	b.registered(clock(10, 10), "ACME-4", true)
-	b.info(clock(10, 10), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-4", "tree", "ACME-4",
-		"generation", b.generation("ACME-4"), "children", 1)
-	b.slotReleased(clock(10, 10), "ACME-4")
+	b.rootWaitsForChildren(clock(10, 10), "ACME-4", 1)
 	b.childStarts(clock(10, 10), "ACME-5")
 	b.launched(clock(10, 20), "ACME-2", claim.RoleImplementer, true)
 	b.turnStarts(clock(10, 20), "ACME-2", claim.RoleImplementer)

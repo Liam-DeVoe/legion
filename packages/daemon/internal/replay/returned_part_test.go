@@ -34,18 +34,14 @@ func returnedPartWindow(t *testing.T) Window {
 	b.reaches(3 * time.Hour)
 	b.capped(2)
 	b.boot(clock(6, 0))
-	promoted := func(at time.Time, key, rank string) {
-		b.file(at, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion})
-		b.rootPromoted(at, key)
-	}
-	promoted(clock(6, 5), "ACME-1", "a1")
+	promotedRoot(b, clock(6, 5), "ACME-1", "a1")
 	b.rootDesigned(clock(6, 20), "ACME-1")
 	b.segmentEnds(clock(6, 50), "ACME-1", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
 	b.turnEnds(clock(8, 30), "ACME-1", claim.RoleImplementer)
 	b.slotReleased(clock(8, 40), "ACME-1")
 
-	promoted(clock(9, 5), "ACME-2", "a2")
-	promoted(clock(9, 10), "ACME-3", "a3")
+	promotedRoot(b, clock(9, 5), "ACME-2", "a2")
+	promotedRoot(b, clock(9, 10), "ACME-3", "a3")
 	b.file(clock(9, 15), "ACME-4", filing{Title: "Ship the ACME-4 change", Status: "todo", Rank: "a4", Labels: handedToLegion})
 	b.file(clock(9, 16), "ACME-5", filing{Title: "Agree the shelf names with the warehouse", Status: "backlog", Rank: "a5"})
 	b.rootDesigned(clock(9, 20), "ACME-2")
@@ -71,12 +67,10 @@ func returnedPartWindow(t *testing.T) Window {
 	b.edit(clock(11, 40), "ACME-5", setStatus(record.DoneStatus))
 	b.segmentEnds(clock(11, 50), "ACME-6", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
 	b.segmentEnds(clock(12, 0), "ACME-4", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
-	b.info(clock(12, 0), "admission gives a slot back to an issue whose wait ended", "issue", "ACME-3", "phase", string(phase.Implementing))
-	b.slotTaken(clock(12, 0), "ACME-3")
+	b.waitEnded(clock(12, 0), "ACME-3", phase.Implementing)
 	b.segmentEnds(clock(12, 10), "ACME-6", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
 	b.segmentEnds(clock(12, 30), "ACME-6", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
-	b.info(clock(12, 30), "admission gives a slot back to an issue whose work came back", "issue", "ACME-2", "phase", string(phase.Implementing))
-	b.slotTaken(clock(12, 30), "ACME-2")
+	b.workCameBack(clock(12, 30), "ACME-2", phase.Implementing)
 	b.turnStarts(clock(12, 30), "ACME-2", claim.RoleImplementer)
 	return b.build()
 }
@@ -128,27 +122,18 @@ func restartAndTreeWindow(t *testing.T) Window {
 	b.reaches(3 * time.Hour)
 	b.capped(1)
 	b.boot(clock(6, 0))
-	promoted := func(at time.Time, key, rank string) {
-		b.file(at, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion})
-		b.rootPromoted(at, key)
-	}
-	promoted(clock(6, 5), "ACME-1", "a1")
+	promotedRoot(b, clock(6, 5), "ACME-1", "a1")
 	b.rootDesigned(clock(6, 20), "ACME-1")
 	b.segmentEnds(clock(6, 50), "ACME-1", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
 	b.slotReleased(clock(8, 40), "ACME-1")
 	b.claimFailed(clock(8, 50), "ACME-1", claim.RoleImplementer)
 
-	promoted(clock(9, 5), "ACME-2", "a2")
+	promotedRoot(b, clock(9, 5), "ACME-2", "a2")
 	b.file(clock(9, 10), "ACME-4", filing{Title: "Agree the shelf names with the warehouse", Status: "backlog", Rank: "a4"})
-	architect := eventActor{Kind: "session", ID: string(b.token("ACME-2", claim.RoleArchitect))}
 	b.filedBy(clock(9, 15), "ACME-3", filing{Title: "Ship the ACME-3 change", Parent: "ACME-2", Tree: "ACME-2", Status: "triage", Rank: "a3"},
-		architect)
+		b.session("ACME-2", claim.RoleArchitect))
 	b.daemonWrites(clock(9, 16), "ACME-3", "todo")
-	b.turnEnds(clock(9, 20), "ACME-2", claim.RoleArchitect)
-	b.registered(clock(9, 20), "ACME-2", true)
-	b.info(clock(9, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-2", "tree", "ACME-2",
-		"generation", b.generation("ACME-2"), "children", 1)
-	b.slotReleased(clock(9, 20), "ACME-2")
+	b.rootWaitsForChildren(clock(9, 20), "ACME-2", 1)
 	b.childStarts(clock(9, 20), "ACME-3")
 	b.file(clock(9, 30), "ACME-5", filing{Title: "Ship the ACME-5 change", Status: "todo", Rank: "a5", Labels: handedToLegion})
 	b.segmentEnds(clock(9, 50), "ACME-3", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
@@ -164,8 +149,7 @@ func restartAndTreeWindow(t *testing.T) Window {
 	b.segmentEnds(clock(11, 35), "ACME-5", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
 	b.edit(clock(11, 40), "ACME-4", setStatus(record.DoneStatus))
 	b.segmentEnds(clock(12, 0), "ACME-5", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
-	b.info(clock(12, 0), "admission gives a slot back to an issue whose work came back", "issue", "ACME-1", "phase", string(phase.Implementing))
-	b.slotTaken(clock(12, 0), "ACME-1")
+	b.workCameBack(clock(12, 0), "ACME-1", phase.Implementing)
 	b.launched(clock(12, 0), "ACME-1", claim.RoleImplementer, true)
 	b.turnStarts(clock(12, 0), "ACME-1", claim.RoleImplementer)
 	return b.build()
@@ -226,17 +210,11 @@ func lingeringParentWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
 	b.capped(2)
 	b.boot(clock(9, 0))
-	b.file(clock(9, 5), "ACME-1", filing{Title: "Ship the ACME-1 change", Status: "todo", Rank: "a1", Labels: handedToLegion})
-	b.rootPromoted(clock(9, 5), "ACME-1")
-	architect := eventActor{Kind: "session", ID: string(b.token("ACME-1", claim.RoleArchitect))}
+	promotedRoot(b, clock(9, 5), "ACME-1", "a1")
 	b.filedBy(clock(9, 10), "ACME-2", filing{Title: "Ship the ACME-2 change", Parent: "ACME-1", Tree: "ACME-1", Status: "triage", Rank: "a2"},
-		architect)
+		b.session("ACME-1", claim.RoleArchitect))
 	b.daemonWrites(clock(9, 11), "ACME-2", "todo")
-	b.turnEnds(clock(9, 20), "ACME-1", claim.RoleArchitect)
-	b.registered(clock(9, 20), "ACME-1", true)
-	b.info(clock(9, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-1", "tree", "ACME-1",
-		"generation", b.generation("ACME-1"), "children", 1)
-	b.slotReleased(clock(9, 20), "ACME-1")
+	b.rootWaitsForChildren(clock(9, 20), "ACME-1", 1)
 	b.childStarts(clock(9, 20), "ACME-2")
 	b.file(clock(10, 0), "ACME-3", filing{Title: "Ship the ACME-3 change", Parent: "ACME-2", Status: "backlog", Rank: "a3"})
 	b.file(clock(10, 10), "ACME-4", filing{Title: "Ship the ACME-4 change", Parent: "ACME-2", Tree: "ACME-1", Status: "todo", Rank: "a4"})
@@ -274,17 +252,11 @@ func childrenAgainWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
 	b.capped(2)
 	b.boot(clock(9, 0))
-	b.file(clock(9, 5), "ACME-1", filing{Title: "Ship the ACME-1 change", Status: "todo", Rank: "a1", Labels: handedToLegion})
-	b.rootPromoted(clock(9, 5), "ACME-1")
-	architect := eventActor{Kind: "session", ID: string(b.token("ACME-1", claim.RoleArchitect))}
+	promotedRoot(b, clock(9, 5), "ACME-1", "a1")
 	b.filedBy(clock(9, 10), "ACME-2", filing{Title: "Ship the ACME-2 change", Parent: "ACME-1", Tree: "ACME-1", Status: "triage", Rank: "a2"},
-		architect)
+		b.session("ACME-1", claim.RoleArchitect))
 	b.daemonWrites(clock(9, 11), "ACME-2", "todo")
-	b.turnEnds(clock(9, 20), "ACME-1", claim.RoleArchitect)
-	b.registered(clock(9, 20), "ACME-1", true)
-	b.info(clock(9, 20), "admission: an issue waits for the Dispatch children under it", "issue", "ACME-1", "tree", "ACME-1",
-		"generation", b.generation("ACME-1"), "children", 1)
-	b.slotReleased(clock(9, 20), "ACME-1")
+	b.rootWaitsForChildren(clock(9, 20), "ACME-1", 1)
 	b.childStarts(clock(9, 20), "ACME-2")
 	b.file(clock(9, 30), "ACME-3", filing{Title: "Ship the ACME-3 change", Parent: "ACME-2", Status: "backlog", Rank: "a3"})
 	b.edit(clock(10, 0), "ACME-3", setStatus(record.DoneStatus))
@@ -307,8 +279,7 @@ func childrenAgainWindow(t *testing.T) Window {
 func linkPastReviewWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
 	b.boot(clock(9, 0))
-	b.file(clock(9, 5), "ACME-1", filing{Title: "Ship the ACME-1 change", Status: "todo", Rank: "a1", Labels: handedToLegion})
-	b.rootPromoted(clock(9, 5), "ACME-1")
+	promotedRoot(b, clock(9, 5), "ACME-1", "a1")
 	b.file(clock(9, 10), "ACME-2", filing{Title: "Agree the shelf names with the warehouse", Status: "backlog", Rank: "a2"})
 	b.rootDesigned(clock(9, 20), "ACME-1")
 	b.segmentEnds(clock(9, 40), "ACME-1", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
@@ -336,29 +307,15 @@ type issueHours struct {
 // alone, and for a fact of the record the trace could not place; it answers the record's scorecard.
 func assertRecordedHours(t *testing.T, window Window, want []issueHours) Scorecard {
 	t.Helper()
-	trace, err := BuildTrace(window)
-	if err != nil {
-		t.Fatalf("build the trace: %v", err)
-	}
-	if len(trace.Unplaced) != 0 {
-		t.Errorf("the trace could not place %+v", trace.Unplaced)
-	}
+	trace := placedTrace(t, window)
 	lined := lineTimeline(trace, ranksOf(trace), trace.ruleAt)
 	for _, issue := range want {
-		alone := Timeline{From: lined.From, To: lined.To, Issues: map[string]*Course{}}
-		if c := lined.Issues[issue.key]; c != nil {
-			alone.Issues[issue.key] = c
-		}
-		card := Measure(alone)
+		card := measureAlone(lined, issue.key)
 		assertNear(t, issue.key+"'s inFlight.hours", card.InFlight.Hours, issue.inFlight)
 		assertNear(t, issue.key+"'s startedWithoutSlot.hours", card.StartedWithoutSlot.Hours, issue.b)
 		assertNear(t, issue.key+"'s waitOnlyForSlot.hours", card.WaitOnlyForSlot.Hours, issue.a)
 	}
-	card, err := Score(window)
-	if err != nil {
-		t.Fatalf("score the record: %v", err)
-	}
-	return card
+	return scoreTrace(trace)
 }
 
 // assertSnapshotHours fails for each issue of want whose hours in either reading of started work
@@ -368,12 +325,17 @@ func assertRecordedHours(t *testing.T, window Window, want []issueHours) Scoreca
 func assertSnapshotHours(t *testing.T, result RunResult, want []issueHours) {
 	t.Helper()
 	for _, issue := range want {
-		alone := Timeline{From: result.snapshot.From, To: result.snapshot.To, Issues: map[string]*Course{}}
-		if c := result.snapshot.Issues[issue.key]; c != nil {
-			alone.Issues[issue.key] = c
-		}
-		card := Measure(alone)
+		card := measureAlone(result.snapshot, issue.key)
 		assertNear(t, "the snapshot's "+issue.key+"'s startedWithoutSlot.hours", card.StartedWithoutSlot.Hours, issue.b)
 		assertNear(t, "the snapshot's "+issue.key+"'s waitOnlyForSlot.hours", card.WaitOnlyForSlot.Hours, issue.a)
 	}
+}
+
+// measureAlone is the Scorecard of key's course alone in timeline, over timeline's span.
+func measureAlone(timeline Timeline, key string) Scorecard {
+	alone := Timeline{From: timeline.From, To: timeline.To, Issues: map[string]*Course{}}
+	if c := timeline.Issues[key]; c != nil {
+		alone.Issues[key] = c
+	}
+	return Measure(alone)
 }

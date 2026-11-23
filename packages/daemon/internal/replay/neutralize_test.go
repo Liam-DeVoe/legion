@@ -2,7 +2,6 @@ package replay
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"log/slog"
 	"maps"
@@ -22,9 +21,9 @@ import (
 // The private-looking names of the window the neutralize tests write: a project and another
 // project, a person's email and login, a repository, a machine, a home directory, a session's
 // title, a label, a component, a priority, free text, a wiki link, a uuid of a document and of a
-// session, a document's digest, and a word no rule knows to be a name (privateWord, which the
-// tests deny). The tailnet host is built at run time, so no file of the repository holds a host
-// name of that form.
+// session, a document's digest, the claim token of a worker, and a word no rule knows to be a name
+// (privateWord, which the tests deny). The tailnet host is built at run time, so no file of the
+// repository holds a host name of that form.
 const (
 	privateEmail    = "ops.lead@hushcorp.example"
 	privateLogin    = "opslead-hush"
@@ -32,6 +31,7 @@ const (
 	privateArtifact = "1b4e28ba-2fa1-41d2-883f-0016d3cca427"
 	privateSession  = "6fa459ea-ee8a-4ca4-894e-db77e160355e"
 	privateAsk      = "c0ffee00-1234-4abc-8def-0123456789ab"
+	privateToken    = "legion-nimbus-nimbus-412-implementer"
 	privateWord     = "megahush"
 )
 
@@ -43,18 +43,6 @@ var (
 	privateNames = []string{"nimbus", "orion", "hush", "vault", "tail5eed", "ts.net", privateArtifact, privateSession, privateAsk,
 		privateWord, "outage", "wiki", privateDigest}
 )
-
-// privateLine is one line of the window's log, as the daemon's JSON handler writes it.
-func privateLine(t *testing.T, at time.Time, level slog.Level, msg string, args ...any) json.RawMessage {
-	t.Helper()
-	var written bytes.Buffer
-	entry := slog.NewRecord(at, level, msg, 0)
-	entry.Add(args...)
-	if err := slog.NewJSONHandler(&written, &slog.HandlerOptions{Level: slog.LevelDebug}).Handle(context.Background(), entry); err != nil {
-		t.Fatal(err)
-	}
-	return bytes.TrimSuffix(written.Bytes(), []byte("\n"))
-}
 
 // privateEvent is one Dispatch event as the issue event log serves it.
 func privateEvent(t *testing.T, id, seq int64, key, project, kind string, at time.Time, actor, payload map[string]any) json.RawMessage {
@@ -76,18 +64,18 @@ func privateEvent(t *testing.T, id, seq int64, key, project, kind string, at tim
 func privateWindow(t *testing.T) string {
 	t.Helper()
 	at := func(minute int) time.Time { return time.Date(2026, time.March, 2, 10, minute, 0, 0, time.UTC) }
-	token := "legion-nimbus-nimbus-412-implementer"
+	token := privateToken
 	log := []json.RawMessage{
-		privateLine(t, at(1), slog.LevelInfo, "legion daemon started", "project", "NIMBUS", "admissionCap", 4, "boot", 7),
-		privateLine(t, at(2), slog.LevelInfo, "workflow: design gate opened", "issue", "NIMBUS-400", "artifact", privateArtifact,
+		jsonLine(t, at(1), slog.LevelInfo, "legion daemon started", "project", "NIMBUS", "admissionCap", 4, "boot", 7),
+		jsonLine(t, at(2), slog.LevelInfo, gateOpenedLine, "issue", "NIMBUS-400", "artifact", privateArtifact,
 			"event", "approved", "version", 2),
-		privateLine(t, at(3), slog.LevelInfo, "workflow: phase changed", "issue", "NIMBUS-412", "tree", "NIMBUS-400", "from", "implementing",
+		jsonLine(t, at(3), slog.LevelInfo, phaseChangedLine, "issue", "NIMBUS-412", "tree", "NIMBUS-400", "from", "implementing",
 			"to", "testing", "trigger", "implementation_ready", "status", "testing"),
-		privateLine(t, at(4), slog.LevelInfo, "admission waits for what this issue waits on", "issue", "NIMBUS-412", "blockers", []string{"ORION-77"}),
-		privateLine(t, at(5), slog.LevelInfo, "supervise: a turn started", "claim", token, "generation", 3, "delivery", "outbox:9"),
-		privateLine(t, at(6), slog.LevelError, "supervise: claim failed", "claim", token, "cause", "launch_refused",
+		jsonLine(t, at(4), slog.LevelInfo, "admission waits for what this issue waits on", "issue", "NIMBUS-412", "blockers", []string{"ORION-77"}),
+		jsonLine(t, at(5), slog.LevelInfo, "supervise: a turn started", "claim", token, "generation", 3, "delivery", "outbox:9"),
+		jsonLine(t, at(6), slog.LevelError, "supervise: claim failed", "claim", token, "cause", "launch_refused",
 			"why", "launch "+token+": dial tcp: lookup "+privateHost+": no such host ("+privateWord+" network)"),
-		privateLine(t, at(7), slog.LevelInfo, "supervise: suspended", "claim", "legion-nimbus-controller", "by", "released",
+		jsonLine(t, at(7), slog.LevelInfo, "supervise: suspended", "claim", "legion-nimbus-controller", "by", "released",
 			"reason", "the issue's pod has been idle for the release period"),
 	}
 	person := map[string]any{"kind": "user", "id": privateEmail}
@@ -166,8 +154,8 @@ func privateWindow(t *testing.T) string {
 	return dir
 }
 
-// shapeOf is v's shape: every member's name in order, every list's length and every value's JSON
-// type, each value itself left out.
+// shapeOf is the shape of the JSON value raw: every member's name in order, every list's length and
+// every value's JSON type, each value itself left out.
 func shapeOf(t *testing.T, raw []byte) any {
 	t.Helper()
 	value, err := decodeOrdered(raw)
@@ -249,24 +237,7 @@ func neutralizePrivate(t *testing.T) (in, out string, names NeutralMap) {
 // readable by its owner alone, and holds the names it returned.
 func TestNeutralizeLeavesNoPrivateNameAndKeepsTheShapes(t *testing.T) {
 	in, out, names := neutralizePrivate(t)
-	err := filepath.WalkDir(out, func(path string, entry os.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		for _, name := range privateNames {
-			if bytes.Contains(bytes.ToLower(data), bytes.ToLower([]byte(name))) {
-				t.Errorf("%s still holds %q", path, name)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	assertNoneHeld(t, out, privateNames, true)
 
 	recorded, err := ReadWindow(in)
 	if err != nil {
@@ -358,14 +329,14 @@ func TestNeutralizeRenamesANameTheSameInEveryFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	token := "legion-acme-acme-2-implementer"
+	const token = "legion-acme-acme-2-implementer"
 	want := []LogLine{
 		DaemonStarted{LineHead: lines[0].Head(), Project: "ACME", AdmissionCap: 4},
 		GateOpened{LineHead: lines[1].Head(), Issue: root, Artifact: names.IDs[privateArtifact], Event: "approved", Version: 2},
 		PhaseChanged{LineHead: lines[2].Head(), Issue: child, Tree: root, From: "implementing", To: "testing", Trigger: "implementation_ready", Status: "testing"},
 		WaitsOnIssues{LineHead: lines[3].Head(), Issue: child, Blockers: []string{other}},
-		TurnStarted{LineHead: lines[4].Head(), Claim: ClaimRef{Token: "legion-acme-acme-2-implementer", Issue: child, Role: "implementer"}, Generation: 3, Delivery: "outbox:9"},
-		ClaimFailed{LineHead: lines[5].Head(), Claim: ClaimRef{Token: "legion-acme-acme-2-implementer", Issue: child, Role: "implementer"}, Cause: "launch_refused",
+		TurnStarted{LineHead: lines[4].Head(), Claim: ClaimRef{Token: token, Issue: child, Role: "implementer"}, Generation: 3, Delivery: "outbox:9"},
+		ClaimFailed{LineHead: lines[5].Head(), Claim: ClaimRef{Token: token, Issue: child, Role: "implementer"}, Cause: "launch_refused",
 			Why: "launch " + token + ": dial tcp: lookup host-1.example.invalid: no such host (withheld network)"},
 		Suspended{LineHead: lines[6].Head(), Claim: ClaimRef{Token: "legion-acme-controller", Role: "controller"}, By: "released",
 			Reason: "the issue's pod has been idle for the release period"},
@@ -518,12 +489,12 @@ func TestNeutralizeRenamesEveryAddressToADocumentationOne(t *testing.T) {
 		host    = "vault-runner.hush.internal"
 	)
 	at := time.Date(2026, time.March, 2, 10, 8, 0, 0, time.UTC)
-	token := "legion-nimbus-nimbus-412-implementer"
+	token := privateToken
 	kept := "via 127.0.0.1:8080, [::1]:9000, 0.0.0.0:13371, 192.0.2.1, 198.51.100.7 and [2001:db8::42]:80"
 	recorded.Log = append(recorded.Log,
-		privateLine(t, at, slog.LevelWarn, processDisplacedLine, "claim", token, "incarnation", "5e0c1a01", "process", "pod/nimbus-412",
+		jsonLine(t, at, slog.LevelWarn, processDisplacedLine, "claim", token, "incarnation", "5e0c1a01", "process", "pod/nimbus-412",
 			"observed", "gone", "detail", "dial tcp "+worker+":13371: connect: connection refused; the pod on "+host+" is gone"),
-		privateLine(t, at.Add(time.Minute), slog.LevelWarn, processDiedLine, "claim", token, "incarnation", "5e0c1a02", "observed", "gone",
+		jsonLine(t, at.Add(time.Minute), slog.LevelWarn, processDiedLine, "claim", token, "incarnation", "5e0c1a02", "observed", "gone",
 			"detail", "dial tcp ["+cluster+"]:443 from "+another+" "+kept, "podEnd", "", "chargedBefore", false))
 	recorded.Lines = slices.Sorted(slices.Values(append(slices.Clone(recorded.Lines), processDisplacedLine, processDiedLine)))
 	recorded.Events["NIMBUS-412"] = append(slices.Clone(recorded.Events["NIMBUS-412"]), privateEvent(t, 17, 7, "NIMBUS-412", "NIMBUS",
@@ -571,7 +542,13 @@ func TestNeutralizeRenamesEveryAddressToADocumentationOne(t *testing.T) {
 	if !strings.HasSuffix(names.Hosts[host], ".example.invalid") {
 		t.Errorf("the worker's host became %q", names.Hosts[host])
 	}
-	err = filepath.WalkDir(out, func(path string, entry os.DirEntry, err error) error {
+	assertNoneHeld(t, out, []string{worker, another, cluster, host}, false)
+}
+
+// assertNoneHeld fails for each file under dir that holds one of names, in any case where foldCase.
+func assertNoneHeld(t *testing.T, dir string, names []string, foldCase bool) {
+	t.Helper()
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return err
 		}
@@ -579,9 +556,16 @@ func TestNeutralizeRenamesEveryAddressToADocumentationOne(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for _, address := range []string{worker, another, cluster, host} {
-			if bytes.Contains(data, []byte(address)) {
-				t.Errorf("%s still holds %s", path, address)
+		if foldCase {
+			data = bytes.ToLower(data)
+		}
+		for _, name := range names {
+			held := []byte(name)
+			if foldCase {
+				held = bytes.ToLower(held)
+			}
+			if bytes.Contains(data, held) {
+				t.Errorf("%s still holds %q", path, name)
 			}
 		}
 		return nil

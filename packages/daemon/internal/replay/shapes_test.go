@@ -53,20 +53,8 @@ func registeredAs(b *windowBuilder, at time.Time, key string, open, changesReque
 	b.info(at, "workflow: design gate registered", args...)
 }
 
-// claimFailedAs is key's role's claim failing at at, its worker having died three times, written
-// with cause, or as the releases before 97519812 wrote it, with no cause, where cause is "".
-func claimFailedAs(b *windowBuilder, at time.Time, key string, role claim.Role, cause string) {
-	b.t.Helper()
-	token := b.token(key, role)
-	delete(b.turns, token)
-	args := []any{"claim", string(token)}
-	if cause != "" {
-		args = append(args, "cause", cause)
-	}
-	args = append(args, "why", "deaths with work outstanding ran out", "launchFailures", 0, "deaths", 3, "promptFailures", 0,
-		"promptRetires", 0)
-	b.line(at, slog.LevelError, "supervise: claim failed", args...)
-}
+// deathsRanOut is the why of a failed claim whose worker's deaths with work outstanding ran out.
+const deathsRanOut = "deaths with work outstanding ran out"
 
 // The daemon's log holds older shapes of two line kinds, and the trace reads each as the release
 // that wrote it meant it (ParseLogLine). A window that holds a design gate registration in each of
@@ -88,8 +76,7 @@ func TestTheTraceReadsTheOlderShapesAsTheirReleasesMeantThem(t *testing.T) {
 		b.reaches(2 * time.Hour)
 		b.boot(clock(8, 0))
 		designed := func(key, rank string, filed, at time.Time, open, changes bool, written gateShape) {
-			b.file(filed, key, filing{Title: "Ship the " + key + " change", Status: "todo", Rank: rank, Labels: handedToLegion})
-			b.rootPromoted(filed, key)
+			promotedRoot(b, filed, key, rank)
 			b.turnEnds(at, key, claim.RoleArchitect)
 			registeredAs(b, at, key, open, changes, shape(written))
 			if open {
@@ -104,24 +91,13 @@ func TestTheTraceReadsTheOlderShapesAsTheirReleasesMeantThem(t *testing.T) {
 		if !older {
 			cause = string(supervise.CauseUnrecorded)
 		}
-		claimFailedAs(b, clock(9, 20), "ACME-4", claim.RoleImplementer, cause)
+		b.claimFailedAs(clock(9, 20), "ACME-4", claim.RoleImplementer, cause, deathsRanOut)
 		rootThrough(b, "ACME-5", "a5", clock(8, 25), clock(8, 40), builtMove{clock(9, 5), phase.Implementing, workflow.TriggerPlannerCompleted})
-		claimFailedAs(b, clock(9, 25), "ACME-5", claim.RoleImplementer, string(supervise.CauseDied))
+		b.claimFailedAs(clock(9, 25), "ACME-5", claim.RoleImplementer, string(supervise.CauseDied), deathsRanOut)
 		return b.build()
 	}
-	traceOf := func(t *testing.T, w Window) Trace {
-		t.Helper()
-		trace, err := BuildTrace(w)
-		if err != nil {
-			t.Fatalf("build the trace: %v", err)
-		}
-		if len(trace.Unplaced) != 0 {
-			t.Errorf("the trace could not place %+v", trace.Unplaced)
-		}
-		return trace
-	}
 	mixedWindow := window(t, true)
-	mixed, today := traceOf(t, mixedWindow), traceOf(t, window(t, false))
+	mixed, today := placedTrace(t, mixedWindow), placedTrace(t, window(t, false))
 
 	if keys := slices.Sorted(maps.Keys(mixed.Issues)); !slices.Equal(keys, slices.Sorted(maps.Keys(today.Issues))) {
 		t.Fatalf("the window in the older shapes holds the issues %v, in today's %v", keys, slices.Sorted(maps.Keys(today.Issues)))
@@ -193,12 +169,12 @@ func TestTheTraceReadsTheOlderShapesAsTheirReleasesMeantThem(t *testing.T) {
 		{"an older registration whose open is a string", gate, append(slices.Clone(gateHead), "version", 1, "open", "true",
 			"policy", "off")},
 		{"a failed claim whose cause is a number", "supervise: claim failed", []any{"claim", "legion-acme-acme-4-implementer",
-			"cause", 3, "why", "deaths with work outstanding ran out"}},
+			"cause", 3, "why", deathsRanOut}},
 		{"an older failed claim with no why", "supervise: claim failed", []any{"claim", "legion-acme-acme-4-implementer",
 			"launchFailures", 0, "deaths", 3}},
 	} {
 		t.Run(refused.name, func(t *testing.T) {
-			if line, err := ParseLogLine(privateLine(t, at, slog.LevelInfo, refused.msg, refused.args...)); err == nil {
+			if line, err := ParseLogLine(jsonLine(t, at, slog.LevelInfo, refused.msg, refused.args...)); err == nil {
 				t.Errorf("ParseLogLine reads it as %s; want it refused", describeReading(line))
 			}
 		})

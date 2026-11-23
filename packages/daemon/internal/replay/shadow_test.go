@@ -21,7 +21,7 @@ import (
 // close of the request Dispatch writes beside the approval that answers it.
 func (b *windowBuilder) answersApproval(at time.Time, key, ask string) {
 	b.t.Helper()
-	architect := eventActor{Kind: "session", ID: string(b.token(key, claim.RoleArchitect))}
+	architect := b.session(key, claim.RoleArchitect)
 	b.event(at, key, "ask.answered", builtPerson, map[string]any{
 		"id": ask, "issue_key": key, "author": architect, "kind": record.AskApproval, "state": "answered",
 		"approval": map[string]any{"artifact_id": b.artifact(key), "version": 1, "requested_version": 1},

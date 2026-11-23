@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,11 +12,10 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // compareFrom is the start of every scorecard these tests make up: a window of compareHours hours.
-var compareFrom = time.Date(2001, 3, 5, 9, 0, 0, 0, time.UTC)
+var compareFrom = clock(9, 0)
 
 // compareHours is the span of the windows these tests make up.
 const compareHours = 6
@@ -26,7 +24,7 @@ const compareHours = 6
 // R4 and three issues with times: ACME-1 with a first slot at the start and a done two hours on,
 // ACME-2 with a first slot half an hour on, ACME-3 with none.
 func sampleCard(hours int) Scorecard {
-	day := compareFrom.Format(time.DateOnly)
+	date := compareFrom.Format(time.DateOnly)
 	return Scorecard{
 		Source: "replay", From: compareFrom, To: compareFrom.Add(time.Duration(hours) * time.Hour),
 		Done: 20, WorkLeft: 3,
@@ -40,7 +38,7 @@ func sampleCard(hours int) Scorecard {
 		Waits:           map[string]WaitHours{string(WaitLinkRemoved): {Count: 2, Hours: 8}, string(WaitOpen): {Count: 1, Hours: 3}},
 		SlotHoursInTurn: 10, SlotHoursNoTurn: 5,
 		InFlight:              Occupancy{Average: 6, Max: 8, Hours: 30},
-		SlotsGivenByDay:       map[string]int{day: 10},
+		SlotsGivenByDay:       map[string]int{date: 10},
 		MedianSlotWaitMinutes: 10,
 		FirstSlot:             map[string]time.Time{"ACME-1": compareFrom, "ACME-2": compareFrom.Add(30 * time.Minute)},
 		DoneAt:                map[string]time.Time{"ACME-1": compareFrom.Add(2 * time.Hour)},
@@ -56,7 +54,7 @@ func sampleCard(hours int) Scorecard {
 // record lacks stands at 0 there, so any replayed value of it fails; and the numbers R5 tests not —
 // the issues the start state could not place and the first day apart — fail no branch.
 func TestValidationGaps(t *testing.T) {
-	day := compareFrom.Format(time.DateOnly)
+	date := compareFrom.Format(time.DateOnly)
 	shiftFirstSlots := func(minutes float64) func(*Scorecard) {
 		return func(card *Scorecard) {
 			shifted := map[string]time.Time{}
@@ -74,8 +72,8 @@ func TestValidationGaps(t *testing.T) {
 	}{
 		{"issues finished, 10%", "done", func(c *Scorecard) { c.Done = 22 }, func(c *Scorecard) { c.Done = 23 }},
 		{"issues finished below, 10%", "done", func(c *Scorecard) { c.Done = 18 }, func(c *Scorecard) { c.Done = 17 }},
-		{"slots given out on a day, 10%", "slotsGivenByDay[" + day + "]",
-			func(c *Scorecard) { c.SlotsGivenByDay = map[string]int{day: 11} }, func(c *Scorecard) { c.SlotsGivenByDay = map[string]int{day: 12} }},
+		{"slots given out on a day, 10%", "slotsGivenByDay[" + date + "]",
+			func(c *Scorecard) { c.SlotsGivenByDay = map[string]int{date: 11} }, func(c *Scorecard) { c.SlotsGivenByDay = map[string]int{date: 12} }},
 		{"median wait for a slot, 30%", "medianSlotWaitMinutes",
 			func(c *Scorecard) { c.MedianSlotWaitMinutes = 13 }, func(c *Scorecard) { c.MedianSlotWaitMinutes = 13.01 }},
 		{"hours waiting only for a slot, 30%", "waitOnlyForSlot.hours",
@@ -615,6 +613,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		}
 	}
 	names := measureNames(cards...)
+	head := tableHead("measure", coded(namesOf(record.SlotRules())))
 	for _, w := range []windowRecord{before, after} {
 		for _, at := range Branches() {
 			heading := "### " + w.Name + ", `" + at.Label() + "` ("
@@ -627,7 +626,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 			if end := strings.Index(table[len(heading):], "\n### "); end >= 0 {
 				table = table[:len(heading)+end]
 			}
-			if !strings.Contains(table, tableHead("measure", coded(namesOf(record.SlotRules())))) {
+			if !strings.Contains(table, head) {
 				t.Errorf("the table of %s on %s does not head a column for every rule:\n%s", w.Name, at.Label(), table)
 			}
 			for _, name := range names {
@@ -638,10 +637,7 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		}
 	}
 	t.Run("whole or in parts", func(t *testing.T) {
-		dsn := os.Getenv("LEGION_TEST_PG_DSN")
-		if dsn == "" {
-			t.Skip(testdb.SkipMessage)
-		}
+		dsn := replayDSN(t)
 		windows := []string{filepath.Join(fixtureWindowsDir, "review-and-test-kept"), filepath.Join(fixtureWindowsDir, "conflict-from-fitted-rate")}
 		small := &runPlan{branches: []BranchAt{MainBranchAt}, breakEven: []float64{1.1}, perDraw: 2}
 		config := CompareConfig{Windows: windows, Rules: []record.SlotRule{record.MainRule}, PGDSN: dsn, Parallel: 2, plan: small}
@@ -677,20 +673,8 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if partDocument != wholeDocument {
-			wholeLines, partLines := strings.Split(wholeDocument, "\n"), strings.Split(partDocument, "\n")
-			for i := range max(len(wholeLines), len(partLines)) {
-				var a, b string
-				if i < len(wholeLines) {
-					a = wholeLines[i]
-				}
-				if i < len(partLines) {
-					b = partLines[i]
-				}
-				if a != b {
-					t.Fatalf("the document written in parts differs from the one written whole at line %d:\nwhole: %s\nparts: %s", i+1, a, b)
-				}
-			}
+		if line, a, b, differ := firstDifference([]byte(wholeDocument), []byte(partDocument)); differ {
+			t.Fatalf("the document written in parts differs from the one written whole at line %d:\nwhole: %s\nparts: %s", line, a, b)
 		}
 		for _, line := range []string{"## The rule named best (R7)", "### review-and-test-kept, `main@1`", "### conflict-from-fitted-rate, `main@1`",
 			"- `legion-v20.42.5`, `main@1.1`"} {
@@ -699,13 +683,4 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 			}
 		}
 	})
-}
-
-// namesOf is the name of each of rules.
-func namesOf(rules []record.SlotRule) []string {
-	names := make([]string, 0, len(rules))
-	for _, rule := range rules {
-		names = append(names, rule.Name)
-	}
-	return names
 }

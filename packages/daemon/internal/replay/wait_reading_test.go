@@ -9,13 +9,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
-
-// childrenWaitLine is the msg of the daemon's line of a children wait it tells (WaitsForChildren).
-const childrenWaitLine = "admission: an issue waits for the Dispatch children under it"
 
 // doneBlockerWindow is a window from 09:00 to 13:00, its inputs reaching back to the daemon's boot
 // at 06:00, in which an issue in flight that the daemon has not started names a blocker already
@@ -36,9 +34,8 @@ func doneBlockerWindow(t *testing.T) Window {
 		BlockedBy: []string{"ACME-3"}})
 	b.rootPromoted(clock(6, 5), "ACME-1")
 	b.rootDesigned(clock(6, 20), "ACME-1")
-	architect := eventActor{Kind: "session", ID: string(b.token("ACME-1", claim.RoleArchitect))}
 	b.filedBy(clock(6, 30), "ACME-2", filing{Title: "Ship the ACME-2 change", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a2",
-		BlockedBy: []string{"ACME-1"}}, architect)
+		BlockedBy: []string{"ACME-1"}}, b.session("ACME-1", claim.RoleArchitect))
 	b.segmentEnds(clock(6, 50), "ACME-1", phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
 	b.turnEnds(clock(8, 30), "ACME-1", claim.RoleImplementer)
 	b.slotReleased(clock(8, 40), "ACME-1")
@@ -66,32 +63,24 @@ func gateVersionWindow(t *testing.T) Window {
 	b.turnEnds(clock(9, 20), "ACME-1", claim.RoleArchitect)
 	b.registered(clock(9, 20), "ACME-1", false)
 	b.approves(clock(10, 20), "ACME-1", "")
-	b.info(clock(10, 20), childrenWaitLine, "issue", "ACME-1", "tree", "ACME-1", "generation", 1, "children", 1)
-	b.info(clock(10, 20), gateOpenedLine, "issue", "ACME-1", "artifact", b.artifact("ACME-1"), "event", "approved", "version", 1)
+	b.waitsForChildren(clock(10, 20), "ACME-1", 1)
+	b.gateOpened(clock(10, 20), "ACME-1", intake.DispatchArtifactApproved, 1)
 	b.slotReleased(clock(10, 20), "ACME-1")
 	b.childStarts(clock(10, 20), "ACME-2")
 	b.turnStarts(clock(10, 20), "ACME-1", claim.RoleArchitect)
 	b.turnEnds(clock(10, 30), "ACME-1", claim.RoleArchitect)
 
-	architect := eventActor{Kind: "session", ID: string(b.token("ACME-1", claim.RoleArchitect))}
-	b.event(clock(11, 0), "ACME-1", "artifact.version", architect, map[string]any{
-		"artifact_id": b.artifact("ACME-1"), "diff": "", "name": "spec.md",
-		"version": map[string]any{"authors": []map[string]string{{"id": architect.ID, "kind": architect.Kind}}, "created_at": clock(11, 0),
-			"named": true, "number": 2, "summary": "The second version of the spec"},
-	})
-	b.info(clock(11, 0), gateClosedLine, "issue", "ACME-1", "artifact", b.artifact("ACME-1"), "event", "version", "version", 2)
-	b.info(clock(11, 0), "admission gives a slot back to an issue whose wait ended", "issue", "ACME-1", "phase", string(phase.Admitted))
-	b.slotTaken(clock(11, 0), "ACME-1")
+	b.specRevised(clock(11, 0), "ACME-1", 2)
+	b.gateClosed(clock(11, 0), "ACME-1", intake.DispatchArtifactVersion, 2)
+	b.waitEnded(clock(11, 0), "ACME-1", phase.Admitted)
 	plan := "00000000-0000-4000-8000-0000000000c1"
+	architect := b.session("ACME-1", claim.RoleArchitect)
 	b.event(clock(11, 30), "ACME-1", "artifact.approved", architect, map[string]any{
 		"actor": map[string]string{"id": architect.ID, "kind": architect.Kind}, "artifact_id": plan, "ask_id": nil, "name": "plan.md",
 		"reason": nil, "version": 1,
 	})
-	b.event(clock(12, 0), "ACME-1", "artifact.approved", builtPerson, map[string]any{
-		"actor": map[string]string{"id": builtPerson.ID, "kind": builtPerson.Kind}, "artifact_id": b.artifact("ACME-1"), "ask_id": nil,
-		"name": "spec.md", "reason": nil, "version": 2,
-	})
-	b.info(clock(12, 0), gateOpenedLine, "issue", "ACME-1", "artifact", b.artifact("ACME-1"), "event", "approved", "version", 2)
+	b.approvesVersion(clock(12, 0), "ACME-1", "", 2)
+	b.gateOpened(clock(12, 0), "ACME-1", intake.DispatchArtifactApproved, 2)
 	b.slotReleased(clock(12, 0), "ACME-1")
 	b.turnStarts(clock(12, 0), "ACME-1", claim.RoleArchitect)
 	b.turnEnds(clock(12, 10), "ACME-1", claim.RoleArchitect)
@@ -118,10 +107,9 @@ func touchingWaitsWindow(t *testing.T) Window {
 	b.slotReleased(clock(9, 20), "ACME-1")
 	b.file(clock(10, 0), "ACME-2", filing{Title: "Write the export's header row", Parent: "ACME-1", Status: "backlog", Rank: "a1"})
 	b.edit(clock(10, 0), "ACME-3", setStatus(record.DoneStatus))
-	b.info(clock(10, 0), childrenWaitLine, "issue", "ACME-1", "tree", "ACME-1", "generation", 1, "children", 1)
+	b.waitsForChildren(clock(10, 0), "ACME-1", 1)
 	b.edit(clock(11, 0), "ACME-2", setStatus(record.DoneStatus))
-	b.info(clock(11, 0), "admission gives a slot back to an issue whose wait ended", "issue", "ACME-1", "phase", string(phase.Admitted))
-	b.slotTaken(clock(11, 0), "ACME-1")
+	b.waitEnded(clock(11, 0), "ACME-1", phase.Admitted)
 	b.rootFirstPhase(clock(11, 0), "ACME-1")
 	return b.build()
 }
@@ -137,21 +125,15 @@ func toldBeforeStartWindow(t *testing.T) Window {
 	b := newWindowBuilder(t, clock(10, 0), clock(13, 0))
 	b.reaches(2 * time.Hour)
 	b.boot(clock(8, 0))
-	b.file(clock(8, 5), "ACME-1", filing{Title: "Ship the ACME-1 change", Status: "todo", Rank: "a1", Labels: handedToLegion})
-	b.rootPromoted(clock(8, 5), "ACME-1")
-	architect := eventActor{Kind: "session", ID: string(b.token("ACME-1", claim.RoleArchitect))}
+	promotedRoot(b, clock(8, 5), "ACME-1", "a1")
 	b.filedBy(clock(8, 10), "ACME-2", filing{Title: "Ship the ACME-2 change", Parent: "ACME-1", Tree: "ACME-1", Status: "triage", Rank: "a2"},
-		architect)
+		b.session("ACME-1", claim.RoleArchitect))
 	b.daemonWrites(clock(8, 11), "ACME-2", "todo")
-	b.turnEnds(clock(8, 20), "ACME-1", claim.RoleArchitect)
-	b.registered(clock(8, 20), "ACME-1", true)
-	b.info(clock(8, 20), childrenWaitLine, "issue", "ACME-1", "tree", "ACME-1", "generation", b.generation("ACME-1"), "children", 1)
-	b.slotReleased(clock(8, 20), "ACME-1")
+	b.rootWaitsForChildren(clock(8, 20), "ACME-1", 1)
 	b.childStarts(clock(8, 20), "ACME-2")
 	b.edit(clock(11, 0), "ACME-2", setStatus(record.DoneStatus))
 	b.leaves(clock(11, 0), "ACME-2", record.DoneStatus)
-	b.info(clock(11, 0), "admission gives a slot back to an issue whose wait ended", "issue", "ACME-1", "phase", string(phase.Admitted))
-	b.slotTaken(clock(11, 0), "ACME-1")
+	b.waitEnded(clock(11, 0), "ACME-1", phase.Admitted)
 	b.rootFirstPhase(clock(11, 0), "ACME-1")
 	return b.build()
 }
@@ -240,7 +222,7 @@ func TestTheStartStateMarksAChildrenWaitTheRecordTold(t *testing.T) {
 		t.Fatalf("replay the window: %v", err)
 	}
 	for _, line := range replayLog(t, out) {
-		if line.Msg == childrenWaitLine && line.Issue == "ACME-1" {
+		if line.Msg == waitsForChildrenLine && line.Issue == "ACME-1" {
 			t.Errorf("the replay tells ACME-1's children wait again at %s, which the record told before the start", stamp(line.Time))
 		}
 	}
