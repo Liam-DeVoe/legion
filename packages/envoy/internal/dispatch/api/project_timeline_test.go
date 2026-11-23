@@ -277,7 +277,7 @@ func TestTheProjectTimelinePagesNewestFirstAndHoldsTheBaseAnswer(t *testing.T) {
 // timeline alone, and one with no issue on that of each project whose default repository holds it
 // (INFRA-2916 R15), DELIV's for the deploy repository's and none for another repository's; each
 // project's merges are the pull requests its pr-open-to-merge day rows count for the window, and
-// DELIV's, which has a deploy source of its own, those its pr-open-to-merge items list; a deploy
+// those its pr-open-to-merge items list, DELIVX's too, which has no deploy source of its own; a deploy
 // is on the timeline of each project whose pull request it ships first, whenever that merged, the
 // one shipping both on both, and on DELIV's where it ships one with no issue; a deploy that ships
 // no pull request, and a failed run, are on the timeline of DELIV alone, whose deploy source reads
@@ -412,10 +412,9 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 
 	// Each project's merges are the pull requests its pr-open-to-merge day rows count for the window:
 	// the members the refresher wrote with the rows of the evals no deploy repository moves
-	// (evals.CountedIn), its own and those of the owner keys it reads. DELIV's are also the pull
-	// requests its pr-open-to-merge items list. DELIVX's items list none, since the items read
-	// reads a project's delivery rows under its own deploy source's rule (evalItemSources) and
-	// DELIVX has no source, though its day rows count its pull requests.
+	// (evals.CountedIn), its own and those of the owner keys it reads; and the pull requests its
+	// pr-open-to-merge items list, DELIVX's too, though it has no source: the items read reads each
+	// pull request of the window and each deploy repository under that repository's own rule.
 	for _, project := range projects {
 		members, err := evals.CountedIn(t.Context(), database.Pool, project, evals.KindDelivery, []string{""}, nil, evals.Range{From: from, To: to})
 		if err != nil {
@@ -432,25 +431,25 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 		if !slices.Equal(gotMerges[project], counted) {
 			t.Errorf("%s's merges = %v, want the %d pull requests its pr-open-to-merge day rows count: %v", project, gotMerges[project], len(counted), counted)
 		}
-	}
-	var listed []string
-	for offset := 0; ; offset += 200 {
-		query := url.Values{
-			"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)},
-			"row_kind": {"pull_request"}, "limit": {"200"}, "offset": {strconv.Itoa(offset)},
+		var listed []string
+		for offset := 0; ; offset += 200 {
+			query := url.Values{
+				"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)},
+				"row_kind": {"pull_request"}, "limit": {"200"}, "offset": {strconv.Itoa(offset)},
+			}
+			page := decodeBody[evalItemsResponse](t, dispatchRequest(t, handler, http.MethodGet,
+				"/api/v1/projects/"+project+"/evals/"+evals.SlugPROpenToMerge+"/items?"+query.Encode(), nil, "alice"))
+			for _, item := range page.Items {
+				listed = append(listed, item.Cols["repo"].(string)+"#"+strconv.Itoa(int(item.Cols["number"].(float64))))
+			}
+			if offset+200 >= page.Total {
+				break
+			}
 		}
-		page := decodeBody[evalItemsResponse](t, dispatchRequest(t, handler, http.MethodGet,
-			"/api/v1/projects/"+fixture.Project+"/evals/"+evals.SlugPROpenToMerge+"/items?"+query.Encode(), nil, "alice"))
-		for _, item := range page.Items {
-			listed = append(listed, item.Cols["repo"].(string)+"#"+strconv.Itoa(int(item.Cols["number"].(float64))))
+		slices.Sort(listed)
+		if !slices.Equal(gotMerges[project], listed) {
+			t.Errorf("%s's merges = %v, want the %d pull requests its pr-open-to-merge items list: %v", project, gotMerges[project], len(listed), listed)
 		}
-		if offset+200 >= page.Total {
-			break
-		}
-	}
-	slices.Sort(listed)
-	if !slices.Equal(gotMerges[fixture.Project], listed) {
-		t.Errorf("%s's merges = %v, want the %d pull requests its pr-open-to-merge items list: %v", fixture.Project, gotMerges[fixture.Project], len(listed), listed)
 	}
 	t.Logf("%s..%s: %s holds %d merges and %d runs, %s %d and %d; run %d ships both; %d merges name no issue, %d of the deploy repository; %d deploys ship none",
 		from.Format(time.DateOnly), to.Format(time.DateOnly), fixture.Project, len(gotMerges[fixture.Project]), len(gotRuns[fixture.Project]),

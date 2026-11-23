@@ -12,31 +12,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The tests of the live hub's items view (dispatch://INFRA-2918, D9): one eval's rows, the body of
 // GET /api/v1/projects/{key}/evals/{slug}/items, read through the route's own function and moved
 // by its eval's writes and, for pr-ci's run and job rows, by a change of a pull-request checks run.
-
-// seedHubSources saves HUB's own delivery settings: one deploy source reading the hub tests'
-// deploy repository under the rule seedHubSettings saves. The items read reads a project's
-// delivery and CI rows under the rule of its own first source (evalItemSources,
-// dispatch://INFRA-978), so pr-ci's runs and jobs are listed for HUB only once it has one. HUB
-// must exist.
-func seedHubSources(t *testing.T, database *store.Store) {
-	t.Helper()
-	settings, err := delivery.GetSettings(t.Context(), database.Pool)
-	if err != nil {
-		t.Fatalf("read the hub tests' delivery settings: %v", err)
-	}
-	if _, err := deliverytest.SaveRules(t.Context(), database.Pool, "HUB", settings); err != nil {
-		t.Fatalf("save HUB's own deploy source: %v", err)
-	}
-}
 
 // itemsLiveView is a subscribe frame's view of the rows of project's eval slug over window, with
 // query the rest of what the items route would be sent.
@@ -399,7 +381,6 @@ func TestARunJobChangeMarksThePrCiJobsView(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "HUB")
-	seedHubSources(t, rig.database)
 	ctx := t.Context()
 	at := rig.clock.Now()
 	day := measures.Midnight(at)
@@ -495,7 +476,6 @@ func TestTheFailuresItemsViewDropsAJobWhenItLeavesThe24Hours(t *testing.T) {
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Checks"})
-	seedHubSources(t, rig.database)
 	ctx := t.Context()
 	// Whole seconds, so the times Postgres stores are the ones the test compares with.
 	at := rig.clock.Now().Truncate(time.Second)
