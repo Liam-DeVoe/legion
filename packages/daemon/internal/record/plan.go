@@ -177,6 +177,12 @@ type PlanTask struct {
 	StepWait       StepWait
 	StepWaitSince  *time.Time
 	StartReason    string
+	// Base is the base the task's latest start fixed for its pull request (SetTaskBase, written
+	// where the start joins its needs): the base the plan gave it then (StoredPlan.PlannedBase),
+	// which stands for its run whatever a later version says of who needs it or whether it merges.
+	// "" for a task that has not started, and for one a release before this one started; BaseOf
+	// reads the plan's base for both.
+	Base string
 }
 
 // BranchOf is the GitHub branch task works on, for the task of the issue keyed issueKey: the branch
@@ -637,10 +643,16 @@ func (p StoredPlan) PlannedBase(issue Issue, task string) (base string, join boo
 
 // BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether
 // it is the task's join branch, which the join of its needs makes (join true): the one rule the
-// join's executor, the opener of a task's pull request, the task text and the judgement of a later
-// version of the plan read. It is the base the plan gives the task (PlannedBase), and a task or a
-// need p does not hold is its error.
+// join's executor, the opener of a task's pull request, the task text and the completion's check of
+// the pull request's base read. It is the base the task's latest start fixed (PlanTask.Base), which
+// stands for the task's run whatever a later version says, so a version that changes whether a
+// running task merges moves no base; and the base the plan gives (PlannedBase) for a task that has
+// not started, or that a release before this one started, whose row holds none. A task or a need p
+// does not hold is its error.
 func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool, err error) {
+	if of, ok := p.TaskOf(task); ok && of.Base != "" {
+		return of.Base, of.Base == of.BranchOf(issue.Key)+claim.JoinBranchSuffix, nil
+	}
 	return p.PlannedBase(issue, task)
 }
 
@@ -873,7 +885,7 @@ const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.tas
 	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
 	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told,
 	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.join_unmerged, plan_tasks.hold_reason, plan_tasks.step_wait,
-	plan_tasks.step_wait_since, plan_tasks.start_reason`
+	plan_tasks.step_wait_since, plan_tasks.start_reason, plan_tasks.base`
 
 // scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
 func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
@@ -886,7 +898,8 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf,
 			&task.OwnerRole, &task.Merges, &task.StepsByDefault, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
 			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold,
-			&task.Branch, &task.JoinConflicts, &task.JoinUnmerged, &task.HoldReason, &task.StepWait, &task.StepWaitSince, &task.StartReason); err != nil {
+			&task.Branch, &task.JoinConflicts, &task.JoinUnmerged, &task.HoldReason, &task.StepWait, &task.StepWaitSince, &task.StartReason,
+			&task.Base); err != nil {
 			return nil, err
 		}
 		task.Generation = uint64(generation)
@@ -972,13 +985,28 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 	return earlier, nil
 }
 
+// SetTaskBase writes base, the base a start of task of the plan of issue at generation fixed for
+// the task's pull request (PlanTask.Base), which stands for the task's run. A task the plan does
+// not hold is refused, naming it.
+func (s *Postgres) SetTaskBase(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, base string) error {
+	tag, err := tx.Exec(ctx, `update plan_tasks set base = $4 where issue = $1 and generation = $2 and task = $3`, issue, int64(generation), task, base)
+	if err != nil {
+		return fmt.Errorf("write the base %s of task %s of %s at generation %d: %w", base, task, issue, generation, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("write the base %s of task %s of %s at generation %d: the plan holds no such task", base, task, issue, generation)
+	}
+	return nil
+}
+
 // CarryPlan copies the plan of issue at generation from to generation to: every version, every task
 // and every step. carried is a hand-over that carries its run, whose tasks go on where they stood,
 // so each task keeps its state, its hold's reason, its place, its step's wait and since when, its
-// counts, its branch and the needs whose join conflicted, and the generation every name it gave a
-// task (AssignTaskBranch), since the run goes on in those branches. Without carried, the plan
-// starts from its start: each task waits at no act with no hold, no step wait, every count 0 and
-// no branch, and to has given no name yet. The names from gave stay given to the issue
+// counts, its branch, the base its start fixed and the needs whose join conflicted, and the
+// generation every name it gave a task (AssignTaskBranch), since the run goes on in those branches.
+// Without carried, the plan starts from its start: each task waits at no act with no hold, no step
+// wait, every count 0, no branch and no base, and to has given no name yet. The names from gave
+// stay given to the issue
 // (AssignTaskBranch reads them at every generation), so no task of a plan of several takes one of
 // them, the issue's branch among them, while the one task of a plan of one takes the issue's
 // branch, as an issue always did. Neither copies a count of starts, which step_starts keeps by
@@ -1007,10 +1035,10 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	if carried {
 		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason)
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason, base)
 			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason, base
 			from plan_tasks where issue = $1 and generation = $2`
 		names = []string{`insert into plan_branches (issue, generation, branch)
 			select issue, $3, branch from plan_branches where issue = $1 and generation = $2 on conflict do nothing`}

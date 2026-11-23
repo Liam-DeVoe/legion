@@ -2357,6 +2357,9 @@ type Store interface {
 	// SetStepWait writes what the step at a running task's place waits for, since at;
 	// StepWaitNone with a nil at ends its wait.
 	SetStepWait(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, wait StepWait, at *time.Time) error
+	// SetTaskBase writes the base a start of task fixed for its pull request (PlanTask.Base), which
+	// stands for the task's run.
+	SetTaskBase(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, base string) error
 	// AgentWaiter is the running task whose step has waited longest for agent (its wait agent, by
 	// the moment it began, then by task id), "" where no step waits for it.
 	AgentWaiter(ctx context.Context, tx pgx.Tx, issue string, generation uint64, agent claim.Agent) (string, error)

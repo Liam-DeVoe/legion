@@ -1223,8 +1223,8 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
 // has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (RunningTaskChanged; StartedTaskBaseMoved; StartedBeforePlans for an issue that ran before
-// Legion took plans; or AgentUnnamed for a version in which a fresh agent would need the name of
+// (RunningTaskChanged; MergeOfStartedActChanged; DoneTaskWouldMerge; StartedBeforePlans for an
+// issue that ran before Legion took plans; or AgentUnnamed for a version in which a fresh agent would need the name of
 // its role that another agent of the plan holds from an earlier version, refused before anything
 // is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
@@ -1855,9 +1855,9 @@ type Refusal struct {
 // the workflow for a version that changes or removes a running or held task (RunningTaskChanged,
 // HeldTaskChanged), one that changes whether the work of a task merges once its retro or its merge
 // has started or is held (MergeOfStartedActChanged), one that leaves a done task whose work did not
-// merge needed by no task (DoneTaskWouldMerge), one that moves the base of a running or held task
-// (StartedTaskBaseMoved), or one whose agent this release cannot name (AgentUnnamed). The message
-// holds every reason in its order, so a reader of the sentence alone reads every cause.
+// merge needed by no task (DoneTaskWouldMerge), or one whose agent this release cannot name
+// (AgentUnnamed). The message holds every reason in its order, so a reader of the sentence alone
+// reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
@@ -1903,18 +1903,6 @@ func MergeOfStartedActChanged(task, act string, held bool) plan.Refusal {
 func DoneTaskWouldMerge(task string) plan.Refusal {
 	return plan.Refusal{Task: task, Reason: fmt.Sprintf("task %s is done and its work did not merge, and in this version no task needs it, "+
 		"so its work would merge by itself; a done task does not start again. Add a task that needs task %s, or keep a need on it.", task, task)}
-}
-
-// StartedTaskBaseMoved is the reason a later version of the plan is refused when it moves the
-// base of task, the branch its pull request is based on (the workflow reads it from the plan), from
-// base to next while task has started and is not stopped: it is running or held. The task started
-// on base, and its later steps would be told next, which no start of it made: a version that adds
-// the first task that needs the task that merges moves that task's base to its join branch, and one
-// that removes the one task that needed a task moves its base to the default branch. Its owner
-// stops it first.
-func StartedTaskBaseMoved(task, base, next string) plan.Refusal {
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf(
-		"task %s has started on the base %s, and this version would base it on %s: stop it with stop_task before you change its base.", task, base, next)}
 }
 
 // AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task,

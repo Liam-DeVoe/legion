@@ -16,14 +16,19 @@ import (
 // startTaskCopy gives s's task its branch at a start of the task, in the transaction
 // that starts it (record.Store.AssignTaskBranch: once, the issue's own branch for the first task of
 // the generation to start where no earlier generation gave it, or the one task of a plan of one,
-// else the first give of the task's slug no generation of the issue gave), and answers whether it
-// queued the join of the task's needs. A task whose branch is not the
-// issue's own, or that needs other tasks, gets one task_branch row (record.TaskBranch), which makes
-// its branch on GitHub at the joined work of its needs and ends with the fact that starts its step
-// (intake.TaskJoined). The task that holds the issue's own branch and needs none queues nothing:
-// the issue_branch row its first step queues makes that branch (gateOpened). Its one caller is the
-// start of every step (Engine.start), at each start of a task, the first and a start again. A task
-// the plan does not hold is refused, naming it.
+// else the first give of the task's slug no generation of the issue gave), fixes the base of the
+// task's pull request for its run, and answers whether it queued the join of the task's needs. The
+// base is the one the plan gives at this start (record.StoredPlan.PlannedBase), read once the task
+// holds its branch, which its join branch is named from, and written on its row
+// (record.Store.SetTaskBase): every reader of a task's base reads it (BaseOf) until the task's
+// next start, whatever a later version says of who needs it or whether it merges. A task whose
+// branch is not the issue's own, or that needs other tasks, gets one task_branch row
+// (record.TaskBranch), which makes its branch on GitHub at the joined work of its needs and ends
+// with the fact that starts its step (intake.TaskJoined). The task that holds the issue's own branch
+// and needs none queues nothing: the issue_branch row its first step queues makes that branch
+// (gateOpened). Its one caller is the start of every step (Engine.start), at each start of a task,
+// the first and a start again, and the join again at a new generation (joinAgain). A task the plan
+// does not hold is refused, naming it.
 func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (bool, error) {
 	issue, task := s.issue, s.walk.Task
 	branch, err := e.store.AssignTaskBranch(ctx, tx, issue.Key, issue.Generation, task)
@@ -40,6 +45,13 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (boo
 	row, ok := stored.TaskOf(task)
 	if !ok {
 		return false, fmt.Errorf("start the copy of task %s of %s: its plan holds no such task", task, issue.Key)
+	}
+	base, _, err := stored.PlannedBase(issue, task)
+	if err != nil {
+		return false, err
+	}
+	if err := e.store.SetTaskBase(ctx, tx, issue.Key, issue.Generation, task, base); err != nil {
+		return false, err
 	}
 	if branch == claim.IssueBranch(issue.Key) && len(row.Needs) == 0 {
 		return false, nil

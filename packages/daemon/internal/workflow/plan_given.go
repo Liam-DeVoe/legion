@@ -112,9 +112,9 @@ type givenVersion struct {
 // version changes or removes must wait or be stopped: a running task is refused, and so is a held
 // task, one reason for each, and so is a task that is done or left the workflow. A version that
 // changes whether the work of a task it leaves as it is merges by itself is refused only where that
-// task stands at its retro or its merge (mergeChangeRefusals). A version that moves the base of a
-// task that has started and is not stopped is refused too, so a task's later steps are never told
-// a base its start did not make (startedBasesMoved). A plan given in a lingering tree is refused too.
+// task stands at its retro or its merge (mergeChangeRefusals). Such a version moves no base: a task
+// that has started keeps the base its start fixed (record.PlanTask.Base, BaseOf), and only the
+// start of its merge moves it. A plan given in a lingering tree is refused too.
 //
 // Each step of the version is named from every row of the issue as it stands now
 // (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
@@ -165,15 +165,7 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 				refused = append(refused, intake.HeldTaskChanged(id, taskPlaceWords(given.stored, task)))
 			}
 		}
-		next := nextPlan(given.stored, given.version, given.tasks, given.steps)
-		refused = append(refused, mergeChangeRefusals(*given.stored, next, given.changed)...)
-		if issue != nil {
-			moved, err := startedBasesMoved(*issue, given.stored, next, given.changed)
-			if err != nil {
-				return givenVersion{}, nil, err
-			}
-			refused = append(refused, moved...)
-		}
+		refused = append(refused, mergeChangeRefusals(*given.stored, nextPlan(given.stored, given.version, given.tasks, given.steps), given.changed)...)
 		if len(refused) > 0 {
 			return givenVersion{}, intake.PlanRefused(refused), nil
 		}
@@ -496,44 +488,6 @@ func mergeChangeRefusals(before, after record.StoredPlan, changed []string) []pl
 		}
 	}
 	return refused
-}
-
-// startedBasesMoved is one refusal (intake.StartedTaskBaseMoved) for each task of stored that has
-// started and is not stopped, running or held, whose base (record.StoredPlan.BaseOf) next, the plan
-// the version makes (nextPlan), moves. The task started on its base: its join, its branch and its
-// pull request stand on it, and its later steps would be told the base next gives (planToldOf),
-// which no start of the task made. A version moves the base of a task it leaves as it is where it
-// moves the merge: one that adds the first task that needs the task that merges, which then merges
-// no more and, with several needs, is based on its join branch; and one that removes the one task
-// that needed a task, which then merges, based on the default branch. A task that waits, and a
-// stopped task when it starts again, joins its needs on the base the plan gives at its start
-// (startTaskCopy), so neither is refused.
-//
-// A task the version changes is left to the refusal that names it already, so no task is named
-// twice (intake.RunningTaskChanged, intake.HeldTaskChanged), and so is a task at its retro or its
-// merge, a change of whose merge mergeChangeRefusals refuses. A plan that holds no task or no need
-// a base reads is an error (record.StoredPlan.BaseOf), which plan.Validate leaves no version to
-// reach.
-func startedBasesMoved(issue record.Issue, stored *record.StoredPlan, next record.StoredPlan, changed []string) ([]plan.Refusal, error) {
-	var refused []plan.Refusal
-	for _, task := range stored.Tasks {
-		if task.State != record.TaskRunning && task.State != record.TaskHeld || slices.Contains(changed, task.Task) ||
-			task.Place.Kind == record.PlaceRetro || task.Place.Kind == record.PlaceMerge {
-			continue
-		}
-		base, _, err := stored.BaseOf(issue, task.Task)
-		if err != nil {
-			return nil, err
-		}
-		moved, _, err := next.BaseOf(issue, task.Task)
-		if err != nil {
-			return nil, fmt.Errorf("version %d of the plan of %s: %w", next.Version.Version, issue.Key, err)
-		}
-		if moved != base {
-			refused = append(refused, intake.StartedTaskBaseMoved(task.Task, base, moved))
-		}
-	}
-	return refused, nil
 }
 
 // nextPlan is the plan stored becomes once the rows of a version given over it (givenRows) are
