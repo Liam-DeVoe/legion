@@ -162,16 +162,7 @@ func TestAStandInDeadlineNothingReadsEndsWithItsParent(t *testing.T) {
 	defer cancel()
 	done := stand.Done()
 	cancelParent(errParent)
-	if !Holds(time.Minute, Poll, func() bool {
-		select {
-		case <-done:
-			return true
-		default:
-			return false
-		}
-	}) {
-		t.Fatalf("a stand-in nothing read was still open a minute after its parent ended")
-	}
+	Receive(t, "the end of a stand-in nothing read, after its parent ended", done)
 	if stand.Err() != context.Canceled || context.Cause(stand) != errParent {
 		t.Errorf("the stand-in reads Err %v and cause %v, want %v and %v, its parent's", stand.Err(), context.Cause(stand), context.Canceled, errParent)
 	}

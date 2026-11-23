@@ -2390,12 +2390,32 @@ func deadlineOnceLogged(log *standInLog, line string) (context.Context, context.
 }
 
 // probeDeadlineOnceLogged puts in newProbeDeadline's place, until t ends, the deadline of a
-// `legion probe-image --probe-budget` run, whatever its budget: it passes once log holds line one
-// more time than it did when the probe began (deadlineOnceLoggedUnder).
-func probeDeadlineOnceLogged(t *testing.T, log *standInLog, line string) {
+// `legion probe-image --probe-budget <budget>` run: it passes once log holds line one more time
+// than it did when the probe began (deadlineOnceLoggedUnder). budget is the flag's value as the test
+// passes it, and the test fails at its end unless the probe asked for its deadline, each time it did,
+// with that budget: the stand-in drops the length it is handed, so this is what holds the flag's
+// value to the deadline the probe asks for.
+func probeDeadlineOnceLogged(t *testing.T, log *standInLog, line, budget string) {
+	t.Helper()
+	want, err := time.ParseDuration(budget)
+	if err != nil {
+		t.Fatalf("--probe-budget %q: %v", budget, err)
+	}
+	var mu sync.Mutex
+	var asked []time.Duration
 	previous := newProbeDeadline
-	t.Cleanup(func() { newProbeDeadline = previous })
-	newProbeDeadline = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	t.Cleanup(func() {
+		newProbeDeadline = previous
+		mu.Lock()
+		defer mu.Unlock()
+		if len(asked) == 0 || slices.ContainsFunc(asked, func(got time.Duration) bool { return got != want }) {
+			t.Errorf("the probe asked for its deadline with the budgets %v, want %s, the --probe-budget given, at least once and every time", asked, want)
+		}
+	})
+	newProbeDeadline = func(ctx context.Context, got time.Duration) (context.Context, context.CancelFunc) {
+		mu.Lock()
+		asked = append(asked, got)
+		mu.Unlock()
 		return deadlineOnceLoggedUnder(ctx, log, line)
 	}
 }
@@ -2592,7 +2612,7 @@ func TestProbeImagePassesWhenAPublicHostGoesDownAfterItsPositiveControl(t *testi
 	dir := t.TempDir()
 	cut := shTLSClient("node", dir, `[ "$1" != "public emSign" ] || exec sleep 30; `+tlsAnswers, down)
 	cut.timeout = time.Minute
-	probeDeadlineOnceLogged(t, standInLogAt(filepath.Join(dir, "runs")), "node public emSign")
+	probeDeadlineOnceLogged(t, standInLogAt(filepath.Join(dir, "runs")), "node public emSign", shortProbeBudget)
 	code, stdout, stderr := probeImageAt(theseTLSClients(cut), passingTLSPositiveControls, askedPublic, img.flags("--probe-budget", shortProbeBudget)...)
 	detail, ok := bootprobe.NoVerdict(stderr)
 	if code != bootprobe.NoVerdictExit || !ok || !strings.Contains(detail, "node public emSign: the probe's deadline ended it after ") || strings.Contains(stdout, bootprobe.OKPrefix) {
@@ -3302,7 +3322,7 @@ func TestTLSProbeKeepsAFailureSeenBeforeTheDeadline(t *testing.T) {
 	previous := tlsPositiveControlSpec
 	t.Cleanup(func() { tlsPositiveControlSpec = previous })
 	tlsPositiveControlSpec.timeout, tlsPositiveControlSpec.limitClock = time.Minute, curlRuns.clock
-	probeDeadlineOnceLogged(t, curlRuns, "curl "+aaaTLSSite.url)
+	probeDeadlineOnceLogged(t, curlRuns, "curl "+aaaTLSSite.url, shortProbeBudget)
 
 	code, stdout, stderr := probeImageWith(passingImageTLSClients, probeTLSPositiveControls, img.flags("--probe-budget", shortProbeBudget)...)
 

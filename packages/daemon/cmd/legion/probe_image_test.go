@@ -921,7 +921,7 @@ func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
 			if tc.cut {
 				reads := standInLogAt(filepath.Join(t.TempDir(), "reads"))
 				t.Setenv("LEGION_TEST_OVERLAY_READS", reads.path)
-				probeDeadlineOnceLogged(t, reads, "config get "+tc.file)
+				probeDeadlineOnceLogged(t, reads, "config get "+tc.file, shortProbeBudget)
 				args = append(args, "--probe-budget", shortProbeBudget)
 			}
 			code, stdout, stderr := probeImageWith(tc.clients, passingTLSPositiveControls, img.flags(args...)...)
