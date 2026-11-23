@@ -636,6 +636,9 @@ func makeReviewClone(ctx context.Context, run Runner, request ReviewRequest, rep
 	if err := configureCloneDefaultRepository(ctx, run, temporary); err != nil {
 		return err
 	}
+	if err := pointOriginHeadAtDefault(ctx, run, temporary, request.DefaultBranch); err != nil {
+		return err
+	}
 	err = inCheckoutPlace(ctx, request, func(bound time.Duration) error {
 		for _, step := range []struct {
 			dir  string
@@ -957,6 +960,29 @@ func originBranch(ctx context.Context, run Runner, dir, branch string) (string, 
 		return "", nil
 	}
 	return strings.TrimSpace(found.Stdout), nil
+}
+
+// pointOriginHeadAtDefault makes the review clone's refs/remotes/origin/HEAD name the issue's
+// default branch at origin, or removes it where the clone records no such branch, before
+// `jj git init --colocate` reads it. jj writes the branch origin's HEAD names into the repository's
+// configuration as its trunk() alias, `<branch>@origin`, with no present() around it. The clone is
+// a clone of the shared clone, whose HEAD can name the issue's own branch, and once that branch
+// leaves origin every jj command of the clone fails resolving trunk(): jj 0.46 resolves it for the
+// short prefixes of each commit it prints, so the next provision's `jj new` fails too. The default
+// branch is what trunk() means, and with no origin HEAD jj keeps its built-in trunk(), which
+// names its branches through present().
+func pointOriginHeadAtDefault(ctx context.Context, run Runner, dir, defaultBranch string) error {
+	gitDir := "--git-dir=" + filepath.Join(dir, ".git")
+	at, err := originBranch(ctx, run, dir, defaultBranch)
+	if err != nil {
+		return err
+	}
+	argv := []string{"git", gitDir, "update-ref", "--no-deref", "-d", "refs/remotes/origin/HEAD"}
+	if at != "" {
+		argv = []string{"git", gitDir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/" + defaultBranch}
+	}
+	_, err = RunChecked(ctx, run, argv, reviewProvisionEnv, dir)
+	return err
 }
 
 // holdsCommit is whether the review clone at dir holds commit, a full commit id, as a commit.

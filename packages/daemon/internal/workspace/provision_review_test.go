@@ -449,6 +449,13 @@ func TestAReviewCloneIsBroughtToTheCurrentHeadAtEachProvision(t *testing.T) {
 	if at := setup.Run(review, git, "rev-parse", "HEAD"); at != base {
 		t.Fatalf("after the issue's branch went, the review clone stands on %s, want the default branch's %s", at, base)
 	}
+	// The clone's trunk() is the default branch, which its jj resolves with the issue's branch
+	// gone: jj names trunk() after origin's HEAD at `jj git init`, and an alias naming the issue's
+	// branch fails every jj command once that branch goes (jj 0.46 resolves it for the short
+	// prefixes of each commit it prints, so the provision's own `jj new` fails too).
+	if trunk := setup.Run(review, jj, "log", "-R", review, "--ignore-working-copy", "-r", "trunk()", "--no-graph", "-T", "commit_id"); trunk != base {
+		t.Fatalf("the review clone's trunk() is %q after the issue's branch went, want the default branch's %s", trunk, base)
+	}
 	request.DefaultBranch = "release/v7"
 	if err := ProvisionReviewClone(context.Background(), run, request); err == nil || !strings.Contains(err.Error(), Bookmark(issue)) || !strings.Contains(err.Error(), "release/v7") {
 		t.Fatalf("a provision with neither branch at origin = %v, want a refusal naming both", err)
