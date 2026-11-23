@@ -255,8 +255,9 @@ type IdleDecision struct {
 //     is what makes a host that cannot report degrade safely;
 //
 //   - no live phase worker whose phase is open has a phase reminder due inside the idle period. A
-//     phase worker's phase is open when the issue's current phase is that worker's role and its
-//     claim serves the current generation;
+//     phase worker's phase is open when that worker's role is the role that works the issue's
+//     place (OpenRoleOf over the view's phase and pods.IdleView.PlaceRole: none at a place the
+//     owner works) and its claim serves the current generation;
 //
 //   - the pod has done nothing the daemon recorded for the whole idle period.
 //

@@ -17,14 +17,17 @@ import (
 // mergeForward is the daemon's act on a confirmed conflict that R0 found a reason to act on, why
 // (dispatch://INFRA-4374 R0, R1; classify.ConflictNeedsMerge): the issue keeps the phase it stands
 // in (record.StandsAt), no phase entry starts and no supervise row is written, so an issue past
-// its review takes no admission slot for the merge, and the implementer is asked, on its own role
-// topic, to merge the base forward onto the head and push (record.MergeForwardAsk). Outside
-// implementing it also tells the worker of that phase, when that is the tester, the reviewer or
+// its review takes no admission slot for the merge, and the agent of the task's last step of the
+// type implementation before the place the issue stands at (the owner, where that step's key is
+// owner; the implementer, for a run with no plan rows) is asked, on its own topic, to merge the
+// base forward onto the head and push (record.MergeForwardAsk). Outside implementing it also tells
+// the worker of that phase, when that is the tester, the reviewer or
 // the merger, to stop writing the workspace the roles share while the merge runs
 // (record.MergeForwardHold), and the architect that owns the issue one checks-red notice whose
 // phase is the phase the issue stays in and whose reason names the head, the base, why and that
 // the issue stays in its phase; the outbox routes that notice to the owning architect, as every
-// notice of the issue is routed. In implementing only the ask goes: the implementer's own
+// notice of the issue but an owner-step is routed. In implementing only the ask goes: the
+// implementer's own
 // assignment and its completion stand, and the architect is told nothing, since the work the
 // conflict needs is already where the issue stands.
 //
@@ -321,8 +324,10 @@ func mergeForwardReviewOwed(pr record.PullRequest) bool {
 // the role to wait for the daemon's landed message (record.MergeForwardLanded) and do the phase's
 // work at the head that message names (awaitedMergeForward). That wait is told only to a role the
 // ask's hold was sent to: every other completion is answered as above, at the head the pull
-// request stands at, since no hold told its role not to complete there. The implementer, whose
-// completion of retro is fenced, is sent no hold, the merge being its own to make; and an ask made
+// request stands at, since no hold told its role not to complete there. The retro's agent (the
+// agent of the task's last step of the type implementation, or the owner), whose completion of
+// retro is fenced, is sent no hold, since a hold goes only to the tester, the reviewer or the
+// merger of the phase; and an ask made
 // in implementing sends none, and stands into the next phase when the move there does not ask
 // again (mergeForwardOnEntry), as at a head the record no longer holds in a confirmed conflict.
 //

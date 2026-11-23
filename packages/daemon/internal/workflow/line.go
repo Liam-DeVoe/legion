@@ -16,7 +16,9 @@ import (
 
 // Walk is the line of phases an issue's run walks, and where its task stands on it. A run with
 // plan rows (record.Store.Plan at the issue's generation) walks the line of its one task's steps
-// (plan.Line): each step runs as the phase of its role, then Legion's own retro and merge. A run
+// (plan.Line): each step runs as the phase of its role, then Legion's own retro, and its merge
+// where the issue has a pull request record (a task whose issue has none is done when its retro
+// ends, TableOf). A run
 // with none, which is every issue that ran before plan rows existed, walks today's line,
 // phase.Order, as the steps of the task default (todaysSteps), with Stored false, and its table is
 // Table, row for row. Every behaviour that differs from today reads Stored and nothing else; the
@@ -35,7 +37,8 @@ type Walk struct {
 	Text string
 	// Steps are the task's steps, by place from 1: todaysSteps where the run has no plan rows.
 	Steps []record.PlanStep
-	// Line is the phases the task walks: one for each step, then retro and merging.
+	// Line is the phases of the task's line: one for each step, then retro and merging, which a
+	// task whose issue has no pull request record does not walk: its retro moves it to done.
 	Line []phase.Phase
 	// State and Place are where the task stands (record.PlanTask); zero where the run has no
 	// plan rows, whose place is the issue's phase alone.
