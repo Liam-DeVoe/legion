@@ -1622,6 +1622,22 @@ The fill starts only after the server listens and the registry of live server pr
 So the fill never runs inside a migration, and it never runs in a process that the registry refuses or has not admitted yet.
 A process that the registry has not admitted serves no answers read, so the pause below would read nothing.
 `DISPATCH_SEARCH_FILL=off`, read once at boot, defers the fill: the process starts no fill, takes no hold, writes no row of the table or its cursor, and logs `dispatch: the keyword fill is deferred; this process fills no keyword table` once (`setting=DISPATCH_SEARCH_FILL value=off`).
+The same line says whether each table holds a row: `search_text_versions_rows` and `search_text_versions_fill_rows`, each `none` or `some`, read by `select exists(select 1 from public.<table>)`.
+The read reads no column and stops at the first visible row, but it may scan dead rows before that one; the statement timeout below bounds that.
+Each read runs in a read-only transaction of its own, under three bounds:
+
+- `lock_timeout` of 5 s: Postgres ends a wait for a lock on the table with 55P03.
+
+- `statement_timeout` of 6 s: Postgres ends a read that runs on for any reason with 57014, so no read is left running at the server.
+
+- A client deadline of 10 s for each table, which also covers taking a connection from the pool, a dial or a wait for a free one included.
+  At that deadline pgx closes the connection and asks the server to cancel the statement.
+
+The two reads run one after the other before the server listens, so they delay the boot by at most 20 s in all; a lock on a table alone delays it by about 5 s for that table.
+The read takes ACCESS SHARE on its table and holds it until its transaction rolls back or its connection ends, normally milliseconds after the read; no statement timeout bounds how long it holds it.
+Row writes go on beside it, but a `TRUNCATE` or another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
+A read that fails, a timeout included, gives `unknown` and the error in `search_text_versions_rows_error` or `search_text_versions_fill_rows_error`, and the boot goes on.
+So the boot log alone, with no read of the database, shows whether a process started with the fill off found both tables empty.
 No route reads the table yet (Search, below), so search answers alike with the fill off, and a later boot with it `on` or unset starts the fill from the cursor where it stands.
 `on` and unset start the fill; any other value refuses the boot, naming the variable.
 
