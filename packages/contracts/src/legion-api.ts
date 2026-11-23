@@ -1031,17 +1031,19 @@ const legionHeldIssue = z.object({
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
  * `active` is every issue holding a slot and `waiting` the admission line, children as much as
  * roots, so one tree with three started children holds three slots. An issue holds one of the
- * cap's slots from the moment the daemon starts it until its work is past its review —
- * `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out
- * of the workflow, so `active` carries an issue at work, one `held` and one waiting on a
- * person, while an issue past its review — a merger at work in `merging`, one in `merging`
- * whose start a closed design gate holds, a merged root standing in `merging` while the rest
- * of its tree runs — and one whose phase has left the workflow, `done` or a status Dispatch
+ * cap's slots while the daemon has started it in a phase that keeps one — every phase but
+ * `accepting`, `retro` and `merging`, which hold none (in the default steps, the phases after its
+ * review); a step after `accepting` whose phase keeps one takes a slot again — until it is done or
+ * Dispatch takes it out of the workflow, so `active` carries an issue at work, one `held` and one
+ * waiting on a person, while an issue in `accepting`, `retro` or `merging` — a merger at work in
+ * `merging`, one in `merging` whose start a closed design gate holds, a merged root standing in
+ * `merging` while the rest of its tree runs, and an issue whose first step is an acceptance, which
+ * starts it on no slot — and one whose phase has left the workflow, `done` or a status Dispatch
  * took it out of the workflow with, are in neither list. A started issue that waits on another
- * issue before its review is missing from `active` too, other than the three roots that keep
- * their slot through such a wait: it holds no slot while it waits and stands in `waiting` and in
- * `blocked`, which is how a reader tells it from an issue a person parked, which stands in none
- * of the three (the rule: "Admission and the `legion` label" in
+ * issue in a phase that keeps a slot is missing from `active` too, other than the three roots that
+ * keep their slot through such a wait: it holds no slot while it waits and stands in `waiting`
+ * and in `blocked`, which is how a reader tells it from an issue a person parked, which stands in
+ * none of the three (the rule: "Admission and the `legion` label" in
  * docs/site/src/content/docs/legion/concepts.md). An issue holding a slot is in
  * `waiting` as well while its work comes back to it, an answered root until the pass that
  * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a
