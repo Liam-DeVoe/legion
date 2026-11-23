@@ -2441,70 +2441,21 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2026-09-22T09:17:56Z"]);
 });
 
-/** The slots line as the daemon writes it (spec R6), one group for every number it prints and one
- * for the first issue that waits for a slot. A count with no known time prints no oldest. */
-const SLOTS_LINE = new RegExp(
-  "^slots: (\\d+) of (\\d+) in use: (\\d+) working(?: \\(oldest [^)]+\\))?, " +
-    "(\\d+) stopped(?: \\(oldest [^)]+\\))?, (\\d+) person, (\\d+) issue, (\\d+) idle(?: \\(oldest [^)]+\\))?\\. " +
-    "Started work without a slot: (\\d+) wait only for a slot(?: \\(oldest [^)]+\\))?, " +
-    "(\\d+) in all(?: \\(oldest [^)]+\\))?\\. (\\d+) holders? ranks? below (\\S+), which waits for a slot\\.$"
-);
-
-// What the controller reads of the slots in `read_state` with no field (spec R6): the body's
-// slots line, on the line after the admission cap, every number of it the body's, and the legend
-// naming it. A summary that leaves the line out, or prints a number other than the body's, gives
-// the controller another reading than the one `legion state` prints and the tick notice carries.
+// What the controller reads of the slots in `read_state` with no field (spec R6): the slots line
+// the daemon wrote, on the line after the admission cap, and the legend naming it. A summary that
+// leaves the line out, or prints another, gives the controller another reading than the one
+// `legion state` prints and the tick notice carries. The state is the daemon's golden, read
+// through the client.
 test("read_state's summary prints the slots line", async () => {
-  const slots = {
-    inUse: 4,
-    cap: 4,
-    working: { count: 1, oldest: "2026-11-16T08:10:00Z" },
-    stopped: { count: 1 },
-    person: { count: 1, oldest: "2026-11-16T07:00:00Z" },
-    issue: { count: 0 },
-    idle: { count: 1, oldest: "2026-11-16T08:40:00Z" },
-    waitOnlyForSlot: { count: 1, oldest: "2026-11-16T07:20:00Z" },
-    startedWithoutSlot: { count: 2, oldest: "2026-11-16T06:30:00Z" },
-    belowFirstWaiting: { count: 3, first: "ACME-6" },
-    line:
-      "slots: 4 of 4 in use: 1 working (oldest 2026-11-16T08:10Z), 1 stopped, 1 person, 0 issue, " +
-      "1 idle (oldest 2026-11-16T08:40Z). Started work without a slot: 1 wait only for a slot " +
-      "(oldest 2026-11-16T07:20Z), 2 in all (oldest 2026-11-16T06:30Z). " +
-      "3 holders rank below ACME-6, which waits for a slot.",
+  const { admission } = daemonFixture("state.json") as {
+    readonly admission: { readonly slots: { readonly line: string } };
   };
-  const state = legionState({
-    admission: {
-      cap: 4,
-      free: 0,
-      active: ["ACME-1", "ACME-2", "ACME-3", "ACME-4"],
-      waiting: ["ACME-7", "ACME-6", "ACME-5"],
-      blocked: [{ issue: "ACME-7", blockedBy: ["ACME-8"] }],
-      slots,
-    },
-  });
-  const lines = await summaryLinesOf(recordingDaemon({ state }).daemon);
+  const lines = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
 
-  const capLine = lines.indexOf("admission cap 4 free 0");
+  const capLine = lines.indexOf("admission cap 5");
   expect(capLine).toBeGreaterThan(0);
-  expect(lines[capLine + 1]).toBe(slots.line);
-  const printed = lines.filter((line) => line.startsWith("slots: "));
-  expect(printed).toEqual([slots.line]);
-  // Every number the summary prints is the body's own, read from its fields rather than its line.
-  expect(printed[0]?.match(SLOTS_LINE)?.slice(1)).toEqual([
-    ...[
-      slots.inUse,
-      slots.cap,
-      slots.working.count,
-      slots.stopped.count,
-      slots.person.count,
-      slots.issue.count,
-      slots.idle.count,
-      slots.waitOnlyForSlot.count,
-      slots.startedWithoutSlot.count,
-      slots.belowFirstWaiting.count,
-    ].map(String),
-    slots.belowFirstWaiting.first,
-  ]);
+  expect(lines[capLine + 1]).toBe(admission.slots.line);
+  expect(lines.filter((line) => line.startsWith("slots: "))).toEqual([admission.slots.line]);
   // The legend says what each line of the summary is, the slots line among them.
   expect(lines[0]).toContain("slots");
 });

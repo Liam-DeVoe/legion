@@ -74,7 +74,7 @@ type IssueState struct {
 	// taken is made of.
 	Tree, Rank, RootRank string
 	// InFlight says the daemon has started the issue's work and it has not reached done or left
-	// the workflow (the windows' README, "The measures").
+	// the workflow (`replay.md`, "The measures").
 	InFlight bool
 	// Holds says it holds a slot of the cap, and Holder is the state of the slots reading it is in
 	// while it does ("" while it does not).
@@ -103,7 +103,7 @@ type CourseMove struct {
 
 // CourseWait is one wait of an issue on other issues: from the moment it began to the moment
 // nothing was left to wait on, or the issue moved past its review (zero while it stands), and what
-// ended it (the windows' README, "The measures": blocker_done, link_removed, child_done,
+// ended it (`replay.md`, "The measures": blocker_done, link_removed, child_done,
 // child_moved_out, gate_closed, moved_on, left_workflow, or open).
 type CourseWait struct {
 	Start, End time.Time
@@ -497,7 +497,7 @@ func recordedWaitStarts(t Trace, ranks rankFunc, at time.Time, keys []string) ma
 	return starts
 }
 
-// issueWaits is iss's waits on other issues as the measures count them (the windows' README, "The
+// issueWaits is iss's waits on other issues as the measures count them (`replay.md`, "The
 // measures": a stretch in which an issue in flight, standing before its review, waits on another
 // issue): each stretch of its link and children waits in which it stands in flight (flight) and
 // before its review (measuredStretches), in the order they began, each run of them that overlap

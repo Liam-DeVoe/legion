@@ -755,8 +755,8 @@ const legionIssue = z.object({
    * line orders its starting part by and `admission.slots` places a holder against the first issue
    * that waits for a slot by. Carried by the issues of the daemon's own project alone, and by no
    * issue of the body served a caller below 232 (`withoutRanksAndSlotStates`). */
-  rank: z.string().optional(),
-  rootRank: z.string().optional(),
+  rank: nonEmptyString.optional(),
+  rootRank: nonEmptyString.optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
    * when the daemon first recorded the issue and never changed after; absent on an issue the
    * workflow does not record (phase `unrecorded`, an operator's claim) (contract 31). */

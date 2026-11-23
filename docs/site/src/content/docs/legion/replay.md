@@ -45,6 +45,8 @@ The [CLI reference](/legion/legion/reference/cli/) gives each command and flag a
 
 - **Work segment**: one visit of an issue to a phase, from the visit's worker start to the recorded move that ends it.
   The worker start is the later of the move into the phase and the slot that the issue takes for it.
+  A visit that the admission pass ends (the design gate opening) ends at its last design registration, or with none at its worker's last turn's end.
+  A visit that the issue's leave cuts ends at the leave, and a visit with no move out in the window stays open.
 
 - **Stretch**: one visit of an issue to the phases from testing to merging, in which its head can conflict with its base.
 
@@ -60,7 +62,7 @@ A recorded window is a directory.
 | `window.json` | The project, the span (`from`, `to`), the reach (`before`), the cap from each change on, the release, commit and rule of each part of the span, the deployment's settings, the kinds of line that the log holds, the collector's commit, and the sha256 of each input file. |
 | `log.jsonl` | The daemon's lines in the reach and the span, one JSON object each, as the daemon writes them on standard error: `time`, `level`, `msg` and the attributes. |
 | `events/<KEY>.jsonl` | Each issue's Dispatch events, oldest first, as Dispatch's issue event log serves them. |
-| `merges/<owner>__<repo>.jsonl` | The first-parent commits of each base branch, which the conflict draw reads. |
+| `merges/<owner>__<name>.jsonl` | The first-parent commits of each base branch, which the conflict draw reads. |
 
 The tool reads these kinds of daemon line:
 
@@ -117,8 +119,8 @@ Where a process supervisor runs the daemon, give `collect` the file in which the
 #### From `kubectl logs`
 
 ```sh
-kubectl -n <namespace> logs <pod> --timestamps > daemon.log
-kubectl -n <namespace> logs <pod> --previous --timestamps > daemon-previous.log
+kubectl -n <namespace> logs <pod> > daemon.log
+kubectl -n <namespace> logs <pod> --previous > daemon-previous.log
 ```
 
 `collect` removes the time that `--timestamps` writes, and the `[pod/<pod>/<container>]` that `--prefix` writes, before each line.
@@ -135,7 +137,7 @@ For example, with Google Cloud Logging:
 ```sh
 gcloud logging read '<daemon filter> AND timestamp>="2026-09-28T00:00:00Z" AND timestamp<"2026-10-08T00:00:00Z"' \
   --project=<project> --order=asc --format=json \
-  | jq '[.[] | {timestamp, jsonPayload}]' > daemon-export.json
+  | jq -c '[.[] | {timestamp, jsonPayload}]' > daemon-export.json
 ```
 
 `<daemon filter>` selects the daemon's own container, for example `resource.type="k8s_container" AND resource.labels.namespace_name="<namespace>" AND resource.labels.container_name="<container>"`.
@@ -195,7 +197,7 @@ It writes the history into the window as `merges/<owner>__<name>.jsonl`, and wri
 
 ```sh
 legion replay collect-merges \
-  --repo <owner>/<repo> --branch main \
+  --repo <owner>/<name> --branch main \
   --from 2026-09-28T00:00:00Z --to 2026-10-08T00:00:00Z \
   --github-token-env GITHUB_TOKEN \
   --out windows/acme-2026-10-05
@@ -209,7 +211,7 @@ The draw reads that number to leave a stretch's own merge out of its count.
 
 | Flag | What it gives |
 | --- | --- |
-| `--repo <owner/name>` | The repository (required). |
+| `--repo <owner>/<name>` | The repository (required). |
 | `--branch <name>` | The base branch (required). |
 | `--from <time>`, `--to <time>` | The span, in RFC 3339 (required). |
 | `--github-token-env <VAR>` | The environment variable that holds the GitHub token, which `collect-merges` never prints (required). |
@@ -813,7 +815,7 @@ Each wait holds its slot under the grace for the shorter of its length and the g
 The lengths of the kept waits alone would leave out the grace that each longer wait holds, where most of the cost falls.
 The slot of a longer wait goes back at the first pass after the end of the grace, a little later, which the slot-hours leave out.
 
-The value of five minutes comes from window one of the comparison, 94 hours at a cap of 157:
+The value of five minutes comes from one deployment's recorded window of 94 hours at a cap of 157:
 
 | Reading of the window | Value |
 | --- | --- |
@@ -905,41 +907,17 @@ One order stays out of reach: while the next recorded start of a tree waits at a
 slots: 4 of 4 in use: 2 working (oldest 2026-10-05T10:12Z), 0 stopped, 1 person (oldest 2026-10-05T08:20Z), 0 issue, 1 idle (oldest 2026-10-05T09:30Z). Started work without a slot: 1 wait only for a slot (oldest 2026-10-05T09:58Z), 2 in all (oldest 2026-10-05T07:41Z). 2 holders rank below ACME-14, which waits for a slot.
 ```
 
-The daemon counts each holder in the first of these five states that is true of it:
-
-- `working`: a claim of the holder is in a turn, a start of one of its roles is queued, or a claim of it holds a task that no turn has taken yet.
-  Its time is the start of its oldest open turn, else the time at which its oldest start was queued, else the time of its oldest pending task.
-
-- `stopped`: its phase is held, or a claim of it is one that nothing will wake (`claim_stopped` in its `why`).
-  Its time is the start of the hold or of the stop.
-
-- `person`: it is a tree root that waits on a person, on an ask or on its design gate.
-  Its time is the start of that wait.
-
-- `issue`: it waits on another issue, an unfinished Dispatch blocker or an open child, and keeps its slot through the wait under the rule.
-  Its time is the start of the wait.
-
-- `idle`: none of the four is true.
-  Its time is the end of its last turn, or the moment at which it took its slot where that is later.
-
-The time after `oldest` is the earliest moment at which a holder of that count entered its state, in UTC to the minute.
-The second sentence gives the two readings of started work that waits for a slot.
-`wait only for a slot` is reading (a): the returned issues that hold no slot and that `admission.blocked` does not name.
-`in all` is reading (b): every returned issue that holds no slot, an issue that still waits on another issue among them.
-The last sentence counts the holders that rank below the first issue of the line that waits for a slot, in the line's own order.
-It reads `No issue waits for a slot.` when no issue does.
-
-`legion state --json` carries the same numbers as `admission.slots`, and each holder's state and its time on its slot (`state`, `since`).
-The controller's tick notice and the `legion` tool's `read_state` summary carry the line too.
+[Running Legion](/legion/legion/running-legion/#observe) says what each state and each count of that line means, and what `legion state --json` carries of it.
 A replay measures from the same states, so a reading of production and a replay use one set of words.
-`waitOnlyForSlot` is reading (a), `startedWithoutSlot` is reading (b), and `priorityTaken` places holders and waiting issues in the same order as the last sentence.
-[Running Legion](/legion/legion/running-legion/#observe) gives the rest of what `legion state` prints.
+`waitOnlyForSlot` is the line's `wait only for a slot`, `startedWithoutSlot` its `in all`, and `priorityTaken` places holders and waiting issues in the order of its last sentence ([The measures](#the-measures)).
 
 ## The assumptions
 
 A replay under a rule other than the one that made the record rests on assumptions about what the window would show under that rule.
 Each run names the assumptions that it used.
-Numbers 1 to 18 are the list of the tool's design, 19 to 25 come from its plan, and 26 to 37 are the tool's own.
+Numbers 1 to 18 are the assumptions that the review of the first replay, below, judged.
+Numbers 19 to 22 map the release at 9542c6fb onto today's workflow, 23 is the conflict path of the rule `main`, 24 is a daemon's downtime, and 25 is its reading of outside blockers.
+Numbers 26 to 37 are the tool's own.
 Each section below gives the assumption as the tool states it, and its verdict.
 It then gives the evidence in a recorded window, the direction in which the assumption moves each measure if it is wrong, and the reading of a window that would test it.
 
@@ -961,7 +939,7 @@ A first replay, a prototype outside this repository, replayed one deployment's r
 A review of it by a model of another family named the faults that the tool fixes.
 For assumptions 1 to 18, sound, doubtful and wrong are that review's verdicts.
 For assumptions 19 to 37, a verdict is the tool's own.
-Numbers from the design's record come from that deployment's daemon log over four days, in which every slot was in use for 99.95% of the time.
+Numbers from the prototype's record come from that deployment's daemon log over four days, in which every slot was in use for 99.95% of the time.
 That record is not in this repository.
 
 ### Assumption 1: A work segment takes its recorded time at any start and at any number in flight
@@ -972,7 +950,7 @@ The tool takes the slowdown factor f: a segment that starts with n issues in fli
 At f = 1, or where n = m, a segment keeps its recorded length.
 
 **Evidence in a recorded window.** _One step of load, read across a change of the rule._
-The design's record shows no slowdown from 186 to 228 issues in flight.
+The prototype's record shows no slowdown from 186 to 228 issues in flight.
 That step came with a change of the slot rule, so it does not separate the load from the rule.
 f is the slowdown for 42 more issues in flight, which is the size of that step.
 
@@ -1007,7 +985,7 @@ The tool keeps each stretch past the review at its recorded length and outcome, 
 
 **Evidence in a recorded window.** _Stretches past the review, with what ended each._
 The phase lines give each visit to accepting, retro and merging, with its time and the trigger that ended it.
-In the design's record, the architect or the merger sent work back within a median of 15 to 83 minutes.
+In the prototype's record, the architect or the merger sent work back within a median of 15 to 83 minutes.
 442 of 682 entries into accepting came back after a send-back.
 
 **If it is wrong.**
@@ -1041,7 +1019,7 @@ It keeps every other send-back loop at its recorded count and length.
 **Evidence in a recorded window.** _A conflict rate fitted on the window, and loops kept as recorded._
 The phase lines give each move back with its trigger, and the trace names its cause.
 `run` prints the conflict model: the window, and the stretches and conflicts, that it was fitted on, each coefficient with its interval, and the odds ratio for each doubling of the merges.
-In the design's record, that odds ratio was 1.21, with a 95% interval of 0.92 to 1.35, so the record does not show the merges term.
+In the prototype's record, that odds ratio was 1.21, with a 95% interval of 0.92 to 1.35, so the record does not show the merges term.
 
 **If it is wrong.**
 If a longer wait brings more conflicts than the fitted rate gives, the replay moves the measures so for a rule under which branches wait longer.
@@ -1072,7 +1050,7 @@ Under the rule that made the record, both give the record's times.
 **Evidence in a recorded window.** _The events that end each wait, and who made them._
 Dispatch's events give each link's removal, each child's move out and close, and each blocker's close.
 The admission lines and the design gate lines give the start of each wait.
-In the design's record, a Legion architect took the link off in 14 of the 21 link waits that ended, after a median of 43.8 hours.
+In the prototype's record, a Legion architect took the link off in 14 of the 21 link waits that ended, after a median of 43.8 hours.
 In the other 7, the blocker reached done, after a median of 36.0 hours.
 14 waits on children ended because a new spec version closed the parent's design gate.
 
@@ -1207,7 +1185,7 @@ The tool names the scenario that each run used: `none`, `drawn` or `drawn-done`.
 
 **Evidence in a recorded window.** _The issues that never start._
 A window shows each issue handed to Legion, and whether the record ever gave it a slot.
-In the design's record, 394 issues waited to start at one moment, 194 children and 200 roots.
+In the prototype's record, 394 issues waited to start at one moment, 194 children and 200 roots.
 A new root waited a median of 16.7 hours for its first slot.
 
 **If it is wrong.**
@@ -1241,7 +1219,7 @@ A rule that orders the line otherwise does so in its own code.
 **Evidence in a recorded window.** _The slots taken, in their order._
 The `admission: slot taken` lines give each slot taken, with its issue and its time.
 The admission lines that give a slot back to an issue whose work came back, or whose wait ended, name that issue.
-In the design's record, each slot that came free went first to the oldest returned issue whose wait had ended, and otherwise to new work.
+In the prototype's record, each slot that came free went first to the oldest returned issue whose wait had ended, and otherwise to new work.
 
 **If it is wrong.**
 If the daemon gave slots out in another order than its code gives, the replay moves the measures so.
@@ -1302,7 +1280,7 @@ A slower hand-out would make the waits for a slot of every rule longer alike.
 
 **Evidence in a recorded window.** _The time from a slot coming free to its hand-out._
 Each `admission: slot released` and `admission: slot taken` line gives its time and the slots in use.
-In the design's record, the median time from a slot coming free to its hand-out was 18 microseconds, and the longest was 88 seconds.
+In the prototype's record, the median time from a slot coming free to its hand-out was 18 microseconds, and the longest was 88 seconds.
 
 **If it is wrong.**
 If the daemon gave a free slot out later than the pass that freed it, the replay moves the measures so.
@@ -1329,7 +1307,7 @@ A pod kept longer would cost a rule that holds idle slots more than the replay c
 
 **Evidence in a recorded window.** _The daemon's release of idle pods._
 The daemon releases an issue pod that is idle for 10 minutes.
-In the design's record, it released 2,266 idle pods in 25 hours, which gave back 2,247.53 pod-hours.
+In the prototype's record, it released 2,266 idle pods in 25 hours, which gave back 2,247.53 pod-hours.
 The median time from a wake to the role's first turn was 160 seconds.
 
 **If it is wrong.**
@@ -1361,7 +1339,7 @@ That is the most time that a worker which never went cold could save.
 
 **Evidence in a recorded window.** _The wait before the work after a send-back._
 The phase lines give each move back, and the slot lines and the `supervise: launched` lines give the worker start after it.
-In the design's record, a send-back past the review waited a median of 16.8 to 18.0 minutes for its slot, and at most 142.4 minutes.
+In the prototype's record, a send-back past the review waited a median of 16.8 to 18.0 minutes for its slot, and at most 142.4 minutes.
 The daemon releases an issue pod that is idle for 10 minutes, so the worker after a longer wait can start in a new pod.
 
 **If it is wrong.**
@@ -1389,6 +1367,7 @@ A length that grows with the wait shows the time that `less-slot-wait` takes off
 Wrong in the first replay, which left out some covers and kept others too long.
 Either fault misstates the rule with covers.
 The tool runs the rule's own code, the rule `cover`, whose start may take a cover.
+Spec v4's rule is the candidate `cover` of [The slot rules](#the-slot-rules), whose choices `legion replay rules` prints.
 
 **Evidence in a recorded window.** _No record holds a cover._
 No daemon ran the rule `cover`, so no window shows a cover.
@@ -1515,7 +1494,7 @@ The tool takes what a conflicting head does as part of the rule: `merge_forward`
 **Evidence in a recorded window.** _The conflict moves of the record._
 A window of a release whose conflicting head moves back holds phase lines with the trigger `conflict`, or `checks_red` in older releases.
 Under `main`, a conflict keeps its phase, and the replay adds a merge-forward segment (assumption 23).
-In the design's record, 359 conflict rounds took 2,315 hours in four days.
+In the prototype's record, 359 conflict rounds took 2,315 hours in four days.
 
 **If it is wrong.**
 If a replay kept a recorded conflict loop for a release where a conflicting head keeps its phase, it would move the measures so.
@@ -1810,7 +1789,7 @@ The replay finishes each release and each pause stop of a role, and each issue b
 `run.json` counts them under `divergence.finished`.
 The replay's pause queues its stop rows on the simulated clock, as the daemon queues them on its own, so each pause stop finishes at the moment the record shows the pause.
 A segment's recorded length runs from its worker start, so the launch of its pod is inside it.
-In the design's record, the median time from a wake to the role's first turn was 160 seconds.
+In the prototype's record, the median time from a wake to the role's first turn was 160 seconds.
 
 **If it is wrong.**
 If pods and workspaces take longer when more issues start at once, the replay moves the measures so for a rule that starts more issues at once.

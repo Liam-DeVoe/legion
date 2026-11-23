@@ -339,14 +339,14 @@ function fixtureBody(name: string): Record<string, unknown> {
 
 /** A state body as a caller below the slots reading's contract (232) is served it: with no
  * `admission.slots`, no `rank` or `rootRank` on an issue, and no `state` or `since` on a slot,
- * the five keys shaping.go's withoutSlotsReading and withoutRanksAndSlotStates take off. */
-function withoutSlotsReading(state: Record<string, unknown>): Record<string, unknown> {
-  const copy = structuredClone(state);
-  if (isJsonObject(copy.admission)) {
-    delete copy.admission.slots;
+ * the five keys shaping.go's withoutSlotsReading and withoutRanksAndSlotStates take off. It
+ * takes the keys off `state` itself, which the caller reads fresh from its file. */
+function servedBelowSlotsReadingContract(state: Record<string, unknown>): Record<string, unknown> {
+  if (isJsonObject(state.admission)) {
+    delete state.admission.slots;
   }
-  if (isJsonObject(copy.issues)) {
-    for (const issue of Object.values(copy.issues)) {
+  if (isJsonObject(state.issues)) {
+    for (const issue of Object.values(state.issues)) {
       if (!isJsonObject(issue)) {
         continue;
       }
@@ -358,7 +358,7 @@ function withoutSlotsReading(state: Record<string, unknown>): Record<string, unk
       }
     }
   }
-  return copy;
+  return state;
 }
 
 /** The path of the first key the parse dropped: the first key present in `file` and absent from
@@ -2653,7 +2653,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     contract: _mark,
     lowestPluginContract: _lowest,
     ...rest
-  } = withoutSlotsReading(fixtureBody("state.json"));
+  } = servedBelowSlotsReadingContract(fixtureBody("state.json"));
   const capabilities = z.array(z.record(z.string(), z.unknown())).parse(rest.capabilities);
   expect(capabilities.some((row) => row.source === "caches")).toBeTrue();
   const withoutCachesSource = capabilities.map((row) => {

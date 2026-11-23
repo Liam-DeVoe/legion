@@ -75,8 +75,11 @@ var allowances = []allowance{
 	{"internal/store", "releaseMigrationConn", "R3", 2},
 	// A replay's own database is made and dropped on a connection of its own to the database its
 	// DSN names, which holds nothing of the daemon's: CREATE DATABASE and DROP DATABASE run in no
-	// transaction block, so neither can go through Transact.
-	{"internal/replay", "openReplayDatabase", "R3", 1},
+	// transaction block, so neither can go through Transact. The same connection then sets the new
+	// database's synchronous_commit, which must be set before the run's own pool opens on it. That
+	// connection is one *pgx.Conn, on which Transact's read of a lost commit's outcome has no second
+	// connection to read on (internal/ompsessions' reason below).
+	{"internal/replay", "openReplayDatabase", "R3", 2},
 	{"internal/replay", "(replayDatabase).drop", "R3", 1},
 }
 

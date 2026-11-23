@@ -50,8 +50,8 @@ func stateAt(c *Course, at time.Time) (IssueState, bool) {
 	return c.States[i].IssueState, true
 }
 
-// The two readings of started work that waits for a slot stand side by side (spec R4; the windows'
-// README, "The measures"): reading (b) counts each member of the line's returned part that holds
+// The two readings of started work that waits for a slot stand side by side (spec R4; `replay.md`,
+// "The measures"): reading (b) counts each member of the line's returned part that holds
 // no slot, reading (a) the same members while admission.blocked does not name them, and each
 // gives its average over the span, its largest count and its hours. Over six hours: ACME-6 waits
 // only for a slot from 09:00 to 10:00; ACME-1 is given back for a wait at 10:00, blocked to 11:00,
@@ -347,7 +347,7 @@ func TestReplayStatesAreTheProjectionsStates(t *testing.T) {
 // at 11:40 with the child's close, though the passes after its root's leave at 11:20 judge no wait
 // of it on its children (openChildren), and a child of it that the daemon recorded and that left
 // the workflow in backlog holds it no longer (recordOf). Both timelines count only the waits of an
-// issue in flight before its review (the windows' README, "The measures"): in childrenFirstWindow
+// issue in flight before its review (`replay.md`, "The measures"): in childrenFirstWindow
 // no wait of ACME-2, a child that has not started whose own first phase its open child holds from
 // 09:20 to 10:20, and in linkPastReviewWindow a link wait cut at the move past the review, though
 // its blocker is done only later (issueWaits). Both timelines count each wait by what ended it as

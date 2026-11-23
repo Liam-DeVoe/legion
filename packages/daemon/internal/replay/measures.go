@@ -15,17 +15,17 @@ import (
 // apart (Scorecard.FirstDayApart, assumption 6).
 const firstDay = 24 * time.Hour
 
-// Measure is the measures of R4 over tl's span (spec R4; the fixture windows' README, "The
-// measures"): the issues that reach done and the work left; the two readings of started work that
-// waits for a slot and the issues past their review with a slot and without; the share of pairs of
-// a holder and an issue that waits for a slot in which the holder ranks below; the rounds and
-// hours of the send-back loops by cause and the hours of the waits on other issues by what ended
-// them; the slot-hours with a worker in a turn and with none; the issues in flight; the slots
-// given out each day, the median wait for one and each issue's first; and, for a window longer
-// than a day, the same over its first day apart. It is the one code every scorecard is read by,
-// the record's (Score) and a replay's two timelines' (Run), so a gap between them is a gap of the
-// timelines and not of two readings. It fills the measures alone; the run or the record names the
-// rest.
+// Measure is the measures of R4 over tl's span (spec R4; `replay.md`, "The measures", and the
+// fixture windows' README for the rules it adds): the issues that reach done and the work left;
+// the two readings of started work that waits for a slot and the issues past their review with a
+// slot and without; the share of pairs of a holder and an issue that waits for a slot in which
+// the holder ranks below; the rounds and hours of the send-back loops by cause and the hours of
+// the waits on other issues by what ended them; the slot-hours with a worker in a turn and with
+// none; the issues in flight; the slots given out each day, the median wait for one and each
+// issue's first; and, for a window longer than a day, the same over its first day apart. It is the
+// one code every scorecard is read by, the record's (Score) and a replay's two timelines' (Run), so
+// a gap between them is a gap of the timelines and not of two readings. It fills the measures
+// alone; the run or the record names the rest.
 //
 // It reads each state of the timeline once, in time order, after one sort of all of them, and
 // keeps the pairs of priority taken by the places of their members in one order of the board

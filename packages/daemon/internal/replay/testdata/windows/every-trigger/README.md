@@ -1,14 +1,10 @@
 # The window `every-trigger`
 
-A recorded window of project ACME, written by hand by the conventions of `../README.md`: seven
-hours, from 2001-03-05T09:00Z to 16:00Z, an admission cap of 2, a root and two children, recorded
-under the rule `main`. It is the window the review of the design asks for (design section 10, item
-11): a root and two children through every trigger — a failed test, a review that asks for changes,
-an architect's send-back from accepting, a sign-off held behind a child, the merge and the linger's
-expiry. A replay under the recorded rule must give each issue the recorded sequence of (from, to,
-trigger), which `expect.json` holds under `moves` beside the scorecard, with no move refused.
-`expect.json`'s scorecard is of a replay under `main` on the main branch, worked by hand below;
-nothing is drawn, so every seed gives it.
+A recorded window of project ACME, written by hand by the conventions of `../README.md`:
+seven hours, from 2001-03-05T09:00Z to 16:00Z, an admission cap of 2, a root and two children, recorded under the rule `main`.
+It takes a root and two children through every trigger the workflow has: a failed test, a review that asks for changes, an architect's send-back from accepting, a sign-off held behind a child, the merge and the linger's expiry.
+A replay under the recorded rule must give each issue the recorded sequence of (from, to, trigger), which `expect.json` holds under `moves` beside the scorecard, with no move refused.
+`expect.json`'s scorecard is of a replay under `main` on the main branch, worked by hand below; nothing is drawn, so every seed gives it.
 
 ## The issues
 
@@ -59,28 +55,28 @@ sign-off by `../README.md`, whose move comes at 13:20, at ACME-3's leave.
 
 ## The replay under `main`
 
-The recorded rule. Each recorded move enters at the end of its segment, the way design section 10,
-item 3 gives it: the handoff moves through `ReplayTransition`, which refuses unless the issue stands
-where the record says; the sign-offs through `intake.SignOff`; the merges through
-`intake.PullRequestMerged` on the replay's own pull request record; the send-back through
-`intake.BackwardMove`; and `gate_opened` is the pass's own promotion, never injected. ACME-1's
-sign-off is applied at 12:30, refused while ACME-3 is in the workflow, and applied again at ACME-3's
-leave at 13:20, when it holds; the linger's close comes from the replay's own `linger_close` row at
-its `next_at`, 15:40. ACME-2's filing comes 10 minutes into ACME-1's first segment and ACME-3's 10
-minutes into its planning segment, each at its recorded time since those segments start at their
-recorded times. So every move falls at its recorded time with no refusal but the sign-off's hold,
-and each issue's sequence is the record's:
+The recorded rule.
+Each recorded move enters at the end of its segment (`../README.md`, "Work segments and their replayed length"):
+the handoff moves through `ReplayTransition`, which refuses unless the issue stands where the record says;
+the sign-offs through `intake.SignOff`; the merges through `intake.PullRequestMerged` on the replay's own pull request record;
+the send-back through `intake.BackwardMove`; and `gate_opened` is the pass's own promotion, never injected.
+ACME-1's sign-off is applied at 12:30, refused while ACME-3 is in the workflow, and applied again at ACME-3's leave at 13:20, when it holds;
+the linger's close comes from the replay's own `linger_close` row at its `next_at`, 15:40.
+ACME-2's filing comes 10 minutes into ACME-1's first segment and ACME-3's 10 minutes into its planning segment, each at its recorded time since those segments start at their recorded times.
+So every move falls at its recorded time with no refusal but the sign-off's hold, and each issue's sequence is the record's:
 
 - ACME-1: admitted→planning `gate_opened`, planning→implementing `planner_completed`,
   implementing→testing `implementation_ready`, testing→reviewing `tester_passed`,
   reviewing→accepting `review_approved`, accepting→retro `sign_off`, retro→merging
   `retro_completed`, merging→done `pull_request_merged`.
+
 - ACME-2: admitted→planning `gate_opened`, planning→implementing `planner_completed`,
   implementing→testing `implementation_ready`, testing→implementing `tester_failed`,
   implementing→testing `implementation_ready`, testing→reviewing `tester_passed`,
   reviewing→accepting `review_approved`, accepting→implementing `backward`, implementing→testing
   `implementation_ready`, testing→reviewing `tester_passed`, reviewing→accepting `review_approved`,
   accepting→retro `sign_off`, retro→merging `retro_completed`, merging→done `pull_request_merged`.
+
 - ACME-3: admitted→planning `gate_opened`, planning→implementing `planner_completed`,
   implementing→testing `implementation_ready`, testing→reviewing `tester_passed`,
   reviewing→implementing `review_rejected`, implementing→testing `implementation_ready`,
@@ -94,44 +90,49 @@ reads it.
 
 The span is 7 hours.
 
-**Slots.** ACME-1 09:00 to 09:20 (20 minutes) and 11:30 to 12:20 (50); ACME-2 09:20 to 10:20 (60)
-and 10:30 to 11:00 (30); ACME-3 11:40 to 12:50 (70). 5 slots on 2001-03-05; `firstSlot` ACME-1 09:00,
-ACME-2 09:20, ACME-3 11:40. Each was taken in the pass where its issue began to wait for it (ACME-1's
-filing; ACME-2's first phase at the gate's opening, before which the gate held it; ACME-2's
-send-back with a slot free; the end of ACME-1's children wait; ACME-3's filing under an open gate):
-all 0, median 0.
+**Slots.**
+ACME-1 09:00 to 09:20 (20 minutes) and 11:30 to 12:20 (50); ACME-2 09:20 to 10:20 (60) and 10:30 to 11:00 (30); ACME-3 11:40 to 12:50 (70).
+5 slots on 2001-03-05; `firstSlot` ACME-1 09:00, ACME-2 09:20, ACME-3 11:40.
+Each was taken in the pass where its issue began to wait for it (ACME-1's filing;
+ACME-2's first phase at the gate's opening, before which the gate held it;
+ACME-2's send-back with a slot free; the end of ACME-1's children wait; ACME-3's filing under an open gate): all 0, median 0.
 
-**Slot-hours.** Every slot is held in a turn throughout: ACME-1's architect 09:00 to 09:20; ACME-2's
-six turns 09:20 to 10:20 and three 10:30 to 11:00; ACME-1's planner, implementer, tester and
-reviewer 11:30 to 12:20; ACME-3's seven turns 11:40 to 12:50. 20 + 60 + 30 + 50 + 70 = 230 minutes:
-`slotHoursInTurn` 3.8333… hours, `slotHoursNoTurn` 0.
+**Slot-hours.**
+Every slot is held in a turn throughout:
+ACME-1's architect 09:00 to 09:20; ACME-2's six turns 09:20 to 10:20 and three 10:30 to 11:00;
+ACME-1's planner, implementer, tester and reviewer 11:30 to 12:20; ACME-3's seven turns 11:40 to 12:50.
+20 + 60 + 30 + 50 + 70 = 230 minutes: `slotHoursInTurn` 3.8333… hours, `slotHoursNoTurn` 0.
 
-**In flight.** ACME-1 09:00 to 13:40 (280 minutes), ACME-2 09:20 to 11:30 (130), ACME-3 11:40 to 13:20
-(100): 510 minutes, 8.5 hours, an average of 1.214285…, at most 2.
+**In flight.**
+ACME-1 09:00 to 13:40 (280 minutes), ACME-2 09:20 to 11:30 (130), ACME-3 11:40 to 13:20 (100): 510 minutes, 8.5 hours, an average of 1.214285…, at most 2.
 
-**Done and work left.** ACME-2 11:30, ACME-3 13:20, ACME-1 13:40 (`done` 3); `workLeft` 0.
+**Done and work left.**
+ACME-2 11:30, ACME-3 13:20, ACME-1 13:40 (`done` 3); `workLeft` 0.
 
-**Started work without a slot.** ACME-1, given back for its children wait, from 09:20 to 11:30:
-reading (b) 130 minutes, 2.1666… hours, an average of 0.309523…, at most 1. It is in
-`admission.blocked` all that time and takes its slot in the pass that ends the wait: reading (a) 0.
+**Started work without a slot.**
+ACME-1, given back for its children wait, from 09:20 to 11:30: reading (b) 130 minutes, 2.1666… hours, an average of 0.309523…, at most 1.
+It is in `admission.blocked` all that time and takes its slot in the pass that ends the wait: reading (a) 0.
 ACME-2's send-back took its slot in the pass that owed it.
 
-**Past the review.** ACME-2 10:20 to 10:30 (10 minutes) and 11:00 to 11:30 (30), ACME-1 12:20 to
-13:40 (80), ACME-3 12:50 to 13:20 (30), none with a slot: `pastReviewNotHolding` 150 minutes, 2.5
-hours, an average of 0.357142…, and 2 at once from 12:50 to 13:20; `pastReviewHolding` 0.
+**Past the review.**
+ACME-2 10:20 to 10:30 (10 minutes) and 11:00 to 11:30 (30), ACME-1 12:20 to 13:40 (80), ACME-3 12:50 to 13:20 (30), none with a slot:
+`pastReviewNotHolding` 150 minutes, 2.5 hours, an average of 0.357142…, and 2 at once from 12:50 to 13:20; `pastReviewHolding` 0.
 
-**Priority taken.** No issue waits for a slot: 0.
+**Priority taken.**
+No issue waits for a slot: 0.
 
-**Loops.** `test_failed`: ACME-2, from 09:50 back to testing at 10:00, 10 minutes (0.1666… hours).
+**Loops.**
+`test_failed`: ACME-2, from 09:50 back to testing at 10:00, 10 minutes (0.1666… hours).
 `send_back`: ACME-2, from 10:30 back to accepting at 11:00, 30 minutes (0.5 hours).
-`review_changes`: ACME-3, from 12:20 back to reviewing at 12:40, 20 minutes (0.3333… hours). One
-round each.
+`review_changes`: ACME-3, from 12:20 back to reviewing at 12:40, 20 minutes (0.3333… hours).
+One round each.
 
-**Waits on another issue.** ACME-1's children wait, 09:20 to 11:30, ended by its last open child's
-`done`: `child_done`, count 1, 2.1666… hours. ACME-3 is filed while ACME-1 stands in planning, where
-no children wait holds it (`record.SlotRule.ChildrenFirstCandidates` reads an issue at admitted).
+**Waits on another issue.**
+ACME-1's children wait, 09:20 to 11:30, ended by its last open child's `done`: `child_done`, count 1, 2.1666… hours.
+ACME-3 is filed while ACME-1 stands in planning, where no children wait holds it (`record.SlotRule.ChildrenFirstCandidates` reads an issue at admitted).
 
-**Assumptions.** 1; 2; 3 (three loops keep their count and cause); 4 (ACME-1's children wait); 7
-(the gate holds ACME-2's first start from 09:10 to 09:20); 9; 10 (children); 11 (ACME-1's slot,
-freed at 09:20, to ACME-2); 13 (the loops move issues back); 17 (both children filed after ACME-1
-started). `assumptions` is [1, 2, 3, 4, 7, 9, 10, 11, 13, 17]; `scenario` is `none`.
+**Assumptions.**
+1; 2; 3 (three loops keep their count and cause);
+4 (ACME-1's children wait); 7 (the gate holds ACME-2's first start from 09:10 to 09:20);
+9; 10 (children); 11 (ACME-1's slot, freed at 09:20, to ACME-2); 13 (the loops move issues back); 17 (both children filed after ACME-1 started).
+`assumptions` is [1, 2, 3, 4, 7, 9, 10, 11, 13, 17]; `scenario` is `none`.

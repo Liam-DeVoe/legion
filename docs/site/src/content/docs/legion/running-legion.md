@@ -1427,6 +1427,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `idle`: none of the four is true, and its last turn has ended or it has had no turn yet.
 
   The time after `oldest` is the earliest moment a holder of that count entered its state, in UTC to the minute.
+  A `working` holder entered it at the start of its oldest open turn, else when its oldest start was queued, else when its oldest pending task was queued.
+  A `stopped` holder entered it at the start of its hold or of its stop, and a `person` or an `issue` holder at the start of its wait.
+  An `idle` holder entered it at the end of its last turn, or at the moment it took its slot where that is later.
   A count prints no `oldest` when the daemon knows no such moment, which is the case for a state that began before the release that added this line.
 
   The second sentence counts the started work that waits without a slot.
@@ -1436,7 +1439,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   The last sentence names the first issue of the waiting line that waits for a slot and for nothing else.
   It counts the holders that rank below that issue, by the Dispatch rank of each issue's tree root and then by its own.
   It reads `No issue waits for a slot.` when no issue of the line waits for a slot alone.
-  `--json` carries the same reading as `admission.slots`, and the controller's tick notice carries it as `slots`.
+  `--json` carries the same reading as `admission.slots`, and each holder's state and the moment it entered it on its slot (`state`, `since`).
+  The controller's tick notice carries the reading as `slots`, and the `legion` tool's `read_state` summary prints the line.
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them: the issues whose work came back first, oldest first by the moment it

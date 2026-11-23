@@ -131,7 +131,7 @@ stands in no place of the line, and ACME-3 waits in the starting part for the on
 | 13:20 | ACME-3 `review_approved`: accepting, its slot goes back |
 | 13:30, 13:40, 13:50 | ACME-3 retro, merging, done |
 
-Every segment keeps its recorded length from the replay's own worker start (n = m throughout).
+Every segment keeps its recorded length from the replay's own worker start (f = 1).
 
 ## The scorecard under `wait-grace`, worked by hand
 
