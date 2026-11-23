@@ -1449,7 +1449,6 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
   const given = "rounded-[5px] border px-1.5 leading-5";
   const mainChip =
     "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300";
-  const mainRail = "relative flex shrink-0 flex-nowrap items-center gap-1";
   const labels = (chipClassName: string | undefined) => (
     <IssueLabels
       chipClassName={chipClassName}
@@ -1484,7 +1483,6 @@ test("chipClassName replaces the chip's class and lets labels wrap", async () =>
   const plain = draw(labels(undefined), "outside");
   try {
     const rail = within(plain.container).getByTestId("issue-labels");
-    expect(rail.getAttribute("class")).toBe(mainRail);
     for (const label of ["api", "frontend"]) {
       expect(within(rail).getByText(label).getAttribute("class")).toBe(mainChip);
     }
@@ -2052,8 +2050,6 @@ test("the default shapes keep main's class strings", async () => {
       "inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
     "IssueLabels trigger":
       "min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600",
-    // `main`'s features/issue/IssueLabels.tsx: the line at `variant="rail"`.
-    "IssueLabels rail line": "relative flex shrink-0 flex-nowrap items-center gap-1",
 
     "IssuePriorityLine line":
       "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
@@ -2347,16 +2343,6 @@ test("the default shapes keep main's class strings", async () => {
           saving={false}
         />
       </div>
-      <div data-case="rail labels">
-        <IssueLabels
-          disabled={false}
-          labels={["api"]}
-          onSave={async () => undefined}
-          project="CORE"
-          saving={false}
-          variant="rail"
-        />
-      </div>
       <div data-case="priorities">
         <IssuePriorityLine
           disabled={false}
@@ -2559,10 +2545,6 @@ test("the default shapes keep main's class strings", async () => {
     classAt("IssueLabels line", labels.getByTestId("issue-labels"));
     classAt("IssueLabels chip", labels.getByText("api"));
     classAt("IssueLabels trigger", labels.getByRole("button", { name: "Edit labels" }));
-    classAt(
-      "IssueLabels rail line",
-      within(caseOf(view, "rail labels")).getByTestId("issue-labels")
-    );
 
     const advances = within(caseOf(view, "priorities"));
     const priorityLink = advances.getByRole("link", { name: /Rocq and Lean/ });

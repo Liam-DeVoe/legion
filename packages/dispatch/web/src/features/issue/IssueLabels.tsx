@@ -224,13 +224,11 @@ export function IssueLabels({
   return (
     <>
       <div
-        // Inside `NoTooltips` the rail's labels wrap with or without a chip shape of the host's:
-        // a label is a value, and a line that keeps its width pushes a long one past its row.
+        // The rail's labels (the new issue page's Details) wrap: a label is a value, and a line
+        // that keeps its width pushes a long one past its row.
         className={
           variant === "rail"
-            ? chipClassName === undefined && page === null
-              ? "relative flex shrink-0 flex-nowrap items-center gap-1"
-              : "relative flex min-w-0 flex-wrap items-center gap-1"
+            ? "relative flex min-w-0 flex-wrap items-center gap-1"
             : "relative mt-2 flex flex-wrap items-center gap-2"
         }
         data-testid="issue-labels"
