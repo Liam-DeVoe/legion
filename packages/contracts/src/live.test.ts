@@ -402,7 +402,10 @@ test("an items delta sets the rows whole, with the fields that moved beside them
   expect(itemsDelta.maps).toEqual({});
   expect(itemsDelta.counts).toEqual({});
   expect(keysOf(itemsDelta.set)).toEqual(["items", "total"]);
-  expect(itemsDelta.set.items.map((row) => row.row_key)).toEqual(["build / unit", "lint"]);
+  expect(itemsDelta.set.items.map((row) => row.row_key)).toEqual([
+    "acme/widgets/build / unit",
+    "acme/widgets/lint",
+  ]);
   expect(itemsDelta.set.items).toEqual(itemsAfter.body.items);
   for (const revision of leaves(itemsDelta.revs.fields, 1)) expect(revision).toMatch(REVISION);
 });

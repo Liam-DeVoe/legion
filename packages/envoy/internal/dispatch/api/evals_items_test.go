@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -352,41 +353,52 @@ func (f failingRuns) query() string {
 // beside it, and the day rows the refresher builds of them all.
 func seedFailingRuns(t *testing.T, database *store.Store, deps Deps) failingRuns {
 	t.Helper()
-	ctx := t.Context()
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2918, OneProject: true, Days: 14})
 	end := measures.Midnight(fixture.To).AddDate(0, 0, -2).Add(10 * time.Hour)
 	f := failingRuns{fixture: fixture, from: end.AddDate(0, 0, -7), end: end}
-	index := slices.IndexFunc(fixture.PullRequests, func(pr delivery.DeliveryPullRequest) bool {
-		return pr.Repo == fixture.DeployRepo && pr.IssueKey != nil && slices.Contains(fixture.Issues[fixture.Project], *pr.IssueKey)
-	})
-	if index < 0 {
-		t.Fatalf("no pull request of %s names an issue of %s, so no run of its checks counts for it", fixture.DeployRepo, fixture.Project)
-	}
-	number := fixture.PullRequests[index].Number
-	failure, jobFailure, jobSuccess := delivery.DeliveryRunConclusionFailure, delivery.DeliveryJobConclusionFailure, delivery.DeliveryJobConclusionSuccess
-	write := func(id int64, started, completed time.Time, failed string) delivery.DeliveryRun {
-		t.Helper()
-		run := delivery.DeliveryRun{
-			Repo: fixture.DeployRepo, RunID: id, Kind: delivery.DeliveryRunKindPRChecks, PRNumber: new(number),
-			HeadSHA: fmt.Sprintf("%040d", id), HeadCommitAt: started.Add(-time.Minute), StartedAt: started, CreatedAt: &started,
-			CompletedAt: &completed, Conclusion: &failure, URL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", fixture.DeployRepo, id),
-			HeadBranch: new("feature"), Event: new("pull_request"),
-		}
-		if err := delivery.UpsertRun(ctx, database.Pool, run); err != nil {
-			t.Fatalf("write run %d: %v", id, err)
-		}
-		if err := delivery.UpsertRunJobs(ctx, database.Pool, fixture.DeployRepo, id, []delivery.DeliveryRunJob{
-			{Repo: fixture.DeployRepo, RunID: id, Name: failed, StartedAt: &started, CompletedAt: &completed, Conclusion: &jobFailure},
-			{Repo: fixture.DeployRepo, RunID: id, Name: "items / steady", StartedAt: &started, CompletedAt: &completed, Conclusion: &jobSuccess},
-		}, true); err != nil {
-			t.Fatalf("write run %d's jobs: %v", id, err)
-		}
-		return run
-	}
-	f.straddle = write(991_000_001, end.Add(-25*time.Hour), end.Add(-23*time.Hour), straddleJob)
-	f.early = write(991_000_002, end.AddDate(0, 0, -5), end.AddDate(0, 0, -5).Add(time.Hour), earlyJob)
+	number := projectPullRequest(t, fixture, fixture.DeployRepo)
+	f.straddle = writeFailedChecksRun(t, database, fixture.DeployRepo, number, 991_000_001, end.Add(-25*time.Hour), end.Add(-23*time.Hour), straddleJob)
+	f.early = writeFailedChecksRun(t, database, fixture.DeployRepo, number, 991_000_002, end.AddDate(0, 0, -5), end.AddDate(0, 0, -5).Add(time.Hour), earlyJob)
 	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, fixture.To.Add(-time.Minute))
 	return f
+}
+
+// projectPullRequest is the number of a pull request of repo in fixture that names an issue of
+// fixture's project, so a run of its checks counts for that project.
+func projectPullRequest(t *testing.T, fixture deliverytest.Fixture, repo string) int {
+	t.Helper()
+	index := slices.IndexFunc(fixture.PullRequests, func(pr delivery.DeliveryPullRequest) bool {
+		return pr.Repo == repo && pr.IssueKey != nil && slices.Contains(fixture.Issues[fixture.Project], *pr.IssueKey)
+	})
+	if index < 0 {
+		t.Fatalf("no pull request of %s names an issue of %s, so no run of its checks counts for it", repo, fixture.Project)
+	}
+	return fixture.PullRequests[index].Number
+}
+
+// writeFailedChecksRun writes run id of repo, a pull-request checks run of pull request number
+// that started at started and failed at completed, with the job failed failing and "items / steady"
+// passing.
+func writeFailedChecksRun(t *testing.T, database *store.Store, repo string, number int, id int64, started, completed time.Time, failed string) delivery.DeliveryRun {
+	t.Helper()
+	ctx := t.Context()
+	failure, jobFailure, jobSuccess := delivery.DeliveryRunConclusionFailure, delivery.DeliveryJobConclusionFailure, delivery.DeliveryJobConclusionSuccess
+	run := delivery.DeliveryRun{
+		Repo: repo, RunID: id, Kind: delivery.DeliveryRunKindPRChecks, PRNumber: new(number),
+		HeadSHA: fmt.Sprintf("%040d", id), HeadCommitAt: started.Add(-time.Minute), StartedAt: started, CreatedAt: &started,
+		CompletedAt: &completed, Conclusion: &failure, URL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", repo, id),
+		HeadBranch: new("feature"), Event: new("pull_request"),
+	}
+	if err := delivery.UpsertRun(ctx, database.Pool, run); err != nil {
+		t.Fatalf("write run %d: %v", id, err)
+	}
+	if err := delivery.UpsertRunJobs(ctx, database.Pool, repo, id, []delivery.DeliveryRunJob{
+		{Repo: repo, RunID: id, Name: failed, StartedAt: &started, CompletedAt: &completed, Conclusion: &jobFailure},
+		{Repo: repo, RunID: id, Name: "items / steady", StartedAt: &started, CompletedAt: &completed, Conclusion: &jobSuccess},
+	}, true); err != nil {
+		t.Fatalf("write run %d's jobs: %v", id, err)
+	}
+	return run
 }
 
 // TestTheFailedJobsListEqualsTheBasesFailingJobs (dispatch://INFRA-2918, D9): pr-ci's items with
@@ -472,6 +484,49 @@ func TestTheFailedJobsListEqualsTheBasesFailingJobs(t *testing.T) {
 		len(runs), len(base), mustJSON(t, base))
 }
 
+// TestAJobNameTwoRepositoriesFailAnswersARowOfEach: pr-ci's failing jobs are each deploy
+// repository's workflow's, so where a second deploy source of the project reads a repository whose
+// pull-request checks fail a job of the name the first repository's fail in the same 24 hours, the
+// failures items answer a row of each, both named that job, each naming its repository and keyed
+// by it (failingJobKey): no two rows share a key.
+func TestAJobNameTwoRepositoriesFailAnswersARowOfEach(t *testing.T) {
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	f := seedFailingRuns(t, database, deps)
+	fixture := f.fixture
+	second := fixture.Settings
+	second.DeployRepo = fixture.Repos[1]
+	if _, err := deliverytest.SaveRules(t.Context(), database.Pool, fixture.Project, fixture.Settings, second); err != nil {
+		t.Fatalf("save %s's second deploy source, %s: %v", fixture.Project, second.DeployRepo, err)
+	}
+	writeFailedChecksRun(t, database, second.DeployRepo, projectPullRequest(t, fixture, second.DeployRepo), 991_000_003,
+		f.straddle.StartedAt, *f.straddle.CompletedAt, straddleJob)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, fixture.To.Add(-time.Minute))
+
+	items := evalGet[evalItemsResponse](t, handler, evalItemsPath(fixture.Project, evals.SlugPRCI)+"?"+f.query())
+	keys := map[string]string{}
+	for _, row := range items.Items {
+		if _, twice := keys[row.RowKey]; twice {
+			t.Errorf("two failing job rows share the key %s: %s", row.RowKey, mustJSON(t, items.Items))
+		}
+		repo, _ := row.Cols["repo"].(string)
+		name, _ := row.Cols["name"].(string)
+		if row.RowKey != failingJobKey(repo, name) {
+			t.Errorf("the failing job %s of %s is keyed %s, want %s", name, repo, row.RowKey, failingJobKey(repo, name))
+		}
+		if name == straddleJob {
+			keys[row.RowKey] = repo
+		}
+	}
+	want := map[string]string{
+		failingJobKey(fixture.DeployRepo, straddleJob): fixture.DeployRepo,
+		failingJobKey(second.DeployRepo, straddleJob):  second.DeployRepo,
+	}
+	if !maps.Equal(keys, want) {
+		t.Fatalf("the failing rows of %s are %v, want one of each repository, %v: %s", straddleJob, keys, want, mustJSON(t, items.Items))
+	}
+	t.Logf("%s failed in %s and %s answers the rows %v", straddleJob, fixture.DeployRepo, second.DeployRepo, slices.Sorted(maps.Keys(keys)))
+}
+
 // TestTheFailedJobsReadReadsRunsByCompletion (dispatch://INFRA-2918, D9; R12): the statements
 // pr-ci's items with sort=failures send read the runs by their completion: the one read of
 // delivery_runs bounds the runs' completed_at by the 24 hours before the range's end, sent as its
@@ -486,7 +541,7 @@ func TestTheFailedJobsReadReadsRunsByCompletion(t *testing.T) {
 
 	log.reset()
 	items := evalGet[evalItemsResponse](t, handler, evalItemsPath(f.fixture.Project, evals.SlugPRCI)+"?"+f.query())
-	if !slices.ContainsFunc(items.Items, func(row evalItemRow) bool { return row.RowKey == straddleJob }) {
+	if !slices.ContainsFunc(items.Items, func(row evalItemRow) bool { return row.RowKey == failingJobKey(f.fixture.DeployRepo, straddleJob) }) {
 		t.Fatalf("the failing jobs %s do not name %s, so the read read no run of the 24 hours", mustJSON(t, items.Items), straddleJob)
 	}
 	var runReads, jobReads []ranStatement

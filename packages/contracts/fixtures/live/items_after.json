@@ -6,13 +6,14 @@
   "body": {
     "items": [
       {
-        "row_key": "build / unit",
+        "row_key": "acme/widgets/build / unit",
         "row_kind": "job",
         "cols": {
           "failures": 2,
           "last_failed_at": "2026-10-28T23:00:00Z",
           "last_run_url": "https://github.com/acme/widgets/actions/runs/52",
           "name": "build / unit",
+          "repo": "acme/widgets",
           "results": 4
         },
         "measured_at": "2026-10-28T23:00:00Z",
@@ -22,13 +23,14 @@
         "range": "window"
       },
       {
-        "row_key": "lint",
+        "row_key": "acme/widgets/lint",
         "row_kind": "job",
         "cols": {
           "failures": 1,
           "last_failed_at": "2026-10-28T23:00:00Z",
           "last_run_url": "https://github.com/acme/widgets/actions/runs/52",
           "name": "lint",
+          "repo": "acme/widgets",
           "results": 4
         },
         "measured_at": "2026-10-28T23:00:00Z",
@@ -58,7 +60,7 @@
     "counts": {},
     "fields": {
       "compare": "ae7a4d6dcdc7266b",
-      "items": "359f05925c32c33c",
+      "items": "a7e0d88fd43b6278",
       "limit": "603ec818278d901d",
       "offset": "af63ad4c86019caf",
       "total": "af63af4c8601a015",

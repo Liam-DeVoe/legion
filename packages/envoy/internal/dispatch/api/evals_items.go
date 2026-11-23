@@ -1034,10 +1034,10 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 // through the same measures.FailingJobs under that repository's roll-up job. The day rows count a
 // run on the day it started, so the items they counted are read on the days the runs read started
 // on alone. A job belongs to its repository's workflow, so each repository's jobs are rows of their
-// own, each naming its repository, with its failures, its results and its latest failed run, which
-// it links to; most failures first. The runs it counts, of every repository, are kept for the range
-// (evalRangeReads.failing), so the live view of the list expires as each run's failures leave the
-// 24 hours (failingJobsNextExpiry).
+// own, each keyed by its repository and its name (failingJobKey) and naming both, with its
+// failures, its results and its latest failed run, which it links to; most failures first. The
+// runs it counts, of every repository, are kept for the range (evalRangeReads.failing), so the
+// live view of the list expires as each run's failures leave the 24 hours (failingJobsNextExpiry).
 func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	end := read.rng.end
 	span := read.rng.days
@@ -1094,7 +1094,7 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 			continue
 		}
 		rows = append(rows, evalItemRow{
-			RowKey:  job.Name,
+			RowKey:  failingJobKey(one.repo, job.Name),
 			RowKind: evalRowJob,
 			Cols: map[string]any{
 				"name": job.Name, "repo": one.repo, "failures": job.Failures, "results": job.Results,
@@ -1108,4 +1108,10 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 		})
 	}
 	return rows, nil
+}
+
+// failingJobKey is the row key of a failing job of repo's workflow named name: `<repo>/<name>`, as
+// a run row is `<repo>/<run id>`, since two repositories' workflows can name a job alike.
+func failingJobKey(repo, name string) string {
+	return repo + "/" + name
 }

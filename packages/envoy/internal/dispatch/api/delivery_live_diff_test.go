@@ -1069,15 +1069,16 @@ func liveEvalsOf(updated time.Time, age int, items ...evalListItem) evalListResp
 }
 
 // liveFailingJob is one of pr-ci's jobs that failed in the 24 hours before the end of the evals
-// fixture's window, as the items read answers it with sort=failures: failures of its results
-// failed, the last of them in run, hours before that end.
+// fixture's window, as the items read answers it with sort=failures: a job of liveRepo's workflow,
+// keyed by both (failingJobKey), failures of its results failed, the last of them in run, hours
+// before that end.
 func liveFailingJob(name string, failures, results int, run int64, hours int) evalItemRow {
 	at := liveEvalsWindow.To.Add(-time.Duration(hours) * time.Hour)
 	runURL := "https://github.com/" + liveRepo + "/actions/runs/" + strconv.FormatInt(run, 10)
 	return evalItemRow{
-		RowKey: name, RowKind: evalRowJob,
+		RowKey: failingJobKey(liveRepo, name), RowKind: evalRowJob,
 		Cols: map[string]any{
-			"name": name, "failures": failures, "results": results, "last_failed_at": at, "last_run_url": runURL,
+			"name": name, "repo": liveRepo, "failures": failures, "results": results, "last_failed_at": at, "last_run_url": runURL,
 		},
 		MeasuredAt: at, Source: "measures.FailingJobs", Href: runURL, Links: []evals.Link{}, Range: evals.RangeWindow,
 	}

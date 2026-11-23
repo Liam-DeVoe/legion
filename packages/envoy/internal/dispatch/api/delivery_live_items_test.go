@@ -433,7 +433,7 @@ func TestARunJobChangeMarksThePrCiJobsView(t *testing.T) {
 		held[sub] = conns[sub].snapshot(t, 5*time.Second, sub).Body
 		requireTheItemsRead(t, rig.handler, "HUB", evals.SlugPRCI, held[sub], *frames[sub].Query)
 	}
-	if got := itemsRowKeys(t, held["f"]); !slices.Equal(got, []string{"checks / flaky"}) {
+	if got := itemsRowKeys(t, held["f"]); !slices.Equal(got, []string{failingJobKey("acme/widgets", "checks / flaky")}) {
 		t.Fatalf("the failures view holds %v, want the one job that failed", got)
 	}
 	rig.settle(t)
@@ -458,7 +458,7 @@ func TestARunJobChangeMarksThePrCiJobsView(t *testing.T) {
 	}
 	delta := conns["f"].delta(t, 5*time.Second, "f")
 	applied := requireTheDeltaLandsOnTheItemsRead(t, rig.handler, "HUB", evals.SlugPRCI, held["f"], delta, *frames["f"].Query)
-	if got := itemsRowKeys(t, applied); !slices.Equal(got, []string{"checks / flaky", "checks / steady"}) {
+	if got, want := itemsRowKeys(t, applied), []string{failingJobKey("acme/widgets", "checks / flaky"), failingJobKey("acme/widgets", "checks / steady")}; !slices.Equal(got, want) {
 		t.Errorf("after the steady job failed the failures view holds %v, want both jobs", got)
 	}
 	conns["d"].none(t, 100*time.Millisecond, "the job's change")
@@ -512,7 +512,7 @@ func TestTheFailuresItemsViewDropsAJobWhenItLeavesThe24Hours(t *testing.T) {
 		conns[sub] = newFakeLiveConn()
 		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
 		held[sub] = conns[sub].snapshot(t, 5*time.Second, sub).Body
-		if got := itemsRowKeys(t, held[sub]); !slices.Equal(got, []string{"checks / flaky"}) {
+		if got := itemsRowKeys(t, held[sub]); !slices.Equal(got, []string{failingJobKey("acme/widgets", "checks / flaky")}) {
 			t.Fatalf("%s: the failures view holds %v, want the job that failed 23 h 59 min ago", sub, got)
 		}
 	}
