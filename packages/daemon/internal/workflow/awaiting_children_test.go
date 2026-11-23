@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The parent and the open child most of these tests stand up (dispatch://INFRA-3320 R9 to R12):
@@ -67,9 +69,7 @@ func cwSeedWaiting(t *testing.T, pool *pgxpool.Pool, key string, start phase.Pha
 // commit scope.
 func cwTransition(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, reason string) {
 	t.Helper()
-	ctx, committed := intake.WithCommitHooks(t.Context())
-	ctx = engine.OpenFact(ctx)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(engine.OpenFact(t.Context()), pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, key)
 		if err != nil || issue == nil {
 			return fmt.Errorf("read %s: %v", key, err)
@@ -85,7 +85,6 @@ func cwTransition(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 	}); err != nil {
 		t.Fatalf("the %s transition of %s: %v", trigger, key, err)
 	}
-	committed()
 }
 
 // cwPhaseEnded is every phase-ended message queued for key, oldest first.
@@ -353,14 +352,12 @@ func TestASecondMoveOfAWaitingParentSendsNothingAgain(t *testing.T) {
 	first := storedIssue(t, pool, cwParent)
 	rows := outboxRows(t, pool)
 
-	ctx, committed := intake.WithCommitHooks(t.Context())
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(t.Context(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return engine.awaitChildren(ctx, tx, first, childrenHold{Start: phase.Implementing, Task: "another task", Cause: "a later pass",
 			Open: []record.OpenChild{{Key: cwChild, Status: "todo"}}, Ended: claim.RoleTester})
 	}); err != nil {
 		t.Fatalf("the second move: %v", err)
 	}
-	committed()
 
 	if got := outboxRows(t, pool); got != rows {
 		t.Fatalf("outbox rows after the second move = %d, want the %d the first left", got, rows)
@@ -635,9 +632,10 @@ func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 		act    string
 		ending string
 	}{
-		{name: "the architect's move back", fact: intake.BackwardMove{Issue: cwParent, Requester: claim.RoleArchitect, To: phase.Implementing, Reason: "redo it"}, act: "request_backward_move", ending: architects},
+		{name: "the architect's move back", fact: intake.BackwardMove{Issue: cwParent, Requester: claim.RoleArchitect, To: phase.Implementing, Reason: "redo it",
+			By: claim.Token(treeRoleToken(t, cwParent, claim.RoleArchitect))}, act: "request_backward_move", ending: architects},
 		{name: "a worker's move back", fact: intake.BackwardMove{Issue: cwParent, Requester: claim.RoleTester, To: phase.Implementing, Reason: "redo it"}, act: "request_backward_move", ending: workers},
-		{name: "the sign-off", fact: intake.SignOff{Issue: cwParent}, act: "sign_off", ending: architects},
+		{name: "the sign-off", fact: intake.SignOff{Issue: cwParent, By: claim.Token(treeRoleToken(t, cwParent, claim.RoleArchitect))}, act: "sign_off", ending: architects},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			message := refusedWith(t, apply(tc.name, tc.fact), waitingOnChildren, cwChild+" (in_progress)")
@@ -654,7 +652,7 @@ func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 	assertOutboxKinds(t, pool, []string{})
 
 	mirrorChild(t, pool, cwChild, cwParent, "done", 2)
-	refusedWith(t, apply("sign-off-after", intake.SignOff{Issue: cwParent}), waitingOnChildren,
+	refusedWith(t, apply("sign-off-after", intake.SignOff{Issue: cwParent, By: claim.Token(treeRoleToken(t, cwParent, claim.RoleArchitect))}), waitingOnChildren,
 		"no Dispatch child of it is open now: at the next admission pass it "+back)
 }
 

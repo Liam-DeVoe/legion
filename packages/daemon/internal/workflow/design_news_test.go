@@ -594,7 +594,7 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 		"- LEGION-212, in reviewing: ":       "told nothing: the approved version holds the same text as the one it took, apart from decision blocks.",
 		"- LEGION-213, in planning: ":        "told nothing: its phase already took the approved version.",
 		"- LEGION-214, in admitted: ":        "told nothing: it has not started, and its first phase starts from the approved version.",
-		"- LEGION-215, in held: ":            "told nothing while it is stopped: the restart that moves it back into its phase carries what it is owed then.",
+		"- LEGION-215, in held: ":            "told nothing while it is held: the release that moves it back into a phase carries what it is owed then.",
 		"- LEGION-216, in done: ":            "told nothing: its work is done.",
 		"- LEGION-217, in awaiting_children: ": "told nothing while it waits on its open children: the return that moves it back into its phase " +
 			"once no child of it is open carries what it is owed then.",

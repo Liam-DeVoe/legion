@@ -164,7 +164,7 @@ func seedStartedParent(t *testing.T, pool *store.Pool, key string) {
 	if err != nil {
 		t.Fatalf("project token: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(_ context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		if _, err := records.OpenTreeLifecycle(ctx, tx, token, key, treelifecycle.AuthorityWorkflow); err != nil {
 			return err

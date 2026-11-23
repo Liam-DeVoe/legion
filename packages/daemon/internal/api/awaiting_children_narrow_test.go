@@ -57,11 +57,12 @@ func phasesAndHeldWords(t *testing.T, body []byte) (phases, reasons map[string]s
 // A caller below gateBasisContract knows neither awaiting_children word, so the value strips of
 // that contract serve it the issue's phase as admitted and the held row's reason as
 // children_first (dispatch://INFRA-3320 R13; shaping.go's withoutUnadmittedPhases and
-// withoutUnadmittedHeldReasons). That holds for a caller that states a contract below it, which
-// is served the nearest recorded contract's shape, and for one that states nothing from a pod
-// whose claims record one, and on the record route as on the state, since the record answers the
-// issue the state holds. A caller at the contract reads the new words, which is the state as the
-// source holds it, and the source is left as it was for the next caller.
+// withoutUnadmittedHeldWords, whose heldReasonStandIn names the word). That holds for a caller
+// that states a contract below it, which is served the nearest recorded contract's shape, and for
+// one that states nothing from a pod whose claims record one, and on the record route as on the
+// state, since the record answers the issue the state holds. A caller at the contract reads the
+// new words, which is the state as the source holds it, and the source is left as it was for the
+// next caller.
 func TestAwaitingChildrenNarrowsToAdmittedAndChildrenFirstBelowItsContract(t *testing.T) {
 	state := awaitingChildrenState()
 	const operator = "192.0.2.1:41000"

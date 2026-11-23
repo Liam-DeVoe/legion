@@ -513,13 +513,21 @@ type pwMove struct {
 // testing, starts no phase since cybermonklabs/legion#4464 (the issue keeps its phase while the
 // implementer merges the base forward), so it holds nothing; the test that follows the table reads
 // what it does instead.
-func pwMoves() []pwMove {
+func pwMoves(t *testing.T) []pwMove {
+	t.Helper()
 	complete := func(role claim.Role, summary, verdict, rec string) intake.HandoffComplete {
 		return intake.HandoffComplete{Generation: 1, Issue: spParent, Role: role, Claim: claim.Token(string(role)), Summary: summary,
 			Verdict: verdict, Commit: "head-42", HandoffRecord: rec, HandoffVersion: 1}
 	}
+	// The architect's own move names the claim that asked for it, which the request's refusals
+	// read (intake's BackwardMove.Request): a worker's move is judged by its role alone.
+	architect := pwRoleToken(t, spParent, claim.RoleArchitect)
 	back := func(by claim.Role, to phase.Phase, reason string) intake.BackwardMove {
-		return intake.BackwardMove{Issue: spParent, Requester: by, To: to, Reason: reason}
+		move := intake.BackwardMove{Issue: spParent, Requester: by, To: to, Reason: reason}
+		if by == claim.RoleArchitect {
+			move.By = architect
+		}
+		return move
 	}
 	return []pwMove{
 		{name: "the planner's completion", from: phase.Planning, source: "api",
@@ -662,9 +670,10 @@ func pwHeldFromTesting(t *testing.T, pool *pgxpool.Pool) *Admission {
 // fact `legion claims retry` applies) and a todo on a held root; and the admission pass's three
 // cases (StopForChildren): a parent in accepting, a start written and not delivered, and a worker
 // in the middle of its phase. A path added to awaitChildren later goes into this table.
-func pwPaths() []pwPath {
+func pwPaths(t *testing.T) []pwPath {
+	t.Helper()
 	var paths []pwPath
-	for _, move := range pwMoves() {
+	for _, move := range pwMoves(t) {
 		paths = append(paths, pwPath{name: move.name, at: move.from,
 			seed: func(t *testing.T, pool *pgxpool.Pool) *Admission {
 				admission := pwAdmission(t, 2)
@@ -805,7 +814,7 @@ func pwDropsForward(t *testing.T, path pwPath, forward pwForward) {
 // one live tree whose root, the parent, holds the slot its phase keeps, run through the workflow
 // engine and the admission pass as the daemon runs them.
 func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
-	for _, move := range pwMoves() {
+	for _, move := range pwMoves(t) {
 		t.Run(move.name, func(t *testing.T) { pwHoldsMove(t, move) })
 	}
 
@@ -825,7 +834,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	// each of the 15 paths into awaiting_children (pwPaths), under each of the three states of the
 	// merge forward its record holds (pwForwards), 45 cases in all (pwDropsForward).
 	t.Run("every move into awaiting_children tells the implementer of a merge forward it drops", func(t *testing.T) {
-		paths := pwPaths()
+		paths := pwPaths(t)
 		if len(paths) != 15 {
 			t.Fatalf("the paths into awaiting_children = %d, want the 15 there are", len(paths))
 		}

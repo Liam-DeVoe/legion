@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -719,7 +720,7 @@ func (r *personHandoverRig) notices(key, kind string) []record.Notice {
 func (r *personHandoverRig) processed(source, id string) bool {
 	r.t.Helper()
 	var marked bool
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		var err error
 		marked, err = record.NewStore().Processed(r.t.Context(), tx, source, id)
 		return err
@@ -763,7 +764,7 @@ func (r *personHandoverRig) record(key string) record.Issue {
 func (r *personHandoverRig) gates(key string) map[record.DesignStep]record.DesignGate {
 	r.t.Helper()
 	var gates map[record.DesignStep]record.DesignGate
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		var err error
 		gates, err = record.NewStore().GatesOf(r.t.Context(), tx, key)
 		return err
@@ -778,7 +779,7 @@ func (r *personHandoverRig) gates(key string) map[record.DesignStep]record.Desig
 func (r *personHandoverRig) entryTask(key string, role claim.Role) string {
 	r.t.Helper()
 	var rows []record.PhaseRow
-	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.t.Context(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = record.NewStore().Phases(r.t.Context(), tx, key)
 		return err
@@ -1183,6 +1184,7 @@ func (r *personHandoverRig) cleaned(key string) {
 //     retitle's own sequence, no handover row is queued, and the one queue of step 2 is all the log
 //     holds.
 func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 
@@ -1277,6 +1279,7 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 //  9. the root of step 3, parked again by the person and its spec revised by a session, is approved
 //     again by the person at the new version: todo again, a second queue.
 func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}
@@ -1401,6 +1404,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 // It shows the boot path. It does not show a daemon down for longer than the event stream keeps a
 // message.
 func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 
 	// 1. The person's label falls while no daemon runs.
@@ -1476,6 +1480,7 @@ func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
 //     todo under the daemon's own actor, admission.waiting names it, the daemon logged the one
 //     queue from source approval and left no handover row in its outbox.
 func TestPersonHandoverIsQueuedForAnApprovalMadeWithThePersonsTokenAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}

@@ -50,7 +50,7 @@ func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if refusal, refuses := held.refusal(actCloseRoot, root.Key); refuses {
+	if refusal, refuses := held.refusal(actCloseRoot, root.Key, ""); refuses {
 		return refusal, nil
 	}
 	if err := e.enqueue(ctx, tx, root.Key, record.CloseStatusWrite("done", root.Status, fact.Message(), root.Generation)); err != nil {

@@ -873,8 +873,8 @@ if [ "$parts" = both ]; then
     key_said="the pod's identity token for the audience $gateway_audience in place of a key, since the model key file $key_file holds none (minted below, read by the driver, never printed)"
   fi
   command -v bun >/dev/null || fail "bun is not on PATH: part two packs the two plugins with it"
-  [ -n "$(git -C "$root" ls-tree --name-only "$base_sha" packages/daemon/internal/prompts/roles)" ] ||
-    refuse "the base $base_sha holds no packages/daemon/internal/prompts/roles, so part two has no base prompts"
+  [ -n "$(git -C "$root" ls-tree --name-only "$base_sha" "$prompts_dir/roles")" ] ||
+    refuse "the base $base_sha holds no $prompts_dir/roles, so part two has no base prompts"
   note "part two against the base $base_sha's prompts, Oh My Pi $LEGION_OMP_PATH, $key_said"
 fi
 note "parts: $parts; evidence: $version_news_evidence"
@@ -999,7 +999,7 @@ fi
 # Part two is the lib's run too, over this checkout and of the driver the plan check built, with
 # the base commit's prompt files extracted for its base arm into a scratch directory of their own.
 prompts_tree=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-approved-version-news-prompts.XXXXXXXX")
-git -C "$root" archive "$base_sha" packages/daemon/internal/prompts/roles packages/daemon/internal/prompts/go |
+git -C "$root" archive "$base_sha" "$prompts_dir/roles" "$prompts_dir/go" |
   tar -x -C "$prompts_tree" || fail "git archive of $base_sha's prompts into $prompts_tree failed"
 part_two=$(mktemp -d "$version_news_evidence/part-two.XXXXXX")
 check=part-two

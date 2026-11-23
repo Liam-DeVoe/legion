@@ -100,11 +100,12 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"When the daemon set the move back, write it again."
 
 // StatusNotTakenYet is the sentence that the architect's refusals over children still in the
-// workflow, and the pr-merged notice, carry; workflow's endChildWords holds it with EndChildRule
-// and names each text that carries them. The daemon reads the architect's status write on a child
-// from that write's Dispatch event, and the event consumer can deliver the event after the
-// architect calls again. Until then the record holds the child in the workflow and the refusal
-// names it, so the architect waits for read_record to show its move (dispatch://INFRA-3178 R1).
+// workflow, the pr-merged notice and the retro-held notice carry; workflow's endChildWords holds
+// it with EndChildRule and names each text that carries them. The daemon reads the architect's
+// status write on a child from that write's Dispatch event, and the event consumer can deliver
+// the event after the architect calls again. Until then the record holds the child in the
+// workflow and the refusal names it, so the architect waits for read_record to show its move
+// (dispatch://INFRA-3178 R1).
 //
 // It lives here, beside EndChildRule, because the legion tool's description carries both texts
 // (packages/pi-legion/src/tools.ts). The tests that hold EndChildRule to that description
@@ -164,22 +165,29 @@ func StandsIn(issue Issue, phases ...phase.Phase) bool {
 }
 
 // AcceptedPhase says whether p is one of the phases past the daemon's acceptance of an issue's
-// reviewed head: its retro and its merge. The two phases are named here and nowhere else, so that
-// no rule of the acceptance order can read a list of its own: one that did is what let a child
-// held from retro through. Accepted reads it of where an issue stands, and the workflow reads it
-// of the phase a move left (workflow's acceptedEntry) and of the phase a move enters.
+// head: its retro and its merge. The two phases are named here and nowhere else, so that no rule
+// of the acceptance order can read a list of its own: one that did is what let a child held from
+// retro through. Accepted reads it of where an issue stands, and the workflow reads it of the
+// phase a move left (workflow's acceptedEntry) and of the phase a move enters.
 func AcceptedPhase(p phase.Phase) bool {
 	return p == phase.Retro || p == phase.Merging
 }
 
-// Accepted says whether the daemon has already accepted issue's own reviewed head and the issue
-// has not closed: it stands in its retro or in its merge, or is held from one of them
-// (StandsAt, AcceptedPhase). Work entering the workflow beneath an issue in one of those phases
-// would let that issue merge first, which is the one thing a parent must not do
-// (dispatch://INFRA-980, "Children first"). The reviewed head of a root whose worker died in
-// retro or merging is accepted still, so the hold must not let work in beneath
+// Accepted says whether the daemon has already accepted issue's head, the head the last step of
+// its task passed, and the issue has not closed: it stands in its retro or in its merge, or is
+// held from one of them (StandsAt, AcceptedPhase). The head is the reviewed one only where the
+// task has a reviewer step; a plan with no reviewer step has no reviewed head. Work entering the
+// workflow beneath an issue in one of those phases would let that issue merge first, which is the
+// one thing a parent must not do (dispatch://INFRA-980, "Children first"). The head of a root
+// whose worker died in retro or merging is accepted still, so the hold must not let work in beneath
 // it: the line held no issue under such a root, the two doors let one in, and the close of a
 // root held from retro handed over nobody.
+//
+// A parent held before its retro for the issues beneath it (HoldForChildren, a parent whose plan
+// has no acceptance step) is not accepted: the hold stands in place of its retro until those
+// issues have run, so each of them must start beneath it and be counted by its wait. Read as
+// accepted, it would hold a child at admitted until the parent closed (HeldUnderAccepted), leave
+// that child out of the wait (OpenBeneath), and start its retro and merge without the child's work.
 //
 // Every rule of the acceptance order asks this predicate, through the nearest accepted ancestor
 // (AcceptedAncestor): the waiting line's hold (HeldUnderAccepted), the doors' refusal (api's
@@ -187,7 +195,7 @@ func AcceptedPhase(p phase.Phase) bool {
 // (OpenBeneath, which leaves out what that hold stopped) — so none of them can count a root as
 // accepted that another counts as still at work.
 func Accepted(issue Issue) bool {
-	return AcceptedPhase(StandsAt(issue))
+	return AcceptedPhase(StandsAt(issue)) && !HeldForChildren(issue)
 }
 
 // BasisAcceptance says why ancestor no longer meets the daemon's half of R1's first condition for
@@ -239,6 +247,17 @@ func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor strin
 		return fmt.Sprintf("The daemon records %s in %s", ancestor, StandsAt(*recorded)), recorded, nil
 	}
 	return "", recorded, nil
+}
+
+// HeldFor says whether issue stands in held for reason.
+func HeldFor(issue Issue, reason HoldReason) bool {
+	return issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.Reason == reason
+}
+
+// HeldForChildren says whether issue is a parent held before its retro for the issues beneath it
+// (HoldForChildren).
+func HeldForChildren(issue Issue) bool {
+	return HeldFor(issue, HoldForChildren)
 }
 
 // Ancestors is every issue above issue inside its own tree, nearest first and the tree's own
@@ -1070,10 +1089,11 @@ func KeepsSlot(issue Issue) bool {
 // repair behind, and the worker of that phase would be repaired by nothing. Read from here, the
 // two move together.
 //
-// It is not Accepted, and the two must not be merged: Accepted names the two phases whose
-// reviewed head the daemon has accepted, which is the rule the acceptance order is written over
-// (its doc names them there and nowhere else), while this one is the slot rule's complement and
-// counts accepting with them.
+// It is not Accepted, and the two must not be merged: Accepted names the two phases whose head,
+// the one the last step of the task passed, the daemon has accepted, which is the rule the
+// acceptance order is written over (its doc names them there and nowhere else), and leaves out a
+// parent held before its retro for its children; this one is the slot rule's complement and
+// counts accepting, and that parent, with them.
 func PastReview(issue Issue) bool {
 	return StandsIn(issue, phase.Accepting, phase.Retro, phase.Merging)
 }

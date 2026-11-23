@@ -4,6 +4,7 @@ package record
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -379,6 +380,18 @@ type HoldReason string
 // HoldEscalated is a hold its architect sent to the controller.
 const HoldEscalated HoldReason = "escalated"
 
+// HoldTaskStopped is a hold whose issue's owner stopped the task it ran (workflow's taskStopped):
+// the task keeps its place and the reason it was stopped for (PlanTask.StoppedReason, StopTask).
+// A later version of the plan that changes the task, or a person's todo on a root, ends the hold:
+// a task whose work ran starts again at its first step, and a task stopped before its first step
+// (TaskPlace.Started) waits for that step again, as a task never stopped does.
+const HoldTaskStopped HoldReason = "task-stopped"
+
+// HoldForChildren is a hold that stands in place of the retro of an issue whose plan has no
+// acceptance step, while issues beneath it are still open (From is phase.Retro, which holds no
+// slot): the retro starts once the last of them has left.
+const HoldForChildren HoldReason = "children"
+
 // Awaiting is what a root in awaiting_person waits on: an ask its architect opened on the root
 // (Ask, the ask's id), or the closed design gate at a spec version (GateVersion) on the document
 // it registered (Artifact); when a person answered it (AnsweredAt, nil until then), with what
@@ -443,9 +456,9 @@ const (
 // wait on the children began; and Children the children that held the wait. The daemon resumes
 // the parent from this when no open child is left (workflow's ReturnFromChildren): a held
 // planning or implementing starts that phase, and a held testing, reviewing or accepting starts
-// testing in its place (ReturnsAsTesting), unless the pull request merged during the wait, when
-// the start goes back as it was held. Each task the return starts names every child of Children
-// that merged during the wait.
+// the first step of the issue's walk after the implementer's (ReturnStep), testing on today's
+// line, unless the pull request merged during the wait, when the start goes back as it was held.
+// Each task the return starts names every child of Children that merged during the wait.
 type ChildrenWait struct {
 	Start  phase.Phase
 	Task   string
@@ -457,22 +470,32 @@ type ChildrenWait struct {
 	Children []string
 }
 
-// ReturnsAsTesting says whether a held start of held comes back as testing once no open child is
+// ReturnsPastImplementing says whether a held start of held comes back, once no open child is
 // left and the pull request has not merged (workflow's ReturnFromChildren, dispatch://INFRA-3320
-// R12): a held testing, reviewing or accepting does, since each round of them before the wait
-// ran on a base without the children's merges, and a held planning or implementing comes back as
-// that phase.
-func ReturnsAsTesting(held phase.Phase) bool {
+// R12), as the first step of the issue's walk after the implementer's rather than as itself
+// (ReturnStep): a held testing, reviewing or accepting does, since each round of them before the
+// wait ran on a base without the children's merges, and a held planning or implementing comes
+// back as that phase.
+func ReturnsPastImplementing(held phase.Phase) bool {
 	return held == phase.Testing || held == phase.Reviewing || held == phase.Accepting
 }
 
-// ReturnsAsTestingInstead says whether a held start of held comes back as testing in place of the
-// start it held, which it does once no open child is left and the pull request has not merged: a
-// held reviewing or accepting (ReturnsAsTesting, less the held testing, which comes back as
-// itself). The refusals that say where the return takes a waiting parent read it (workflow's
-// goesBack, api's restartWorkedPhase).
-func ReturnsAsTestingInstead(held phase.Phase) bool {
-	return held != phase.Testing && ReturnsAsTesting(held)
+// ReturnStep is the phase a held start of held comes back as once no open child is left and the
+// pull request has not merged, steps being the phases of the steps of the issue's walk in their
+// order: for a held testing, reviewing or accepting (ReturnsPastImplementing), the first step
+// after the implementer's, which stands at or before held, since a plan runs its steps in today's
+// order — testing on today's line, and reviewing on a walk of an implementer, a reviewer and the
+// owner's acceptance; and held itself where steps hold no implementer's step or no step of held.
+// Any other held start comes back as itself.
+func ReturnStep(steps []phase.Phase, held phase.Phase) phase.Phase {
+	if !ReturnsPastImplementing(held) {
+		return held
+	}
+	implementing, at := slices.Index(steps, phase.Implementing), slices.Index(steps, held)
+	if implementing < 0 || at <= implementing {
+		return held
+	}
+	return steps[implementing+1]
 }
 
 // ParkedDecision is a person's decision on a tree nobody in it could hear, which the daemon
@@ -645,7 +668,7 @@ type PhaseRow struct {
 	// "reviewing-implementing", "merging-implementing" and the rest. It is counted on the
 	// implementer's row alone, beside Pass and in the same place (workflow's recordPass), and the
 	// two count the same moves to different ends: Pass rises on every move back, because a phase
-	// completion's idempotency key is built from it (api/handoff.go's handoffPosition), while this
+	// completion's idempotency key is built from it (api's handoffPosition), while this
 	// map says what kind each move was, which is what a hook reads. A conflict round is the one
 	// move the two part company on: it raises Pass, and Rounds and ConflictRounds where a review
 	// opened the round, and no pair at all, since nobody sent the work back, so no hook fires
@@ -771,7 +794,8 @@ type PhaseRow struct {
 	EntryMovedBack bool
 	// EntryFrom is the phase the start that raised that entry moved the issue from, written beside
 	// the four fields above in the same transaction (workflow's start and enter): the phase a
-	// transition left, and awaiting_children for the return from a wait on the children. It is
+	// transition left, awaiting_children for the return from a wait on the children, and held for
+	// the release of a hold that raises one (workflow's restartTask and startHeldRetro). It is
 	// "" where no move raised the entry: the promotion's start of a mid-phase worker a re-admitted
 	// tree brings back, which hands the role the phase it already stands in, and every row a
 	// daemon upgraded in place found. Like the entry it is never reset: ClearGeneration leaves it
@@ -788,6 +812,16 @@ type PhaseRow struct {
 	// Given is the last task a phase worker was given for an entry, with that entry and the
 	// issue's generation it was given in (GivenTask); its one reader reads it through GivenFor.
 	Given GivenTask
+	// StepTask and StepPlace are the step this role's row runs, for an issue with plan rows: the
+	// plan's task (PlanTask.Task) and the step's place in it, from 1 for a step and 0 for the retro
+	// on the implementer's row and for the merge on the merger's row, written by the start that
+	// raises the entry (workflow's enter). A role runs at most one step of an issue, so the row's
+	// handoff, completion, entry and decision above are the facts of that step's run. An issue with
+	// no plan rows keeps "" and 0, and so does every row the release before the column wrote. A new
+	// generation clears both with the entry's task (ClearGeneration), since the task ids belong to
+	// one generation's plan; a carried hand-over keeps its rows, and the step with them.
+	StepTask  string
+	StepPlace int
 }
 
 // GivenTask is the last task a phase worker was given for an entry, as it was composed, with that
@@ -1164,13 +1198,15 @@ type ConflictRead struct {
 // the issue stood in when the daemon asked, and stays in. Why is the first of R0's reasons that
 // held (dispatch://INFRA-4374 R0, ConflictWhy). AskedAt is when the ask was written. Landed is the
 // first new head that arrived after the ask, "" until one does; ReviewAsked is whether that
-// landing asked the reviewer to read the merge, which it does when the issue stands past review.
-// Earlier is every merge forward that landed before this ask in the same stretch of work, oldest
-// first: a later ask replaces the one the record holds, so when the head a merge left conflicts in
-// its turn and is merged forward again, Earlier is what still names the head the first merge
-// replaced (PullRequest.MergeForward says how long the stretch lasts). It is stored as the jsonb
-// of pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier
-// and Role with no migration of their own, and leaves each out while it is empty.
+// landing asked the reviewer to read the merge, which it does when the issue stands past review
+// and its task has a reviewer step (workflow's mergeForwardLanded), and which the merger's task and
+// its landed message read. Earlier is every merge forward that landed before this ask in the same
+// stretch of work, oldest first: a later ask replaces the one the record holds, so when the head a
+// merge left conflicts in its turn and is merged forward again, Earlier is what still names the
+// head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). It is
+// stored as the jsonb of pull_requests.merge_forward (migration 20261119003157), null for nil; the
+// jsonb takes Earlier and Role with no migration of their own, and leaves each out while it is
+// empty.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
@@ -2327,8 +2363,11 @@ type Store interface {
 	// StepStarts is the count of starts of place on issue with the agent, the moment and the run
 	// of the latest, unchanged: the zero StepStart where the place has no row.
 	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
+	// OpenStep is the open run of a step of issue whose start wrote the latest moment, of the
+	// several an issue can have open (Postgres.OpenStep), and the zero StepEntry where none is open.
+	OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepEntry, error)
 	// EndStepStart marks the open run of place on issue ended and answers its start and true, in
-	// the transaction that writes the run's end (workflow's endStep); false where that run has its
+	// the transaction that writes the run's end (workflow's endRun); false where that run has its
 	// end already, so one run gets one end.
 	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error)
 	// OpenUncountedStep marks open, at the daemon's boot, the row of a run at place that no start
@@ -2340,6 +2379,44 @@ type Store interface {
 	// StepRuns is every row of starts of each of issues, by issue and place, in one read: what the
 	// end of a step's run reads of the issues one fact touched (workflow's settleRuns).
 	StepRuns(ctx context.Context, tx pgx.Tx, issues []string) ([]IssueStepRun, error)
+	// PutPlan stores version v of the plan of v's issue at v's generation, with the tasks it
+	// gives and their steps. The same version given twice is refused, and so is a step of a task
+	// it does not give. A task the generation holds already takes the version's text and
+	// attributes and keeps where it stands (MoveTask, StopTask, PutReturnCounts); the steps of
+	// each task it gives are its steps alone.
+	PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks []PlanTask, steps []PlanStep) error
+	// Plan is the plan of issue at generation: its highest version, every task and every step.
+	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
+	// no plan reached yet.
+	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
+	// OwnersNewestPlan is the newest plan in force, of any generation, generation 0 included, that
+	// an architect of issue's tree now gave (ArchitectOfTree); nil where no owner gave one in force.
+	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue Issue) (*StoredPlan, error)
+	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
+	// architect of the issue's tree now (ArchitectOfTree): the plans its first step passes over.
+	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
+	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands;
+	// without, each task waiting at no act with its counts at 0. It writes nothing where from has
+	// no plan rows.
+	CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error
+	// DeletePlan deletes the plan of issue at generation from its three tables.
+	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
+	// DeleteTasks deletes each of tasks, waiting or stopped, with its steps.
+	DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tasks []string) error
+	// MoveTask writes where task stands and its state, which is not stopped (StopTask), and
+	// clears a stop's reason.
+	MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state TaskState) error
+	// StopTask writes task stopped for reason, at the place it stands.
+	StopTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error
+	// ReturnCounts is the counts of returns of task: on the task for a generation with plan rows,
+	// on the implementer's phases row for one with none.
+	ReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (ReturnCounts, error)
+	// PutReturnCounts writes the counts of returns of task where ReturnCounts reads them, and
+	// nothing else of that row.
+	PutReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, c ReturnCounts) error
+	// PlanTasksOf is every task of the plan of each issue of the Dispatch project at the issue's
+	// current generation, in one read; an issue with no plan rows at that generation has none.
+	PlanTasksOf(ctx context.Context, tx pgx.Tx, project string) ([]PlanTask, error)
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.
@@ -2851,6 +2928,111 @@ type RoleClaim struct {
 func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool, error) {
 	root, err := store.Issue(ctx, tx, tree)
 	return root != nil && root.Lingers(), err
+}
+
+// ArchitectOfTree says whether architect is an architect of issue's tree now: the architect of the
+// tree's root (issue.Tree), or of a member the record holds in that tree, a sub-architect. It is
+// the one rule of who owns an issue, and both readers of that hold to it: an architect's call on a
+// recorded issue (api's architectForIssue, register_plan, and rerun_child's childOfTree over the
+// tree it read, ArchitectOfTreeIn) and the giver of a stored plan at the issue's first step
+// (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
+// architect whose issue moved to another tree, or whose tree the issue left, is no owner of it any
+// longer, whatever tree its claim was registered in. A claim that ends in no architect role is
+// none; a member whose key yields no claim token holds no claim, so it matches nothing. The tree
+// root's architect, the owner of most issues, is answered from issue alone; only another
+// architect costs the read of the tree.
+func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
+	return architectOfTree(architect, issue, func() ([]Issue, error) { return store.TreeIssues(ctx, tx, issue.Tree) })
+}
+
+// ArchitectOfTreeIn is ArchitectOfTree over members, the records of issue's tree that the caller
+// read already (Store.TreeIssues), so a request that judges more of the tree than its owner reads
+// the tree once (api's childOfTree).
+func ArchitectOfTreeIn(architect claim.Token, issue Issue, members []Issue) (bool, error) {
+	return architectOfTree(architect, issue, func() ([]Issue, error) { return members, nil })
+}
+
+// architectOfTree is the rule of ArchitectOfTree, with members the records of issue's tree, read
+// only where the architect is not the tree root's.
+func architectOfTree(architect claim.Token, issue Issue, members func() ([]Issue, error)) (bool, error) {
+	if _, role, ok := architect.Cut(); !ok || role != claim.RoleArchitect {
+		return false, nil
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return false, fmt.Errorf("the architects of the tree of %s: %w", issue.Key, err)
+	}
+	architectOf := func(key string) bool {
+		token, err := claim.NewToken(project, key, claim.RoleArchitect)
+		return err == nil && token == architect
+	}
+	if architectOf(issue.Tree) {
+		return true, nil
+	}
+	tree, err := members()
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(tree, func(member Issue) bool { return architectOf(member.Key) }), nil
+}
+
+// OwnerRule is which architects own an issue for an architect's request on it, the rule the
+// request's route judges and its fact judges again under the fact lock (workflow's Engine.Apply):
+// OwnerOfTree, every architect of the issue's tree (ArchitectOfTree), for register_plan and
+// stop_task; or OwnerAbove, of those the issue's own architect or one above it in its tree
+// (ArchitectAbove), for sign_off, request_backward_move, retry_or_escalate, close_root and
+// register_gate.
+type OwnerRule int
+
+const (
+	OwnerOfTree OwnerRule = iota
+	OwnerAbove
+)
+
+// ArchitectAbove says whether architect owns issue for a request that only the issue's own
+// architect or one above it in its tree makes: architect is the architect of issue, or of an issue
+// above it through its recorded parents in its tree, and the tree root's architect owns every
+// issue of the tree. So a sub-architect, which holds a grant for the whole tree and can name any
+// issue of it, owns its own issue and those under it, never the root or a sibling. A chain that
+// leaves the tree before it reaches architect's issue (no parent on a child, a parent not recorded
+// or recorded in another tree, a cycle) ends at the tree root, whose architect owns the issue: a
+// human's re-parent in Dispatch leaves an issue's tree as it was (admit's recordObservation),
+// except a root that never ran, which joins its parent's live tree (workflow/adopt.go), and the
+// notice router ends the same walk at the same place (OwningArchitect), so the architect the
+// reviewer's phase-finished notice reaches is the one that may accept the issue. An architect this
+// answers true for is an architect of the issue's tree (ArchitectOfTree), since the
+// walk stays in that tree. The route judges it on its own read and the fact again under the lock,
+// so the two never judge different rules.
+func ArchitectAbove(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
+	if _, role, ok := architect.Cut(); !ok || role != claim.RoleArchitect {
+		return false, nil
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return false, fmt.Errorf("the architects above %s: %w", issue.Key, err)
+	}
+	architectOf := func(key string) bool {
+		token, err := claim.NewToken(project, key, claim.RoleArchitect)
+		return err == nil && token == architect
+	}
+	seen := map[string]bool{}
+	for current := &issue; ; {
+		if architectOf(current.Key) {
+			return true, nil
+		}
+		if current.Parent == nil || claim.IsTreeRoot(current.Key, current.Tree) || seen[current.Key] {
+			return architectOf(issue.Tree), nil
+		}
+		seen[current.Key] = true
+		parent, err := store.Issue(ctx, tx, *current.Parent)
+		if err != nil {
+			return false, err
+		}
+		if parent == nil || parent.Tree != issue.Tree {
+			return architectOf(issue.Tree), nil
+		}
+		current = parent
+	}
 }
 
 // PhaseRowOf is role's row among rows, and the zero row where the record holds no row of that

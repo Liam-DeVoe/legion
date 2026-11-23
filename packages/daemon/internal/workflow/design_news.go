@@ -153,8 +153,9 @@ const (
 	// NewsAwaitingPerson is a member told nothing while it waits on a person, since no phase
 	// holder works it.
 	NewsAwaitingPerson NewsState = "awaiting-person"
-	// NewsStopped is a member told nothing while it stands in held (record.UntoldHeld): the restart
-	// that moves it back into its phase carries what it is owed then.
+	// NewsStopped is a member told nothing while it stands in held (record.UntoldHeld), whatever
+	// holds it (its stopped task, the issues beneath it or its failed worker): the release that
+	// moves it back into a phase carries what it is owed then.
 	NewsStopped NewsState = "stopped"
 	// NewsAwaitingChildren is a parent told nothing while it stands in awaiting_children, a
 	// Dispatch child of it open (record.UntoldAwaitingChildren): no restart moves it back, and the
@@ -447,7 +448,7 @@ func memberWords(member NewsMember, gates map[record.DesignStep]record.DesignGat
 	case NewsAwaitingPerson:
 		return "told nothing while it waits on a person: no phase holder works it."
 	case NewsStopped:
-		return "told nothing while it is stopped: the restart that moves it back into its phase carries what it is owed then."
+		return "told nothing while it is held: the release that moves it back into a phase carries what it is owed then."
 	case NewsAwaitingChildren:
 		return "told nothing while it waits on its open children: the return that moves it back into its phase once no child " +
 			"of it is open carries what it is owed then."
