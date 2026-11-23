@@ -6,6 +6,7 @@ package daemon
 // (`k1: …`), failing when a count it reads is 0.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -49,6 +50,7 @@ import (
 // turn's end taken from the claim going durably idle in place of the turn's end: A's turn ends
 // straight into the pause's stop and never goes idle, so its end is in no copy either.
 func TestPauseHoldsEveryStart(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.AdmissionCap = 8 })
 	X, Y, U, W, V, Z := r.issue(1), r.issue(2), r.issue(3), r.issue(4), r.issue(5), r.issue(6)
 	A, B := r.token(X, claim.RolePlanner), r.token(X, claim.RoleArchitect)
@@ -316,6 +318,7 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 // launch; and no let-out moment stamped (projectPause.wakeLetOut), where the test fails at a stuck
 // warning before the last launch.
 func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
+	t.Parallel()
 	const (
 		roles      = 101
 		woken      = 90
@@ -598,6 +601,7 @@ func (r *pauseDaemonRig) runPacing(since, want int, made func(waveLaunch), read 
 // which the boot resumes by rule: after the restart a start row is queued for S, and the test
 // fails there.
 func TestPauseHoldsAcrossRestart(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.AdmissionCap = 8 })
 	issues := []string{r.issue(1), r.issue(2), r.issue(3), r.issue(4), r.issue(5)}
 	G, H := r.token(issues[0], claim.RoleImplementer), r.token(issues[1], claim.RoleArchitect)
@@ -707,6 +711,7 @@ func TestPauseHoldsAcrossRestart(t *testing.T) {
 // The negative control is the pause's hold taken out of workflow.UnownedPodRelease: pod 4 is
 // deleted after the idle period once the project resumes, and the test fails there.
 func TestPauseKeepsThePods(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.AdmissionCap = 8 })
 	// The update rounds' sweep runs beside the machines (overrides.orphanSweep), reading the test
 	// clock at each pass.
@@ -911,7 +916,7 @@ func turnStartedLine() string { return "supervise: a turn started" }
 // pullRequest records issue's open pull request number, its head at head.
 func (r *pauseDaemonRig) pullRequest(issue string, number int, head string) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{Issue: issue, Repo: liveRepo, Number: number,
 			Branch: "legion/" + issue, HeadSHA: head, HeadUpdatedAt: r.clock.Now().Add(-time.Hour).UTC(), State: record.PullRequestOpen})
 	}); err != nil {
@@ -952,7 +957,7 @@ func (r *pauseDaemonRig) noPrompt(sh *shim, why string) {
 // clock, which the engine stamps its rows with, and the wall clock, which the outbox reads.
 func (r *pauseDaemonRig) noneDue(held []api.PauseHeldView) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		due, err := r.records.DueRows(r.ctx, tx, r.cfg.Project, "", nil, r.later())
 		if err != nil {
 			return err
@@ -972,7 +977,7 @@ func (r *pauseDaemonRig) noneDue(held []api.PauseHeldView) {
 // claimed by it on the same database, as before any pause.
 func (r *pauseDaemonRig) claimsRowOf(project string, id int64) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		now := r.later()
 		due, err := r.records.DueRows(r.ctx, tx, project, "", nil, now)
 		if err != nil {

@@ -274,7 +274,7 @@ func (w *workflowRuntime) forgetClosedRetries(ctx context.Context) error {
 		return nil
 	}
 	var closed map[string]bool
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		closed, err = w.closedRetries(ctx, tx, owed)
 		return err

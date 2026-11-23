@@ -243,7 +243,7 @@ const heldCopyWrite = 4242
 func holdCopyWrites(t *testing.T, s *Store) func() {
 	t.Helper()
 	ctx := context.Background()
-	held, err := s.Pool().Begin(ctx)
+	held, err := s.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestACopyWriteInFlightWhenAPodFirstAsksIsReadAtThatAsk(t *testing.T) {
 func recordPush(t *testing.T, s *Store, issue, before, after string) bool {
 	t.Helper()
 	var moved bool
-	if err := s.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := Transact(context.Background(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		recorded, err := s.RecordIssuePush(context.Background(), tx, issue, before, after)
 		moved = recorded
 		return err
@@ -492,7 +492,7 @@ func TestAReleaseBundleOlderThanTheNewestRecordedPushIsSentAndItsConfirmationLif
 	unrestored := func() bool {
 		t.Helper()
 		var held bool
-		if err := s.Tx(ctx, func(tx pgx.Tx) error {
+		if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			held, err = workspaceBundleUnrestored(ctx, tx, "INFRA-1117")
 			return err

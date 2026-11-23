@@ -107,9 +107,10 @@ import (
 //
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // the reviewer's reviewed commit, the step records' three, the plan record's kind list
-// (20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's cutover of the
-// update ask's mark (20261117200337), dispatch://INFRA-4374's 20261119003157 and the design news:
-// it names every kind the merge-queue list names and its own.
+// (20261117023932), the plan of an issue (20261117034837), dispatch://INFRA-1997's
+// 20261117112334, dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337),
+// dispatch://INFRA-4374's 20261119003157 and the design news: it names every kind the merge-queue
+// list names and its own.
 // The kind list with the step record (20261117000528) is named here too: it stands above the
 // role-holders publication's and the reviewer's reviewed commit, and it restates
 // 20261116165926's kinds with step_record. So is the kind list with the plan record
@@ -117,7 +118,12 @@ import (
 // plan_record. The count of starts of each step (20261117004117) creates tables and a function of
 // its own, and its roll forward (20261117064152) changes nothing on a database no rollback
 // touched; neither touches outbox_kind_check, nor do the reviewed commit and the commit statuses,
-// which each add a column at its default.
+// which each add a column at its default, nor the plan of an issue (20261117034837), which
+// creates the three tables of the plan and adds `phases.step_task` and `phases.step_place`, each
+// at a default that every row it finds reads as no plan (migration_20261117034837_test.go).
+// The plan of an experiment's draw (20261123165139) adds `experiment_assignments.plan` at its
+// default, which every row it finds reads as no group (migration_20261123165139_test.go), stands
+// above every migration named here, and touches no outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -156,9 +162,9 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112105448, 20261112180548, 20261113005308,
 	20261113082214, 20261113082415, 20261113090512, 20261113110610, 20261113181500,
 	20261113182000, 20261114020537, 20261114031356, 20261114061900, 20261114090103, 20261115194357,
-	20261116144907, 20261116165926, 20261116234034, 20261117000528, 20261117004117, 20261117023932,
+	20261116144907, 20261116165926, 20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117034837,
 	20261117064152, 20261117112334, 20261117200337, 20261119003157, 20261119203047,
-	20261120012547, 20261120042902, 20261120055717, 20261121170714,
+	20261120012547, 20261120042902, 20261120055717, 20261121170714, 20261123165139,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its

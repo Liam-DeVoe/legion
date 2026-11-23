@@ -101,7 +101,9 @@ const runningCopyUpsert = `on conflict (issue) do update set source_pod_uid = ex
 // names one.
 func (s *Store) ReleaseBundleSavedOff(ctx context.Context, issue, pod string) (bool, error) {
 	var saved bool
-	if err := s.pool.QueryRow(ctx, `select `+releaseBundleSavedOff, issue, pod).Scan(&saved); err != nil {
+	if err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select `+releaseBundleSavedOff, issue, pod).Scan(&saved)
+	}); err != nil {
 		return false, fmt.Errorf("read whether the release bundle of %s came off pod %s: %w", issue, pod, err)
 	}
 	return saved, nil
@@ -145,7 +147,9 @@ func (b WorkspaceCopyBegun) At() time.Time { return b.at }
 // A read that fails answers no time, and the taker takes no copy.
 func (s *Store) BeginWorkspaceCopy(ctx context.Context) (WorkspaceCopyBegun, error) {
 	var at time.Time
-	if err := s.pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&at); err != nil {
+	if err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select clock_timestamp()`).Scan(&at)
+	}); err != nil {
 		return WorkspaceCopyBegun{}, fmt.Errorf("read the store's clock as the take of a workspace copy begins: %w", err)
 	}
 	return WorkspaceCopyBegun{at: at}, nil
@@ -256,7 +260,7 @@ func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, project, issue stri
 	if err != nil {
 		return fmt.Errorf("save the running workspace copy of %s: %w", issue, err)
 	}
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -460,6 +464,9 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 		bundleTake, runningTake, ask.Offered = runtime.DecideWorkspaceRestore(bundle, running, ask.Push, podUID, ask.FirstAsked)
 		return bundleTake, runningTake, nil
 	})
+	if errors.Is(err, ErrCommitOutcomeUnknown) {
+		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s: %w: their one restore attempt may be spent, and their work stays in the database", issue, podUID, err)
+	}
 	if err != nil {
 		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s to restore: %w", issue, podUID, err)
 	}
@@ -480,12 +487,14 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue,
 // times alone for WorkspaceBundleLeftForNextPod, the delete of a copy the pod's kept volume holds
 // (dropCopy), and the take of every other (takeCopy). A failure anywhere leaves every row as it
 // was, the first ask's included, and is answered unwrapped, so the caller names the act that
-// failed.
+// failed. It runs until one run commits (transactUntilCommitted): a run whose commit reply was
+// lost may have spent the copies' attempts, and a second run would find them spent and answer the
+// pod nothing.
 func (s *Store) askWorkspaceCopies(ctx context.Context, project, issue, podUID string,
 	decide func(tx pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error),
 ) (runtime.WorkspaceRestore, error) {
 	var ask runtime.WorkspaceRestore
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := transactUntilCommitted(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		ask = runtime.WorkspaceRestore{}
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
@@ -655,7 +664,7 @@ func (s *Store) RecordPodRegistration(ctx context.Context, issue, podUID string)
 	if podUID == "" {
 		return fmt.Errorf("record a registration in a pod of %s: no pod named", issue)
 	}
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -770,7 +779,7 @@ func (s *Store) DeleteRunningWorkspaceCopy(ctx context.Context, project, issue s
 	if begun.at.IsZero() {
 		return fmt.Errorf("the delete of the running workspace copy of %s needs the store's time its take began (BeginWorkspaceCopy)", issue)
 	}
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -799,13 +808,12 @@ func (s *Store) DeleteRunningWorkspaceCopy(ctx context.Context, project, issue s
 	return nil
 }
 
-// deleteRunningCopy drops issue's running copy whatever minute took it, through db: the
-// transaction of each write that drops the copy with what it changes (PutWorkspaceBundle,
-// DeleteWorkspaceBundle), each of which leaves the issue an answer of its own and so reads no
-// time. The cadence's own delete reads one (DeleteRunningWorkspaceCopy). Deleting one the table
-// does not hold is success.
-func deleteRunningCopy(ctx context.Context, db execer, issue string) error {
-	_, err := db.Exec(ctx, `delete from workspace_running_copies where issue = $1`, issue)
+// deleteRunningCopy drops issue's running copy whatever minute took it, in tx: the transaction of
+// each write that drops the copy with what it changes (PutWorkspaceBundle, DeleteWorkspaceBundle),
+// each of which leaves the issue an answer of its own and so reads no time. The cadence's own
+// delete reads one (DeleteRunningWorkspaceCopy). Deleting one the table does not hold is success.
+func deleteRunningCopy(ctx context.Context, tx pgx.Tx, issue string) error {
+	_, err := tx.Exec(ctx, `delete from workspace_running_copies where issue = $1`, issue)
 	return err
 }
 
@@ -860,7 +868,7 @@ func (s *Store) KeepRestoredRunningWorkspaceCopy(ctx context.Context, issue, pod
 	if podUID == "" {
 		return fmt.Errorf("the restored running workspace copy %d of %s needs the pod that restored it", restoreID, issue)
 	}
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := transactUntilCommitted(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
 		}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The pod after the one that restored a copy is sent the kept copy whatever the API server's clock
@@ -143,7 +144,7 @@ func TestARestoreSendsAReleaseBundleOlderThanTheIssuesNewestPushAndThePodAfterAS
 	ctx := context.Background()
 	saved := savedWorkspaceBundle()
 	saveReleaseBundle(t, st, saved)
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := st.RecordIssuePush(ctx, tx, testTree, "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2")
 		return err
 	}); err != nil {

@@ -784,7 +784,7 @@ func TestARestoreSendsNoRunningCopyOlderThanTheIssuesNewestPushAndLogsThePushItW
 	saveRunningCopy(t, st, taken)
 	takenAt := storedTime(t, st, runningCopyTaken, testTree)
 	const beforeHead, pushedHead = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := st.RecordIssuePush(ctx, tx, testTree, beforeHead, pushedHead)
 		return err
 	}); err != nil {

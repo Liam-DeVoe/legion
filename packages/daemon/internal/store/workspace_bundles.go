@@ -62,7 +62,7 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 	if err != nil {
 		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
 	}
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -90,7 +90,9 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // of the pool and out of the daemon's memory.
 func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error) {
 	var size int
-	err := s.pool.QueryRow(ctx, `select size_bytes from workspace_bundles where issue = $1`, issue).Scan(&size)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select size_bytes from workspace_bundles where issue = $1`, issue).Scan(&size)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -113,7 +115,7 @@ func (s *Store) WorkspaceBundleSize(ctx context.Context, issue string) (int, boo
 // bundle that left the copy behind would leave exactly that copy for the issue's next pod — a
 // later generation's, should the issue be reopened.
 func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1`, issue); err != nil {
 			return err
 		}
@@ -181,7 +183,7 @@ func (s *Store) KeepRestoredWorkspaceBundle(ctx context.Context, issue, podUID s
 	if podUID == "" {
 		return fmt.Errorf("the restored workspace bundle of %s saved by release %d needs the pod that restored it", issue, release)
 	}
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := transactUntilCommitted(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
 		}

@@ -66,6 +66,7 @@ func (r *idleRig) pendingSave(t *testing.T) {
 // teardown of the same pass go on, so each route must leave the pod and its workspace alone; once
 // the save row leaves on a later pass, the teardown it held back finishes or tears the pod down.
 func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// One drain over what the release queued: the save fails first, and the stop and teardown
 	// listed beside it run in the same pass.
@@ -263,6 +264,7 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 // not be built, or one too large to carry, which the shim refuses itself with the size it came to
 // and which the release's line names.
 func TestABundleTheReleaseCannotSaveStopsItAndResumesTheClaims(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// fail makes the save's bundle fail that way.

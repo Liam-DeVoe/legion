@@ -16,7 +16,7 @@ import (
 func newestPush(t *testing.T, s *Store, issue string) runtime.WorkspacePush {
 	t.Helper()
 	var push runtime.WorkspacePush
-	if err := s.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := Transact(context.Background(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		read, err := issuePush(context.Background(), tx, issue)
 		push = read
 		return err
@@ -167,7 +167,7 @@ func TestTheRecordKeepsTheNewestHeadsOfEachIssueUpToItsBound(t *testing.T) {
 	recordPush(t, s, "INFRA-2760", "d0", "d1")
 	head := func(i int) string { return fmt.Sprintf("c%03d", i) }
 	const pushes = maxIssuePushHeads + 44
-	if err := s.Tx(ctx, func(tx pgx.Tx) error {
+	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		for i := 1; i <= pushes; i++ {
 			if _, err := s.RecordIssuePush(ctx, tx, "INFRA-1117", head(i-1), head(i)); err != nil {
 				return err
