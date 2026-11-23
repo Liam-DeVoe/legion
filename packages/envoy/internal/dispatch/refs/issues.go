@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
@@ -55,32 +56,76 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 	return ancestors, nil
 }
 
-// IssueDescendants is every issue below the issue key on `child_of`, at any status, read through
-// q: its children, their children, and so on, bounded by IssueDepthCap like the ancestor walk
-// above, so the query terminates even if a raced reparent ever commits a cycle. The key itself is
+// IssueDescendant is an issue below another one on `child_of`, as IssueDescendantRows reads it:
+// its key, its parent, its status, and its depth, 1 for a child of the issue the walk starts at.
+type IssueDescendant struct {
+	Key    string
+	Parent string
+	Status string
+	Depth  int
+}
+
+// IssueDescendants is the keys of every issue below the issue key on `child_of`, at any status,
+// in key order: IssueDescendantRows' keys, answered for who as that walk answers. An issue with no
+// child, an issue no row has, and the empty key answer []. api's coverage read, the issue tree's
+// read and the plan order are this query; a caller that needs the nearest issues first reads
+// IssueDescendantRows.
+func IssueDescendants(ctx context.Context, q Queryer, who model.Actor, key string) ([]string, error) {
+	rows, err := IssueDescendantRows(ctx, q, who, key)
+	if err != nil {
+		return nil, err
+	}
+	descendants := make([]string, 0, len(rows))
+	for _, row := range rows {
+		descendants = append(descendants, row.Key)
+	}
+	slices.Sort(descendants)
+	return descendants, nil
+}
+
+// IssueDescendantRows is every issue below the issue key on `child_of`, at any status, read
+// through q: its children, their children, and so on, bounded by IssueDepthCap like the ancestor
+// walk above, so the query terminates even if a raced reparent ever commits a cycle. Each row
+// holds the issue's parent, its status and its depth. The rows are in the order of their depth,
+// nearest first, and at one depth in the order of their projects and numbers. The key itself is
 // not in the answer. An issue with no child, an issue no row has, and the empty key answer [].
-// This is the server's one recursive descendant walk over whole subtrees: api's coverage read is
-// this query. api's issueChildrenStatement is a different read — one row per direct child, with
-// a rollup over that child's own subtree — and stays its own.
+// This is the server's one recursive descendant walk over whole subtrees: api's coverage read,
+// which reads the keys (IssueDescendants), and the check of a move's subtree (api's
+// refuseSpecWriterOfMovedSubtree, spec_writer.go) and the plan of a status change (api's
+// planStatusChange), which read the rows nearest first, are this query. api's
+// issueChildrenStatement is a different read - one row per direct child, with a
+// rollup over that child's own subtree - and stays its own.
+//
+// The walk carries each issue's project and number, which its order needs, from the row it reads
+// already, rather than join its keys back to issues: the planner has no estimate of a recursive
+// CTE's size, so such a join hashes the whole table (api's issueChildrenStatement says what it
+// cost there). The two columns follow from the key, so `union` removes the rows it removes
+// without them.
 //
 // It answers for who: an issue who may not see is not in the answer, and the walk does not pass
 // below it, so neither it nor the issues it holds are reached through it (VisibleKind).
-func IssueDescendants(ctx context.Context, q Queryer, who model.Actor, key string) ([]string, error) {
-	descendants := []string{}
+func IssueDescendantRows(ctx context.Context, q Queryer, who model.Actor, key string) ([]IssueDescendant, error) {
 	if key == "" {
-		return descendants, nil
+		return []IssueDescendant{}, nil
 	}
-	if err := q.QueryRow(ctx, `
+	rows, err := q.Query(ctx, `
 		with recursive descendants as (
-			select c.key, 1 as depth from issues c where c.parent_key = $1
+			select c.key, c.parent_key, c.status, c.project_key, c.number, 1 as depth
+			from issues c where c.parent_key = $1
 			  and `+VisibleKind("issue", "c.key", "$3")+`
 			union
-			select c.key, d.depth + 1
+			select c.key, c.parent_key, c.status, c.project_key, c.number, d.depth + 1
 			from issues c join descendants d on c.parent_key = d.key
 			where d.depth < $2 and `+VisibleKind("issue", "c.key", "$3")+`
 		)
-		select coalesce(array_agg(key order by key), '{}') from descendants
-	`, key, IssueDepthCap, VisibilityArg(who)).Scan(&descendants); err != nil {
+		select key, parent_key, status, depth from descendants
+		order by depth, project_key, number
+	`, key, IssueDepthCap, VisibilityArg(who))
+	if err != nil {
+		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
+	}
+	descendants, err := pgx.CollectRows(rows, pgx.RowToStructByPos[IssueDescendant])
+	if err != nil {
 		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
 	}
 	return descendants, nil

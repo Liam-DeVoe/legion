@@ -198,6 +198,7 @@ const validCalls = {
   dispatch_issues: { project: "ACME" },
   dispatch_project: { key: "CORE", name: "Core" },
   dispatch_projects: {},
+  dispatch_project_update: { project: "CORE", proven_sessions: "off" },
   dispatch_priorities: { project: ["DSP"] },
   dispatch_architecture_sync: { project: "CORE" },
   dispatch_open_asks: {},
@@ -326,6 +327,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_issues",
       "dispatch_project",
       "dispatch_projects",
+      "dispatch_project_update",
       "dispatch_priorities",
       "dispatch_architecture_sync",
       "dispatch_open_asks",
@@ -422,6 +424,28 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
     // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
     expectNotAProjectKey(schema, [{ project: "infra" }, { project: "" }]);
+  });
+
+  test("dispatch_project_update takes a project key and on or off, and nothing else", () => {
+    const schema = schemaFor("dispatch_project_update");
+
+    for (const proven_sessions of ["on", "off"]) {
+      expect(schema.safeParse({ project: "CORE", proven_sessions }).success, proven_sessions).toBe(
+        true
+      );
+    }
+    expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: true }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "yes" }).success).toBe(false);
+    expect(schema.safeParse({ project: "CORE", proven_sessions: "on", name: "Core" }).success).toBe(
+      false
+    );
+    // An empty key would send `PUT /api/v1/projects//proven-sessions`, so it is refused like any
+    // other.
+    expectNotAProjectKey(schema, [
+      { project: "core", proven_sessions: "on" },
+      { project: "", proven_sessions: "off" },
+    ]);
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {
@@ -980,6 +1004,7 @@ describe("dispatchToolSpecs", () => {
       "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
     const artifactOwner =
       "Exactly one of issue and project is required; with project, artifact names the document.";
+    const notMarkdownName = `a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; a document takes a name ending in .md or .markdown or with no extension.`;
     const edit = { artifact: "spec.md", ops: [{ op: "delete", find: "x" }] };
     const readOwner =
       "Exactly one of issue and project is required; project alone lists its documents, and with artifact names one.";
@@ -994,6 +1019,12 @@ describe("dispatchToolSpecs", () => {
       ["dispatch_artifact", { issue: "DSP-1", name: "n", path: "p", content: "c" }, source],
       ["dispatch_artifact", { name: "n", content: "c" }, artifactOwner],
       ["dispatch_artifact", { name: "n", path: "p", content: "c" }, `${artifactOwner} ${source}`],
+      // A call that breaks the owner rule and the Markdown-name rule is told of both at once.
+      [
+        "dispatch_artifact",
+        { name: "rows.jsonl", content: "c" },
+        `${artifactOwner} ${notMarkdownName}`,
+      ],
       ["dispatch_read", { issue: "DSP-1", message: "m" }, readMessage],
       ["dispatch_read", {}, readOwner],
     ] as const) {

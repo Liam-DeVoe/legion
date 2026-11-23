@@ -3,12 +3,12 @@ package api
 // going_catalogue.go holds the catalogue of operations an agent may propose on Dispatch's
 // graph, and serves it at GET /api/v1/going/catalogue.
 //
-// The catalogue is the dispatch tools that write, all but four: the specs in
+// The catalogue is the dispatch tools that write, all but five: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
 // each carried whole through contracts.DispatchTools — its own curated description, which is
 // what a model chooses on, and its own argument schema. The list is read whole: nothing searches
 // it, and no second schema is authored per route. How a model's choice among the actions holds up
-// as the list grows is unmeasured. The four the catalogue leaves out are left out on purpose.
+// as the list grows is unmeasured. The five the catalogue leaves out are left out on purpose.
 // Three record or undo a person's decision: dispatch_review records an approval or a changes
 // request in a person's name; dispatch_settle, written by a person's credential, records that the
 // person settled a proposal, which is the person's own call (spec requirement r-proposed); and
@@ -16,7 +16,8 @@ package api
 // and the caller rule a person's credential passes for those moves is the settle's own. The fourth,
 // dispatch_premortem_convert, retires a document once, through docs.RetireDocument,
 // and moves its address to the lens it writes in its place
-// (spec requirement r-premortem-nodes). The loop that proposes operations on
+// (spec requirement r-premortem-nodes). The fifth, dispatch_project_update, turns a check of a
+// project on or off (its proven-sessions setting). The loop that proposes operations on
 // Dispatch's graph must never propose any of them, so goingToolRoutes names no row for them.
 //
 // Which tools write is not a field a tool spec carries. goingToolRoutes names the rows of the
@@ -27,8 +28,9 @@ package api
 // report rather than a refusal, since a write no tool in the catalogue performs is not an error:
 // most are work still to do, and the two review routes, the document header's and the one
 // dispatch_review performs, the settle dispatch_settle performs, the state write dispatch_state
-// performs and the pre-mortem conversion dispatch_premortem_convert performs are kept out on
-// purpose. TestTheMutatingRoutesNoToolSpecNames names every one of them.
+// performs, the pre-mortem conversion dispatch_premortem_convert performs and the two routes of
+// the proven-sessions setting, which dispatch_project_update performs, are kept out on purpose.
+// TestTheMutatingRoutesNoToolSpecNames names every one of them.
 //
 // Nothing here decides anything: the catalogue says what an action is and what it takes, and
 // GoingCaller performs one an agent already chose. The loop that chooses is not in this package.
@@ -83,11 +85,12 @@ type goingToolRoute struct {
 // name, and so the tools the catalogue holds. A tool this map does not name is not in the
 // catalogue: the read tools, `dispatch_constraints`, `dispatch_lenses` and `dispatch_proposed`
 // among them; `dispatch_related`, whose POST row writes nothing (it runs the related-item check and
-// records none of it); and `dispatch_review`, `dispatch_settle`, `dispatch_state` and
-// `dispatch_premortem_convert`, which write and are left out on purpose. A review records an
-// approval or a changes request in a person's name, a settle written by a person's credential
-// records that the person settled a proposal, a state write moves a node out of settled or into
-// gone, and the pre-mortem conversion retires a document once: the loop that proposes operations
+// records none of it); and `dispatch_review`, `dispatch_settle`, `dispatch_state`,
+// `dispatch_premortem_convert` and `dispatch_project_update`, which write and are left out on
+// purpose. A review records an approval or a changes request in a person's name, a settle written
+// by a person's credential records that the person settled a proposal, a state write moves a node
+// out of settled or into gone, the pre-mortem conversion retires a document once, and
+// dispatch_project_update turns a check of a project on or off: the loop that proposes operations
 // on Dispatch's graph must never propose any of them, so none gets a row here.
 //
 // The rows of one tool are tried in order, so the row a call performs is the first whose guard
@@ -98,11 +101,32 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Method: http.MethodPost, Pattern: "/api/v1/issues", Path: map[string]string{},
 		Relations: []string{"child_of", model.EdgeKindNeeds, "duplicate_of", "filed_from", "affects", "mentions"},
 	}},
-	"dispatch_issue_update": {{
-		Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
-		Path:      map[string]string{"key": "issue"},
-		Relations: []string{"child_of", model.EdgeKindNeeds, "duplicate_of", "filed_from", "affects"},
-	}},
+	"dispatch_issue_update": {
+		// A call that sets an option of the status change sends that route, which takes the
+		// status and the option: the PATCH takes no option and would drop it. One row per option,
+		// each guarded by its own argument, and all three tried before the PATCH row, which takes
+		// every call that sets none.
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionIncludeChildren, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionUnlinkChildren, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionIncludeParent, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
+			Path:      map[string]string{"key": "issue"},
+			Relations: []string{"child_of", model.EdgeKindNeeds, "duplicate_of", "filed_from", "affects"},
+		},
+	},
 	"dispatch_claim": {
 		{
 			Method: http.MethodDelete, Pattern: "/api/v1/issues/{key}/claim",

@@ -285,6 +285,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Whether the credential is a person's, for the check of a create under a parent
+	// (refuseSpecWriter), read before the transaction opens (specWriterOf). A create under no
+	// parent is not checked and reads nothing for it.
+	var writer specWriter
+	if parentKey != "" {
+		writer = s.specWriterOf(r, actor)
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -319,6 +326,15 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The check of who writes the spec of an issue Legion runs, on the new row as the create
+		// leaves it: its labels, and its parent's chain, whose architects pass. It runs before the
+		// project's owner lock and the spec's document call, and before the create's first write.
+		if err := refuseSpecWriter(r.Context(), tx, writer, specWrite{
+			act: specWriteCreate, under: parentKey, labels: labels,
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -524,6 +540,25 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueRank := rank.Between(lastRank, "")
+	// R24 with the rule on: a new issue is in triage, so only a done parent holds the rule
+	// against it (createParentConflict). A create holds no owner lock of its parent, so the
+	// parent's row is read `for share`, as the statement just before the insert. A close of the
+	// parent whose update ran first makes this read wait for its commit and read done. A close
+	// whose update comes after this read waits for this create to commit, and its second read
+	// sees the new child (openChildrenOfAClose). With the rule off the create reads nothing here.
+	if parentKey != "" && s.deps.ParentStatusRule.On() {
+		var parentTitle, parentStatus string
+		if err := tx.QueryRow(r.Context(), `
+			select title, status from issues where key = $1 for share
+		`, parentKey).Scan(&parentTitle, &parentStatus); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if conflict := createParentConflict(parentKey, parentTitle, parentStatus); conflict != nil {
+			s.writeHandlerError(w, conflict)
+			return
+		}
+	}
 
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
 	// them in the store's order, each in the issue's project, with the spec's part_of the issue
