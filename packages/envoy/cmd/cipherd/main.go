@@ -642,7 +642,7 @@ func main() {
 
 	var waker func(context.Context, string, string, string)
 	if cfg.EnvoyURL != "" {
-		w := wake.Envoy{URL: cfg.EnvoyURL, Account: ciphertoken.NewAccountToken(cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
+		w := wake.Envoy{URL: cfg.EnvoyURL, Account: ciphertoken.NewAccountToken("BROKER_ENVOY_ACCOUNT_TOKEN_FILE", cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
 		waker = func(ctx context.Context, enrollmentID, requestID, state string) {
 			sid, _ := reqMachine.SessionID(ctx, requestID) // requests.session_id, else the enrollment's
 			if sid == "" {
@@ -1359,7 +1359,7 @@ func projectAccessClients(baseURL, tokenFile string) (projectaccess.Access, api.
 	if baseURL == "" {
 		return nil, nil
 	}
-	account := ciphertoken.NewAccountToken(tokenFile)
+	account := ciphertoken.NewAccountToken("BROKER_PROJECT_ACCESS_TOKEN_FILE", tokenFile)
 	return projectaccess.New(baseURL, account, projectAccessHTTPClient()), projectrepos.New(baseURL, account, nil)
 }
 
@@ -1441,7 +1441,7 @@ func judgeDispatch(cfg config.Config) *judge.Dispatch {
 	}
 	return &judge.Dispatch{
 		BaseURL: cfg.JudgeDispatchURL,
-		Account: ciphertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
+		Account: ciphertoken.NewAccountToken("BROKER_JUDGE_DISPATCH_TOKEN_FILE", cfg.JudgeDispatchTokenFile),
 		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
 	}
 }

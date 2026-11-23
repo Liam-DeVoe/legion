@@ -105,7 +105,7 @@ func newRig(t *testing.T, options ...func(*ciphertoken.Options)) *rig {
 	tick := newClock()
 	opts := ciphertoken.Options{
 		BrokerURL: broker.Server.URL,
-		Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+		Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 		Origin:    dispatchOrigin,
 		Replay:    store.NewDPoPProofs(database.Pool),
 		Address:   sourceAddress,
@@ -811,18 +811,22 @@ func TestAnUnreachableBrokerURLWithACredentialPrintsNoneOfIt(t *testing.T) {
 }
 
 // TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing: Dispatch's own missing credential is
-// its deployment's failure, so it is the unreachable outcome and the error says why it could not
-// be read, never the path, which here is a made-up token, as one pasted where the path goes is.
+// its deployment's failure, so it is the unreachable outcome and the error names the setting that
+// holds the file and why it could not be read, never the path, which here is a made-up token, as
+// one pasted where the path goes is.
 func TestAnAccountTokenDispatchCannotReadAsksTheBrokerNothing(t *testing.T) {
 	const pasted = "madeUpAccountTokenPath0123456789"
 	missing := filepath.Join(t.TempDir(), pasted)
-	rig := newRig(t, func(o *ciphertoken.Options) { o.Account = ciphertoken.NewAccountToken(missing) })
+	rig := newRig(t, func(o *ciphertoken.Options) {
+		o.Account = ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", missing)
+	})
 	caller := newSigner(t)
 
 	_, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "a-token-never-asked-about"))
-	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) || !strings.Contains(err.Error(), "read the ServiceAccount token: its file cannot be read: it does not exist") ||
+	if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) ||
+		!strings.Contains(err.Error(), "read the ServiceAccount token DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE names: its file cannot be read: it does not exist") ||
 		strings.Contains(err.Error(), pasted[:10]) {
-		t.Fatalf("an unreadable account token answered %v, want ErrBrokerUnreachable naming why and not the path", err)
+		t.Fatalf("an unreadable account token answered %v, want ErrBrokerUnreachable naming the setting and why, and not the path", err)
 	}
 	var unreadable *ciphertoken.AccountTokenError
 	if !errors.As(err, &unreadable) {
@@ -902,7 +906,7 @@ func TestNewRefusesAnOriginItCannotCheckAProofAgainst(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := ciphertoken.New(ciphertoken.Options{
 				BrokerURL: "https://broker.test",
-				Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+				Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 				Origin:    origin,
 				Replay:    store.NewDPoPProofs(database.Pool),
 				Address:   sourceAddress,
@@ -923,7 +927,7 @@ func TestNewRefusesAVerifierWithNoSourceAddress(t *testing.T) {
 	options := func() ciphertoken.Options {
 		return ciphertoken.Options{
 			BrokerURL: "https://broker.test",
-			Account:   ciphertoken.NewAccountToken(accountTokenFile(t, accountToken)),
+			Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", accountTokenFile(t, accountToken)),
 			Origin:    dispatchOrigin,
 			Replay:    store.NewDPoPProofs(database.Pool),
 		}

@@ -2387,7 +2387,7 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	}
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
-		Account:   ciphertoken.NewAccountToken(boot.AgentSecretsTokenFile),
+		Account:   ciphertoken.NewAccountToken("DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", boot.AgentSecretsTokenFile),
 		Origin:    strings.TrimSuffix(serverURL, "/"),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and

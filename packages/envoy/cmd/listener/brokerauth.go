@@ -74,7 +74,7 @@ func (c listenerBrokerConfig) configured() bool { return c.BrokerURL != "" }
 // already refused a configuration naming neither or both.
 func (c listenerBrokerConfig) account() ciphertoken.Account {
 	if c.AccountTokenFile != "" {
-		return ciphertoken.NewAccountToken(c.AccountTokenFile)
+		return ciphertoken.NewAccountToken(EnvBrokerAccountTokenFile, c.AccountTokenFile)
 	}
 	return ciphertoken.NewGoogleAccount(c.GoogleAudience)
 }
