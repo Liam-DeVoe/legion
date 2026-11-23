@@ -28,7 +28,8 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   Each agent is named for the role of its first step, and an agent whose role's name another agent of the plan holds takes a numbered name of its own:
   `steps="implementer reviewer implementer"` runs step 3 as a fresh agent, `implementer-2`, in a claim and a session of its own.
   Under `runtime: kubernetes` that agent runs in a slot of the issue pod that carries its name, and where the pod was built without that slot, step 3 waits until the pod's update round or its release replaces the pod.
-  A key keeps its name in every version: a later version that names the key again runs its steps in the same agent and session, and while a version leaves the key out, no other agent takes its name.
+  A key keeps its name in every version: a later version that names the key again runs its steps in the same agent and session, and while a version leaves the key out, no other agent takes its name, so the agent that would have taken it takes a numbered name and a slot of its own, whose start can wait for the pod's update round.
+  A name that only agents with no key held is given again to a later agent with no key, which starts in a session of its own.
 
 ## The roles and their order
 
