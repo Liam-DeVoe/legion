@@ -2,6 +2,7 @@ package requests
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -18,7 +19,7 @@ import (
 func TestProxyGrantsOfEnrollmentAnswersEveryLiveGrantOfTheEnrollment(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", ""), rule("SECOND_TOKEN", "")}})
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
-	_, first := grantOf(t, m, enr, key, "read the first for INFRA-1352", "AUTO_TOKEN")
+	_, first := grantOf(t, m, enr, key, "read the first for ACME-7", "AUTO_TOKEN")
 	_, second := grantOf(t, m, enr, key, "read the second", "SECOND_TOKEN")
 	other, otherKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
 	_, foreign := grantOf(t, m, other, otherKey, "read it on another box", "AUTO_TOKEN")
@@ -31,14 +32,11 @@ func TestProxyGrantsOfEnrollmentAnswersEveryLiveGrantOfTheEnrollment(t *testing.
 		passwords[grantID] = release.Airlock.ProxyPassword
 	}
 
-	live, err := m.ProxyGrantsOfEnrollment(t.Context(), enr)
+	live, err := m.ProxyGrantsOfEnrollment(t.Context(), enr, "")
 	if err != nil {
 		t.Fatalf("ProxyGrantsOfEnrollment: %v", err)
 	}
-	want := []string{first, second}
-	if first > second {
-		want = []string{second, first}
-	}
+	want := slices.Sorted(slices.Values([]string{first, second}))
 	if got := grantIDs(live); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the enrollment's live grants = %v; want %v, in grant id order, and not %s of another enrollment", got, want, foreign)
 	}
@@ -55,7 +53,7 @@ func TestProxyGrantsOfEnrollmentAnswersEveryLiveGrantOfTheEnrollment(t *testing.
 	if err := m.RevokeGrant(t.Context(), second, enr); err != nil {
 		t.Fatalf("RevokeGrant: %v", err)
 	}
-	live, err = m.ProxyGrantsOfEnrollment(t.Context(), enr)
+	live, err = m.ProxyGrantsOfEnrollment(t.Context(), enr, "")
 	if err != nil {
 		t.Fatalf("ProxyGrantsOfEnrollment after a revoke: %v", err)
 	}
@@ -68,19 +66,22 @@ func TestProxyGrantsOfEnrollmentAnswersEveryLiveGrantOfTheEnrollment(t *testing.
 	if _, err := m.Store.Pool.Exec(t.Context(), `insert into withheld_secrets (enrollment_id, name) values ($1,$2)`, enr, "AUTO_TOKEN"); err != nil {
 		t.Fatal(err)
 	}
-	live, err = m.ProxyGrantsOfEnrollment(t.Context(), enr)
+	live, err = m.ProxyGrantsOfEnrollment(t.Context(), enr, "")
 	if err != nil {
 		t.Fatalf("ProxyGrantsOfEnrollment with AUTO_TOKEN withheld: %v", err)
 	}
 	if len(live) != 0 {
 		t.Fatalf("the enrollment's live grants with every name withheld = %v; want none", grantIDs(live))
 	}
-	if still, err := m.ProxyGrantsOfEnrollment(t.Context(), other); err != nil || !reflect.DeepEqual(grantIDs(still), []string{foreign}) {
+	if still, err := m.ProxyGrantsOfEnrollment(t.Context(), other, ""); err != nil || !reflect.DeepEqual(grantIDs(still), []string{foreign}) {
 		t.Fatalf("the other enrollment's live grants = %v, %v; want %s, which no withhold of this enrollment reaches", grantIDs(still), err, foreign)
+	}
+	if others, err := m.ProxyGrantsOfEnrollment(t.Context(), other, foreign); err != nil || len(others) != 0 {
+		t.Fatalf("the other enrollment's live grants but %s = %v, %v; want none: the grant it names is left out", foreign, grantIDs(others), err)
 	}
 
 	empty, _ := newEnrollment(t, m.Store, "session", "box-c-"+t.Name(), new(fixtureOperator), nil)
-	if none, err := m.ProxyGrantsOfEnrollment(t.Context(), empty); err != nil || len(none) != 0 {
+	if none, err := m.ProxyGrantsOfEnrollment(t.Context(), empty, ""); err != nil || len(none) != 0 {
 		t.Fatalf("an enrollment with no grant answered %v, %v; want none", grantIDs(none), err)
 	}
 }

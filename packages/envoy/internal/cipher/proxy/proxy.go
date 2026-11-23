@@ -108,7 +108,7 @@ type GrantSource interface {
 	// (sessionBinds) and a placeholder of any of them is swapped on one connection (handledFor).
 	// Every error of it is a read that did not happen, or a refusal of the whole enrollment
 	// (grantRefusal).
-	ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID string) ([]requests.AirlockConnection, error)
+	ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string) ([]requests.AirlockConnection, error)
 }
 
 // Options is what a Server is built from.
@@ -300,7 +300,9 @@ type connInfo struct {
 	password string
 	// grant is what that password proved when the connection was opened. Nothing is decided
 	// from it - each request is decided from the grant it read for itself - and what it is
-	// here for is the line a request logs before that read answers.
+	// here for is the line a request logs before that read answers. On the copy one request
+	// reads, serveBound replaces it with the grant that request is handled for (handledFor),
+	// which the call's line, its dials and its watcher read.
 	grant requests.AirlockConnection
 	// handledBy is a placeholder of the grant one request on this connection is handled for,
 	// when that is another live grant of the connection's enrollment than the one password

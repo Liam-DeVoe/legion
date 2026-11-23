@@ -56,7 +56,7 @@ func gitBasic(token string) string {
 // the request carries; a path that names none, or names one the grant holds no installation on,
 // gets the carried placeholder's. git's /{owner}/{repo} is no account on an API host. The line
 // names the slot whose token went to the service. The named revert: proxy-account-from-placeholder
-// (the token of the carried placeholder's account alone, today's rule before this one).
+// (the token of the carried placeholder's account alone).
 func TestTheTokenIsTheAccountsThePathNames(t *testing.T) {
 	r := newRig(t, Options{Rules: githubRules()})
 	r.useGitHubAppGrant()

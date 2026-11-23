@@ -76,7 +76,7 @@ func (gcpAirlockGrant) AirlockAccessPlaceholder(context.Context, string, string,
 
 // ProxyGrantsOfEnrollment answers no grant beside the one above, which is its enrollment's only
 // one and the one every connection of the test opens.
-func (gcpAirlockGrant) ProxyGrantsOfEnrollment(context.Context, string) ([]requests.AirlockConnection, error) {
+func (gcpAirlockGrant) ProxyGrantsOfEnrollment(context.Context, string, string) ([]requests.AirlockConnection, error) {
 	return nil, nil
 }
 

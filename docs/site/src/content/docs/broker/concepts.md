@@ -1533,13 +1533,13 @@ host no such entry binds is tunnelled unread, to a public address alone. A bound
 a certificate of the proxy's own authority, and the request must name that same host in its TLS
 name and in its `Host` header; then the entry's hosts, headers, methods and paths decide whether
 the swap happens. A request is handled for one name of one grant: the password's own grant when
-the request carries one of its placeholders, and otherwise the first live grant of the
-enrollment, in grant id order, whose placeholder it carries, so a placeholder of another grant of
-the session is swapped on the same connection. A request that carries placeholders of two grants
-is handled for the password's own. A `github-app` or `github-installations` name holds one
-placeholder for each account its App is installed on, and the token swapped in is the one of the
-account the request's path names, when the grant holds that account: `/repos/{owner}/…`,
-`/orgs/{owner}` and `/users/{owner}` on an API host, and git's `/{owner}/{repo}` on `github.com`.
+the request carries one of its placeholders, and otherwise the first other live grant of the
+enrollment, in grant id order, that binds the host and whose placeholder the request carries, so
+a placeholder of another grant of the session is swapped on the same connection. A `github-app`
+or `github-installations` name holds one placeholder for each account its App is installed on,
+and the token swapped in is the one of the account the request's path names, when the grant holds
+that account: `/repos/{owner}/…`, `/orgs/{owner}` and `/users/{owner}` on an API host, and git's
+`/{owner}/{repo}` on `github.com`.
 Otherwise it is the token of the account whose placeholder the request carries, so a GraphQL,
 search or `/user` call gets the token of the account the command's gh configuration names. That
 connection speaks HTTP/1.1 to a client that offers it, and HTTP/2 to a client that offers nothing

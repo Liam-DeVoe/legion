@@ -263,13 +263,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, info.callFor(pair{}), status, code, why)
 		return
 	}
-	// Everything below reads the grant this request is handled for (handledFor): the
-	// connection's own, read again above, or another live grant of its enrollment whose
-	// placeholder the request carries - the names it still carries, the placeholders behind
-	// them, and the ids its line logs. Every dial made for it - an Azure exchange's as well as
-	// the call's own - runs under that grant too (withCaller), so its line names the caller the
-	// request's own line names, and not the one the CONNECT read, which a grant that moved since
-	// no longer is.
+	// Until handledFor answers, a refusal's line names the connection's own grant, as this
+	// request read it.
 	info.grant = connection
 	request := &proxyrules.Request{
 		ConnectHost: info.host,
@@ -299,7 +294,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// The grant and the (name, slot) pair this request is handled for, from the grants as they
 	// are now: a name the operator has withheld since the CONNECT is not among them, and its
 	// placeholder stops at this request while the grant's other names go on.
-	handled, found, err := s.handledFor(r.Context(), connection, info.host, info.port, request)
+	handled, found, err := s.handledFor(r.Context(), connection, request)
 	if err != nil {
 		// The same rule as the connection read above (grantRefusal): a read of the
 		// enrollment's other grants that did not happen is 503, since nothing says which of
@@ -318,12 +313,19 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	}
 	if handled.grant.GrantID != connection.GrantID {
 		// Another grant of the enrollment than the one the password proves, which the call's
-		// watcher reads again by a placeholder of its own (carryRefusal).
-		info.handledBy = firstPlaceholder(handled.grant)
+		// watcher reads again by the placeholder this request is handled for (carryRefusal).
+		info.handledBy = handled.grant.Names[handled.chosen.name].Slots[handled.chosen.slot]
 	}
+	// Everything below reads the grant this request is handled for (handledFor): the
+	// connection's own, read again above, or another live grant of its enrollment whose
+	// placeholder the request carries - the names it still carries, the placeholders behind
+	// them, and the ids its line logs. Every dial made for it - an Azure exchange's as well as
+	// the call's own - runs under that grant too (withCaller), so its line names the caller the
+	// request's own line names, and not the one the CONNECT read, which a grant that moved since
+	// no longer is.
 	info.grant = handled.grant
 	r = r.WithContext(withCaller(r.Context(), info.grant))
-	chosen, holdsPlaceholder := handled.chosen, handled.carried
+	chosen, holdsPlaceholder := handled.chosen, handled.holdsPlaceholder
 	// The entry's kind is what the value behind this name is: "" a string a header carries,
 	// which the swap below puts there; "aws" a key pair the call itself has to be signed with
 	// (aws.go); "azure" a federated token that has to be exchanged at a token endpoint for an
@@ -1032,55 +1034,54 @@ func choosePair(candidates []pair, grant requests.AirlockConnection, request *pr
 // handling is what one request on a decrypted connection is handled for: the grant, the (name,
 // slot) pair of it (choosePair), and whether the request carries that pair's placeholder.
 type handling struct {
-	grant   requests.AirlockConnection
-	chosen  pair
-	carried bool
+	grant            requests.AirlockConnection
+	chosen           pair
+	holdsPlaceholder bool
 }
 
 // handledFor is the grant and the (name, slot) pair one request on a decrypted connection is
 // handled for. own is the grant the connection's password proves, as this request read it. A
 // command holds the placeholders of every grant its session has - a role's own GitHub grant
-// beside the one an agent-secrets run inside it asked for, mailbox's write grant beside the read
-// grant whose run it is - and its password names one of them, so the proxy swaps a placeholder of
-// any live grant of the enrollment on one connection:
+// beside the one an agent-secrets run inside it asked for, a mail client's write grant beside the
+// read grant whose run it is - and its password names one of them, so the proxy swaps a
+// placeholder of any live grant of the enrollment on one connection:
 //
 //   - a request that carries a placeholder of own is handled for own, as choosePair chooses, and
 //     reads nothing more, which is the common path;
-//   - otherwise every live grant of own's enrollment is read (ProxyGrantsOfEnrollment), and the
-//     request is handled for the first of them, in grant id order, that binds the host and whose
-//     placeholder it carries;
+//   - otherwise every other live grant of own's enrollment is read (ProxyGrantsOfEnrollment),
+//     and the request is handled for the first of them, in grant id order, that binds the host
+//     and whose placeholder it carries;
 //   - a request that carries none is decided for own's first candidate, or, where own binds
 //     nothing here, for the first candidate of the first other grant that binds the host, and
 //     forwarded with nothing swapped, so the entry's rules bound it as they bound any request.
 //
 // One request is still handled for one (name, slot) pair of one grant: a request that carries
-// placeholders of two grants is handled for own, or for the first of the others. The second
-// answer is false when no live grant of the enrollment binds the host.
-func (s *Server) handledFor(ctx context.Context, own requests.AirlockConnection, host string, port uint16, request *proxyrules.Request) (handling, bool, error) {
+// placeholders of two grants is handled for own when one of them is own's, and otherwise for the
+// first of them in grant id order. The second answer is false when no live grant of the
+// enrollment binds the host.
+func (s *Server) handledFor(ctx context.Context, own requests.AirlockConnection, request *proxyrules.Request) (handling, bool, error) {
+	host, port := request.ConnectHost, request.ConnectPort
 	var fallback handling
 	found := false
 	if candidates := s.candidates(own, host, port); len(candidates) > 0 {
-		chosen, carried := choosePair(candidates, own, request)
-		if carried {
-			return handling{grant: own, chosen: chosen, carried: true}, true, nil
+		chosen, holdsPlaceholder := choosePair(candidates, own, request)
+		if holdsPlaceholder {
+			return handling{grant: own, chosen: chosen, holdsPlaceholder: true}, true, nil
 		}
 		fallback, found = handling{grant: own, chosen: chosen}, true
 	}
-	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, own.EnrollmentID)
+	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, own.EnrollmentID, own.GrantID)
 	if err != nil {
 		return handling{}, false, err
 	}
 	for _, other := range others {
-		if other.GrantID == own.GrantID {
-			continue
-		}
 		candidates := s.candidates(other, host, port)
 		if len(candidates) == 0 {
 			continue
 		}
-		chosen, carried := choosePair(candidates, other, request)
-		if carried {
-			return handling{grant: other, chosen: chosen, carried: true}, true, nil
+		chosen, holdsPlaceholder := choosePair(candidates, other, request)
+		if holdsPlaceholder {
+			return handling{grant: other, chosen: chosen, holdsPlaceholder: true}, true, nil
 		}
 		if !found {
 			fallback, found = handling{grant: other, chosen: chosen}, true
@@ -1103,28 +1104,16 @@ func (s *Server) sessionBinds(ctx context.Context, grant requests.AirlockConnect
 	if port != 443 {
 		return false, nil
 	}
-	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, grant.EnrollmentID)
+	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, grant.EnrollmentID, grant.GrantID)
 	if err != nil {
 		return false, err
 	}
 	for _, other := range others {
-		if other.GrantID != grant.GrantID && len(s.candidates(other, host, port)) > 0 {
+		if len(s.candidates(other, host, port)) > 0 {
 			return true, nil
 		}
 	}
 	return false, nil
-}
-
-// firstPlaceholder is a placeholder of grant, the first in (name, slot) order: any of them proves
-// the grant, and the first is the one the release names as its proxy password.
-func firstPlaceholder(grant requests.AirlockConnection) string {
-	for _, name := range slices.Sorted(maps.Keys(grant.Names)) {
-		slots := grant.Names[name].Slots
-		for _, slot := range slices.Sorted(maps.Keys(slots)) {
-			return slots[slot]
-		}
-	}
-	return ""
 }
 
 // gitHubGitHost is the host GitHub serves a repository's git transport on, at /{owner}/{repo}.
@@ -1139,16 +1128,17 @@ const gitHubGitHost = "github.com"
 // answers false, and the request is handled for the account whose placeholder it carries, which
 // is the account its gh configuration names.
 func accountSlot(host, path string, slots map[string]string) (string, bool) {
-	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	if len(segments) < 2 || segments[0] == "" || segments[1] == "" {
+	first, rest, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	second, _, _ := strings.Cut(rest, "/")
+	if first == "" || second == "" {
 		return "", false
 	}
 	account := ""
 	switch {
 	case host == gitHubGitHost:
-		account = segments[0]
-	case segments[0] == "repos" || segments[0] == "orgs" || segments[0] == "users":
-		account = segments[1]
+		account = first
+	case first == "repos" || first == "orgs" || first == "users":
+		account = second
 	default:
 		return "", false
 	}

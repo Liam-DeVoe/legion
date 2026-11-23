@@ -660,14 +660,16 @@ func (m *Machine) proxyNamesOf(ctx context.Context, grantID, decidedBy string, h
 	return names, nil
 }
 
-// ProxyGrantsOfEnrollment is every live grant of enrollment enrollmentID that holds a
-// placeholder, each answered as AirlockConnection answers a connection opened with one of that
-// grant's own placeholders, in grant id order. The proxy reads it for a connection whose own grant
-// does not bind a host, or whose request carries none of that grant's placeholders: a command
-// holds the placeholders of every grant its session has - a role's own grant beside the one an
-// agent-secrets run inside it asked for, or one agent-secrets run nested in another - and its
-// proxy password names one of them, so a host any of them binds is read, and a placeholder of any
-// of them is swapped on one connection.
+// ProxyGrantsOfEnrollment is every live grant of enrollment enrollmentID but exceptGrantID that
+// holds a placeholder, each answered as AirlockConnection answers a connection opened with one of
+// that grant's own placeholders, in grant id order. The proxy reads it for a connection whose own
+// grant, exceptGrantID, does not bind a host, or whose request carries none of that grant's
+// placeholders: a command holds the placeholders of every grant its session has - a role's own
+// grant beside the one an agent-secrets run inside it asked for, or one agent-secrets run nested
+// in another - and its proxy password names one of them, so a host any of them binds is read, and
+// a placeholder of any of them is swapped on one connection. The connection's own grant is the one
+// the proxy has already read, so the read leaves it out, and a session with no other grant costs
+// one query that answers no row.
 //
 // It makes the checks AirlockConnection makes for each grant, so a grant it answers is one a
 // connection of its own would be opened for: the grant and its enrollment live, the enrollment's
@@ -675,46 +677,53 @@ func (m *Machine) proxyNamesOf(ctx context.Context, grantID, decidedBy string, h
 // decided, and the project rule. A grant with no name left, or one the project rule ends, is left
 // out rather than refused, since no connection names it; a restricted member's person ends every
 // grant listed, as a connection of each would, and is refused with ErrGrantNotLive. An enrollment
-// that is not live has no live grant. It is indexed reads alone: the enrollment's live grants by
-// enrollment_id (grants_enrollment_live) with their requests, their placeholders by grant_id, and
-// the enrollment's withheld names.
-func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID string) ([]AirlockConnection, error) {
-	var enr enrollmentRow
-	var runtimeID, sessionID string
-	var live bool
-	err := m.Store.Pool.QueryRow(ctx, `select e.runtime_id, coalesce(e.session_id, ''),
-		e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
-		e.kind, e.operator, e.subject, e.projects, c.service
-		from enrollments e
+// that is not live has no live grant. Besides those two questions it is two indexed reads: the
+// enrollment's live grants by enrollment_id (grants_enrollment_live), joined to their enrollment,
+// their requests and their placeholders, and the enrollment's withheld names.
+func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string) ([]AirlockConnection, error) {
+	rows, err := m.Store.Pool.Query(ctx, `select g.id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
+		p.name, p.slot, p.placeholder,
+		e.runtime_id, coalesce(e.session_id, ''), e.kind, e.operator, e.subject, e.projects, c.service
+		from grants g
+		join enrollments e on e.id = g.enrollment_id
+		join requests r on r.id = g.request_id
+		join airlock_placeholders p on p.grant_id = g.id
 		left join launcher_credentials c on c.id = e.launcher_credential_id
-		where e.id = $1`, enrollmentID).
-		Scan(&runtimeID, &sessionID, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !live) {
-		return nil, nil
-	}
+		where g.enrollment_id = $1 and g.id::text <> $2 and g.revoked_at is null and `+grantUnexpired("g")+`
+		and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
+		order by g.id`, enrollmentID, exceptGrantID)
 	if err != nil {
 		return nil, err
 	}
-	enr.ID = enrollmentID
+	defer rows.Close()
+	// One row per placeholder, a grant's rows together since they are in grant id order.
 	type liveGrant struct {
 		conn              AirlockConnection
 		reason, decidedBy string
+		held              map[string]map[string]string
 	}
-	rows, err := m.Store.Pool.Query(ctx, `select g.id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, '')
-		from grants g
-		join requests r on r.id = g.request_id
-		where g.enrollment_id = $1 and g.revoked_at is null and `+grantUnexpired("g")+`
-		and exists (select 1 from airlock_placeholders p where p.grant_id = g.id)
-		order by g.id`, enrollmentID)
-	if err != nil {
-		return nil, err
+	var grants []*liveGrant
+	enr := enrollmentRow{ID: enrollmentID}
+	for rows.Next() {
+		var row liveGrant
+		var name, slot, placeholder string
+		if err := rows.Scan(&row.conn.GrantID, &row.conn.RequestID, &row.conn.Expires, &row.reason, &row.decidedBy,
+			&name, &slot, &placeholder,
+			&row.conn.RuntimeID, &row.conn.SessionID, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service); err != nil {
+			return nil, err
+		}
+		if len(grants) == 0 || grants[len(grants)-1].conn.GrantID != row.conn.GrantID {
+			row.conn.EnrollmentID = enrollmentID
+			row.held = map[string]map[string]string{}
+			grants = append(grants, &row)
+		}
+		held := grants[len(grants)-1].held
+		if held[name] == nil {
+			held[name] = map[string]string{}
+		}
+		held[name][slot] = placeholder
 	}
-	grants, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (liveGrant, error) {
-		g := liveGrant{conn: AirlockConnection{EnrollmentID: enrollmentID, SessionID: sessionID, RuntimeID: runtimeID}}
-		err := row.Scan(&g.conn.GrantID, &g.conn.RequestID, &g.conn.Expires, &g.reason, &g.decidedBy)
-		return g, err
-	})
-	if err != nil || len(grants) == 0 {
+	if err := rows.Err(); err != nil || len(grants) == 0 {
 		return nil, err
 	}
 	restricted, err := m.restrictedOperator(ctx, enr)
@@ -735,12 +744,8 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID stri
 	}
 	var answered []AirlockConnection
 	for _, g := range grants {
-		held, err := placeholdersOf(ctx, m.Store.Pool, g.conn.GrantID)
-		if err != nil {
-			return nil, err
-		}
 		g.conn.Issue = record.IssueKeyInReason(g.reason)
-		g.conn.Names, err = m.proxyNamesOf(ctx, g.conn.GrantID, g.decidedBy, held, withheld, enr)
+		g.conn.Names, err = m.proxyNamesOf(ctx, g.conn.GrantID, g.decidedBy, g.held, withheld, enr)
 		if errors.Is(err, ErrGrantNotLive) {
 			continue
 		}

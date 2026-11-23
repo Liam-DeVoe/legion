@@ -71,12 +71,12 @@ func enrollmentRules() proxyrules.Rules {
 
 // TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarries: a connection is
 // opened with the placeholder of one grant, and the command holds another grant of the same
-// session beside it - mailbox's write placeholder on the connection of its read grant. A request
-// that carries the second grant's placeholder and none of the first's is handled for the second:
-// its value is swapped in, and the line names its grant. A request carrying a placeholder of both
-// is handled for the connection's own grant alone, one (name, slot) per request as before. The
-// controls: a placeholder of a grant of another enrollment, and of a second grant that has ended,
-// each reach the service as the command wrote them.
+// session beside it - a mail client's write placeholder on the connection of its read grant. A
+// request that carries the second grant's placeholder and none of the first's is handled for the
+// second: its value is swapped in, and the line names its grant. A request carrying a placeholder
+// of both is handled for the connection's own grant alone, one (name, slot) per request as before.
+// The controls: a placeholder of a grant of another enrollment, and of a second grant that has
+// ended, each reach the service as the command wrote them.
 func TestARequestIsHandledForTheLiveGrantOfTheEnrollmentWhosePlaceholderItCarries(t *testing.T) {
 	r := newRig(t, Options{Rules: enrollmentRules()})
 	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)

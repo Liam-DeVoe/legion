@@ -7,7 +7,7 @@
 
 --- a/packages/envoy/internal/cipher/proxy/bound.go
 +++ b/packages/envoy/internal/cipher/proxy/bound.go
-@@ -1100,7 +1100,8 @@
+@@ -1101,7 +1101,8 @@
  	if len(s.candidates(grant, host, port)) > 0 {
  		return true, nil
  	}
@@ -16,4 +16,4 @@
 +	if port != 443 || true {
  		return false, nil
  	}
- 	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, grant.EnrollmentID)
+ 	others, err := s.grants.ProxyGrantsOfEnrollment(ctx, grant.EnrollmentID, grant.GrantID)

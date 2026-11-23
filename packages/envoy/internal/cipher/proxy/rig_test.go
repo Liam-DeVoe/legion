@@ -292,7 +292,7 @@ func (f *fakeGrants) connectionReads() int {
 // a placeholder the row wrote opens, of that enrollment, in grant id order, as the broker's read
 // answers them. A grant any of whose placeholders the row refused is ended, as the broker's own
 // row is for every placeholder of it, so it is left out.
-func (f *fakeGrants) ProxyGrantsOfEnrollment(_ context.Context, enrollmentID string) ([]requests.AirlockConnection, error) {
+func (f *fakeGrants) ProxyGrantsOfEnrollment(_ context.Context, enrollmentID, exceptGrantID string) ([]requests.AirlockConnection, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.enrollmentCalls++
@@ -309,7 +309,7 @@ func (f *fakeGrants) ProxyGrantsOfEnrollment(_ context.Context, enrollmentID str
 	var live []requests.AirlockConnection
 	for _, placeholder := range slices.Sorted(maps.Keys(f.connections)) {
 		conn := f.connections[placeholder]
-		if conn.EnrollmentID != enrollmentID || ended[conn.GrantID] || seen[conn.GrantID] {
+		if conn.EnrollmentID != enrollmentID || conn.GrantID == exceptGrantID || ended[conn.GrantID] || seen[conn.GrantID] {
 			continue
 		}
 		seen[conn.GrantID] = true

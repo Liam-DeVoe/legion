@@ -96,8 +96,8 @@ func (g *rolledGrants) AirlockAccessPlaceholder(ctx context.Context, grantID, na
 	return g.machine.Load().AirlockAccessPlaceholder(ctx, grantID, name, slot)
 }
 
-func (g *rolledGrants) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID string) ([]requests.AirlockConnection, error) {
-	return g.machine.Load().ProxyGrantsOfEnrollment(ctx, enrollmentID)
+func (g *rolledGrants) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string) ([]requests.AirlockConnection, error) {
+	return g.machine.Load().ProxyGrantsOfEnrollment(ctx, enrollmentID, exceptGrantID)
 }
 
 // profileRig is the rig with a broker behind its proxy: the store, the stored App key, the GitHub
@@ -420,7 +420,7 @@ func TestAGitBasicAuthPlaceholderIsSwappedForAProfileToken(t *testing.T) {
 	placeholder := placeholderOf(t, released, requests.SlotValue)
 	client := pr.client(released.ProxyPassword)
 
-	credential := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+placeholder))
+	credential := gitBasic(placeholder)
 	// The stand-in serves no git route, and answers it 404: what this row reads is what the
 	// service was sent, which the proxy carried.
 	if answer, body := pr.get(client, "https://"+boundHost+"/ada/proofs.git/info/refs?service=git-upload-pack", "Authorization", credential); answer.StatusCode != http.StatusNotFound {
