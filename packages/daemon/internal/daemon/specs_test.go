@@ -268,31 +268,35 @@ func TestARoleOfAPlanShadowedByADeploymentRoleOnClaudeCodeRunsOnOhMyPi(t *testin
 }
 
 // A claim the cheap terms of the stale-plugin rule settle never asks whether its launch installs
-// a plugin, which under Kubernetes reads the plan of the claim's issue from the store for a role
-// that is none of Legion's (noPluginInstall over roleBackends). A claim on this daemon's
-// contract, one in an update round and one on a daemon that can relaunch onto no plugin are each
-// answered with no read of the plan. A claim on an older contract reads it once, under the
-// context of the call that asks, and is refused, since its prober runs on Oh My Pi.
+// a plugin, which under Kubernetes can read the plan of the claim's issue from the store
+// (noPluginInstall over roleBackends). A claim on this daemon's contract, one in an update round
+// and one on a daemon that can relaunch onto no plugin are each answered with no read of the plan.
+// The plan is read only where a role of the plan can change the answer: a role worker_backends
+// puts on Claude Code. The prober, which worker_backends puts there and the plan of LEGION-43
+// defines, reads it once on an older contract, under the context of the call that asks, and is
+// refused, since a role of a plan runs on Oh My Pi. The checker, on Oh My Pi, reads no plan on an
+// older contract and is refused all the same: no role of a plan can move it off Oh My Pi.
 func TestTheStalePluginRuleReadsThePlanOnlyForAClaimItsContractFindsStale(t *testing.T) {
 	cfg := config.Config{Runtime: config.Runtime{Name: "kubernetes"},
-		Roles: []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}}}
+		Roles: []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}, {Name: "checker", Type: "testing", GitHubApp: config.RoleAppReview}},
+		WorkerBackends: map[claim.Role]runtime.Backend{"prober": runtime.BackendClaude}}
 	type callKey struct{}
 	call := context.WithValue(context.Background(), callKey{}, "the call's")
 	var reads []string
-	planRole := func(ctx context.Context, issue string, _ claim.Role) (record.PlanRole, bool, error) {
+	planRole := func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
 		reads = append(reads, issue)
 		if ctx.Value(callKey{}) != "the call's" {
 			t.Errorf("the plan of %s was read under a context other than the call's", issue)
 		}
-		return record.PlanRole{}, false, nil
+		return record.PlanRole{Issue: issue, Role: string(role), Type: "testing", Prompt: "# Prober"}, issue == "LEGION-43" && role == "prober", nil
 	}
 	backends := roleBackends(cfg.BackendFor, planRole)
 	noInstall := func(ctx context.Context, c supervise.Claim) (bool, error) {
 		return noPluginInstall(ctx, cfg, backends, c)
 	}
 	older := api.DaemonAPIVersion - 1
-	prober := func(contract int, round string) supervise.Claim {
-		return supervise.Claim{Issue: "LEGION-43", Role: "prober", PluginContract: contract, UpdateRound: round}
+	claimOf := func(role claim.Role, contract int, round string) supervise.Claim {
+		return supervise.Claim{Issue: "LEGION-43", Role: role, PluginContract: contract, UpdateRound: round}
 	}
 	for _, tc := range []struct {
 		name         string
@@ -301,17 +305,18 @@ func TestTheStalePluginRuleReadsThePlanOnlyForAClaimItsContractFindsStale(t *tes
 		refused      bool
 		reads        int
 	}{
-		{"on this daemon's contract", prober(api.DaemonAPIVersion, ""), true, false, 0},
-		{"in an update round", prober(older, "round-1"), true, false, 0},
-		{"on a daemon that relaunches onto no plugin", prober(older, ""), false, false, 0},
-		{"on an older contract", prober(older, ""), true, true, 1},
+		{"the prober on this daemon's contract", claimOf("prober", api.DaemonAPIVersion, ""), true, false, 0},
+		{"the prober in an update round", claimOf("prober", older, "round-1"), true, false, 0},
+		{"the prober on a daemon that relaunches onto no plugin", claimOf("prober", older, ""), false, false, 0},
+		{"the prober on an older contract", claimOf("prober", older, ""), true, true, 1},
+		{"the checker on an older contract", claimOf("checker", older, ""), true, true, 0},
 	} {
 		reads = nil
 		if got, err := supervise.StaleRefusesCalls(call, tc.claim, api.DaemonAPIVersion, tc.relaunchable, noInstall); err != nil || got != tc.refused {
-			t.Errorf("the prober %s: refused = %t, %v; want %t", tc.name, got, err, tc.refused)
+			t.Errorf("%s: refused = %t, %v; want %t", tc.name, got, err, tc.refused)
 		}
 		if len(reads) != tc.reads {
-			t.Errorf("the prober %s read the plan %d times, want %d", tc.name, len(reads), tc.reads)
+			t.Errorf("%s read the plan %d times, want %d", tc.name, len(reads), tc.reads)
 		}
 	}
 }
