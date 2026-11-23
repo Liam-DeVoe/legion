@@ -323,13 +323,15 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"let the merge close it",
 		"You get no backstop",
 		"at your retro, or in `accepting` with no plan rows",
+		"the daemon's own start at once",
 	}
 	for _, tc := range []struct {
 		part string
 		want []string
 	}{
 		{"architect-root.md", append(slices.Clone(shared), "each issue's `plan.md`", "before `register_gate`")},
-		{"architect.md", append(slices.Clone(shared), "the agent of its first step may already be reading it", "The agent of your child's first step may already be working", "given it its plan with `register_plan`")},
+		{"architect.md", append(slices.Clone(shared), "the agent of its first step may already be reading it", "The agent of your child's first step may already be working", "given it its plan with `register_plan`",
+			"of yours other than its acceptance, or at its retro, the daemon starts you again at once", "the operator's retry or the controller's `fresh_session` starts you")},
 	} {
 		t.Run(tc.part, func(t *testing.T) {
 			part := rolePart(t, tc.part)
