@@ -209,6 +209,12 @@ jobs:
       - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
         run: bash scripts/project-secrets-check.test.sh
         working-directory: packages/envoy
+      # approve-check.sh's session (scripts/approve/session.ts): the scan of k31's step (e) finds a
+      # logged binding's key as bare PEM and as PEM inside a JSON string, and on a box refuses,
+      # UNKNOWN and exit 3, a run that names no process of the session it could read.
+      - name: Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)
+        run: bun test scripts/approve/
+        working-directory: packages/envoy
       - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
         run: bash scripts/callout-check.test.sh
         working-directory: packages/envoy

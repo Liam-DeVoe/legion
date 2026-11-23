@@ -266,6 +266,18 @@ if [[ "$(jq -r .status <<<"$box_comment")" == 2?? ]]; then
 else
   result "1b control: the box's token comments" FAIL "$(jq -c 'del(.body)' <<<"$box_comment")"
 fi
+# The revoke control runs before the scan: the scan's DPoP diagnostic presents up to a hundred
+# candidates to Dispatch from loopback, which spends Dispatch's broker-token rate limit for that
+# address, and the proxy reaches Dispatch from the same address. Run first, it also leaves a
+# revoked grant's minted token among the hashes the scan compares with.
+REVOKE_COMMAND="psql '$BROKER_DB_URL' -Atqc \"update launcher_credentials set revoked_at = now() where id = (select credential_id from approve_grants order by created_at desc limit 1)\""
+revoked="$(session approve-then-revoked)"
+if [[ "$(jq -r .first.status <<<"$revoked")" == 2?? ]] && [ "$(jq -r .second.status <<<"$revoked")" = 407 ]; then
+  result "1a control: the grant revoked" PASS "the review $(jq -r .first.status <<<"$revoked"), then on the same placeholder after the sign-in's credential was revoked 407 $(jq -r .second.proxy_code <<<"$revoked")"
+else
+  result "1a control: the grant revoked" FAIL "$(jq -c 'del(.second.body)' <<<"$revoked")"
+fi
+REVOKE_COMMAND=""
 scan="$(session scan "$BROKER_LOG" "$BOX")"
 read -r candidates logged bindings hashes keys < <(jq -r '[.candidates, .logged_hashes, .logged_bindings, (.hash_matches | length), (.key_matches | length)] | @tsv' <<<"$scan")
 if [ "$candidates" = 0 ] || [ "$logged" = 0 ] || [ "$bindings" = 0 ]; then
@@ -275,14 +287,6 @@ elif [ "$hashes" = 0 ] && [ "$keys" = 0 ]; then
 else
   result "1e scan" FAIL "$(jq -c . <<<"$scan")"
 fi
-REVOKE_COMMAND="psql '$BROKER_DB_URL' -Atqc \"update launcher_credentials set revoked_at = now() where id = (select credential_id from approve_grants order by created_at desc limit 1)\""
-revoked="$(session approve-then-revoked)"
-if [[ "$(jq -r .first.status <<<"$revoked")" == 2?? ]] && [ "$(jq -r .second.status <<<"$revoked")" = 407 ]; then
-  result "1a control: the grant revoked" PASS "the review $(jq -r .first.status <<<"$revoked"), then on the same placeholder after the sign-in's credential was revoked 407 $(jq -r .second.proxy_code <<<"$revoked")"
-else
-  result "1a control: the grant revoked" FAIL "$(jq -c 'del(.second.body)' <<<"$revoked")"
-fi
-REVOKE_COMMAND=""
 stop_stack
 
 # --- Stack 2: the allow list off. ---

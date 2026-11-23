@@ -5,11 +5,12 @@
 // the broker credential the TypeScript client builds from this process's environment. Each command
 // is one step of the check and prints one JSON line of what it saw, never a token or a placeholder.
 //
-// Dispatch serves under https://<the approve host> (DISPATCH_URL) and listens on loopback
-// (APPROVE_CHECK_DISPATCH_LOCAL). A request through Cipher's proxy goes to the public URL, which the
-// proxy terminates and sends on to Dispatch's own address; a direct request is signed for the
-// public URL, as every request of a box is in production, and sent to the loopback address, which
-// stands in for the name resolving there.
+// Dispatch serves under https://<the approve host> (DISPATCH_URL). On the local stack it listens on
+// loopback (APPROVE_CHECK_DISPATCH_LOCAL). A request through Cipher's proxy goes to the public URL,
+// which the proxy terminates and sends on to Dispatch's own address; a direct request is signed for
+// the public URL, as every request of a box is in production, and sent to the loopback address,
+// which stands in for the name resolving there. With APPROVE_CHECK_DISPATCH_LOCAL unset, the run is
+// on a box (k31 Part 1), and every request goes to the public URL itself.
 //
 //   setup                         as the person: a project, an issue and its spec, saved to the state file
 //   approve                       the spec's version reviewed approved through the proxy (reviewArtifact)
@@ -19,8 +20,15 @@
 //   reviews                       the spec's reviews, read with the box's token
 //   comments                      the issue's comments, read with the box's token
 //   agent-tokens                  the person's agent tokens, read with the box's token
-//   scan <broker log> <path>...   every candidate credential and private key in the paths and this
-//                                 process's environment, against the hashes and bindings the broker logged
+//   scan <broker log> <path>...   every candidate credential and private key in the paths and in the
+//                                 environment of each process of the session, against the hashes and
+//                                 bindings the broker logged
+//
+// The scan reads the environment of each process APPROVE_CHECK_SESSION_PIDS names. On the local
+// stack every step of the session is one process started with the one environment approve-check.sh
+// gives it, so this process's own environment is the session's. On a box the session is processes
+// of their own, so a scan there with no process named reads none of them: it prints UNKNOWN and
+// exits 3 rather than report a clean environment it never read.
 
 import { createHash, createPrivateKey } from "node:crypto";
 import { readdirSync, readFileSync, type Stats, statSync, writeFileSync } from "node:fs";
@@ -60,15 +68,16 @@ function say(answer: Record<string, unknown>): void {
 }
 
 const PUBLIC = setting("DISPATCH_URL").replace(/\/+$/, "");
-const LOCAL = setting("APPROVE_CHECK_DISPATCH_LOCAL").replace(/\/+$/, "");
-const STATE = setting("APPROVE_CHECK_STATE");
+const LOCAL = (env["APPROVE_CHECK_DISPATCH_LOCAL"] ?? "").trim().replace(/\/+$/, "");
 
 /** A fetch that sends a request of the public URL to Dispatch's loopback address, and one through
  *  a proxy as it is: the proxy itself reaches Dispatch's own address. */
 const localFetch = Object.assign(
   async (input: Parameters<typeof fetch>[0], init?: RequestInit & { proxy?: string }) => {
     const url = String(input);
-    if (init?.proxy !== undefined || !url.startsWith(PUBLIC)) return await fetch(input, init);
+    if (LOCAL === "" || init?.proxy !== undefined || !url.startsWith(PUBLIC)) {
+      return await fetch(input, init);
+    }
     return await fetch(LOCAL + url.slice(PUBLIC.length), init);
   },
   { preconnect: () => {} }
@@ -84,7 +93,7 @@ interface State {
 }
 
 function state(): State {
-  return JSON.parse(readFileSync(STATE, "utf8")) as State;
+  return JSON.parse(readFileSync(setting("APPROVE_CHECK_STATE"), "utf8")) as State;
 }
 
 /** What one answer was: its status, Dispatch's or the proxy's code, and the proxy's own headers. */
@@ -185,7 +194,7 @@ async function setup(): Promise<void> {
     documents.find((document) => document["id"] === artifact)?.["latest_version"] ?? 0
   );
   if (!(version > 0)) fail(`the spec's version: ${JSON.stringify(summary)}`);
-  writeFileSync(STATE, JSON.stringify({ issue: key, artifact, version }));
+  writeFileSync(setting("APPROVE_CHECK_STATE"), JSON.stringify({ issue: key, artifact, version }));
   say({ step: "setup", issue: key, artifact, version });
 }
 
@@ -264,6 +273,24 @@ function dpopAnswers(value: unknown, into: Set<string>): void {
   }
 }
 
+/** Every string value anywhere in a parsed JSON `value`, pushed onto `into`. */
+function jsonStrings(value: unknown, into: string[]): void {
+  if (typeof value === "string") {
+    into.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) jsonStrings(item, into);
+  } else if (typeof value === "object" && value !== null) {
+    for (const item of Object.values(value)) jsonStrings(item, into);
+  }
+}
+
+/** `text` with the escapes a JSON or shell string writes a line ending, a tab, a quote, a slash or
+ *  a backslash in decoded, which is how a PEM key kept as one string's value reads as PEM. */
+function unescaped(text: string): string {
+  const decoded: Record<string, string> = { n: "\n", r: "\r", t: "\t" };
+  return text.replace(/\\(["\\/nrt])/g, (_, escaped: string) => decoded[escaped] ?? escaped);
+}
+
 /** Each JWK with a private part (`d`), anywhere in `value`. */
 function privateJwks(value: unknown, into: Jwk[]): void {
   if (Array.isArray(value)) {
@@ -279,6 +306,7 @@ async function scan(): Promise<void> {
   const [, , , logPath, ...paths] = process.argv;
   if (logPath === undefined || paths.length === 0)
     fail("scan needs the broker log and at least one path");
+  const pids = (env["APPROVE_CHECK_SESSION_PIDS"] ?? "").split(/\s+/).filter(Boolean);
   // What the broker logged: each minted token's SHA-256 and the thumbprint of the key it is bound to.
   const logged = new Map<string, { grant: unknown; expires_at: unknown }>();
   const bindings = new Set<string>();
@@ -310,37 +338,67 @@ async function scan(): Promise<void> {
       .map(([name, value]) => `${name}=${value}`)
       .join("\n")
   );
-  for (const pid of (env["APPROVE_CHECK_SESSION_PIDS"] ?? "").split(/\s+/).filter(Boolean)) {
+  let environs = 0;
+  for (const pid of pids) {
     try {
       texts.push(readFileSync(`/proc/${pid}/environ`).toString("latin1").replaceAll("\0", "\n"));
+      environs += 1;
     } catch {
       skipped.push(`/proc/${pid}/environ`);
     }
   }
+  if (LOCAL === "" && environs === 0) {
+    // On a box the session's processes are not this one, so a scan that read none of theirs read
+    // no environment of the session, and would call clean what it never saw.
+    say({
+      step: "scan",
+      result: "UNKNOWN",
+      reason:
+        pids.length === 0
+          ? "APPROVE_CHECK_SESSION_PIDS names no process of the session, and outside the local stack (APPROVE_CHECK_DISPATCH_LOCAL unset) the session's processes are not this one"
+          : `no environment of the ${pids.length} processes APPROVE_CHECK_SESSION_PIDS names could be read`,
+      files_skipped: skipped,
+    });
+    process.exit(3);
+  }
   const base64url = new Set<string>();
   const token68 = new Set<string>();
   const answers = new Set<string>();
-  const keys: Jwk[] = [];
-  for (const text of texts) {
+  const keys = new Map<string, Jwk>();
+  // Each text in every form a credential can sit in it: as written; with the escapes a JSON or
+  // shell string writes a line ending, a quote or a slash in decoded, so a PEM key a file keeps as
+  // one JSON string (a sign-in record's box_key) reads as PEM; and each string value of every JSON
+  // document or line in it, which may itself hold JSON or PEM. Each form is read once.
+  const seen = new Set<string>();
+  const queue = [...texts];
+  for (let text = queue.pop(); text !== undefined; text = queue.pop()) {
+    if (seen.has(text)) continue;
+    seen.add(text);
+    queue.push(unescaped(text));
     for (const match of text.matchAll(/[A-Za-z0-9_-]{20,}/g)) base64url.add(match[0]);
     for (const match of text.matchAll(/[A-Za-z0-9._~+/=-]{20,}/g)) token68.add(match[0]);
     for (const block of text.matchAll(
       /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g
     )) {
       try {
-        keys.push(createPrivateKey(block[0]).export({ format: "jwk" }) as Jwk);
+        const key = createPrivateKey(block[0]).export({ format: "jwk" }) as Jwk;
+        keys.set(JSON.stringify(key), key);
       } catch {
         // not a key this runtime reads; counted as no key
       }
     }
     for (const chunk of [text, ...text.split("\n")]) {
+      let value: unknown;
       try {
-        const value: unknown = JSON.parse(chunk);
-        dpopAnswers(value, answers);
-        privateJwks(value, keys);
+        value = JSON.parse(chunk);
       } catch {
-        // not JSON
+        continue;
       }
+      dpopAnswers(value, answers);
+      const found: Jwk[] = [];
+      privateJwks(value, found);
+      for (const key of found) keys.set(JSON.stringify(key), key);
+      jsonStrings(value, queue);
     }
   }
   const candidates = new Set<string>([...base64url, ...token68, ...answers]);
@@ -350,10 +408,10 @@ async function scan(): Promise<void> {
     const entry = logged.get(hash);
     if (entry !== undefined) matched.push({ sha256: hash, ...entry });
   }
-  const keyMatches: string[] = [];
-  for (const key of keys) {
+  const keyMatches = new Set<string>();
+  for (const key of keys.values()) {
     const thumbprint = ecThumbprint(key);
-    if (thumbprint !== "" && bindings.has(thumbprint)) keyMatches.push(thumbprint);
+    if (thumbprint !== "" && bindings.has(thumbprint)) keyMatches.add(thumbprint);
   }
   // The diagnostic, which decides nothing: each candidate a matched hash or a DPoP answer names,
   // and at most 100 others, presented to Dispatch as a broker token under the DPoP scheme with a
@@ -391,11 +449,11 @@ async function scan(): Promise<void> {
     base64url: base64url.size,
     token68: token68.size,
     dpop_answers: answers.size,
-    private_keys: keys.length,
+    private_keys: keys.size,
     logged_hashes: logged.size,
     logged_bindings: bindings.size,
     hash_matches: matched,
-    key_matches: keyMatches,
+    key_matches: [...keyMatches],
     diagnostic,
     diagnostic_of_matches: perMatch,
   });

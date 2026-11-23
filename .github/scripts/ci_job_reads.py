@@ -3525,6 +3525,11 @@ GATES = [
                  "spec-check guard reads every file under it")
           for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")
+      # The scan tests of approve-check's session spawn `bun scripts/approve/session.ts`, which
+      # imports envoy-client's broker credential and Dispatch client and cipher-client's DPoP key.
+      + envoy_client_dep(at("envoy-go-checks", "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)")
+                         + ": packages/envoy/scripts/approve/session.ts imports "
+                         "../../../envoy-client/src/broker-credential.ts and dispatch-http.ts")
       + darwin_vet_reads("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY)),
 
 
