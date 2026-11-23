@@ -1520,8 +1520,11 @@ These arrive as messages on the Dispatch issue:
   reports that head one the issue may advance on.
 - **A later review round reads the whole change, or from an older commit.** The reviewer's task of
   a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
-  commit to the head. Each reviewer step of a task keeps its own commit on its phases row, and the
-  first round of a later reviewer step names the commit of the reviewer step before it. A review
+  commit to the head. Each reviewer step of a task keeps its own commit on its phases row. The first
+  round of a later reviewer step names the commit of the reviewer step before it where one agent, by
+  one key, works both steps; where that step is another agent's, it names `none`, so the reviewer
+  reads the whole change, with `Commit another agent's review read: <sha>.` before it naming the
+  commit that agent's review read. A review
   moves that commit only when it is the reviewer's own (its Legion footer names the session the
   reviewer's claim records), the phases row of the reviewer step whose round it is holds the task of
   an entry, and the footer's `entry` is the entry on that row. Each task the reviewer gets in its

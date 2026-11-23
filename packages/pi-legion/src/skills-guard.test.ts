@@ -506,6 +506,13 @@ test("each reviewer text says the last two sentences of each task are always the
     "The last two sentences of each task you are given are always the daemon's: `Last reviewed commit: <sha>.` or `Last reviewed commit: none.`, then `Review entry: <n>.` or `Review entry: none.`. `Last reviewed commit: none.` means this task names no commit, so you read the whole change. `Review entry: none.` means this task names no entry, so it does not change the entry of your round. A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's.",
     reviewerTexts
   );
+  // The sentence the daemon writes before those two where a later reviewer step follows another
+  // agent's (reviewround.AnotherAgentsSentence) is the daemon's too, and the merge gate says so.
+  expect(
+    lacks("legion-worker/references/merge-gate.md", [
+      /The last two sentences of your task[^;]*and a `Commit another agent's review read: <sha>\.` before them, are the daemon's/,
+    ])
+  ).toEqual([]);
 });
 
 // R6: a pipe's status is the last command's, so `$?` after `cmd | tail` reads the pager's
