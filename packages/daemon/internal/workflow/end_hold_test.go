@@ -19,8 +19,8 @@ import (
 // task past its testing step (newFixRig) and give the head's checks their states by Dispatch's
 // check.state_changed events, fixChecks being the head's set.
 
-// ciRunning is check's state at a head while its CI job has not ended there.
-func ciRunning(check string) intake.DispatchCheckState {
+// jobRunning is check's state at a head while its CI job has not ended there.
+func jobRunning(check string) intake.DispatchCheckState {
 	return inCI(stateOf(check, "no", reasonNoResult, "ci"), ciNotCompleted)
 }
 
@@ -55,7 +55,7 @@ func (r *fixRig) noChecksAt(head string) {
 // k-unit, which no CI job runs, read fail by its tester, k-ci2 passed and k-ci running.
 func (r *fixRig) ciRunsAtTheEnd() {
 	r.t.Helper()
-	r.at(fixHead, noCIJob("k-unit"), ciPassing("k-ci2"), ciRunning("k-ci"))
+	r.at(fixHead, noCIJob("k-unit"), ciPassing("k-ci2"), jobRunning("k-ci"))
 }
 
 // reviewerReported writes the reviewer's report on its phases row, as its completion writes it,
