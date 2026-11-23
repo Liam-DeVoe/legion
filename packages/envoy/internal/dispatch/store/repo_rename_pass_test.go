@@ -641,3 +641,96 @@ func TestARenameMovesEachProjectsExcludedRepositories(t *testing.T) {
 		t.Errorf("a second pass = %+v, want one pair and nothing written, deleted, failed or left", again)
 	}
 }
+
+// productionEventsRenameSeed writes, under the old name sjawhar/legion, the fields of the record
+// of production events and of the merged reverts (dispatch://INFRA-978, T11 and T12): a revert of
+// the old name, one whose twin the new name holds, and one of sjawhar/legion-smoke that reverts a
+// pull request of the old name; a GitHub deploy row whose pull requests name the old name in mixed
+// case beside one of sjawhar/legion-smoke, a posted deploy that names none, and two revert rows of
+// the old name, one of them with a twin under the new name; the rule the old name's deploy rows
+// stand derived under; and the progress of its reverts' search.
+const productionEventsRenameSeed = `
+	insert into projects (key, name, default_assignee, default_repo) values
+		('INFRA', 'Infra', 'alice', 'sjawhar/legion');
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('SJawhar/Legion', 'INFRA', '{"kind":"user","id":"alice"}', 'CybermonkLabs/Legion');
+	insert into delivery_reverts (repo, number, reverts_repo, reverts_number, merged_at) values
+		('sjawhar/legion', 9, 'sjawhar/legion', 5, '2026-01-02T00:00:00Z'),
+		('cybermonklabs/legion', 9, 'cybermonklabs/legion', 5, '2026-01-02T00:00:00Z'),
+		('sjawhar/legion', 10, 'sjawhar/legion-smoke', 3, '2026-01-03T00:00:00Z'),
+		('sjawhar/legion-smoke', 4, 'SJawhar/Legion', 2, '2026-01-04T00:00:00Z');
+	insert into production_events (id, project_key, kind, source, source_ref, finished_at, repo, pull_requests, actor) values
+		('00000000-0000-7000-8000-000000000001', 'INFRA', 'deploy', 'github', 'github:100', '2026-01-01T01:00:00Z',
+			'sjawhar/legion', '{sjawhar/legion#5,SJawhar/Legion#6,sjawhar/legion-smoke#7}', '{"kind":"system","id":"production-signals"}'),
+		('00000000-0000-7000-8000-000000000002', 'INFRA', 'deploy', 'api', 'posted-1', '2026-01-01T02:00:00Z',
+			'', '{sjawhar/legion-smoke#8}', '{"kind":"session","id":"poster"}');
+	insert into production_events (id, project_key, kind, source, source_ref, repo, pull_requests, actor, deploy_id, signal, detected_at) values
+		('00000000-0000-7000-8000-000000000003', 'INFRA', 'failure', 'reverts', 'revert:sjawhar/legion#10', 'sjawhar/legion',
+			'{sjawhar/legion-smoke#3}', '{"kind":"system","id":"production-signals"}', '00000000-0000-7000-8000-000000000001', 'revert', '2026-01-03T00:00:00Z'),
+		('00000000-0000-7000-8000-000000000004', 'INFRA', 'failure', 'reverts', 'revert:sjawhar/legion#9', 'sjawhar/legion',
+			'{sjawhar/legion#5}', '{"kind":"system","id":"production-signals"}', '00000000-0000-7000-8000-000000000001', 'revert', '2026-01-02T00:00:00Z'),
+		('00000000-0000-7000-8000-000000000005', 'INFRA', 'failure', 'reverts', 'revert:cybermonklabs/legion#9', 'cybermonklabs/legion',
+			'{cybermonklabs/legion#5}', '{"kind":"system","id":"production-signals"}', '00000000-0000-7000-8000-000000000001', 'revert', '2026-01-02T00:00:00Z');
+	insert into production_deploy_rules (repo, project_key, production_job_names) values
+		('sjawhar/legion', 'INFRA', '{release}');
+	insert into delivery_reconcile_progress (step, scope, through, updated_at) values
+		('reverts/sjawhar/legion', 'sjawhar/legion', '2026-01-05T00:00:00Z', '2026-01-01T00:00:00Z');
+`
+
+// The pass writes the new name into the merged reverts, the record of production events and the
+// rule its deploy rows stand derived under (dispatch://INFRA-978): each revert's repository and the
+// repository of the pull request it reverts, each row's repository, each pull request a row names
+// in its place with its number, and each revert row's source_ref, so the revert's signal reads its
+// row back under the new name and writes no second one. A revert and a revert row whose twin the
+// new name holds are deleted, and the twins stay. The reverts' search step keeps its progress
+// under the new name. Names that only begin like the old name are left. A second pass writes
+// nothing.
+func TestARenameMovesTheRecordOfProductionEventsAndTheReverts(t *testing.T) {
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, productionEventsRenameSeed)
+	logs := capturePassLogs(t)
+
+	pass := RewriteRenamedRepositories(ctx, store.Pool, pairs)
+
+	if pass.Deleted != 2 || pass.Failures != 0 || pass.Left != noneLeft || pass.Err() != nil {
+		t.Fatalf("the pass = %+v (%v), want 2 rows deleted, no failure and nothing left", pass, pass.Err())
+	}
+	for query, want := range map[string]string{
+		`select string_agg(repo || '#' || number || '>' || reverts_repo || '#' || reverts_number, ' ' order by repo collate "C", number) from delivery_reverts`: "" +
+			"cybermonklabs/legion#9>cybermonklabs/legion#5 cybermonklabs/legion#10>sjawhar/legion-smoke#3 sjawhar/legion-smoke#4>cybermonklabs/legion#2",
+		`select string_agg(source_ref || '=' || repo || ' ' || pull_requests::text, ' | ' order by id) from production_events`: "" +
+			"github:100=cybermonklabs/legion {cybermonklabs/legion#5,cybermonklabs/legion#6,sjawhar/legion-smoke#7} | " +
+			"posted-1= {sjawhar/legion-smoke#8} | " +
+			"revert:cybermonklabs/legion#10=cybermonklabs/legion {sjawhar/legion-smoke#3} | " +
+			"revert:cybermonklabs/legion#9=cybermonklabs/legion {cybermonklabs/legion#5}",
+		`select string_agg(repo || '=' || project_key, ' ') from production_deploy_rules`:                                                        "cybermonklabs/legion=INFRA",
+		`select string_agg(step || '=' || scope || '@' || to_char(through at time zone 'UTC', 'MM-DD'), ' | ') from delivery_reconcile_progress`: "reverts/cybermonklabs/legion=cybermonklabs/legion@01-05",
+	} {
+		if got := readText(t, store, query); got != want {
+			t.Errorf("%s\n= %s\nwant %s", query, got, want)
+		}
+	}
+	written, deleted := map[string]float64{}, map[string]int{}
+	records := logs()
+	for _, record := range named(records, rewroteLine) {
+		written[record["field"].(string)] += record["rows"].(float64)
+	}
+	for _, record := range named(records, deletedLine) {
+		deleted[record["table"].(string)]++
+	}
+	for field, want := range map[string]float64{
+		"delivery_reverts.repo": 1, "delivery_reverts.reverts_repo": 1,
+		"production_events.source_ref": 1, "production_events.repo": 2, "production_events.pull_requests": 1,
+		"production_deploy_rules.repo": 1, "delivery_reconcile_progress.step": 1, "delivery_reconcile_progress.scope": 1,
+	} {
+		if written[field] != want {
+			t.Errorf("logged %v rows of %s, want %v (every line: %v)", written[field], field, want, written)
+		}
+	}
+	if want := map[string]int{"delivery_reverts": 1, "production_events": 1}; !maps.Equal(deleted, want) {
+		t.Errorf("logged deletions %v, want %v", deleted, want)
+	}
+	if again := RewriteRenamedRepositories(ctx, store.Pool, pairs); again != (RepoRenamePass{Pairs: 1, Left: noneLeft}) {
+		t.Errorf("a second pass = %+v, want one pair and nothing written, deleted, failed or left", again)
+	}
+}

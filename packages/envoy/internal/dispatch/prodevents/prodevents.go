@@ -462,10 +462,11 @@ func (r totalRow) Scan(dest ...any) error {
 
 // DeployForCommit is the deploy row, of any project, whose commits hold sha: the earliest to
 // reach production, which is the deploy that first shipped the commit (a check made at a commit
-// blames the deploy that shipped it, R7). ok is false where no deploy holds it yet.
+// blames the deploy that shipped it, R7). ok is false where no deploy holds it yet. A dropped
+// GitHub deploy (StatusDropped) holds none.
 func DeployForCommit(ctx context.Context, q delivery.Querier, sha string) (Event, bool, error) {
 	event, err := scan(q.QueryRow(ctx, `select `+columns+` from production_events
-		where kind = 'deploy' and $1 = any(commits)
+		where kind = 'deploy' and $1 = any(commits) and not `+droppedDeploy+`
 		order by finished_at, id limit 1`, strings.ToLower(sha)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, false, nil
@@ -476,10 +477,12 @@ func DeployForCommit(ctx context.Context, q delivery.Querier, sha string) (Event
 	return event, true, nil
 }
 
-// DeployForRun is the deploy row the GitHub adapter wrote for run runID of repo, of any project.
+// DeployForRun is the deploy row the GitHub adapter wrote for run runID of repo, of any project,
+// and false where it wrote none or dropped it (StatusDropped).
 func DeployForRun(ctx context.Context, q delivery.Querier, repo string, runID int64) (Event, bool, error) {
 	event, err := scan(q.QueryRow(ctx, `select `+columns+` from production_events
 		where kind = 'deploy' and source = 'github' and lower(repo) = lower($1) and source_ref = $2
+		  and not `+droppedDeploy+`
 		order by id limit 1`, repo, GitHubSourceRef(runID)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Event{}, false, nil

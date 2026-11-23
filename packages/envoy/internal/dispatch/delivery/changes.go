@@ -192,9 +192,11 @@ const ChangesChannel = "delivery_changes"
 // No eval, refresher, Legion facts or production event write takes it: their changes wait in the
 // outbox (delivery_changes_pending, migration 20261117100001), and the drain moves them into the
 // log in a short transaction of its own after they commit. The production event writers
-// (dispatch://INFRA-978) write in transactions of their own that take no lock, the GitHub adapter
-// after the run write that made a run a deploy has committed, so no transaction that takes the
-// lock locks a production_events row and that table holds no position.
+// (dispatch://INFRA-978) write in transactions of their own that take no lock: the GitHub adapter
+// (prodevents/signals) reads the change a run, job or pull request write logged, once that write
+// has committed, and only then writes the deploy row, and the signals and the record's routes write
+// after their own causes committed. No transaction that takes the lock locks a production_events
+// row, so that table holds no position, and no path above writes one.
 const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 
 // queueLockChanges queues the change log's lock (lockChangesStatement) into batch, so the

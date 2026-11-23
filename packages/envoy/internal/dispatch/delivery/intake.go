@@ -558,10 +558,12 @@ func headWriteDeliveriesSpent(msg *natsgo.Msg) (delivered uint64, spent bool) {
 // other reason is no failure of this write at all: the row is written from the envelope
 // alone, incomplete and unstamped, and the reconcile's own pass reads it again.
 // Only a merge (action "closed", merged "true") does anything for the delivery timeline
-// after that; its author and excluded-repository checks run on the envelope's own fields against
-// the population, the union of every delivery-on project's (SourceRules.Population), so a merge by
-// anyone outside it costs no GitHub call of its own, and the task-label rule is its own
-// repository's (IsPopulationPR). It reports whether it stored the pull request's delivery row: a
+// after that. A merge of a deploy repository whose body says it reverts a pull request is recorded
+// as a revert first, whoever authored it (recordRevert). The merge's author and excluded-repository
+// checks run on the envelope's own fields against the population, the union of every delivery-on
+// project's (SourceRules.Population), so a merge by anyone outside it costs no GitHub call of its
+// own but a revert's, and the task-label rule is its own repository's (IsPopulationPR). It reports
+// whether it stored the pull request's delivery row: a
 // head write is not one, and neither is a row it deleted or a pull request outside the population,
 // so neither ships with anything.
 func (in *Intake) handlePullRequestEnvelope(ctx context.Context, rules *SourceRules, payload map[string]string) (wrote bool, err error) {
@@ -586,6 +588,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, rules *SourceRu
 	if payload["action"] != "closed" || payload["merged"] != "true" {
 		return false, nil
 	}
+	in.recordRevert(ctx, rules, repoFull, number, payload)
 	if !rules.Population().Admits(repoFull, payload["author"]) {
 		return false, nil
 	}
@@ -623,6 +626,28 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, rules *SourceRu
 		return false, err
 	}
 	return true, nil
+}
+
+// recordRevert records the merge of a deploy repository's pull request whose body says it reverts
+// one (delivery_reverts, RecordRevert), whoever authored it: the person who pressed GitHub's revert
+// button is often outside every population, so the population check after it would drop the merge
+// (dispatch://INFRA-978, T12). The envelope's body decides only whether GitHub is asked, and a body
+// the envelope cut short asks too; what is stored is GitHub's own answer
+// (recordRevertFromGitHub). A merge of any other repository costs nothing. A failure is logged and
+// the envelope goes on: the reconcile's search of the repository records the revert later
+// (reconcileReverts).
+func (in *Intake) recordRevert(ctx context.Context, rules *SourceRules, repoFull string, number int, payload map[string]string) {
+	rule, ok := rules.For(repoFull)
+	if !ok {
+		return
+	}
+	if _, _, says := ParseRevert(payload["body"]); !says && payload["body_truncated"] != "true" {
+		return
+	}
+	if _, err := recordRevertFromGitHub(ctx, in.pool, in.github, rule.DeployRepo, number); err != nil {
+		slog.Warn("dispatch delivery: record a merged revert; the reconcile's search records it later",
+			"repo", repoFull, "number", number, "error", err)
+	}
 }
 
 // completePullRequest finishes writing one merged pull request's complete row -- session
