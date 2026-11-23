@@ -152,18 +152,19 @@ export const NATS_STOP_HOOK_MS = NATS_CLIENTS_READ_MS + NATS_REMOVAL_MS + HOOK_R
 /**
  * The names of the clients still connected to the server whose monitor is at `monitor`
  * (`host:port`), read from its /connz once they are exactly `leftOpen` (none, unless a caller left
- * clients open on purpose) or once `until` (a `performance.now()` reading) has passed. A client's
- * close is asynchronous, so one closed a moment ago can still be counted: the read polls the
- * server's own count, which no fake clock advances, until it is what the caller left or the bound
- * passes. A client with no name is named by its connection id.
+ * clients open on purpose) or once `window` aborts. A client's close is asynchronous, so one closed
+ * a moment ago can still be counted: the read polls the server's own count, which no fake clock
+ * advances, until it is what the caller left or the window ends. A client with no name is named by
+ * its connection id. `stop` passes a window that ends {@link NATS_REMOVAL_MS} before its deadline.
  *
- * Each poll's request is cut at `until`. A poll the bound cuts after an earlier poll answered gives
- * that earlier answer, so a client left open is named rather than lost to "could not be read"; a
- * first poll that fails throws.
+ * Each poll's request is cut when `window` aborts. A poll the window cuts after an earlier poll
+ * answered gives that earlier answer, so a client left open is named rather than lost to "could not
+ * be read"; a first poll that fails throws. It is exported for the row that cuts a poll on purpose
+ * (nats-server.test.ts).
  */
-async function connectedClients(
+export async function connectedClients(
   monitor: string,
-  until: number,
+  window: AbortSignal,
   leftOpen: readonly string[]
 ): Promise<string[]> {
   const expected = [...leftOpen].sort().join("\n");
@@ -171,17 +172,15 @@ async function connectedClients(
   for (;;) {
     let open: string[];
     try {
-      const response = await fetch(`http://${monitor}/connz`, {
-        signal: AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
-      });
+      const response = await fetch(`http://${monitor}/connz`, { signal: window });
       if (!response.ok) throw new Error(`http://${monitor}/connz answered ${response.status}`);
       const connz = (await response.json()) as { connections?: { cid: number; name?: string }[] };
       open = (connz.connections ?? []).map((c) => c.name || `connection ${c.cid}`);
     } catch (error) {
-      if (last !== undefined && performance.now() >= until) return last;
+      if (last !== undefined && window.aborted) return last;
       throw error;
     }
-    if ([...open].sort().join("\n") === expected || performance.now() >= until) return open;
+    if ([...open].sort().join("\n") === expected || window.aborted) return open;
     last = open;
     await Bun.sleep(100);
   }
@@ -284,7 +283,13 @@ export function natsServerWithConfig(directory: string, configuration: string): 
       const clients =
         monitor === undefined
           ? []
-          : await connectedClients(monitor, deadline - NATS_REMOVAL_MS, leftOpen).catch(
+          : await connectedClients(
+              monitor,
+              AbortSignal.timeout(
+                Math.max(1, Math.ceil(deadline - NATS_REMOVAL_MS - performance.now()))
+              ),
+              leftOpen
+            ).catch(
               (error: unknown) => new Error(`its clients could not be read: ${reason(error)}`)
             );
       try {

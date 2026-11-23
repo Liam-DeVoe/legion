@@ -105,16 +105,45 @@ func startNatsdWith(t *testing.T, env []string, args ...string) (*exec.Cmd, stri
 	return cmd, address
 }
 
-// natsInfo reports whether a NATS server answers at address with its INFO line.
+// natsInfo reports whether a NATS server answers at address with its INFO line within 2 s. It is
+// for the negative check alone: nothing listening refuses a dial at once, so the short span never
+// decides it. A positive check waits with requireNatsInfo.
 func natsInfo(address string) bool {
-	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	return natsInfoWithin(address, 2*time.Second) == nil
+}
+
+// natsInfoWithin dials address and reads its first line, each step bounded by span (none when
+// span is 0), and says why that line is not a NATS INFO line, or nil when it is.
+func natsInfoWithin(address string, span time.Duration) error {
+	dialer := net.Dialer{Timeout: span}
+	conn, err := dialer.Dial("tcp", address)
 	if err != nil {
-		return false
+		return err
 	}
 	defer conn.Close()
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if span > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(span))
+	}
 	line, err := bufio.NewReader(conn).ReadString('\n')
-	return err == nil && strings.HasPrefix(line, "INFO ")
+	if err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	if !strings.HasPrefix(line, "INFO ") {
+		return fmt.Errorf("first line %q, not INFO", line)
+	}
+	return nil
+}
+
+// requireNatsInfo waits for the NATS server at address to answer with its INFO line and fails the
+// test, naming why, when it does not. natsd writes INFO only once its accept loop runs, which a
+// loaded machine can hold well after natsd has logged its address, so the wait has no span of its
+// own: testwait.Receive bounds it by the binary's deadline.
+func requireNatsInfo(t *testing.T, address string) {
+	t.Helper()
+	answered := make(chan error, 1)
+	go func() { answered <- natsInfoWithin(address, 0) }()
+	require.NoError(t, testwait.Receive(t, fmt.Sprintf("a NATS INFO line from %s", address), answered),
+		"the address natsd named, %s, does not answer", address)
 }
 
 // Given no -a, natsd listens on a loopback address of its own, claimed for its process while it
@@ -133,7 +162,7 @@ func TestNatsdListensOnALoopbackAddressOfItsOwnAndNamesIt(t *testing.T) {
 	require.NotNil(t, ip, "natsd named %q, no IP address", host)
 	require.True(t, ip.IsLoopback(), "natsd listens on %s, no loopback address", host)
 	require.NotEqual(t, "127.0.0.1", host, "natsd still listens on 127.0.0.1")
-	require.True(t, natsInfo(address), "the address natsd named, %s, does not answer", address)
+	requireNatsInfo(t, address)
 	require.False(t, natsInfo(net.JoinHostPort("127.0.0.1", port)), "127.0.0.1:%s reaches natsd", port)
 
 	claim := filepath.Join(testport.ClaimDir(), host)
@@ -158,7 +187,7 @@ func TestNatsdTakesTheLoopbackAddressItIsGivenAndRefusesAnyOther(t *testing.T) {
 	got, _, err := net.SplitHostPort(address)
 	require.NoError(t, err)
 	require.Equal(t, host, got)
-	require.True(t, natsInfo(address))
+	requireNatsInfo(t, address)
 	if runtime.GOOS == "linux" {
 		_, err = os.Stat(filepath.Join(testport.ClaimDir(), host))
 		require.ErrorIs(t, err, os.ErrNotExist, "natsd claimed %s, which its caller gave it", host)
@@ -203,5 +232,5 @@ func TestARestartWithClaimForKeepsTheAddressAndThePort(t *testing.T) {
 
 	_, again := startNatsd(t, "-a", host, "-p", port, "-store_dir", store)
 	require.Equal(t, address, again, "the restart came back elsewhere")
-	require.True(t, natsInfo(again))
+	requireNatsInfo(t, again)
 }
