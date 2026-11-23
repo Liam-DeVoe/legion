@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests for `check-biome-tree.sh`. A clean tree passes and keeps Biome's own output. A TypeScript
 # file above biome.json's files.maxSize fails and is named in a GitHub annotation with Biome's own
-# sentence. A file Biome fails on (bad formatting) fails with Biome's own output and no
+# sentence, its name escaped in `file=` when it holds ',' or '::'. A file Biome fails on (bad
+# formatting) fails with Biome's own output and no
 # annotation, and a tree with both is named and fails. Each of 25 skipped files is named, though
 # Biome prints only 20 diagnostics by default. A file above Biome's default of 1 MiB under a nested
 # configuration that extends nothing is named, though the root limit is larger, and so is a 1.7 MB
@@ -113,6 +114,18 @@ check "annotates the file for GitHub, with Biome's own sentence" \
   "$(contains "$out" '^::error file=src/big.ts::src/big.ts: Biome reads none of this file and still exits 0. The size of the file is 2.9 KiB, which exceeds the configured maximum of 2.0 KiB')"
 check "counts the findings" "$(contains "$out" '^check-biome-tree: Biome skipped 1 file(s) for their size$')"
 check "names no other file" "$(is "$(grep -c '^::error' <<< "$out")" 1)"
+
+# The runner ends a workflow command's properties at `::` and splits them on `,`, so a file name
+# holding either must reach `file=` escaped, as ci_filter_coverage.py's escape_property writes it,
+# or the annotation names another file.
+echo "case: a skipped file whose name holds ',' and '::' is annotated with that name escaped"
+root=$(fixture escaped)
+ts "$root/src/a,b::c.ts" 3000
+git -C "$root" add src
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "escapes the name in file=, and keeps it whole" \
+  "$(contains "$out" '^::error file=src/a%2Cb%3A%3Ac\.ts::src/a,b::c\.ts: Biome reads none of this file')"
 
 echo "case: a file Biome fails on fails with Biome's own output, and names no file"
 root=$(fixture biome-fails)

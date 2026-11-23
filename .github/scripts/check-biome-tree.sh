@@ -65,9 +65,28 @@ while IFS= read -r line; do
   pending=""
 done < "$log"
 
+# escape_message <text>: text as a workflow command's message, escaped as ci_filter_coverage.py's
+# escape_annotation_message does: %, CR and LF, and the `##[` a legacy runner command starts with.
+escape_message() {
+  local text=${1//'%'/%25}
+  text=${text//$'\r'/%0D}
+  text=${text//$'\n'/%0A}
+  printf '%s' "${text//'##['/%23%23%5B}"
+}
+
+# escape_property <text>: text as a workflow command's property value, as ci_filter_coverage.py's
+# escape_property writes it: escaped as a message is, and its ":" and "," too, since the runner
+# ends the properties at `::` and splits them on `,`.
+escape_property() {
+  local text
+  text=$(escape_message "$1")
+  text=${text//:/%3A}
+  printf '%s' "${text//,/%2C}"
+}
+
 for i in "${!skipped[@]}"; do
   path=${skipped[$i]}
-  echo "::error file=$path::$path: Biome reads none of this file and still exits 0. ${messages[$i]} Split the file, or raise files.maxSize in the Biome configuration that applies to it."
+  echo "::error file=$(escape_property "$path")::$(escape_message "$path: Biome reads none of this file and still exits 0. ${messages[$i]} Split the file, or raise files.maxSize in the Biome configuration that applies to it.")"
 done
 
 if [ "$biome_status" -ne 0 ]; then
