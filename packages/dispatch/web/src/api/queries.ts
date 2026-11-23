@@ -557,13 +557,19 @@ export type EvalKind = "delivery" | "legion" | "ci" | "experiment";
 export const EVALS_VIEW_LIMIT = 200;
 
 /** One evals view of a project's Evals tab: its window, the compare range (null for none), the
- *  repositories whose day rows every number folds (none: the project's own), the kind it keeps,
- *  and the offset of its page. */
+ *  repositories whose day rows every number folds (none: the project's own), the merge timeline's
+ *  facets but the repository and its search (`narrowing`), the kind it keeps, and the offset of its
+ *  page. */
 export interface EvalsViewParams {
   readonly project: string;
   readonly window: DeliveryLiveWindow;
   readonly compare: { readonly from: string; readonly to: string } | null;
   readonly repos: readonly string[];
+  /** The facets but the repository and the search that narrow the evals counting pull requests
+   *  (dispatch://INFRA-2918/artifact/plan-md, D7a), as the timeline's query names them: `q`, then
+   *  each facet's key once per value. Empty or absent: none, and every number reads the stored
+   *  day rows. */
+  readonly narrowing?: string;
   readonly kind: EvalKind;
   readonly offset: number;
 }
@@ -571,7 +577,10 @@ export interface EvalsViewParams {
 /** One project's evals of one kind, live (dispatch://INFRA-2918/artifact/plan-md, D3): the body of
  *  `GET /api/v1/projects/{key}/evals` for the window, sent as the view's window, and the rest of
  *  its query, sent as the view's query, a page of EVALS_VIEW_LIMIT at `offset`. Keyed by the view,
- *  so a change of the window, the compare range or the repositories subscribes its own entry. */
+ *  so a change of the window, the compare range, the repositories or the narrowing subscribes its
+ *  own entry. Only a delivery view carries the narrowing: the evals it narrows are delivery evals
+ *  (D7a), so a view of another kind answers the same with or without it, and a facet change
+ *  subscribes no such view again. */
 export const evalsViewQuery = (params: EvalsViewParams) => {
   const query = new URLSearchParams();
   if (params.compare !== null) {
@@ -579,6 +588,9 @@ export const evalsViewQuery = (params: EvalsViewParams) => {
     query.set("compare_to", params.compare.to);
   }
   for (const repo of params.repos) query.append("repo", repo);
+  if (params.kind === "delivery") {
+    for (const [key, value] of new URLSearchParams(params.narrowing)) query.append(key, value);
+  }
   query.set("kind", params.kind);
   query.set("limit", String(EVALS_VIEW_LIMIT));
   if (params.offset > 0) query.set("offset", String(params.offset));

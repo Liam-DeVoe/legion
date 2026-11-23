@@ -80,6 +80,53 @@ test("a view with no compare range names none, one of the project's own rows no 
   expect(second.query).toBe("kind=ci&limit=200&offset=200");
 });
 
+// The timeline's facets but the repository, and its search, narrow the delivery evals alone
+// (dispatch://INFRA-2918/artifact/plan-md, D7a): a delivery view sends each under the key the list
+// read takes it by, and a view of another kind is the same view with or without them.
+test("a delivery view carries the search and each facet value under the list read's keys, and a view of another kind none", () => {
+  const narrowing =
+    "q=fix&parent_agent=ACME-1&session=s1&issue=ACME-2&priority=P1&component=ACME%2Fweb&author=alice&author=bob&rework=rework&deployed=waiting";
+  const scope: Omit<EvalsViewParams, "kind"> = {
+    compare: null,
+    narrowing,
+    offset: 0,
+    project: "ACME",
+    repos: ["acme/widgets"],
+    window: { preset: 28 },
+  };
+  const query = new URLSearchParams(viewOf({ ...scope, kind: "delivery" }).query);
+  expect([...query.keys()]).toEqual([
+    "repo",
+    "q",
+    "parent_agent",
+    "session",
+    "issue",
+    "priority",
+    "component",
+    "author",
+    "author",
+    "rework",
+    "deployed",
+    "kind",
+    "limit",
+  ]);
+  expect(query.get("q")).toBe("fix");
+  expect(query.getAll("author")).toEqual(["alice", "bob"]);
+  expect(query.get("component")).toBe("ACME/web");
+  expect(query.getAll("repo")).toEqual(["acme/widgets"]);
+  // Narrowed and unnarrowed, each is its own view.
+  expect(evalsViewQuery({ ...scope, kind: "delivery" }).queryKey).not.toEqual(
+    evalsViewQuery({ ...scope, kind: "delivery", narrowing: "" }).queryKey
+  );
+
+  for (const kind of ["legion", "ci", "experiment"] as const) {
+    expect(evalsViewQuery({ ...scope, kind }).queryKey).toEqual(
+      evalsViewQuery({ ...scope, kind, narrowing: undefined }).queryKey
+    );
+    expect(viewOf({ ...scope, kind }).query).toBe(`repo=acme%2Fwidgets&kind=${kind}&limit=200`);
+  }
+});
+
 // An items view names the eval whose rows it shows apart, and the rest of what the items route
 // takes as its query (packages/contracts DeliveryLiveView), so the hub reads it as the route does.
 test("an items view carries the project, the eval, the window, and the items route's query", () => {
