@@ -112,19 +112,22 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 		held := heldPlan(given.stored)
 		var running []plan.Refusal
 		for _, id := range plan.ChangedTasks(held, fact.Plan) {
-			if at := slices.IndexFunc(given.stored.Tasks, func(task record.PlanTask) bool { return task.Task == id }); at >= 0 {
-				state := given.stored.Tasks[at].State
-				if refusal := intake.FinishedTask(fact.Issue, id, state, intake.ChangeOfTask); refusal != nil {
-					return givenVersion{}, refusal, nil
-				}
-				if state == record.TaskRunning {
-					if refusal := plan.RunningChange(held, fact.Plan, id); refusal != nil {
-						running = append(running, *refusal)
-					}
-					continue
-				}
+			at := slices.IndexFunc(given.stored.Tasks, func(task record.PlanTask) bool { return task.Task == id })
+			if at < 0 {
+				given.changed = append(given.changed, id)
+				continue
 			}
-			given.changed = append(given.changed, id)
+			state := given.stored.Tasks[at].State
+			if refusal := intake.FinishedTask(fact.Issue, id, state, intake.ChangeOfTask); refusal != nil {
+				return givenVersion{}, refusal, nil
+			}
+			if state != record.TaskRunning {
+				given.changed = append(given.changed, id)
+				continue
+			}
+			if refusal := plan.RunningChange(held, fact.Plan, id); refusal != nil {
+				running = append(running, *refusal)
+			}
 		}
 		if len(running) > 0 {
 			return givenVersion{}, intake.PlanRefused(running), nil
