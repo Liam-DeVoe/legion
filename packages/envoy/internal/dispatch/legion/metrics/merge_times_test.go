@@ -30,9 +30,9 @@ type mergedPull struct {
 }
 
 // mergeTimesDatabase is a database with the statement of a pull request's issue built, as main
-// builds it after the migrations, project ACME mapped to mergeTimesRepo, and issues ACME-1 to
-// ACME-4, each closed in the window the test reads. ACME-5 closed a day before that window, so
-// the read asks for no pull request of it.
+// builds it after the migrations, project ACME whose default repository is mergeTimesRepo, and
+// issues ACME-1 to ACME-4, each closed in the window the test reads. ACME-5 closed a day before
+// that window, so the read asks for no pull request of it.
 func mergeTimesDatabase(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
 	pool, ctx := storetest.Open(t).Pool, t.Context()
@@ -45,9 +45,7 @@ func mergeTimesDatabase(t *testing.T) (*store.Pool, context.Context) {
 			t.Fatalf("seed (%s): %v", sql, err)
 		}
 	}
-	exec(`insert into projects (key, name, default_assignee) values ('ACME', 'ACME', 'alice')`)
-	exec(`insert into repo_projects (repo, project, created_by, is_default)
-		values ($1, 'ACME', '{"kind":"system","id":"metrics-test"}'::jsonb, true)`, mergeTimesRepo)
+	exec(`insert into projects (key, name, default_assignee, default_repo) values ('ACME', 'ACME', 'alice', $1)`, mergeTimesRepo)
 	for number := 1; number <= 5; number++ {
 		created, closed := after(0), after(10)
 		if number == 5 {
