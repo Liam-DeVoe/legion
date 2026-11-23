@@ -57,14 +57,10 @@ func stalePassSupervision(t *testing.T, logs *syncBuffer, read roleBackend) *sup
 // one line names it for each claim. A read that fails because the pass's context ended, the
 // daemon stopping, says nothing of the store, and the pass writes no line for it: a stop over a
 // fleet would otherwise write one line for each stale claim, each saying that a sweep that never
-// comes reads it again.
+// comes reads it again. The stop comes during the first read, so the pass reads a claim's plan
+// and the read fails for the stop, which is the failure the pass must not log.
 func TestTheStalePluginPassLogsAFailedReadOnlyWhileTheDaemonRuns(t *testing.T) {
-	read := func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error) {
-		if err := ctx.Err(); err != nil {
-			return "", fmt.Errorf("the role %s of the plan of %s: %w", role, issue, err)
-		}
-		return "", errors.New("the role " + string(role) + " of the plan of " + issue + ": connection refused")
-	}
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		stopping bool
@@ -75,13 +71,24 @@ func TestTheStalePluginPassLogsAFailedReadOnlyWhileTheDaemonRuns(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := &syncBuffer{}
-			s := stalePassSupervision(t, logs, read)
 			ctx, stop := context.WithCancel(context.Background())
 			defer stop()
-			if tc.stopping {
-				stop()
+			reads := 0
+			read := func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error) {
+				reads++
+				if tc.stopping {
+					stop()
+				}
+				if err := ctx.Err(); err != nil {
+					return "", fmt.Errorf("the role %s of the plan of %s: %w", role, issue, err)
+				}
+				return "", errors.New("the role " + string(role) + " of the plan of " + issue + ": connection refused")
 			}
+			s := stalePassSupervision(t, logs, read)
 			s.refreshStalePlugins(ctx, staleProbers(t, 2), "sweep")
+			if reads == 0 {
+				t.Fatalf("the pass read no claim's plan, so it judged no failed read")
+			}
 			if lines := loggedLines(t, logs.String(), stalePassReadFailed); len(lines) != tc.lines {
 				t.Fatalf("the pass wrote %d lines of a failed read, want %d; it logged:\n%s", len(lines), tc.lines, logs.String())
 			}
