@@ -394,17 +394,19 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 	if err := e.clearHandoff(ctx, tx, s.issue.Key, role); err != nil {
 		return err
 	}
+	// The pull request of the task, read once: the start's task names it (readPull), and the merge
+	// forward of the release acts on it (releasedIntoPhase).
 	pr, err := e.taskPullRequest(ctx, tx, s)
 	if err != nil {
 		return err
 	}
 	issue := s.issue
-	if err := e.start(ctx, tx, s, role, func(at Standing) string {
-		return task(issue, at, record.PhaseRow{}, pr, reason)
+	if err := e.start(ctx, tx, s, role, readPull(pr), func(at Standing) string {
+		return task(issue, at, record.PhaseRow{}, reason)
 	}, true); err != nil {
 		return err
 	}
-	return e.releasedIntoPhase(ctx, tx, s, from)
+	return e.releasedIntoPhase(ctx, tx, s, from, pr)
 }
 
 // scopeWalks is the walk of each task of s's plan, in task id order, with s's own walk in place of

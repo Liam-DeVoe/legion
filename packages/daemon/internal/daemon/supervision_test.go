@@ -1391,7 +1391,8 @@ func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
 // Every architect is told, in its addressing, the roles a step of its plan may name with the type
 // of each: Legion's five, then each role the deployment defines in the file's order, with the
 // model its agent starts with where the settings give one. A root architect's addressing still
-// ends with its design gate's line; no other launch is told the roles.
+// ends with its design gate's line, then the project's production check (ProductionCheckFragment),
+// which every architect is told last; no other launch is told the roles.
 func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
@@ -1424,8 +1425,8 @@ func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	if !strings.Contains(root, want) {
 		t.Errorf("the root architect's addressing = %q, want it to hold %q", root, want)
 	}
-	if !strings.HasSuffix(root, " "+gate) {
-		t.Errorf("the root architect's addressing = %q, want it to end with %q", root, gate)
+	if check := " " + gate + " " + ProductionCheckFragment(""); !strings.HasSuffix(root, check) {
+		t.Errorf("the root architect's addressing = %q, want it to end with %q", root, check)
 	}
 	if sub := addressing(deployed, "S1-2", claim.RoleArchitect); !strings.Contains(sub, want) {
 		t.Errorf("a sub-architect's addressing = %q, want it to hold %q", sub, want)

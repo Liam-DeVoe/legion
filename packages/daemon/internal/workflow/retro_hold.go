@@ -194,10 +194,6 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err != nil {
 		return err
 	}
-	pr, err := e.taskPullRequest(ctx, tx, s)
-	if err != nil {
-		return err
-	}
 	status := PhaseStatus(phase.Retro)
 	if err := e.status(ctx, tx, held, status, ""); err != nil {
 		return err
@@ -219,8 +215,14 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.clearHandoff(ctx, tx, held.Key, role); err != nil {
 		return err
 	}
-	if err := e.start(ctx, tx, s, role, func(at Standing) string {
-		return task(held, at, last, pr, "")
+	// The pull request of the parent's task, read once: the start's task names it (readPull), and
+	// the merge forward of the release acts on it (releasedIntoPhase).
+	pr, err := e.taskPullRequest(ctx, tx, s)
+	if err != nil {
+		return err
+	}
+	if err := e.start(ctx, tx, s, role, readPull(pr), func(at Standing) string {
+		return task(held, at, last, "")
 	}, false); err != nil {
 		return err
 	}
@@ -228,7 +230,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	// (transition), so it does what that pass does after its start (releasedIntoPhase): the
 	// reconcile of its tree's news, which the hold owed the parent nothing of, and the merge
 	// forward of the move.
-	return e.releasedIntoPhase(ctx, tx, s, from)
+	return e.releasedIntoPhase(ctx, tx, s, from, pr)
 }
 
 // heldForChildren is the scope of parent's task held for the issues beneath it: the task whose
