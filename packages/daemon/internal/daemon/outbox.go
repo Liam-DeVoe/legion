@@ -73,6 +73,12 @@ const (
 // work (outbox_lanes.go). Claiming and finishing have separate transactions so a slow external
 // service never holds an issue transition lock.
 type outbox struct {
+	// roleDefinition is the definition of a plan's role a launch of a claim would run now
+	// (specs.roleDefinition: the fingerprint of the one resolution of the claim's role), which the
+	// start of a step compares with the definition the claim's process was launched with
+	// (roleDefinitionChanged). Nil compares nothing, as for an outbox a test builds with no specs.
+	roleDefinition func(ctx context.Context, c supervise.Claim) (string, error)
+
 	// pool is the daemon's guarded pool (store.Pool): each lane opens its transactions on it
 	// under a hold mark of the lane's own (runLane), so a row's work that asks for a second
 	// connection while its transaction holds one is refused at that call
@@ -235,12 +241,12 @@ type outboxTrees interface {
 
 // newOutbox builds the outbox. controllerLaunched is `controller: daemon` (config.ControllerLaunch),
 // which decides whether the launched controller claim holds the controller topic back (heldTopic).
-func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
+func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, roleDefinition func(context.Context, supervise.Claim) (string, error), trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &outbox{
-		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
+		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, roleDefinition: roleDefinition, trees: trees, tokens: tokens,
 		handlers: handlers, gatedSteps: gatedSteps, controllerLaunched: controllerLaunched,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
 		log: log, now: time.Now, clock: supervise.RealClock{},
@@ -2627,7 +2633,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			why := ""
 			if payload.FreshSession {
 				why = fmt.Sprintf("its claim's next step on %s is another agent's", row.Issue)
-			} else if why, err = r.roleDefinitionChanged(ctx, machine, issue.Key, issue.Generation); err != nil {
+			} else if why, err = r.roleDefinitionChanged(ctx, machine); err != nil {
 				return err
 			}
 			if why != "" {
@@ -3268,58 +3274,28 @@ func (r *outbox) suspendForStep(ctx context.Context, machine *supervise.Machine,
 	return nil
 }
 
-// roleDefinitions is the part of the supervisor's spec builder (specs.roleDefinition) that answers
-// which definition of a plan's role a launch of a claim would run now.
-type roleDefinitions interface {
-	roleDefinition(ctx context.Context, c supervise.Claim) (string, bool, error)
-}
-
-// roleDefinitionChanged is why machine's claim runs a process that may run another definition of
-// its role than a launch of it would run now, and "" where it does not. The definition its newest
-// launch was built for (supervise.Machine.LaunchedDefinition) is compared with the one the
-// supervisor's spec builder resolves from the plan in force (specs.roleDefinition), both "" for a
-// role no plan defines. A claim that runs nothing has no process to compare, and a spec builder
-// that answers no definition (a test's) changes nothing.
-//
-// A daemon that built no launch of the claim since it started does not know what its process
-// runs. Where the plan in force of issue, at generation, defines the role and was given after the
-// claim's agent last came up (supervise.Claim.LastReady), the process may predate it and run an
-// earlier definition, so it is relaunched once, with a reason of its own; where that plan was given
-// before, nothing is known to have changed since the process started, and nothing is relaunched.
-// One window is left: a launch whose spec was built before a version was taken and whose agent
-// came up after it; the next restart of the claim's process closes it.
-func (r *outbox) roleDefinitionChanged(ctx context.Context, machine *supervise.Machine, issue string, generation uint64) (string, error) {
+// roleDefinitionChanged is why machine's claim runs a process that runs another definition of its
+// role than a launch of it would run now, and "" where it does not: the definition the launch of
+// that process was built for, which the claim keeps over a restart
+// (supervise.Claim.LaunchedDefinition), against the one the supervisor's spec builder resolves
+// from the plan in force (roleDefinition), both "" for a role no plan defines. So a version of the
+// plan taken at any moment after the launch was built — before its agent came up, after, or
+// before a restart of this daemon — relaunches the process at the role's next step, and a block no
+// version changed relaunches nothing. A claim that runs nothing has no process to compare, and an
+// outbox with no reader of the definition (a test's) changes nothing.
+func (r *outbox) roleDefinitionChanged(ctx context.Context, machine *supervise.Machine) (string, error) {
 	held := machine.Claim()
-	defs, ok := r.supervisor.deps.Specs.(roleDefinitions)
-	if !ok || held.RunsNothing() {
+	if r.roleDefinition == nil || held.RunsNothing() {
 		return "", nil
 	}
-	current, planned, err := defs.roleDefinition(ctx, held)
+	current, err := r.roleDefinition(ctx, held)
 	if err != nil {
 		return "", err
 	}
-	launched, known := machine.LaunchedDefinition()
-	if known {
-		if launched == current {
-			return "", nil
-		}
-		return fmt.Sprintf("the definition of its role %s on %s changed since its process launched", held.Role, issue), nil
-	}
-	if !planned {
+	if held.LaunchedDefinition == current {
 		return "", nil
 	}
-	var stored *record.StoredPlan
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		var err error
-		stored, err = r.records.Plan(ctx, tx, issue, generation)
-		return err
-	}); err != nil {
-		return "", fmt.Errorf("read the plan of %s to judge the process of %s: %w", issue, held.Token, err)
-	}
-	if stored == nil || (!held.LastReady.IsZero() && !stored.Version.GivenAt.After(held.LastReady)) {
-		return "", nil
-	}
-	return fmt.Sprintf("this daemon started after the process of its role %s on %s launched, and the plan in force was given after that process came up, so it may run an earlier definition of the role", held.Role, issue), nil
+	return fmt.Sprintf("the definition of its role %s on %s changed since its process launched", held.Role, held.Issue), nil
 }
 
 // stepStands says whether the step a start of a phase entry (payload) is for is still the work its

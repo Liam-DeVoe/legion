@@ -159,6 +159,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "why the last start produced no running agent, which is a different fault from a process that died and is read as one"},
 	{Field: "LastReady", Column: ColumnAgents, Keys: []string{"lastReady"},
 		Reason: "when the agent last said it could be prompted, which is what dates the two causes above"},
+	{Field: "LaunchedDefinition", Column: ColumnWithheld,
+		Reason: "a hash of the plan role's definition the claim's process was launched with, which the daemon compares at a step's start and no reader acts on"},
 	{Field: "TurnOutcomes", Column: ColumnWithheld,
 		Reason: "the window the run of refused turns is derived from, whose count reaches a reader as the failure's own sentence"},
 	{Field: "Abandoned", Column: ColumnWithheld,

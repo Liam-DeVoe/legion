@@ -1490,8 +1490,12 @@ type supervision struct {
 	stream     *stream.Listener
 	runtime    runtime.Runtime
 	supervisor *supervisor
-	tokens     *api.BootTokens
-	claims     []supervise.Claim
+	// roleDefinition is the definition of a plan's role a launch of a claim would run now, from
+	// the supervisor's one spec builder (specs.roleDefinition), which the outbox's start of a step
+	// compares with the definition the claim's process was launched with (outbox.roleDefinition).
+	roleDefinition func(ctx context.Context, c supervise.Claim) (string, error)
+	tokens         *api.BootTokens
+	claims         []supervise.Claim
 	// refreshGate is the daemon's one stale-plugin refresh gate, the same object every machine of
 	// this supervision holds on its Deps (supervise.RefreshGate, built in run and handed to
 	// openSupervision beside the wake limiter). Supervision keeps the reference because the
@@ -1761,21 +1765,22 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	// role (resolveClaimRole), the stall backstop and a role's harness (roleBackends) read alike.
 	planRole := planRoleOf(st)
 	backends := roleBackends(cfg.BackendFor, planRole)
+	launches := specs{
+		stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
+		roles: cfg.Roles, models: cfg.ListedModels(), planRole: planRole,
+		identity: p.identityAs, repository: p.launchRepository, owner: p.owner,
+		appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
+		designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
+		runtimeName: cfg.Runtime.Name, plugins: p.plugins,
+		commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
+		backendFor: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
+		variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
+	}
 	sup.deps = supervise.Deps{
-		Runtime: rt,
-		Conns:   listener,
-		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
-		Specs: specs{
-			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			roles: cfg.Roles, models: cfg.ListedModels(), planRole: planRole,
-			identity: p.identityAs, repository: p.launchRepository, owner: p.owner,
-			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
-			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
-			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
-			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
-			backendFor: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
-		},
+		Runtime:                 rt,
+		Conns:                   listener,
+		Store:                   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
+		Specs:                   launches,
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
 		Secrets:                 p.secretsEnroller,
@@ -1827,7 +1832,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
 	supervisionOf := &supervision{
-		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
+		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, roleDefinition: launches.roleDefinition, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses, backends: backends, planRole: planRole,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
