@@ -450,15 +450,11 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	entry, sent, err := e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
+	raised, err := e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
 	if err != nil {
 		return err
 	}
-	agent, err := e.startClaim(issue, w, role)
-	if err != nil {
-		return err
-	}
-	return e.started(ctx, tx, issue, role, agent, sent, entry, startMarks{stored: true})
+	return e.started(ctx, tx, issue, role, raised.agent, raised.task, raised.entry, startMarks{stored: true})
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
@@ -659,15 +655,11 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil {
 		return err
 	}
-	entry, sent, err := e.enter(ctx, tx, issue, &w, role, task, false, false)
+	raised, err := e.enter(ctx, tx, issue, &w, role, task, false, false)
 	if err != nil {
 		return err
 	}
-	agent, err := e.startClaim(issue, w, role)
-	if err != nil {
-		return err
-	}
-	return e.started(ctx, tx, issue, role, agent, sent, entry, startMarks{resumeTask: true, stored: true})
+	return e.started(ctx, tx, issue, role, raised.agent, raised.task, raised.entry, startMarks{resumeTask: true, stored: true})
 }
 
 // startMarks are the marks a start's request carries beside its entry, which tell the outbox and
@@ -987,7 +979,8 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // queue writes them into every other task of the reviewer (namingTheReviewRound, queuedRow). That
 // is why enter answers the text and its two phase-worker callers send what it answers, marked as
 // the stored task (startMarks.stored) so the queue writes the sentences no second time, never
-// their own task: the number is known only once it is raised, here.
+// their own task: the number is known only once it is raised, here. It answers the claim it wrote
+// on the row too (entered.agent), which those two callers queue the start for.
 //
 // movedBack is written with them: whether the start raising this entry was a move back to an
 // earlier phase. Its one reader is the completion route's entry fence, which takes a completion
@@ -1035,10 +1028,10 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // No entry falls below its own row's, which a row the release before raised and no completion
 // named a claim on keeps. An issue with no plan rows has one row for each role, which a clear never
 // folds, so its entry is the row's own plus one.
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (entered, error) {
 	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
-		return 0, "", err
+		return entered{}, err
 	}
 	row := record.PhaseRowOf(rows, role)
 	worker := role != claim.RoleArchitect
@@ -1048,7 +1041,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 			var moves bool
 			if row, moves = stepRunRow(rows, row, role, w.Task, place.Place); moves {
 				if err := e.store.MovePhaseToStep(ctx, tx, issue.Key, role, w.Task, place.Place); err != nil {
-					return 0, "", err
+					return entered{}, err
 				}
 			}
 		}
@@ -1059,7 +1052,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	var agent claim.Token
 	if worker && recordsSteps(issue) {
 		if agent, err = e.startClaim(issue, *w, role); err != nil {
-			return 0, "", err
+			return entered{}, err
 		}
 		for _, other := range rows {
 			if (other.Claim == agent || other.Role == role) && other.Entry >= entry {
@@ -1068,7 +1061,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 		}
 		held, err := e.store.RoleClaims(ctx, tx, []claim.Token{agent})
 		if err != nil {
-			return 0, "", err
+			return entered{}, err
 		}
 		if given := held[agent]; given != nil && given.GivenEntry >= entry {
 			entry = given.GivenEntry + 1
@@ -1083,20 +1076,30 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	raised.EntryTask = task
 	row.EntryTask = namingTheReviewRound(task, role, issue.Phase, raised)
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
-		return 0, "", err
+		return entered{}, err
 	}
+	done := entered{entry: row.Entry, task: row.EntryTask, agent: agent}
 	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
 	// and the promotion's start of a mid-phase member (StartPromotedWorker), under the claim of the
 	// step's agent written on the row above. The architect's own entry is no step of the issue's task.
 	if !worker {
-		return row.Entry, row.EntryTask, nil
+		return done, nil
 	}
 	if step, ok := standingStep(*w, issue); ok {
 		if err := e.startStep(ctx, tx, issue, step, agent); err != nil {
-			return 0, "", err
+			return entered{}, err
 		}
 	}
-	return row.Entry, row.EntryTask, nil
+	return done, nil
+}
+
+// entered is what enter raised: the entry's number, the task it wrote as that entry's work, and
+// the claim of the step's agent it wrote on the row ("" for the architect's own entry and for an
+// issue whose key names no claims).
+type entered struct {
+	entry int64
+	task  string
+	agent claim.Token
 }
 
 // stepRunRow is the row an entry of role's step at place of task raises, among rows, and whether
@@ -1143,8 +1146,8 @@ func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, ta
 // that start. The entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's
 // one reader is the completion route's entry fence, and the architect completes nothing there.
 func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, verbatim bool) (int64, error) {
-	entry, _, err := e.enter(ctx, tx, root, nil, claim.RoleArchitect, task, false, verbatim)
-	return entry, err
+	raised, err := e.enter(ctx, tx, root, nil, claim.RoleArchitect, task, false, verbatim)
+	return raised.entry, err
 }
 
 // The labels of a started worker's task that a prompt or a skill names to the worker, each the
