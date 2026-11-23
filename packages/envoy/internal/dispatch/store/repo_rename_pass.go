@@ -37,7 +37,9 @@ import (
 // (spec_check_results) or github_rate_limits, whose scope names no repository. A row of
 // spec_check_results is the record of one CI run, with its repository as the run's results token
 // named it, which the row's in-toto statement holds too: nothing updates or deletes such a row,
-// and no read selects or compares by its repository column.
+// and no read selects or compares by its repository column. The in-toto statement of a CI job's
+// result of an issue's check (ci_check_results.attestation) is such a record of its run too, and
+// the pass writes only that row's commit_repo.
 //
 // A line whose table has a key with the repository in it can meet a collision: the new name gives
 // a row the key of another row. Two keys are equal when their repository is equal in lower case.
@@ -435,6 +437,9 @@ var repoRenameLines = []repoRenameLine{
 	nameLine("issues", "repo"),
 	nameLine("projects", "default_repo"),
 	nameLine("check_results", "commit_repo"),
+	// A CI job's result names the repository other than the check's issue's that the record route
+	// took its commit to be of, as a role's does (check_results.commit_repo).
+	nameLine("ci_check_results", "commit_repo"),
 	{
 		// A URL links one issue (issue_external_links_url), and readers compare a link in lower
 		// case (issue_external_links_url_lower). So an old URL collides with every link whose

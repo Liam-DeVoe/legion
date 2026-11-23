@@ -28,7 +28,7 @@ import (
 const (
 	// ciJobProject is the project of the job's results token and of the issue it records on.
 	ciJobProject = "ACME"
-	// ciJobRepository is the repository of the job's run, which the project maps as its default.
+	// ciJobRepository is the repository of the job's run, the project's default repository.
 	ciJobRepository = "example-org/example-repo"
 	// ciJobCommit is the commit the job's run tested, the commit of its token.
 	ciJobCommit = "0123456789abcdef0123456789abcdef01234567"

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The results write takes the owner locks of the recording issue and of the check's issue
@@ -75,6 +77,37 @@ var ciJobVerificationReworded = ciCheckBlock("c1", `negative_control="`+ciJobNeg
 func writeVerification(t *testing.T, rig *ciJobRig, markdown string) {
 	t.Helper()
 	uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "verification.md", markdown)
+}
+
+// A results write that is held before its locks, in GitHub's answer to whether the repository
+// holds its commit (refuseUnknownCommit), holds no owner lock of either issue across that read: a
+// PATCH of the recording issue, which takes its owner lock, answers while the read is still held,
+// and the read ends only once the test lets it go. The test judges whom the writer waits for,
+// never how long it took (main's #4776): each wait is testwait.Receive, whose one bound is the
+// test binary's deadline, so a read moved under the locks fails naming the step that never came,
+// and a merely slow step is no failure. It reads no lock table: the rig's document service may
+// hold the issue's owner lock for a moment of its own, which a PATCH waits out and a snapshot of
+// the lock table would take for the write's.
+func TestAResultsWriteHoldsNoOwnerLockWhileGitHubIsAskedForItsCommit(t *testing.T) {
+	rig := newCIJobRig(t)
+	held := holdWriteBeforeItsLocks(t, rig, rig.sessionToken(),
+		resultBody("k1", "pass", heldWriteCommit, map[string]any{"role": "tester"}))
+
+	patched := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		patched <- dispatchRequest(t, rig.handler, http.MethodPatch, "/api/v1/issues/"+rig.issue,
+			map[string]any{"labels_add": []string{"waited"}}, "alice")
+	}()
+	patch := testwait.Receive(t, "a PATCH of "+rig.issue+" while the results write's read of GitHub is held", patched)
+	held.release()
+	if patch.Code != http.StatusOK {
+		t.Fatalf("PATCH the issue beside the results write: status=%d body=%s", patch.Code, patch.Body.String())
+	}
+
+	response := testwait.Receive(t, "the results write to answer", held.answered)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("record the result: status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 // A version that rewords the check between the write's resolve and its locks is the check the

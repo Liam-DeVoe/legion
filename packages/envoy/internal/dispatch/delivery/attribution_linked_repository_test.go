@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The issue of this test, ACME-1, the repository its project maps, and the repository of each
+// The issue of this test, ACME-1, the default repository of its project, and the repository of each
 // pull request of the test, which is another one.
 const (
 	linkedIssue     = "ACME-1"
