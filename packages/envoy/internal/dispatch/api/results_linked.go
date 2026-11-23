@@ -110,7 +110,7 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	if repo == nil {
 		return nil, nil
 	}
-	heads, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
+	heads, err := s.deps.Attributor.HeadsAttributedTo(ctx, q, issueKey)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a recorded result's commit",
 			"issue", issueKey, "commit", sha, "error", err)
