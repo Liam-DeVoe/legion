@@ -1196,13 +1196,19 @@ approve_record() { # <record id>
 	session="$(sed -n 's/^Set-Cookie: \(__Host-broker-session=[^;]*\).*/\1/p' "$d/callback" | tr -d '\r')"
 	[ -n "$session" ] || return 1
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
-	local field
+	local field digests=()
 	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
+	# Each profile the page printed has a profile_digest field, and the broker refuses an approval
+	# that does not send each of them back (403 PROFILE_CHANGED), so every one is posted.
+	local digest
+	while IFS= read -r digest; do
+		digests+=(--data-urlencode "profile_digest=$digest")
+	done < <(sed -n 's/.*name="profile_digest" value="\([^"]*\)".*/\1/p' "$d/page.html")
 	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
 	# command line.
 	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
-		--data-urlencode "printed=$(field printed)" --data-urlencode token@- \
+		--data-urlencode "printed=$(field printed)" "${digests[@]}" --data-urlencode token@- \
 		--data-urlencode "expires=$(field expires)" "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
 	echo >>"$d/decisions"
 }
@@ -1359,7 +1365,7 @@ EOF
 	declare -gA K6AWS
 	local key value
 	while IFS='=' read -r key value; do K6AWS["$key"]="$value"; done <"$d/aws-out"
-	K6_AWS_RECS="$(records aws | jq --argjson n "$aws_before" '.[$n:]')"
+	K6_AWS_RECS="$(records aws | jq --argjson n "$aws_before" '(.[$n:] // [])')"
 	K6_AWS_CALLS="$(printf '%s' "$K6_AWS_RECS" | jq 'length')"
 	K6_AWS_TOKENS="$(printf '%s' "$K6_AWS_RECS" | jq -r '[.[] | .header["X-Amz-Security-Token"] // [] | .[]] | unique | length')"
 	K6_AWS_KEYIDS="$(printf '%s' "$K6_AWS_RECS" | jq -r '[.[] | .header.Authorization // [] | .[] | capture("Credential=(?<k>[^/]*)/") | .k] | unique | join(",")')"
