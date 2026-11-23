@@ -1994,9 +1994,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       readonly branch?: readonly unknown[];
       /** The daemon's answer to `POST /legion/v1/handoff/complete`: success unless given. */
       readonly complete?: () => Response;
-      /** The phase the daemon's record puts REPO-43 at; `retro`, the implementer's, unless a
-       * test moves it, which is how the record check decides the reminder is no longer this
-       * role's to get. */
+      /** The phase the daemon's record puts REPO-43 at; `retro`, which the implementer works here,
+       * unless a test moves it, which is how the record check decides the reminder is no longer
+       * this role's to get. */
       readonly phase?: string;
       /** The daemon's whole answer to `GET /legion/v1/issues/REPO-43/record`, for a daemon that
        * does not answer with a record at all. */
@@ -3220,9 +3220,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     await bootPane({ role: "architect", sessionId: "ses_notice_architect" });
     await bootPane({ role: "implementer", sessionId: "ses_notice_worker" });
 
-    // The daemon sends every notice to the owning architect's role topic, which the architect
-    // claims as its Envoy role; a phase worker subscribed to its issue's topic would be woken by
-    // notices meant for the architect.
+    // The daemon sends every notice to an architect's role topic, which the architect claims as its
+    // Envoy role: the owning architect's, and an owner-step to the issue's own architect. A phase
+    // worker subscribed to its issue's topic would be woken by notices meant for the architect.
     const subjects = natsConnections.flatMap((connection) => connection.subjects);
     expect(
       subjects.filter((subject) => subject.startsWith("notifications.legion.omp.REPO-"))

@@ -404,10 +404,11 @@ test.skipIf(skip)(
     expect(turns).toHaveLength(3);
     // A Legion pane, both entries loaded: the host offers the model the `legion` tool.
     expect(toolNames(turns[0] as Request)).toContain("legion");
-    // Every role is offered the same tool text, and it gives a verdict to the tester or a role
-    // of the deployment.
+    // Every role is offered the same tool text, and it names who reports a verdict: the tester, a
+    // role of the deployment or of the plan, the fresh agent of acceptance and a reviewer of an
+    // issue with no pull request.
     expect(legionToolDescription(turns[0] as Request)).toContain(
-      "`verdict` pass|fail from the tester or a role of the deployment"
+      "`verdict` pass|fail on a phase completion from the tester, a role of the deployment or of the plan, the fresh agent of acceptance and a reviewer of an issue with no pull request"
     );
     expect(userText(turns[0] as Request)).not.toContain("handoff_complete");
     // The sentence the settling message earned still leads the reminder it earned.
