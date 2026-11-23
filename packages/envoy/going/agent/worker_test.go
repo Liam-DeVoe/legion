@@ -8,6 +8,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1133,6 +1136,70 @@ func TestARequestForAChangeEndsWithAPlan(t *testing.T) {
 	} {
 		if !strings.Contains(systemPrompt, said) {
 			t.Errorf("the system prompt does not say %q", said)
+		}
+	}
+}
+
+// TestThePromptsExamplesNameNoItemOfTheEvalsSeed: the eval's run that answered with no read said
+// the planner is on DEMO-7, the key the prompt's examples named, which the eval's seed holds. Every
+// issue key the system prompt and the new-issue prompt name is of the project ACME, and neither the
+// prompts nor the text of a tool the agent is offered or find_tools answers - its description and
+// its arguments' schema - names a project, session or person of the eval's seed
+// (going/eval/seed.json).
+func TestThePromptsExamplesNameNoItemOfTheEvalsSeed(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "eval", "seed.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seed struct {
+		Projects []struct{ Key string }
+		Sessions []struct{ ID, Title string }
+		People   []struct{ Login, Name string }
+	}
+	if err := json.Unmarshal(raw, &seed); err != nil {
+		t.Fatal(err)
+	}
+	if len(seed.Projects) == 0 || len(seed.Sessions) == 0 || len(seed.People) == 0 {
+		t.Fatalf("the seed read as %d projects, %d sessions and %d people, want some of each", len(seed.Projects), len(seed.Sessions), len(seed.People))
+	}
+	prompt := systemPrompt + newIssuePrompt
+	keys := regexp.MustCompile(`\b[A-Z][A-Z0-9]*-\d+\b`).FindAllString(prompt, -1)
+	if len(keys) == 0 {
+		t.Fatal("the prompts name no issue key, so no example is checked")
+	}
+	for _, key := range keys {
+		if !strings.HasPrefix(key, "ACME-") {
+			t.Errorf("the prompts name %s, an issue of a project other than ACME", key)
+		}
+	}
+
+	// offered is a text the agent's model reads - the prompts, a tool it is offered or a spec
+	// find_tools answers - and where it is.
+	type offered struct{ where, text string }
+	texts := []offered{{"the prompts", prompt}}
+	w := &worker{agent: &agent{}}
+	for _, tool := range w.tools(0) {
+		texts = append(texts, offered{"the tool " + tool.Name, tool.Description + " " + string(tool.Schema)})
+	}
+	for _, tool := range findableTools() {
+		texts = append(texts, offered{"find_tools' spec of " + tool.name, tool.description + " " + string(tool.schema)})
+	}
+	var held []string
+	for _, project := range seed.Projects {
+		held = append(held, project.Key)
+	}
+	for _, session := range seed.Sessions {
+		held = append(held, session.ID, session.Title)
+	}
+	for _, person := range seed.People {
+		held = append(held, person.Login, person.Name)
+	}
+	for _, name := range held {
+		named := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\b`)
+		for _, text := range texts {
+			if named.MatchString(text.text) {
+				t.Errorf("%s: names %s, which the eval's seed holds", text.where, name)
+			}
 		}
 	}
 }

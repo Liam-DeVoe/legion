@@ -237,11 +237,12 @@ func issueHit(key, title string) going.Hit {
 	return going.Hit{Kind: "issue", ID: key, Title: title, Href: "/issues/" + key}
 }
 
-// readRoster is read_roster: GET /api/v1/agents' rows, each session with its open asks and last
-// activity, and the age of Dispatch's copy of the listener's list. A listener that is refilling
-// its list is waited out for the Retry-After it sent while the run's window leaves room to answer
-// after it, then read again; a listener that is unavailable, or still refilling once the window
-// leaves no room, leaves the sessions Dispatch's own rows name, marked stored (R10).
+// readRoster is read_roster: GET /api/v1/agents' rows, each session with the delivery modes it
+// takes (capabilities), its open asks and its last activity, and the age of Dispatch's copy of the
+// listener's list. A listener that is refilling its list is waited out for the Retry-After it
+// sent while the run's window leaves room to answer after it, then read again; a listener that is
+// unavailable, or still refilling once the window leaves no room, leaves the sessions Dispatch's
+// own rows name, marked stored (R10), which name no delivery modes.
 func (g *goingReadRun) readRoster(ctx context.Context, arguments json.RawMessage) (going.Read, error) {
 	if err := decodeGoingArguments(arguments, &struct{}{}); err != nil {
 		return going.Read{}, err
@@ -268,7 +269,7 @@ func (g *goingReadRun) readRoster(ctx context.Context, arguments json.RawMessage
 			continue
 		}
 		session := map[string]any{
-			going.FieldSessionID: row.SessionID, going.FieldTitle: row.Title, going.FieldState: row.State, "roles": row.Roles,
+			going.FieldSessionID: row.SessionID, going.FieldTitle: row.Title, going.FieldState: row.State, "roles": row.Roles, "capabilities": row.Capabilities,
 			going.FieldOpenAsks: row.OpenAsks, going.FieldLastActivity: row.LastActivity,
 		}
 		// Where the session's last activity is, where it has one: the issue and the type of

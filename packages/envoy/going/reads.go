@@ -78,7 +78,7 @@ type readTool struct {
 var readTools = []readTool{
 	{
 		name:        ReadRoster,
-		description: "Read the agent sessions Dispatch knows of: each session's title, state, roles, open asks and last activity - when it was, and where: the issue and the event type of the session's newest event (last_activity_issue, last_activity_type, such as comment.created), where to read what the session last wrote - the roster's source (live, or stored when the live roster is unavailable) and its age in milliseconds. A session that is gone is not listed; an issue's claim names the session that works on it. It takes no arguments.",
+		description: "Read the agent sessions Dispatch knows of: each session's title, state, roles, the delivery modes it takes (capabilities: btw, aside or steer), open asks and last activity - when it was, and where: the issue and the event type of the session's newest event (last_activity_issue, last_activity_type, such as comment.created), where to read what the session last wrote - the roster's source (live, or stored when the live roster is unavailable, whose rows name no delivery modes) and its age in milliseconds. A session that is gone is not listed; an issue's claim names the session that works on it. It takes no arguments.",
 		schema:      json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 	},
 	{
@@ -87,8 +87,8 @@ var readTools = []readTool{
 		schema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "project": {"type": "string", "description": "A project key such as DEMO."},
-    "issue": {"type": "string", "description": "An issue key such as DEMO-12."}
+    "project": {"type": "string", "description": "A project key such as ACME."},
+    "issue": {"type": "string", "description": "An issue key such as ACME-12."}
   },
   "additionalProperties": false
 }`),
@@ -99,7 +99,7 @@ var readTools = []readTool{
 		schema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "project": {"type": "string", "description": "A project key such as DEMO."}
+    "project": {"type": "string", "description": "A project key such as ACME."}
   },
   "additionalProperties": false
 }`),
@@ -110,7 +110,7 @@ var readTools = []readTool{
 		schema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "project": {"type": "string", "description": "A project key such as DEMO."},
+    "project": {"type": "string", "description": "A project key such as ACME."},
     "weeks": {"type": "integer", "minimum": 1, "maximum": 52, "description": "How many weeks back, this week included."}
   },
   "additionalProperties": false

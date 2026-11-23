@@ -277,7 +277,7 @@ var issueCommentsRead = contracts.DispatchTool{
 	Label:       contracts.ToolLabel{Kind: kindRead, Verb: "read", Present: "Reading {ref}", Past: "Read {ref}", Count: "comment"},
 	Description: "List every comment on an issue, a person's or an agent session's, each with its author, its time and its body: dispatch_read, or read, with ref dispatch://KEY/comments.",
 	Arguments: []contracts.ToolField{
-		{Name: "ref", Kind: contracts.ToolFieldString, Required: true, Description: "dispatch://KEY/comments, KEY the issue's key, such as dispatch://DEMO-7/comments."},
+		{Name: "ref", Kind: contracts.ToolFieldString, Required: true, Description: "dispatch://KEY/comments, KEY the issue's key, such as dispatch://ACME-7/comments."},
 	},
 }
 
