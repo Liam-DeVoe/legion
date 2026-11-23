@@ -559,6 +559,26 @@ func (s *Store) DeclineLeftPodClose(ctx context.Context, project, issue string, 
 	return told, nil
 }
 
+// LeftPodTurned is whether a claim of issue is in a turn now, starting, or of a launch not yet
+// known (a live state the idle rule releases no pod in), or started a turn after turnStart, the
+// newest turn start of the pass that queued a left pod's close check (record.IssueWorkspaceCheck's
+// TurnStart). A read that such a turn ran beside is no word of the disk: the turn can have pushed
+// the work the read found, or made more, so internal/daemon's checkLeftPodWorkspace records no
+// decline from it (INFRA-341's reviewer's point 2 on R6 of dispatch://INFRA-3271). It joins the
+// caller's transaction, under the lifecycle serializer the caller holds.
+func (s *Store) LeftPodTurned(ctx context.Context, project, issue string, turnStart time.Time) (bool, error) {
+	var turned bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select exists (select 1 from claims where project = $1 and issue = $2
+			and (last_turn_start > $3 or state not in ('ready', 'idle', 'suspended', 'failed', 'retired')))`,
+			project, issue, turnStart).Scan(&turned)
+	})
+	if err != nil {
+		return false, fmt.Errorf("read whether a claim of %s turned since its close was queued: %w", issue, err)
+	}
+	return turned, nil
+}
+
 // recordDecline writes the decline of issue's release (idle_release_declines, one row per issue)
 // and queues its message, through the caller's transaction, and answers whether it queued the
 // message. The row's started_row is the newest start row of the issue's claims, read in this

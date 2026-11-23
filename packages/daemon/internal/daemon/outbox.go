@@ -212,6 +212,7 @@ type outboxTrees interface {
 		outOfWorkflow func(status string) bool, paused store.ReleaseCancelPause) (store.ReleaseCancelled, error)
 	ForgetIdleDecline(ctx context.Context, project, issue string) error
 	DeclineLeftPodClose(ctx context.Context, project, issue string, decline store.IdleReleaseDecline) (bool, error)
+	LeftPodTurned(ctx context.Context, project, issue string, turnStart time.Time) (bool, error)
 	ReleaseIdleIssue(ctx context.Context, project, issue string, decide store.IdleReleaseDecide) (bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
@@ -3501,9 +3502,12 @@ func (r *outbox) holdsPod(issue, pod string) bool {
 // finds work that origin does not hold, or that fails, declines the close (declineFor,
 // store.DeclineLeftPodClose): the pod stays with its roles as they are, the role read through, or
 // for a launcher's read the issue's architect, is told once, and the rule holds the pod while the
-// decline stands. Its hold carries the read's
-// sentence as its detail, where a cancel's carries none, and is otherwise recorded as a cancel's is
-// (cancelRelease), as is its line. A read that finds nothing queues the close's stops and the issue's
+// decline stands. Its hold carries the read's sentence as its detail, where a cancel's carries
+// none, and is otherwise recorded as a cancel's is (cancelRelease), as is its line. A read that
+// found work while a claim of the issue was in a turn, or had started one since the pass that
+// queued the check (store.Store.LeftPodTurned), records nothing: that turn can have pushed the work,
+// so the check finishes without acting and the next pass reads again (INFRA-341's reviewer's point
+// 2 on R6). A read that finds nothing queues the close's stops and the issue's
 // Sandbox suspension (leftPodStopRows) in one transaction with a view read again
 // (workflow.LeftPodCloseAfterCheck), so a role that started a turn since the pass that queued the
 // check (payload.TurnStart) — one that ended while the read ran too — or that is in one or was
@@ -3551,6 +3555,22 @@ func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow
 			return err
 		}
 		if declines {
+			// A turn that ran beside the read can have pushed the work the read found: a decline
+			// from it would hold the pod as holding that work until another turn, and for good
+			// once the claims stop (pods.IdleDecline.HoldsUnpushedWork). The read is discarded,
+			// and the next pass reads again, as a clean read beside such a turn is
+			// (workflow.LeftPodCloseAfterCheck).
+			turned, err := r.trees.LeftPodTurned(ctx, r.project, row.Issue, payload.TurnStart)
+			if err != nil {
+				return err
+			}
+			if turned {
+				store.OnCommit(ctx, func() {
+					r.log.Info("outbox: the close of the pod of an issue that left the workflow read work while a turn of its claims ran beside the read; the read is discarded, and the next pass reads again",
+						"issue", row.Issue, "reason", why, "role", payload.Role, "launcher", payload.Launcher)
+				})
+				return r.records.FinishLeasedOutbox(ctx, tx, row.ID, row.LeaseToken)
+			}
 			told, err := r.trees.DeclineLeftPodClose(ctx, r.project, row.Issue, decline)
 			if err != nil {
 				return err

@@ -360,25 +360,25 @@ func (d IdleDecline) Stands(v IdleView, now time.Time) bool {
 
 // HoldsUnpushedWork is whether the decline says the disk of the pod that stands now holds work
 // that no branch or tag on origin holds: the last read that could read the workspace found such
-// work, and the pod is the one that read was made in. The release of a pod no claim owns and the
-// close of a left pod with no live claim read it (workflow.UnownedPodRelease, LeftPodClose): such a
-// pod runs no role to read through, so the decline on record is the one word the daemon has of its
-// disk. A turn does not end it, since a pod no claim owns runs no turn, and a read that failed says
-// nothing of the disk, so it ends nothing either.
+// work, the pod is the one that read was made in, and no claim of the issue was started or ran a
+// turn since that read. The release of a pod no claim owns and the close of a left pod with no live
+// claim read it (workflow.UnownedPodRelease, LeftPodClose): such a pod runs no role to read
+// through, so the decline on record is the one word the daemon has of its disk. A read that failed
+// says nothing of the disk, so it ends nothing.
 //
-// Where the decline and the view each name the pod, the pod is all that ends it (podMoved): a start
-// row into that same pod, such as an operator's retry whose process fails again before any read,
-// leaves the disk and the work on it as they were. Only where either uid is unknown does a start row
-// after the decline end it, as the one word that a process may have run, and read, since.
+// A start of a claim's process after the last read (a start row above StartedRow), or a turn of a
+// claim that started after it, ends the hold, in whichever pod it ran: the process can have pushed
+// the work, or made more (INFRA-341's reviewer's point 2 on R6 of dispatch://INFRA-3271). Ending it
+// deletes nothing unread: both callers then have the pod's launcher read the disk before any
+// delete (workflow.IdleDecision.Read), and a read that finds the same work writes the decline again
+// at its own moment, so each start or turn costs one read.
 func (d IdleDecline) HoldsUnpushedWork(v IdleView) bool {
 	if d.At.IsZero() || !(d.Work || d.Reason == DeclineUnpushedWork) || d.podMoved(v) {
 		return false
 	}
-	if d.PodUID != "" && v.PodUID != "" {
-		return true
-	}
+	checked := d.checked()
 	for _, c := range v.Claims {
-		if c.LastStartRow > d.StartedRow {
+		if c.LastStartRow > d.StartedRow || c.LastTurnStart.After(checked) {
 			return false
 		}
 	}

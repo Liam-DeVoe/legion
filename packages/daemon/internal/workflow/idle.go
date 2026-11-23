@@ -153,7 +153,8 @@ const (
 	// (pods.IdleDecline.HoldsUnpushedWork): the second rule's (UnownedPodRelease), and the close's
 	// of a left pod with no live claim (LeftPodClose). No role runs in the pod to read it again, so
 	// the decline on record is the one word the daemon has of that disk, and the pod stays with the
-	// work until a role of the issue comes back and a read finds it gone, or the pod is replaced.
+	// work until a claim of the issue is started or runs a turn and the launcher's read after it
+	// finds the work gone, or the pod is replaced, or the issue or its tree closes or lingers.
 	// The same hold keeps such a pod after the pod's launcher read its disk and found work there
 	// (IdleDecision.Read), since that read records the same decline.
 	IdleHoldUnownedUnpushedWork
@@ -666,12 +667,12 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 //
 //   - no decline of the issue's idle release says the disk of this pod holds work that no branch
 //     or tag on origin holds (pods.IdleDecline.HoldsUnpushedWork): the last read that could read
-//     the workspace found such work, and the pod is the one that read was made in. A failed read
-//     after it keeps that work. Where the decline and the runtime both name the pod, only another
-//     pod ends it, and a start row into the same pod does not; only where either uid is unknown
-//     does a start row after the decline end it. A role whose claims all stopped after such a
-//     decline — relaunches that ran out, say — left that work on this disk, and the release would
-//     delete it (IdleHoldUnownedUnpushedWork);
+//     the workspace found such work, the pod is the one that read was made in, and no claim of
+//     the issue was started or ran a turn since that read. A failed read after it keeps that work.
+//     A role whose claims all stopped after such a decline — relaunches that ran out, say — left
+//     that work on this disk, and the release would delete it (IdleHoldUnownedUnpushedWork). A
+//     start or a turn since the read ends the hold, since the role can have pushed the work, and
+//     the release then reads the disk again before it deletes it (Read);
 //
 //   - where the release deletes the disk, no decline whose read failed stands
 //     (IdleHoldUnownedWorkspaceUnread, noRoleDiskHold): the pod's launcher could not read the disk,
