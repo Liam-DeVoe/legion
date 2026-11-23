@@ -876,7 +876,8 @@ of the issue's pull request the daemon records, or, for an issue it records none
 `legion/<ISSUE>` at origin as the shared clone records it, else the default branch. A new clone is
 a `git clone --no-checkout --no-hardlinks --no-local` of the shared clone, which takes the objects
 through git's transport rather than as copies of the shared clone's files, so no
-`objects/info/alternates` the shared clone holds reaches it, with origin's branches as the shared
+`objects/info/alternates` the shared clone holds reaches it (a new clone that holds one all the
+same is refused), with origin's branches as the shared
 clone records them, the head fetched from the shared clone by its id where no branch brings it,
 origin set to GitHub, and a detached checkout of the head, with jj colocated in it. Where the
 shared clone does not hold the head, the daemon fetches that commit from GitHub, at the issue's
