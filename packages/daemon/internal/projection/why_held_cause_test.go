@@ -45,7 +45,7 @@ type heldFixture struct {
 // publishes and the sentence it serves are proved of one state. An entry no fixture walks fails
 // the test: an entry added to the table is given a fixture here. at_work is the one exception:
 // the issues that read it stand in accepting, retro or merging, which keep no slot, and are not
-// held (record.HeldAtWork), one whose tree runs is served no answer (atWorkPastReview), and no
+// held (record.HeldAtWork), one whose tree runs is served no answer (atWorkInSlotlessPhase), and no
 // fixture here builds the member of a tree that runs nothing that the entry is served to.
 func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.T) {
 	opened := projectedAt.Add(-time.Hour)
@@ -190,7 +190,7 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
 			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
-			"The daemon has accepted the head of LEGION-101 that the last step of its task passed, and LEGION-101 stands above it, so nothing of its own work starts before that issue closes."},
+			"The daemon has accepted the head of LEGION-101 that the last step of its task passed, and LEGION-101 stands above it, so nothing of its own work starts while that issue stands in retro or merging."},
 		{record.HeldChildrenBeforeRetro, api.WhyUnlisted}: {childrenBeforeRetro,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldChildrenBeforeRetro, HeldBy: []string{"LEGION-101"}},
 			"It passed the last step of its task, which is not the owner's acceptance, so the daemon holds it before its retro while these issues beneath it are still in the workflow: LEGION-101. Its retro does not start while one of them is."},

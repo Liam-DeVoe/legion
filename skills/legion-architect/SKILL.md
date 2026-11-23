@@ -1,14 +1,13 @@
 ---
 name: legion-architect
-description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, an issue's plan, releasing or parking children, a delivered wake, a worker's escalation, or accepting an issue's head."
+description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, an issue's plan, releasing children, a delivered wake, a worker's escalation, or accepting an issue's head."
 ---
 
 # Legion architect
 
-You own one issue and every issue under it until the merge that closes it.
+You own one issue and every issue under it while you hold your role.
 The daemon starts every worker and moves every phase; you write no code.
 Your role prompt holds the lifecycle rules, this skill the procedures.
-Where it disagrees with the code or a `--help`, follow those and say so.
 
 ## Every turn
 
@@ -34,8 +33,8 @@ Where it disagrees with the code or a `--help`, follow those and say so.
    Record it on the issue or in `plan.md`, with your reason wherever you do not follow it.
    Run it again when a push-back or a review changes what the design is for.
 
-3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since any new version closes the gate.
-   A child: as `skill://legion-architect/references/decomposition.md`, "Creating children", says.
+3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except two kinds it names.
+   A child: after step 4, for the part that stays.
 
 4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says, red-team check first.
 
@@ -43,7 +42,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
    a root's plan comes before `register_gate`, a child's before `release_children`, and an issue with none runs the default steps.
    Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
 
-6. File every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
+6. A root: file every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
    the gate's opening starts the root's own first phase, and a later child runs beside it.
 
 - Mark each requirement as a `requirement` block and write `verification.md` beside the spec:
@@ -60,29 +59,27 @@ Where it disagrees with the code or a `--help`, follow those and say so.
 
 - Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
-- Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41"] })`.
+- Release each child once its spec is approved and it has its plan: `legion({ op: "release_children", issues: ["LEGION-41"] })`.
   Legion holds a child whose blockers are not `done`.
-  Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
+  Never hold a release back for a close, except as `skill://legion-architect/references/decomposition.md` says: the daemon refuses one under an accepted issue.
   Never block a child on its own parent, which merges last.
 
-- On each `child-closed`, read the child's handoff, edit the specs of open children it changes, and `park_child` each child it makes unneeded.
-
-- Before you park a child for good, take it off each sibling's `--blocked-by` list (`--clear-blocked-by` where it was the only one), or park that sibling too:
-  a parked child is not `done`, and its dependents stay held with no notice.
+- On each `child-closed`, read the child's handoff, edit the specs of open children it changes.
 
 ## 3. Children complete
 
-A parent's own first phase waits while Dispatch shows an open child under it (the `children-first` row).
+A parent's own first phase does not start while Dispatch shows an open child under it (the `children-first` row).
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own pull request, from its task's steps' evidence (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
+- Prove every criterion of your issue in its own pull request, from its task's steps' evidence (`skill://legion-architect/references/acceptance.md`, "Accepting"), and never downgrade one.
+  Only the part a child carries is proven in the child, with a check of its own whose `serves` names the criterion.
   A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
   a passing check does not show that a person can do their job with it.
 
-- Where the work is a page or a tool a person uses, offer that person a running build before the review; the deployment instructions say how a pod runs one.
+- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none. The deployment instructions say how a pod runs one.
 
 ## 5. Retro
 
@@ -104,8 +101,8 @@ Finding asks, refusals and what follows: `skill://legion-architect/references/ac
 
 ## 7. Close
 
-The merge closes the issue once every issue beneath it has left the workflow;
-nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
+The issue closes once its pull request has merged, it is in `merging` and every issue beneath it has left the workflow.
+Nothing after that close is yours (`skill://legion-architect/references/acceptance.md`, "The close").
 
 ## Escalation judgment
 

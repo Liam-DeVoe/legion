@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"math"
 	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -47,7 +46,7 @@ const (
 // HasOpenOrMergedPR is whether the issue's pull request record is open or merged. A merged record
 // counts: the work landed, the merge told the architect (pr-merged), and the workflow runs on. The
 // implementer's completion never moves an issue on a pull request closed without merging, nor with
-// none recorded (hasOpenOrMergedPR); no other step's completion reads it.
+// none recorded (hasOpenOrMergedPR). No other step's completion reads it.
 type Snapshot struct {
 	Phase             phase.Phase
 	HasOpenOrMergedPR bool
@@ -197,20 +196,6 @@ func placeAt(line []phase.Phase, at int) record.TaskPlace {
 		return record.TaskPlace{Kind: record.PlaceMerge}
 	}
 	return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}
-}
-
-// placeRank orders the places of one line: no place first, then each step by its place, then the
-// retro, then the merge.
-func placeRank(place record.TaskPlace) int {
-	switch place.Kind {
-	case record.PlaceStep:
-		return place.Position
-	case record.PlaceRetro:
-		return math.MaxInt - 1
-	case record.PlaceMerge:
-		return math.MaxInt
-	}
-	return 0
 }
 
 // effectsInto is what a row into to does beyond the move: it starts to's role and tells the

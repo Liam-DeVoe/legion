@@ -157,8 +157,9 @@ func (w Walk) steps() []phase.Phase {
 }
 
 // MovesBack says whether row moves w's task back by the task's own order. A stored walk compares
-// the row's two places (placeRank): an earlier step by its place, every step before the retro, the
-// retro before the merge, so a move from step 3 back to step 2 goes back though both run as step.
+// the row's two places (record.TaskPlace.Rank): an earlier step by its place, every step before
+// the retro, the retro before the merge, so a move from step 3 back to step 2 goes back though both
+// run as step.
 // A run with no plan rows walks today's line, so this is phase.MovesBack of the row's two phases
 // for it. A task in another order than today's so counts its move back from testing to reviewing
 // (the steps `implementer reviewer tester`), and not the review's approval from reviewing to
@@ -167,7 +168,20 @@ func (w Walk) MovesBack(row Row) bool {
 	if !w.Stored {
 		return phase.MovesBack(row.From, row.To)
 	}
-	return row.ToPlace.Kind != "" && placeRank(row.ToPlace) < placeRank(row.FromPlace)
+	return row.ToPlace.Kind != "" && row.ToPlace.Rank() < row.FromPlace.Rank()
+}
+
+// passedStep says whether the step of w's task that runs as p stands before the place the task
+// stands at while its issue stands in at (placeIn): the implementer's work behind a later step, or
+// the reviewer's review an issue past it stands on. It compares places (record.TaskPlace.Rank), so
+// it reads a task whose steps of roles the deployment defines all run as step as the stored table
+// does (MovesBack). A phase the line does not hold, and an issue that stands at no place of the
+// line, passed nothing. Where two steps run as p it reads the first (PlaceOf); its readers ask of
+// implementing and reviewing, which each stand once in a line.
+func (w Walk) passedStep(at, p phase.Phase) bool {
+	here, standing := w.placeIn(at)
+	there, held := w.PlaceOf(p)
+	return standing && held && there.Rank() < here.Rank()
 }
 
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done
@@ -527,7 +541,7 @@ func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.Ta
 	}
 	var found []record.TaskPlace
 	for at, p := range w.Line {
-		if place := placeAt(w.Line, at); p == to && placeRank(place) < placeRank(w.Place) {
+		if place := placeAt(w.Line, at); p == to && place.Rank() < w.Place.Rank() {
 			found = append(found, place)
 		}
 	}

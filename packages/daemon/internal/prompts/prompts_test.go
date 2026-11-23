@@ -38,128 +38,6 @@ func TestComposeStepIsTheHeadlessMechanicsThePromptFileAndWorkerCommon(t *testin
 	}
 }
 
-// A step of a role the deployment defines writes no handoff, so its composition tells it how it
-// reports instead: with handoff_complete, the verdict, its commit and a summary, and return_to on a
-// fail. The part of that composition that is Legion's own, go/worker-common.md, says so where it
-// lists the phases that end with a handoff record. It also says which report the `Handoff:` line
-// names after a return, and that such a step's summary follows its reported line. No `Reason:`
-// line comes with such a fail, so no part promises one. The owner's part says where to read such a
-// role's report on a `worker-died`. The implementer's parts say where to read the round such a role
-// sent back, and that implementing answers such a fail. Each part is read alone, so one part's
-// words cannot stand for another's. This shows the text is loaded, never that an agent follows it.
-func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
-	stateDir := t.TempDir()
-	composer, err := New(stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	promptFile := filepath.Join(t.TempDir(), "checker.md")
-	if err := os.WriteFile(promptFile, []byte("# Checker\n\nCheck the change against the issue's spec.\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var composed strings.Builder
-	for _, path := range composer.ComposeStep(promptFile).RolePromptPaths {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		composed.Write(body)
-	}
-	holdsAndRetires(t, "the composition of a role of the deployment", composed.String(), []string{
-		"Report your step with handoff_complete, with the verdict pass or fail and a `summary` of what you found.",
-		"The tool reports the commit your workspace stands on, `@-`, itself.",
-		"The next step's task carries that summary after your verdict.",
-		"With fail you may name `return_to`, the place of an earlier step of your task.",
-	}, []string{"and the commit your workspace stands on; with fail", "the verdict pass or fail, the commit your workspace stands on, and a `summary`"})
-	for _, part := range []struct {
-		name, text    string
-		want, retired []string
-	}{
-		{"go/worker-common.md", goPart(t, "worker-common.md"), []string{
-			"ends with a handoff record on the Dispatch issue, under the phase's word (`plan`, `implement`, `test` or `review`); `step`, the phase of a role of the deployment, writes none",
-			"the `Handoff:` line names the report of the step that failed, where that step wrote one. A step of a role of the deployment writes none: its `Step <i> (<role>) reported: <verdict>.` line, with that step's summary after it, says what it found.",
-		}, []string{"and the `Reason:` line say what it found"}},
-		{"go/architect-common.md", goPart(t, "architect-common.md"), []string{"or, for a role of the deployment, which writes none, the verdict of its step"}, nil},
-		{"go/implementer.md", goPart(t, "implementer.md"), []string{
-			"answer a review, a failed test, the fail of a step of a role of the deployment, or a send-back",
-		}, []string{"a failed test or a send-back"}},
-		{"roles/implementer.md", rolePart(t, "implementer.md"), []string{
-			"its `Step <i> (<role>) reported:` line and that step's summary after it, since that step writes no handoff",
-		}, []string{"line and the `Reason:` line"}},
-		{"go/reviewer.md", goPart(t, "reviewer.md"), []string{
-			"A `verdict` is the tester's or a role of the deployment's, never yours, and the daemon refuses one from you (`VERDICT_ROLE_FORBIDDEN`)",
-		}, []string{"the tester's and a role of the deployment's"}},
-	} {
-		holdsAndRetires(t, part.name, part.text, part.want, part.retired)
-	}
-}
-
-// The implementer's parts name every trigger of a forward merge that its skill names, so the two
-// lists agree. Retro's own work commits nothing, and a merge forward the daemon asks for in retro
-// is no part of it, so the parts that say retro commits nothing say "of its own". Each part is
-// read alone. This shows the text is loaded, never that an implementer follows it.
-func TestTheImplementerIsToldEachMergeTriggerAndRetrosOwnCommits(t *testing.T) {
-	for _, part := range []struct {
-		name, text    string
-		want, retired []string
-	}{
-		{"roles/core/implementer.md", rolePart(t, "core/implementer.md"), []string{
-			"Merge the base forward only on one of six triggers.",
-			"(in `implementing` and `retro` your own assignment and its completion stand)",
-			"The controller asks you to, because of a conflict.",
-			"The architect's move back names a parent's last round.",
-		}, []string{"one of four triggers"}},
-		{"go/implementer.md", goPart(t, "implementer.md"), []string{
-			"Retro commits nothing and pushes nothing of its own:",
-			"A merge forward the daemon asks of you in `retro` is no part of retro's work.",
-		}, nil},
-		{"roles/implementer.md", rolePart(t, "implementer.md"), []string{"Retro writes no handoff and commits nothing of its own,"}, nil},
-	} {
-		holdsAndRetires(t, part.name, part.text, part.want, part.retired)
-	}
-}
-
-// The owner is told the roles a step of its plan may name by the list its launch gives after its
-// addressing, never by a list in its prompt, since the deployment's settings name roles no prompt
-// part can know. Its prompt says where a step of such a role runs, that it runs at the phase step
-// whatever its type, and that it reports pass or fail. It also says what goes on after a task
-// stops because the deployment no longer defines the role of one of its steps. Both architect
-// compositions share that part, so both are read. This shows the text is loaded, never that an
-// owner follows it.
-func TestTheOwnerIsToldTheRolesOfItsDeployment(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, isRoot := range []bool{true, false} {
-		holdsAndRetires(t, fmt.Sprintf("the composed architect prompt (root %t)", isRoot), composedText(t, composer, claim.RoleArchitect, isRoot), []string{
-			"A role of this deployment runs where its step stands in your plan, at the phase `step` whatever its type, and reports pass or fail.",
-			`A task that stops with the reason "step <i> names the role <role>, which the deployment no longer defines" goes on in one of two ways: you give a later version of your plan, or the operator defines the role again and a person's todo restarts the task.`,
-			`A task that stops with the reason "step <i> is the work of the agent <agent>, which runs in the slot of the role <agent>, which the deployment no longer defines", or "the retro is the work of the agent <agent>, …", goes on in the same two ways, except that a later version of your plan ends that stop only where it gives that work an agent of another name, a step with another key or with none: a key keeps the name an earlier version gave its agent.`,
-		}, []string{"Legion's step roles, each with the type of its step, are", "A role of this deployment runs where its step stands in your plan, and reports"})
-	}
-}
-
-// The owner's move back from accepting to `step` works only where it says which earlier step of
-// the task runs as `step`: the daemon refuses a move to `step` with two such steps and no
-// `return_to`. So each part that tells the owner of request_backward_move also tells it that
-// rule, naming the legion tool's own field, each read alone, since the composition joins one
-// architect part of go/ and one of roles/ to architect-common.md, and a part that keeps the words
-// before `return_to` would tell its reader the move goes through. This shows the text is loaded,
-// never that an owner follows it.
-func TestAMoveBackToStepIsToldWithReturnTo(t *testing.T) {
-	const rule = "`request_backward_move` to `step` works where one earlier step of the task runs as `step`; with two, name `return_to`."
-	for _, part := range []struct{ name, text string }{
-		{"go/architect-common.md", goPart(t, "architect-common.md")},
-		{"go/architect.md", goPart(t, "architect.md")},
-		{"go/architect-root.md", goPart(t, "architect-root.md")},
-		{"roles/architect.md", rolePart(t, "architect.md")},
-		{"roles/architect-root.md", rolePart(t, "architect-root.md")},
-	} {
-		holdsAndRetires(t, part.name, part.text, []string{rule}, nil)
-	}
-}
-
 // A broken role sequence drops the shared core, uses a root prompt for a child, or makes the Go
 // daemon's instructions win before the shared role instructions. The prompt paths are what every
 // launch concatenates into the one prompt file its agent reads, so their order is the contract. The
@@ -173,7 +51,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 	}
 	// Every operation the legion tool gives an architect besides register_gate
 	// (packages/pi-legion/src/tools.ts), which a prompt that never names it leaves unused.
-	architectOperations := []string{"`release_children`", "`park_child`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`read_record`"}
+	architectOperations := []string{"`release_children`", "`rerun_child`", "`request_backward_move`", "`retry_or_escalate`", "`sign_off`", "`read_record`"}
 
 	for _, tc := range []struct {
 		name     string
@@ -337,15 +215,7 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 	if err != nil {
 		t.Fatalf("Compose %s (root %t): %v", role, isRoot, err)
 	}
-	var text strings.Builder
-	for _, path := range parts.RolePromptPaths {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		text.Write(body)
-	}
-	return text.String()
+	return readJoined(t, parts.RolePromptPaths...)
 }
 
 // No role's handoff is a commit: each is a record on the Dispatch issue, so no phase worker's
@@ -475,6 +345,21 @@ func foldWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
+// readJoined is the bytes of each of paths, read in order and joined; a read that fails ends the
+// test (t.Fatalf), naming the path.
+func readJoined(t *testing.T, paths ...string) string {
+	t.Helper()
+	var text strings.Builder
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text.Write(body)
+	}
+	return text.String()
+}
+
 // ruleParagraphs are the blank-line-separated paragraphs of a composed prompt that hold marker,
 // each folded to one line: a paragraph is the span a reader takes the rule and its framing from,
 // so it is the span a test asks what the rule calls its case. A composed prompt holds one per
@@ -502,6 +387,51 @@ func clauses(text string) []string {
 		}
 	}
 	return found
+}
+
+// blocks are the blocks of text, each folded to one line: each blank-line paragraph cut before
+// every line that starts an item of a list (startsListItem), so a paragraph and each item of a
+// list in it are blocks of their own. A block is the span a reader takes one item's rule from:
+// the words of one item limit no other.
+func blocks(text string) []string {
+	var found []string
+	for _, paragraph := range strings.Split(text, "\n\n") {
+		block := ""
+		for _, line := range strings.Split(paragraph, "\n") {
+			if block != "" && startsListItem(line) {
+				found, block = append(found, foldWhitespace(block)), ""
+			}
+			block += line + "\n"
+		}
+		found = append(found, foldWhitespace(block))
+	}
+	return found
+}
+
+// startsListItem says whether line, past its indent, starts an item of a list: `- `, or a number
+// of any length and `. `, so `10. ` starts an item as `1. ` does.
+func startsListItem(line string) bool {
+	item := strings.TrimLeft(line, " ")
+	digits := len(item) - len(strings.TrimLeft(item, "0123456789"))
+	return strings.HasPrefix(item, "- ") || digits > 0 && strings.HasPrefix(item[digits:], ". ")
+}
+
+// Each item of a list is a block of its own (blocks), a numbered item of two digits as much as
+// one of one, so a check that one item names a step cannot pass on the words of its neighbour. A
+// wrapped line that starts with a number but no `. ` after it stays in the item it continues.
+func TestBlocksGiveEachItemOfAListABlockOfItsOwn(t *testing.T) {
+	var text strings.Builder
+	text.WriteString("Steps:\n")
+	want := []string{"Steps:"}
+	for n := 1; n <= 11; n++ {
+		fmt.Fprintf(&text, "%d. Step %d,\n   10 files.\n", n, n)
+		want = append(want, fmt.Sprintf("%d. Step %d, 10 files.", n, n))
+	}
+	text.WriteString("  - A nested item.\n\nA closing paragraph.")
+	want = append(want, "- A nested item.", "A closing paragraph.")
+	if got := blocks(text.String()); !reflect.DeepEqual(got, want) {
+		t.Errorf("blocks =\n%q\nwant\n%q", got, want)
+	}
 }
 
 // clauseHolds says whether one clause of text (clauses) holds each of terms, in the order given:
@@ -729,9 +659,14 @@ func TestTheRootArchitectPartNamesTheGatedSteps(t *testing.T) {
 }
 
 // retiredGatePhrases are the words the step list replaced. A prompt that still carries one tells
-// its reader to look on the addressing line for a sentence the daemon no longer writes.
+// its reader to look on the addressing line for a sentence the daemon no longer writes. The last
+// three are the registration words option b' replaced (dispatch://INFRA-175, Design 7): a root
+// with a Verification document registers it as `criteria` under a line that names `spec` alone,
+// not only where the line names both, and each document is registered at the version the
+// approval question names for it, which a request for two documents prints once for each.
 var retiredGatePhrases = []string{"gates.design: root-issues", "gates.design: off", "Design gate policy",
-	"either design gate policy", "The gate records one document"}
+	"either design gate policy", "The gate records one document",
+	"Where the line names both `criteria` and `spec`", "at the version the request returned", "at the version it returned"}
 
 // The controller reads the same addressing line as a root architect, so its own prompt names the
 // steps sentence and carries none of the words that sentence replaced. Its text is read folded:
@@ -746,15 +681,7 @@ func TestTheControllerPartNamesTheGatedSteps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ControllerPromptPaths(headless %t): %v", headless, err)
 		}
-		var text strings.Builder
-		for _, path := range paths {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			text.Write(body)
-		}
-		folded := foldWhitespace(text.String())
+		folded := foldWhitespace(readJoined(t, paths...))
 		if !strings.Contains(folded, "`Design gate steps:`") {
 			t.Errorf("the composed controller prompt (headless %t) never names the `Design gate steps:` line it reads its steps off", headless)
 		}
@@ -786,7 +713,7 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		"once the branch has an open pull request",
 		"an empty one when your work is complete",
 		"tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-		"The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
+		"The merger pushes only a merge of the base forward, and makes this read after that push as any role does",
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger} {
@@ -882,10 +809,12 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // entry's task. The core part names the commit in the daemon part's words, the head the Legion
 // footer of the reviewer's own newest deciding review named, since a deciding review whose footer
 // names no entry or another one moves no commit. It says to read the difference from that commit
-// and each thread, gives the thermonuclear pair that same diff, keeps every defect seen outside it
-// a finding, and names the three cases that read the whole change again. The pair's old sentence,
-// which ran it over the whole change in every round, is gone. This shows the text is loaded, never
-// that a reviewer follows it.
+// and each thread, takes that commit as the earlier head the review sizes itself to, names in each
+// task of the thermonuclear pair the diff it reviews, keeps every defect seen outside it a
+// finding, and reads the whole change where the commit is no ancestor of the head. The pair's old
+// sentence, which ran it over the whole change in every round, is gone, and so is the
+// unchanged-diff fingerprint, which dispatch://INFRA-4406 R1 deleted from the role prompts. This
+// shows the text is loaded, never that a reviewer follows it.
 func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -905,19 +834,22 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"A `COMMENT`, a review the daemon set aside, a person's review and a review whose footer names no entry or another than your row's, such as one of a round before a new generation or a carried hand-over's promotion entered you again, leave it where it stands.",
 		"the head read by the newest of your own deciding reviews whose footer named the entry of its round; the daemon part below gives the whole rule and where the commit comes from.",
 		"read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
-		"over the diff that round reads, when that diff touches runtime code",
-		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
+		"over the diff that round reads, when that diff touches runtime code, and name that diff in each agent's task",
 		"The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other",
-		"Read the whole change again, and give the pair the whole change, in two cases: the task names no commit,",
-		"the commit is not an ancestor of the head (`git merge-base --is-ancestor <commit> <head>` does not exit 0)",
-		"After a forward merge of the base, read the merge as the next paragraph says",
+		"On a new head, that commit is your earlier head, unless it is not an ancestor of the head (`git merge-base --is-ancestor <commit> <head>` does not exit 0): then you read the whole change, as for `none`.",
+		"Size your review to the change you read: review again only what it can affect, and confirm the rest by naming the earlier head.",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed reviewer prompt omits %q", phrase)
 		}
 	}
-	if retired := "Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code"; strings.Contains(text, retired) {
-		t.Errorf("the composed reviewer prompt still says %q", retired)
+	for _, retired := range []string{
+		"Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code",
+		"fingerprint",
+	} {
+		if strings.Contains(text, retired) {
+			t.Errorf("the composed reviewer prompt still says %q", retired)
+		}
 	}
 }
 

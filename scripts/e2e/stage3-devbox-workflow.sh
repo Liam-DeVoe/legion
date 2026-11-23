@@ -499,10 +499,15 @@ assert_claim_endpoints() {
     fail "ABORT: $role pane on $issue (OMP pid $omp) has $mismatch"
   fi
 }
-# pane_watcher checks every pane the daemon launches — including those it starts on its own —
-# as soon as its OMP process exists, which is before the plugin registers and before any turn.
-# A mismatch is recorded, the private tmux server is killed so no agent can act, and the next
-# bounded wait aborts naming the pane.
+# pane_watcher polls every 0.2 s and checks every pane the daemon launches — including those it
+# starts on its own — once its OMP process runs and its environment is laid out, usually before the
+# plugin registers, though no barrier holds the pane back for it. The kernel names the program an
+# exec starts before it lays out that program's environment (environ_laid_out, lib/process-tree.sh),
+# so an OMP found inside that window is read again at the next poll, never counted: a read there
+# would find no environment. One that never lays its environment out stays out of
+# pane-endpoints-checked.txt, and every_launch_checked fails naming it. A mismatch is recorded, the
+# private tmux server is killed, which ends every agent of the run, and the next bounded wait aborts
+# naming the pane.
 pane_watcher() {
   local claims inc issue role pane omp mismatch
   trap - EXIT ERR
@@ -513,6 +518,7 @@ pane_watcher() {
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
         pane=$(incarnation_pid "$inc") || continue
         omp=$(omp_descendant "$pane") || continue
+        environ_laid_out "$omp" || continue
         if mismatch=$(endpoint_mismatch "$omp"); then
           printf '%s pane on %s (incarnation %s, OMP pid %s) has %s\n' "$role" "$issue" "$inc" "$omp" "$mismatch" \
             >"$evidence/pane-endpoint-violation.txt"
@@ -750,7 +756,7 @@ until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | gre
 start_listener
 start_dispatch
 dispatch_human POST projects "$(jq -cn --arg key "$project" --arg name "Stage 3 proof $project" '{key:$key,name:$name}')" >/dev/null
-dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null
+dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null
 # This is the production Envoy ingress bridge, subscribe-only from its perspective. GitHub events
 # are observed, never manufactured, and only the smoke repository is forwarded to this run's NATS.
 SMOKE_REPO="$repo" SMOKE_RIG_NATS="nats://127.0.0.1:$port_nats" \
@@ -915,7 +921,8 @@ primary_issue() {
       # implementer as accepted (already resolved, the implementer having closed it first).
       review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
-    # The reviewer's record before the round, which the round's completion replaces.
+    # The reviewer's record as the review is asked for, which the move into reviewing emptied
+    # (workflow's clearHandoff); the wait below takes only a record other than it.
     before_review=$(role_handoff_record "$root_issue" reviewer)
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
     # The review ends the round whether or not the reviewer has completed (workflow's

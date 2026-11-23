@@ -123,7 +123,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// Engine.mergeForward and Engine.mergeForwardLanded both read. At admitted it answers the
 	// architect, whom record.MergeForwardReaches reaches with neither message, so the architect is
 	// told nothing there, as at accepting. A merge forward is never asked at admitted in any case
-	// (record.MergeForwardPhases).
+	// (classify.MergeForwardStands: admitted stands on no task's line).
 	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardWorker"}: {calls: 1, tests: []string{
 		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge",
 		"TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole", "TestAMergeForwardTellsNoRoleTheDeploymentLost"}},
@@ -150,6 +150,15 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/wake.go", fn: "OpenRoleOf"}: {calls: 1, tests: []string{
 		"TestAnArchitectGetsNoBackstop", "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted",
 		"TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting", "TestTheResumePathsGiveTheRunningDeploymentRoleItsWork"}},
+	// The holder of a member's phase that design news reaches, the reason a member is owed none,
+	// and the role the root architect's summary names as the member's holder: each reads the role
+	// of the running step at step (record.Issue.RoleAt).
+	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}: {calls: 1, tests: []string{
+		"TestOnlyAPhaseWorkerHoldsAMembersPhase", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
+	{file: "internal/daemon/design_news_send.go", fn: "memberDraft.told"}: {calls: 1, tests: []string{
+		"TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
+	{file: "internal/record/design_news.go", fn: "untold"}: {calls: 1, tests: []string{
+		"TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken", "TestDesignNewsReachesTheRoleOfARunningDeploymentStep"}},
 }
 
 // R2: the reader list is complete and nothing reads RoleFor that this test does not hold. The

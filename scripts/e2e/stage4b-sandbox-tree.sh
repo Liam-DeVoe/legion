@@ -75,6 +75,9 @@
 #   Dispatch, the production Envoy listener and production NATS, by the operator's fully-qualified
 #   names for them: an https:// URL, an http(s):// URL and a nats://host:port, none with a path. The
 #   repository carries none of them, and the run never prints them.
+#   Production Dispatch must be a release that serves PUT /api/v1/projects/{key}/default-repository
+#   and lists default_repo on GET /api/v1/projects (dispatch://INFRA-4402). The run reads and sets
+#   its project's default repository through them, and an earlier release refuses that write.
 # - LEGION_E2E_DISPATCH_TOKEN_FILE (required) names a file only its owner can read (no group or
 #   other permission bits) holding a bearer of the Dispatch agents' client, the one an agent
 #   session's Dispatch configuration resolves (DISPATCH_TOKEN_FILE, DISPATCH_TOKEN, or envoy.json's
@@ -3427,15 +3430,15 @@ for key in $stale; do
   note "moved stale todo issue $key to backlog"
 done
 [ -z "$(dispatch_get "issues?project=$project&status=todo" | jq -r '.[].key')" ] || fail "$project still holds todo issues"
-# The project's repository is no key of legion.yaml: the daemon records an issue on the repository
-# Dispatch resolves for it, so $repo is set as $project's default repository in Dispatch before the
-# daemon starts (through Dispatch's mapping route, the one way to set it today). A default already
-# so is left as it is; the write names $project alone.
-if ! dispatch_get settings/repo-projects | jq -e --arg repo "$repo" --arg project "$project" \
-  'any(.[]; .repo == $repo and .project == $project and .default == true)' >/dev/null; then
-  dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$project" '{project:$project,default:true}')" >/dev/null ||
-    fail "set $repo as the default repository of $project in production Dispatch"
-  note "set $repo as the default repository of $project"
+# The project's repository is its default repository on Dispatch, not a key of legion.yaml: the
+# daemon records an issue on the repository Dispatch resolves for it, and an issue that names no
+# repository resolves to its project's default. So $repo is set as $project's default repository
+# before the daemon starts. A project that has that default already is left as it is.
+if ! dispatch_get projects | jq -e --arg repo "$repo" --arg project "$project" \
+  'any(.[]; .key == $project and .default_repo == $repo)' >/dev/null; then
+  dispatch_human PUT "projects/$project/default-repository" "$(jq -cn --arg repo "$repo" '{repo:$repo}')" >/dev/null ||
+    fail "set $repo as $project's default repository in production Dispatch"
+  note "set $repo as $project's default repository"
 fi
 # The configured stream carries both halves of the workflow's intake. Each `last` call reads one
 # ordered-consumer message under its 20-second budget instead of draining every matching subject.
@@ -4969,7 +4972,7 @@ refusals_beneath() {
     grep -o 'still in the workflow: [^."]*' | sed 's/^still in the workflow: //'
 }
 refused_naming() { refusals_beneath | grep -qxF -- "$1"; }
-accept_now="read the evidence as your instructions say and accept it with the legion tool's sign_off for $tree1 now. Park, close and change nothing: the proof human takes the children out. Report what the daemon answered."
+accept_now="read the evidence as your instructions say and accept it with the legion tool's sign_off for $tree1 now. Write no status, close nothing and change nothing: the proof human takes the children out. Report what the daemon answered."
 send_agent "$tree1" architect "Stage 4b proof acceptance: the reviewer approved pull request #$pr_number and $tree1 is in accepting, with $child3 and $child4 still in the workflow beneath it; $accept_now"
 on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off, naming $child3 and $child4 beneath it" \
   refused_naming "$child3, $child4"
@@ -4986,7 +4989,7 @@ child_parked() {
   out=$(op get sandboxes,pods -l "legion.dev/project=$run_label,legion.dev/issue=$1" -o name) && [ -z "$out" ] &&
     out=$(pod_disk "$2") && [ -z "$out" ]
 }
-park_child_issue() {
+backlog_child_issue() {
   local child=$1 pod=$2
   set_status "$child" backlog
   until_true 600 "$child to leave the workflow" issue_phase "$child" "done"
@@ -4994,14 +4997,14 @@ park_child_issue() {
   until_true 600 "$child's Sandbox, pod and disk to be gone after its backlog" child_parked "$child" "$pod"
   note "the proof human parked $child (backlog): it left the workflow, its planner is suspended, and it has no Sandbox, no pod and no disk (its pod $pod took the disk $pod-issue with it)"
 }
-park_child_issue "$child3" "$child3_pod"
+backlog_child_issue "$child3" "$child3_pod"
 send_agent "$tree1" architect "Stage 4b proof acceptance, again: $child3 has left the workflow and $child4 has not; $accept_now"
 on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off again, naming $child4 alone" \
   refused_naming "$child4"
 issue_phase "$tree1" accepting >/dev/null ||
   fail "$tree1 left accepting while $child4 was still in the workflow: $(daemon_state | jq -c --arg i "$tree1" '.issues[$i].phase')"
 note "with $child3 parked the daemon refused the sign_off again, naming $child4 alone (every refusal of this run so far: $(refusals_beneath | paste -sd '; ' -)): the rule is every issue beneath, not any"
-park_child_issue "$child4" "$child4_pod"
+backlog_child_issue "$child4" "$child4_pod"
 send_agent "$tree1" architect "Stage 4b proof acceptance, last: $child3 and $child4 have both left the workflow; $accept_now"
 on_tree "$tree1" wait_for_phase "$tree1" retro 900
 phase_change_logged "$tree1" accepting retro sign_off ||
@@ -6490,14 +6493,16 @@ await_merger_merge "$repo" "$pr_number" --delete-branch
 handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of pull request #$pr_number"
 [ -z "$handoff_pushes" ] || fail "merged pull request #$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"
 note "merged pull request #$pr_number holds $(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha' | grep -c .) commits, none changing only .legion/"
-# The merge closes tree 1 at once: children 3 and 4 left the workflow at children-first-acceptance,
-# so no close waits for the rest of the tree and no pr-merged notice is sent.
+# The merge closes the root on the merge itself: nothing of tree 1 is in the workflow, so
+# closeMerged waits for nobody. Its wait is entered only with an issue beneath the root still in
+# the workflow, and the architect's pr-merged notice is that wait's own (closeMergedTelling), so
+# neither the wait's log line nor the notice may appear here.
 on_tree "$tree1" wait_for_phase "$tree1" "done" 900
 phase_change_logged "$tree1" merging "done" pull_request_merged ||
   fail "the daemon log has no \"workflow: phase changed\" line moving $tree1 from merging to done on pull_request_merged"
-waited=$(log_lines "workflow: a merged root's close waits for the rest of its tree" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
+waited=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
 [ "$waited" = 0 ] ||
-  fail "the daemon logged \"a merged root's close waits for the rest of its tree\" for $tree1 $waited times, want none: nothing of its tree was in the workflow at the merge"
+  fail "the daemon logged $tree1's merged close waiting for the issues beneath it $waited times, though $child3 and $child4 left the workflow at children-first-acceptance: $(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | tail -1)"
 merged_notice=$(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")")
 [ -z "$merged_notice" ] ||
   fail "$tree1's architect holds a pr-merged notice, want none, since the merge closed $tree1: $(cut -c1-300 <<<"$merged_notice")"

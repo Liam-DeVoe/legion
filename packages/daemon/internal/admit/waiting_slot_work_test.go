@@ -147,10 +147,10 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 
 	// In merging the wait has no row to take, since merging keeps none (record.KeepsSlot), so the
 	// repair of a worker with no task reaches the issue as it reaches any issue in accepting,
-	// retro or merging (resumeSlottedWorkers' second half, record.PastReview): the merger is
+	// retro or merging (resumeSlottedWorkers' second half, record.InSlotlessPhase): the merger is
 	// started at once on a start held for no slot, though the link still holds the issue, and the
 	// issue never stands in the line as a release for a wait, since it needs no slot to wait for.
-	t.Run("a merger with no task past its review is started again whatever holds its issue", func(t *testing.T) {
+	t.Run("a merger with no task in merging is started again whatever holds its issue", func(t *testing.T) {
 		const (
 			waiter  = "LEGION-20"
 			blocker = "LEGION-91"
