@@ -79,6 +79,11 @@
  *   that `row-map.test.ts` waits for cost 45.23 s at most.
  * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
  *   child builds two stacks, and each stack is a Go build and an initdb.
+ * - `oneDatabase`, against 19.02 s: the stack row of `harness-postgres-ends.test.ts`, whose child
+ *   makes the binaries provider's template and starts one stack's Postgres, the first run of that
+ *   file in a fresh build pod on 2026-11-23, from a cold disk. Two other pods' first runs read
+ *   11.87 s and 11.10 s, and five runs one after another in a pod of 6 CPUs under 18 busy loops,
+ *   three per CPU, read 3.98 s at most. Three times 19.02 s, rounded up to the minute, is 60 s.
  * - `edgeRun`, against 175.0 s: the slowest of 30 runs, one after another, of
  *   `e2e/acceptance/outside-edge-refusals.sh` against one stand-in edge of its tests, with their
  *   lists and probe bounds, on a dev box of 288 CPUs at a 1-minute load of 1,024 to 1,892 on
@@ -92,7 +97,8 @@
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a listing after 6 minutes, the generation after
- * 6.5 minutes, a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
+ * 6.5 minutes, a run of the edge check after 9 minutes, a provider row's child of
+ * `harness-postgres-ends.test.ts` after 60 s, and the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -109,7 +115,8 @@
  * `round-robin-proxy.test.ts`, each read from its lists through a spread the guard does not
  * total): a hung child of either fails at its own 60 s bound. The two-stack row's 1 830 000 ms is
  * longer than the job and never fires there: that row skips unless `DISPATCH_E2E_PG_BIN` or
- * `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of `ci.yaml` names either.
+ * `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of `ci.yaml` names either. The provider
+ * rows of `harness-postgres-ends.test.ts` skip unless `DISPATCH_E2E_PG_BIN` names one, too.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -128,6 +135,9 @@ export const bounds = Object.freeze({
   generation: 390_000,
   /** The `bun --eval` of `second-global-setup.test.ts`, which builds two stacks. */
   twoStackBuild: 1_800_000,
+  /** The child of a provider row of `harness-postgres-ends.test.ts`, which makes the binaries
+   *  provider's template and starts one stack's Postgres, with no Go build. */
+  oneDatabase: 60_000,
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
 });

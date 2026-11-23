@@ -1,0 +1,158 @@
+/** What the binaries provider of e2e/harness-postgres.ts does when the postmaster it started ends
+ *  while the start waits for it to answer `select 1`, as a server that crashes on its way up does.
+ *  The wait (`ready`) has no bound of its own and reads the postmaster's end through
+ *  `postmasterGone`: a refusal must name the server that stopped, at once, rather than wait for
+ *  ever. Found by Tester4958-2, whose plant read every postmaster as running and passed every row
+ *  before these (no row called `postmasterGone`), and whose probe this file's provider rows follow.
+ *
+ *  The first row reads `postmasterGone` itself, against a pid that runs and one that ended, and
+ *  runs everywhere. The two provider rows start the real binaries provider in a child of their
+ *  own, the template's server and then one stack's, with a stand-in `psql` first on its PATH that
+ *  answers as a server starting up does while a hold file exists and runs the real psql
+ *  otherwise; once the held server's postmaster has written its pid and a held `psql` has been
+ *  refused, the child SIGKILLs that postmaster and prints what the start answered. The template's
+ *  row holds from the start; the stack's sets the hold as the stack's data directory appears, so
+ *  the template is made by the real psql first. They need `DISPATCH_E2E_PG_BIN`, the binaries
+ *  that make the databases, and a psql on PATH, and are skipped without them, saying so. A start
+ *  that never reads the end is ended by the child's `oneDatabase` bound, which names it. */
+
+import { beforeAll, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+
+import { postmasterGone } from "../harness-postgres";
+import { rowLimit, runBounded } from "./bounded-subprocess";
+
+const harnessPostgres = fileURLToPath(new URL("../harness-postgres.ts", import.meta.url));
+const stubs = temporaryDirectory("harness-postgres-ends-");
+const bin = (process.env.DISPATCH_E2E_PG_BIN ?? "").trim();
+const realPsql = Bun.which("psql") ?? "";
+const withoutBinaries = bin === "" || realPsql === "";
+if (withoutBinaries) {
+  console.error(
+    "e2e/__tests__/harness-postgres-ends.test.ts: the provider rows are skipped, since " +
+      (bin === "" ? "DISPATCH_E2E_PG_BIN names no Postgres binaries" : "no psql is on PATH") +
+      " to start the template's and a stack's server with."
+  );
+}
+const child = join(stubs, "end-during-start.ts");
+
+beforeAll(() => {
+  writeFileSync(
+    child,
+    `// Starts stack 0 of the binaries provider, SIGKILLs the held server's postmaster once its
+// pid is written and a held psql was refused, and prints what the start answered.
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const [module, target, dir, hold, calls] = process.argv.slice(2);
+const { stackPostgres } = await import(module);
+const provider = stackPostgres({ dir, run: "ends-" + target });
+let settled = false;
+const starting = provider.start(0).then(
+  async (database) => {
+    settled = true;
+    await database.stop(false).catch(() => {});
+    return { started: true };
+  },
+  (error) => {
+    settled = true;
+    return { message: error.message };
+  }
+);
+// Each wait below ends on what it waits for or on the start settling; the bound the row puts on
+// this child ends one that never does.
+const until = async (fact) => {
+  while (!fact()) await Bun.sleep(5);
+};
+const data = join(dir, target === "template" ? "template" : "worker-0", "pgdata");
+if (target === "stack") {
+  await until(() => existsSync(data) || settled);
+  writeFileSync(hold, "");
+}
+const pidFile = join(data, "postmaster.pid");
+await until(() => (existsSync(pidFile) && existsSync(calls)) || settled);
+let killed = null;
+if (!settled) {
+  killed = Number(readFileSync(pidFile, "utf8").split("\\n")[0]);
+  process.kill(killed, "SIGKILL");
+}
+console.log(JSON.stringify({ killed, ...(await starting) }));
+`
+  );
+});
+
+test(
+  "postmasterGone reads a postmaster that runs as running and one that ended as gone",
+  async () => {
+    const data = join(stubs, "gone-data");
+    mkdirSync(data);
+    // This process runs; the shell below has ended, and been reaped, by the time it is read.
+    writeFileSync(join(data, "postmaster.pid"), `${process.pid}\n${data}\n`);
+    expect(postmasterGone(data)(), "this running process read as gone").toBe(false);
+    const ended = await runBounded({
+      argv: ["/bin/sh", "-c", "echo $$"],
+      bound: "short",
+      from: import.meta.url,
+    });
+    const pid = Number(ended.stdout.trim());
+    expect(Number.isInteger(pid) && pid > 0, `${ended.named} printed ${ended.stdout}`).toBe(true);
+    writeFileSync(join(data, "postmaster.pid"), `${pid}\n${data}\n`);
+    expect(postmasterGone(data)(), `pid ${pid}, which has ended, read as running`).toBe(true);
+  },
+  rowLimit("short")
+);
+
+for (const row of [
+  { target: "template", what: "the stacks' Postgres template" },
+  { target: "stack", what: "stack 0's Postgres" },
+] as const) {
+  test.skipIf(withoutBinaries)(
+    `${row.what}, its postmaster killed while the start waits, is refused at once by name`,
+    async () => {
+      const dir = join(stubs, row.target);
+      const shims = join(stubs, `${row.target}-shims`);
+      const hold = join(stubs, `${row.target}-hold`);
+      const calls = join(stubs, `${row.target}-held-calls`);
+      mkdirSync(dir);
+      mkdirSync(shims);
+      writeFileSync(
+        join(shims, "psql"),
+        `#!/bin/sh
+if [ -e "${hold}" ]; then
+  echo held >> "${calls}"
+  echo 'psql: error: connection to server at "127.0.0.1" failed: FATAL:  the database system is starting up' >&2
+  exit 2
+fi
+exec "${realPsql}" "$@"
+`
+      );
+      chmodSync(join(shims, "psql"), 0o755);
+      if (row.target === "template") writeFileSync(hold, "");
+      const { code, named, stderr, stdout } = await runBounded({
+        argv: [process.execPath, child, harnessPostgres, row.target, dir, hold, calls],
+        bound: "oneDatabase",
+        env: {
+          DISPATCH_E2E_PG_BIN: bin,
+          HOME: process.env.HOME ?? "",
+          PATH: `${shims}:${process.env.PATH ?? ""}`,
+          TMPDIR: stubs,
+        },
+        from: import.meta.url,
+      });
+      expect(code, `${named} exited ${code}:\n${stderr}`).toBe(0);
+      const read = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}") as {
+        killed?: number | null;
+        message?: string;
+        started?: true;
+      };
+      expect(read.killed, `${named} printed ${stdout}:\n${stderr}`).toBeGreaterThan(0);
+      expect(read.message, `${named} printed ${stdout}:\n${stderr}`).toStartWith(
+        `The Dispatch e2e harness cannot start: ${row.what} stopped before it answered select 1: `
+      );
+    },
+    rowLimit("oneDatabase")
+  );
+}
