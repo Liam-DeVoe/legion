@@ -2412,3 +2412,21 @@ nothing races. check-ci-filters.sh holds both jobs to their one `name:` (ci_filt
 DISPATCH_NAMES), the reconcile step to its one `if:` (RECONCILE_IF), the changes job to the
 output and the exact step (REF_OUTPUT, REF_STEP_RUN), and every other job to a name that can
 evaluate to neither check.
+
+## The runner's own pulls of a job's service and container images
+
+Before a job's first step the runner pulls each image the job's `services:` and `container:` name,
+with `docker pull` and no timeout of its own; actions/runner tries a pull again only after a
+non-zero exit, so a registry that answers and then all but stops holds the pull, and a workflow can
+give that pull no bound of its own. The job's limit is its one bound. A job limit held to the
+installs it runs through `.github/scripts/network-install.sh` therefore counts each such pull at
+180 s, before the job's installs: the slowest of 304 green "Initialize containers" steps pulled in
+62.7 s (dispatch-browser's webkit-alone, job 135946192641), doubled and rounded up to the minute.
+
+Each such limit is held to this sum: up to each step that installs, the runner's pulls, the bounds
+of every step before it (its own limit, or its installs where it sets none) and the step's own
+installs at their worst case, three attempts of the kind's bound, each killed 15 s after its
+SIGTERM, with two 10 s pauses (`network-install.sh --bounds` prints each kind's numbers). Each job
+whose limit this rests on derives it in its own note (`ci-job-daemon-go.md`, `ci-job-pi-envoy.md`,
+`ci-job-claude-envoy.md`, `ci-job-envoy-client.md`, `ci-job-envoy-smoke.md`,
+`dispatch-browser.md`).

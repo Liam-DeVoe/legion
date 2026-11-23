@@ -21,3 +21,32 @@ costs the setup it repeats, about 1.4 min.
 The split makes no test do less work. The race step's time is one package's: internal/daemon took
 1,352 s of the step's 1,422 s in run 45048924209, and the four other packages of the step ended
 inside it. That package's tests are where the rest of the time is.
+
+## Each job's limit, held to the installs it runs
+
+Each job's limit is held, beside what its comment derives from its go test steps, to every wait on
+the network the job makes, so each one fails by name before GitHub's cancellation, which names
+nothing: up to each step that installs, the bounds of every step before it (its own limit, or its
+installs and its go tests' own `-timeout` where it sets none), the runner's pulls and the step's own
+installs. Both jobs make the same waits but for the NATS images:
+
+- 180 s: before the first step the runner pulls the Postgres service image with `docker pull`,
+  which has no bound of its own and takes none from a workflow, so the job's limit is its one
+  bound; it counts at what a healthy pull takes (`.github/ci-notes/ci.md`, "The runner's own pulls
+  of a job's service and container images").
+- 490 s: the two apt commands of `.github/scripts/runner-tmux.sh`, 245 s each (three attempts of
+  apt's 60 s, each killed 15 s after its SIGTERM, with two 10 s pauses). They run only on a runner
+  image without tmux, which a later image can be, so they count.
+- 1,207 s: `.github/actions/install-omp`'s download of the pinned Oh My Pi, `curl --retry 3
+  --retry-all-errors --max-time 300`: four attempts of 300 s, with curl's own pauses of 1, 2 and
+  4 s between them, before the action fails by name.
+- 425 s for each NATS test image `.github/actions/pull-test-images` pulls: one in daemon-go
+  (testnats.Image), three in daemon-go-race (Image, SkippingImage and Envoy's HubImage).
+
+daemon-go: 180 s + 490 s + 1,207 s + 425 s = 2,302 s, which its 60 minutes (3,600 s) hold.
+daemon-go-race: 180 s + 490 s + 1,207 s + 1,275 s = 3,152 s, which its 70 minutes (4,200 s) hold.
+
+The Postgres image `scripts/e2e/stage1-skeleton.sh` pulls (425 s) is left out: the pull stands in
+that script's `if [ -z "${LEGION_E2E_PG_DSN:-}" ]` branch, the devbox's path, and daemon-go's env
+sets LEGION_E2E_PG_DSN, so in that job the branch never runs. A job that dropped the variable
+would count the pull again.

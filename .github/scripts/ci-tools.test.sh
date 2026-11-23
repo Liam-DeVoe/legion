@@ -890,8 +890,8 @@ check "the package was asked again with the token" \
   "$(is "$(tail -n 1 "$log.auth")" "$blob_path Bearer fixture-token")"
 check "the store was asked once, with no Authorization header" \
   "$(is "$(cat "$store_log.auth")" "$blob_path none")"
-check "by a call handed the protocols it may use and the store's address, and no header" \
-  "$(is "$(cat "$curl_arguments")" "$(printf '%s\n' -sS --proto =http,https -o /dev/null -D "$work/head-headers" -w '%{http_code}' -I -L "$store_base$blob_path")")"
+check "by a call handed its bound, the protocols it may use and the store's address, and no header" \
+  "$(is "$(cat "$curl_arguments")" "$(printf '%s\n' -sS --max-time 60 --proto =http,https -o /dev/null -D "$work/head-headers" -w '%{http_code}' -I -L "$store_base$blob_path")")"
 check "and the headers file holds the store's answer, the blob's own length" \
   "$(is "$(awk 'tolower($1) == "content-length:" { value = $2 } END { gsub(/\r/, "", value); print value }' "$work/head-headers")" "$(wc -c < "$work/payloads/tarred")")"
 printf '302\n' > "$root$blob_path.redirect"

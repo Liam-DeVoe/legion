@@ -495,8 +495,15 @@ ENV GOPROXY=https://proxy.golang.org|direct
 RUN apk add --no-cache git
 # The notices stage's Go part: go-licenses (pinned in go-third-party-notices.sh) is built in a layer of
 # its own, before the module files, so neither a source change nor a dependency bump rebuilds it.
+# It is fetched by go-fetch.sh under network-install.sh's bound for go, and built from the module
+# cache with the network off (GOPROXY a file:// proxy of the cache), held by the build step's own
+# limit: a bound around the compile would time the compile as a wait on the network, as gopls's
+# 74 s of compile under the 120 s bound did (go-fetch.sh's header says why).
 COPY scripts/go-third-party-notices.sh /usr/local/bin/
-RUN go-third-party-notices.sh --install
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    --mount=type=bind,source=.github/scripts/go-fetch.sh,target=/usr/local/bin/go-fetch.sh \
+    go-fetch.sh "$(go-third-party-notices.sh --tool)" \
+    && GO_LICENSES_FETCHED=1 GOPROXY="file://$(go env GOMODCACHE)/cache/download" go-third-party-notices.sh --install
 # gopls, in a layer of its own before the module files for the same reason: `go install pkg@version`
 # builds the module at that tag with its own go.mod, whatever this checkout's go.work says, so the
 # binary changes only with GOPLS_VERSION (or GO_VERSION), never with a commit.
@@ -533,7 +540,7 @@ WORKDIR /src/packages/daemon
 # The licenses of the Go modules `legion` and `agent-secrets` compile in, with the build's CGO_ENABLED
 # (which decides them, with the GOARCH this stage builds for); fails the build when one's license
 # cannot be determined.
-RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
+RUN mkdir -p /out && GO_LICENSES_FETCHED=1 CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
     ./cmd/legion github.com/sjawhar/envoy/cmd/cipher
 # Declared here, after the dependency layers, so a new commit re-runs only the compile.
 ARG LEGION_REVISION
