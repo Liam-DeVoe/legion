@@ -287,7 +287,7 @@ test("the n key opens a message to one or more agents from the Inbox", async ({ 
     await singleAnswer;
     await expect(dialog.getByRole("region", { name: "Where your message went" })).toBeVisible();
     expect(writes.length, `the writes the dialog sent:\n${described(writes)}`).toBe(1);
-    // `watchAgentWrites` keeps POSTs alone: the one write is the send to that session.
+    // `watchAgentWrites` keeps each POST alone: the one write is the send to that session.
     expect(new URL(writes[0]?.url() ?? "").pathname).toBe(
       `/api/v1/agents/${builder.session_id}/messages`
     );
