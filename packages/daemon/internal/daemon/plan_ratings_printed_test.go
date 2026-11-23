@@ -42,7 +42,7 @@ func defaultPlanPrinted() string {
 // ratings print as ratings, the answer the tests below parse.
 func plansPrintedWith(ratings string) string {
 	return "SR1: 1 finished issues\nSR1-1 closed 2026-11-17T00:00:00Z plan " + defaultPlanPrinted() +
-		" ratings " + ratings + " time 0h1m failed steps 0"
+		" ratings " + ratings + " time 0h1m failed steps 0 fixes 0"
 }
 
 // The read script prints the ratings as the command printed them, and plans.ts prints each reason
@@ -170,8 +170,11 @@ func parseRatings(text string) ([]printedRating, error) {
 // a rating is `<n>/<most> ` and then its reason as one JSON string, so a `null` in the reason's
 // place or a space before it is no rating, and the header is `<project>: <n> finished issues` with
 // nothing after it. The scale is the daemon's (steprecord.RatingLeast to steprecord.RatingMost):
-// its top is a rating, and a rating past either end, or out of another number, is none.
+// its top is a rating, and a rating past either end, or out of another number, is none. The line
+// ends with its count of failed steps and then its count of fixes, so a line that ends at its
+// failed steps, as the command printed it before it counted fixes, is none either.
 func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
+	t.Parallel()
 	if parsed, err := parsePlans("SR1", plansPrintedWith(`4/5 "x"`)); err != nil || len(parsed) != 1 || len(parsed[0].ratings) != 1 || parsed[0].ratings[0] != (printedRating{rating: 4, reason: "x"}) {
 		t.Fatalf("the line the command prints parsed as %+v, %v; want one rating 4/5 \"x\"", parsed, err)
 	}
@@ -190,6 +193,12 @@ func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 	}
 	if parsed, err := parsePlans("SR1", strings.Replace(plansPrintedWith(`4/5 "x"`), "1 finished issues", "1 finished issues (of 4)", 1)); err == nil {
 		t.Errorf("the header `SR1: 1 finished issues (of 4)` parsed as %+v, want an error: the command prints the header with nothing after it", parsed)
+	}
+	for _, tail := range []string{" failed steps 0", " failed steps 0 fixes", " failed steps 0 fixes 0 1"} {
+		out := strings.Replace(plansPrintedWith(`4/5 "x"`), " failed steps 0 fixes 0", tail, 1)
+		if parsed, err := parsePlans("SR1", out); err == nil {
+			t.Errorf("the line ending %q parsed as %+v, want an error: the command ends each line with its failed steps and then its fixes, each a count", tail, parsed)
+		}
 	}
 }
 
@@ -230,6 +239,7 @@ func TestThePrintedReadHoldsEachIssueToItsPlan(t *testing.T) {
 // unrated one printed with a rating, the time printed past its minutes, and the failed step
 // printed as none.
 func TestThePrintedReadHoldsTwoIssuesToTheirOrderRatingsTimesAndFailedSteps(t *testing.T) {
+	t.Parallel()
 	records := func(started, ended string) stepRecordsRead {
 		t.Helper()
 		var steps stepRecordsRead
@@ -243,8 +253,8 @@ func TestThePrintedReadHoldsTwoIssuesToTheirOrderRatingsTimesAndFailedSteps(t *t
 		{walkIssue: walkIssue{key: "SR1-2"}, rating: &record.PlanRating{Rating: 4, Reason: "The plan fit the work."}, failed: 1, steps: records("2026-11-16T22:50:00Z", "2026-11-16T23:55:00Z")},
 		{walkIssue: walkIssue{key: "SR1-1"}, steps: records("2026-11-16T23:58:00Z", "2026-11-16T23:59:00Z")},
 	}
-	newer := "SR1-2 closed 2026-11-17T01:00:00Z plan " + defaultPlanPrinted() + ` ratings 4/5 "The plan fit the work." time 1h5m failed steps 1`
-	older := "SR1-1 closed 2026-11-17T00:00:00Z plan " + defaultPlanPrinted() + " ratings none time 0h1m failed steps 0"
+	newer := "SR1-2 closed 2026-11-17T01:00:00Z plan " + defaultPlanPrinted() + ` ratings 4/5 "The plan fit the work." time 1h5m failed steps 1 fixes 2`
+	older := "SR1-1 closed 2026-11-17T00:00:00Z plan " + defaultPlanPrinted() + " ratings none time 0h1m failed steps 0 fixes 0"
 	printed := func(lines ...string) string { return "SR1: 2 finished issues\n" + strings.Join(lines, "\n") }
 	if _, err := plansPrintedHold("SR1", printed(newer, older), want); err != nil {
 		t.Fatalf("the two issues printed newest close first: %v, want them held", err)

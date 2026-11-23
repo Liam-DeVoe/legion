@@ -23,11 +23,12 @@ import { executeDispatchTool } from "../dispatch-execute";
 
 // `dispatch plans --project <KEY>`: each finished issue of a project, as Dispatch's
 // `GET /api/v1/projects/{key}/plans` answers them, one header line and one line per issue: its
-// plan, each rating its retros gave the plan with the reason, its time and its count of failed
-// steps. The Legion whole-daemon driver parses the line, so each case asserts it whole. The format
-// cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`) as a
-// fetch, so each reads the text and the details a host is handed; the command-line cases drive
-// the real CLI against that fake on a loopback port, and read its exit code and output.
+// plan, each rating its retros gave the plan with the reason, its time, its count of failed steps
+// and its count of fixes. The Legion whole-daemon driver parses the line, so each case asserts it
+// whole. The format cases drive `executeDispatchTool` over the shared fake Dispatch
+// (`test/fake-dispatch.ts`) as a fetch, so each reads the text and the details a host is handed;
+// the command-line cases drive the real CLI against that fake on a loopback port, and read its
+// exit code and output.
 
 /** The Dispatch bearer each command-line case is handed. */
 const TOKEN = fixtureSecret("dsp");
@@ -52,7 +53,7 @@ function defaultPlan(issue: string, id: string): PlanRecord {
 }
 
 /** A finished issue Legion ran on its default plan, rated once: an hour and a half, one failed
- *  review. */
+ *  review, and two fixes of a failed CI check. */
 const ratedOnce: FinishedIssue = {
   issue: "INFRA-12",
   title: "Retry failed webhook deliveries",
@@ -70,7 +71,7 @@ const ratedOnce: FinishedIssue = {
   ended_at: "2026-11-16T12:00:00Z",
   duration_seconds: 5400,
   failed_steps: 1,
-  fixes: 0,
+  fixes: 2,
 };
 
 /** INFRA-11's plan: its owner's, in three tasks. The first task is neither the first nor the last
@@ -137,6 +138,7 @@ const ratedThrice: FinishedIssue = {
   ended_at: "2026-11-17T08:55:00Z",
   duration_seconds: 18480,
   failed_steps: 0,
+  fixes: 0,
 };
 
 /** A finished issue Legion never ran: no plan, no rating, no time. */
@@ -174,6 +176,7 @@ const uncountedTime: FinishedIssue = {
   ended_at: "2026-11-14T08:55:00Z",
   duration_seconds: null,
   failed_steps: 2,
+  fixes: 0,
 };
 
 /** A finished issue of a second project, ACME: its own key, plan, rating, time and count, so a
@@ -254,8 +257,8 @@ describe("dispatch plans", () => {
     expect(result.text).toBe(
       [
         "INFRA: 2 finished issues",
-        'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1',
-        "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
+        'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1 fixes 2',
+        "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0 fixes 0",
       ].join("\n")
     );
     expect(result.details).toEqual({ project: "INFRA", issues: [ratedOnce, unrated] });
@@ -268,7 +271,7 @@ describe("dispatch plans", () => {
 
     expect(result.text.split("\n")).toEqual([
       "INFRA: 1 finished issues",
-      'INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the first merge.", 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped." time 5h8m failed steps 0',
+      'INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the first merge.", 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped." time 5h8m failed steps 0 fixes 0',
     ]);
   });
 
@@ -310,7 +313,7 @@ describe("dispatch plans", () => {
 
     expect(result.text.split("\n")).toEqual([
       "INFRA: 1 finished issues",
-      `INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings ${most}/${most} "The plan fit the first merge.", ${least}/${most} "The plan sent the second merge back.", ${least + 1}/${most} "The plan had no rollback step." time 5h8m failed steps 0`,
+      `INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings ${most}/${most} "The plan fit the first merge.", ${least}/${most} "The plan sent the second merge back.", ${least + 1}/${most} "The plan had no rollback step." time 5h8m failed steps 0 fixes 0`,
     ]);
   });
 
@@ -375,10 +378,11 @@ describe("dispatch plans", () => {
       const lines = result.text.split("\n");
       expect(lines, printed).toEqual([
         "INFRA: 1 finished issues",
-        `INFRA-9 closed 2026-11-14T08:00:00Z plan none ratings 3/5 ${printed} time - failed steps 0`,
+        `INFRA-9 closed 2026-11-14T08:00:00Z plan none ratings 3/5 ${printed} time - failed steps 0 fixes 0`,
       ]);
       // The reason as the line prints it reads back as the reason Dispatch answered.
-      const shown = /^.* ratings 3\/5 (".*") time - failed steps 0$/.exec(lines[1] ?? "")?.[1];
+      const line = /^.* ratings 3\/5 (".*") time - failed steps 0 fixes 0$/;
+      const shown = line.exec(lines[1] ?? "")?.[1];
       expect(JSON.parse(shown ?? "null"), printed).toBe(reason);
     }
   });
@@ -399,9 +403,9 @@ describe("dispatch plans", () => {
 
     expect(result.text.split("\n")).toEqual([
       "INFRA: 3 finished issues",
-      "INFRA-12 closed 2026-11-17T10:00:00Z plan none ratings none time - failed steps 0",
-      "INFRA-9 closed 2026-11-16T10:00:00Z plan none ratings none time - failed steps 0",
-      "INFRA-11 closed 2026-11-15T10:00:00Z plan none ratings none time - failed steps 0",
+      "INFRA-12 closed 2026-11-17T10:00:00Z plan none ratings none time - failed steps 0 fixes 0",
+      "INFRA-9 closed 2026-11-16T10:00:00Z plan none ratings none time - failed steps 0 fixes 0",
+      "INFRA-11 closed 2026-11-15T10:00:00Z plan none ratings none time - failed steps 0 fixes 0",
     ]);
   });
 
@@ -412,8 +416,8 @@ describe("dispatch plans", () => {
 
     expect(result.text.split("\n")).toEqual([
       "INFRA: 2 finished issues",
-      'INFRA-10 closed 2026-11-14T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 3/5 "Enough." time - failed steps 2',
-      "INFRA-9 closed 2026-11-14T08:00:00Z plan none ratings none time - failed steps 0",
+      'INFRA-10 closed 2026-11-14T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 3/5 "Enough." time - failed steps 2 fixes 0',
+      "INFRA-9 closed 2026-11-14T08:00:00Z plan none ratings none time - failed steps 0 fixes 0",
     ]);
   });
 
@@ -437,7 +441,7 @@ describe("dispatch plans", () => {
     const { result } = await readPlans({ project: "INFRA" }, nulls);
 
     expect(result.text.split("\n")[1]).toBe(
-      "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (0 tasks: -) ratings none time 1h2m failed steps 0"
+      "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (0 tasks: -) ratings none time 1h2m failed steps 0 fixes 0"
     );
   });
 
@@ -550,15 +554,15 @@ describe("dispatch plans on the command line", () => {
         "INFRA",
         [
           "INFRA: 2 finished issues",
-          'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1',
-          "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
+          'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1 fixes 2',
+          "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0 fixes 0",
         ],
       ],
       [
         "ACME",
         [
           "ACME: 1 finished issues",
-          'ACME-3 closed 2026-11-13T17:00:00Z plan owner (1 tasks: implementer tester) ratings 2/5 "The plan left out the rollback." time 2h35m failed steps 3',
+          'ACME-3 closed 2026-11-13T17:00:00Z plan owner (1 tasks: implementer tester) ratings 2/5 "The plan left out the rollback." time 2h35m failed steps 3 fixes 0',
         ],
       ],
     ] as const) {
