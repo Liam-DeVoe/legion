@@ -101,7 +101,9 @@ func exchangeClient() oauth2.Client {
 			oauthwire.SubjectTokenTypePerson,
 			oauthwire.SubjectTokenTypeAccessToken,
 		},
-		TokenExchangeRequestTokenTypes: []string{oauthwire.SubjectTokenTypeAccessToken},
+		// An access token, and the airlock placeholder a person's sign-in is traded for to reach
+		// the approve capability (oauth.Provider.grantApprove), which is never an access token.
+		TokenExchangeRequestTokenTypes: []string{oauthwire.SubjectTokenTypeAccessToken, oauthwire.TokenTypeAirlockPlaceholder},
 		TokenExchangeActorTokenTypes:   []string{oauthwire.ActorTokenTypeMachine},
 	}}
 }

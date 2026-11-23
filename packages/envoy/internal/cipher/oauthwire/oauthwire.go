@@ -130,10 +130,28 @@ const (
 	MembershipHeld = "membership_held"
 )
 
+// The token exchange's answer to a trade the broker grants a capability it mints and holds
+// (requests.MintedKind): an airlock placeholder bound to a grant the broker keeps, never an access
+// token. The caller asks for it under TokenTypeAirlockPlaceholder, and the broker's proxy swaps
+// the grant's token in for the placeholder on each request the kind's dpop entry allows.
+const (
+	// TokenTypeAirlockPlaceholder is the requested_token_type such a caller asks for and the
+	// issued_token_type it is answered: the placeholder its requests carry through the proxy.
+	// RFC 8693 Section 2.2.1 lets the issued token be other than an access token; the broker
+	// defines this name, as it defines its subject token types.
+	TokenTypeAirlockPlaceholder = "urn:envoy:params:oauth:token-type:airlock-placeholder"
+	// ExtraGrantID is the placeholder answer's field naming the grant: its kind's word, a colon
+	// and its uuid.
+	ExtraGrantID = "grant_id"
+	// ExtraAirlock is the placeholder answer's field holding the grant's AirlockRelease.
+	ExtraAirlock = "airlock"
+)
+
 // AirlockRelease is how a command reaches the values the airlock holds back: the proxy it sends
 // their requests through, the certificate authority that proxy's certificates are signed by, the
 // password every connection to it opens with, and one entry per name held back. A release of
-// secrets answers it under "airlock" (POST /v1/grants/{id}/values).
+// secrets answers it under "airlock" (POST /v1/grants/{id}/values), and so does the token
+// exchange's placeholder answer (ExtraAirlock).
 type AirlockRelease struct {
 	// The URL the command points HTTPS_PROXY at (BROKER_AIRLOCK_PROXY_URL).
 	ProxyURL string `json:"proxy_url"`
