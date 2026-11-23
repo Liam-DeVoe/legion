@@ -102,6 +102,7 @@ func lensTarget(lens lensInvoked) stateTarget {
 // under the gone lens, and its finding or its risk would stand live under it, since the gone read
 // what stood under the lens before the post wrote anything.
 func TestAFindingOrARiskWrittenWhileItsLensIsTakenGoneIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	// requireNothingUnder holds the lens to gone, with no node standing under it by a part_of tuple.

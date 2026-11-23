@@ -400,6 +400,7 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 // server can name each node the write changes as changed by that run. A caller acting for no run
 // sends no such header.
 func TestAGoingCallerNamesItsRunOnEveryWriteItMakes(t *testing.T) {
+	t.Parallel()
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatalf("build the catalogue: %v", err)

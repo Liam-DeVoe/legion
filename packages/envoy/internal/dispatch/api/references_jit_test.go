@@ -34,6 +34,7 @@ import (
 // and the route running refs.Closure on the pool rather than inside inClosureRead, under which the
 // closure's statements run in no transaction.
 func TestTheIssueReferencesReadRunsWithJITOff(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -58,6 +59,7 @@ func TestTheIssueReferencesReadRunsWithJITOff(t *testing.T) {
 // statement after its begin is the statement over graph_edges; and the route reading refs.Edges
 // on the pool, under which that statement runs in no transaction.
 func TestTheReferencesListReadRunsWithJITOff(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")

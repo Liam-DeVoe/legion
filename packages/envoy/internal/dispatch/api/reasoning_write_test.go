@@ -34,6 +34,7 @@ import (
 // - is also one value tuple of the node, its whole history, as a finding's text is; and an append
 // of a pointer the node holds already writes nothing, under a run as under none.
 func TestTheReasoningWriteStatesTheWriterItsRecordNames(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "RSN", "Reasoned work", "# Spec\n\nA passage.")

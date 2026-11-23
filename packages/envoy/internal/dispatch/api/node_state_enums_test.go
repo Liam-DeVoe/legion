@@ -23,6 +23,7 @@ import (
 // over. Both the document the emitter writes now and the one committed beside the clients are
 // read.
 func TestEveryNodeStateAndVisibilityEnumIsTheStoresValues(t *testing.T) {
+	t.Parallel()
 	states := slices.Sorted(slices.Values(graphstore.NodeStates()))
 	visibilities := slices.Sorted(slices.Values([]string{graphstore.VisibilityProject, graphstore.VisibilityAuthor}))
 	rendered, _ := readOpenAPI(t)
@@ -85,6 +86,7 @@ func TestEveryNodeStateAndVisibilityEnumIsTheStoresValues(t *testing.T) {
 // these kinds from graphstore, which imports model; this test is what holds it to them, and a
 // pointer added to graphstore's pointerRules alone fails it.
 func TestTheStructuralEdgeKindsNameEveryKindTheStoreAloneStates(t *testing.T) {
+	t.Parallel()
 	rendered := refs.TupleKinds()
 	for _, kind := range slices.Concat(graphstore.PointerKinds(), graphstore.PlacementKinds(),
 		[]string{graphstore.TupleChangedByRun, graphstore.TupleAuthoredBy}) {

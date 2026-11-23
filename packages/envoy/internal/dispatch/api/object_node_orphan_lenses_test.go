@@ -181,6 +181,7 @@ func (d lensedDocument) requireRemovedBehindNoRow(t *testing.T, state string) {
 // gone, the four reads still answer 404 NOT_FOUND, and X#b and LK still read live: each belongs to
 // X, whose row stands, and neither statement takes a node that is not a stale lens or under one.
 func TestTheOrphanSweepTakesEveryLensOnItsDocumentGone(t *testing.T) {
+	t.Parallel()
 	removed := newLensedDocument(t, "Notes a release before removes.md")
 	settle := removed.settle
 	x := uploadDocument(t, settle.handler, "/api/v1/issues/"+settle.issue.Key, "x-notes.md", "# X\n\nThe one paragraph of X.\n").Artifact
@@ -247,6 +248,7 @@ func TestTheOrphanSweepTakesEveryLensOnItsDocumentGone(t *testing.T) {
 // no node gone; then LO, FO and LP each read gone in the store, and the four reads still answer
 // 404 NOT_FOUND.
 func TestTheSweepTakesTheLensesOnADocumentAnotherBuildStatedGone(t *testing.T) {
+	t.Parallel()
 	removed := newLensedDocument(t, "Notes another build states gone.md")
 	removeAsABuildStatingTheNodeGone(t, removed.settle.database, removed.document)
 	removed.requireRemovedBehindNoRow(t, graphstore.StateGone)

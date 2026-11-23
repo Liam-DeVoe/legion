@@ -103,6 +103,7 @@ func (c interactionCredential) references(t *testing.T, handler http.Handler, di
 //     second connection reads; two goroutines appending to one run take two sequences with no
 //     gap, the second queued at the run's interaction row.
 func TestInteractionNodesAreTuplesReadByTheirOwnCredential(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	requireInteractionDeclared(t, database)

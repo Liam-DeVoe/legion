@@ -25,6 +25,7 @@ import (
 // byte once the id is substituted. No lens stands on a block of the document: the route removes
 // only a document whose one version is empty, which holds no block.
 func TestRemovingADocumentTakesEveryLensOnItGone(t *testing.T) {
+	t.Parallel()
 	settle := newSettleRig(t)
 	document := emptyDocument(t, settle.handler, settle.issue.Key, "Notes nobody wrote.md")
 	address := "dispatch://" + settle.issue.Key + "/artifact/" + document.Slug

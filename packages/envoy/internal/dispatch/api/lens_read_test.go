@@ -110,6 +110,7 @@ func lensKindWords(t *testing.T, rig reasoningRig, id string) string {
 // (gone_subtree_test.go), and a lens on a block of a comment or a part of an ask that a revision
 // removes TestALensOnARemovedPartOrCommentBlockNamesItsLastRevision's.
 func TestTheLensReadAnswersEveryLensInInvocationOrder(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	tradeOff := rig.invoke(rig.spec, "trade-off", "alice", nil)
@@ -223,6 +224,7 @@ func requireEveryLensOn(t *testing.T, what string, read nodeLenses) {
 // a pre-mortem's risks in the order of their part_of tuples, each whole, a risk no check prevents
 // with an empty list; a finding or a risk reserved for its author is in its author's read alone.
 func TestTheLensReadAnswersEachLensWithItsFindingsAndRisks(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	lens := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{
 		"verdict": "Keep one region.", "findings": []string{"A second region doubles the cost.", "Failover takes minutes."},
@@ -314,6 +316,7 @@ func TestTheLensReadAnswersEachLensWithItsFindingsAndRisks(t *testing.T) {
 // only through H - is nowhere, and his one chain is C and E. alice reads the whole chain, D on the
 // requirement among it. A read on a lens's address answers its own trigger ends, each reader's.
 func TestALensReadSkipsALensTheReaderMayNotSee(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	a := rig.invoke(rig.spec, "trade-off", "alice", nil)
 	hidden := rig.invoke(rig.spec, "inversion", "alice", map[string]any{"triggered_by": a.Address, "visibility": graphstore.VisibilityAuthor})
@@ -393,6 +396,7 @@ func TestALensReadSkipsALensTheReaderMayNotSee(t *testing.T) {
 // nobody wrote, 404 NOT_FOUND; and gone is final, so the state route's overtaken on it is 409
 // NODE_GONE naming it.
 func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	parent := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{"A finding a lens looks at."}})
 	finding := parent.Findings[0].Address
@@ -423,6 +427,7 @@ func TestALensOnAFindingGoesGoneWithTheFinding(t *testing.T) {
 // refused the same way, so a move changes neither the order nor the rule. C triggered by B is
 // taken, and the spec answers the one chain A, B and C, starting at A.
 func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	a := rig.invoke(rig.spec, "trade-off", "alice", nil)
@@ -510,6 +515,7 @@ func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
 // lens on the paragraph, so no lens past the cut begins one, and no chain holds the fifty-first or
 // any lens after it.
 func TestALensChainOfSixtyIsCutAtFifty(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	stacked := rig.invokeChain(rig.requirement, 60, true)
 	read := rig.lenses(rig.requirement, "alice")
@@ -574,6 +580,7 @@ func TestALensChainOfSixtyIsCutAtFifty(t *testing.T) {
 // root is the first lens invoked; here the lenses past the cut come first in the order the read
 // walks the lenses on the node, so only the rule that a root alone begins a chain keeps them out.
 func TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	invoked := make([]lensInvoked, 0, 120)
 	for range cap(invoked) {
@@ -624,6 +631,7 @@ func TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll(t *testing.T) {
 // TestALensChainOfExactlyFiftyIsListedWhole: a chain of exactly fifty, flat on the spec or
 // stacked on the requirement, is listed whole with no stop reported.
 func TestALensChainOfExactlyFiftyIsListedWhole(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	for _, shape := range []struct {
 		name, on string
@@ -647,6 +655,7 @@ func TestALensChainOfExactlyFiftyIsListedWhole(t *testing.T) {
 // holds and words that are no address each answer bob one 404, in the same words but the
 // address; alice reads her own lens. An empty on is 400.
 func TestALensReadOfANodeNobodyMaySeeAnswersNotFound(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	hidden := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
 	written := rig.post("/constraints", map[string]any{"standard": "A rule she keeps", "reference": "her notes", "visibility": graphstore.VisibilityAuthor}, "alice")

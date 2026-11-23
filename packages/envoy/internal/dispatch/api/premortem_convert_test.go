@@ -53,6 +53,7 @@ func readPremortemCapture(t *testing.T) premortemCapture {
 // the heading the capture names and the early warning and prevention its section holds, and the
 // two closing sections word for word, which the lens's verdict carries after the document's own.
 func TestTheParserReadsTheCapturedPremortem(t *testing.T) {
+	t.Parallel()
 	capture := readPremortemCapture(t)
 	document, err := parsePremortem(capture.Document.Markdown)
 	if err != nil {
@@ -256,6 +257,7 @@ func (r premortemRig) retirements(artifactID string) []string {
 // cites that address holds the lens as its member, and the store census reads no difference and
 // no unresolved far end. A second call finds that lens and writes nothing.
 func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	document, err := parsePremortem(rig.capture.Document.Markdown)
 	if err != nil {
@@ -473,6 +475,7 @@ func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
 // naming its position, its risk and that member, and a body that is not JSON keeps 400
 // INVALID_JSON. With the eleven entries and dry_run it answers the report and writes nothing.
 func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	path := "/api/v1/issues/" + rig.issue + "/artifacts/" + rig.slug + "/premortem-convert"
 	before := rig.storeCounts()
@@ -532,6 +535,7 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 // store holds no node or tuple of it - no lens, no risk, no prevented_by, no moved_to - and the
 // document stays listed and unretired.
 func TestAConversionMapNamingACheckOfAnotherProjectWritesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	foreign, _ := rig.otherProjectCheck()
 	entries := rig.premortemMap()

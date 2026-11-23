@@ -33,11 +33,7 @@ import (
 // so the two moves run in order against the one issue, not as subtests a reader could run alone,
 // and each failure names the move it came from.
 func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T) {
-	// Not parallel: it reads the issue right after the move and wants the sequence the move
-	// committed, so it assumes no later event of its own issue lands between the move and that
-	// read. Among this package's parallel tests on CI's runner one did, and the read answered 20
-	// for a close at 19 (job 137359069610), under newCloseAsksFixture's 20 ms settle delay. This
-	// fixture settles the issue's documents only when the test asks, after that read.
+	t.Parallel()
 	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
 	anchored := createThreadComment(t, f.handler, f.issue, map[string]any{
 		"body":   "Does this still hold?",

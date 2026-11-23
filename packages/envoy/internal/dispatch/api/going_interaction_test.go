@@ -154,6 +154,7 @@ func requireFramesHeldAsValues(t *testing.T, database *store.Store, run string, 
 // is inserted, and the id of the transaction that inserted it, which is the id that wrote the
 // node, the tuple and the author's node.
 func TestARunIsAnInteractionNodeWrittenBeforeItsRowInOneTransaction(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	runWritesSeen(t, rig.database)
 	ctx := context.Background()
@@ -252,6 +253,7 @@ func TestARunIsAnInteractionNodeWrittenBeforeItsRowInOneTransaction(t *testing.T
 // the one before it: no sequence is taken twice, none is skipped, and each frame's value and row
 // are both there.
 func TestTwoWritersAppendingFramesOfOneRunTakeGaplessSequences(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	run := rig.record(t, "how many frames can two writers append?")
@@ -301,6 +303,7 @@ func TestTwoWritersAppendingFramesOfOneRunTakeGaplessSequences(t *testing.T) {
 // exactly what an address nobody holds answers. A run whose author is nobody, which only a direct
 // call writes, is answered to nobody at all and states no authored_by.
 func TestARunIsReadByTheWholeCredentialThatAskedIt(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	pool := rig.database.Pool
@@ -372,6 +375,7 @@ func TestARunIsReadByTheWholeCredentialThatAskedIt(t *testing.T) {
 // (graphstore.WriteRun), with its authored_by, its author's node and a frame value of every frame
 // that pod stored, and then the frame itself, all in the frame's one transaction.
 func TestAFrameOfARunWithNoNodeWritesTheNodeFirst(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	pool := rig.database.Pool

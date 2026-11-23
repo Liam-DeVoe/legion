@@ -29,6 +29,7 @@ import (
 // nothing filled: it writes every field that carries no `,omitempty`, so no answer of either shape
 // leaves them out.
 func TestTheGraphNodeKindEnumIsTheRegistrysKinds(t *testing.T) {
+	t.Parallel()
 	want := map[string][]string{
 		"kind":       refs.ResolvableKinds(),
 		"state":      graphstore.NodeStates(),

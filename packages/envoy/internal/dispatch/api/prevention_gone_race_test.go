@@ -25,6 +25,7 @@ import (
 // no lock would read it live before the pass committed, and the pass would read the risk's tuples
 // before the append committed, so both would commit and the tuple would stand at a gone check.
 func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	ctx := context.Background()
 	premortem := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", nil)
@@ -81,7 +82,7 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 		}
 		var waiting bool
 		if err := rig.database.Pool.QueryRow(ctx, `
-			select exists (select 1 from pg_stat_activity where $1::integer = any(pg_blocking_pids(pid)))
+			select exists (select 1 from pg_stat_activity where datname = current_database() and $1::integer = any(pg_blocking_pids(pid)))
 		`, int64(pass)).Scan(&waiting); err != nil {
 			t.Fatalf("read what waits on the index pass: %v", err)
 		}

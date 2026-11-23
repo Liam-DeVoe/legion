@@ -132,6 +132,7 @@ func (r runDocumentRig) madeForRun(t *testing.T) model.Artifact {
 // node live counted the removed document while listing it no more, and one that left its
 // changed_by_run asserted listed the new document under the run that made the old one, both ways.
 func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRemoved(t *testing.T) {
+	t.Parallel()
 	rig := newRunDocumentRig(t, "GONE")
 	document := rig.madeForRun(t)
 
@@ -175,6 +176,7 @@ func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRemoved(t *testing.
 // is not gone (refs' liveVisibleNodeOf), so the run's ?to= and its count both leave the document
 // out, and its ?from= lists no run.
 func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRetired(t *testing.T) {
+	t.Parallel()
 	rig := newRunDocumentRig(t, "RETIRED")
 	document := rig.madeForRun(t)
 

@@ -25,6 +25,7 @@ import (
 // PATCH of other labels, which names the issue once, so the run was admitted and the first
 // write's none is the write's own.
 func TestAPatchForARunThatChangesNoFieldNamesNoChange(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()
@@ -79,6 +80,7 @@ func TestAPatchForARunThatChangesNoFieldNamesNoChange(t *testing.T) {
 // does. A second PATCH of the issue for the run moves nothing of the node and appends no second
 // changed_by_run.
 func TestAPatchForARunGivesAnIssueWithNoNodeTheNodeTheBackfillGivesIt(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()

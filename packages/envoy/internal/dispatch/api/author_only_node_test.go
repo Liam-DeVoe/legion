@@ -337,6 +337,7 @@ func requireOnlyTheFiveKindsTakeAuthor(t *testing.T) {
 // nodes of the kinds that compare the person, bob's reads none. Last, a comment asked for author is
 // refused naming its kind, and the comment list holds no new comment.
 func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
+	t.Parallel()
 	requireOnlyTheFiveKindsTakeAuthor(t)
 
 	rig := newReasoningRig(t)

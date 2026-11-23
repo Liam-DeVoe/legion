@@ -94,6 +94,7 @@ func runRows(t *testing.T, database *store.Store, run string) (int, int) {
 // its rows, and read by nobody else either way. The third run's node reads gone though the sweep
 // removed none of its rows, and the later release's node stays live.
 func TestARunIsGoneAfterOneHour(t *testing.T) {
+	t.Parallel()
 	routes := newGoingRoutesRig(t, nil)
 	rig := goingRig{server: routes.server, database: routes.database}
 	ctx := context.Background()
@@ -310,6 +311,7 @@ func TestARunIsGoneAfterOneHour(t *testing.T) {
 // sequential scans off, under which a read of every node is an index scan and not a sequential
 // one, so that condition is what tells a probe from a scan.
 func TestTheSweepReadsOfTheRunsPastTheHourAreBounded(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	const index = "graph_nodes_interaction_live"

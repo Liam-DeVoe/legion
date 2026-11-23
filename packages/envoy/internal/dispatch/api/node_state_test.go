@@ -105,6 +105,7 @@ func stateTupleCount(t *testing.T, database *store.Store) int64 {
 // with no tuple carrying it stored and the node at the state it held. A node of the issue another
 // person may not see answers that person as an id nobody wrote.
 func TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	lens := rig.invoke(rig.spec, "trade-off", "alice", nil)
@@ -185,6 +186,7 @@ func requireGoneRefused(t *testing.T, name string, response *httptest.ResponseRe
 // 409 NODE_GONE naming the node written on, and a lens triggered by the gone lens, a far end, is
 // still 404 NOT_FOUND. A gone lens reserved for alice answers bob as a lens nobody wrote.
 func TestALensTakenGoneTakesItsFindingsAndRisksGone(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	const bobSession = "ses_bob_agent_00001"
@@ -388,6 +390,7 @@ const threeRequirements = ":::requirement{#r1}\nThe cache holds every read for a
 // a new version of the spec changes r3's text, and r3 still reads overtaken, since the index pass
 // keeps every node state that is not gone.
 func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "PRP", "Proposed requirements", threeRequirements)
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "The plan holds no task yet.\n")
@@ -531,6 +534,7 @@ func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T
 // version of the spec that rewrites another block then leaves the requirement's cause as it was:
 // its row was never at the sentinel, which that version's index pass moves its own event onto.
 func TestAStateWriteKeepsTheCauseOfTheBlockItMoves(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	cause := func() int64 {
@@ -597,6 +601,7 @@ func TestAStateWriteKeepsTheCauseOfTheBlockItMoves(t *testing.T) {
 // node the backfill has not reached, of the same code, does not name - and stores no tuple and no
 // row; the block still reads live, and the settle refuses it as a node that is not proposed.
 func TestTheStateRouteRefusesABlockOfACommentInWordsThatAreTrue(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	comment := createThreadComment(t, rig.handler, rig.issue, map[string]any{"body": "The first remark.\n\nThe second remark."}, "alice")
@@ -633,6 +638,7 @@ func TestTheStateRouteRefusesABlockOfACommentInWordsThatAreTrue(t *testing.T) {
 // partial index graph_nodes_proposed: its plan reads graph_nodes through that index and scans the
 // table nowhere, so the read costs the few rows at proposed and not every node of the store.
 func TestTheProposedReadTakesTheProposedIndex(t *testing.T) {
+	t.Parallel()
 	_, database := newTestHandlerWithStore(t)
 	plan := planWithoutSeqScans(t, database, issueProposedQuery, "PRP-1", refs.VisibilityArg(model.Actor{Kind: "user", ID: "alice"}))
 	if explaintest.SeqScansRelation(t, plan, "graph_nodes") {

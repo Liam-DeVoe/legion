@@ -38,6 +38,7 @@ import (
 // lens nobody wrote answers, 404 NOT_FOUND byte for byte once the id is substituted, and leaves LX
 // live on F.
 func TestALensMovedOntoADocumentRecordsThatDocumentsRow(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	a := emptyDocument(t, rig.handler, rig.issue, "Notes A.md")
 	c := emptyDocument(t, rig.handler, rig.issue, "Notes C.md")
@@ -169,6 +170,7 @@ func movePartOf(t *testing.T, database *store.Store, issue, kind, id, toKind, to
 // alice invokes a trade-off analysis LK on X#b's address. LK records X's row, and not Y's; alice's
 // removal of Y leaves LK live, and GET /api/v1/lenses?on= LK answers its on naming X#b's address.
 func TestALensOnABlockRecordsTheRowItsAddressNames(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	x := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "x-notes.md", "# X\n\nThe one paragraph of X.\n").Artifact
 	y := emptyDocument(t, rig.handler, rig.issue, "Notes Y.md")
@@ -206,6 +208,7 @@ func TestALensOnABlockRecordsTheRowItsAddressNames(t *testing.T) {
 // as refuseGoneNode names a gone document, and the store holds no new lens node and no new part_of
 // tuple out of a lens.
 func TestALensWriteThatWaitsBehindARemovalIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "RSN", "Reasoned work", "An opening paragraph.\n").Key

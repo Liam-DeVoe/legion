@@ -31,6 +31,7 @@ import (
 // issue among them. A run of the command bar the reader asked is a node the reader reads and one
 // that stands under no issue, so no issue's route finds it.
 func TestFindNodeUnderIssueDecodesTheStoreAddress(t *testing.T) {
+	t.Parallel()
 	fixture := seedPrivateNode(t, true)
 	ctx := context.Background()
 	pool := fixture.database.Pool

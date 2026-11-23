@@ -26,6 +26,7 @@ import (
 // INVALID_ATTRIBUTE_VALUE, naming the attribute, the word and the two values it takes. `project`,
 // or no visibility at all, writes the comment as today, project-visible.
 func TestACommentAskedForAuthorIsRefusedNamingItsKind(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "VIS", "A comment asked for author", "# Spec\n\nA passage.\n")
 	comments := "/api/v1/issues/" + issue.Key + "/comments"

@@ -137,6 +137,7 @@ func requireRefused(t *testing.T, name string, response *httptest.ResponseRecord
 // from the requirement to it, and the issue's constraint list. Each answer names the node at its
 // address with its author, state and visibility, and the store holds what the answer says.
 func TestTheReasoningRoutesWriteEachNodeAndAnswerItsShape(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 
 	lens := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{
@@ -266,6 +267,7 @@ func TestTheReasoningRoutesWriteEachNodeAndAnswerItsShape(t *testing.T) {
 // TestTheReasoningRoutesRefuseAndStoreNothing holds each refusal of the reasoning routes to its
 // status and code and to what it names, and to a store that holds after it what it held before.
 func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 
 	before, _ := rig.counts(graphstore.KindLens, graphstore.TupleHasKind)
@@ -348,6 +350,7 @@ func TestTheReasoningRoutesRefuseAndStoreNothing(t *testing.T) {
 // type rules hold (graphstore.PointerKinds), the list the route reads: a struct tag cannot read a
 // variable, so a kind the store's table gains or drops fails here until the tag says the same.
 func TestThePointerRouteKindEnumIsTheStoresPointerKinds(t *testing.T) {
+	t.Parallel()
 	field, ok := reflect.TypeFor[pointerInput]().FieldByName("Kind")
 	if !ok {
 		t.Fatal("pointerInput holds no Kind field")
@@ -367,6 +370,7 @@ func TestThePointerRouteKindEnumIsTheStoresPointerKinds(t *testing.T) {
 // kind away from pre-mortem is the same 409, body for body, whether a risk hangs under the lens
 // or none does.
 func TestAPointerRetargetMovesTheKindAndKeepsThePlace(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	lens := rig.invoke(rig.spec, "trade-off", "alice", nil)
 	place := rig.current(graphstore.KindLens, lens.ID, graphstore.TuplePartOf)
@@ -416,6 +420,7 @@ func TestAPointerRetargetMovesTheKindAndKeepsThePlace(t *testing.T) {
 // pointer at it. Each is the 404 a node nobody holds answers, in the same words but the address,
 // and nothing is stored. The constraint list holds the hidden constraint for its author alone.
 func TestAFarEndTheCallerMayNotSeeAnswersAsNoNode(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	hidden := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
 	if hidden.Visibility != graphstore.VisibilityAuthor {
@@ -497,6 +502,7 @@ func TestAFarEndTheCallerMayNotSeeAnswersAsNoNode(t *testing.T) {
 // another project that the caller may not see, and an address there nobody holds, each answer the
 // one 404 an address nobody holds answers, through either route.
 func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	foreign, foreignNode := rig.otherProjectCheck()
 	premortem := rig.invoke(rig.requirement, graphstore.LensKindPreMortem, "alice", nil)
@@ -593,6 +599,7 @@ func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
 // through the risk route, the pointer route's append and retarget, and the conversion's map, in a
 // dry run as in a real one, which names the entry and its risk too; nothing is stored.
 func TestARetiredDocumentsChecksPreventNoRisk(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	ctx := context.Background()
 	premortem := rig.invoke(rig.requirement, graphstore.LensKindPreMortem, "alice", nil)
@@ -719,6 +726,7 @@ func TestARetiredDocumentsChecksPreventNoRisk(t *testing.T) {
 // TestARepeatedLensWriteUnderItsKeyWritesOnce: the route's Idempotency-Key answers a repeat of a
 // lens's invocation from the key, and the store holds one lens.
 func TestARepeatedLensWriteUnderItsKeyWritesOnce(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	before, _ := rig.counts(graphstore.KindLens, graphstore.TupleHasKind)
 	key := uuid.NewString()
@@ -740,6 +748,7 @@ func TestARepeatedLensWriteUnderItsKeyWritesOnce(t *testing.T) {
 // list, its backlink count and the lens read of it each hold the lens, and alice's own lens for
 // alice alone.
 func TestALensOnABlockOfACommentStandsOnItWhereEveryReaderKeysIt(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	comment := createThreadComment(t, rig.handler, rig.issue, map[string]any{"body": "The first remark.\n\nThe second remark."}, "alice")
 	node := "comment/" + comment.ID + "#b1"
@@ -795,6 +804,7 @@ func TestALensOnABlockOfACommentStandsOnItWhereEveryReaderKeysIt(t *testing.T) {
 // whose words name the node the write drew and the node it would stand under or on, each by its
 // address, and the store holds after each what it held before.
 func TestAChildIsNeverWiderThanItsParent(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	hidden := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", map[string]any{
 		"visibility": graphstore.VisibilityAuthor, "findings": []string{"Her own finding."},

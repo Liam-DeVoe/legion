@@ -159,6 +159,7 @@ func storedNodeOf(t *testing.T, database *store.Store, address string) graphstor
 // (gone_subtree_test.go), and the lenses a document's removal takes gone are
 // TestRemovingADocumentTakesEveryLensOnItGone's.
 func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
+	t.Parallel()
 	settle := newSettleRig(t)
 	rig, issuer, issue, spec := settle.brokerTokenRig, settle.issuer, settle.issue, settle.spec
 	asFirst, asSecond := settle.asFirst, settle.asSecond
@@ -533,6 +534,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 // nothing a caller is refused moves a node. Each writer marks its own lens proposed, as its
 // author, but for the shared bearer, which proves no author: alice, a person, marks its lens.
 func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t)})
@@ -680,6 +682,7 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 // such sessions therefore author no proposal to be told apart by, and what tells them from the
 // workload is the read.
 func TestABrokerSessionOfAWorkloadIsNotThatWorkload(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	issuer := newServiceTokenIssuer(t)
 	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})

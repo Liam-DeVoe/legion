@@ -107,6 +107,7 @@ func requireReadsAsALensNobodyWrote(t *testing.T, failure func(read, status, log
 // form nobody wrote answers once that id is read as the hidden one's, and it is absent from the
 // edges of the nodes it stands on. An address of each kind nobody wrote is a 404, never a 500.
 func TestTheReferencesReadAnswersEachNewKindAtItsAddress(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	created := func(name string, response *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 		t.Helper()

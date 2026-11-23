@@ -48,6 +48,7 @@ import (
 // checks is an error and not the end of the test, so a run whose route leaves a node standing, or
 // takes a move it refuses, names each node.
 func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	first := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"findings": []string{"The first lens's finding."}})
 	finding := first.Findings[0].Address
@@ -351,6 +352,7 @@ func TestANodeTakenGoneTakesItsWholePartOfSubtree(t *testing.T) {
 // same write on a lens nobody wrote answers, 404 NOT_FOUND, on either document. None of the
 // refused writes stores a lens, a part_of tuple or a state tuple.
 func TestAWriteOnALensOnARemovedDocumentIsRefusedAsGone(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	// lensed is a document of the rig's issue that alice made by typing a title, at address, with
 	// her pre-mortem lens on it holding a finding she added and a risk she wrote, and her trade-off
@@ -447,6 +449,7 @@ func TestAWriteOnALensOnARemovedDocumentIsRefusedAsGone(t *testing.T) {
 // `dispatch://KEY/artifact/<slug>@v<N>`, and GET /api/v1/references answers the node's `parent`
 // naming that block or document with `parent_version` N.
 func TestALensOnARemovedBlockOrARetiredDocumentNamesItsParent(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	onBlock := rig.invoke(rig.secondCheck, "trade-off", "alice", nil)
 	uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "verification.md", checkServing("k1", rig.requirement))
@@ -521,6 +524,7 @@ func requireNamedParent(t *testing.T, rig reasoningRig, address, want string) {
 // such a node is (the ruling of 2026-11-20 07:15Z on the spec's R1): no write is narrowed in
 // silence. A finding asked for no visibility takes its lens's, `author`.
 func TestAFindingAskedForProjectUnderAnAuthorOnlyLensIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newReasoningRig(t)
 	lens := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
 	nodes, tuples := rig.counts(refs.BlockNodeKind, graphstore.TuplePartOf)
