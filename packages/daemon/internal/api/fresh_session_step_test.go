@@ -188,6 +188,8 @@ func TestAControllersFreshSessionReachesTheClaimItNames(t *testing.T) {
 		// named is the claim the body names, as a function of the tester's own claim and key a's.
 		named func(own, keyed claim.Token) string
 		code  int
+		// refusal is the refusal's code the answer carries, "" for an answer that is no refusal.
+		refusal string
 		// fresh is the claim the request brings back in a new session, "" for none.
 		fresh func(own, keyed claim.Token) claim.Token
 	}{
@@ -196,12 +198,12 @@ func TestAControllersFreshSessionReachesTheClaimItNames(t *testing.T) {
 		{name: "no claim: the step's worker", named: func(_, _ claim.Token) string { return "" },
 			code: http.StatusOK, fresh: func(_, keyed claim.Token) claim.Token { return keyed }},
 		{name: "a claim of another issue", named: func(_, _ claim.Token) string { return "legion-legion-legion-210-tester" },
-			code: http.StatusBadRequest, fresh: func(_, _ claim.Token) claim.Token { return "" }},
+			code: http.StatusBadRequest, refusal: "INVALID_CLAIM", fresh: func(_, _ claim.Token) claim.Token { return "" }},
 		{name: "a claim of the issue that holds another role", named: func(_, _ claim.Token) string { return "legion-legion-legion-209-reviewer" },
-			code: http.StatusConflict, fresh: func(_, _ claim.Token) claim.Token { return "" }},
+			code: http.StatusConflict, refusal: "CLAIM_NOT_OF_ROLE", fresh: func(_, _ claim.Token) claim.Token { return "" }},
 		{name: "key a's agent's own token, named as the implementer it no longer is", role: claim.RoleImplementer,
 			named: func(_, keyed claim.Token) string { return string(keyed) },
-			code:  http.StatusConflict, fresh: func(_, _ claim.Token) claim.Token { return "" }},
+			code:  http.StatusConflict, refusal: "CLAIM_NOT_OF_ROLE", fresh: func(_, _ claim.Token) claim.Token { return "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -246,6 +248,12 @@ func TestAControllersFreshSessionReachesTheClaimItNames(t *testing.T) {
 					Claim: tc.named(own, keyed)}, nil)
 			if recorder.Code != tc.code {
 				t.Fatalf("the fresh session = %d (%s), want %d", recorder.Code, recorder.Body, tc.code)
+			}
+			if tc.refusal != "" {
+				var refused Failure
+				if err := json.Unmarshal(recorder.Body.Bytes(), &refused); err != nil || refused.Code != tc.refusal {
+					t.Fatalf("the refusal = %+v (%v), want the code %s: %s", refused, err, tc.refusal, recorder.Body)
+				}
 			}
 			fresh := tc.fresh(own, keyed)
 			for token, m := range machines {
