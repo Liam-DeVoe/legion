@@ -1751,14 +1751,15 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // behind an earlier notice of its tree that is held for the same architect, so each architect is
 // told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
 // earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). An
-// owner-step is published only while the run of the step it tells is open, and finishes
-// undelivered once that run has ended; one of a step other than the owner's acceptance and its
-// retro waits besides until its architect's slot holds the App of that step (ownerSlotHolds), and
-// the next notice to the owner after one of its steps ends waits for the write of its own App back
-// to its slot. A role topic with no live holder refuses the publish (notify.ErrNoHolder): while
-// the architect's claim can hold its role again — relaunching, a root the operator suspended and
-// can resume, or the
-// architect of a catch-up's own issue suspended while that issue is in the workflow, which its
+// owner-step is published only while the run it tells is open, and finishes undelivered once that
+// run has ended (ownerStepRuns); one of a step that acts as an App other than the owner's own
+// (ownApp: not the owner's acceptance, nor its retro) waits besides until its architect's slot
+// holds that App (ownerSlotHolds). The end of a step the owner did queues the write of its slot
+// back to its own App, and every notice to the architect queued after that write waits until it
+// ran (slotWritePending). A role topic with no live holder refuses the publish
+// (notify.ErrNoHolder): while the architect's claim can hold its role again — relaunching, a root
+// the operator suspended and can resume, or the architect of a catch-up's own issue suspended
+// while that issue is in the workflow, which its
 // next start resumes — the row is held for it; once nobody will hold that role for this notice —
 // the claim has failed or retired, or its tree lingers or has closed — the row finishes
 // undelivered with one log line. So does a row whose architect cannot be resolved from the record
