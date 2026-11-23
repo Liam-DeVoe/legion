@@ -4911,7 +4911,7 @@
       "requirement": "r3-each-site",
       "package": "./internal/redact",
       "test": "TestAnAnswersDecodeErrorQuotesNoValue/box",
-      "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box member's own type error, which names no field, names its member through failingMember"
+      "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box member's own type error, which names no field, names its member through failingMember, with the JSON kind the box's error names"
     },
     {
       "id": "redact-answer-decode-box-at-depth",

@@ -456,11 +456,15 @@ func decodeText(err error, data []byte, t reflect.Type) string {
 		return fmt.Sprintf("the answer is not JSON that %s decodes from (at byte %d)", typeName(t), syntax.Offset)
 	}
 	name, field := failingMember(data, t)
-	// A type error that names no field, from a member's own UnmarshalJSON - a RemoteText's, for a
-	// member that holds no JSON string - to which encoding/json adds none, names its member below.
 	var typed *json.UnmarshalTypeError
-	if errors.As(err, &typed) && (typed.Field != "" || name == "") {
+	if errors.As(err, &typed) {
 		kind, _, _ := strings.Cut(typed.Value, " ")
+		// A type error that names no field, from a member's own UnmarshalJSON - a RemoteText's, for
+		// a member that holds no JSON string - to which encoding/json adds none, names the member
+		// failingMember finds, and that member's type.
+		if typed.Field == "" && name != "" {
+			return fmt.Sprintf("the answer's %q is a JSON %s where %s holds %s", name, kind, typeName(t), typeName(field))
+		}
 		return fmt.Sprintf("the answer's %s is a JSON %s where %s holds %s", member(typed.Field, t), kind, typeName(t), typeName(typed.Type))
 	}
 	if name != "" {

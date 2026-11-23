@@ -66,9 +66,9 @@ func TestAnEventReadsAlikeFromTheLogAndTheStream(t *testing.T) {
 // created_at or a sequence of the wrong JSON kind; an event that is no object - is refused, and the
 // durable stream's decoder refuses the same event. Each error names the member, or the event's
 // place, where its decoder can, and holds no run of the bearer. A box's own type error in a list
-// names no member (Answer.Decode names one only in an object it decodes into), so the log's refusal
-// of a created_at that is a number names the JSON kind alone. Captures dispatch.event-log/<case>
-// and dispatch.event-stream/<case>.
+// names no member and encoding/json adds none, so the log's refusal of a created_at that is a
+// number names the member as Answer.Decode finds it, the list's item as "(item)", and the JSON
+// kind. Captures dispatch.event-log/<case> and dispatch.event-stream/<case>.
 func TestAnEventThatDoesNotReadIsRefusedWithoutItsText(t *testing.T) {
 	const token = "dsp_event-RDX-5c1a9e7f3b"
 	for _, tc := range []struct {
@@ -79,7 +79,7 @@ func TestAnEventThatDoesNotReadIsRefusedWithoutItsText(t *testing.T) {
 		{name: "time", event: `{"id":1,"issue_key":"LEGION-9","seq":3,"type":"ask.opened","notify":true,"created_at":"{auth}","payload":{}}`,
 			served: []string{"event 1 of the page, at sequence 3", "created_at"}, streamed: []string{"created_at"}},
 		{name: "time-number", event: `{"id":1,"issue_key":"LEGION-9","seq":3,"type":"ask.opened","notify":true,"created_at":7,"payload":{"note":"{auth}"}}`,
-			served: []string{"JSON number"}, streamed: []string{"created_at", "JSON number"}},
+			served: []string{`"(item).created_at"`, "JSON number"}, streamed: []string{"created_at", "JSON number"}},
 		{name: "sequence", event: `{"id":1,"issue_key":"LEGION-9","seq":"{auth}","type":"ask.opened","notify":true,"payload":{}}`,
 			served: []string{"seq", "JSON string"}, streamed: []string{"seq", "JSON string"}},
 		{name: "no-object", event: `"{auth}"`,

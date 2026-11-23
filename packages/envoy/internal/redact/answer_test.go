@@ -99,8 +99,9 @@ func TestAnAnswersDecodeErrorQuotesNoValue(t *testing.T) {
 // through the list as "(item)", in a map's value or as the value through the map as "(key)", as
 // member names those segments, whether the list or the map is a member or the destination itself;
 // a member the answer spells in another case, or one promoted from an embedded struct, by the
-// destination's own name for it. The answer echoes the request's bearer as a map key and as a
-// value that decodes, and the error quotes neither. Captures redact.answer-decode-box/<case>.
+// destination's own name for it; and each with the JSON kind the box's error names. The answer
+// echoes the request's bearer as a map key and as a value that decodes, and the error quotes
+// neither. Captures redact.answer-decode-box/<case>.
 func TestAnAnswersDecodeErrorNamesABoxMemberAtAnyDepth(t *testing.T) {
 	type boxed struct {
 		Code redact.RemoteText `json:"code"`
@@ -136,8 +137,8 @@ func TestAnAnswersDecodeErrorNamesABoxMemberAtAnyDepth(t *testing.T) {
 				t.Fatal("Decode took an answer that does not decode")
 			}
 			redacttest.RequireNone(t, "redact.answer-decode-box/"+c.name, fmt.Sprintf("%v | %+v | %#v", err, err, err))
-			if !strings.Contains(err.Error(), "the answer's "+c.names+" ") {
-				t.Errorf("Decode's error is %q, want it to name %s", err, c.names)
+			if !strings.Contains(err.Error(), "the answer's "+c.names+" is a JSON number ") {
+				t.Errorf("Decode's error is %q, want it to name %s and the JSON number it held", err, c.names)
 			}
 			if errors.Unwrap(err) != nil {
 				t.Errorf("Decode's error unwraps to %v, whose text quotes the value", errors.Unwrap(err))
