@@ -63,7 +63,8 @@ The two files in that directory are the operator's, and `apply.sh` writes the Co
 To change the model a role uses, edit that role's line under `modelRoles` in `overlay.yml` and run
 the same `apply.sh` command; nothing in this repository changes. Pods started after that read the
 new file. A running pod keeps the files it started with until it restarts, because `pod.yml` mounts
-both by `subPath`, which the kubelet never refreshes.
+both by `subPath`, which the kubelet never refreshes. A role of `roles` that names a `model` runs on
+that `model` in `legion.yaml`, and no line under `modelRoles` applies to it.
 
 `modelRoles.default` is the model of each role whose settings name no model, a resumed session
 included: each such launch names `--model @default`, Oh My Pi's own name for that role, so a role

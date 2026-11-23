@@ -8085,8 +8085,8 @@ each issue's pod (every role of it alike) and the image probe's.
   a forced one writes its copy back, and one without force fails on any key whose value differs and leaves the operator's copy;
   either way, stop it declaring the ConfigMap first.
   To change a role's model, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
-  A role of `roles` that names a `model` runs on it, and its line under `modelRoles` does not apply to it.
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
+  A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under `modelRoles` applies to it.
   The example overlay also turns `retry.modelFallback` on (LEGION-578's decision:
   a failed model call is retried on another model;
   which model is the repository's `retry.fallbackChains` to name):

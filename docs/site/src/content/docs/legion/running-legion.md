@@ -1097,7 +1097,8 @@ every variable your route depends on in `pod.env`, which outranks a repository's
 
 To change a role's model later, edit its line under `modelRoles` in your `overlay.yml` and run the
 same `apply.sh` command. Pods started after that use it; a running pod keeps its files until it is
-relaunched.
+relaunched. A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no
+line under `modelRoles` applies to it.
 
 ## Check and start the daemon
 
