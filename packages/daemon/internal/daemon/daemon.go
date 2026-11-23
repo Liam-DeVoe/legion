@@ -900,7 +900,7 @@ type plan struct {
 	// phaseHolds, rootHears, rootTask, designNews and treeClosable are the workflow's answers to
 	// the supervisor's predicates; nil without a workflow, where every delivery is sent as it was
 	// queued and every tree closes.
-	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64, fix int) (bool, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, []byte, error)
 	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)

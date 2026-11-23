@@ -1026,8 +1026,11 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// it for all of them: an adoption run while another role is in a turn moves that role's worker
 	// onto a fresh commit mid-write, and the work it goes on to do lands authored by this role —
 	// a review App's adoption took the implementer's next commit that way (dispatch://INFRA-714).
-	// The task waits for that turn instead. Nothing is written and nothing moves: the delivery is
-	// left exactly as it was, and the hold is decided again, from the claims as they stand then,
+	// The task waits for that turn instead. The hold is scoped to the working copy the task works
+	// (copyOf): a fix works a copy of its own beside the shared one, so a fix's task waits for no
+	// turn in the shared copy, and a task of the shared copy waits for no fix's turn, which writes
+	// nothing there. Nothing is written and nothing moves: the delivery is left exactly as it was,
+	// and the hold is decided again, from the claims as they stand then,
 	// at the next trigger — the turn's end elsewhere on the issue, which the daemon posts here
 	// (IssueTurnEnded), the sweep's observation, the shim's hello, this claim's own ready. That is
 	// what keeps the task from being stranded by a turn that never ends: a claim whose process
@@ -1047,7 +1050,7 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// with no agent round trip in it. Two sends that start inside each other's tail are what
 	// remains, and no answer read outside the other machine's lock can rule that out.
 	if m.adopts(*p) {
-		if other, inTurn := m.issueInTurn(); inTurn {
+		if other, inTurn := m.issueInTurn(copyOf(*p)); inTurn {
 			m.log.Info("supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share",
 				"delivery", p.ID, "issue", m.claim.Issue, "inTurn", other)
 			return nil
@@ -1346,16 +1349,18 @@ func (m *Machine) relaunchAfterDrop(ctx context.Context) error {
 	return m.sendPending(ctx)
 }
 
-// phaseHolds asks whether the issue is still in the phase and run this task was queued for. A delivery
-// that names no phase is nobody's to drop — an operator's own, an architect's — and is never put
-// to the answer at all, so the exemption this package documents is this package's own rather
-// than a promise every implementation has to keep. A daemon with no workflow configured supplies
-// no answer, and every delivery holds.
+// phaseHolds asks whether this task is still its issue's work: the issue is still in the phase and
+// run it was queued for, or, for a fix's task (Delivery.Fix), that fix still runs on that run,
+// whatever phase the issue stands in, since it runs beside the step of the phase (the daemon
+// answers with record.PhaseHolds). A delivery that names no phase is nobody's to drop — an
+// operator's own, an architect's — and is never put to the answer at all, so the exemption this
+// package documents is this package's own rather than a promise every implementation has to keep.
+// A daemon with no workflow configured supplies no answer, and every delivery holds.
 func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	if m.deps.PhaseHolds == nil || d.Phase == "" {
 		return true, nil
 	}
-	holds, err := m.deps.PhaseHolds(ctx, m.claim.Issue, d.Phase, d.Generation)
+	holds, err := m.deps.PhaseHolds(ctx, m.claim.Issue, d.Phase, d.Generation, d.Fix)
 	if err != nil {
 		return false, fmt.Errorf("read the phase of %s: %w", m.claim.Token, err)
 	}
@@ -1586,18 +1591,53 @@ func (m *Machine) adopts(d Delivery) bool {
 	return m.deps.Identity != nil && m.claim.Role != claim.RoleController && d.Phase != ""
 }
 
-// issueInTurn names another claim of this claim's issue whose agent is in a turn now, or whose
-// prompt is on its way to one, when there is such a claim. The answer is the state those claims'
-// machines keep (Deps.IssueInTurn reads StateWorking, which a turn's start sets and its end
-// clears, and the send in flight those machines publish beside it) rather than a second record of
-// who is in a turn kept beside them: the machines' own state is the only account that moves with
-// everything that ends a turn — the agent's own end of it, a process found dead, a suspension, a
-// close — where a record of turn times would have to be told of each of those again.
-func (m *Machine) issueInTurn() (claim.Token, bool) {
+// WorkingCopy names the working copy of an issue a task works, which is the one its adoption
+// rewrites (adopt): CopyIssue, the workspace the issue's roles share (LEGION_WORKSPACE), or CopyFix,
+// the fix's own copy beside it, which the shim makes and moves (its FixDir). The turn hold guards
+// one working copy two adoptions share (sendPending's hold, Deps.IssueInTurn).
+type WorkingCopy string
+
+const (
+	// CopyIssue is the working copy the issue's roles share: every task of no fix works it, and a
+	// claim that serves no task counts as working it (ClaimView.Copy).
+	CopyIssue WorkingCopy = ""
+	// CopyFix is a fix's own working copy, which a fix's task works.
+	CopyFix WorkingCopy = "fix"
+)
+
+// copyOf is the working copy d works: the fix's own for a fix's task (Delivery.Fix), else the
+// shared one.
+func copyOf(d Delivery) WorkingCopy {
+	if d.Fix > 0 {
+		return CopyFix
+	}
+	return CopyIssue
+}
+
+// servedCopy is the working copy of the delivery a claim serves, pending or confirmed — the claim
+// holds it until it is retired (Claim.Pending) — and CopyIssue for a claim that serves none, so a
+// turn no task of a fix started, an Envoy message's among them, still holds an adoption of the
+// shared copy.
+func servedCopy(pending *Delivery) WorkingCopy {
+	if pending == nil {
+		return CopyIssue
+	}
+	return copyOf(*pending)
+}
+
+// issueInTurn names another claim of this claim's issue whose agent is in a turn in workingCopy
+// now, or whose prompt is on its way to one, when there is such a claim. The answer is the state
+// those claims' machines keep (Deps.IssueInTurn reads StateWorking, which a turn's start sets and
+// its end clears, the send in flight those machines publish beside it, and the working copy each
+// serves) rather than a second record of who is in a turn kept beside them: the machines' own
+// state is the only account that moves with everything that ends a turn — the agent's own end of
+// it, a process found dead, a suspension, a close — where a record of turn times would have to be
+// told of each of those again.
+func (m *Machine) issueInTurn(workingCopy WorkingCopy) (claim.Token, bool) {
 	if m.deps.IssueInTurn == nil || m.claim.Issue == "" {
 		return "", false
 	}
-	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token)
+	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token, workingCopy)
 }
 
 // adopt hands the working copy the role's App identity before the phase task d reaches the agent,

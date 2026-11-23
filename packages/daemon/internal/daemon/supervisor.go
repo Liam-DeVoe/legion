@@ -83,14 +83,18 @@ func (s *supervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
 }
 
 // claimInTurn names a claim of issue other than except whose agent is in a turn now, or is about
-// to be, for the adoption a phase task makes of the working copy an issue's roles share
+// to be, in the working copy workingCopy, for the adoption a phase task makes of that working copy
 // (supervise's Deps.IssueInTurn). A claim counts when its published state is StateWorking, a turn
 // in flight, and when its machine has a send in flight (supervise.ClaimView.SendInFlight): the
 // prompt that starts that turn is on its way and the adoption it goes behind may be rewriting the
-// shared working copy at this moment, which is the very thing this answer guards. Without it two
-// phase tasks to two roles of one issue each read the other as idle and adopt together
+// working copy at this moment, which is the very thing this answer guards. Without it two phase
+// tasks to two roles of one issue each read the other as idle and adopt together
 // (dispatch://INFRA-314), and a turn's end wakes a held claim whose own next send has already
-// started.
+// started. It counts only a claim whose published working copy is workingCopy
+// (supervise.ClaimView.Copy): a fix works a copy of its own, so its adoption takes nothing from a
+// turn in the copy the issue's roles share, and an adoption of the shared copy takes nothing from
+// the fix's turn, which writes nothing there. A claim that serves no task counts as the shared
+// copy's, so an Envoy turn of any claim still holds an adoption of it.
 //
 // It reads each machine's published claim rather than any record of turns kept beside them, and
 // it iterates the lock-free snapshot of the machines (supervised) rather than taking s.mu:
@@ -98,13 +102,13 @@ func (s *supervisor) Machine(token claim.Token) (*supervise.Machine, bool) {
 // reader here holding s.mu while a machine decides would be those two locks taken in both orders.
 // View never waits on the decision a machine is making either, so answering this can never be
 // held up by another claim's launch or stop.
-func (s *supervisor) claimInTurn(issue string, except claim.Token) (claim.Token, bool) {
+func (s *supervisor) claimInTurn(issue string, except claim.Token, workingCopy supervise.WorkingCopy) (claim.Token, bool) {
 	if issue == "" {
 		return "", false
 	}
 	for _, machine := range s.supervised() {
 		view := machine.View()
-		if view.Token == except || view.Issue != issue {
+		if view.Token == except || view.Issue != issue || view.Copy != workingCopy {
 			continue
 		}
 		if view.State == supervise.StateWorking || view.SendInFlight {

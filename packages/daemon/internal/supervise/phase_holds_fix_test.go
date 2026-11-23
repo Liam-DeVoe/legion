@@ -35,9 +35,7 @@ func heldShut(t *testing.T) (*harness, *fixIssue) {
 	t.Helper()
 	h := newBareHarness(t)
 	issue := &fixIssue{phase: phase.Reviewing, generation: 5, runningFix: 1}
-	h.deps.PhaseHolds = func(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
-		return issue.holds(ctx, key, queuedFor, generation, 0)
-	}
+	h.deps.PhaseHolds = issue.holds
 	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
 		t.Fatal(err)
 	}
