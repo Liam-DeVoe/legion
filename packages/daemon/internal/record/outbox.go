@@ -1735,18 +1735,19 @@ func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
 // (ProductionCheck.OpenedAt), since a later merge of the same issue replaces the check and counts
 // its looks from one again — zero names no instance and is not fenced. Reason is what the wake
 // is, for the look's wake and the log: the checking agent's summary on its pending report, or the
-// daemon's words of the retry of a look nobody reported. Retry marks the latter (workflow's
-// endLook): the look it starts names it as a retry (woken_by: retry). A row with no mark that this
-// release queued is the agent's own wake, whose reason is the agent's summary whatever words it
-// opens with. A row an earlier release queued marked none: one whose reason is word for word that
-// release's sentence of a retry is a retry too where it is not the wake of the pending report whose
-// time the check holds (it comes due before the check's WakeAt, or the check holds no such time),
-// and any other is the agent's own wake (workflow's queuedRetry).
+// daemon's words of the retry of a look nobody reported. Every row this release queues says which
+// with exactly one mark (workflow's nameWake): Retry marks the retry (workflow's endLook), whose
+// look names it as a retry (woken_by: retry), and Pending the agent's own wake, whose look gives
+// the reason as the agent's summary whatever words it opens with. A row an earlier release queued
+// carries neither: it is a retry where its reason is word for word that release's sentence of a
+// retry, and otherwise the agent's own wake, as that release's checking role read it (workflow's
+// queuedRetry).
 type CheckWakeDue struct {
 	Look     int       `json:"look"`
 	OpenedAt time.Time `json:"openedAt,omitzero"`
 	Reason   string    `json:"reason"`
 	Retry    bool      `json:"retry,omitempty"`
+	Pending  bool      `json:"pending,omitempty"`
 }
 
 func (CheckWakeDue) OutboxKind() OutboxKind { return OutboxKindCheckWake }

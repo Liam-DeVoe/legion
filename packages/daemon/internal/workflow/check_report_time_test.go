@@ -38,7 +38,7 @@ func TestANamedLooksSummaryBlockNamesWhenThePendingReportWasRecorded(t *testing.
 			t.Fatalf("the check_wake row of look %d's pending = %+v, want that look with the report's summary as its reason", look, due)
 		}
 		rig.clock.now = wake
-		rig.apply("wake-"+summary, intake.CheckWakeDue{Issue: issue, Look: due.Look, OpenedAt: due.OpenedAt, Reason: due.Reason})
+		rig.apply("wake-"+summary, intake.CheckWakeDue{Issue: issue, Look: due.Look, OpenedAt: due.OpenedAt, Reason: due.Reason, Retry: due.Retry, Pending: due.Pending})
 		starts := superviseRowsOf(t, rig.pool, issue, "start")
 		if latest := starts[len(starts)-1]; latest.CheckLook != look+1 || latest.Role != claim.RoleTester {
 			t.Fatalf("the newest start row = %+v, want look %d handed to the tester", latest, look+1)
@@ -72,7 +72,7 @@ func TestANamedLooksSummaryBlockNamesWhenThePendingReportWasRecorded(t *testing.
 		t.Fatalf("the check_wake row of look 2 nobody reported = %+v, want look 2's retry", retry)
 	}
 	rig.clock.now = ended.Add(CheckLookBound)
-	rig.apply("look-2-retry", intake.CheckWakeDue{Issue: issue, Look: retry.Look, OpenedAt: retry.OpenedAt, Reason: retry.Reason, Retry: retry.Retry})
+	rig.apply("look-2-retry", intake.CheckWakeDue{Issue: issue, Look: retry.Look, OpenedAt: retry.OpenedAt, Reason: retry.Reason, Retry: retry.Retry, Pending: retry.Pending})
 	starts := superviseRowsOf(t, rig.pool, issue, "start")
 	if read := readTaskOf(t, starts[len(starts)-1].Task); read.fields["woken_by"] != "retry" || len(read.blocks) != 0 {
 		t.Fatalf("look 3's task is woken_by %q with the blocks %+v, want the retry and no summary block", read.fields["woken_by"], read.blocks)

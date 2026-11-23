@@ -148,35 +148,24 @@ const retryOfLook = "the retry of a look nobody reported: "
 // name a look's bound, an operator's hold on its start and its role's failed claim.
 var earlierRetryCauses = []string{"look bound", "operator hold", "claim failed"}
 
-// queuedRetry is whether the check_wake row fact, due on check, is the retry of a look nobody
-// reported: a row this release queued says so by its mark (record.CheckWakeDue.Retry), since its
-// endLook marks every retry it queues. A row an earlier release queued has no mark, and it is a
-// retry where its reason is word for word the sentence that release's endLook wrote, retryOfLook
-// and one of earlierRetryCauses, and the row is not the wake of the pending report the check holds
-// the time of (record.ProductionCheck.ReportedAt). checkReported queues that report's row,
-// unmarked, due at the WakeAt it writes beside that time, so a row that came due before the
-// check's WakeAt (intake.CheckWakeDue.Due, the row's own due time, not the time it runs), or on a
-// check that names none, is not that report's row: it is the retry an earlier release queued for
-// the look the report came late for (a look its bound, an operator's hold or its role's failed
-// claim ended first), which the report left queued beside its own row. The time the row runs
-// tells nothing here: the outbox holds a row while its project is paused, and runs none while the
-// daemon is down, so a retry that came due before the WakeAt can run after it. Where something
-// moved the WakeAt while that report's row stands (a later report of the same look, a row deferred
-// while the issue runs again), that row is read as a retry only where its summary is the sentence
-// word for word. An earlier release never wrote the time of a report, so every check it recorded
-// holds none, and the words alone tell its rows apart, as the checking role's prompt of that
-// release told them apart: its retry's reason was that sentence, and its pending's the role's own
+// queuedRetry is whether the check_wake row fact is the retry of a look nobody reported. A row this
+// release queued says which it is by its one mark (nameWake): Retry for the retry its endLook
+// queued, Pending for the checking role's own wake, whose reason is the summary of its pending
+// report whatever words it opens with. A row an earlier release queued carries neither mark, and
+// it is a retry exactly where its reason is word for word the sentence that release's endLook
+// wrote, retryOfLook and one of earlierRetryCauses, as the checking role's prompt of that release
+// told them apart: its retry's reason was that sentence, and its pending's the role's own
 // summary, which is read as a retry only where the role wrote that sentence word for word as its
 // whole summary.
-func queuedRetry(check record.ProductionCheck, fact intake.CheckWakeDue) bool {
-	if fact.Retry {
+func queuedRetry(fact intake.CheckWakeDue) bool {
+	switch {
+	case fact.Retry:
 		return true
-	}
-	cause, found := strings.CutPrefix(fact.Reason, retryOfLook)
-	if !found || !slices.Contains(earlierRetryCauses, cause) {
+	case fact.Pending:
 		return false
 	}
-	return check.ReportedAt == nil || check.WakeAt == nil || fact.Due.Before(*check.WakeAt)
+	cause, found := strings.CutPrefix(fact.Reason, retryOfLook)
+	return found && slices.Contains(earlierRetryCauses, cause)
 }
 
 // CheckLook is what the check's role is told at a look of the closed issue's production check, as
@@ -357,12 +346,12 @@ func (e *Engine) endLook(ctx context.Context, tx pgx.Tx, check *record.Productio
 // look's pending only for an issue with no such requirement. The last look, reported pending or not
 // reported, closes the check as not run. Every other look names when the check is next looked at
 // (nameWake: the clamped wake the record already carries, with reason as what wakes it and retry
-// marking the retry of a look nobody reported), which is
-// the one thing that starts the look after this one — nothing else reads production any more. An
-// issue back in the workflow — a root reopened inside its linger, whose implementer now works the
-// new run — writes that row and suspends nobody: the check waits, its wake row defers itself while
-// the run holds the issue (checkWakeDue), and the check closes with the run's next merge
-// (openCheck) or at its bound (checkBound).
+// saying whether it is the retry of a look nobody reported or the checking role's own wake),
+// which is the one thing that starts the look after this one — nothing else reads production any
+// more. An issue back in the workflow — a root reopened inside its linger, whose implementer now
+// works the new run — writes that row and suspends nobody: the check waits, its wake row defers
+// itself while the run holds the issue (checkWakeDue), and the check closes with the run's next
+// merge (openCheck) or at its bound (checkBound).
 // The claim of the check's role is then suspended, its session kept, and the issue's Sandbox is
 // deleted with the pod it ran in (record.IssueSuspend): both rows follow the look's start row, so
 // the suspension's fences find no later start and wait for the suspend (store.IssueSuspension),
@@ -415,8 +404,9 @@ func (e *Engine) lookRetry() time.Time { return e.now().Add(CheckLookBound) }
 // nameWake queues the one row that starts check's next look: a check_wake row
 // (record.CheckWakeDue) due at the clamped moment the record already carries (clampWake, written
 // with the look's close), carrying the look the wake was named at, the check instance it was
-// named for, reason, which the look it starts is woken by, and retry, the mark of the retry of a
-// look nobody reported (record.CheckWakeDue.Retry). A wake at or past the check's bound is no
+// named for, reason, which the look it starts is woken by, and exactly one mark of what the wake
+// is (record.CheckWakeDue): Retry where retry is set, the retry of a look nobody reported, and
+// Pending where it is not, the checking role's own wake. A wake at or past the check's bound is no
 // wake: WakeAt is unset and no row is written, so the record holds whichever row stands and
 // nothing else.
 func (e *Engine) nameWake(ctx context.Context, tx pgx.Tx, check *record.ProductionCheck, reason string, retry bool) error {
@@ -425,7 +415,8 @@ func (e *Engine) nameWake(ctx context.Context, tx pgx.Tx, check *record.Producti
 			"mergeCommit", check.MergeSHA, "look", check.Looks, "bound", check.BoundAt, "reason", reason)
 		return nil
 	}
-	if err := e.enqueueAt(ctx, tx, check.Issue, record.CheckWakeDue{Look: check.Looks, OpenedAt: check.OpenedAt, Reason: reason, Retry: retry}, *check.WakeAt); err != nil {
+	due := record.CheckWakeDue{Look: check.Looks, OpenedAt: check.OpenedAt, Reason: reason, Retry: retry, Pending: !retry}
+	if err := e.enqueueAt(ctx, tx, check.Issue, due, *check.WakeAt); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: production check wake named", "issue", check.Issue, "mergeCommit", check.MergeSHA, "look", check.Looks,
@@ -543,8 +534,9 @@ func (e *Engine) checkLookEnded(ctx context.Context, tx pgx.Tx, fact intake.Chec
 //
 // The first three change nothing and are logged with why; without them the last one's queue
 // would make an orphan row immortal. Whether the row is the retry of a look nobody reported is
-// read once (queuedRetry), so the look it starts names a retry, and a row queued again keeps the
-// mark: an earlier release's unmarked retry is queued again marked.
+// read once (queuedRetry), so the look it starts names a retry or the checking role's own wake,
+// and a row queued again carries the mark it was read by: an earlier release's unmarked row is
+// queued again marked.
 func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckWakeDue) (intake.Result, error) {
 	check, err := e.store.ProductionCheck(ctx, tx, fact.Issue)
 	if err != nil {
@@ -568,7 +560,7 @@ func (e *Engine) checkWakeDue(ctx context.Context, tx pgx.Tx, fact intake.CheckW
 			"reason", fact.Reason, "why", why)
 		return intake.Result{}, nil
 	}
-	retry := queuedRetry(*check, fact)
+	retry := queuedRetry(fact)
 	issue, _, err := e.checkIssue(ctx, tx, *check)
 	if err != nil {
 		return intake.Result{}, err

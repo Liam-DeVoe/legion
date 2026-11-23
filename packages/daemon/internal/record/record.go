@@ -1401,11 +1401,8 @@ func (m MergeState) Mergeable() bool {
 // row where the wake falls before the bound), and the look that wake starts names it as the time
 // of the report's summary (workflow.CheckLook). A look nobody reported clears it, since the wake
 // its end names is a retry no report named (workflow.endLook), and it is nil on a check an
-// earlier release recorded, whose named look names no time. An unmarked check_wake row whose
-// reason is an earlier release's sentence of a retry is read as that retry only where it is not
-// the wake of the report ReportedAt times: where ReportedAt is nil, where WakeAt is, or where the
-// row comes due before WakeAt (workflow.queuedRetry). Last marks the bound's look, after which no
-// look starts. A closed check has ClosedAt and its Outcome.
+// earlier release recorded, whose named look names no time. Last marks the bound's look, after
+// which no look starts. A closed check has ClosedAt and its Outcome.
 type ProductionCheck struct {
 	Issue   string
 	Project string

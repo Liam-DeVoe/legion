@@ -2958,13 +2958,13 @@ This release adds fields to the payloads that its outbox queues:
 - An update-stalled notice names who suspended each suspended claim that it lists (`update.waiting[].suspended_by`), `pause` for a claim that a project's pause stopped, whether or not that pause still owes the claim a launch, and whether a claim that it lists left the round's pod (`update.waiting[].left_round`).
   A claim that the pause stopped owing it no launch is named `pause` until the claim is ready again or a release of the pod suspends the claim's role (`pod_releases.roles` names it); a release that suspended other roles alone leaves it `pause`.
 
-- A `check_wake` row of the retry of a look nobody reported carries `retry`, and the look it starts names a retry (`woken_by: retry`).
-  A `check_wake` row with no `retry` that this release queued starts a look that names the checking role's own wake (`woken_by: named`) with the row's reason in its summary block, whatever words that reason opens with.
-  A `check_wake` row that an earlier release queued has no `retry`.
-  Where its reason is word for word that release's sentence of a retry (`the retry of a look nobody reported: ` and then `look bound`, `operator hold` or `claim failed`), the look that it starts names a retry, with `retry_of`, unless it is the wake of the pending report whose time its check holds (`production_checks.reported_at`).
-  Such a report's own row comes due at the check's `wake_at`, so such a row that comes due before it, or on a check with no `wake_at`, is the earlier release's retry of the look that the report came late for.
+- A `check_wake` row that this release queues carries one of two marks.
+  The retry of a look nobody reported carries `retry`, and the look it starts names a retry (`woken_by: retry`).
+  The checking role's own wake, which its pending report named, carries `pending`, and the look it starts names that wake (`woken_by: named`) with the row's reason in its summary block, whatever words that reason opens with.
+  A `check_wake` row that an earlier release queued carries neither mark.
+  Where its reason is word for word that release's sentence of a retry (`the retry of a look nobody reported: ` and then `look bound`, `operator hold` or `claim failed`), the look that it starts names a retry, with `retry_of`, as that release's checking role read it.
   Any other such row starts the checking role's own wake.
-  Where such a retry waits again because its issue is back in the workflow, the daemon queues it again with `retry`.
+  Where such a row waits again because its issue is back in the workflow, the daemon queues it again with the mark it was read by.
 
 - A pr-merged notice whose close waits carries `status_not_taken_yet` and `end_child_rule`, and a children-first notice carries `end_child_rule`: the sentence on a status the daemon has not taken yet and the rules for ending a child, word for word.
 

@@ -1366,20 +1366,19 @@ func (f CheckReport) namedIssue() (string, bool) { return f.Issue, true }
 
 // CheckWakeDue is the wake of issue Issue's production check coming due (the check_wake row at
 // ProductionCheck.WakeAt): the next look starts, woken by Reason — what the checking agent named
-// its own next look for on a pending report, or the retry of a look nobody reported, which Retry
-// marks (record.CheckWakeDue.Retry). Look is the look the check stood at when the wake was named,
-// so a row of a look the check has since left starts nothing, and OpenedAt the check instance it
-// was named for, so a row of a check a later merge of the same issue replaced — whose looks count
-// from one again — starts nothing either; a zero OpenedAt names none. Due is when the row came due
-// (record.OutboxRow.NextAt), which can be well before it runs: the outbox holds a row while its
-// project is paused, and runs none while the daemon is down.
+// its own next look for on a pending report, which Pending marks, or the retry of a look nobody
+// reported, which Retry marks (record.CheckWakeDue's marks; a row an earlier release queued
+// carries neither). Look is the look the check stood at when the wake was named, so a row of a
+// look the check has since left starts nothing, and OpenedAt the check instance it was named for,
+// so a row of a check a later merge of the same issue replaced — whose looks count from one again
+// — starts nothing either; a zero OpenedAt names none.
 type CheckWakeDue struct {
 	Issue    string
 	Look     int
 	OpenedAt time.Time
 	Reason   string
 	Retry    bool
-	Due      time.Time
+	Pending  bool
 }
 
 func (f CheckWakeDue) namedIssue() (string, bool) { return f.Issue, true }

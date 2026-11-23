@@ -49,13 +49,12 @@ body: |-
   time is. The look that a pending report's wake starts names when the daemon recorded that
   report on the block of its summary (`at`), which the check keeps (`production_checks.reported_at`,
   migration `20261122011615_production_check_reported_at`); the look of a check recorded before it
-  names no time. The wake of the retry of a look nobody reported is marked on its `check_wake` row
-  (`retry`), which makes the look it starts a retry (`woken_by: retry`), and so is a row an earlier
-  release queued with no mark whose reason is word for word that release's sentence of a retry,
-  where it is not the wake of the pending report whose time the check holds: on a check that holds
-  no such time, or that came due before the check's `wake_at`, whenever it runs, as the retry of a
-  look that a late report leaves queued beside its own row; any other wake is the checking role's
-  own, whose summary is its words whatever they open with. An
+  names no time. Each `check_wake` row this release queues says what it wakes: the retry of a look
+  nobody reported is marked `retry`, which makes the look it starts a retry (`woken_by: retry`),
+  and the checking role's own wake is marked `pending`, whose look gives its reason as the role's
+  summary whatever words it opens with. A row an earlier release queued carries neither mark: it
+  is a retry where its reason is word for word that release's sentence of a retry, as that release
+  read it, and otherwise the checking role's own wake. An
   update-stalled notice names who suspended each suspended claim it lists (`suspended_by:
   operator` for the operator's suspension, one held for a claim's turn among them, and
   `suspended_by: pause` for a claim a project's pause stopped, answered or not, whether the pause

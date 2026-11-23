@@ -4466,15 +4466,15 @@ func (r *outbox) lookBoundAfterPause(ctx context.Context, row record.OutboxRow, 
 // and otherwise changes nothing or queues the row again, as the workflow decides
 // (workflow.checkWakeDue). The row carries the check instance it was named for, so nothing is
 // read here before the fact: the workflow reads the check in the fact's own transaction, where no
-// report can land between the read and the look it starts. The fact carries when the row came due
-// (record.OutboxRow.NextAt), which the workflow reads an earlier release's unmarked row by
+// report can land between the read and the look it starts. The fact carries the row's marks
+// (record.CheckWakeDue.Retry and Pending), by which the workflow tells what woke the look
 // (workflow's queuedRetry). The event is the issue and this row, as the check's bound is
 // (checkBound), since the workflow queues the wake again as a new row while the issue runs again,
 // and that row's apply must be fresh rather than a duplicate of this one's.
 func (r *outbox) checkWake(ctx context.Context, row record.OutboxRow, payload record.CheckWakeDue) error {
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("check-wake:%s:%d", row.Issue, row.ID),
 		intake.CheckWakeDue{Issue: row.Issue, Look: payload.Look, OpenedAt: payload.OpenedAt, Reason: payload.Reason, Retry: payload.Retry,
-			Due: row.NextAt}, r.handlers...); err != nil {
+			Pending: payload.Pending}, r.handlers...); err != nil {
 		return fmt.Errorf("wake %s's production check at look %d: %w", row.Issue, payload.Look, err)
 	}
 	return nil
