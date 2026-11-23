@@ -143,10 +143,11 @@ func (c Claim) SessionOfAnotherAgent(agent plan.AgentID) bool {
 // under the machine's lock taken here, after the start's own record (StartedBy).
 //
 // The start read its step from the record before this lock, so it asks with the step's standing
-// (Standing), judged here under the lock before anything is recorded: a step its issue has left
-// since, by a move or a later entry, is ErrStepLeft, and the claim records no agent. Recorded for a
-// stale start, the agent would hold the session though its task is never delivered, and the next
-// start, of the agent whose session it is, would find another agent's and start a new session.
+// (Standing), judged here under the lock before anything is recorded where no earlier act of the
+// start has passed it: a step its issue has left since, by a move or a later entry, is
+// ErrStepLeft, and the claim records no agent. Recorded for a stale start, the agent would hold
+// the session though its task is never delivered, and the next start, of the agent whose session
+// it is, would find another agent's and start a new session.
 func (m *Machine) TakeSessionFor(ctx context.Context, agent plan.AgentID) error {
 	m.mu.Lock()
 	defer m.unlock()
@@ -427,9 +428,13 @@ func judgeStanding(ctx context.Context, token claim.Token, pass bool) error {
 // resumes it.
 //
 // The start read the step from the record before this lock, so it asks with the step's standing
-// (Standing), judged here under the lock: a step its issue has left since, by a move back or a
-// later entry, is ErrStepLeft, and the claim keeps the role it holds. A role is never stored for
-// a step the record no longer asks for, whatever reaches the claim next.
+// (Standing), and the first act of the start to pass that standing under a machine's lock commits
+// the start. Where Rerole is that first act, a step its issue has left since, by a move back or a
+// later entry, is ErrStepLeft, and the claim keeps the role it holds. Where a suspension the start
+// asked for landed at once, that suspension committed the start and Rerole judges nothing: a move
+// that committed in between leaves the claim with the step's role all the same, StartWork then
+// refuses to bring it back for the step the issue left (startHolds, through Deps.PhaseHolds), and
+// the next start of the claim's agent gives the claim the role of its own step.
 func (m *Machine) Rerole(ctx context.Context, role claim.Role) error {
 	m.mu.Lock()
 	defer m.unlock()
