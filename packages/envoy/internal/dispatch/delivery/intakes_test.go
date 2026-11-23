@@ -218,9 +218,8 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 // it gives up is handed back rather than acknowledged, so the next process to bind the durable
 // redoes it within seconds instead of after the ack wait.
 func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
-	budget := intakeStopBudget
-	intakeStopBudget = time.Second
-	t.Cleanup(func() { intakeStopBudget = budget })
+	tuning := tuningFor(t)
+	tuning.stopBudget = time.Second
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -231,7 +230,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	t.Cleanup(held.release)
 
 	runCtx, cancel := context.WithCancel(ctx)
-	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
+	stop, err := startIntakes(runCtx, tuning, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
 	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
 	if err != nil {
@@ -249,16 +248,16 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	started := time.Now()
 	cancel()
 	stop()
-	if waited, within := time.Since(started), budget/2; waited > within {
+	if waited, within := time.Since(started), intakeStopBudget/2; waited > within {
 		t.Fatalf("stop returned %s after ctx ended under a %s stop budget, want within %s: the budget did not bound the handler wait",
-			waited, intakeStopBudget, within)
+			waited, tuning.stopBudget, within)
 	}
 	// The fake records the end once it sees the request cancelled, a moment after the client did.
 	waitFor(t, 5*time.Second, func() bool { return slices.Equal(held.of("1"), []string{"start 1", "end 1"}) }, func() string {
 		return fmt.Sprintf("pull request 1's events once stop returned = %q, want the held fetch given up", held.of("1"))
 	})
 
-	runIntake(t, newIntake(intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	runIntake(t, newIntake(tuningFor(t), intakeTestClient(t), pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitAcknowledged(t, publisher)
 	if events, want := held.of("1"), []string{"start 1", "end 1", "start 1", "end 1"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 1's events = %q, want %q: the next process redoes the message given up", events, want)
@@ -337,7 +336,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 
 	jobsCtx, stopJobs := context.WithCancel(ctx)
 	jobsDone := make(chan struct{})
-	jobs := newJobIntake(shared, pool, leases, github, realJobClock{}, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), shared, pool, leases, github, realJobClock{}, loadedSettingsCache(t, ctx, pool))
 	go func() {
 		defer close(jobsDone)
 		jobs.Run(jobsCtx)
@@ -351,7 +350,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 	})
 
 	seedDeliverySettings(t, ctx, pool)
-	startIntake(t, newIntake(shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	var refusal map[string]any
 	waitFor(t, 20*time.Second, func() bool {
 		for _, record := range logs() {
