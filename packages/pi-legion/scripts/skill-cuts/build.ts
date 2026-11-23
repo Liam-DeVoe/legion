@@ -554,7 +554,6 @@ import {
 } from "./cases";
 import {
   configFrom,
-  eachChunk,
   firstLine,
   GhRetries,
   installationRateWait,
@@ -569,8 +568,6 @@ import {
   type Sent,
   STORE_QUIET_MS,
   schemaFaults,
-  textOf,
-  timeLimit,
   transientReason,
   writeWhole,
 } from "./common";
@@ -646,7 +643,7 @@ import {
   stepText,
 } from "./judge";
 import { EvidenceItem, messageLoad, type RecordedListing, Task } from "./load";
-import { PsqlTable, PullCheck } from "./psql-rows";
+import { eachStoreRow, PullCheck, storeRows } from "./psql-rows";
 import {
   AuditAnswer,
   CaseAnswer,
@@ -1044,66 +1041,6 @@ function readJson(file: string): unknown {
 
 // ---------------------------------------------------------------------------------------------
 // The store
-
-/** The rows of `query` run by the store command `command` on the database `db`, as eachStoreRow
- *  reads them. */
-async function storeRows(command: string, db: string, query: string): Promise<unknown[]> {
-  const rows: unknown[] = [];
-  await eachStoreRow(command, db, query, (row) => {
-    rows.push(row);
-  });
-  return rows;
-}
-
-/**
- * Runs `query` by the store command `command` on the database `db` and gives each row to `visit`
- * as the command prints it, read by psql-rows.ts's `PsqlTable`: what is held is the row being read
- * and the chunks of output it spans (common.ts's `eachChunk` lets each chunk go once it is read),
- * never the whole answer. A command that prints nothing for `quietMs` is ended and reported
- * first, naming the command and the limit; its exit, and its error text when it fails, are waited
- * for under the same limit, so one that closes its output and does not exit is ended too, `quietMs`
- * after its last output. Then a command that fails is reported, with its first error line; then a
- * fault of its output; then a throw of `visit`, after which no row is given. Returns the rows the
- * table holds.
- */
-async function eachStoreRow(
-  command: string,
-  db: string,
-  query: string,
-  visit: (row: unknown) => void,
-  quietMs = STORE_QUIET_MS
-): Promise<number> {
-  const child = Bun.spawn([command, db], {
-    stdin: new Blob([query]),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  // Ended once it prints nothing for `quietMs` (STORE_QUIET_MS): each chunk starts the time again.
-  const limit = timeLimit(child, quietMs);
-  const stderr = textOf(child.stderr, limit);
-  const table = new PsqlTable(visit);
-  let code: number;
-  let first = "";
-  try {
-    await eachChunk(child.stdout, limit, (chunk) => {
-      limit.touch();
-      table.write(chunk);
-    });
-    code = await child.exited;
-    if (code !== 0 && !limit.timedOut()) {
-      first = (await stderr).split("\n").find((each) => each.trim() !== "") ?? "";
-    }
-  } finally {
-    limit.clear();
-  }
-  if (limit.timedOut()) {
-    throw new Error(
-      `the store command ${command} printed nothing for ${quietMs} ms on ${db}, so it was ended (STORE_QUIET_MS)`
-    );
-  }
-  if (code !== 0) throw new Error(`the store command exited ${code}: ${first.slice(0, 300)}`);
-  return table.end();
-}
 
 /** Pulls the file `filePath` of the store `db` into the file `spool`, PULL_PAGE rows a call, each
  *  row checked by psql-rows.ts's `PullCheck` and its bytes written as it comes (`eachStoreRow`),

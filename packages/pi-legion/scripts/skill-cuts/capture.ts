@@ -182,7 +182,7 @@ import {
   InjectionRefused,
 } from "./arms";
 import type { Case } from "./cases";
-import { eachChunk, json, STORE_QUIET_MS, textOf, timeLimit, writeWhole } from "./common";
+import { json, pastLimit, STORE_QUIET_MS, textOf, timeLimit, writeWhole } from "./common";
 import {
   buildContext,
   type ContextRecord,
@@ -193,7 +193,7 @@ import {
 } from "./context";
 import { sessionHeadSql } from "./countsql";
 import { type Gateway, isResponsesBody, type MessagesBody, type RequestBody } from "./gateway";
-import { psqlRows } from "./psql-rows";
+import { eachStoreRow } from "./psql-rows";
 import { messageSse, type RecordedRequest, sseResponse, startRecorder } from "./recorder";
 import { HOOK_LOG_VARIABLE, MESSAGES_VARIABLE, SYSTEM_PROMPT_VARIABLE } from "./replay-hook";
 
@@ -977,44 +977,23 @@ export async function sessionHeads(
     missing.push(hash);
   }
   if (missing.length === 0) return heads;
-  const child = Bun.spawn([command, store], {
-    stdin: new Blob([sessionHeadSql(missing)]),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  // Ended once it prints nothing for `quietMs` (common.ts's STORE_QUIET_MS): each chunk of its
-  // answer starts the time again, and its exit is waited for under the same limit, so one that
-  // closes its output and does not exit is ended too (as build.ts's `eachStoreRow`).
-  const limit = timeLimit(child, quietMs);
-  const chunks: Uint8Array[] = [];
-  const [, stderr, code] = await Promise.all([
-    eachChunk(child.stdout, limit, (chunk) => {
-      limit.touch();
-      chunks.push(chunk);
-    }),
-    textOf(child.stderr, limit),
-    child.exited,
-  ]);
-  limit.clear();
-  if (limit.timedOut()) {
-    throw new Error(
-      `the store command ${command}'s read of the session heads printed nothing for ${quietMs} ms on ${store}, so it was ended (STORE_QUIET_MS)`
-    );
-  }
-  const stdout = Buffer.concat(chunks).toString("utf8");
-  if (code !== 0) {
-    const first = stderr.split("\n").find((line) => line.trim() !== "") ?? "";
-    throw new Error(
-      `the store command's read of the session heads exited ${code}: ${first.slice(0, 300)}`
-    );
-  }
+  // Read as every store read is (psql-rows.ts's `eachStoreRow`): ended once it prints nothing for
+  // `quietMs` (STORE_QUIET_MS), each chunk of its answer starting the time again; its exit waited
+  // for under the same limit, and its error text only when it exits other than 0.
   const rows = new Map<string, z.infer<typeof HeadRow>>();
-  for (const row of psqlRows(stdout)) {
-    const parsed = HeadRow.safeParse(row);
-    if (!parsed.success)
-      throw new Error(`a session-head.sql row is no head: ${JSON.stringify(row)}`);
-    rows.set(parsed.data.hash, parsed.data);
-  }
+  await eachStoreRow(
+    command,
+    store,
+    sessionHeadSql(missing),
+    (row) => {
+      const parsed = HeadRow.safeParse(row);
+      if (!parsed.success)
+        throw new Error(`a session-head.sql row is no head: ${JSON.stringify(row)}`);
+      rows.set(parsed.data.hash, parsed.data);
+    },
+    quietMs,
+    "read of the session heads"
+  );
   const readAt = new Date().toISOString();
   for (const hash of missing) {
     const row = rows.get(hash);
@@ -1386,13 +1365,22 @@ function previewDescription(description: string): string {
 
 const versions = new Map<string, Promise<string>>();
 
-/** What `omp --version` prints for `binary`. */
-function ompVersion(binary: string): Promise<string> {
+/** The longest `omp --version` may run: it took 0.10 s on the pod (Oh My Pi 18.18.6, measured
+ *  2026-11-23), so a minute is 600 times that, room for a cold start on a loaded pod. */
+export const OMP_VERSION_TIMEOUT_MS = 60_000;
+
+/** What `omp --version` prints for `binary`. A run past `timeoutMs` (OMP_VERSION_TIMEOUT_MS) is
+ *  ended (common.ts's `timeLimit`) and fails naming the command and the limit (`pastLimit`).
+ *  Exported for capture.test.ts. */
+export function ompVersion(binary: string, timeoutMs = OMP_VERSION_TIMEOUT_MS): Promise<string> {
   let version = versions.get(binary);
   if (version === undefined) {
     version = (async () => {
       const child = Bun.spawn([binary, "--version"], { stdout: "pipe", stderr: "ignore" });
-      const [text, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      const limit = timeLimit(child, timeoutMs);
+      const [text, code] = await Promise.all([textOf(child.stdout, limit), child.exited]);
+      limit.clear();
+      if (limit.timedOut()) throw new Error(pastLimit(`${binary} --version`, timeoutMs));
       if (code !== 0) throw new Error(`${binary} --version failed with exit ${code}`);
       return text.trim();
     })();

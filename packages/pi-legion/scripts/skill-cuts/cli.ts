@@ -59,7 +59,8 @@
  * checked against `--old`). Each case's results are one file, `<out>/cases/<id>.json` (CaseResult),
  * written whole (a fresh file renamed over it) after each round of runs, so a run started again
  * goes on from what was saved and skips each case whose stage is complete. `--after-case
- * <command>` runs `<command> <that file>` through `sh` when a case's stage ends.
+ * <command>` runs `<command> <that file>` through `sh` when a case's stage ends; one still
+ * running after 10 minutes (AFTER_CASE_TIMEOUT_MS) is ended, and counts as failed.
  *
  * - `screen`: per case in the file's order, until the skill has MIN_INFORMATIVE_CASES informative
  *   or MAX_SCREENED_CASES screened cases (score.ts): a case whose model the gateway does not serve
@@ -255,10 +256,12 @@ import {
   configFrom,
   json,
   parse,
+  pastLimit,
   Refused,
   required,
   Stopped,
   schemaFaults,
+  timeLimit,
   writeWhole,
 } from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
@@ -358,6 +361,11 @@ const DEFAULT_CONCURRENCY = 8;
 /** The most the runner's peak resident memory may reach: a case that ends above it stops the run
  *  (exit 3). */
 const MEMORY_LIMIT_BYTES = 1024 ** 3;
+/** The longest one `--after-case` command may run. It is the user's command, so its time is
+ *  theirs; what it is for, a copy of the case's results file elsewhere, took 59 ms on the pod for
+ *  a file of 2.2 MB (the largest results file the efficiency review found was 2.1 MB; measured
+ *  2026-11-23), and 10 minutes leaves room for a copy to another machine. */
+export const AFTER_CASE_TIMEOUT_MS = 600_000;
 /** The request log's name: `<out>/requests.jsonl` for `behaviour` and `load`, and the `--out`
  *  file's path with `.requests.jsonl` added for `read` and `control`, unless `--request-log`
  *  names one. */
@@ -1719,6 +1727,29 @@ async function runStage(
   }
 }
 
+/** Runs the `--after-case` command `command` on the results file `file` (`<command> "<file>"`
+ *  through `sh`, its output the runner's own), ended once `timeoutMs` pass (common.ts's
+ *  `timeLimit`). Gives why it failed, naming the file (with the command and the limit when the
+ *  limit ended it, `pastLimit`), or undefined when it exited 0. Exported for cli.test.ts. */
+export async function runAfterCase(
+  command: string,
+  file: string,
+  timeoutMs = AFTER_CASE_TIMEOUT_MS
+): Promise<string | undefined> {
+  const child = Bun.spawn(["sh", "-c", `${command} "$1"`, "after-case", file], {
+    stdin: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const limit = timeLimit(child, timeoutMs);
+  const code = await child.exited;
+  limit.clear();
+  if (limit.timedOut()) {
+    return `the --after-case command for ${file}: ${pastLimit(command, timeoutMs)}`;
+  }
+  return code === 0 ? undefined : `the --after-case command exited ${code} for ${file}`;
+}
+
 /** Ends case `result`'s stage: records the peak memory, writes the result, says the case's line
  *  (its stage, the peak and the seconds of each phase of `phases`), runs `--after-case`, and stops
  *  the run when the peak is above MEMORY_LIMIT_BYTES. Returns the result as written. */
@@ -1740,14 +1771,9 @@ async function finishCase(
     `case ${result.caseId}: ${what}; peak memory ${mib(peak)} MiB; ${phaseWords(phases)}; written to ${file}`
   );
   if (r.afterCase !== undefined) {
-    const child = Bun.spawn(["sh", "-c", `${r.afterCase} "$1"`, "after-case", file], {
-      stdin: "ignore",
-      stdout: "inherit",
-      stderr: "inherit",
-    });
-    const code = await child.exited;
-    if (code !== 0) {
-      r.io.err(`${r.command}: the --after-case command exited ${code} for ${file}`);
+    const failed = await runAfterCase(r.afterCase, file);
+    if (failed !== undefined) {
+      r.io.err(`${r.command}: ${failed}`);
       r.afterCaseFailures.push(file);
     }
   }

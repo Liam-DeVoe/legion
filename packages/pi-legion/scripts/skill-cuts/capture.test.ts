@@ -23,6 +23,7 @@ import {
   NEUTRAL_CWD,
   NEUTRAL_OS,
   ompHarnessRules,
+  ompVersion,
   pluginTools,
   promptDigest,
   refusedTools,
@@ -2361,6 +2362,39 @@ test("a store command that closes its output and does not exit is ended at the r
     sessionHeads(lingers, "store_a", [pathHash("/sessions/other.jsonl")], root, 300)
   ).rejects.toThrow(
     `the store command ${lingers}'s read of the session heads printed nothing for 300 ms on store_a, so it was ended (STORE_QUIET_MS)`
+  );
+  expect(performance.now() - started).toBeLessThan(3_000);
+});
+
+// Catches: the heads read waiting for the store command's error output to close though the
+// command exited 0, so one whose child (a background process of the wrapper) still holds that
+// output open failed at the quiet limit, where build.ts's reads of the store succeed.
+test("a store command that exits 0 while a process it started holds its error output open is done: the heads are read, as every store read reads them", async () => {
+  const root = path.join(dir, "heads-exit-0");
+  mkdirSync(root, { recursive: true });
+  const leaves = path.join(root, "leaves.sh");
+  writeFileSync(
+    leaves,
+    "#!/bin/sh\ncat >/dev/null\nsleep 5 >/dev/null &\nprintf ' value \\n-------\\n(0 rows)\\n\\n'\n",
+    { mode: 0o755 }
+  );
+  const hash = pathHash("/sessions/other.jsonl");
+  const started = performance.now();
+  const heads = await sessionHeads(leaves, "store_a", [hash], root, 1_000);
+  expect(heads.get(hash)?.head.held).toBe(false);
+  expect(performance.now() - started).toBeLessThan(3_000);
+});
+
+// Catches: `omp --version` run with no limit, so a binary that never answers held the capture,
+// and the run, for ever.
+test("an `omp --version` that never exits is ended at its limit, and the capture fails naming the command and the limit", async () => {
+  const root = path.join(dir, "omp-version-hangs");
+  mkdirSync(root, { recursive: true });
+  const omp = path.join(root, "omp");
+  writeFileSync(omp, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  const started = performance.now();
+  await expect(ompVersion(omp, 200)).rejects.toThrow(
+    `\`${omp} --version\` ran past its limit of 200 ms, so it was ended`
   );
   expect(performance.now() - started).toBeLessThan(3_000);
 });

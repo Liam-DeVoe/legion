@@ -5576,9 +5576,9 @@ async function readAll(
   for (const owner of owners) {
     io.err(`copies: listing ${owner}`);
     try {
-      const listed =
-        cache.get("listing", owner, Listing) ??
-        (await github.json(
+      let listed = cache.get("listing", owner, Listing);
+      if (listed === undefined) {
+        listed = await github.json(
           [
             "repo",
             "list",
@@ -5589,8 +5589,9 @@ async function readAll(
             "nameWithOwner,isFork,isArchived,defaultBranchRef,parent",
           ],
           Listing
-        ));
-      cache.put("listing", owner, listed);
+        );
+        cache.put("listing", owner, listed);
+      }
       for (const entry of listed) {
         repositories.push({
           repository: entry.nameWithOwner,
@@ -5640,10 +5641,11 @@ async function readAll(
     for (const owner of listed) {
       let qualifier = "user";
       try {
-        const type =
-          cache.get("owner-type", owner, z.string()) ??
-          (await github.api(`users/${owner}`, GithubUser)).type;
-        cache.put("owner-type", owner, type);
+        let type = cache.get("owner-type", owner, z.string());
+        if (type === undefined) {
+          type = (await github.api(`users/${owner}`, GithubUser)).type;
+          cache.put("owner-type", owner, type);
+        }
         if (type === "Organization") qualifier = "org";
       } catch (error) {
         rethrowStop(error);

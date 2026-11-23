@@ -170,8 +170,9 @@ seed (`replay.ts`'s `sendOrder`); the first run of each arm in that order goes a
 arm's, so its reply writes the prefix cache the arm's later runs read, and no place of the order
 changes. A results file whose stages were run before this (they record no `sends`) is refused:
 use a new `--out`. `--after-case <command>` runs `<command> <that file>` when a case's stage
-ends. Captures are kept under `<out>/captures/`; a capture that is not there yet is made with Oh My
-Pi and needs `--models`: `--omp`, else `$LEGION_OMP_PATH`, else the `omp` on PATH, taken as an
+ends, and is ended after 10 minutes (`AFTER_CASE_TIMEOUT_MS`). Captures are kept under
+`<out>/captures/`; a capture that is not there yet is made with Oh My Pi and needs `--models`:
+`--omp`, else `$LEGION_OMP_PATH`, else the `omp` on PATH, taken as an
 absolute path; a command given `--models` when none of them names one is refused (exit 2), and
 `load` reads Oh My Pi the same way. The run stops above 1 GiB of peak resident memory, and no new
 model call starts once the replies cost `--budget-usd` at list price.
@@ -1155,12 +1156,18 @@ The runner starts at most 4 gh processes at once, across all its GitHub reads (c
 about 145 MiB a call, and one profile can start a read for every repository at once. The
 environment variable `SKILL_CUTS_GH_CONCURRENCY` (a whole number of 1 or more) sets another bound.
 
-Every gh call, store read, model call and download has a limit, and so does each Oh My Pi and
-Claude Code run (10 minutes, `RUN_TIMEOUT_MS`); the other commands the runner starts have none:
-`omp --version`, `claude --version`, `claude plugin marketplace add` and `claude plugin install`,
-the commands that build a context (`tar`, `bun install`, `bun run build` and `go test`, context.ts's
-`mustRun`), and `--after-case`. A gh call is ended after 120 s (`GH_CALL_TIMEOUT_MS`, context.ts's
-API reads too; its tarball read after 15 minutes, `GH_TARBALL_TIMEOUT_MS`), and an ended call is
+Every child the runner starts and every download it makes has a limit. Each Oh My Pi and Claude
+Code run is killed after 10 minutes (`RUN_TIMEOUT_MS`). The other commands are ended at their limit
+and fail naming the command and the limit (common.ts's `timeLimit` and `pastLimit`): `omp
+--version` after a minute (`OMP_VERSION_TIMEOUT_MS`); `claude --version` after a minute, and
+`claude plugin marketplace add` and `claude plugin install` after 5 minutes each
+(`CLAUDE_VERSION_TIMEOUT_MS`, `CLAUDE_PLUGIN_TIMEOUT_MS`); the commands that build a context
+(context.ts's `COMMAND_TIMEOUT_MS`): `tar` after 10 minutes, `bun install` after 15, `bun run
+build` after 10 and `go test` after 15; and `--after-case` after 10 minutes
+(`AFTER_CASE_TIMEOUT_MS`), when it counts as a failed `--after-case` command. Each limit is over
+100 times what one run took on the pod (each constant's comment gives the measure). A gh call is
+ended after 120 s (`GH_CALL_TIMEOUT_MS`, context.ts's API reads too; its tarball read after 15
+minutes, `GH_TARBALL_TIMEOUT_MS`), and an ended call is
 sent again as a transient failure (`time limit`).
 A store command is ended once it prints nothing for 20 minutes (`STORE_QUIET_MS`): the store's SQL
 ends itself after 15 minutes, and psql prints only after the query ends, so a pull that is still

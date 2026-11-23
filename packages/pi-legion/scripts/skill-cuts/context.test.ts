@@ -28,6 +28,7 @@ import {
   LOCAL_SKILL_REPO,
   legionRole,
   localSource,
+  mustRun,
   NoSuchFile,
   PROMPTS_GO,
   type RepoSource,
@@ -320,6 +321,20 @@ test("a SKILL.md that starts with a byte order mark is read as Oh My Pi reads it
     description: "Use when the file starts with a mark.",
     hidden: false,
   });
+});
+
+// Catches: the commands that build a context (`tar`, `bun install`, `bun run build`, `go test`)
+// run with no limit, so one that never exits held the capture for ever.
+test("a command that builds a context and never exits is ended at its limit, and fails naming the command and the limit", async () => {
+  const root = path.join(dir, "command-hangs");
+  mkdirSync(root, { recursive: true });
+  const tar = path.join(root, "tar");
+  writeFileSync(tar, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  const started = performance.now();
+  await expect(mustRun([tar, "-xzf", "a.tgz"], 200)).rejects.toThrow(
+    `\`${tar} -xzf a.tgz\` ran past its limit of 200 ms, so it was ended`
+  );
+  expect(performance.now() - started).toBeLessThan(3_000);
 });
 
 test("each skill is its repository's directory at its commit, through the cache, and the case's skill is the arm's", async () => {

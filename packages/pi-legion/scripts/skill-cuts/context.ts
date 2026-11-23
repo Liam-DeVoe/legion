@@ -117,6 +117,7 @@ import {
   installationRateWait,
   ompText,
   parseJson,
+  pastLimit,
   textOf,
   timeLimit,
 } from "./common";
@@ -507,11 +508,12 @@ export function skillFrontmatter(dir: string): { description: string; hidden: bo
   return skillTextFrontmatter(ompText(readFileSync(path.join(dir, "SKILL.md"))));
 }
 
-/** What a finished command gave. */
+/** What a finished command gave; `timedOut` when its limit ended it. */
 interface Ran {
   readonly code: number;
   readonly stdout: Uint8Array;
   readonly stderr: string;
+  readonly timedOut: boolean;
 }
 
 /** Runs `argv` to its end, or until `timeoutMs` has passed, when it is ended and its stderr says
@@ -547,15 +549,33 @@ async function run(
     // The concatenated bytes as a plain Uint8Array, with no copy of them.
     stdout: new Uint8Array(stdout.buffer, stdout.byteOffset, stdout.byteLength),
     stderr: limit.timedOut() ? `${stderr}\ntimed out after ${options.timeoutMs} ms` : stderr,
+    timedOut: limit.timedOut(),
   };
 }
 
-/** Runs `argv` and throws, naming it and its last error lines, when it fails. */
-async function mustRun(
+/** The longest each command that builds a context may run, from one run of each on the pod
+ *  (2026-11-23, warm caches): `tar -xzf` of a 71 MB tarball (this repository's) took 5.1 s, so 10
+ *  minutes is over 100 times that; `bun install --frozen-lockfile --ignore-scripts --filter` of a
+ *  plugin took 2.0 s with bun's cache filled, and 15 minutes leaves room for an empty cache that
+ *  downloads every package; `bun run build` took 1.1 s, so 10 minutes; the role prompt's `go test`
+ *  took 8.4 s with Go's build cache filled, and 15 minutes leaves room for an empty one. */
+export const COMMAND_TIMEOUT_MS = {
+  tar: 600_000,
+  bunInstall: 900_000,
+  bunBuild: 600_000,
+  goTest: 900_000,
+} as const;
+
+/** Runs `argv` and throws, naming it and its last error lines, when it fails; it is ended once
+ *  `timeoutMs` pass (common.ts's `timeLimit`), and throws naming it and the limit (`pastLimit`).
+ *  Exported for context.test.ts. */
+export async function mustRun(
   argv: readonly string[],
+  timeoutMs: number,
   options: { readonly cwd?: string; readonly env?: Record<string, string | undefined> } = {}
 ): Promise<Ran> {
-  const ran = await run(argv, options);
+  const ran = await run(argv, { ...options, timeoutMs });
+  if (ran.timedOut) throw new Error(pastLimit(argv.join(" "), timeoutMs));
   if (ran.code !== 0) {
     const tail = ran.stderr.trim().split("\n").slice(-12).join("\n");
     throw new Error(`\`${argv.join(" ")}\` failed with exit ${ran.code}: ${tail}`);
@@ -740,7 +760,10 @@ export function ghSource(
           })
         )
       );
-      await mustRun(["tar", "-xzf", archive, "-C", dest, "--strip-components=1"]);
+      await mustRun(
+        ["tar", "-xzf", archive, "-C", dest, "--strip-components=1"],
+        COMMAND_TIMEOUT_MS.tar
+      );
     } finally {
       rmSync(archive, { force: true });
     }
@@ -1148,12 +1171,14 @@ async function buildPlugin(tree: string, pluginPath: string, dest: string): Prom
   const rootFile = path.join(tree, "package.json");
   const root: Manifest = existsSync(rootFile) ? JSON.parse(readFileSync(rootFile, "utf8")) : {};
   if (pluginPath !== "" && root.workspaces !== undefined && lockfile(tree)) {
-    await mustRun([...install, "--filter", `./${pluginPath}`], { cwd: tree });
+    await mustRun([...install, "--filter", `./${pluginPath}`], COMMAND_TIMEOUT_MS.bunInstall, {
+      cwd: tree,
+    });
   } else if (lockfile(dir)) {
-    await mustRun(install, { cwd: dir });
+    await mustRun(install, COMMAND_TIMEOUT_MS.bunInstall, { cwd: dir });
   }
   if (typeof manifest.scripts?.build === "string") {
-    await mustRun(["bun", "run", "build"], { cwd: dir });
+    await mustRun(["bun", "run", "build"], COMMAND_TIMEOUT_MS.bunBuild, { cwd: dir });
   }
   const files = strings(manifest.files);
   if (files.length === 0) {
@@ -1273,6 +1298,7 @@ async function composeParts(
     );
     await mustRun(
       ["go", "test", "-count=1", "-run", "^TestSkillCutsCompose$", `./internal/${name}/`],
+      COMMAND_TIMEOUT_MS.goTest,
       {
         cwd: moduleDir,
         env: {

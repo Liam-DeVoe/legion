@@ -26,6 +26,7 @@ import {
   main,
   noVerdict,
   ompBinary,
+  runAfterCase,
   runnerDigest,
   SENDS,
   textDigest,
@@ -2684,4 +2685,21 @@ describe("behaviour: a replay's reads of skill files", () => {
     );
     expect(reported.stdout).toContain(`, 1 ${READS_PAST_LAST_ROUND}), 0 unscreened, 0 not run`);
   }, 120_000);
+});
+
+// Catches: the --after-case command run with no limit, so one that never exits held the
+// behaviour run for ever after a case.
+test("an --after-case command that never exits is ended at its limit, and counts as failed, naming the file, the command and the limit", async () => {
+  const root = path.join(scratch, "after-case-hangs");
+  mkdirSync(root, { recursive: true });
+  const command = path.join(root, "upload.sh");
+  writeFileSync(command, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  const file = path.join(root, "c1.json");
+  const started = performance.now();
+  expect(await runAfterCase(command, file, 200)).toBe(
+    `the --after-case command for ${file}: \`${command}\` ran past its limit of 200 ms, so it was ended`
+  );
+  expect(performance.now() - started).toBeLessThan(3_000);
+  writeFileSync(command, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  expect(await runAfterCase(command, file, 2_000)).toBeUndefined();
 });

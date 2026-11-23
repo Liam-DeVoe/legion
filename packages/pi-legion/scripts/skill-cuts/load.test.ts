@@ -49,6 +49,7 @@ import {
   loadProfile,
   loadRunFile,
   messageLoad,
+  mustRun,
   namesSkill,
   type RecordedListing,
   recordedLines,
@@ -2113,6 +2114,22 @@ test("the skill's name is read from a SKILL.md that starts with a byte order mar
     "SKILL.md": "\uFEFF---\nname: lookup\ndescription: Use when a lookup is due.\n---\n",
   });
   expect(skillName(marked)).toBe("lookup");
+});
+
+// Catches: Claude Code's `--version` and `claude plugin` commands run with no limit, so one that
+// never exits held the load test for ever.
+test("a Claude Code setup command that never exits is ended at its limit, and fails naming the command and the limit", async () => {
+  const root = path.join(scratch, "claude-hangs");
+  mkdirSync(root, { recursive: true });
+  const claude = path.join(root, "claude");
+  writeFileSync(claude, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  const started = performance.now();
+  await expect(
+    mustRun([claude, "plugin", "install", "a@b"], { PATH: "/usr/bin:/bin" }, 200)
+  ).rejects.toThrow(
+    `\`${claude} plugin install a@b\` ran past its limit of 200 ms, so it was ended`
+  );
+  expect(performance.now() - started).toBeLessThan(3_000);
 });
 
 test("a profile skill with a namespace is checked under <namespace>/<name>: it may share the tested skill's name and another skill's, and Claude Code, whose layout places skills by their bare name, refuses it naming it", () => {

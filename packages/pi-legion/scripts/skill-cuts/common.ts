@@ -358,10 +358,14 @@ export interface TimeLimit {
 
 /** Ends `child` (SIGTERM) once `ms` pass, if `ms` is given; each `touch()` starts the `ms` again.
  *  `timedOut()` says whether the limit ended it, so a child a signal from elsewhere ended is not
- *  reported as out of time. Every limited child whose output the runner reads through pipes uses
- *  it: copies.ts's gh calls, the store reads of build.ts and capture.ts, and context.ts's
- *  commands. The Oh My Pi run (capture.ts) and the Claude Code run (load.ts), which write their
- *  output to files, keep their own timer, which ends them with SIGKILL. */
+ *  reported as out of time. Every child the runner starts has a limit, and every one but two gets
+ *  it here: copies.ts's and context.ts's gh calls (`gh <call> timed out after <ms> ms`, a
+ *  transient failure), the store reads (psql-rows.ts's `eachStoreRow`), and, ended with
+ *  `pastLimit`'s reason, context.ts's commands (`tar`, `bun install`, `bun run build`, `go
+ *  test`), `omp --version` (capture.ts), Claude Code's `--version` and `claude plugin` commands
+ *  (load.ts) and `--after-case` (cli.ts). The Oh My Pi run (capture.ts) and the Claude Code run
+ *  (load.ts), which write their output to files, keep their own timer, which ends them with
+ *  SIGKILL. */
 export function timeLimit(child: { kill(): void }, ms: number | undefined): TimeLimit {
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -380,6 +384,12 @@ export function timeLimit(child: { kill(): void }, ms: number | undefined): Time
   };
   start();
   return { touch: start, timedOut: () => timedOut, clear: () => clearTimeout(timer), ended };
+}
+
+/** Why a child that ran past its limit (`timeLimit`) was ended: the command and the limit, in one
+ *  wording for every command the runner starts. */
+export function pastLimit(command: string, ms: number): string {
+  return `\`${command}\` ran past its limit of ${ms} ms, so it was ended`;
 }
 
 /** Gives each chunk of `stream` to `take` until the stream ends, or until `limit` ends its child:

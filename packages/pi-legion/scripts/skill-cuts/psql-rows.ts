@@ -18,6 +18,10 @@
  * from the footer's, text after the footer, or a row line that is not one JSON value, naming that
  * line's number. `psqlRows` returns the rows of a whole output, read the same way.
  *
+ * `eachStoreRow` runs a query through the store command and reads its answer with `PsqlTable` as
+ * it comes, under the command's quiet limit (common.ts's STORE_QUIET_MS); every read of the store
+ * goes through it (build.ts's reads, `storeRows`, and capture.ts's `sessionHeads`).
+ *
  * `PullCheck` checks the rows of a transcript pull (pull.sql), every call's rows in order, one at
  * a time, and gives each row's bytes, which the caller appends to the file's text: the file row's
  * slices (offset -1) first, then each part's slices, each piece's slices in order. It refuses a
@@ -26,6 +30,7 @@
  * row holds the file's first bytes), so a page left out cannot pass as a whole file.
  */
 import { z } from "zod";
+import { eachChunk, STORE_QUIET_MS, textOf, timeLimit } from "./common";
 
 const RULE = /^-+$/;
 const FOOTER = /^\((\d+) rows?\)$/;
@@ -148,6 +153,72 @@ export function psqlRows(output: string): unknown[] {
   for (const line of output.split("\n")) table.line(line);
   table.end();
   return rows;
+}
+
+/** The rows of `query` run by the store command `command` on the database `db`, as
+ *  `eachStoreRow` reads them. */
+export async function storeRows(command: string, db: string, query: string): Promise<unknown[]> {
+  const rows: unknown[] = [];
+  await eachStoreRow(command, db, query, (row) => {
+    rows.push(row);
+  });
+  return rows;
+}
+
+/**
+ * Runs `query` by the store command `command` on the database `db` and gives each row to `visit`
+ * as the command prints it, read by `PsqlTable`: what is held is the row being read and the chunks
+ * of output it spans (common.ts's `eachChunk` lets each chunk go once it is read), never the whole
+ * answer. A command that prints nothing for `quietMs` is ended and reported first, naming the
+ * command and the limit; its exit is waited for under the same limit, and its error text too when
+ * it exits other than 0, so one that closes its output and does not exit is ended, `quietMs` after
+ * its last output, while one that exits 0 is done though a process it started still holds its
+ * error output open. Then a command that fails is reported, with its first error line; then a
+ * fault of its output; then a throw of `visit`, after which no row is given. `read` names the read
+ * in both errors (`the store command <command>'s <read> printed nothing…`, `the store command's
+ * <read> exited…`), none when absent. Returns the rows the table holds.
+ */
+export async function eachStoreRow(
+  command: string,
+  db: string,
+  query: string,
+  visit: (row: unknown) => void,
+  quietMs = STORE_QUIET_MS,
+  read?: string
+): Promise<number> {
+  const child = Bun.spawn([command, db], {
+    stdin: new Blob([query]),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  // Ended once it prints nothing for `quietMs` (STORE_QUIET_MS): each chunk starts the time again.
+  const limit = timeLimit(child, quietMs);
+  const stderr = textOf(child.stderr, limit);
+  const table = new PsqlTable(visit);
+  const its = read === undefined ? "" : `'s ${read}`;
+  let code: number;
+  let first = "";
+  try {
+    await eachChunk(child.stdout, limit, (chunk) => {
+      limit.touch();
+      table.write(chunk);
+    });
+    code = await child.exited;
+    if (code !== 0 && !limit.timedOut()) {
+      first = (await stderr).split("\n").find((each) => each.trim() !== "") ?? "";
+    }
+  } finally {
+    limit.clear();
+  }
+  if (limit.timedOut()) {
+    throw new Error(
+      `the store command ${command}${its} printed nothing for ${quietMs} ms on ${db}, so it was ended (STORE_QUIET_MS)`
+    );
+  }
+  if (code !== 0) {
+    throw new Error(`the store command${its} exited ${code}: ${first.slice(0, 300)}`);
+  }
+  return table.end();
 }
 
 /** One row of a transcript pull: a piece's start offset (-1 for the file row), the slice of the

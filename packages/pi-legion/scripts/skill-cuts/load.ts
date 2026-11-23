@@ -272,7 +272,18 @@ import {
   userTurnKey,
 } from "./capture";
 import { Case, listedName, Profile, ProfileSkill, type Thinking } from "./cases";
-import { json, ompText, parseJson, Refused, Stopped, schemaFaults, writeWhole } from "./common";
+import {
+  json,
+  ompText,
+  parseJson,
+  pastLimit,
+  Refused,
+  Stopped,
+  schemaFaults,
+  textOf,
+  timeLimit,
+  writeWhole,
+} from "./common";
 import {
   type AgentDefinition,
   buildContext,
@@ -347,6 +358,13 @@ const MIN_TASKS_PER_LABEL = 5;
 
 /** The longest one Claude Code run may take: one still running then is killed. */
 const RUN_TIMEOUT_MS = 600_000;
+/** The longest `claude --version` may run: it took 0.09 s on the pod (Claude Code 2.1.311,
+ *  measured 2026-11-23), so a minute is over 600 times that. */
+export const CLAUDE_VERSION_TIMEOUT_MS = 60_000;
+/** The longest one `claude plugin marketplace add` or `claude plugin install` may run, each of a
+ *  local marketplace: they took 0.97 s and 1.20 s on the pod (Claude Code 2.1.311, measured
+ *  2026-11-23), so 5 minutes is 250 times the longer one. */
+export const CLAUDE_PLUGIN_TIMEOUT_MS = 300_000;
 /** What a Claude Code run is given as its provider credential: the recorder reads none, and no
  *  gateway ever gets this one. */
 const RECORDER_CREDENTIAL = "not-a-secret-the-recorder-reads-none";
@@ -1622,14 +1640,22 @@ function rolePromptFault(record: string, evidence: readonly EvidenceItem[]): str
 }
 
 /** Runs `argv` to its end with `env` and returns its standard output; throws, naming it and its
- *  last output lines, when it fails. */
-async function mustRun(argv: readonly string[], env: Record<string, string>): Promise<string> {
+ *  last output lines, when it fails, and naming it and the limit (common.ts's `pastLimit`) when
+ *  it runs past `timeoutMs`, at which it is ended (`timeLimit`). Exported for load.test.ts. */
+export async function mustRun(
+  argv: readonly string[],
+  env: Record<string, string>,
+  timeoutMs: number
+): Promise<string> {
   const child = Bun.spawn([...argv], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const limit = timeLimit(child, timeoutMs);
   const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
+    textOf(child.stdout, limit),
+    textOf(child.stderr, limit),
     child.exited,
   ]);
+  limit.clear();
+  if (limit.timedOut()) throw new Error(pastLimit(argv.join(" "), timeoutMs));
   if (code !== 0) {
     const tail = `${stdout}\n${stderr}`.trim().split("\n").slice(-12).join("\n");
     throw new Error(`\`${argv.join(" ")}\` failed with exit ${code}: ${tail}`);
@@ -2028,12 +2054,19 @@ class LoadTest {
         DISABLE_ERROR_REPORTING: "1",
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       };
-      const version = (await mustRun([this.o.claude, "--version"], env)).trim();
-      await mustRun([this.o.claude, "plugin", "marketplace", "add", market], env);
+      const version = (
+        await mustRun([this.o.claude, "--version"], env, CLAUDE_VERSION_TIMEOUT_MS)
+      ).trim();
+      await mustRun(
+        [this.o.claude, "plugin", "marketplace", "add", market],
+        env,
+        CLAUDE_PLUGIN_TIMEOUT_MS
+      );
       for (const plugin of plugins) {
         await mustRun(
           [this.o.claude, "plugin", "install", `${plugin.name}@${layout.marketplace}`],
-          env
+          env,
+          CLAUDE_PLUGIN_TIMEOUT_MS
         );
       }
       return {
