@@ -459,13 +459,18 @@ function retryAfterMs(error: unknown): number {
  * challenge), stops the poll at once, naming the status, rather than polling until the code lapses
  * and saying it expired. That is the one place this poll and `pollLogin` differ by choice: the
  * helper polls on there until the code lapses, as it records the login's state in the background,
- * where a person waits on this poll. Beyond it they differ only in the answers the library under
- * this poll never reads as an OAuth error ({@link outage}'s module header says which). Each refusal
- * names {@link DEVICE_LOGIN_COMMAND}, and none writes a
- * file. An approved login that cannot be kept is refused naming its credential, which the broker
- * holds live, and where to revoke it, and a copy of it written whole is kept beside the file
- * ({@link KeptCopyError}), which the refusal names whatever fails after it, letting go of the
- * lock included. One kept whose lock is then not let go is answered as kept: the machine uses that
+ * where a person waits on this poll. Beyond it they differ only where the two libraries read an
+ * answer apart, in answers no conforming broker gives, which `pollLogin`'s doc lists: an OAuth
+ * error in a body that is not JSON or beside a `WWW-Authenticate` challenge ({@link outage}'s
+ * module header), a 2xx naming an OAuth error, a 3xx, any 2xx but a 200 JSON body, an approval
+ * with no `token_type` or one the library does not know, a wait named otherwise than in an
+ * unsigned `Retry-After` count or an HTTP date, and a device authorization naming an interval or
+ * a lifetime that is not positive or is a fraction, a lifetime past what a Go duration holds, or
+ * no lifetime. Each refusal names {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An
+ * approved login that cannot be kept is refused naming its credential, which the broker holds
+ * live, and where to revoke it, and a copy of it written whole is kept beside the file
+ * ({@link KeptCopyError}), which the refusal names whatever fails after it, letting go of the lock
+ * included. One kept whose lock is then not let go is answered as kept: the machine uses that
  * login, so it is not one to revoke.
  */
 export async function finishDeviceLogin(

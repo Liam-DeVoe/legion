@@ -5,8 +5,11 @@ package helper
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"sync"
 	"testing"
@@ -15,6 +18,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/redirects"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -120,23 +124,53 @@ func hangingUp(w http.ResponseWriter) {
 	}
 }
 
+// answeringBody answers a poll with status and body, typed contentType.
+func answeringBody(status int, contentType, body string) pollAnswer {
+	return func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}
+}
+
+// cutOff answers a poll 200 with a JSON body cut off while it is read: the connection closes
+// partway through the body its Content-Length names.
+func cutOff(w http.ResponseWriter) {
+	conn, sent, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		return
+	}
+	_, _ = sent.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"access_token\":")
+	_ = sent.Flush()
+	conn.Close()
+}
+
 // pollRig is a Broker logged in against the fake broker, whose first polls are answered in turn
 // by answers and every later one by the fake itself (an approval), and whose waits before each
 // poll are recorded, not waited (Broker.testLoginWait). lapseAt, when not 0, is the wait that
 // lapses the code, after which the helper polls no more; a negative one also leaves the code 2 s
 // at the first wait, and lapses it at the wait -lapseAt.
 type pollRig struct {
-	f     *fakeBroker
-	b     *Broker
-	mu    sync.Mutex
-	waits []time.Duration
-	until []time.Duration // each wait's time left of the code's lifetime, read as it was handed over
+	f       *fakeBroker
+	b       *Broker
+	started time.Time // read just before the login started
+	mu      sync.Mutex
+	waits   []time.Duration
+	until   []time.Duration // each wait's time left of the code's lifetime, read as it was handed over
 }
 
 func newPollRig(t *testing.T, lapseAt int, answers ...pollAnswer) *pollRig {
 	t.Helper()
+	return newPollRigNaming(t, nil, lapseAt, answers...)
+}
+
+// newPollRigNaming is newPollRig whose device authorization answers fields in place of the fake's
+// own pairs (fakeBroker.deviceAuthFields).
+func newPollRigNaming(t *testing.T, fields map[string]any, lapseAt int, answers ...pollAnswer) *pollRig {
+	t.Helper()
 	r := &pollRig{f: newFakeBroker(t)}
 	r.f.mu.Lock()
+	r.f.deviceAuthFields = fields
 	r.f.devicePollAnswer = func(poll int, w http.ResponseWriter) bool {
 		if poll > len(answers) {
 			return false
@@ -158,6 +192,7 @@ func newPollRig(t *testing.T, lapseAt int, answers ...pollAnswer) *pollRig {
 			}
 		}}
 	t.Cleanup(r.b.Close)
+	r.started = time.Now()
 	if _, err := r.b.Login(context.Background(), "host-a"); err != nil {
 		t.Fatal(err)
 	}
@@ -179,8 +214,9 @@ func (r *pollRig) polls() int {
 // TestALoginPollGrowsItsIntervalAsRFC8628Has: each poll waits the interval first, the fake's 1 s.
 // RFC 8628 section 3.5 grows it by 5 s for that poll and every later one on a slow_down, at
 // whatever status its body names it, and on a poll the broker did not answer or answered with an
-// outage, once for an answer that is both; authorization_pending, and a refusal naming no deciding
-// error, keep it. These are the TypeScript device login's rules.
+// outage, once for an answer that is both; a 2xx that holds no token and names no error is no
+// token endpoint's answer, so an outage too. authorization_pending, and a refusal naming no
+// deciding error, keep it. These are the TypeScript device login's rules.
 func TestALoginPollGrowsItsIntervalAsRFC8628Has(t *testing.T) {
 	const s = time.Second
 	for _, c := range []struct {
@@ -193,9 +229,14 @@ func TestALoginPollGrowsItsIntervalAsRFC8628Has(t *testing.T) {
 		{"a slow_down, a 503, authorization_pending, then the approval", []pollAnswer{answering(http.StatusBadRequest, "slow_down"), answering(http.StatusServiceUnavailable, ""), answering(http.StatusBadRequest, "authorization_pending")}, []time.Duration{s, 6 * s, 11 * s, 11 * s}},
 		{"a 503 naming authorization_pending, then the approval", []pollAnswer{answering(http.StatusServiceUnavailable, "authorization_pending")}, []time.Duration{s, 6 * s}},
 		{"a 429 naming slow_down, then the approval", []pollAnswer{answering(http.StatusTooManyRequests, "slow_down")}, []time.Duration{s, 6 * s}},
+		{"a 200 with no token, then the approval", []pollAnswer{answeringBody(http.StatusOK, "application/json", `{"token_type":"DPoP"}`)}, []time.Duration{s, 6 * s}},
+		{"a 200 page, then the approval", []pollAnswer{answeringBody(http.StatusOK, "text/html", "<html>a portal's sign-in page</html>")}, []time.Duration{s, 6 * s}},
+		{"a 200 naming slow_down, then the approval", []pollAnswer{answering(http.StatusOK, "slow_down")}, []time.Duration{s, 6 * s}},
 		// Controls: authorization_pending, and a refusal naming no deciding error, keep the interval.
 		{"a 503, a 401 invalid_client, then the approval", []pollAnswer{answering(http.StatusServiceUnavailable, ""), answering(http.StatusUnauthorized, "invalid_client")}, []time.Duration{s, 6 * s, 6 * s}},
 		{"authorization_pending twice, then the approval", []pollAnswer{answering(http.StatusBadRequest, "authorization_pending"), answering(http.StatusBadRequest, "authorization_pending")}, []time.Duration{s, s, s}},
+		// A 2xx naming an error is the broker's answer, as x/oauth2 reads it (devicePoll).
+		{"a 200 naming authorization_pending, then the approval", []pollAnswer{answering(http.StatusOK, "authorization_pending")}, []time.Duration{s, s}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newPollRig(t, 0, c.answers...)
@@ -256,6 +297,8 @@ func TestALoginThatLapsesAfterUnansweredPollsNamesThem(t *testing.T) {
 		{"a 503, then authorization_pending", []pollAnswer{answering(http.StatusServiceUnavailable, ""), answering(http.StatusBadRequest, "authorization_pending")}, ""},
 		{"a 503, authorization_pending, a 503", []pollAnswer{answering(http.StatusServiceUnavailable, ""), answering(http.StatusBadRequest, "authorization_pending"), answering(http.StatusServiceUnavailable, "")}, "the broker was unreachable or busy for the last poll"},
 		{"a refusal, then a 429", []pollAnswer{answering(http.StatusUnauthorized, "invalid_client"), answering(http.StatusTooManyRequests, "")}, "the broker was unreachable or busy for the last poll"},
+		// A 2xx that holds no token is no token endpoint's answer.
+		{"a 200 with no token, then a 200 whose body does not parse", []pollAnswer{answeringBody(http.StatusOK, "application/json", "{}"), answeringBody(http.StatusOK, "application/json", "{")}, "the broker was unreachable or busy for the last 2 polls"},
 		// Control: the outage was followed by an answer.
 		{"a 503, then a refusal", []pollAnswer{answering(http.StatusServiceUnavailable, ""), answering(http.StatusUnauthorized, "invalid_client")}, ""},
 	} {
@@ -284,5 +327,127 @@ func TestALoginPollsWaitEndsAtTheCodesLifetime(t *testing.T) {
 	}
 	if reason := r.b.LoginStatus().Reason; reason != "the broker was unreachable or busy for the last poll" || r.polls() != 1 {
 		t.Fatalf("the lapse recorded %q after %d polls, want the last poll named after 1", reason, r.polls())
+	}
+}
+
+// TestALoginPollHoldsTheBrokersIntervalAndTheCodesLifetime: the poll starts at the broker's
+// interval held to 1 through 60 s, and 5 s where it names none, and the code lives at most an
+// hour, so long where the broker names no lifetime, as the TypeScript device login holds them. A
+// negative interval would poll as fast as the broker answers authorization_pending, and one past
+// what a time.Duration holds would wrap. x/oauth2 reads an interval or a lifetime of 0 as none.
+func TestALoginPollHoldsTheBrokersIntervalAndTheCodesLifetime(t *testing.T) {
+	const s = time.Second
+	for _, c := range []struct {
+		name     string
+		interval any // the device authorization's interval; nil names none
+		want     time.Duration
+	}{
+		{"a negative interval", -3, s},
+		{"an interval of a day", 86400, 60 * s},
+		{"an interval past what a time.Duration holds", int64(1e12), 60 * s},
+		// Controls: 0, none and an interval inside the bounds.
+		{"an interval of 0", 0, 5 * s},
+		{"no interval", nil, 5 * s},
+		{"an interval of 30 s", 30, 30 * s},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newPollRigNaming(t, map[string]any{"interval": c.interval}, 0, answering(http.StatusBadRequest, "authorization_pending"))
+			waitFor(t, func() bool { return r.b.LoginStatus().State == "issued" })
+			if got, _ := r.seen(); !slices.Equal(got, []time.Duration{c.want, c.want}) {
+				t.Fatalf("the polls waited %v, want %v twice", got, c.want)
+			}
+		})
+	}
+	for _, c := range []struct {
+		name      string
+		expiresIn any // the device authorization's expires_in; nil names none
+	}{
+		{"a lifetime of two hours", 7200},
+		{"no lifetime", nil},
+		{"a lifetime of 0", 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newPollRigNaming(t, map[string]any{"expires_in": c.expiresIn}, 0)
+			waitFor(t, func() bool { return r.b.LoginStatus().State == "issued" })
+			// The code's end is set between the login's start and its first wait, so what is left
+			// of it at that wait is at most the hour, and at least the hour less the time since.
+			if _, until := r.seen(); len(until) != 1 || until[0] > time.Hour || until[0] < time.Hour-time.Since(r.started) {
+				t.Fatalf("the first wait had %v of the code left, want an hour less the time since the login started", until)
+			}
+		})
+	}
+}
+
+// TestADevicePollReadsItsAnswerAsXOAuth2Does: devicePoll reads a token endpoint's answer as
+// x/oauth2 v0.37.0 reads it (internal/token.go:258-333). A 2xx whose JSON, form or text body holds
+// an access_token and names no error is the token. Any other status, and a 2xx naming an error,
+// is the broker's answer, an *oauth2.RetrieveError with the error its body names. A 2xx whose body
+// does not parse or holds no access_token, and an answer cut off while it is read, is a plain
+// error, which pollLogin counts as an outage.
+func TestADevicePollReadsItsAnswerAsXOAuth2Does(t *testing.T) {
+	const (
+		form     = "application/x-www-form-urlencoded"
+		text     = "text/plain; charset=utf-8"
+		approval = "access_token=a&token_type=DPoP&refresh_token=r&credential_id=lcred-1"
+		approved = `{"access_token":"a","token_type":"DPoP","refresh_token":"r","credential_id":"lcred-1"`
+	)
+	// read is what a poll came to: the access token of an approval, the status and the error of
+	// the broker's answer, or, for a plain error, whether it is an answer cut off while it was read.
+	type read struct {
+		token  string
+		status int
+		code   string
+		cut    bool
+	}
+	for _, c := range []struct {
+		name   string
+		answer pollAnswer
+		want   read
+	}{
+		{"a 200 JSON approval", answeringBody(http.StatusOK, "application/json", approved+"}"), read{token: "a"}},
+		{"a 200 form approval", answeringBody(http.StatusOK, form, approval), read{token: "a"}},
+		{"a 200 text approval", answeringBody(http.StatusOK, text, approval), read{token: "a"}},
+		{"a 201 JSON approval", answeringBody(http.StatusCreated, "application/json", approved+"}"), read{token: "a"}},
+		{"a 200 JSON approval whose expires_in is a fraction", answeringBody(http.StatusOK, "application/json", approved+`,"expires_in":900.5}`), read{token: "a"}},
+		{"a 400 form slow_down", answeringBody(http.StatusBadRequest, form, "error=slow_down"), read{status: http.StatusBadRequest, code: "slow_down"}},
+		{"a 401 text access_denied", answeringBody(http.StatusUnauthorized, text, "error=access_denied"), read{status: http.StatusUnauthorized, code: "access_denied"}},
+		{"a 200 naming slow_down", answering(http.StatusOK, "slow_down"), read{status: http.StatusOK, code: "slow_down"}},
+		{"a 200 form naming access_denied beside a token", answeringBody(http.StatusOK, form, "error=access_denied&"+approval), read{status: http.StatusOK, code: "access_denied"}},
+		// The redirect is refused (redirects.Refused), so the 302 is the answer read.
+		{"a 302", func(w http.ResponseWriter) {
+			w.Header().Set("Location", "/elsewhere")
+			answeringBody(http.StatusFound, "text/html", "<html>moved</html>")(w)
+		}, read{status: http.StatusFound}},
+		{"a 503 page", answeringBody(http.StatusServiceUnavailable, "text/html", "<html>down</html>"), read{status: http.StatusServiceUnavailable}},
+		{"a 400 whose JSON does not parse", answeringBody(http.StatusBadRequest, "application/json", "{"), read{status: http.StatusBadRequest}},
+		// A 2xx that holds no token and names no error is no token endpoint's answer.
+		{"a 200 with no access_token", answeringBody(http.StatusOK, "application/json", `{"token_type":"DPoP","refresh_token":"r"}`), read{}},
+		{"a 200 page", answeringBody(http.StatusOK, "text/html", "<html>a portal's sign-in page</html>"), read{}},
+		{"a 200 whose JSON does not parse", answeringBody(http.StatusOK, "application/json", "{"), read{}},
+		{"a 200 form that does not parse", answeringBody(http.StatusOK, form, "access_token=%zz"), read{}},
+		{"a 200 cut off while it is read", cutOff, read{cut: true}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { c.answer(w) }))
+			t.Cleanup(srv.Close)
+			cfg := &oauth2.Config{ClientID: "machine-login", Endpoint: oauth2.Endpoint{TokenURL: srv.URL}}
+			tok, err := devicePoll(context.Background(), redirects.Refused(srv.Client()), cfg, &oauth2.DeviceAuthResponse{DeviceCode: "device-1"})
+			var got read
+			var answered *oauth2.RetrieveError
+			switch {
+			case err == nil:
+				got.token = tok.AccessToken
+				if id := tok.Extra("credential_id"); id != "lcred-1" {
+					t.Fatalf("the approval's credential_id %v, want lcred-1", id)
+				}
+			case errors.As(err, &answered):
+				got.status, got.code = answered.Response.StatusCode, answered.ErrorCode
+			default:
+				got.cut = errors.Is(err, io.ErrUnexpectedEOF)
+			}
+			if got != c.want {
+				t.Fatalf("devicePoll read %+v (%v), want %+v", got, err, c.want)
+			}
+		})
 	}
 }

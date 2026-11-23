@@ -184,6 +184,9 @@ type fakeBroker struct {
 	// authorization, answering 200 with no device_code or user_code.
 	enrollEmpty2xx     bool
 	deviceAuthEmpty2xx bool
+	// deviceAuthFields, when set, replaces the device authorization answer's own pairs with its
+	// own, a nil value removing its pair: a broker naming another interval or lifetime, or none.
+	deviceAuthFields map[string]any
 	// oauthErrorStatus, when set, is the status of every OAuth error the token endpoint answers, in
 	// place of its own: a broker, or a proxy before it, answering 5xx, 408 or 429 with a body that
 	// still names access_denied, expired_token or invalid_grant, or another refusal status.
@@ -438,7 +441,15 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		f.next++
 		f.deviceCode = fmt.Sprintf("device-%d", f.next)
 		f.pendingCode = fakeConfirmationCode()
-		writeJSON(w, 200, map[string]any{"device_code": f.deviceCode, "user_code": f.pendingCode, "verification_uri": f.srv.URL, "expires_in": 900, "interval": 1})
+		answer := map[string]any{"device_code": f.deviceCode, "user_code": f.pendingCode, "verification_uri": f.srv.URL, "expires_in": 900, "interval": 1}
+		for name, value := range f.deviceAuthFields {
+			if value == nil {
+				delete(answer, name)
+			} else {
+				answer[name] = value
+			}
+		}
+		writeJSON(w, 200, answer)
 	})
 	mux.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()

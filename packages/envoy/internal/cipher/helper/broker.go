@@ -617,39 +617,58 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 // refusal naming no error or another one is the broker answering with no decision, and polls
 // again too, until the code's lifetime records "expired".
 //
-// Each poll waits the interval first, the broker's and 5 s where it names none (RFC 8628 section
-// 3.2), and RFC 8628 section 3.5 grows it by 5 s for that poll and every later one on a
-// slow_down, at whatever status the body names it, and on a poll the broker did not answer or
-// answered with an outage, once for an answer that is both. An outage's Retry-After, in seconds or
-// as an HTTP date (serverwait.Read), is waited where it asks longer, though never past the code's
-// lifetime, which ends any wait (the poll's context). authorization_pending keeps the interval. A
-// lapse after polls the broker did not answer or answered with an outage records, in the
-// "expired" state's Reason, how many came in a row (pollsUnreached); the lapse is no poll. These
-// are the TypeScript device login's rules (packages/cipher-client/src/device-login.ts,
-// finishDeviceLogin), but for its one choice: there a refusal naming no deciding error stops the
-// poll, where a person waits on it; here the helper polls on in the background.
+// The poll starts at the broker's interval, held to leastDeviceInterval through
+// mostDeviceInterval, and defaultDeviceInterval, RFC 8628 section 3.2's 5 s, where it names none;
+// and the code lives at most mostDeviceLifetime, so long where the broker names no lifetime. Each
+// poll waits the interval first, and RFC 8628 section 3.5 grows it by 5 s for that poll and every
+// later one on a slow_down, at whatever status the body names it, and on a poll the broker did not
+// answer or answered with an outage, once for an answer that is both. An outage's Retry-After, in
+// seconds or as an HTTP date (serverwait.Read), is waited where it asks longer, though never past
+// the code's lifetime, which ends any wait (the poll's context). authorization_pending keeps the
+// interval. A lapse after polls the broker did not answer or answered with an outage records, in
+// the "expired" state's Reason, how many came in a row (pollsUnreached); the lapse is no poll.
+//
+// These are the TypeScript device login's interval and Retry-After rules, with its bounds
+// (packages/cipher-client/src/device-login.ts, finishDeviceLogin). The two differ by choice on a
+// refusal naming no deciding error: there it stops the poll, where a person waits on it; here the
+// helper polls on in the background. Beyond that they differ only where their libraries read an
+// answer apart, in answers no conforming broker gives:
+//   - An OAuth error counts here in a form or text body and beside a WWW-Authenticate challenge,
+//     as x/oauth2 reads it (devicePoll); there the library reads one only from a JSON 4xx with no
+//     challenge, and stops at any other refusal, naming its status.
+//   - A 2xx naming an OAuth error is the broker's answer here, as x/oauth2 reads it; there a 200
+//     naming one holds no token, so it is an outage, and any other 2xx stops the poll (below), as
+//     a 200 JSON body with no token, or one that does not parse, is an outage in both.
+//   - Any 2xx with a token in a JSON, form or text body is the approval here, any other 2xx an
+//     outage, and a 3xx an answer, polled on; there the library reads an approval only from a
+//     200 JSON body it holds conforming (a token_type it knows, among others), reads any other
+//     200 JSON body as an outage, and stops at a 3xx, at any other 2xx and at a 200 that is not
+//     JSON.
+//   - serverwait.Read here also reads a Retry-After count signed "+", and, where an outage names
+//     no Retry-After and X-RateLimit-Remaining is 0, X-RateLimit-Reset; there neither is a wait,
+//     and a Retry-After date counts in any form Date.parse reads, where here only HTTP's do.
+//   - The bounds read the device authorization as x/oauth2 reads it (mostDeviceLifetime).
 func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse, operator string) {
 	client := b.tokenClient(key)
-	ctx := context.Background()
-	if !da.Expiry.IsZero() {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, da.Expiry)
-		defer cancel()
+	if most := time.Now().Add(mostDeviceLifetime); da.Expiry.IsZero() || da.Expiry.After(most) {
+		da.Expiry = most
 	}
+	ctx, cancel := context.WithDeadline(context.Background(), da.Expiry)
+	defer cancel()
 	settle := func(state, reason string) {
 		b.recordLogin(&loginState{Code: da.UserCode, State: state, Reason: reason})
 	}
-	lapsed := func() bool { return ctx.Err() != nil || (!da.Expiry.IsZero() && !time.Now().Before(da.Expiry)) }
-	interval := time.Duration(cmp.Or(da.Interval, defaultDeviceInterval)) * time.Second
+	// The code's end alone says it lapsed: the context's deadline is that end, or a later one
+	// where a test brought the end nearer.
+	lapsed := func() bool { return !time.Now().Before(da.Expiry) }
+	seconds := min(max(cmp.Or(da.Interval, defaultDeviceInterval), leastDeviceInterval), mostDeviceInterval)
+	interval := time.Duration(seconds) * time.Second
 	wait := interval
 	// unreached counts the polls in a row the broker did not answer or answered with an outage.
 	unreached := 0
 	for {
 		if !lapsed() {
-			if !da.Expiry.IsZero() {
-				wait = min(wait, time.Until(da.Expiry))
-			}
-			b.loginWait(ctx, wait, da)
+			b.loginWait(ctx, min(wait, time.Until(da.Expiry)), da)
 		}
 		if lapsed() {
 			settle("expired", pollsUnreached(unreached))
@@ -682,12 +701,10 @@ func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2
 		if outage || (answered != nil && answered.ErrorCode == "slow_down") {
 			interval += deviceIntervalStep
 		}
+		// The top of the loop holds the wait to what is left of the code's lifetime.
 		wait = interval
-		if asked := retryAfter(err); outage && asked > wait {
-			wait = asked
-			if !da.Expiry.IsZero() {
-				wait = max(interval, min(asked, time.Until(da.Expiry)))
-			}
+		if outage {
+			wait = max(interval, retryAfter(err))
 		}
 	}
 }
@@ -709,10 +726,16 @@ func (b *Broker) loginWait(ctx context.Context, d time.Duration, da *oauth2.Devi
 
 // devicePoll is one poll of da's device code (RFC 8628 section 3.4) through client, under ctx,
 // read as x/oauth2 reads a token endpoint's answer (golang.org/x/oauth2 v0.37.0,
-// internal/token.go:258-333): a 2xx with an access_token and no error is the token, its extras
-// kept (Token.Extra); any other answer read whole is an *oauth2.RetrieveError carrying the
-// response and the error its JSON or form body names, which oauthrefusal reads; no answer, or one
-// cut off before its body read whole, is the transport's error.
+// internal/token.go:258-333): a 2xx whose JSON, form or text body holds an access_token and names
+// no error is the token, its extras kept (Token.Extra). Any other status, and a 2xx naming an
+// error, is an *oauth2.RetrieveError carrying the response and the error its body names, which
+// oauthrefusal reads. A 2xx whose body does not parse, or holds no access_token, is a plain error,
+// no token endpoint's answer, which pollLogin counts as an outage, as it counts no answer, or one
+// cut off before its body was read whole (the transport's error). It reads expires_in, which
+// nothing in a login reads (machineFileFrom), apart from x/oauth2: here a fraction, or a count
+// that is not positive, leaves the token no expiry, and a large count is not held; x/oauth2 dates
+// a negative count in the past, and in a JSON body refuses a fraction and holds a count to an
+// int32.
 func devicePoll(ctx context.Context, client *http.Client, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error) {
 	form := url.Values{
 		"client_id":   {cfg.ClientID},
@@ -737,16 +760,15 @@ func devicePoll(ctx context.Context, client *http.Client, cfg *oauth2.Config, da
 		return nil, fmt.Errorf("read the device code poll's answer: %w", err)
 	}
 	answer := &oauth2.RetrieveError{Response: resp, Body: body}
+	// tok stays nil where the body does not parse.
 	var tok *oauth2.Token
 	if content, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); content == "application/x-www-form-urlencoded" || content == "text/plain" {
-		vals, err := url.ParseQuery(string(body))
-		if err != nil {
-			return nil, answer
-		}
-		answer.ErrorCode, answer.ErrorDescription, answer.ErrorURI = vals.Get("error"), vals.Get("error_description"), vals.Get("error_uri")
-		tok = (&oauth2.Token{AccessToken: vals.Get("access_token"), TokenType: vals.Get("token_type"), RefreshToken: vals.Get("refresh_token")}).WithExtra(vals)
-		if seconds, _ := strconv.Atoi(vals.Get("expires_in")); seconds > 0 {
-			tok.Expiry = time.Now().Add(time.Duration(seconds) * time.Second)
+		if vals, err := url.ParseQuery(string(body)); err == nil {
+			answer.ErrorCode, answer.ErrorDescription, answer.ErrorURI = vals.Get("error"), vals.Get("error_description"), vals.Get("error_uri")
+			tok = (&oauth2.Token{AccessToken: vals.Get("access_token"), TokenType: vals.Get("token_type"), RefreshToken: vals.Get("refresh_token")}).WithExtra(vals)
+			if seconds, _ := strconv.Atoi(vals.Get("expires_in")); seconds > 0 {
+				tok.Expiry = time.Now().Add(time.Duration(seconds) * time.Second)
+			}
 		}
 	} else {
 		var fields struct {
@@ -759,27 +781,47 @@ func devicePoll(ctx context.Context, client *http.Client, cfg *oauth2.Config, da
 			URI          string      `json:"error_uri"`
 		}
 		raw := map[string]any{}
-		if json.Unmarshal(body, &fields) != nil || json.Unmarshal(body, &raw) != nil {
-			return nil, answer
-		}
-		answer.ErrorCode, answer.ErrorDescription, answer.ErrorURI = fields.Error, fields.Description, fields.URI
-		tok = (&oauth2.Token{AccessToken: fields.AccessToken, TokenType: fields.TokenType, RefreshToken: fields.RefreshToken}).WithExtra(raw)
-		if seconds, _ := fields.ExpiresIn.Int64(); seconds > 0 {
-			tok.Expiry, tok.ExpiresIn = time.Now().Add(time.Duration(seconds)*time.Second), seconds
+		if json.Unmarshal(body, &fields) == nil && json.Unmarshal(body, &raw) == nil {
+			answer.ErrorCode, answer.ErrorDescription, answer.ErrorURI = fields.Error, fields.Description, fields.URI
+			tok = (&oauth2.Token{AccessToken: fields.AccessToken, TokenType: fields.TokenType, RefreshToken: fields.RefreshToken}).WithExtra(raw)
+			if seconds, _ := fields.ExpiresIn.Int64(); seconds > 0 {
+				tok.Expiry, tok.ExpiresIn = time.Now().Add(time.Duration(seconds)*time.Second), seconds
+			}
 		}
 	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 || answer.ErrorCode != "" || tok.AccessToken == "" {
+	if resp.StatusCode < 200 || resp.StatusCode > 299 || answer.ErrorCode != "" {
 		return nil, answer
+	}
+	if tok == nil || tok.AccessToken == "" {
+		return nil, errors.New("the broker's 2xx answer to a device code poll holds no access_token")
 	}
 	return tok, nil
 }
 
-// defaultDeviceInterval is the interval, in seconds, a device code is polled at where the broker
-// names none (RFC 8628 section 3.2), and deviceIntervalStep what a slow_down, or a poll the broker
-// did not answer, adds to it (pollLogin), the 5 s of RFC 8628 section 3.5.
+// The bounds of a device code's poll (pollLogin), the TypeScript device login's
+// DEFAULT_POLL_SECONDS, LEAST_POLL_SECONDS, MOST_POLL_SECONDS and MOST_LIFETIME_SECONDS
+// (packages/cipher-client/src/device-login.ts): defaultDeviceInterval is the interval, in seconds,
+// a code is polled at where the broker names none (RFC 8628 section 3.2); leastDeviceInterval and
+// mostDeviceInterval are the least and the most it starts at, whatever the broker names; and
+// mostDeviceLifetime is the longest a code is polled, whatever lifetime the broker names, one
+// naming none included. A wait that is not positive would poll as fast as the broker answers
+// authorization_pending, and a huge interval, or a code with no end, would keep the poll past any
+// use. deviceIntervalStep is what a slow_down, or a poll the broker did not answer, adds to the
+// interval, the 5 s of RFC 8628 section 3.5, which can take it past the most.
+//
+// x/oauth2 reads the device authorization's interval and expires_in as whole seconds
+// (oauth2.DeviceAuthResponse), and the TypeScript login's library, oauth4webapi, reads them apart.
+// Here an interval of 0 or none is 5 s and a negative one the least; a lifetime of 0 or none is the
+// hour, a negative one lapses the code before its first poll, and one past what a time.Duration
+// holds (292 years) wraps, to a time that has passed or that the hour bounds; a fraction of either
+// fails the login. There a missing lifetime, a negative one and an interval that is not positive
+// fail the login, a lifetime of 0 lapses the code at once, and a fraction is kept.
 const (
 	defaultDeviceInterval = 5
+	leastDeviceInterval   = 1
+	mostDeviceInterval    = 60
 	deviceIntervalStep    = 5 * time.Second
+	mostDeviceLifetime    = time.Hour
 )
 
 // pollsUnreached is the Reason of a login that expired after n polls in a row the broker did not
@@ -1267,9 +1309,11 @@ func (b *Broker) redeem(ctx context.Context, cred *machineCredential) (next *Mac
 }
 
 // retryAfter is the wait a token endpoint answer names, read through serverwait.Read, or zero when
-// err carries none or the answer names none, which retrySchedule.next raises to its retry. The
-// broker's 429s name it in Retry-After alone. A wait of an hour is past next's cap, so next waits
-// maxRetryAfter, a minute.
+// err carries none or the answer names none. The broker's 429s name it in Retry-After alone. Its
+// readers are the refresh's retrySchedule.next, which raises a zero to its retry and holds a wait
+// to maxRetryAfter, a minute, so a wait of an hour waits the minute; redeem's line for a
+// rate-limited refresh; and the device code poll (pollLogin), which waits it after an outage where
+// it is longer than the interval, and never past the code's lifetime.
 func retryAfter(err error) time.Duration {
 	var re *oauth2.RetrieveError
 	if !errors.As(err, &re) || re.Response == nil {
