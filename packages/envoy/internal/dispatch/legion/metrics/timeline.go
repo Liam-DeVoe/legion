@@ -402,7 +402,7 @@ func (p *Population) slotSpans(issue *Issue, end time.Time) []Span {
 // phaseMark is one moment the event log says the issue's phase changed, and what says so.
 // sendBack is statusPhase's own decision that a status change sends the issue back to
 // implementing; a role's first event and a handoff never do. rank is the phase's place on the
-// issue's line at that moment (Issue.phaseLine, phaseRank).
+// issue's line at that moment (Issue.phaseLine), -1 for a phase the line does not hold.
 type phaseMark struct {
 	at       time.Time
 	source   markSource
@@ -453,12 +453,12 @@ func appendStepSpans(timeline []PhaseSpan, steps []phaseMark, until time.Time) [
 func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 	architect, hasArchitect := issue.FirstRoleEvent["architect"]
 	var marks []phaseMark
-	add := func(source markSource, at time.Time, phase string, sendBack bool) {
-		marks = append(marks, phaseMark{at: at, source: source, phase: phase, sendBack: sendBack, rank: phaseRank(issue.phaseLine(at), phase)})
+	add := func(source markSource, at time.Time, line []string, phase string, sendBack bool) {
+		marks = append(marks, phaseMark{at: at, source: source, phase: phase, sendBack: sendBack, rank: slices.Index(line, phase)})
 	}
 	for role, at := range issue.FirstRoleEvent {
 		if phase, works := rolePhase[role]; works && role != "architect" {
-			add(sourceRole, at, phase, false)
+			add(sourceRole, at, issue.phaseLine(at), phase, false)
 		}
 	}
 	// "An issue has a design phase when a session titled `Legion architect · <its own key>` wrote
@@ -470,11 +470,12 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 		if slots := p.slotSpans(issue, p.issueEnd(issue)); len(slots) > 0 && slots[0].From.Before(architect) {
 			architect = slots[0].From
 		}
-		add(sourceRole, architect, phaseDesign, false)
+		add(sourceRole, architect, issue.phaseLine(architect), phaseDesign, false)
 	}
 	for _, handoff := range issue.Handoffs {
-		if phase, starts := handoffStart(issue.phaseLine(handoff.At), handoff.Phase); starts {
-			add(sourceHandoff, handoff.At, phase, false)
+		line := issue.phaseLine(handoff.At)
+		if phase, starts := handoffStart(line, handoff.Phase); starts {
+			add(sourceHandoff, handoff.At, line, phase, false)
 		}
 	}
 	previous := ""
@@ -482,8 +483,9 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 		if mark.Value == previous {
 			continue
 		}
-		if phase, sendBack, named := statusPhase(previous, mark.Value, issue.phaseLine(mark.At)); named {
-			add(sourceStatus, mark.At, phase, sendBack)
+		line := issue.phaseLine(mark.At)
+		if phase, sendBack, named := statusPhase(previous, mark.Value, line); named {
+			add(sourceStatus, mark.At, line, phase, sendBack)
 		}
 		previous = mark.Value
 	}
@@ -540,11 +542,6 @@ func phaseSteps(marks []phaseMark) []phaseMark {
 		steps = append(steps, mark)
 	}
 	return steps
-}
-
-// phaseRank is a phase's place on line (Issue.phaseLine), and -1 for one the line does not hold.
-func phaseRank(line []string, phase string) int {
-	return slices.Index(line, phase)
 }
 
 // statusPhase is the phase a status change sets before observations exist, on the issue's line
