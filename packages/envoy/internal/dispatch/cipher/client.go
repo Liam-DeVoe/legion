@@ -88,7 +88,7 @@ func New(baseURL, tokenFile string, options ...Option) *Client {
 }
 
 // TokenFileSetting is the setting that holds the file New reads Dispatch's ServiceAccount token
-// from, the one Dispatch's server takes it from (cmd/dispatch).
+// from: cmd/dispatch reads the file's path from it, and names it in a refusal, by this constant.
 const TokenFileSetting = "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE"
 
 // Error carries the broker's status and its {"code","error"} body so handlers can forward
