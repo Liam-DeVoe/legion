@@ -1,0 +1,253 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/verdict"
+)
+
+// wroteSuccess is whether the newest check run or the newest commit status the store records the
+// daemon wrote on target's head concluded success.
+func (w *workflowRuntime) wroteSuccess(ctx context.Context, target verdictTarget) (bool, error) {
+	var newest map[store.VerdictWriteKind]store.VerdictConclusion
+	err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		writes, err := store.VerdictWritesTx(ctx, tx, target.repository, target.head)
+		newest = map[store.VerdictWriteKind]store.VerdictConclusion{}
+		for _, written := range writes {
+			newest[written.Kind] = written.Conclusion
+		}
+		return err
+	})
+	return newest[store.VerdictWriteCheckRun] == store.VerdictConclusionSuccess || newest[store.VerdictWriteStatus] == store.VerdictConclusionSuccess, err
+}
+
+// listedCheckRun is one check run as GitHub lists a commit's (GET /commits/{ref}/check-runs): its
+// id, its conclusion and the id of the App that made it, which a rename of the App leaves as it is.
+type listedCheckRun struct {
+	ID         int64  `json:"id"`
+	Conclusion string `json:"conclusion"`
+	App        struct {
+		ID int64 `json:"id"`
+	} `json:"app"`
+}
+
+// listedStatus is one commit status as GitHub lists a commit's (GET /commits/{ref}/statuses),
+// newest first: its id, context, state and the id of the account that created it, which a rename
+// of the App leaves as it is for its bot.
+type listedStatus struct {
+	ID      int64  `json:"id"`
+	Context string `json:"context"`
+	State   string `json:"state"`
+	Creator struct {
+		ID int64 `json:"id"`
+	} `json:"creator"`
+}
+
+// writeDecided writes decided's conclusion as legion-verdict on target's head with the daemon's own
+// verdict token (appauth.Tokens.VerdictToken), and records each write in the store
+// (store.VerdictWrite) and in one legion_verdict_write line. It reads the head's legion-verdict
+// check runs and commit statuses first. It tells the one App's runs by the App's id, and its bot's
+// statuses by the bot user's id the verdict lease carries (appauth.Lease.BotUserID), the creator.id
+// C56 reads: a rename of the App changes neither. What each run and status of the App there should
+// show is the head's conclusion, or failure where the head has none (spec R19):
+//   - each run of the App the record does not hold is updated to it, whatever it shows, and so
+//     becomes one the record holds;
+//   - each run the record holds is updated to it where GitHub shows it at another conclusion,
+//     whether the daemon's own write left it there or another token of the App wrote over it;
+//   - a run of the daemon's own is created only where the head has a conclusion and no run of the
+//     App is there at all;
+//   - the newest legion-verdict status the App's bot created gets a status of the daemon's own over
+//     it, with that state, when the record does not hold it or GitHub shows it at another state:
+//     GitHub reads the newest status of each context.
+//
+// A head with no conclusion is written on only when overForeign is set, which is the writers'
+// sweep's ask to put failure over each run and status of the App there that does not show it; a
+// write a fact asks for (writeVerdictOver without overForeign) writes nothing there and makes no
+// GitHub call. In token mode the daemon mints no verdict token (appauth.ErrNoVerdictToken): it
+// writes nothing and logs that once. One goroutine makes every write (writeVerdicts), so no two
+// writes of one head read its runs together and each create one.
+func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) error {
+	_, err := w.writeDecidedChanged(ctx, target, decided, overForeign)
+	return err
+}
+
+// writeDecidedChanged is writeDecided, and answers too, where it answers no error, whether it
+// created or updated a check run or set a commit status: a pass that writes a success is followed
+// by one more merge-state read (writeVerdictOver), and a pass that finds it written is not.
+func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) (bool, error) {
+	if decided.conclusion == verdict.None && !overForeign {
+		return false, nil
+	}
+	serving := w.repositories.serving(target.repository)
+	lease, err := w.tokens.VerdictToken(ctx, serving.Owner())
+	if errors.Is(err, appauth.ErrNoVerdictToken) {
+		w.verdicts.tokenMode.Do(func() { w.log.Warn(verdictTokenMode, "repository", target.repository.String()) })
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("mint the verdict token for %s: %w", serving, err)
+	}
+	client := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(w.githubAPI, serving)}
+	call, cancel := context.WithTimeout(ctx, issueRead)
+	defer cancel()
+	ownRuns, ownStatuses, err := w.recordedVerdictWrites(ctx, target)
+	if err != nil {
+		return false, err
+	}
+	runs, err := githubrest.GetListPages[listedCheckRun](call, client, "/commits/"+target.head+"/check-runs?check_name="+verdict.CheckName+"&filter=all", "check_runs")
+	if err != nil {
+		return false, fmt.Errorf("list the legion-verdict runs of %s at %s: %w", serving, target.head, err)
+	}
+	over := decided.conclusion
+	if over == verdict.None {
+		over = verdict.Failure
+	}
+	shown, changed := false, false
+	for _, run := range runs {
+		if w.verdicts.appID == 0 || run.App.ID != w.verdicts.appID {
+			continue
+		}
+		shown = true
+		foreign := run.ID
+		if ownRuns[run.ID] {
+			if run.Conclusion == string(over) {
+				continue
+			}
+			foreign = 0
+		}
+		if err := w.updateVerdictRun(call, client, target, decided, run.ID, over, foreign); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+	if decided.conclusion != verdict.None && !shown {
+		if err := w.createVerdictRun(call, client, target, decided); err != nil {
+			return false, err
+		}
+		changed = true
+	}
+	statuses, err := githubrest.GetPages[listedStatus](call, client, "/commits/"+target.head+"/statuses")
+	if err != nil {
+		return false, fmt.Errorf("list the commit statuses of %s at %s: %w", serving, target.head, err)
+	}
+	bot := lease.BotUserID
+	for _, status := range statuses {
+		if status.Context != verdict.CheckName || bot == 0 || status.Creator.ID != bot {
+			continue
+		}
+		switch {
+		case !ownStatuses[status.ID]:
+			return true, w.createVerdictStatus(call, client, target, decided.kind, over, status.ID)
+		case status.State != string(over):
+			return true, w.createVerdictStatus(call, client, target, decided.kind, over, 0)
+		}
+		return changed, nil
+	}
+	return changed, nil
+}
+
+// recordedVerdictWrites is the GitHub id of each check run and of each commit status the store
+// records the daemon wrote on target's head.
+func (w *workflowRuntime) recordedVerdictWrites(ctx context.Context, target verdictTarget) (runs, statuses map[int64]bool, err error) {
+	runs, statuses = map[int64]bool{}, map[int64]bool{}
+	err = pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		writes, err := store.VerdictWritesTx(ctx, tx, target.repository, target.head)
+		for _, written := range writes {
+			if written.Kind == store.VerdictWriteCheckRun {
+				runs[written.GitHubID] = true
+			} else {
+				statuses[written.GitHubID] = true
+			}
+		}
+		return err
+	})
+	return runs, statuses, err
+}
+
+// The summaries of a legion-verdict run that concludes failure for want of an independent review
+// (verdict.NoIndependentReview, verdict.ChangeUnread), under the title verdictOutput gives it. The
+// merger reads them on the head it would merge and tells the owner (spec R4), so their words are
+// the merger's prompt's to quote: change them with prompts/roles/merger.md.
+const (
+	noIndependentReviewSummary = "Every testing and review step of the task's plan passed at this head, and no review step that approved it was run by an agent whose claim wrote none of the change: an independent review is missing."
+	changeUnreadSummary        = "Every testing and review step of the task's plan passed at this head, but the daemon could not read the change's commits or the sessions of the review steps' claims, so it counts no review as independent: an independent review is missing."
+)
+
+// verdictOutput is the title and summary a check run of legion-verdict shows when it concludes
+// conclusion on a head of kind, decided being what the writer decided there: a failure for want
+// of an independent review says so, and every other conclusion names the head's kind alone.
+func verdictOutput(decided verdictDecision, conclusion verdict.Conclusion) map[string]string {
+	summary := map[verdict.Reason]string{verdict.NoIndependentReview: noIndependentReviewSummary, verdict.ChangeUnread: changeUnreadSummary}[decided.reason]
+	if summary == "" || conclusion != decided.conclusion {
+		return map[string]string{
+			"title":   verdict.CheckName + ": " + string(conclusion),
+			"summary": "The Legion daemon wrote this from the verdicts it records at this " + decided.kind + " head.",
+		}
+	}
+	return map[string]string{"title": verdict.CheckName + ": " + string(conclusion) + " (no independent review)", "summary": summary}
+}
+
+// createVerdictRun creates the daemon's own legion-verdict check run on target's head, completed
+// with decided's conclusion (POST /check-runs), and records it.
+func (w *workflowRuntime) createVerdictRun(ctx context.Context, client githubrest.Client, target verdictTarget, decided verdictDecision) error {
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	if err := client.Post(ctx, "/check-runs", map[string]any{"name": verdict.CheckName, "head_sha": target.head, "status": "completed",
+		"conclusion": string(decided.conclusion), "output": verdictOutput(decided, decided.conclusion)}, &created); err != nil {
+		return fmt.Errorf("create legion-verdict on %s at %s: %w", target.repository, target.head, err)
+	}
+	return w.recordVerdictWrite(ctx, target, decided.kind, store.VerdictWriteCheckRun, created.ID, decided.conclusion, 0)
+}
+
+// updateVerdictRun updates check run id on target's head to conclusion (PATCH /check-runs/{id}),
+// with the output decided gives it (verdictOutput), and records it, foreign being the id of the
+// run when another writer made it, 0 when it is the daemon's own.
+func (w *workflowRuntime) updateVerdictRun(ctx context.Context, client githubrest.Client, target verdictTarget, decided verdictDecision, id int64, conclusion verdict.Conclusion, foreign int64) error {
+	if err := client.Patch(ctx, "/check-runs/"+strconv.FormatInt(id, 10), map[string]any{"status": "completed",
+		"conclusion": string(conclusion), "output": verdictOutput(decided, conclusion)}, nil); err != nil {
+		return fmt.Errorf("update legion-verdict run %d on %s at %s: %w", id, target.repository, target.head, err)
+	}
+	return w.recordVerdictWrite(ctx, target, decided.kind, store.VerdictWriteCheckRun, id, conclusion, foreign)
+}
+
+// createVerdictStatus sets a legion-verdict commit status of the daemon's own on target's head with
+// conclusion's state (POST /statuses/{sha}) and records it, foreign being the id of the status of
+// another writer it goes over, 0 for one of the daemon's own.
+func (w *workflowRuntime) createVerdictStatus(ctx context.Context, client githubrest.Client, target verdictTarget, kind string, conclusion verdict.Conclusion, foreign int64) error {
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	if err := client.Post(ctx, "/statuses/"+target.head, map[string]any{"state": string(conclusion), "context": verdict.CheckName,
+		"description": "Written by the Legion daemon from the verdicts it records at this " + kind + " head."}, &created); err != nil {
+		return fmt.Errorf("set the legion-verdict status on %s at %s: %w", target.repository, target.head, err)
+	}
+	return w.recordVerdictWrite(ctx, target, kind, store.VerdictWriteStatus, created.ID, conclusion, foreign)
+}
+
+// recordVerdictWrite logs one write GitHub made in one legion_verdict_write line, and records it
+// in the store: the repository, the pull request, the head and its kind, what was written and its
+// GitHub id, the conclusion, and the id of another writer's run or status it went over (0 for
+// none), which is what a read of the App's runs at a head matches each one against (spec R19). The
+// line comes first, so a write the store fails to record is still named; the store's failure is
+// the write's, and the next sweep writes over the run its record does not hold.
+func (w *workflowRuntime) recordVerdictWrite(ctx context.Context, target verdictTarget, kind string, written store.VerdictWriteKind, id int64, conclusion verdict.Conclusion, foreign int64) error {
+	w.log.Info("legion_verdict_write", "repository", target.repository.String(), "pull_request", target.number, "head", target.head,
+		"head_kind", kind, "kind", string(written), "id", id, "conclusion", string(conclusion), "foreign_id", foreign)
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		_, err := store.RecordVerdictWriteTx(ctx, tx, store.VerdictWrite{Repository: target.repository, Head: target.head, Kind: written,
+			GitHubID: id, Conclusion: conclusion, ForeignID: foreign, WrittenAt: w.clockNow().UTC()})
+		return err
+	}); err != nil {
+		return fmt.Errorf("record the write of legion-verdict %s %d on %s at %s: %w", written, id, target.repository, target.head, err)
+	}
+	return nil
+}
