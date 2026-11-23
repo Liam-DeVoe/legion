@@ -3332,7 +3332,8 @@ test("the pager reads Rows and Page, its steps and the page size, and no total",
   expect(pager.textContent).not.toMatch(/120|issues/);
 
   await user.selectOptions(sizes, String(ALL_ROWS));
-  await waitFor(() => expect(pager.querySelector(".ml-auto")?.textContent).toBe("All rows"));
+  // The range reads All rows. The page size's option says the same words, so options are skipped.
+  expect(await within(pager).findByText("All rows", { ignore: "option" })).toBeDefined();
   expect(pager.textContent).not.toMatch(/120|issues/);
 });
 

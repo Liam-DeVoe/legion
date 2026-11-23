@@ -449,12 +449,13 @@ test("the chip is a Tab stop whose tooltip names the holder whole, and it carrie
     actor: { kind: "session", id: "session-one", origin: { session_title: holder } },
     at: claim.at,
   };
-  // The name ellipsizes: it holds more than its box shows.
+  // The name ellipsizes: the holder's name (`AgentName`'s `data-agent-name`) holds more than its
+  // box shows.
   const scrollWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollWidth");
   Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
     configurable: true,
     get(this: HTMLElement) {
-      return this.classList.contains("truncate") ? 900 : 0;
+      return this.dataset.agentName === "session-one" ? 900 : 0;
     },
   });
   const view = header({ ...base, claim: long });
@@ -513,8 +514,9 @@ test("a stacked chip writes Claimed by and the whole holder, then the age and st
     expect(chip).toHaveAttribute("data-claim-stacked");
     const [name, state] = [...chip.children];
     expect(name?.textContent).toMatch(/^Claimed by Implementer.*alice/);
-    // The name wraps rather than ellipsizes.
-    expect(name?.querySelector(".truncate")).toBeNull();
+    // That the name wraps rather than ellipsizes is layout, which the unit DOM does not do: the
+    // browser row "a claimed card's chip writes the session's whole title on lines inside the
+    // card" (`e2e/issues-views-legion.e2e.ts`) measures it.
     expect(state?.querySelector("time")?.getAttribute("datetime")).toBe(claim.at);
     expect(state).toHaveTextContent("not running");
     expect(chip).toHaveAttribute("tabindex", "0");

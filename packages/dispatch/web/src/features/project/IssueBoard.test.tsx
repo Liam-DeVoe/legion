@@ -891,6 +891,13 @@ test("Enter and o open the focused card once, p focuses its priority select, Esc
   expect(screen.getByTestId("route").textContent).toBe("/issues/CORE-1");
 });
 
+/** The keys of the cards dnd-kit holds lifted. A lifted card follows the pointer by the
+ *  `transform` dnd-kit hands it, which the card draws as its style only while it is dragged. */
+const liftedCards = (region: HTMLElement) =>
+  [...region.querySelectorAll<HTMLElement>("[data-board-card]")]
+    .filter((card) => card.style.transform !== "")
+    .map((card) => card.dataset.boardCard);
+
 test("Space on a focused card lifts nothing, and the card's instructions name the registry keys, not dnd-kit's grammar", async () => {
   const user = userEvent.setup();
   const patch = patchInFlight();
@@ -903,7 +910,7 @@ test("Space on a focused card lifts nothing, and the card's instructions name th
   await user.keyboard("[Space]");
   await act(async () => {});
   expect(patch).not.toHaveBeenCalled();
-  expect(region.querySelector(".opacity-50")).toBeNull();
+  expect(liftedCards(region)).toEqual([]);
   const describedBy = alpha.getAttribute("aria-describedby");
   expect(describedBy).not.toBeNull();
   const instructions = document.getElementById(describedBy as string)?.textContent ?? "";
@@ -1010,7 +1017,7 @@ test("a drag cancelled with Escape keeps its own release off the card's link", a
     // The release of that same drag, with the button still down.
     fireEvent.mouseUp(document, { clientX: 10, clientY: 40 });
   });
-  expect(region.querySelector(".opacity-50")).toBeNull();
+  expect(liftedCards(region)).toEqual([]);
   let followed = true;
   await act(async () => {
     // The assertion reads fireEvent's boolean: whether the click was cancelled.
@@ -1501,8 +1508,10 @@ const painted = () => waitMs(50);
 
 // R11: the Board keeps the reader's place as a table does. A card another reader adds above the
 // card the reader's hand is on does not move that card on screen: the window scrolls by the added
-// card instead. A card that itself leaves its column is not followed, and the Board's scroll boxes
-// leave the window to the anchor alone.
+// card instead. A card that itself leaves its column is not followed. That the Board's scroll
+// boxes leave the window to the anchor alone is the browser's own scroll anchoring, which the
+// unit DOM does not do: the browser row "on the Board a card the pointer rests on or the focus
+// holds keeps its top through writes above it" (`e2e/issues-views-live.e2e.ts`) measures it.
 test("a card added above the card in hand keeps its top, and a card that leaves its column is not followed", async () => {
   boardGeometry();
   const rows = [issue("CORE-2"), issue("CORE-3")];
@@ -1523,8 +1532,6 @@ test("a card added above the card in hand keeps its top, and a card that leaves 
   await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
   await waitFor(() => expect(columnCards("backlog")).toEqual(["CORE-3"]));
   expect(window.scrollY).toBe(CARD_PX);
-  for (const box of region.querySelectorAll('[data-testid="board-scroll-container"]'))
-    expect(box.className).toContain("[overflow-anchor:none]");
 });
 
 // R11: with no hand on a card and the window at its top, the anchor holds the first card of the
@@ -1590,9 +1597,8 @@ test("a card added while another is dragged is not held, and the anchor holds ag
     issue("CORE-6", { status: "in_progress" }),
   ];
   const { client } = board(rows, "?layout=board");
-  const dragged = await within(await boardRegion()).findByRole("article", {
-    name: "CORE-6 Work CORE-6",
-  });
+  const region = await boardRegion();
+  const dragged = await within(region).findByRole("article", { name: "CORE-6 Work CORE-6" });
   await painted();
   await act(async () => {
     // The press that starts a dnd-kit drag, as in `dropInPlace` above.
@@ -1602,7 +1608,7 @@ test("a card added while another is dragged is not held, and the anchor holds ag
     // The move that lifts the card: user-event sends no mousemove of its own.
     fireEvent.mouseMove(document, { clientX: 10, clientY: 40 });
   });
-  expect(dragged.className).toContain("opacity-50");
+  expect(liftedCards(region)).toEqual(["CORE-6"]);
 
   rows.unshift(issue("CORE-4", { status: "in_progress" }));
   await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
