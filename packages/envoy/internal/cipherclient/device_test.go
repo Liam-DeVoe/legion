@@ -179,9 +179,7 @@ func (r *recordingTransport) scopes() []string {
 // held to the device grant's bounds (BoundDeviceAuth), as the broker helper's machine login holds
 // its own. A code that names no lifetime, or one past the hour, is polled under a deadline an hour
 // away at most, where x/oauth2 polls one that names none under no deadline at all, and one of two
-// hours under that deadline. A code of ten minutes keeps its own, a negative interval beside it:
-// x/oauth2 v0.38.0 reads that interval as 5 s, the bound as 1 s, and either completes the sign-in
-// (a panic, which v0.37.0's ticker raises on it, reads as a failure here).
+// hours under that deadline. A code of ten minutes keeps its own, a negative interval beside it.
 func TestASignInHoldsTheIssuersIntervalAndLifetime(t *testing.T) {
 	const (
 		clientID     = "example-device-client.apps.googleusercontent.example"
@@ -219,7 +217,7 @@ func TestASignInHoldsTheIssuersIntervalAndLifetime(t *testing.T) {
 			if c.life != 0 {
 				authorization.Expiry = started.Add(c.life)
 			}
-			signIn, err := waitNoPanic(ctx, flow, authorization)
+			signIn, err := flow.Wait(ctx, authorization)
 			if err != nil {
 				t.Fatalf("Wait: %v", err)
 			}
@@ -237,10 +235,11 @@ func TestASignInHoldsTheIssuersIntervalAndLifetime(t *testing.T) {
 	}
 }
 
-// TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime: BoundDeviceAuth holds the interval to 1
-// through 60 s, 5 s where none is named, and the lifetime to an hour from now, one that names none
-// included, as the TypeScript device login holds them; a lifetime inside the hour, or one already
-// past, is kept.
+// TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime: BoundDeviceAuth holds the interval to 1 s
+// at least, 5 s where none is named, and the lifetime to an hour from now, one that names none
+// included, as the TypeScript device login holds them. An interval past a minute is kept, as RFC
+// 8628 section 3.5 has a client wait at least the interval named, up to the hour, past which it
+// would only wait out the code. A lifetime inside the hour, or one already past, is kept.
 func TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime(t *testing.T) {
 	now := time.Date(2026, 11, 23, 18, 0, 0, 0, time.UTC)
 	for _, c := range []struct {
@@ -250,13 +249,14 @@ func TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime(t *testing.T) {
 		{-3, 1, now.Add(10 * time.Minute), now.Add(10 * time.Minute)},
 		{0, 5, time.Time{}, now.Add(time.Hour)},
 		{30, 30, now.Add(2 * time.Hour), now.Add(time.Hour)},
-		{86400, 60, now.Add(-time.Minute), now.Add(-time.Minute)},
-		{1e12, 60, now.Add(time.Hour), now.Add(time.Hour)},
+		{90, 90, now.Add(time.Hour), now.Add(time.Hour)},
+		{86400, 3600, now.Add(-time.Minute), now.Add(-time.Minute)},
+		{1e12, 3600, now.Add(time.Hour), now.Add(time.Hour)},
 	} {
-		da := &oauth2.DeviceAuthResponse{UserCode: "WDJB-MJHT", Interval: c.interval, Expiry: c.expiry}
+		da := &oauth2.DeviceAuthResponse{Interval: c.interval, Expiry: c.expiry}
 		BoundDeviceAuth(da, now)
-		if da.Interval != c.wantInterval || !da.Expiry.Equal(c.wantExpiry) || da.UserCode != "WDJB-MJHT" {
-			t.Errorf("an interval of %d and an end %v held to %d and %v (user code %q), want %d and %v", c.interval, c.expiry, da.Interval, da.Expiry, da.UserCode, c.wantInterval, c.wantExpiry)
+		if da.Interval != c.wantInterval || !da.Expiry.Equal(c.wantExpiry) {
+			t.Errorf("an interval of %d and an end %v held to %d and %v, want %d and %v", c.interval, c.expiry, da.Interval, da.Expiry, c.wantInterval, c.wantExpiry)
 		}
 	}
 	// The end is one reading of the monotonic clock, though x/oauth2 dates it from the wall clock
@@ -267,17 +267,6 @@ func TestTheDeviceGrantsBoundsHoldTheIntervalAndTheLifetime(t *testing.T) {
 	if da.Expiry == da.Expiry.Round(0) {
 		t.Error("the bounded end carries no monotonic reading, so a comparison with it reads the wall clock")
 	}
-}
-
-// waitNoPanic is flow.Wait, with a panic inside it, which x/oauth2 v0.37.0's ticker raises on a
-// wait that is not positive, answered as an error.
-func waitNoPanic(ctx context.Context, flow *DeviceFlow, authorization *oauth2.DeviceAuthResponse) (signIn *SignIn, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("Wait panicked: %v", r)
-		}
-	}()
-	return flow.Wait(ctx, authorization)
 }
 
 // deadlineTransport carries every request to the issuer and keeps, for each device code poll, the
