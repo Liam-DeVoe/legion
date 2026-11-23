@@ -51,6 +51,7 @@ func (c *fakeConnStatus) set(connected bool, err error) {
 // signal instead: a warn every reconnectWarnEvery naming the downtime so far and the connection's
 // own LastError, and none at all while connected.
 func TestReconnectWatchdogWarnsWhileDisconnectedNotWhileConnected(t *testing.T) {
+	t.Parallel()
 	logBuf := &syncBuffer{}
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
 	conn := &fakeConnStatus{connected: true}
@@ -88,6 +89,7 @@ func TestReconnectWatchdogWarnsWhileDisconnectedNotWhileConnected(t *testing.T) 
 // no-warn check below would catch. The two outages' errors print as two classes
 // (natsconn.ConnectionClass), which tell their warns apart.
 func TestReconnectWatchdogResetsAfterReconnecting(t *testing.T) {
+	t.Parallel()
 	const firstOutage, secondOutage = "nats: no servers available for connection", "connection refused"
 	logBuf := &syncBuffer{}
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
@@ -144,6 +146,7 @@ var reconnectDowntimeRe = regexp.MustCompile(`downtime=(\S+)`)
 // tripping it. The first warn must wait for the downtime itself to reach warnEvery, exactly as
 // pollHoldReleaseWith holds its own first warn for holdWarnAfter, then warn every warnEvery after.
 func TestReconnectWatchdogWarnsOnlyOnceDowntimeReachesWarnEvery(t *testing.T) {
+	t.Parallel()
 	logBuf := &syncBuffer{}
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
 	conn := &fakeConnStatus{connected: true}
