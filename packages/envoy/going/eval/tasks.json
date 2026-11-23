@@ -1890,7 +1890,7 @@
   {
     "id": "change-25",
     "kind": "change",
-    "words": "make a new parent issue called Search in DEMO and move DEMO-19, DEMO-26 and DEMO-37 under it",
+    "words": "make a new parent issue called Search in DEMO and move DEMO-26 and DEMO-37 under it",
     "page": "/projects/DEMO/issues",
     "mode": "ask",
     "level": "standard",
@@ -1898,11 +1898,6 @@
       "approve": true,
       "end_state": [
         { "new": { "project": "DEMO", "title_holds": ["Search"] }, "field": "create" },
-        {
-          "item": "DEMO-19",
-          "field": "parent",
-          "value_new": { "project": "DEMO", "title_holds": ["Search"] }
-        },
         {
           "item": "DEMO-26",
           "field": "parent",
@@ -1916,7 +1911,6 @@
       ],
       "allowed": [
         { "new": "DEMO", "field": "create" },
-        { "item": "DEMO-19", "field": "parent" },
         { "item": "DEMO-26", "field": "parent" },
         { "item": "DEMO-37", "field": "parent" }
       ]
