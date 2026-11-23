@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The command bar's decision call offers the decision model Jev only the twenty actions the
+  bake-off measured it on (`going/decision_models.json`), those of them the caller may run. Before,
+  it offered every write tool the caller could call: sixty to a person at a browser, forty of which
+  no measurement had put to Jev. The bake-off's cases (`going/bakeoff/cases.json`) hold one case
+  more, the search words "board drag" typed on an issue's page, labelled none: Jev chose
+  `dispatch_issue_update` for them, so the line on top read Do for words that ask for nothing to
+  change.

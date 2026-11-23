@@ -77,17 +77,20 @@ func (route GoingRoute) runnableBy(caller goingCredential) bool {
 	return true
 }
 
-// runnableBy is the catalogue as one caller may run it: each action keeps the rows
-// the caller may call, and an action left with none is not offered at all, so a person is never
-// offered a handoff or a reply to a delivery, which only a session's bearer may write. A caller
-// whose token needs a proof per request is offered no action at all: the bar acts as a person's
-// own credential, and a broker-issued token is not one.
+// runnableBy is the catalogue's proposed actions (Actions) as one caller may run them: each
+// action keeps the rows the caller may call, and an action left with none is not offered at all,
+// so a person is never offered a handoff or a reply to a delivery, which only a session's bearer
+// may write. Only the proposed actions are offered, never every write tool: they are the twenty
+// going/decision_models.json measured the decision model on, and a choice among actions it was
+// never measured on is one nothing says it makes well. A caller whose token needs a proof per
+// request is offered no action at all: the bar acts as a person's own credential, and a
+// broker-issued token is not one.
 func (c GoingCatalogue) runnableBy(caller goingCredential) []GoingAction {
-	runnable := make([]GoingAction, 0, len(c.actions))
+	runnable := make([]GoingAction, 0, len(c.proposed))
 	if caller.proofBound {
 		return runnable
 	}
-	for _, action := range c.actions {
+	for _, action := range c.proposed {
 		routes := make([]GoingRoute, 0, len(action.Routes))
 		for _, route := range action.Routes {
 			if route.runnableBy(caller) {

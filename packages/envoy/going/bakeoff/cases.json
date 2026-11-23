@@ -723,6 +723,13 @@
     "names_action": false,
     "chart_worthy": false
   },
+  {
+    "words": "board drag",
+    "context": { "path": "/issues/DEMO-1", "project": "DEMO", "issue": "DEMO-1" },
+    "action": "none",
+    "names_action": false,
+    "chart_worthy": false
+  },
 
   {
     "words": "how many issues did DEMO close each week this month?",
