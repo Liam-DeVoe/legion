@@ -4054,13 +4054,15 @@ func wireTestRoleForwarder(t *testing.T, cfg listenerDeliveryHandlerConfig) list
 }
 
 // settled waits until every forward the forwarder holds has been reported: a test reads what a
-// forward did after it, since the forwarder publishes and reports off the handler.
+// forward did after it, since the forwarder publishes and reports off the handler. It waits on the
+// forwarder's own WaitGroup (roleForwarder.wait), whose Done is each forward's last act, so what a
+// forward wrote is the test's to read once it returns; a count of the forwarder's slots would not
+// order those writes before the read. Its bound is the shared wait's give-up.
 func (f *roleForwarder) settled(t *testing.T) {
 	t.Helper()
-	testwait.Until(t, "every role forward the forwarder holds to be reported", func() (string, bool) {
-		outstanding := f.outstanding()
-		return fmt.Sprintf("%d forwards outstanding", outstanding), outstanding == 0
-	})
+	if !f.wait(testwait.Context(t)) {
+		t.Fatalf("gave up waiting for every role forward the forwarder holds to be reported, at the shared wait's give-up (testwait.Context): %d forwards outstanding", f.outstanding())
+	}
 }
 
 // registerFanoutTarget records sessionID as a session of this machine following topic and
