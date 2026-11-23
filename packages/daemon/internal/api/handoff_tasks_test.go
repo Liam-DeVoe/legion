@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -96,5 +97,32 @@ func TestACompletionsKeyNamesItsTasksPhase(t *testing.T) {
 	}
 	if got := len(facts.recorded()); got != len(applied) {
 		t.Fatalf("the reviewer's completion applied %d facts, want none", got-len(applied))
+	}
+}
+
+// The completion route tells the daemon's hook (Options.HandoffCompleted) the issue and the task
+// whose step completed, so the read of GitHub the hook queues judges that task's pull request:
+// with task a at its tester's step and task b at its implementer's, the tester's completion tells
+// the hook task a. A completion of an issue whose plan holds one task tells the hook no task, and
+// the read judges the issue's one task as before.
+//
+// The fault it catches is a hook told the issue alone, so the read after a completion judges the
+// task the implementer's phases row names rather than the one that completed (its control: the
+// route telling the hook no task).
+func TestTheCompletionHookIsToldTheCompletingTask(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	const several, one = "LEGION-211", "LEGION-213"
+	seedIssueAt(t, h, several, phase.Implementing)
+	seedTwoTasks(t, h, several)
+	tester := newLiveClaim(t, h, several, claim.RoleTester)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+
+	seedIssueAt(t, h, one, phase.Testing)
+	seedTaskPlan(t, h, one, taskStanding{task: "a", state: record.TaskRunning, place: 2})
+	alone := newLiveClaim(t, h, one, claim.RoleTester)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: alone.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: alone.writeHandoff("test", 1), HandoffVersion: 1}))
+
+	if got, want := facts.completions(), []toldCompletion{{issue: several, task: "a"}, {issue: one}}; !slices.Equal(got, want) {
+		t.Fatalf("the completion hook was told %+v, want %+v: the task whose step completed, and none for a plan of one task", got, want)
 	}
 }

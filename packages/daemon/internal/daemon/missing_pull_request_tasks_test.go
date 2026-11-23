@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // seedTwoTasks records CAPTURE-1 in implementing with a plan of two tasks, each started in id
@@ -94,7 +95,7 @@ func TestAMissingPullRequestIsOfTheCompletingTask(t *testing.T) {
 	t.Cleanup(server.Close)
 	w := readRuntime(pool, server.URL, quietLogger())
 
-	_, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1")
+	_, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1", "")
 	reasons := noticeReasons(t, pool, "pull-request-missing")
 	if len(reasons) != 1 || !strings.Contains(reasons[0], "legion/CAPTURE-1.b") || !strings.Contains(reasons[0], "handoff-b") {
 		t.Fatalf("the read told pull-request-missing %q, want one naming b's branch legion/CAPTURE-1.b and its handoff commit", reasons)
@@ -115,5 +116,39 @@ func TestAMissingPullRequestIsOfTheCompletingTask(t *testing.T) {
 		if err != nil || got.Number != want.number || got.Task != want.task {
 			t.Fatalf("the open record of task %s's #%d = #%d of task %q, %v; want its own row", want.task, want.number, got.Number, got.Task, err)
 		}
+	}
+}
+
+// The read a completion queues judges the pull request of the task whose step completed
+// (handoffCompleted's task), not the task the implementer's phases row names. CAPTURE-1's task a
+// stands at its review with its pull request #86 open on legion/CAPTURE-1, while task b stands at
+// its implementer's step, whose phases row is the issue's newest implementer row. When a's
+// reviewer completes, the read reads #86, and lists no branch for b's pull request.
+//
+// The fault it catches is a reviewer's completion of one task whose read judges another task's
+// pull request, so the review's own pull request is not read when its next step is decided (its
+// control: the completion queued without its task).
+func TestTheReadAfterACompletionJudgesTheCompletingTasksPullRequest(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	seedTwoTasks(t, pool)
+	github := newIssueReadStandIn(t, time.Date(2026, 11, 23, 1, 0, 0, 0, time.UTC))
+	w := readRuntime(pool, github.URL, quietLogger())
+	w.handedOff = newHandedOffSet()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		w.readHandedOff(ctx)
+		close(stopped)
+	}()
+
+	w.handoffCompleted("CAPTURE-1", "a")
+	testwait.Eventually(t, "the completion's read to ask GitHub for a pull request of CAPTURE-1", func() bool {
+		return github.count("/repos/acme/widgets/pulls/86")+github.count("/repos/acme/widgets/pulls") > 0
+	})
+	cancel()
+	<-stopped
+	if read, listed := github.count("/repos/acme/widgets/pulls/86"), github.count("/repos/acme/widgets/pulls"); read != 1 || listed != 0 {
+		t.Fatalf("the read after a's reviewer completed read #86 %d times and listed the open pull requests of a branch %d times, want #86 once and no list: GitHub was read %v",
+			read, listed, github.counts())
 	}
 }

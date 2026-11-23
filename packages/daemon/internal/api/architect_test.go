@@ -55,6 +55,15 @@ type factRecorder struct {
 	mu      sync.Mutex
 	facts   []intake.Fact
 	refusal *intake.Refusal
+	// told is each issue and task the completion route's hook was told of (HandoffCompleted), in
+	// order.
+	told []toldCompletion
+}
+
+// toldCompletion is one call of the completion route's hook: the issue, and the task of the plan
+// whose step completed ("" for a plan of one task, or none).
+type toldCompletion struct {
+	issue, task string
 }
 
 func (r *factRecorder) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (intake.Result, error) {
@@ -68,6 +77,20 @@ func (r *factRecorder) recorded() []intake.Fact {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]intake.Fact(nil), r.facts...)
+}
+
+// completed is the completion route's hook (Options.HandoffCompleted), which records what it is told.
+func (r *factRecorder) completed(issue, task string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.told = append(r.told, toldCompletion{issue: issue, task: task})
+}
+
+// completions is each call of the completion route's hook, in order.
+func (r *factRecorder) completions() []toldCompletion {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]toldCompletion(nil), r.told...)
 }
 
 type statusWrite struct {

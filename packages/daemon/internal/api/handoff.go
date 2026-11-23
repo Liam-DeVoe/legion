@@ -473,11 +473,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
 		return
 	}
-	// The completion is recorded and its transaction committed, so the daemon's read of the issue's
-	// pull request judges what this phase left; the hook only queues that read, which runs on the
-	// daemon's own goroutine, so this answer waits for no GitHub call.
+	// The completion is recorded and its transaction committed, so the daemon's read of the pull
+	// request of the task whose step completed judges what this phase left; the hook only queues
+	// that read, which runs on the daemon's own goroutine, so this answer waits for no GitHub call.
 	if s.handoffCompleted != nil {
-		s.handoffCompleted(grant.Issue)
+		s.handoffCompleted(grant.Issue, position.ofTask)
 	}
 	s.writeAnswer(w, r, AnswerHandoffComplete, http.StatusOK, HandoffCompleteResponse{})
 	return
