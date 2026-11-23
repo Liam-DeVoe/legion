@@ -30,6 +30,7 @@ import (
 // Both closes are driven here against the real Dispatch server, each with one unrelated event
 // between the row's read and its write, and each must end with Dispatch showing done.
 func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		close func(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string)
@@ -77,6 +78,7 @@ func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t 
 // that one: writing it would close the issue the person just reopened. The row names the
 // generation it closed, so its retry reads the record and finishes having written nothing.
 func TestAReopenedIssueKeepsTheStatusThePersonGaveItAndTheCloseWritesNothing(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "in_progress")
@@ -124,6 +126,7 @@ func (d *failingStatus) SetStatusAt(context.Context, dispatch.Issue, string) (di
 // attempt must write nothing: the close it carries is of the run before the reopen, and writing
 // it would close the issue the person just took back.
 func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "in_progress")
