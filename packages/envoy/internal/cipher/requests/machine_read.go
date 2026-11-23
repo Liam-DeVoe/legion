@@ -339,15 +339,37 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 // grant for good, in the same step (endJudgedGrant): the release, and every release after it, is
 // refused, and putting the tag back does not revive it, as a lowered max-grant does not. The
 // caller still answers the chain's refusal, which names the judge tag.
+//
+// A key the live policy does not serve at all gives the judge no seconds of it either, and the
+// chain refuses it the same way; but that is no judge tag taken away. A secret deleted before a
+// restore, a tag the load refuses or a value it cannot read pauses a person's grant
+// (noLongerServed, endGrant), so it pauses a judged one too: such a refusal answers
+// noLongerServed, writes no broken-chain line and ends nothing, and the grant releases again
+// once the key is served with a tag that admits it (unservedJudgeKey).
 func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) (string, error) {
 	recordID, err := m.verifyChain(ctx, grantID)
 	if errors.Is(err, ErrGrantChainInvalid) {
+		if name, unserved := m.unservedJudgeKey(err); unserved {
+			return recordID, noLongerServed(name)
+		}
 		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
 		if ended := m.endJudgedGrant(ctx, grantID, err); ended != nil {
 			return recordID, ended
 		}
 	}
 	return recordID, err
+}
+
+// unservedJudgeKey answers the key a chain refusal names, and true, when chainErr is a judge-tag
+// refusal (record.JudgeTagRefusal) of a key the live policy does not serve: the chain read no
+// judge tag because there is no served secret to read one from. Any other refusal answers false.
+func (m *Machine) unservedJudgeKey(chainErr error) (string, bool) {
+	var refusal record.JudgeTagRefusal
+	if !errors.As(chainErr, &refusal) || refusal.Tagged || m.Policy == nil {
+		return "", false
+	}
+	_, served := m.Policy.Get().Secrets[refusal.Name]
+	return refusal.Name, !served
 }
 
 // endJudgedGrant ends grantID for good (endGrant) when chainErr, the chain's refusal of it, is a
