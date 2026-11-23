@@ -351,3 +351,33 @@ func TestUnguardedRefusesARootUnderWhichItReadsNoTestFile(t *testing.T) {
 		t.Errorf("Unguarded on a module root with one test file and no write = %v, %v; want nothing and no error", got, err)
 	}
 }
+
+// ForkBeside runs its test only where the run of a busy program was refused with ETXTBSY. A kernel
+// that ran it (gVisor's answer, nil) skips the test, saying so, outside CI and fails it under
+// GITHUB_ACTIONS; any other answer fails it everywhere, naming the answer, rather than skipping
+// with the claim that the kernel ran the program: a TMPDIR mounted noexec answers EACCES, and a
+// machine without /bin/sh answers ENOENT.
+func TestForkBesideRunsOnlyWhereABusyRunIsRefused(t *testing.T) {
+	t.Parallel()
+	refused := &os.PathError{Op: "fork/exec", Path: "/tmp/held-open", Err: syscall.ETXTBSY}
+	noexec := &os.PathError{Op: "fork/exec", Path: "/tmp/held-open", Err: syscall.EACCES}
+	noShell := &os.PathError{Op: "fork/exec", Path: "/tmp/held-open", Err: syscall.ENOENT}
+	for _, row := range []struct {
+		what       string
+		answer     error
+		ci         bool
+		skip, fail string
+	}{
+		{"refused", refused, false, "", ""},
+		{"refused, in CI", refused, true, "", ""},
+		{"ran", nil, false, "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, as gVisor does", ""},
+		{"ran, in CI", nil, true, "", "under GITHUB_ACTIONS that is a broken runner"},
+		{"noexec", noexec, false, "", "answered fork/exec /tmp/held-open: permission denied, neither ETXTBSY nor a run"},
+		{"no shell, in CI", noShell, true, "", "answered fork/exec /tmp/held-open: no such file or directory, neither ETXTBSY nor a run"},
+	} {
+		skip, fail := busyRunVerdict(row.answer, row.ci)
+		if (skip == "") != (row.skip == "") || !strings.Contains(skip, row.skip) || (fail == "") != (row.fail == "") || !strings.Contains(fail, row.fail) {
+			t.Errorf("%s: busyRunVerdict = skip %q, fail %q; want skip with %q, fail with %q", row.what, skip, fail, row.skip, row.fail)
+		}
+	}
+}
