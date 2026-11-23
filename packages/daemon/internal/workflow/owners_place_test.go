@@ -58,9 +58,10 @@ func TestAnAcceptanceStartNamesTheAgentThatDoesIt(t *testing.T) {
 // A sign-off ends the owner's own acceptance and no other agent's: the acceptance of a step
 // `acceptance` with no key is the fresh agent of acceptance's, which ends it with its own verdict,
 // so the owner's sign_off there is refused SIGNOFF_NOT_THE_OWNERS, naming the step and its agent,
-// and the issue stays at the step. The twin is the owner's own acceptance, `acceptance:owner`,
-// whose sign-off moves the task on to its retro, as an issue with no plan rows does (the tests of
-// today's sign-off). The control is signOff reading the phase alone: the owner's sign-off of the
+// and the issue stays at the step. The twin is the owner's own acceptance, `acceptance:owner`, here
+// its task's last step, whose sign-off moves the task on to its retro, as an issue with no plan
+// rows does (the tests of today's sign-off). The control is signOff reading the phase alone: the
+// owner's sign-off of the
 // fresh agent's step is taken and starts the retro before that agent's reading arrives.
 func TestASignOffEndsOnlyTheOwnersOwnAcceptance(t *testing.T) {
 	t.Run("the fresh agent's acceptance", func(t *testing.T) {

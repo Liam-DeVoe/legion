@@ -29,8 +29,9 @@ func reviewedLine(sha string) string { return " Last reviewed commit: " + sha + 
 // A review step the owner does is told, at its next run, the commit its run before read, as a
 // reviewer's later round is told the commit the round before it read: for `reviewer:owner`, the
 // commit its complete_step fail named, and for `acceptance:owner`, the head of the pull request
-// its request_backward_move acted on, since that move names no commit of its own. Its first run
-// names no commit read. A step of another type the owner does names none at any run.
+// its request_backward_move acted on, where the issue has one (recordOwnersReview), since that move
+// names no commit of its own. Its first run names no commit read. A step of another type the owner
+// does names none at any run.
 //
 // The controls: the reviewed commit cleared between the two runs (the rule that reads the
 // reviewer's row alone writes none for acceptance, and the move back writes none): the second
