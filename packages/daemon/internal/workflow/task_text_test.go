@@ -439,13 +439,18 @@ func seedBranches(t *testing.T, pool *pgxpool.Pool, key string, tasks ...string)
 
 // The first step of a task whose join GitHub refused as a conflict is told to repair it, right
 // after the sentence that names the tasks it starts from: of tasks a and c, which are done, d
-// needs both, and the join of c into d's branch conflicted. d's first step is told that GitHub
-// could not join the work of task c, the commands that join c's branch in d's working copy, and the
-// branch to push; d's second step is not told it. A task whose join conflicted on two needs names
-// both, each with its branch. A task whose join ended with no conflict is told nothing of a join.
+// needs both, and the join of c into d's join branch conflicted. d's pull request is based on that
+// join branch (record.StoredPlan.BaseOf), so d's first step is told that GitHub could not join the
+// work of task c into its join branch, the commands that repair the join there and push the join
+// branch, and then the command that starts its own work on its branch from the repaired join; d's
+// second step is not told it. f has no join branch, since none of its steps implements: its join
+// conflicted on two needs, and it is told to join both, each with its branch, on its own branch
+// and to push that. A task whose join ended with no conflict is told nothing of a join.
 //
-// The fault it catches is a conflict the agent of the first step is not told (its control: the
-// conflict sentence dropped, under which d's first step names no join to repair).
+// The fault it catches is a conflict the agent of the first step is not told, or told to repair on
+// the task's branch where the task has a join branch, so its pull request shows its needs' work as
+// its own (its controls: the conflict sentence dropped, under which d's first step names no join
+// to repair; the join branch left out of the sentence, under which d's sentence fails).
 func TestTheFirstStepOfATaskWhoseJoinConflictedIsToldToRepairIt(t *testing.T) {
 	pool := migratedPool(t)
 	engine := textEngine()
@@ -469,11 +474,15 @@ func TestTheFirstStepOfATaskWhoseJoinConflictedIsToldToRepairIt(t *testing.T) {
 
 	first := stepLines(t, pool, engine, root.Key, "d", atStep(1))
 	const repair = " This task starts from the joined work of tasks a, c, which are done." +
-		" GitHub could not join the work of task c into this branch: their changes conflict." +
-		" Before your own work, join it in your working copy: `jj -R /work/LEGION-208.d git fetch`," +
-		" then `jj -R /work/LEGION-208.d new @- legion/LEGION-208.c@origin -m \"LEGION-208: join the work of task c\"`," +
-		" repair each path that `jj -R /work/LEGION-208.d resolve --list` lists, `jj -R /work/LEGION-208.d squash`," +
-		" and push the branch legion/LEGION-208.d. That join is the first commit of your step."
+		" GitHub could not join the work of task c into the join branch legion/LEGION-208.d.join, the base of this task's pull request:" +
+		" their changes conflict. Before your own work, repair that join on legion/LEGION-208.d.join, so the pull request shows this task's own work alone:" +
+		" `jj -R /work/LEGION-208.d git fetch`, `jj -R /work/LEGION-208.d bookmark track legion/LEGION-208.d.join@origin`," +
+		" then `jj -R /work/LEGION-208.d new legion/LEGION-208.d.join@origin legion/LEGION-208.c@origin -m \"LEGION-208: join the work of task c\"`," +
+		" repair each path that `jj -R /work/LEGION-208.d resolve --list` lists, then `jj -R /work/LEGION-208.d bookmark set legion/LEGION-208.d.join -r @`" +
+		" and `jj -R /work/LEGION-208.d git push --bookmark legion/LEGION-208.d.join`." +
+		" Then start your own work on the branch legion/LEGION-208.d from the repaired join:" +
+		" `jj -R /work/LEGION-208.d new 'heads(legion/LEGION-208.d@origin | legion/LEGION-208.d.join@origin)'`," +
+		" and repair each path that `jj -R /work/LEGION-208.d resolve --list` lists there; your first commit on legion/LEGION-208.d is from that join."
 	if !strings.Contains(first, repair) {
 		t.Fatalf("the first step of d's task = %q,\nwant it to hold %q", first, repair)
 	}
@@ -482,12 +491,75 @@ func TestTheFirstStepOfATaskWhoseJoinConflictedIsToldToRepairIt(t *testing.T) {
 	const both = " GitHub could not join the work of task a, task c into this branch: their changes conflict." +
 		" Before your own work, join it in your working copy: `jj -R /work/LEGION-208.f git fetch`," +
 		" then `jj -R /work/LEGION-208.f new @- legion/LEGION-208@origin legion/LEGION-208.c@origin -m \"LEGION-208: join the work of task a, task c\"`," +
-		" repair each path that `jj -R /work/LEGION-208.f resolve --list` lists, `jj -R /work/LEGION-208.f squash`," +
-		" and push the branch legion/LEGION-208.f. That join is the first commit of your step."
+		" repair each path that `jj -R /work/LEGION-208.f resolve --list` lists, then `jj -R /work/LEGION-208.f bookmark set legion/LEGION-208.f -r @`" +
+		" and `jj -R /work/LEGION-208.f git push --bookmark legion/LEGION-208.f`. That join is the first commit of your step:" +
+		" start your own work after it with `jj -R /work/LEGION-208.f new`."
 	if f := stepLines(t, pool, engine, root.Key, "f", atStep(1)); !strings.Contains(f, both) {
 		t.Fatalf("the first step of f's task = %q,\nwant it to hold %q", f, both)
 	}
 	lacks(t, "first step of g", stepLines(t, pool, engine, root.Key, "g", atStep(1)), "GitHub could not join")
+}
+
+// The first step of a task whose join branch GitHub could not merge into the task's branch, since
+// the task's own work there conflicts with what its needs did since, is told to merge it there, on
+// the task's branch, and the join branch takes none of that repair: of tasks a and c, which are
+// done, h and k each need both. h's join branch did not merge into its branch, and h is told the
+// commands of that merge and the branch to push. k's join conflicted on c too, and its join branch
+// did not merge: it is told first to repair the join of c on its join branch, then to merge the
+// repaired join branch into its branch. A task whose join branch merged is told no such merge.
+//
+// The fault it catches is that conflict told as a conflict of the needs on the join branch, which
+// holds their work already (its control: the unmerged join left out of the task's text, under which
+// h's first step names no merge).
+func TestTheFirstStepOfATaskWhoseJoinBranchDidNotMergeIsToldToMergeIt(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "a", steps: []string{"implementer:a"}, agents: []claim.Agent{"impl-a"}, state: record.TaskDone, place: atStep(1)},
+		planTask{id: "c", steps: []string{"implementer:c"}, agents: []claim.Agent{"impl-c"}, state: record.TaskDone, place: atStep(1)},
+		planTask{id: "d", steps: []string{"implementer:d"}, agents: []claim.Agent{"impl-d"}, needs: []string{"a", "c"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "h", steps: []string{"implementer:h"}, agents: []claim.Agent{"impl-h"}, needs: []string{"a", "c"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "k", steps: []string{"implementer:k"}, agents: []claim.Agent{"impl-k"}, needs: []string{"a", "c"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "z", steps: []string{"implementer:z"}, agents: []claim.Agent{"impl-z"}, needs: []string{"d", "h", "k"}, state: record.TaskWaiting})
+	seedBranches(t, pool, root.Key, "a", "c", "d", "h", "k")
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		store := record.NewStore()
+		if err := store.SetJoinUnmerged(t.Context(), tx, root.Key, root.Generation, "h", true); err != nil {
+			return err
+		}
+		if err := store.SetJoinConflicts(t.Context(), tx, root.Key, root.Generation, "k", []string{"c"}); err != nil {
+			return err
+		}
+		return store.SetJoinUnmerged(t.Context(), tx, root.Key, root.Generation, "k", true)
+	})
+
+	const merge = " This task starts from the joined work of tasks a, c, which are done." +
+		" GitHub could not merge the join branch legion/LEGION-208.h.join into this branch: its changes conflict with this task's own work." +
+		" Before your own work, merge it here: `jj -R /work/LEGION-208.h git fetch`," +
+		" then `jj -R /work/LEGION-208.h new legion/LEGION-208.h@origin legion/LEGION-208.h.join@origin -m \"LEGION-208: join the work of tasks a, c\"`," +
+		" repair each path that `jj -R /work/LEGION-208.h resolve --list` lists, then `jj -R /work/LEGION-208.h bookmark set legion/LEGION-208.h -r @`" +
+		" and `jj -R /work/LEGION-208.h git push --bookmark legion/LEGION-208.h`." +
+		" That merge is the first commit of your step, and the join branch takes none of it: start your own work after it with `jj -R /work/LEGION-208.h new`."
+	if h := stepLines(t, pool, engine, root.Key, "h", atStep(1)); !strings.Contains(h, merge) {
+		t.Fatalf("the first step of h's task = %q,\nwant it to hold %q", h, merge)
+	}
+
+	const repairThenMerge = " GitHub could not join the work of task c into the join branch legion/LEGION-208.k.join, the base of this task's pull request:" +
+		" their changes conflict. Before your own work, repair that join on legion/LEGION-208.k.join, so the pull request shows this task's own work alone:" +
+		" `jj -R /work/LEGION-208.k git fetch`, `jj -R /work/LEGION-208.k bookmark track legion/LEGION-208.k.join@origin`," +
+		" then `jj -R /work/LEGION-208.k new legion/LEGION-208.k.join@origin legion/LEGION-208.c@origin -m \"LEGION-208: join the work of task c\"`," +
+		" repair each path that `jj -R /work/LEGION-208.k resolve --list` lists, then `jj -R /work/LEGION-208.k bookmark set legion/LEGION-208.k.join -r @`" +
+		" and `jj -R /work/LEGION-208.k git push --bookmark legion/LEGION-208.k.join`." +
+		" Then merge the repaired join into this branch, which GitHub could not do: its changes conflict with this task's own work:" +
+		" `jj -R /work/LEGION-208.k new legion/LEGION-208.k@origin legion/LEGION-208.k.join@origin -m \"LEGION-208: join the work of tasks a, c\"`," +
+		" repair each path that `jj -R /work/LEGION-208.k resolve --list` lists, then `jj -R /work/LEGION-208.k bookmark set legion/LEGION-208.k -r @`" +
+		" and `jj -R /work/LEGION-208.k git push --bookmark legion/LEGION-208.k`." +
+		" That merge is the first commit of your step, and the join branch takes none of it: start your own work after it with `jj -R /work/LEGION-208.k new`."
+	if k := stepLines(t, pool, engine, root.Key, "k", atStep(1)); !strings.Contains(k, repairThenMerge) {
+		t.Fatalf("the first step of k's task = %q,\nwant it to hold %q", k, repairThenMerge)
+	}
+	lacks(t, "first step of d", stepLines(t, pool, engine, root.Key, "d", atStep(1)), "GitHub could not")
 }
 
 // An implementation step of a task whose pull request has a base other than the issue's default

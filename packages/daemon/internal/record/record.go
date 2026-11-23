@@ -2338,9 +2338,12 @@ type Store interface {
 	// the generation has given no task, even one a later version removed. The generation's task
 	// rows are locked first, so two starts at one time never take one name.
 	AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (string, error)
-	// SetJoinConflicts writes the needs of task whose join into its branch GitHub refused as a
-	// conflict, in place of what the task held.
+	// SetJoinConflicts writes the needs of task whose merge GitHub refused as a conflict, into the
+	// branch the join of its needs is made on, in place of what the task held.
 	SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, needs []string) error
+	// SetJoinUnmerged writes whether GitHub refused as a conflict the merge of task's join branch
+	// into its branch, in place of what the task held.
+	SetJoinUnmerged(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, unmerged bool) error
 	// SetStartReason writes why a running task started again at its first step, which every move
 	// of the task clears.
 	SetStartReason(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error

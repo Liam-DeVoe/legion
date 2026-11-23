@@ -141,11 +141,14 @@ type ReturnCounts struct {
 // held, "" for one whose agent's claim failed and for every task that is not held. StepWait and
 // StepWaitSince are what the step at a running task's place waits for and since when, nil where it
 // waits for nothing (SetStepWait). Branch is the GitHub branch the task works on, "" until its
-// first start gives it one (AssignTaskBranch), and JoinConflicts is the id of each need whose join
-// into that branch GitHub refused as a conflict (SetJoinConflicts). StartReason is why the task
-// started again at its first step (SetStartReason), "" for a first start and after any later move:
-// the step that starts after a wait reads it (the workflow's startAfterWait). Needs and
-// JoinConflicts are nil where they hold none.
+// first start gives it one (AssignTaskBranch), and JoinConflicts is the id of each need whose merge
+// GitHub refused as a conflict, into the branch the join of its needs is made on: its join branch
+// where it has one (StoredPlan.BaseOf), else its branch (SetJoinConflicts). JoinUnmerged says
+// GitHub refused as a conflict the merge of its join branch into its branch, which the task's own
+// work there makes at a start again (SetJoinUnmerged). StartReason is why the task started again
+// at its first step (SetStartReason), "" for a first start and after any later move: the step that
+// starts after a wait reads it (the workflow's startAfterWait). Needs and JoinConflicts are nil
+// where they hold none.
 type PlanTask struct {
 	Issue       string
 	Generation  uint64
@@ -166,6 +169,7 @@ type PlanTask struct {
 	Counts         ReturnCounts
 	Branch         string
 	JoinConflicts  []string
+	JoinUnmerged   bool
 	HoldReason     HoldReason
 	StepWait       StepWait
 	StepWaitSince  *time.Time
@@ -254,10 +258,10 @@ func (s *Postgres) AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string
 	return branch, nil
 }
 
-// SetJoinConflicts writes needs as the needs of task of the plan of issue at generation whose join
-// into the task's branch GitHub refused as a conflict, in place of what the row held: each
-// task_branch row of the task joins its needs again, so the newest join is the one its first step
-// repairs. A task the plan does not hold is refused, naming it.
+// SetJoinConflicts writes needs as the needs of task of the plan of issue at generation whose merge
+// GitHub refused as a conflict, into the branch the join of its needs is made on, in place of what
+// the row held: each task_branch row of the task joins its needs again, so the newest join is the
+// one its first step repairs. A task the plan does not hold is refused, naming it.
 func (s *Postgres) SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, needs []string) error {
 	describe := fmt.Sprintf("write the needs whose join conflicted of task %s of %s at generation %d", task, issue, generation)
 	if needs == nil {
@@ -270,6 +274,23 @@ func (s *Postgres) SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task", describe)
+	}
+	return nil
+}
+
+// SetJoinUnmerged writes whether GitHub refused as a conflict the merge of the join branch of task
+// of the plan of issue at generation into the task's branch, in place of what the row held, as
+// SetJoinConflicts writes the needs that conflicted: each task_branch row of the task joins again,
+// so the newest join is the one its first step merges by hand. A task the plan does not hold is
+// refused, naming it.
+func (s *Postgres) SetJoinUnmerged(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, unmerged bool) error {
+	tag, err := tx.Exec(ctx, `update plan_tasks set join_unmerged = $4 where issue = $1 and generation = $2 and task = $3`,
+		issue, int64(generation), task, unmerged)
+	if err != nil {
+		return fmt.Errorf("write whether the join branch of task %s of %s at generation %d merged into its branch: %w", task, issue, generation, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("write whether the join branch of task %s of %s at generation %d merged into its branch: the plan holds no such task", task, issue, generation)
 	}
 	return nil
 }
@@ -595,8 +616,8 @@ const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.tas
 	plan_tasks.block_text, plan_tasks.needs, plan_tasks.part_of, plan_tasks.owner_role, plan_tasks.merges, plan_tasks.steps_by_default,
 	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
 	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told,
-	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.hold_reason, plan_tasks.step_wait, plan_tasks.step_wait_since,
-	plan_tasks.start_reason`
+	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.join_unmerged, plan_tasks.hold_reason, plan_tasks.step_wait,
+	plan_tasks.step_wait_since, plan_tasks.start_reason`
 
 // scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
 func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
@@ -609,7 +630,7 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf,
 			&task.OwnerRole, &task.Merges, &task.StepsByDefault, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
 			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold,
-			&task.Branch, &task.JoinConflicts, &task.HoldReason, &task.StepWait, &task.StepWaitSince, &task.StartReason); err != nil {
+			&task.Branch, &task.JoinConflicts, &task.JoinUnmerged, &task.HoldReason, &task.StepWait, &task.StepWaitSince, &task.StartReason); err != nil {
 			return nil, err
 		}
 		task.Generation = uint64(generation)
@@ -728,10 +749,10 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	if carried {
 		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts, start_reason)
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason)
 			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts, start_reason
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason
 			from plan_tasks where issue = $1 and generation = $2`
 		names = []string{`insert into plan_branches (issue, generation, branch)
 			select issue, $3, branch from plan_branches where issue = $1 and generation = $2 on conflict do nothing`}
