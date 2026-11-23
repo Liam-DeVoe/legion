@@ -2521,8 +2521,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if payload.Op == "pause_stop" {
 		return r.pauseStop(ctx, row, payload)
 	}
-	// A slot's credential is written for the App its claim's slot holds as the record stands when
-	// the row runs (slotCredential), whatever the issue's generation, phase or tree.
+	// A slot_credential row writes the owner's slot back to the owner's own App (slotCredential).
+	// It writes only where the slot's role, read from the record when the row runs, acts as that
+	// App, and else nothing. It runs whatever the issue's generation, phase or tree.
 	if payload.Op == "slot_credential" {
 		return r.slotCredential(ctx, row.Issue, payload)
 	}

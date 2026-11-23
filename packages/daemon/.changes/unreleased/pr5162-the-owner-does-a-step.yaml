@@ -5,9 +5,12 @@ body: |-
   The owner of an issue, its own architect, can do a step of the issue's plan itself. A step
   keyed `owner` (for example `implementer:owner` or `acceptance:owner`) starts no worker: the
   owner is told it in an `owner-step` notice, and reports it with `complete_step`. While the owner
-  does a step its gh acts as the App of the step's role, and the notice waits until it does,
-  except where that App is the owner's own; every end of the step writes the owner's own App back,
-  and the next notice to the owner waits for that write. A notice of a run that has ended is not
+  does a step, its gh acts as the App of the step's role. Legion writes that App into the owner's
+  slot only where it is not the owner's own. For every step, the notice waits until the slot's gh
+  files hold that App. Where the pod's launcher is too old to tell, a step of the owner's own App
+  is told at once, and a step of another App waits until the pod is replaced. The end of each step
+  the owner does writes its own App back, unless its next step has started and needs another App.
+  Each later notice to the owner waits for that write. A notice of a run that has ended is not
   delivered. An owner's step that started and has not ended is told to the owner again when the
   owner is idle past the silence bound, and at each launch of the owner. A child's own architect
   that fails at a step of its own or its retro is started again at once, at most three times in

@@ -101,8 +101,10 @@ type launcherSession struct {
 	credentialWait bool
 	// credentialCheck is whether this launcher's hello said it answers a check of its slot's gh
 	// files (shimwire.LauncherHello.CredentialCheck). A launcher of an image before that frame
-	// says nothing, is sent no check, and a step told once its slot holds a credential waits for
-	// the pod's update round (Runtime.SlotHoldsCredential).
+	// says nothing and is sent no check, so Runtime.SlotHoldsCredential answers
+	// runtime.ErrAwaitsPodUpdate. An owner-step of another role's App then waits for the pod's
+	// update round. One of the owner's own App is told at once, since the slot held that App from
+	// its launch (the daemon's ownerSlotHolds).
 	credentialCheck bool
 
 	mu      sync.Mutex
