@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -298,6 +299,72 @@ func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
 		}))
 		assertUnchanged(t, write.String(), before, databaseFingerprint(t, rig.database))
 	})
+}
+
+// TestAStatusChangesCommentIsANodeOfTheStore: the comment Dispatch's system actor leaves on an
+// issue an option moves is written as the comment route writes one (queueIssueComment): its row
+// names its node, and the node is the comment's, project-visible and live, made at the row's
+// created_at by the system actor and caused by the comment's own comment.created, under which its
+// two base attributes are stated. It states no authored_by: the system actor is nobody the store
+// names (graphstore.AuthorOf), so the store census reads no author off its row either.
+func TestAStatusChangesCommentIsANodeOfTheStore(t *testing.T) {
+	rig := newStatusChangeRig(t, true)
+	ctx := context.Background()
+	root := rig.file(t, "Root closed with its child", "in_progress", "")
+	child := rig.file(t, "Child closed with it", "todo", root)
+	write := statusChangeOf(root, map[string]any{"status": "done", "include_children": true})
+	if response := rig.send(t, write); response.Code != http.StatusOK {
+		t.Fatalf("%s: status=%d body=%s", write.String(), response.Code, response.Body.String())
+	}
+	var id string
+	var createdAt time.Time
+	var nodeKind, nodeAddress *string
+	if err := rig.database.Pool.QueryRow(ctx, `
+		select id::text, created_at, node_kind, node_address from comments where issue_key = $1
+	`, child).Scan(&id, &createdAt, &nodeKind, &nodeAddress); err != nil {
+		t.Fatalf("read the comment the status change left on %s: %v", child, err)
+	}
+	if deref(nodeKind) != graphstore.KindComment || deref(nodeAddress) != id {
+		t.Fatalf("the comment %s on %s names the node (%q, %q), want (%q, %q)",
+			id, child, deref(nodeKind), deref(nodeAddress), graphstore.KindComment, id)
+	}
+	node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, graphstore.KindComment, id)
+	if err != nil || !held {
+		t.Fatalf("read the node of the comment %s: held=%t err=%v", id, held, err)
+	}
+	event := commentCreatedEvent(t, rig.database, id)
+	switch {
+	case node.Supertag != graphstore.KindComment:
+		t.Errorf("the node's supertag is %q, want %s", node.Supertag, graphstore.KindComment)
+	case node.Visibility != graphstore.VisibilityProject || node.State != graphstore.StateLive:
+		t.Errorf("the node is %s/%s, want %s/%s", node.Visibility, node.State, graphstore.VisibilityProject, graphstore.StateLive)
+	case !node.MadeAt.Equal(createdAt):
+		t.Errorf("the node was made at %s, and its row at %s", node.MadeAt, createdAt)
+	case !node.MadeBy.SameAs(parentStatusRuleActor):
+		t.Errorf("the node was made by %+v, want Dispatch's system actor %+v", node.MadeBy, parentStatusRuleActor)
+	case node.SourceEvent != event:
+		t.Errorf("the node's cause is event %d, want the comment's comment.created, %d", node.SourceEvent, event)
+	}
+	attributes := map[string]bool{}
+	for _, tuple := range tuplesTheWriteAppended(t, rig.database, graphstore.KindComment, id) {
+		if tuple.FromKind != graphstore.KindComment || tuple.FromID != id {
+			continue
+		}
+		if tuple.Kind == graphstore.TupleAuthoredBy {
+			t.Errorf("the comment states it was authored by %s %q, and Dispatch's system actor is nobody the store names",
+				tuple.ToKind, tuple.ToID)
+		}
+		if tuple.ToKind == graphstore.KindValue && (tuple.Kind == graphstore.AttributeVisibility || tuple.Kind == graphstore.AttributeState) {
+			attributes[tuple.Kind] = true
+			if tuple.SourceEvent != event {
+				t.Errorf("the comment's %s tuple carries cause %d, want its comment.created, %d", tuple.Kind, tuple.SourceEvent, event)
+			}
+		}
+	}
+	if !attributes[graphstore.AttributeVisibility] || !attributes[graphstore.AttributeState] {
+		t.Errorf("the comment's write stated its visibility %t and its state %t, want both",
+			attributes[graphstore.AttributeVisibility], attributes[graphstore.AttributeState])
+	}
 }
 
 // statusChangeCaller is one way a request reaches the status-change route: what it presents, and

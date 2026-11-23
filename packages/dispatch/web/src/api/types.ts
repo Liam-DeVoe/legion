@@ -230,6 +230,8 @@ export type {
   OpenAskOwner,
   ParentStatusConflictIssue,
   PatchPriorityInput,
+  PersonNode,
+  PersonNodes,
   PersonSignInResp,
   PersonSignInsResponse,
   Priorities,
