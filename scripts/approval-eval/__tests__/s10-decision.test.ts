@@ -35,7 +35,7 @@ const ENDED = "dispatch://ACME-1/comment/claim-result";
 const HERE = join(import.meta.dir, "..");
 
 /** The digest of the pinned closure at this head, as `sha256sum` over its six files prints it. */
-const PINNED_DIGEST = "69054a419016dde5f1be9a73c910320202eafbabb0e593f962e029b3f8c00fad";
+const PINNED_DIGEST = "30cfa3c810b3fc7449ad6a1610ba9ca720b94434b1925d31c3ae2f069487d77d";
 
 // The rows copy the pinned closure and spawn its children, and the hooks make and remove the
 // copies: each ends when its child exits or its I/O answers. Their bound is a hang guard, not a
