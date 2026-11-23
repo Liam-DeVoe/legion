@@ -67,10 +67,22 @@ func queryArms(clock *clocktest.Fake) []time.Time {
 // awaitQueryArms is clocktest.Fake.AwaitArmed for the room queries' arms alone (queryArms).
 func awaitQueryArms(t *testing.T, clock *clocktest.Fake, what string, n int) []time.Time {
 	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("%s (at least %d of the room queries' timers armed on the fake clock)", what, n), func() ([]time.Time, bool) {
-		armed := queryArms(clock)
-		return armed, len(armed) >= n
-	})
+	return testwait.Until(t, fmt.Sprintf("%s (at least %d of the room queries' timers armed on the fake clock)", what, n), func() (queryArmsReading, bool) {
+		read := queryArmsReading{now: clock.Now(), all: clock.Armed(), arms: queryArms(clock)}
+		return read, len(read.arms) >= n
+	}).arms
+}
+
+// queryArmsReading is what awaitQueryArms last read: the fake's present, every timer armed on it,
+// and the ones queryArms keeps, so a give-up names where the fake stood and what was armed.
+type queryArmsReading struct {
+	now       time.Time
+	all, arms []time.Time
+}
+
+func (r queryArmsReading) String() string {
+	return fmt.Sprintf("%d of the room queries' timers armed (%v) of %d on the fake (%v), the fake at %s",
+		len(r.arms), r.arms, len(r.all), r.all, r.now.Format(time.RFC3339Nano))
 }
 
 // roomQueryResult is what one roomQueries.ask returned.
