@@ -1341,9 +1341,11 @@ func (e *Engine) endByVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue
 // of its own, since its branch below comes before any read of the phase, and is told as a
 // worker-died of the architect on the child, which reaches the architect above it, since the owner
 // walk starts at the child's parent for an architect's own worker-died (record.OwningArchitect).
-// That architect takes the child's notices from then on, all but an owner-step, which waits for
-// the child's own architect (record.OwnerClaim), because the failed claim no longer holds its
-// role, until the child's architect runs again: the daemon starts it again at the child's next
+// That architect takes the child's notices from then on, all but an owner-step, because the failed
+// claim no longer holds its role, until the child's architect runs again. An owner-step goes to
+// the child's own architect alone (record.OwnerClaim): one sent while its claim has failed
+// finishes undelivered, and its next launch's catch-up tells it the step again (claimReady). The
+// daemon starts that architect again at the child's next
 // phase start (start), and so do a re-admission of the tree while the child stands in a phase
 // (admit's startMidPhaseMembers) and an operator's retry. A child that stands at a step of its
 // owner's or its owner's retro, which only its own architect reports, has no next phase start

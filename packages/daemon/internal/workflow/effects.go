@@ -528,9 +528,10 @@ func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // starts again at its child's next phase start (dispatch://INFRA-3915 R2). One that failed while
 // its child stands at a place only it ends, which no phase start follows, is started again at its
 // failure, at most OwnerRestarts times in the step's run, and then waits for the operator's retry,
-// which the stranded list names (restartFailedOwner). Until it runs again its child's notices but
-// an owner-step, which waits for that architect
-// (record.OwnerClaim), go to the architect above it (record.OwningArchitect). The outbox's start
+// which the stranded list names (restartFailedOwner). Until it runs again its child's notices go
+// to the architect above it (record.OwningArchitect), all but an owner-step, which goes to that
+// architect alone (record.OwnerClaim): one sent while its claim has failed finishes undelivered,
+// and its next launch's catch-up tells it the step again (claimReady). The outbox's start
 // retries a failed claim with fresh budgets (supervise.RequestRetry), in the session it recorded,
 // or a new one once supervise's Machine.forgetSession has dropped it. This start asks for no new
 // session itself. A tree root's architect is admission's, started with its tree,
