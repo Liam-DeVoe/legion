@@ -1177,18 +1177,26 @@ func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, wha
 // recorded as the session's last-seen time, as a registration's is (recordSeen). Several processes
 // can run under one session id and refresh its claims at once, so once it has lost entryWriteLosses
 // writes (writeEntryAt's stop rule) to what may be the session's own other processes, it reads the
-// leader once more and answers nil where the session's own record already carries the change
-// (machineID, selfSubscribed, no port), and ErrWriteConflict otherwise. An
+// leader once more and succeeds where the session's own record already carries the change
+// (machineID, selfSubscribed, no port), and answers ErrWriteConflict otherwise. An
 // empty machineID is refused with ErrEntryUnbound.
-func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machineID string, selfSubscribed bool, projects []string) error {
+//
+// It answers the record it decided on, as that read found it and so as it stood before this
+// write, with true, where that record is the session's own writer's record naming its key (the
+// first case above): the record of the pass whose write landed, or the record the read after the
+// last lost write found already carrying the change. Any other record answers the zero entry and
+// false, and so does an error. A caller that needs a field of the session's own registration as it
+// stood before the refresh takes it from here rather than reading the record again: cmd/listener's
+// roleSetHandler takes the claimant's registered client instance id from it.
+func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machineID string, selfSubscribed bool, projects []string) (SessionEntry, bool, error) {
 	if machineID == "" {
-		return fmt.Errorf("write session %s to the bucket: %w: the entry names no machine", sessionID, ErrEntryUnbound)
+		return SessionEntry{}, false, fmt.Errorf("write session %s to the bucket: %w: the entry names no machine", sessionID, ErrEntryUnbound)
 	}
 	kv, epoch := r.watcher.Handle()
 	for range entryWriteLosses {
 		stored, revision, found, err := r.readForClear(ctx, kv, sessionID)
 		if err != nil {
-			return fmt.Errorf("read session %s from the bucket's stream leader before writing it: %w", sessionID, err)
+			return SessionEntry{}, false, fmt.Errorf("read session %s from the bucket's stream leader before writing it: %w", sessionID, err)
 		}
 		// Every record but the two the switch keeps - none at all, a marker, one the server wrote -
 		// is written bare: the machine, the self-subscription and the claim token's projects, and
@@ -1198,9 +1206,10 @@ func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machine
 		// a reap took that consumer, in the stream for the one the registration creates at its
 		// resume point; the registration writes the full record and the relay delivers the message
 		// then (cmd/listener's TestARoleClaimOverAMissingRecordHoldsAMessageUntilTheHeartbeat).
+		own := found && stored.SessionID == sessionID
 		entry := SessionEntry{MachineID: machineID, SelfSubscribed: selfSubscribed, Projects: projects}
 		switch {
-		case found && stored.SessionID == sessionID:
+		case own:
 			entry = stored
 			entry.MachineID, entry.SelfSubscribed, entry.Port = machineID, selfSubscribed, 0
 		case found && stored.SessionID == "":
@@ -1211,18 +1220,21 @@ func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machine
 		entry.UpdatedAt = r.now().UnixMilli()
 		written, lost, err := r.writeEntryAt(ctx, kv, epoch, sessionID, entry, revision)
 		if err != nil {
-			return fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
+			return SessionEntry{}, false, fmt.Errorf("write session %s to the bucket: %w", sessionID, err)
 		}
 		if !lost {
 			r.recordSeen(ctx, kv, sessionID, written)
-			return nil
+			if !own {
+				return SessionEntry{}, false, nil
+			}
+			return stored, true, nil
 		}
 	}
 	if stored, _, found, err := r.readForClear(ctx, kv, sessionID); err == nil && found && stored.SessionID == sessionID &&
 		stored.MachineID == machineID && stored.SelfSubscribed == selfSubscribed && stored.Port == 0 {
-		return nil
+		return stored, true, nil
 	}
-	return fmt.Errorf("%w: session %s", ErrWriteConflict, sessionID)
+	return SessionEntry{}, false, fmt.Errorf("%w: session %s", ErrWriteConflict, sessionID)
 }
 
 // readEntryFromLeader reads sessionID's newest message from the bucket's stream leader through kv

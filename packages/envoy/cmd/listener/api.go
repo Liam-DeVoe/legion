@@ -1925,23 +1925,27 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // role is a 409, a refused key a 413 or 400, and an unreadable claim the 503 or 500 it was.
 //
 // A hard claim of a role no claim has held, by a claimant whose registration this listener's
-// cache does not hold yet, makes eleven NATS round trips up to and including its claim write: two
-// reads of the claimant's session (liveSessionEntry, then bucketSessionEntry); the refresh of its
-// registration, which is the stream leader's read of the record, the write and its last-seen
-// record's read and write (session.SessionRegistry.PutClearingGap, recordSeen); the claim read and
-// the read of the delete marker a role with no claim record may hold
+// cache does not hold yet, makes ten NATS round trips up to and including its claim write: the
+// read of the claimant's session (liveSessionEntry); the refresh of its registration, which is the
+// stream leader's read of the record, the write and its last-seen record's read and write
+// (session.SessionRegistry.PutClearingGap, recordSeen), and whose leader read is also the read of
+// the claimant's record the predecessor rule's fallback takes its client instance id from; the
+// claim read and the read of the delete marker a role with no claim record may hold
 // (store.Registry.roleClaimToWrite, bus.KeyValue.GetLatest); the read and the write of the
 // claimant's interest record with the role's topic (store.Registry.UpsertWithin); and the claim
 // write. One more, the read that confirms that topic, runs in the reserve after the claim's tries.
 // A claimant the cache holds saves the first read; a role a claim holds saves the marker read and
 // spends the write of a takeover record instead (takeoverTries.beforeTry); each conflict of a hard
 // claim's write adds a read and a write; and a soft claim adds the reads of its decision. The
-// eleven must land before the claim's tries end (store's claimTriesContext): at the request's
+// ten must land before the claim's tries end (store's claimTriesContext): at the request's
 // deadline, sendRequestBudget (3.5 s) after it began, less a reserve of 1 s, or of a third of the
-// time left when the store is reached if that is less. At a latency of L a round trip, the six
-// trips before the store take 6L, so the tries end 2.5 s in while L is at most 83 ms and
-// (7 s + 6L)/3 in above that. The claim write fits while 11L is within that end, so while L is at
-// most 259 ms; at 280 ms it would land at 3.08 s, past the tries' end at 2.89 s.
+// time left when the store is reached if that is less. At a latency of L a round trip, the five
+// trips before the store take 5L, so the tries end 2.5 s in while L is at most 100 ms and
+// (7 s + 5L)/3 in above that. The claim write fits while 10L is within that end, so while L is at
+// most 280 ms; at 300 ms it would land at 3.0 s, past the tries' end at 2.83 s. A claimant the
+// cache holds makes nine, four of them before the store, and fits while 9L is within
+// (7 s + 4L)/3, so while L is at most 304 ms: at 300 ms its claim write lands at 2.7 s, before the
+// tries' end at 2.73 s (TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite's role set).
 // TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails runs this claim behind a 150 ms link.
 //
 // A claim that carries if_claim_revision is conditional: it lands only while the role's claim
@@ -2149,27 +2153,13 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			writeStoreError(ctx, w, fmt.Errorf("read session registration: %w", err), http.StatusServiceUnavailable)
 			return
 		}
-		// liveSessionEntry answers from the cache first, and the cache follows the session bucket
-		// through a watcher and so trails it. A trailing cache would decide this claim: it would
-		// read an empty client instance id from an entry this listener has not caught up with,
-		// demoting a claim weighed against a predecessor to the "no instance id" case below. So
-		// the claimant's own entry is read from the bucket itself, and when that read answers it
-		// is the one the predecessor rule falls back to. A read that does not answer keeps the
-		// entry liveSessionEntry found, so this claim is never worse off than it was without the
-		// bucket read. The id is the client's own, and the bucket is shared by every pod of the
-		// machine, so the pod this claim reached reads the same id as the pod that accepted the
-		// registration.
-		if fresh, freshErr := bucketSessionEntry(ctx, d.sessions, body.SessionID, roleHolderReadTimeout); freshErr == nil {
-			entry = fresh
-		}
 		// The process this claim is made by is the one the request states, and the claim records
 		// it: a session id names no process, since a second process can resume a live session's
 		// id, and the session record then names whichever of them registered the id last. That
 		// record is the thing this route stops trusting, so it is read for one decision alone -
-		// the predecessor rule's fallback below - and registeredInstanceID is read before the
-		// refresh overwrites nothing of it.
+		// the predecessor rule's fallback below (registeredInstanceID, taken from the refresh's
+		// read of the record).
 		claimantInstanceID := body.ClientInstanceID
-		registeredInstanceID := entry.ClientInstanceID
 		// The refresh names this machine as the session's relay, so a claim made through
 		// another edge replica than the one the session registered through moves the relay
 		// here. An edge relay holds the session's frames to the projects of the token this
@@ -2204,9 +2194,28 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// registration per session id is a non-goal, and a process that wants a registration of
 		// its own registers (POST /v1/sessions/subscribe). A leader read that did not answer is the
 		// bus-unavailable 503, so a hiccup never wipes a session's projects.
-		if err := d.sessions.PutClearingGap(ctx, body.SessionID, machineID, true, registeringProjects(r)); err != nil {
+		registration, own, err := d.sessions.PutClearingGap(ctx, body.SessionID, machineID, true, registeringProjects(r))
+		if err != nil {
 			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", err), http.StatusServiceUnavailable)
 			return
+		}
+		// The claimant's registered client instance id, which the predecessor rule falls back
+		// to, is the id its registration carried before the refresh wrote it. liveSessionEntry
+		// answers from the cache first, and the cache follows the session bucket through a
+		// watcher and so trails it. A trailing cache would decide this claim: it would read an
+		// empty client instance id from an entry this listener has not caught up with, demoting a
+		// claim weighed against a predecessor to the "no instance id" case below. So the id is
+		// taken from the record the refresh read from the stream leader where that record is the
+		// session's own registration naming its key, which the refresh writes back with that same
+		// id: the bucket's record, at no read of its own. Any other record the refresh found -
+		// none, a marker, one the server wrote, or one naming no key or another key - keeps the
+		// entry liveSessionEntry found, so this claim is never worse off than it was without the
+		// bucket's record. The id is the client's own, and the bucket is shared by every pod of the
+		// machine, so the pod this claim reached reads the same id as the pod that accepted the
+		// registration.
+		registeredInstanceID := entry.ClientInstanceID
+		if own {
+			registeredInstanceID = registration.ClientInstanceID
 		}
 		// landed is set by a claim that landed, whose own handover hands the claimed role's lane
 		// over, so the handovers of a claimant this refresh made live again leave that role out.

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -90,7 +91,9 @@ func requireClearedClaimRefresh(t *testing.T, r *SessionRegistry, sessionID, wha
 // writes at that read's revision (PutClearingGap). A record the server wrote - a RePublish whose
 // body reads as the session's own registration - is replaced with the session's own record naming
 // its key, carrying none of the RePublish's fields: neither the cache nor a direct get can tell it
-// from a registration, and the leader's read can.
+// from a registration, and the leader's read can. Nor is it answered as the session's own record,
+// so the client instance it names decides no role claim's predecessor rule (cmd/listener's
+// roleSetHandler).
 func TestAClaimRefreshReplacesAServerWrittenRecordWithOneNamingItsKey(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)
@@ -108,8 +111,12 @@ func TestAClaimRefreshReplacesAServerWrittenRecordWithOneNamingItsKey(t *testing
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"}); err != nil {
+	decided, mine, err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"})
+	if err != nil {
 		t.Fatalf("PutClearingGap(%s) over the record republished at %d: %v", sessionID, stored, err)
+	}
+	if mine || !reflect.DeepEqual(decided, SessionEntry{}) {
+		t.Errorf("PutClearingGap(%s) answered the RePublish as %+v (own %t), want the zero entry and false", sessionID, decided, mine)
 	}
 	requireClearedClaimRefresh(t, r, sessionID, "after the refresh over the RePublish")
 }
@@ -139,7 +146,7 @@ func TestAServerWriteBetweenAClaimRefreshsReadAndItsWriteMakesItReadAgain(t *tes
 	useKV(t, r, seam)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"}); err != nil {
+	if _, _, err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"}); err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", sessionID, err)
 	}
 	if raced == 0 {

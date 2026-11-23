@@ -337,7 +337,10 @@ func TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails(t *testing.T) {
 
 // Writes through the pod whose cache trails keep the other pod's newer write: the standby sits
 // behind a 300 ms slow link, so a write through the active pod reaches its cache 300 ms late (slow
-// enough to trail, fast enough that a role set's bucket round trips fit sendRequestBudget). A
+// enough to trail, fast enough that a role set's bucket round trips land before the claim's tries
+// end). The role set here is a hard claim of a role no claim has held, by a claimant the standby's
+// cache holds: nine NATS round trips up to its claim write, which lands 2.7 s in, before the tries'
+// end 2.73 s in, and fits while a round trip takes at most 304 ms (roleSetHandler counts them). A
 // heartbeat on the standby within that window, of a process that does not drive the session, keeps
 // the driving claim written through the active pod; a heartbeat on the standby keeps a topic added
 // through the active pod; and a role set on the standby keeps the newer host recorded through the
