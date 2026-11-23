@@ -2348,6 +2348,9 @@ type Store interface {
 	// RecordBranchGiven records branch among the names generation of issue gave, so no task of the
 	// issue takes it again: the branch of a pull request of an earlier run whose row is deleted.
 	RecordBranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) error
+	// BranchGiven says whether generation of issue gave branch: to a task of it, as the branch of
+	// a pull request of an earlier run, or with the run a hand-over carried.
+	BranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) (bool, error)
 	// SetJoinConflicts writes the needs of task whose merge GitHub refused as a conflict, into the
 	// branch the join of its needs is made on, in place of what the task held.
 	SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, needs []string) error

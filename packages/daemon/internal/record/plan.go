@@ -27,9 +27,9 @@ import (
 // each branch name a generation of the issue gave (store migration 20261121165047_task_copies):
 // AssignTaskBranch writes it at each name it gives and decides by every generation's rows,
 // RecordBranchGiven writes the branch of each pull request of an earlier run whose row a run
-// started again deletes, a carried CarryPlan copies it, and neither DeleteTasks nor DeletePlan
-// deletes it. A task's hold and the wait of the step at its place are
-// columns of its row (store migration 20261117224125_task_held).
+// started again deletes, a carried CarryPlan copies it, BranchGiven reads one name of one
+// generation, and neither DeleteTasks nor DeletePlan deletes it. A task's hold and the wait of the
+// step at its place are columns of its row (store migration 20261117224125_task_held).
 
 const (
 	// PlanSourceOwner is a version the issue's owner gave (register_plan), at the version of its
@@ -288,6 +288,22 @@ func (s *Postgres) RecordBranchGiven(ctx context.Context, tx pgx.Tx, issue strin
 	return nil
 }
 
+// BranchGiven says whether generation of issue gave branch (plan_branches): to a task of it
+// (AssignTaskBranch), as the branch of a pull request of an earlier run (RecordBranchGiven), or
+// with the run a hand-over carried (CarryPlan). The workflow reads it where it records a pull
+// request on the issue's own branch that the one task of a plan of one holds before its start
+// (StoredPlan.HoldsBranchBeforeItsStart): that task takes the issue's branch at its start only
+// where its generation gave that branch to no task, so a pull request there is not its own where
+// the generation gave it to a task a later version removed.
+func (s *Postgres) BranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) (bool, error) {
+	var given bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from plan_branches where issue = $1 and generation = $2 and branch = $3)`,
+		issue, int64(generation), branch).Scan(&given); err != nil {
+		return false, fmt.Errorf("read whether %s gave %s at generation %d: %w", issue, branch, generation, err)
+	}
+	return given, nil
+}
+
 // SetJoinConflicts writes needs as the needs of task of the plan of issue at generation whose merge
 // GitHub refused as a conflict, into the branch the join of its needs is made on, in place of what
 // the row held: each task_branch row of the task joins its needs again, so the newest join is the
@@ -393,38 +409,47 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 	return p.Tasks[0], nil
 }
 
-// TasksOfBranch is each task of p whose branch (BranchOf) branch is, for the issue keyed issueKey,
-// in task id order: the one rule by which a pull request on branch, and each fact of it, is a
-// task's (PullRequest.Task, TaskOfBranch). A task whose row holds branch is its only task. The
-// issue's own branch (claim.IssueBranch), while no task's row holds it, is the branch of each task
-// whose row holds none, as BranchOf reads it: of those, the ones that have started hold it before
-// any that waits, since a waiting task's first start gives it a branch of its own (AssignTaskBranch,
-// which counts the issue's branch given while a started task holds none). So a task a release
-// before tasks had branches of their own started holds the issue's branch beside tasks a later
-// version added, and the one task of a plan of one that has not started yet holds it too. In the
-// daemon a row of a started task holds no branch only for that task of the release before, which
-// ran plans of one task (plan.Supported), so the answer is one task or none; a plan whose rows name
-// several such started tasks names each of them.
+// TasksOfBranch is each task of p whose branch branch is, for the issue keyed issueKey, in task id
+// order: the one rule by which a pull request on branch, and each fact of it, is a task's
+// (PullRequest.Task, TaskOfBranch, HoldsBranch). A task whose row holds branch is its only task. A
+// task whose row holds none (BranchOf reads the issue's own branch for it, claim.IssueBranch)
+// holds that branch, while no task's row holds it, in two cases alone. It started (unstarted), as
+// a task a release before tasks had branches of their own did, on that branch; each start now
+// gives a task its branch (AssignTaskBranch, which counts the issue's branch given while a started
+// task holds none). Or it is the one task of a plan of one and has not started, since it takes the
+// issue's branch at its first start, as an issue always did. A task of a plan of several that has
+// not started was given no branch, and its first start can give it another than the issue's, so it
+// holds none: no pull request on the issue's branch is its own before then, neither one a person
+// opened there nor one of an earlier run that a run started again closed. Started tasks hold the
+// branch before one that has not. In the daemon a row of a started task holds no branch only for
+// that task of the release before, which ran plans of one task (plan.Supported), so the answer is
+// one task or none; a plan whose rows name several such started tasks names each of them.
 func (p StoredPlan) TasksOfBranch(issueKey, branch string) []string {
 	if branch == "" {
 		return nil
 	}
-	var started, waiting []string
+	var started, unstarted []string
 	for _, task := range p.Tasks {
 		switch {
 		case task.Branch == branch:
 			return []string{task.Task}
 		case task.Branch != "" || branch != claim.IssueBranch(issueKey):
-		case task.State == TaskWaiting:
-			waiting = append(waiting, task.Task)
+		case task.unstarted():
+			unstarted = append(unstarted, task.Task)
 		default:
 			started = append(started, task.Task)
 		}
 	}
-	if len(started) > 0 {
+	if len(started) > 0 || len(p.Tasks) > 1 {
 		return started
 	}
-	return waiting
+	return unstarted
+}
+
+// unstarted says whether t has not started its work: it waits, or a stop took it before its first
+// step, at no act (TaskPlace.Started).
+func (t PlanTask) unstarted() bool {
+	return t.State == TaskWaiting || t.State == TaskStopped && !t.Place.Started()
 }
 
 // TaskOfBranch is the task of p whose branch branch is (TasksOfBranch), for the issue keyed
@@ -435,6 +460,33 @@ func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
 		return tasks[0], true
 	}
 	return "", false
+}
+
+// HoldsBranch says whether a pull request on branch is one of the issue keyed issueKey, whose plan
+// at its generation p is (nil, or no tasks, for an issue with no plan rows there): the one rule by
+// which the workflow records a pull request (its issueForBranch), and by which the merge of the
+// pull request of the task that merges closes the others (closeOtherTaskPullRequests). It is
+// where a task of the plan holds branch (TasksOfBranch), and the issue's own branch
+// (claim.IssueBranch) where the plan holds no task, as an issue that ran before plans did. A pull
+// request on any other branch of an issue's shape (claim.BranchIssue) is none of the issue's: a
+// person's or a fork's on a name no task was given, and one whose row the record deleted when it
+// let the pull request go, whose task a later version removed or whose run was started again. The
+// recorder reads one fact more for the one case HoldsBranchBeforeItsStart names.
+func (p *StoredPlan) HoldsBranch(issueKey, branch string) bool {
+	if p == nil || len(p.Tasks) == 0 {
+		return branch == claim.IssueBranch(issueKey)
+	}
+	return len(p.TasksOfBranch(issueKey, branch)) > 0
+}
+
+// HoldsBranchBeforeItsStart says whether the task of p that holds branch (TasksOfBranch) holds it
+// only as the one task of a plan of one that has not started: branch is the issue's own, and the
+// task's row holds no branch. Its first start gives it the issue's branch only where its
+// generation gave that branch to no task (AssignTaskBranch), which the plan's rows cannot say once
+// a later version removed the task that held it, so the workflow reads that too where it records
+// a pull request (Store.BranchGiven).
+func (p *StoredPlan) HoldsBranchBeforeItsStart(issueKey, branch string) bool {
+	return p != nil && len(p.Tasks) == 1 && p.Tasks[0].Branch == "" && p.Tasks[0].unstarted() && branch == claim.IssueBranch(issueKey)
 }
 
 // BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether
