@@ -73,13 +73,13 @@ func (r *ownerHoldRig) ready(t *testing.T, id string, launch uint64, paced bool)
 	}
 }
 
-// queuedOwnerSteps is every owner-step of LEGION-1 the outbox holds, in row order.
-func (r *ownerHoldRig) queuedOwnerSteps(t *testing.T) []record.Notice {
+// queuedNotices is every notice of LEGION-1 the outbox holds, in row order.
+func (r *ownerHoldRig) queuedNotices(t *testing.T) []record.Notice {
 	t.Helper()
-	rows, err := r.pool.Query(context.Background(), `select payload from outbox where kind = $1 and issue = 'LEGION-1'
-		and payload->>'kind' = $2 order by id`, string(record.OutboxKindNotice), string(record.OwnerStepNotice))
+	rows, err := r.pool.Query(context.Background(), `select payload from outbox where kind = $1 and issue = 'LEGION-1' order by id`,
+		string(record.OutboxKindNotice))
 	if err != nil {
-		t.Fatalf("read LEGION-1's queued owner-steps: %v", err)
+		t.Fatalf("read LEGION-1's queued notices: %v", err)
 	}
 	defer rows.Close()
 	var queued []record.Notice
@@ -87,44 +87,73 @@ func (r *ownerHoldRig) queuedOwnerSteps(t *testing.T) []record.Notice {
 		var payload []byte
 		var notice record.Notice
 		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("read a queued owner-step: %v", err)
+			t.Fatalf("read a queued notice: %v", err)
 		}
 		if err := json.Unmarshal(payload, &notice); err != nil {
-			t.Fatalf("decode the queued owner-step %s: %v", payload, err)
+			t.Fatalf("decode the queued notice %s: %v", payload, err)
 		}
 		queued = append(queued, notice)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read LEGION-1's queued owner-steps: %v", err)
+		t.Fatalf("read LEGION-1's queued notices: %v", err)
 	}
 	return queued
 }
 
-// tell runs notice through the executor (told) and fails the test unless it published, the
-// published notices then numbering want.
+// queuedOwnerSteps is every owner-step of LEGION-1 the outbox holds, in row order.
+func (r *ownerHoldRig) queuedOwnerSteps(t *testing.T) []record.Notice {
+	t.Helper()
+	var steps []record.Notice
+	for _, notice := range r.queuedNotices(t) {
+		if notice.Kind == record.OwnerStepNotice {
+			steps = append(steps, notice)
+		}
+	}
+	return steps
+}
+
+// ownerStepsPublished is how many owner-steps the outbox has published.
+func (r *ownerHoldRig) ownerStepsPublished() int {
+	_, delivered := r.pub.snapshot()
+	published := 0
+	for _, d := range delivered {
+		if notice, ok := d.payload.(record.Notice); ok && notice.Kind == record.OwnerStepNotice {
+			published++
+		}
+	}
+	return published
+}
+
+// tell runs notice through the executor (told) and fails the test on its error, or unless the
+// owner-steps published then number want.
 func (r *ownerHoldRig) tell(t *testing.T, notice record.Notice, want int) {
 	t.Helper()
 	if err := r.told(t, notice); err != nil {
-		t.Fatalf("tell the owner %q: %v", notice.Reason, err)
+		t.Fatalf("tell the owner a %s %q: %v", notice.Kind, notice.Reason, err)
 	}
-	if got := r.published(); len(got) != want {
-		t.Fatalf("the outbox has published %v, want %d notices", got, want)
+	if got := r.ownerStepsPublished(); got != want {
+		t.Fatalf("the outbox has published %d owner-steps, want %d", got, want)
 	}
 }
 
-// tellQueued runs the one owner-step of LEGION-1 the outbox holds as the runner runs a row: it
-// publishes, and the row is gone.
+// tellQueued runs every notice of LEGION-1 the outbox holds, the catch-up a ready queued and the
+// owner-step among them, in row order, as the runner runs them: each publishes, and its row is
+// gone. The owner-steps published then number want.
 func (r *ownerHoldRig) tellQueued(t *testing.T, want int) {
 	t.Helper()
-	queued := r.queuedOwnerSteps(t)
-	if len(queued) != 1 {
-		t.Fatalf("the outbox holds the owner-steps %+v, want one to run", queued)
+	queued := r.queuedNotices(t)
+	if _, err := r.pool.Exec(context.Background(), `delete from outbox where kind = $1 and issue = 'LEGION-1'`,
+		string(record.OutboxKindNotice)); err != nil {
+		t.Fatalf("take LEGION-1's queued notices: %v", err)
 	}
-	if _, err := r.pool.Exec(context.Background(), `delete from outbox where kind = $1 and issue = 'LEGION-1' and payload->>'kind' = $2`,
-		string(record.OutboxKindNotice), string(record.OwnerStepNotice)); err != nil {
-		t.Fatalf("take the queued owner-step: %v", err)
+	for _, notice := range queued {
+		if err := r.told(t, notice); err != nil {
+			t.Fatalf("tell the owner a %s %q: %v", notice.Kind, notice.Reason, err)
+		}
 	}
-	r.tell(t, queued[0], want)
+	if got := r.ownerStepsPublished(); got != want {
+		t.Fatalf("the outbox has published %d owner-steps, want %d", got, want)
+	}
 }
 
 // An owner's launch tells its step again only to a session that was not told it. The owner of
