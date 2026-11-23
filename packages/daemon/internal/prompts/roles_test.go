@@ -335,8 +335,9 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
-// base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
-// before it merges it, may ask the other workers, and sends the issue back only for a change to the
+// base's newer code breaks, merges the new head only once legion-verdict there reads success,
+// which the daemon writes from the review steps' verdicts it asks at that head, may ask the other
+// workers, and sends the issue back only for a change to the
 // change's own logic. Its part says so, and no longer tells it to hand the conflict to the
 // implementer, to send a failed queue check back as a matter of course, or that it pushes nothing.
 func TestTheMergerResolvesAConflictItself(t *testing.T) {
@@ -348,7 +349,7 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"git show --remerge-diff <merge>",
 		"so that both sides keep their intent",
 		"adapt the change in the same merge commit",
-		"Merge or enqueue the new head only once the reviewer's approval of it by SHA is on the pull request",
+		"Merge or enqueue the new head only once `legion-verdict` at that head reads `success`",
 		"You may ask the implementer, the tester or the reviewer what they know",
 		"Run again what the merge can reach",
 		"ask both, on their role topics, to record their results at the new head",

@@ -15,7 +15,9 @@ import (
 // the merger's own App, by the slug its next read filters on too: a run of another App beside it
 // is no run of the daemon's. With none, it enqueues the same head again once the head's own
 // legion-verdict stands, records that enqueue, and sends nothing back; with any, the group's checks
-// failed and it sends the issue back as before. The unconditional send-back it held for every
+// failed, on the head merged with the base and the entries ahead of it, and the merger decides
+// their cause as its part's *A check that failed* says, since past the review a check the base's
+// newer code breaks is the merger's to fix (cybermonklabs/legion#4979). The unconditional send-back it held for every
 // `failed_checks` removal is gone. Each head gets that requeue once, a choice the prompt states
 // with its reason: a second such removal of the same head, which its own recorded enqueue shows,
 // goes to the architect, and nothing is enqueued, so a writer that keeps failing on group commits
@@ -38,7 +40,7 @@ func TestMergerPromptRequeuesAMissingLegionVerdict(t *testing.T) {
 		"gh api 'repos/<o>/<r>/commits/<head>/check-runs?check_name=legion-verdict' --jq '[.check_runs[] | select(.app.slug == \"<slug>\") | .conclusion]'",
 		missing,
 		"When it reads `success`, enqueue the same head again (step 4), and record that enqueue in a `dispatch comment` on the issue that names the group commit.",
-		"Any other count: the queue's own `merge_group` checks failed. That is work to fix. Send the issue back with `request_backward_move` (step 6).",
+		"Any other count: the queue's own `merge_group` checks failed, on the head merged with the base and the entries ahead of it. Decide its cause as *A check that failed* below says.",
 		"If that command lists no branch, tell the architect with `envoy_publish` to its encoded role token, and quote its output.",
 	} {
 		if !strings.Contains(text, phrase) {
