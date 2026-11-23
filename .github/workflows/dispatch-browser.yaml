@@ -100,8 +100,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 1,680 + 120 + 120 + 425 = 2,345 s, 39 min 5 s, rounded up to the 40 minutes below.
-    timeout-minutes: 40
+    # 1,800 + 120 + 120 + 425 = 2,465 s, 41 min 5 s, rounded up to the 42 minutes below.
+    timeout-minutes: 42
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-three-places
@@ -164,16 +164,16 @@ jobs:
         run: .github/scripts/dispatch-browser-wait-for-store.sh
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 2)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # A hang guard, not a verdict: 855 s x 1.75 x 1.11 = 1,661 s -> 28 min. 855 s is the largest
-        # of the eight two-leg browser steps of this branch's four full lanes (shard 1 of run
-        # 44997560086; runs 44997458055, 44997506117, 44997560086 and 45005495938 read 666 to
-        # 855 s); 1.75 is the slowest runner seen (run 44985914477 ran its rows 1.75 times slower,
-        # per-row median, than a runner of the same minute); 1.11 is main's drift figure, the worst
-        # share of the mean the heaviest of four legs took under a row-time table up to 7 days old,
-        # not read for two. Read again from the first full lane at the merged head. A largest leg on
-        # that runner under such a table ends under it, so no row's verdict rests on it; it cuts a
-        # leg that has stopped running rows.
-        timeout-minutes: 28
+        # A hang guard, not a verdict: 901 s x 1.75 x 1.11 = 1,750 s -> 30 min. 901 s is the largest
+        # of the six browser steps of the three green full lanes at the merged head, under main's
+        # split by time (shard 1 of run 45130540632; runs 45130372249, 45130540632 and 45130647066
+        # read 596 to 901 s); it replaced the 855 s of the branch's four count-split lanes. 1.75 is
+        # the slowest runner seen (run 44985914477 ran its rows 1.75 times slower, per-row median,
+        # than a runner of the same minute); 1.11 is main's drift figure, the worst share of the
+        # mean the heaviest of four legs took under a row-time table up to 7 days old, not read for
+        # two. A largest leg on that runner under such a table ends under it, so no row's verdict
+        # rests on it; it cuts a leg that has stopped running rows.
+        timeout-minutes: 30
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
             "${{ needs.binaries.outputs.connections }}"

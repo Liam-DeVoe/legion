@@ -129,13 +129,13 @@ export function placeUnits(
   return { loads, placed };
 }
 
-/** How old the table may be before a leg warns: the browser step's 28-minute guard is
- *  855 s x 1.75 x 1.11, the largest leg of the shard job's full lanes times the slowest runner
- *  seen times main's drift, and 1.11 is the worst share of the mean the heaviest of main's four
- *  legs took under a table up to 7 days old, of the two read (.github/ci-notes/dispatch-browser.md,
- *  the browser step's budget). Past that no table was measured, and one that drifted to 1.21, the
- *  share main's count split gave the heaviest of its four legs, would leave that 855 s leg on the
- *  slowest runner seen near 1,810 s, past the guard. */
+/** How old the table may be before a leg warns: the browser step's 30-minute guard is
+ *  901 s x 1.75 x 1.11, the largest leg of the shard job's full lanes under this split times the
+ *  slowest runner seen times main's drift, and 1.11 is the worst share of the mean the heaviest of
+ *  main's four legs took under a table up to 7 days old, of the two read
+ *  (.github/ci-notes/dispatch-browser.md, the browser step's budget). Past that no table was
+ *  measured, and one that drifted to 1.21, the share main's count split gave the heaviest of its
+ *  four legs, would leave that 901 s leg on the slowest runner seen near 1,908 s, past the guard. */
 export const tableDaysAtMost = 7;
 
 /** The share of a leg's rows that may be placed by an estimate before the leg warns: the reading
@@ -152,7 +152,7 @@ export function tableWarnings(read: string, now: Date, rows: number, estimated: 
   if (!(days <= tableDaysAtMost)) {
     warnings.push(
       `e2e/shard-weights.json was read ${Number.isNaN(days) ? "at no date it names" : `${days.toFixed(1)} days ago`} ` +
-        `(${read}), past the ${tableDaysAtMost} days the browser step's 28-minute guard allows for its drift; ` +
+        `(${read}), past the ${tableDaysAtMost} days the browser step's 30-minute guard allows for its drift; ` +
         "read it again from packages/dispatch: bun e2e/tools/shard-weights.ts --main 17"
     );
   }
