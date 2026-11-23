@@ -201,22 +201,24 @@ func checkProjectTimelinePages(t *testing.T, pages []map[string]any, limit int, 
 }
 
 // TestTheProjectTimelinePagesNewestFirstAndHoldsTheBaseAnswer: on a one-project history with one
-// deploy repository (deliverytest's OneProject: every pull request names an issue of DELIV), the
-// project timeline read 50 rows at a time over eight days is the base timeline's answer for the
-// same window (GET /api/v1/delivery/timeline, deliveryTimelineCompute), every field but measures:
-// its merges are the base's prs[] each with its kind, its runs the base's runs[] each with its
-// kind, its repository and its creation, its waiting line, counts, labels, window and freshness
-// the base's; no row is on two pages, each page's oldest row comes before the next page's newest,
-// and waiting is on the last page alone. The same holds with a facet set, which narrows the merges
-// and leaves the runs.
+// deploy repository (deliverytest's OneProject: every pull request names an issue of DELIV, whose
+// deploy source reads the deploy repository), the project timeline read 50 rows at a time over
+// eight days is the base timeline's answer for the same window (GET /api/v1/delivery/timeline,
+// deliveryTimelineCompute), every field but measures: its merges are the base's prs[] each with its
+// kind, its runs the base's runs[] each with its kind, its repository and its creation, its waiting
+// line, counts, labels, window and freshness the base's; no row is on two pages, each page's oldest
+// row comes before the next page's newest, and waiting is on the last page alone. The same holds
+// with a facet set, which narrows the merges and leaves the runs.
 //
-// The runs are the base's that count for the project by root R27, which at this head are the
-// deploys that ship one of its pull requests: a deploy that ships none, and every failed run (no
-// failed run ships), count for no project until INFRA-978's D1 gives them the project whose deploy
-// source reads their repository; the subtest that holds them to the base waits for that head.
+// The runs are the base's that count for the project by root R27, which here are every one of
+// them: the deploys that ship one of its pull requests, and those that ship none, every failed run
+// among them (no failed run ships), which count for DELIV as the project whose deploy source reads
+// their repository (INFRA-978 R12). That source names no repository and reads DELIV's default, as
+// the refresher publishes it, which the test publishes as the refresher's page does.
 func TestTheProjectTimelinePagesNewestFirstAndHoldsTheBaseAnswer(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2918, Days: 30, OneProject: true})
+	publishDefaultRepos(t, database.Pool)
 	to := fixture.To.AddDate(0, 0, -1)
 	from := to.AddDate(0, 0, -8)
 	ships := fixtureShips(fixture)
@@ -249,44 +251,38 @@ func TestTheProjectTimelinePagesNewestFirstAndHoldsTheBaseAnswer(t *testing.T) {
 			if want := listByID(t, base["prs"]); !reflect.DeepEqual(merges, want) {
 				t.Errorf("the pages' merges differ from the base's prs[]: %d merges, %d prs", len(merges), len(want))
 			}
-			wantRuns := listByID(t, base["runs"])
-			var shipNone []string
-			for id := range wantRuns {
-				runID, _ := strconv.ParseInt(id, 10, 64)
-				if len(ships[runID]) == 0 {
-					delete(wantRuns, id)
-					shipNone = append(shipNone, id)
+			if want := listByID(t, base["runs"]); !reflect.DeepEqual(runs, want) {
+				t.Errorf("the pages' runs differ from the base's runs[]: %d runs, %d in the base", len(runs), len(want))
+			}
+			shipNone := 0
+			for id := range runs {
+				if runID, _ := strconv.ParseInt(id, 10, 64); len(ships[runID]) == 0 {
+					shipNone++
 				}
 			}
-			if !reflect.DeepEqual(runs, wantRuns) {
-				t.Errorf("the pages' runs differ from the base's runs[] that ship a pull request: %d runs, want %d", len(runs), len(wantRuns))
+			if kinds[projectTimelineMerge] == 0 || kinds[projectTimelineDeploy] == 0 || shipNone == 0 {
+				t.Fatalf("the window's rows by kind are %v with %d runs shipping none, want merges, deploys and runs shipping none", kinds, shipNone)
 			}
-			if kinds[projectTimelineMerge] == 0 || kinds[projectTimelineDeploy] == 0 || len(shipNone) == 0 {
-				t.Fatalf("the window's rows by kind are %v with %d runs shipping none, want merges, deploys and runs shipping none", kinds, len(shipNone))
-			}
-			t.Logf("%s..%s: %v rows over %d pages (%v); the base's %d runs that ship no pull request wait for INFRA-978's D1",
-				from.Format(time.DateOnly), to.Format(time.DateOnly), pages[0]["total"], len(pages), kinds, len(shipNone))
-
-			t.Run("the runs that ship no pull request", func(t *testing.T) {
-				t.Skip("waits for INFRA-978's D1 head: a deploy that ships no pull request, and a failed run, count for the project whose deploy source reads their repository")
-				if !reflect.DeepEqual(runs, listByID(t, base["runs"])) {
-					t.Errorf("the pages' runs differ from the base's runs[]")
-				}
-			})
+			t.Logf("%s..%s: %v rows over %d pages (%v), %d of the runs shipping no pull request",
+				from.Format(time.DateOnly), to.Format(time.DateOnly), pages[0]["total"], len(pages), kinds, shipNone)
 		})
 	}
 }
 
 // TestTheProjectTimelineCountsTheProjectsRowsByR27: in deliverytest's default history, whose pull
-// requests name issues of DELIV, one in twenty of DELIVX, and some none, over seven whole UTC days
-// holding a deploy that ships pull requests of both: a merge with an issue is on its issue's
-// project's timeline alone, and one with no issue on neither (until the attribution through
-// default repositories lands); each project's merges are the pull requests its pr-open-to-merge
-// items count for the window; a deploy is on the timeline of each project whose pull request it
-// ships first, whenever that merged, the one shipping both on both, and a deploy in DELIV's
-// repository that ships none of DELVIX's is not on DELIVX's. The rows that need INFRA-2916's
-// finished attribution through default repositories, or INFRA-978's D1, are written and wait for
-// those heads.
+// requests name issues of DELIV, one in twenty of DELIVX, and some none, and whose deploy
+// repository is DELIV's default repository and the one its deploy source reads, over seven whole
+// UTC days holding a deploy that ships pull requests of both, with the default repositories
+// published as the refresher publishes them: a merge with an issue is on its issue's project's
+// timeline alone, and one with no issue on that of each project whose default repository holds it
+// (INFRA-2916 R15), DELIV's for the deploy repository's and none for another repository's; each
+// project's merges are the pull requests its pr-open-to-merge day rows count for the window, and
+// DELIV's, which has a deploy source of its own, those its pr-open-to-merge items list; a deploy
+// is on the timeline of each project whose pull request it ships first, whenever that merged, the
+// one shipping both on both, and on DELIV's where it ships one with no issue; a deploy that ships
+// no pull request, and a failed run, are on the timeline of DELIV alone, whose deploy source reads
+// their repository (INFRA-978 R12); and a deploy in DELIV's repository that ships none of DELIVX's
+// pull requests is not on DELIVX's.
 func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, Days: 40})
@@ -325,20 +321,35 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 	from := runsByID[target].StartedAt.UTC().Truncate(24 * time.Hour)
 	to := from.AddDate(0, 0, 7)
 
+	// The refresher writes the day rows each project's pr-open-to-merge items are read from, and
+	// its page publishes the projects' default repositories, which a row with no issue counts under.
+	registry := evals.New(database, deps.Docs, deps.Events)
+	for _, project := range projects {
+		seededEntries(t, registry, project)
+	}
+	refreshEvalDays(t, registry, database, fixture.To.Add(-time.Minute))
+
 	// What each project counts in the window, by the fixture's own rows: its merges by issue, and
-	// the deploy runs on main GitHub created and started in it that ship one of its pull requests.
+	// DELIV the deploy repository's merges with no issue; the deploy runs on main GitHub created and
+	// started in it that ship one of its pull requests, and DELIV those that ship one with no issue,
+	// every one of them being of the deploy repository, or ship none.
 	wantMerges := map[string][]string{}
 	var noIssue []string
+	owned := 0
 	for _, pr := range fixture.PullRequests {
 		if pr.MergedAt.Before(from) || !pr.MergedAt.Before(to) {
 			continue
 		}
 		id := pr.Repo + "#" + strconv.Itoa(pr.Number)
-		if project := projectOf(pr); project != "" {
-			wantMerges[project] = append(wantMerges[project], id)
-		} else {
+		project := projectOf(pr)
+		if project == "" {
 			noIssue = append(noIssue, id)
+			if pr.Repo != fixture.DeployRepo {
+				continue
+			}
+			project, owned = fixture.Project, owned+1
 		}
+		wantMerges[project] = append(wantMerges[project], id)
 	}
 	wantRuns := map[string][]string{}
 	var shipNone []string
@@ -347,11 +358,12 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 			continue
 		}
 		id := strconv.FormatInt(run.RunID, 10)
-		if len(ships[run.RunID]) == 0 {
+		none := len(ships[run.RunID]) == 0
+		if none {
 			shipNone = append(shipNone, id)
 		}
 		for _, project := range projects {
-			if shipsFor(run.RunID, project) {
+			if shipsFor(run.RunID, project) || project == fixture.Project && (none || shipsFor(run.RunID, "")) {
 				wantRuns[project] = append(wantRuns[project], id)
 			}
 		}
@@ -374,15 +386,10 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 
 	for _, project := range projects {
 		if !slices.Equal(gotMerges[project], wantMerges[project]) {
-			t.Errorf("%s's merges = %v, want the %d pull requests of the window naming its issues: %v", project, gotMerges[project], len(wantMerges[project]), wantMerges[project])
+			t.Errorf("%s's merges = %v, want the %d pull requests of the window it counts: %v", project, gotMerges[project], len(wantMerges[project]), wantMerges[project])
 		}
 		if !slices.Equal(gotRuns[project], wantRuns[project]) {
-			t.Errorf("%s's runs = %v, want the %d deploys of the window shipping one of its pull requests: %v", project, gotRuns[project], len(wantRuns[project]), wantRuns[project])
-		}
-		for _, id := range noIssue {
-			if slices.Contains(gotMerges[project], id) {
-				t.Errorf("%s's timeline holds %s, which names no issue", project, id)
-			}
+			t.Errorf("%s's runs = %v, want the %d deploys of the window it counts: %v", project, gotRuns[project], len(wantRuns[project]), wantRuns[project])
 		}
 	}
 	targetID := strconv.FormatInt(target, 10)
@@ -398,47 +405,61 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 			onlyFirst++
 		}
 	}
-	if onlyFirst == 0 || len(noIssue) == 0 || len(shipNone) == 0 {
-		t.Fatalf("the window holds %d deploys of %s alone, %d merges naming no issue and %d deploys shipping none; want some of each", onlyFirst, fixture.Project, len(noIssue), len(shipNone))
+	if onlyFirst == 0 || owned == 0 || len(noIssue) == owned || len(shipNone) == 0 {
+		t.Fatalf("the window holds %d deploys of %s alone, %d merges naming no issue, %d of them of the deploy repository, and %d deploys shipping none; want some of each, and some merges naming no issue of another repository",
+			onlyFirst, fixture.Project, len(noIssue), owned, len(shipNone))
 	}
 
-	// Each project's merges are the pull requests its pr-open-to-merge items count for the window,
-	// from the day rows the refresher writes.
-	registry := evals.New(database, deps.Docs, deps.Events)
+	// Each project's merges are the pull requests its pr-open-to-merge day rows count for the window:
+	// the members the refresher wrote with the rows of the evals no deploy repository moves
+	// (evals.CountedIn), its own and those of the owner keys it reads. DELIV's are also the pull
+	// requests its pr-open-to-merge items list. DELIVX's items list none, since the items read
+	// reads a project's delivery rows under its own deploy source's rule (evalItemSources) and
+	// DELIVX has no source, though its day rows count its pull requests.
 	for _, project := range projects {
-		seededEntries(t, registry, project)
-	}
-	refreshEvalDays(t, registry, database, fixture.To.Add(-time.Minute))
-	for _, project := range projects {
+		members, err := evals.CountedIn(t.Context(), database.Pool, project, evals.KindDelivery, []string{""}, nil, evals.Range{From: from, To: to})
+		if err != nil {
+			t.Fatalf("read the pull requests %s's day rows count: %v", project, err)
+		}
 		var counted []string
-		for offset := 0; ; offset += 200 {
-			query := url.Values{
-				"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)},
-				"row_kind": {"pull_request"}, "limit": {"200"}, "offset": {strconv.Itoa(offset)},
-			}
-			page := decodeBody[evalItemsResponse](t, dispatchRequest(t, handler, http.MethodGet,
-				"/api/v1/projects/"+project+"/evals/"+evals.SlugPROpenToMerge+"/items?"+query.Encode(), nil, "alice"))
-			for _, item := range page.Items {
-				counted = append(counted, item.Cols["repo"].(string)+"#"+strconv.Itoa(int(item.Cols["number"].(float64))))
-			}
-			if offset+200 >= page.Total {
-				break
+		for _, member := range members {
+			if id, found := strings.CutPrefix(member.RowKey, "pull_request:"); found {
+				counted = append(counted, id)
 			}
 		}
 		slices.Sort(counted)
+		counted = slices.Compact(counted)
 		if !slices.Equal(gotMerges[project], counted) {
-			t.Errorf("%s's merges = %v, want the %d pull requests its pr-open-to-merge items count: %v", project, gotMerges[project], len(counted), counted)
+			t.Errorf("%s's merges = %v, want the %d pull requests its pr-open-to-merge day rows count: %v", project, gotMerges[project], len(counted), counted)
 		}
 	}
-	t.Logf("%s..%s: %s holds %d merges and %d runs, %s %d and %d; run %d ships both; %d merges name no issue, %d deploys ship none",
+	var listed []string
+	for offset := 0; ; offset += 200 {
+		query := url.Values{
+			"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)},
+			"row_kind": {"pull_request"}, "limit": {"200"}, "offset": {strconv.Itoa(offset)},
+		}
+		page := decodeBody[evalItemsResponse](t, dispatchRequest(t, handler, http.MethodGet,
+			"/api/v1/projects/"+fixture.Project+"/evals/"+evals.SlugPROpenToMerge+"/items?"+query.Encode(), nil, "alice"))
+		for _, item := range page.Items {
+			listed = append(listed, item.Cols["repo"].(string)+"#"+strconv.Itoa(int(item.Cols["number"].(float64))))
+		}
+		if offset+200 >= page.Total {
+			break
+		}
+	}
+	slices.Sort(listed)
+	if !slices.Equal(gotMerges[fixture.Project], listed) {
+		t.Errorf("%s's merges = %v, want the %d pull requests its pr-open-to-merge items list: %v", fixture.Project, gotMerges[fixture.Project], len(listed), listed)
+	}
+	t.Logf("%s..%s: %s holds %d merges and %d runs, %s %d and %d; run %d ships both; %d merges name no issue, %d of the deploy repository; %d deploys ship none",
 		from.Format(time.DateOnly), to.Format(time.DateOnly), fixture.Project, len(gotMerges[fixture.Project]), len(gotRuns[fixture.Project]),
-		fixture.SecondProject, len(gotMerges[fixture.SecondProject]), len(gotRuns[fixture.SecondProject]), target, len(noIssue), len(shipNone))
+		fixture.SecondProject, len(gotMerges[fixture.SecondProject]), len(gotRuns[fixture.SecondProject]), target, len(noIssue), owned, len(shipNone))
 
-	// DELIV's default repository is the deploy repository (deliverytest), so once a row with no
-	// issue counts for each project whose default repository holds it, the deploy repository's
-	// merges with no issue are DELIV's, and so is each deploy that ships one of them.
+	// DELIV's default repository is the deploy repository (deliverytest), which the refresher
+	// published above, so the deploy repository's merges with no issue are DELIV's, and so is each
+	// deploy that ships one of them.
 	t.Run("a merge with no issue counts for each project whose default repository holds it", func(t *testing.T) {
-		t.Skip("waits for INFRA-2916's finished attribution head")
 		for _, pr := range fixture.PullRequests {
 			if pr.IssueKey != nil || pr.MergedAt.Before(from) || !pr.MergedAt.Before(to) {
 				continue
@@ -453,7 +474,6 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 		}
 	})
 	t.Run("a deploy shipping only pull requests with no issue counts for the project whose default repository holds them", func(t *testing.T) {
-		t.Skip("waits for INFRA-2916's finished attribution head")
 		for runID, shipped := range ships {
 			run := runsByID[runID]
 			if run.Created().Before(from) || run.StartedAt.Before(from) || !run.StartedAt.Before(to) ||
@@ -465,10 +485,8 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 			}
 		}
 	})
-	// The deploy repository is the one DELIV's deploy source reads once INFRA-978's D1 gives each
-	// project its own sources; at this head the deployment's one settings row reads it.
+	// The deploy repository is the one DELIV's deploy source reads (deliverytest.SaveRules).
 	t.Run("a deploy that ships no pull request counts for the project whose deploy source reads its repository", func(t *testing.T) {
-		t.Skip("waits for INFRA-978's D1 head: a deploy that ships no pull request counts for the project whose deploy source reads its repository")
 		for _, id := range shipNone {
 			if !slices.Contains(gotRuns[fixture.Project], id) || slices.Contains(gotRuns[fixture.SecondProject], id) {
 				t.Errorf("run %s ships no pull request, and is on %s's timeline %t and %s's %t, want %s's alone", id,
@@ -477,7 +495,6 @@ func TestTheProjectTimelineCountsTheProjectsRowsByR27(t *testing.T) {
 		}
 	})
 	t.Run("a failed run counts for the project whose deploy source reads its repository", func(t *testing.T) {
-		t.Skip("waits for INFRA-978's D1 head: a failed run counts for the project whose deploy source reads its repository")
 		for _, run := range fixture.Runs {
 			if run.Kind != delivery.DeliveryRunKindDeploy || run.Conclusion == nil || *run.Conclusion != delivery.DeliveryRunConclusionFailure ||
 				run.Created().Before(from) || run.StartedAt.Before(from) || !run.StartedAt.Before(to) {
@@ -740,6 +757,45 @@ func TestTheProjectTimelineViewParsesAsItsRoute(t *testing.T) {
 			t.Errorf("%s: the view's snapshot differs from the route's body:\nview:  %s\nroute: %s", query, snapshot.Body, route)
 		}
 		rig.hub.Unsubscribe(conn, "q")
+	}
+}
+
+// TestTheDefaultsPublishingMarksTheProjectTimeline: a project timeline counts a row no issue
+// attributes, and a deploy that ships nothing, under the published default repositories
+// (evals.Attribution), so the refresher's commit that publishes them marks its views: the commit's
+// change for a project whose default it moved marks that project's timeline views and no other
+// project's, and its change for a deploy repository whose judging project it moved marks every
+// timeline view. The settings applied, and an eval's day rows, readings or versions, mark none.
+func TestTheDefaultsPublishingMarksTheProjectTimeline(t *testing.T) {
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	today := now.Truncate(24 * time.Hour)
+	views := map[string]*deliveryView{}
+	for _, project := range []string{"DELIV", "OTHER"} {
+		views[project] = viewShowingIssues(deliveryLiveSpec{kind: deliveryLiveProjectTimeline, project: project, preset: 7}, nil)
+	}
+	// published is the change the refresher's commit that publishes the defaults logs for repo,
+	// with ref (evals.publishDefaults).
+	published := func(repo, ref string) delivery.Change {
+		return delivery.Change{Seq: 1, Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenByDefaults, Repo: repo, Ref: ref}
+	}
+	cases := []struct {
+		what   string
+		change delivery.Change
+		marks  []string
+	}{
+		{"DELIV's default published", published("DELIV", ""), []string{"DELIV"}},
+		{"the judging project of acme/widgets moved", published("acme/widgets", delivery.DefaultsJudgingRef), []string{"DELIV", "OTHER"}},
+		{"the settings applied", delivery.Change{Seq: 1, Kind: delivery.ChangeKindEvalDays, RunKind: delivery.EvalDaysWrittenBySettingsRewrite}, nil},
+		{"DELIV's merge-to-production day rows", evalsChange("eval_days", "DELIV", evals.SlugMergeToProduction, &today, &today), nil},
+		{"a version of DELIV's merge-to-production", evalsChange("eval_versions", "DELIV", evals.SlugMergeToProduction, nil, nil), nil},
+		{"a reading of DELIV's pr-ci", evalsChange("eval_readings", "DELIV", evals.SlugPRCI, &today, &today), nil},
+	}
+	for _, c := range cases {
+		for project, view := range views {
+			if got, want := view.touchedBy(c.change, now), slices.Contains(c.marks, project); got != want {
+				t.Errorf("%s: touchedBy(%s's timeline) = %t, want %t", c.what, project, got, want)
+			}
+		}
 	}
 }
 

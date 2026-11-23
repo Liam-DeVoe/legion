@@ -99,9 +99,11 @@ func deployRunIn(t *testing.T, database *store.Store, repo string, id int64, cre
 // GET /api/v1/delivery/runs/{id} answers of a deployment deploying from it. A deploy in OTHR's
 // repository that shipped a SHIP pull request answers its jobs on SHIP's route, as its timeline row
 // is SHIP's; one there that ships only OTHR's pull request answers 404 on SHIP's route and its jobs
-// on OTHR's. A deploy of IDLE's repository shipping a SHIP pull request answers 404, as no
-// delivery-on project's source reads it, and so does a run id the named repository holds no run
-// of. A query naming no repo, or naming it twice, answers 400 INVALID_QUERY naming repo.
+// on OTHR's; and one there that ships no pull request answers its jobs on OTHR's route, whose
+// deploy source found it, and 404 on SHIP's (INFRA-978 R12). A deploy of IDLE's repository shipping
+// a SHIP pull request answers 404, as no delivery-on project's source reads it, and so does a run
+// id the named repository holds no run of. A query naming no repo, or naming it twice, answers 400
+// INVALID_QUERY naming repo.
 func TestADeployRunAnswersItsJobsFromTheNamedSourceRepository(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createTestProject(t, handler, "SHIP", "OTHR", "IDLE")
@@ -125,6 +127,7 @@ func TestADeployRunAnswersItsJobsFromTheNamedSourceRepository(t *testing.T) {
 	deployRunIn(t, database, "acme/beta", 100, at.Add(time.Hour))
 	deployRunIn(t, database, "acme/gamma", 300, at.Add(time.Hour))
 	deployRunIn(t, database, "acme/gamma", 301, at.Add(4*time.Hour))
+	deployRunIn(t, database, "acme/gamma", 302, at.Add(6*time.Hour))
 	deployRunIn(t, database, "acme/delta", 400, at.Add(time.Hour))
 
 	target := func(project string, id int64, query string) string {
@@ -135,7 +138,7 @@ func TestADeployRunAnswersItsJobsFromTheNamedSourceRepository(t *testing.T) {
 		id      int64
 		repo    string
 	}{
-		{"SHIP", 100, "acme/alpha"}, {"SHIP", 100, "acme/beta"}, {"SHIP", 300, "acme/gamma"}, {"OTHR", 301, "acme/gamma"},
+		{"SHIP", 100, "acme/alpha"}, {"SHIP", 100, "acme/beta"}, {"SHIP", 300, "acme/gamma"}, {"OTHR", 301, "acme/gamma"}, {"OTHR", 302, "acme/gamma"},
 	}
 	for _, want := range answers {
 		path := target(want.project, want.id, "?repo="+want.repo)
@@ -172,6 +175,7 @@ func TestADeployRunAnswersItsJobsFromTheNamedSourceRepository(t *testing.T) {
 		code       string
 	}{
 		{"a deploy of OTHR's repository shipping no SHIP pull request", target("SHIP", 301, "?repo=acme/gamma"), http.StatusNotFound, "NOT_FOUND"},
+		{"a deploy of OTHR's repository shipping no pull request", target("SHIP", 302, "?repo=acme/gamma"), http.StatusNotFound, "NOT_FOUND"},
 		{"a repository only a delivery-off project's source reads", target("SHIP", 400, "?repo=acme/delta"), http.StatusNotFound, "NOT_FOUND"},
 		{"a run id the named repository holds no run of", target("SHIP", 300, "?repo=acme/alpha"), http.StatusNotFound, "NOT_FOUND"},
 		{"no repo", target("SHIP", 100, ""), http.StatusBadRequest, "INVALID_QUERY"},
