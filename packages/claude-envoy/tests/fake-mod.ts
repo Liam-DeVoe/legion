@@ -76,8 +76,13 @@ export async function startFakeMod(
     /** Sent as the first event, as a real mod's `session.start` does; true by default. */
     readonly hello?: boolean
     /** The server's exit, where the caller started it: the probe for its socket stops, naming
-     *  that, once the server has exited. With none, the probe runs until the socket answers. */
+     *  that, once the server has exited. */
     readonly exited?: Promise<unknown>
+    /** Aborted once the caller's row has ended, at its limit included: the probe for the socket
+     *  stops, naming that, and so does the polling after it, as `stop` stops it. A caller that
+     *  holds the server process passes `exited`; one that does not passes this, and one may pass
+     *  both. With neither, the probe runs until the socket answers. */
+    readonly signal?: AbortSignal
   },
 ): Promise<FakeMod> {
   const calls: ModCall[] = []
@@ -137,7 +142,7 @@ export async function startFakeMod(
   }
 
   const poll = async (): Promise<void> => {
-    while (!stopped) {
+    while (!stopped && options.signal?.aborted !== true) {
       let requests: readonly ModRequest[] = []
       try {
         const body = (await post(MOD_ROUTE_REQUESTS, {})) as { requests?: readonly ModRequest[] }
@@ -167,13 +172,17 @@ export async function startFakeMod(
   // The server binds its socket while its MCP transport starts, so a mod started beside it
   // probes until the socket answers, as the real mod does. The probe has no deadline of its
   // own: how long the bind takes is the host's speed, and a socket that never answers is the
-  // row's limit to end, which names the row. A server that exits first ends the probe at once.
+  // row's limit to end, which names the row. A server that exits first ends the probe at once
+  // (`exited`), and so does the end of the caller's row (`signal`).
   let exited = false
   const ended = () => {
     exited = true
   }
   void options.exited?.then(ended, ended)
   for (;;) {
+    if (options.signal?.aborted === true) {
+      throw new Error("the row ended before the server's mod socket answered")
+    }
     try {
       if (options.hello !== false) {
         await send({

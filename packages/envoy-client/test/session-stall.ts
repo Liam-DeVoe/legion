@@ -267,8 +267,12 @@ interface StalledSession {
   stderr(): string;
 }
 
-/** Starts the child and resolves once the listener has accepted its registration and its claim. */
-async function startStalledSession(config: ChildConfig): Promise<StalledSession> {
+/** Starts the child and resolves once the listener has accepted its registration and its claim.
+ *  The wait fails by name once natsd or the listener of `stack` has exited. */
+async function startStalledSession(
+  config: ChildConfig,
+  stack: EnvoyStack
+): Promise<StalledSession> {
   const child = Bun.spawn(["bun", "run", import.meta.path], {
     env: { ...process.env, ENVOY_SESSION_STALL_CHILD: JSON.stringify(config) },
     stdout: "pipe",
@@ -325,7 +329,19 @@ async function startStalledSession(config: ChildConfig): Promise<StalledSession>
   };
   const deadline = Date.now() + 30_000;
   while (registeredAt === 0 || !claimed) {
-    if (child.exitCode !== null || Date.now() > deadline) {
+    const exited = stack.exited();
+    if (exited !== undefined) {
+      await session.kill();
+      throw new Error(`waiting for the stalled session's registration and claim: ${exited}`);
+    }
+    if (child.exitCode !== null || child.signalCode !== null) {
+      await session.kill();
+      const code = child.exitCode ?? child.signalCode;
+      throw new Error(
+        `the stalled session exited (${code}) before it claimed ${config.role}: ${errors}`
+      );
+    }
+    if (Date.now() > deadline) {
       await session.kill();
       throw new Error(`the stalled session did not register and claim ${config.role}: ${errors}`);
     }
@@ -356,31 +372,40 @@ async function sighting(envoyUrl: string, sessionID: string): Promise<Sighting> 
   return { state: refusal.state, lastSeen: refusal.last_seen ?? 0 };
 }
 
-/** Polls the session until it reads `want`, throwing with what it did read when `deadline` passes. */
+/** Polls the session until it reads `want`, throwing with what it did read when `deadline` passes,
+ *  and naming the exit once natsd or the listener of `stack` has exited. */
 async function awaitState(
-  envoyUrl: string,
+  stack: EnvoyStack,
   sessionID: string,
   want: SessionState,
   deadline: number
 ): Promise<Sighting> {
-  let seen = await sighting(envoyUrl, sessionID);
+  let seen = await sighting(stack.envoyUrl, sessionID);
   while (seen.state !== want) {
+    const exited = stack.exited();
+    if (exited !== undefined) {
+      throw new Error(`waiting for ${sessionID} to read ${want}: ${exited}`);
+    }
     if (Date.now() > deadline) {
       throw new Error(`${sessionID} still reads ${seen.state}, not ${want}, at the deadline`);
     }
     await Bun.sleep(POLL_MS);
-    seen = await sighting(envoyUrl, sessionID);
+    seen = await sighting(stack.envoyUrl, sessionID);
   }
   return seen;
 }
 
-/** Polls `condition` until it holds, throwing `what` when `deadline` passes. */
+/** Polls `condition` until it holds, throwing `what` when `deadline` passes, and naming the exit
+ *  once natsd or the listener of `stack` has exited. */
 async function until(
+  stack: EnvoyStack,
   what: string,
   deadline: number,
   condition: () => boolean | Promise<boolean>
 ): Promise<void> {
   while (!(await condition())) {
+    const exited = stack.exited();
+    if (exited !== undefined) throw new Error(`waiting for ${what}: ${exited}`);
     if (Date.now() > deadline) throw new Error(`${what} did not happen before the deadline`);
     await Bun.sleep(POLL_MS);
   }
@@ -408,6 +433,10 @@ async function roleClaim(claims: KV, role: string): Promise<RoleClaim | undefine
 
 describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
   let stack: EnvoyStack | undefined;
+  // The start, kept with its stop: a `beforeAll` its limit cut off leaves the start running and
+  // `stack` unset, and the `afterAll` aborts the start, which stops what it started.
+  const stopStart = new AbortController();
+  let starting: Promise<EnvoyStack> | undefined;
   let nats: NatsConnection | undefined;
   let claims: KV | undefined;
   let child: StalledSession | undefined;
@@ -423,11 +452,11 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     ) {
       throw new Error("the session-stall rig did not start");
     }
-    return { envoyUrl: stack.envoyUrl, claims, child, client };
+    return { stack, envoyUrl: stack.envoyUrl, claims, child, client };
   };
 
   beforeAll(async () => {
-    const started = await startEnvoyStack({
+    starting = startEnvoyStack({
       work: stackDirectory,
       listenerEnv: {
         ENVOY_SESSION_LIVE_WINDOW: goDuration(LIVE_WINDOW_MS),
@@ -436,18 +465,23 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
         ENVOY_ROLE_CLAIM_REAP_INTERVAL: goDuration(REAP_INTERVAL_MS),
         ENVOY_SESSION_MAX_AGE: goDuration(SESSION_MAX_AGE_MS),
       },
+      signal: stopStart.signal,
     });
+    const started = await starting;
     stack = started;
     client = createEnvoyClient({ baseUrl: started.envoyUrl, fetch });
-    child = await startStalledSession({
-      envoyUrl: started.envoyUrl,
-      natsUrl: started.natsUrl,
-      sessionID: `ses_stalled_${process.pid}`,
-      role: "session-stall-reviewer",
-      directory: "/test/session-stall",
-      title: "Stalled session",
-      heartbeatMs: HEARTBEAT_MS,
-    });
+    child = await startStalledSession(
+      {
+        envoyUrl: started.envoyUrl,
+        natsUrl: started.natsUrl,
+        sessionID: `ses_stalled_${process.pid}`,
+        role: "session-stall-reviewer",
+        directory: "/test/session-stall",
+        title: "Stalled session",
+        heartbeatMs: HEARTBEAT_MS,
+      },
+      started
+    );
     nats = await connect({ servers: [started.natsUrl], name: "session-stall-observer" });
     claims = await nats.jetstream().views.kv(ROLE_CLAIM_BUCKET, { bindOnly: true });
   }, 180_000);
@@ -455,14 +489,18 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
   afterAll(async () => {
     await child?.kill();
     await nats?.close();
-    await stack?.stop();
+    // A start still running ends the build or the wait it is in, stops what it started and
+    // rejects; a start that resolved is stopped here.
+    stopStart.abort();
+    const started = await starting?.catch(() => undefined);
+    await started?.stop();
   }, 60_000);
 
   // Properties 1, 2 and 3. A listener that read a missed heartbeat as death answers this session
   // nothing at all: no state to read, no last_seen to date the stall by, and an `include` that
   // can list nothing, because the record is gone the moment the window passes.
   test("a stopped session reads unresponsive with its last registration, is listed only when the caller asks for it, and SIGCONT returns it to live", async () => {
-    const { envoyUrl, child, client } = rig();
+    const { stack, envoyUrl, child, client } = rig();
     const frozenAt = child.freeze();
     // Let a registration the freeze may have cut between the listener's write and the child's
     // own line land before either is read.
@@ -470,7 +508,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     const registered = child.registeredAt();
 
     const stalled = await awaitState(
-      envoyUrl,
+      stack,
       child.sessionID,
       "unresponsive",
       frozenAt + LIVE_WINDOW_MS + 20_000
@@ -496,7 +534,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // (3) The box comes back, the heartbeat resumes, and the same session is live again.
     child.thaw();
     const resumed = await awaitState(
-      envoyUrl,
+      stack,
       child.sessionID,
       "live",
       Date.now() + HEARTBEAT_MS * 3 + 20_000
@@ -511,7 +549,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
   // lookup and refuses the send with "no live session", so the role goes to whoever asks next and
   // the message is never stored for the session that was only stalled.
   test("a stalled session keeps its role claim through any number of lookups, and a send to it is stored and arrives when it answers again", async () => {
-    const { envoyUrl, claims, child, client } = rig();
+    const { stack, envoyUrl, claims, child, client } = rig();
     const live = `stall-live-${crypto.randomUUID()}`;
     const sentLive = await client.send({
       source: "agent",
@@ -520,7 +558,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
       message: live,
     });
     expect(sentLive.recipientState).toBe("live");
-    await until(`${live} to reach the live session`, Date.now() + 30_000, () =>
+    await until(stack, `${live} to reach the live session`, Date.now() + 30_000, () =>
       child.messages().includes(live)
     );
     const claimed = await roleClaim(claims, child.role);
@@ -528,7 +566,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
 
     const frozenAt = child.freeze();
     const stalled = await awaitState(
-      envoyUrl,
+      stack,
       child.sessionID,
       "unresponsive",
       frozenAt + LIVE_WINDOW_MS + 20_000
@@ -565,11 +603,12 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
 
     child.thaw();
     await until(
+      stack,
       `${missed}, sent while the session was stalled, to reach it`,
       Date.now() + 60_000,
       () => child.messages().includes(missed)
     );
-    await awaitState(envoyUrl, child.sessionID, "live", Date.now() + HEARTBEAT_MS * 3 + 20_000);
+    await awaitState(stack, child.sessionID, "live", Date.now() + HEARTBEAT_MS * 3 + 20_000);
     const back = await roleAnswer(envoyUrl, child.role);
     expect("holder" in back ? back.holder.holder : undefined).toBe(child.sessionID);
     expect(await roleClaim(claims, child.role)).toEqual(claimed);
@@ -579,7 +618,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
   // death would release this claim within the live window — within seconds of a stall a loaded
   // box recovers from — instead of holding it for the hour a session has to come back in.
   test("a killed session stays unresponsive until the gone horizon, then reads gone, and only then does the reaper release its role claim", async () => {
-    const { envoyUrl, claims, child } = rig();
+    const { stack, envoyUrl, claims, child } = rig();
     const claimed = await roleClaim(claims, child.role);
     expect(claimed?.holder_session_id).toBe(child.sessionID);
 
@@ -587,7 +626,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     await child.kill();
 
     const stalled = await awaitState(
-      envoyUrl,
+      stack,
       child.sessionID,
       "unresponsive",
       killedAt + LIVE_WINDOW_MS + 20_000
@@ -607,12 +646,14 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // one the child made. Every read here is taken a pass short of the horizon
     // (stalled.lastSeen + GONE_HORIZON_MS), which is the earliest moment any pass may release it.
     while (Date.now() < stalled.lastSeen + GONE_HORIZON_MS - REAP_INTERVAL_MS) {
+      const exited = stack.exited();
+      if (exited !== undefined) throw new Error(`reading the claim to the horizon: ${exited}`);
       expect(await roleClaim(claims, child.role)).toEqual(claimed);
       await Bun.sleep(REAP_INTERVAL_MS);
     }
 
     await awaitState(
-      envoyUrl,
+      stack,
       child.sessionID,
       "gone",
       stalled.lastSeen + GONE_HORIZON_MS + REAP_INTERVAL_MS + 30_000
@@ -628,6 +669,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // byte the one the child made, and once the reaper has taken it a lookup answers unclaimed.
     // No answer ever reports a claim a lookup released.
     await until(
+      stack,
       "the role claim reaper to release the gone holder's claim",
       Date.now() + REAP_INTERVAL_MS + 30_000,
       async () => {

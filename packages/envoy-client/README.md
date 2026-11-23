@@ -278,10 +278,15 @@ open at that moment without closing either side, and which records when each con
 accepted, first subscribed and closed; a real natsd and listener that each stack builds with
 `go build` from `packages/envoy` into its own scratch directory (its `monitorUrl` is natsd's
 monitoring port); and `runFreezeScenario`, the freeze both plugins' stall tests put their session
-through. The stack's listener answers `consumer`, so the scenario checks consumer delivery across
-the freeze: the connection nats.js dials in place of the frozen one subscribes the relay subject
-again (`/connz`), the session's `envoy_sessions` entry names a new epoch, and the message sent
-during the freeze and one sent after it are each shown once, neither as a replay. A test that
+through. The stack's `exited()` names natsd or the listener once either has exited, with its exit
+code or signal, and each live wait checks it on every poll, so a process that exits mid-row fails
+the wait by name rather than at the row's limit. A `signal` handed to `startEnvoyStack` stops a
+start still in progress: the start ends its build or its wait, stops the processes it started and
+rejects, which is how a live describe's `afterAll` leaves nothing running after a `beforeAll` its
+limit cut off. The stack's listener answers `consumer`, so the scenario checks consumer delivery
+across the freeze: the connection nats.js dials in place of the frozen one subscribes the relay
+subject again (`/connz`), the session's `envoy_sessions` entry names a new epoch, and the message
+sent during the freeze and one sent after it are each shown once, neither as a replay. A test that
 uses the stack runs only with `LEGION_E2E_ENVOY_STACK=1`.
 
 `@legion/envoy-client/test/dispatch-stack` (Bun only, not built, in `test/`) is the same shape for

@@ -1,5 +1,5 @@
 import { expect } from "bun:test";
-import { connect, type KV } from "nats";
+import { connect, ErrorCode, type KV, NatsError } from "nats";
 import { z } from "zod";
 import { deliverSubject } from "../src/consumer-delivery";
 import { STORED_WHILE_AWAY_SUFFIX } from "../src/delivery-ledger";
@@ -21,8 +21,9 @@ export interface FreezeScenarioHost {
   readonly proxy: StallProxy;
   /** The text of every message the host showed the session that holds `marker`, in order. */
   shown(marker: string): readonly string[];
-  /** Resolves once `condition` holds; throws, naming `what`, when `deadline` passes first. A
-   *  wait given no deadline ends at the row's own limit, the host's hang guard. */
+  /** Resolves once `condition` holds; throws, naming `what`, when `deadline` passes first, when
+   *  a process of `stack` has exited (`EnvoyStack.exited`), checked on each poll, or once the
+   *  row has ended. A wait given no deadline ends at the row's own limit, the host's hang guard. */
   waitFor(
     condition: () => boolean | Promise<boolean>,
     deadline: number | undefined,
@@ -57,6 +58,30 @@ async function sessionEntry(
   if (entry === null || entry.operation !== "PUT") return undefined;
   return SessionEntrySchema.parse(entry.json());
 }
+
+/**
+ * `read`'s answer, or false when nats.js gave up waiting for natsd's answer to it: a JetStream
+ * request whose timeout passed fails with `ErrorCode.Timeout`, and so does each request still
+ * pending when the observer's connection closes. The wait polling `read` then polls it again,
+ * until its row ends or a process of the stack exits. Any other error fails the wait.
+ */
+async function falseOnTimeout(read: () => Promise<boolean>): Promise<boolean> {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof NatsError && error.code === ErrorCode.Timeout) return false;
+    throw error;
+  }
+}
+
+/**
+ * The observer's timeouts: an hour, past the limit of each row that runs this scenario and the
+ * 20-minute job that runs those rows, so a row's own limit, which names the row, ends a read
+ * that never answers. nats.js's defaults, 20 s for the handshake and 5 s for each JetStream
+ * request, are inside those limits, and a loaded host could fail the row on the observer's own
+ * read.
+ */
+const OBSERVER_TIMEOUT_MS = 3_600_000;
 
 /**
  * Whether a connection natsd accepted at or after `since` (`Date.now()` time) subscribes `subject`.
@@ -105,18 +130,28 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
   };
   const run = crypto.randomUUID();
   // The scenario's own connection, straight to natsd, reads the listener's session entry.
-  const observer = await connect({ servers: [stack.natsUrl], name: `stall-observer-${run}` });
+  const observer = await connect({
+    servers: [stack.natsUrl],
+    name: `stall-observer-${run}`,
+    // A hang guard: what can hang is natsd's answer to the observer's handshake.
+    timeout: OBSERVER_TIMEOUT_MS,
+  });
   try {
-    const sessions = await observer.jetstream().views.kv("envoy_sessions", { bindOnly: true });
+    const sessions = await observer
+      // A hang guard: what can hang is natsd's answer to a JetStream request, the bind's account
+      // check below and each read of the session entry.
+      .jetstream({ timeout: OBSERVER_TIMEOUT_MS })
+      .views.kv("envoy_sessions", { bindOnly: true });
     let firstEpoch: string | undefined;
     await waitFor(
-      async () => {
-        const entry = await sessionEntry(sessions, sessionID);
-        if (entry === undefined) return false;
-        firstEpoch = entry.delivery === "consumer" ? entry.epoch : undefined;
-        if (firstEpoch === undefined) return false;
-        return await subscribedSince(stack.monitorUrl, sessionSubject, 0);
-      },
+      () =>
+        falseOnTimeout(async () => {
+          const entry = await sessionEntry(sessions, sessionID);
+          if (entry === undefined) return false;
+          firstEpoch = entry.delivery === "consumer" ? entry.epoch : undefined;
+          if (firstEpoch === undefined) return false;
+          return await subscribedSince(stack.monitorUrl, sessionSubject, 0);
+        }),
       undefined,
       "the session's registration answered consumer, with its relay subject subscribed"
     );
@@ -156,10 +191,11 @@ export async function runFreezeScenario(host: FreezeScenarioHost): Promise<void>
     // deadline: a session that never registers one ends at the row's limit, which names the row.
     let renewed: z.infer<typeof SessionEntrySchema> | undefined;
     await waitFor(
-      async () => {
-        renewed = await sessionEntry(sessions, sessionID);
-        return renewed?.delivery === "consumer" && renewed.epoch !== firstEpoch;
-      },
+      () =>
+        falseOnTimeout(async () => {
+          renewed = await sessionEntry(sessions, sessionID);
+          return renewed?.delivery === "consumer" && renewed.epoch !== firstEpoch;
+        }),
       undefined,
       "the session's registration of a new epoch"
     );

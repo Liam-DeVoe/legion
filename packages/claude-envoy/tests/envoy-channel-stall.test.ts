@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {
@@ -36,16 +36,27 @@ interface ChannelServer {
   readonly home: string
   /** The channel messages Claude Code would be shown, in the order the server sent them. */
   readonly channel: readonly string[]
-  /** Resolves once `condition` holds; throws when the server exits or `deadline`, where one is
-   *  given, passes first. */
+  /** Aborted once `stop` has run: by the row's own `finally`, or for a row its limit abandoned,
+   *  by the describe's `afterEach`. Its reason says the row ended. */
+  readonly ended: AbortSignal
+  /** Resolves once `condition` holds; throws when the server or a process of the stack has
+   *  exited, by an exit code or a signal, when the row has ended (`ended`), or when `deadline`,
+   *  where one is given, passes first. */
   waitFor(
     condition: () => boolean | Promise<boolean>,
     deadline: number | undefined,
     what: string,
   ): Promise<void>
-  /** Stops the server (SIGTERM, then SIGKILL after 10 s), closes the proxy, removes its home. */
+  /** Ends the host's row (`ended`) and releases what the host holds, the last taken first: the
+   *  fake mod; the server (SIGTERM, then SIGKILL after 10 s), whose release ends once it has
+   *  exited or been sent that SIGKILL, whichever comes first; the home; the proxy. A call made
+   *  while another runs waits for it, then releases whatever was taken since. */
   stop(): Promise<void>
 }
+
+/** The stop of each host started and not yet stopped. The describe's `afterEach` runs each one:
+ *  a row its limit abandoned never reaches its own `finally`, and its host must not outlive it. */
+const openHosts = new Set<() => Promise<void>>()
 
 /**
  * Starts the channel server from this checkout as Claude Code would, for a new session whose
@@ -56,102 +67,163 @@ async function startChannelServer(
   stack: EnvoyStack,
   sessionPrefix: string,
 ): Promise<ChannelServer> {
-  const proxy = await startStallProxy(stack.natsHostPort)
-  const home = await mkdtemp(join(SOCKET_ROOT, "claude-envoy-stall-"))
-  const configDirectory = join(home, "claude-config")
-  await mkdir(configDirectory)
-  await writeFile(
-    join(configDirectory, "envoy.json"),
-    JSON.stringify({ envoy: { enabled: true, url: stack.envoyUrl, natsUrls: [proxy.url] } }),
-  )
-  const sessionID = `${sessionPrefix}_${crypto.randomUUID().replaceAll("-", "")}`
-  const server = Bun.spawn(["bun", channelEntry], {
-    cwd: home,
-    env: {
-      PATH: process.env["PATH"] ?? "",
-      HOME: home,
-      CLAUDE_CONFIG_DIR: configDirectory,
-      CLAUDE_CODE_SESSION_ID: sessionID,
-      CLAUDE_PLUGIN_DATA: home,
-      // The base the server and the mod below both resolve the link's socket from.
-      XDG_RUNTIME_DIR: home,
-      // No heartbeat registration runs in the test's window: the reconnect's registration, on a
-      // new epoch, is the only one that restarts the relay.
-      ENVOY_HEARTBEAT_MS: "240000",
-    },
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const socketPath = modSocketPath(sessionID, { XDG_RUNTIME_DIR: home })
-  if (socketPath === undefined) throw new Error("the session names no mod socket")
-  // Read before the probe below, so a server that writes while it starts never blocks on a full
-  // pipe.
-  let stderr = ""
-  void (async () => {
-    for await (const chunk of server.stderr.pipeThrough(new TextDecoderStream())) stderr += chunk
-  })()
-  // Every delivery reaches the model as the mod's own write - the row of a turn running, or the
-  // prompt of a new turn while the session is idle, which this one is throughout (`show` in
-  // `../src/mod-session`) - so the mod is this test's view of what the session was shown.
-  const channel: string[] = []
-  const mod = await startFakeMod(socketPath, {
-    sessionId: sessionID,
-    exited: server.exited,
-    answers: {
-      "session.message": (args) => {
-        channel.push(shownText(args))
-        // The prompt an idle session took, which is what answers the frame: a prompt carries
-        // no row of its own (`../hooks/mod-protocol.ts`, `ModCallResults["session.message"]`).
-        return { as: "prompt" }
-      },
-    },
-  })
-  server.stdin.write(
-    `${JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {
-        protocolVersion: "2025-06-18",
-        capabilities: {},
-        clientInfo: { name: "test", version: "0" },
-      },
-    })}\n`,
-  )
-  server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
-  return {
-    server,
-    proxy,
-    sessionID,
-    home,
-    channel,
-    // The server runs on nats.js's real ping and dial timers and a real listener, so each wait
-    // polls the real clock until its condition holds. Only a wait whose time the row asserts has a
-    // deadline (`RECOVERY_BOUND_MS`). A wait given none ends at the row's limit, which names the
-    // row, or when the server exits.
-    async waitFor(condition, deadline, what) {
-      while (!(await condition())) {
-        if (server.exitCode !== null) {
-          throw new Error(
-            `the channel server exited ${server.exitCode} waiting for ${what}: ${stderr}`,
-          )
-        }
-        if (deadline !== undefined && Date.now() > deadline) {
-          throw new Error(`timed out waiting for ${what}: ${stderr}`)
-        }
-        await Bun.sleep(100)
+  // What the host holds, each with its release from the moment it exists. `stop` is in
+  // `openHosts` before the first of them, so a start that throws, or that its row's limit
+  // abandoned, leaves nothing behind once its row has ended.
+  const ended = new AbortController()
+  const releases: (() => Promise<void>)[] = []
+  let stopping = Promise.resolve()
+  const stop = (): Promise<void> => {
+    openHosts.delete(stop)
+    ended.abort(new Error("the row ended"))
+    stopping = stopping.then(async () => {
+      for (let release = releases.pop(); release !== undefined; release = releases.pop()) {
+        await release()
       }
-    },
-    async stop() {
-      await mod.stop()
+    })
+    return stopping
+  }
+  openHosts.add(stop)
+  try {
+    const proxy = await startStallProxy(stack.natsHostPort)
+    releases.push(() => proxy.close())
+    const home = await mkdtemp(join(SOCKET_ROOT, "claude-envoy-stall-"))
+    releases.push(() => rm(home, { recursive: true, force: true }))
+    const configDirectory = join(home, "claude-config")
+    await mkdir(configDirectory)
+    await writeFile(
+      join(configDirectory, "envoy.json"),
+      JSON.stringify({ envoy: { enabled: true, url: stack.envoyUrl, natsUrls: [proxy.url] } }),
+    )
+    const sessionID = `${sessionPrefix}_${crypto.randomUUID().replaceAll("-", "")}`
+    // A start its row's limit abandoned spawns no server into the row after it.
+    ended.signal.throwIfAborted()
+    const server = Bun.spawn(["bun", channelEntry], {
+      cwd: home,
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: home,
+        CLAUDE_CONFIG_DIR: configDirectory,
+        CLAUDE_CODE_SESSION_ID: sessionID,
+        CLAUDE_PLUGIN_DATA: home,
+        // The base the server and the mod below both resolve the link's socket from.
+        XDG_RUNTIME_DIR: home,
+        // An hour between heartbeats, past each row's limit here and the 20-minute job that runs
+        // the rows: after the start's registration no heartbeat registers within a row, so the
+        // reconnect's registration is the only one that can carry a new epoch. `envoySettings`
+        // takes any finite number above zero and holds it under 2 147 483 647 ms
+        // (`resolvedInterval`, `@legion/envoy-client/envoy-settings`), so the hour stands.
+        ENVOY_HEARTBEAT_MS: "3600000",
+      },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    releases.push(async () => {
       server.kill("SIGTERM")
-      const killer = setTimeout(() => server.kill("SIGKILL"), 10_000)
-      await server.exited
+      const killed = Promise.withResolvers<void>()
+      const killer = setTimeout(() => {
+        server.kill("SIGKILL")
+        killed.resolve()
+      }, 10_000)
+      // A process sent SIGKILL runs no more of its own code, so from then on nothing it does
+      // needs the proxy or writes into the home: their releases wait on no exit that may not come.
+      await Promise.race([server.exited, killed.promise])
       clearTimeout(killer)
-      await proxy.close()
-      await rm(home, { recursive: true, force: true })
-    },
+    })
+    const socketPath = modSocketPath(sessionID, { XDG_RUNTIME_DIR: home })
+    if (socketPath === undefined) throw new Error("the session names no mod socket")
+    // Read before the probe below, so a server that writes while it starts never blocks on a
+    // full pipe.
+    let stderr = ""
+    void (async () => {
+      for await (const chunk of server.stderr.pipeThrough(new TextDecoderStream())) {
+        stderr += chunk
+      }
+    })()
+    // Every delivery reaches the model as the mod's own write - the row of a turn running, or
+    // the prompt of a new turn while the session is idle, which this one is throughout (`show`
+    // in `../src/mod-session`) - so the mod is this test's view of what the session was shown.
+    const channel: string[] = []
+    const mod = await startFakeMod(socketPath, {
+      sessionId: sessionID,
+      exited: server.exited,
+      signal: ended.signal,
+      answers: {
+        "session.message": (args) => {
+          channel.push(shownText(args))
+          // The prompt an idle session took, which is what answers the frame: a prompt carries
+          // no row of its own (`../hooks/mod-protocol.ts`, `ModCallResults["session.message"]`).
+          return { as: "prompt" }
+        },
+      },
+    })
+    releases.push(() => mod.stop())
+    server.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "test", version: "0" },
+        },
+      })}\n`,
+    )
+    server.stdin.write(
+      `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`,
+    )
+    // What has ended of the server, natsd and the listener, with its exit code or signal, or
+    // undefined while all three run.
+    const exit = (): string | undefined =>
+      server.exitCode !== null || server.signalCode !== null
+        ? `the channel server exited (${server.exitCode ?? server.signalCode}): ${stderr}`
+        : stack.exited()
+    return {
+      server,
+      proxy,
+      sessionID,
+      home,
+      channel,
+      ended: ended.signal,
+      // The server runs on nats.js's real ping and dial timers and a real listener, so each wait
+      // polls the real clock until its condition holds. Only a wait whose time the row asserts
+      // has a deadline (`RECOVERY_BOUND_MS`). A wait given none ends at the row's limit, which
+      // names the row. Every wait throws on the poll after the server, natsd or the listener
+      // exits, naming that exit, and names it in place of the error a read meets once one has.
+      // Once its row has ended it throws before each poll and in place of its answer, so a wait
+      // of a row its limit abandoned does not poll on into the row after it.
+      async waitFor(condition, deadline, what) {
+        const stillOpen = () => {
+          if (ended.signal.aborted) throw new Error(`stopped waiting for ${what}: the row ended`)
+        }
+        for (;;) {
+          stillOpen()
+          let met: boolean
+          try {
+            met = await condition()
+          } catch (error) {
+            stillOpen()
+            const exited = exit()
+            if (exited === undefined) throw error
+            throw new Error(`waiting for ${what}: ${exited}`, { cause: error })
+          }
+          stillOpen()
+          if (met) return
+          const exited = exit()
+          if (exited !== undefined) throw new Error(`waiting for ${what}: ${exited}`)
+          if (deadline !== undefined && Date.now() > deadline) {
+            throw new Error(`timed out waiting for ${what}: ${stderr}`)
+          }
+          await Bun.sleep(100)
+        }
+      },
+      stop,
+    }
+  } catch (error) {
+    await stop()
+    throw error
   }
 }
 
@@ -165,25 +237,52 @@ const stackDirectory = useEnvoyStackDirectory()
 describe.skipIf(!envoyStackEnabled)(
   "the channel server against a real natsd and Envoy listener",
   () => {
+    // The room one hang has in this file's step of the `envoy-session-stall` job
+    // (`.github/workflows/ci-job-envoy-session-stall.yaml`) is 847 s: the job's
+    // `timeout-minutes: 20`, less the 351 s from the job's start to this step's in the slowest of
+    // its ten runs on this branch from d7aa4f9b to 919ee888 (run 45070043835, at a61f3fc7), and
+    // less the 2 s at most that the steps run after a failed step took in those runs (the ci-ok
+    // report, which runs `if: always()`, and the post steps). The steps after this one are not
+    // counted: a step that fails skips them. Each limit below is sized for one hang, that hook
+    // or row at its limit and every other at its worst, and keeps 30 s for the `afterAll`'s stop
+    // (worst 4.7 s) and the teardown (a host's stop: up to 10 s before its server's SIGKILL, then
+    // the home's removal and the proxy's close).
     let stack: EnvoyStack | undefined
+    // The start, kept with its stop: a `beforeAll` its limit cut off leaves the start running and
+    // `stack` unset, and the `afterAll` aborts the start, which stops what it started.
+    const stopStart = new AbortController()
+    let starting: Promise<EnvoyStack> | undefined
     beforeAll(async () => {
-      stack = await startEnvoyStack({ work: stackDirectory })
+      starting = startEnvoyStack({ work: stackDirectory, signal: stopStart.signal })
+      stack = await starting
       // A hang guard: what can hang is the stack's start, which builds natsd and the listener with
       // `go build` and waits for each to serve. It is the start pi-envoy's live describe makes
       // (`startEnvoyStack`). Worst measured cost of that start: 249 197.32 ms over 20 runs at the
       // 96 rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace, two
       // CPUs and 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the
-      // calibration's 31.2 s), 2026-11-22T08:32Z to 09:41Z. Six times the worst is 1 495 s. That
-      // is past the 700 s one hang leaves this step of the `envoy-session-stall` job
-      // (`.github/workflows/ci-job-envoy-session-stall.yaml`): its `timeout-minutes: 20` less its
-      // other steps' 500 s at d7aa4f9b, run 44984499551, where this step took 72 s of the 572 s.
-      // So that ceiling decides 600_000, which is 2.4 times the worst.
-    }, 600_000)
+      // calibration's 31.2 s), 2026-11-22T08:32Z to 09:41Z. Six times the worst is 1 495 s, past
+      // the room above, so the room decides: 847 s less the 30 s kept is 817 s, and 810_000 is
+      // 3.3 times the worst.
+    }, 810_000)
     afterAll(async () => {
-      await stack?.stop()
-      // A hang guard: what can hang is the stop of natsd or the listener. Worst measured cost:
-      // 4 703.96 ms over the same 20 runs, so 60_000 is 12.8 times the worst.
+      // A start still running ends the build or the wait it is in, stops what it started and
+      // rejects; a start that resolved is stopped here.
+      stopStart.abort()
+      const started = await starting?.catch(() => undefined)
+      await started?.stop()
+      // A hang guard: what can hang is the stop of natsd or the listener, which a start cut off
+      // makes too. Worst measured cost of the stop: 4 703.96 ms over the same 20 runs, so 60_000
+      // is 12.8 times the worst.
     }, 60_000)
+    afterEach(async () => {
+      // A row its limit abandoned never reaches its own `finally`: its host is stopped here, so
+      // its waits throw and its server, home and proxy go with the row. A row that reached its
+      // `finally` left no host open.
+      for (const stop of openHosts) await stop()
+      // A hang guard: what can hang is a host's stop, whose server is sent SIGKILL 10 s after its
+      // SIGTERM. No run has measured it, so 30_000 is three times those 10 s.
+      // MEASUREMENT-PROVISIONAL
+    }, 30_000)
 
     test("a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start")
@@ -227,16 +326,16 @@ describe.skipIf(!envoyStackEnabled)(
       // infra-1580-krows-kc-4bm4r of the cluster's `builds` namespace, two CPUs and 8 GiB (199
       // busy loops, at which row A's runs took 39.1 s against the calibration's 31.2 s),
       // 2026-11-22T18:21Z to 20:50Z; 116 398.78 ms in the Job infra-1580-krows-kc-g4zvc (120
-      // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z. Six times the worst is past
-      // the 700 s this step of the `envoy-session-stall` job leaves one hang, less the stack's
-      // slowest start (249 s, the `beforeAll` above) and the other row's worst (177 s), so
-      // that ceiling decides 270_000, 2.2 times the worst.
-    }, 270_000)
+      // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z. Six times the worst is 725 s,
+      // past the room above, so the room decides: 847 s less the stack's slowest start (249 s,
+      // the `beforeAll` above), the other row's worst (177 s) and the 30 s kept is 390.5 s, and
+      // 390_000 is 3.2 times the worst.
+    }, 390_000)
 
     test("a session whose redial once hung still exits on SIGTERM", async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start")
       const { envoyUrl } = stack
-      const { server, proxy, sessionID, waitFor, stop } = await startChannelServer(
+      const { server, proxy, sessionID, ended, waitFor, stop } = await startChannelServer(
         stack,
         "ses_stall_exit",
       )
@@ -264,9 +363,12 @@ describe.skipIf(!envoyStackEnabled)(
         // No timer bounds the exit. A server that never exits holds the row to its limit, which
         // fails the row by name. Bun's runner then sends SIGTERM to every process the file's rows
         // started that still runs. This server handles SIGTERM once (`process.once` in
-        // `../src/envoy-channel-server.ts`), so that second signal ends it, and the `finally`
-        // stops the rest.
+        // `../src/envoy-channel-server.ts`), so that second signal ends it, and the describe's
+        // `afterEach` stops the host whatever the server does.
         await server.exited
+        // Once the row has ended the body stops here, rather than assert on an exit it did not
+        // cause.
+        ended.throwIfAborted()
         const exitSeconds = ((Date.now() - signalledAt) / 1000).toFixed(1)
         console.log(`claude-envoy stall exit: SIGTERM -> exited after ${exitSeconds} s`)
         // It exited of itself, through its SIGTERM handler. A process a signal ended has that
@@ -281,10 +383,10 @@ describe.skipIf(!envoyStackEnabled)(
       // infra-1580-krows-kc-4bm4r of the cluster's `builds` namespace, two CPUs and 8 GiB (199
       // busy loops, at which row A's runs took 39.1 s against the calibration's 31.2 s),
       // 2026-11-22T18:21Z to 20:50Z; 118 302.75 ms in the Job infra-1580-krows-kc-g4zvc (120
-      // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z. Six times the worst is past
-      // the 700 s this step of the `envoy-session-stall` job leaves one hang, less the stack's
-      // slowest start (249 s, the `beforeAll` above) and the other row's worst (121 s), so
-      // that ceiling decides 330_000, 1.9 times the worst.
-    }, 330_000)
+      // busy loops, row A at 34.2 s), 2026-11-22T15:21Z to 17:53Z. Six times the worst is
+      // 1 064 s, past the room above, so the room decides: 847 s less the stack's slowest start
+      // (249 s, the `beforeAll` above), the other row's worst (121 s) and the 30 s kept is
+      // 446.9 s, and 440_000 is 2.5 times the worst.
+    }, 440_000)
   },
 )

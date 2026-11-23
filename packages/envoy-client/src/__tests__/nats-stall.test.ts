@@ -18,12 +18,21 @@ const stackDirectory = useEnvoyStackDirectory();
 
 describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () => {
   let stack: EnvoyStack | undefined;
+  // The start, kept with its stop: a `beforeAll` its limit cut off leaves the start running and
+  // `stack` unset, and the `afterAll` aborts the start, which stops what it started.
+  const stopStart = new AbortController();
+  let starting: Promise<EnvoyStack> | undefined;
 
   beforeAll(async () => {
-    stack = await startEnvoyStack({ work: stackDirectory });
+    starting = startEnvoyStack({ work: stackDirectory, signal: stopStart.signal });
+    stack = await starting;
   }, 120_000);
   afterAll(async () => {
-    await stack?.stop();
+    // A start still running ends the build or the wait it is in, stops what it started and
+    // rejects; a start that resolved is stopped here.
+    stopStart.abort();
+    const started = await starting?.catch(() => undefined);
+    await started?.stop();
   }, 60_000);
 
   for (const { row, slug, stalledRedials, unackedBytes } of [
@@ -99,12 +108,15 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         // What is measured is nats.js's own wall-clock ping and dial timers, so the wait is real
         // time. A publish reaches the client only once it has subscribed again on a path that
         // answers, and each one before that goes to the frozen connection and is lost, so one
-        // goes out every quarter second until one arrives or the bound passes.
+        // goes out every quarter second until one arrives or the bound passes. A natsd or listener
+        // that exits meanwhile fails the wait by name (`EnvoyStack.exited`).
         for (
           let attempt = 0;
           arrivedAt === undefined && Date.now() - frozenAt < RECOVERY_BOUND_MS;
           attempt += 1
         ) {
+          const exited = stack.exited();
+          if (exited !== undefined) throw new Error(`waiting for a publish to arrive: ${exited}`);
           publisher.publish(subject, codec.encode(`after-${attempt}`));
           await publisher.flush();
           await Bun.sleep(250);
@@ -129,9 +141,13 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         // nats.js abandons a dial after its dial timeout; the socket it opened must go with it, so
         // the client holds no socket to a redial it gave up on. The proxy never closes a stalled
         // connection, so its close is the client's. Real nats.js dial timers: the wait polls the
-        // real clock.
+        // real clock, and fails by name once natsd or the listener has exited.
         for (const hung of redials.slice(0, stalledRedials)) {
           while (hung.closedAt === undefined && Date.now() - hung.acceptedAt < 30_000) {
+            const exited = stack.exited();
+            if (exited !== undefined) {
+              throw new Error(`waiting for the client to close a hung redial: ${exited}`);
+            }
             await Bun.sleep(250);
           }
           console.log(

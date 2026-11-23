@@ -44,10 +44,10 @@ function startServer(
 
 /** The fake mod of `run`'s session, and the notices this server wrote into it under `heading`: a
  *  notice is the one card that names no Envoy event. */
-async function sessionMod(run: { readonly stateDirectory: string }) {
+async function sessionMod(run: Pick<ReopenServer, "stateDirectory" | "server">) {
   const socketPath = modSocketPath(SESSION, { XDG_RUNTIME_DIR: run.stateDirectory })
   if (socketPath === undefined) throw new Error("the session names no mod socket")
-  const mod = await startFakeMod(socketPath, { sessionId: SESSION })
+  const mod = await startFakeMod(socketPath, { sessionId: SESSION, exited: run.server.exited })
   const notices = (heading: string) =>
     mod
       .madeOf("session.message")

@@ -26015,23 +26015,40 @@ describe("consumer delivery", () => {
 const stackDirectory = useEnvoyStackDirectory();
 
 describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", () => {
+  // The room one hang has in this file's step of the `envoy-session-stall` job
+  // (`.github/workflows/ci-job-envoy-session-stall.yaml`) is 879 s: the job's
+  // `timeout-minutes: 20`, less the 319 s from the job's start to this step's in the slowest of
+  // its ten runs on this branch from d7aa4f9b to 919ee888 (run 45070043835, at a61f3fc7), and
+  // less the 2 s at most that the steps run after a failed step took in those runs (the ci-ok
+  // report, which runs `if: always()`, and the post steps). The steps after this one, the
+  // claude-envoy step among them, are not counted: a step that fails skips them. Each limit
+  // below is sized for one hang, that hook or row at its limit and every other at its worst, and
+  // keeps 30 s for the `afterAll`'s stop (worst 4.7 s) and the teardown.
   let stack: EnvoyStack | undefined;
+  // The start, kept with its stop: a `beforeAll` its limit cut off leaves the start running and
+  // `stack` unset, and the `afterAll` aborts the start, which stops what it started.
+  const stopStart = new AbortController();
+  let starting: Promise<EnvoyStack> | undefined;
   beforeAll(async () => {
-    stack = await startEnvoyStack({ work: stackDirectory });
+    starting = startEnvoyStack({ work: stackDirectory, signal: stopStart.signal });
+    stack = await starting;
     // A hang guard: what can hang is the stack's start, which builds natsd and the listener with
     // `go build` and waits for each to serve. Worst measured cost: 249 197.32 ms over 20 runs at
     // the 96 rung in the Job infra-1580-krows-kfh-tgvmp of the cluster's `builds` namespace, two
     // CPUs and 8 GiB (218 busy loops, at which row A's runs took 33.5 s against the calibration's
     // 31.2 s), 2026-11-22T08:32Z to 09:41Z, where the base's 120_000 failed 10 starts in 20 in the
-    // Job infra-1580-krows-kf-6s8tw. Six times the worst is 1 495 s, past the 659 s one hang
-    // leaves the `envoy-session-stall` job (its `timeout-minutes: 20` less its other steps' 541 s
-    // at d7aa4f9b, run 44984499551, `.github/workflows/ci-job-envoy-session-stall.yaml`), so that
-    // ceiling decides 600_000, which is 2.4 times the worst.
-  }, 600_000);
+    // Job infra-1580-krows-kf-6s8tw. Six times the worst is 1 495 s, past the room above, so the
+    // room decides: 879 s less the 30 s kept is 849 s, and 840_000 is 3.4 times the worst.
+  }, 840_000);
   afterAll(async () => {
-    await stack?.stop();
-    // A hang guard: what can hang is the stop of natsd or the listener. Worst measured cost:
-    // 4 703.96 ms over the same 20 runs, so 60_000 is 12.8 times the worst.
+    // A start still running ends the build or the wait it is in, stops what it started and
+    // rejects; a start that resolved is stopped here.
+    stopStart.abort();
+    const started = await starting?.catch(() => undefined);
+    await started?.stop();
+    // A hang guard: what can hang is the stop of natsd or the listener, which a start cut off
+    // makes too. Worst measured cost of the stop: 4 703.96 ms over the same 20 runs, so 60_000
+    // is 12.8 times the worst.
   }, 60_000);
 
   // The session runs on nats.js's real ping and dial timers and a real listener, so each wait
@@ -26041,8 +26058,10 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
   // such as the registration's below and the scenario's others, ends at the row's limit, its hang
   // guard, which names the row; and every wait throws once its row has ended (`stillOn`), before
   // each poll and in place of its answer, as `until` does, rather than poll the live listener on
-  // into the rows after it or return into them. These rows run only under
-  // `LEGION_E2E_ENVOY_STACK=1`, which CI's `envoy-session-stall` job sets.
+  // into the rows after it or return into them. It throws too on the poll after natsd or the
+  // listener exits (`EnvoyStack.exited`), naming that exit, and names it in place of the error a
+  // read meets once one has. These rows run only under `LEGION_E2E_ENVOY_STACK=1`, which CI's
+  // `envoy-session-stall` job sets.
   async function waitFor(
     condition: () => boolean | Promise<boolean>,
     deadline: number | undefined,
@@ -26051,9 +26070,19 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     const ownRow = rowCheck();
     for (;;) {
       stillOn(ownRow, `waiting for ${what}`);
-      const met = await condition();
+      let met: boolean;
+      try {
+        met = await condition();
+      } catch (error) {
+        stillOn(ownRow, `waiting for ${what}`);
+        const exited = stack?.exited();
+        if (exited === undefined) throw error;
+        throw new Error(`waiting for ${what}: ${exited}`, { cause: error });
+      }
       stillOn(ownRow, `waiting for ${what}`);
       if (met) return;
+      const exited = stack?.exited();
+      if (exited !== undefined) throw new Error(`waiting for ${what}: ${exited}`);
       if (deadline !== undefined && Date.now() > deadline) {
         throw new Error(`timed out waiting for ${what}`);
       }
@@ -26064,11 +26093,30 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
   test("a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
     if (stack === undefined) throw new Error("the Envoy stack did not start");
     const { envoyUrl } = stack;
-    const proxy = await startStallProxy(stack.natsHostPort);
+    // The proxy closes after the session's shutdown, whatever that settles to, and the shutdown
+    // ends by its own 1 s deadline (`SHUTDOWN_DEADLINE_MS` in `envoy.ts`). The shutdown drains the
+    // session's NATS connection through the proxy, and a proxy closed under that drain would leave
+    // nats.js dialing it again 2 s apart for good (`maxReconnectAttempts: -1`,
+    // `natsConnectionOptions`). `rowShutdown` registers the close in `rowStops` before the first
+    // await, so the file's `afterEach` closes the proxy of a row its limit cut off, and of one
+    // whose proxy started only after the row ended.
+    let stopSession: (() => Promise<unknown>) | undefined;
+    const proxyStarted = startStallProxy(stack.natsHostPort);
+    const closeProxy = rowShutdown(async () => {
+      await stopSession?.().catch(() => undefined);
+      await proxyStarted.then(
+        (started) => started.close(),
+        () => undefined
+      );
+    });
+    const proxy = await proxyStarted;
     stillOn(rowCheck(), "setting the stall's environment");
-    // No heartbeat registration runs in the test's window: the reconnect's registration, on
-    // a new epoch, is the only one that restarts the relay.
-    process.env.ENVOY_HEARTBEAT_MS = "240000";
+    // An hour between heartbeats, past this row's limit and the 20-minute job that runs it: after
+    // the start's registration no heartbeat registers within the row, so the reconnect's
+    // registration is the only one that can carry a new epoch. `envoySettings` takes any finite
+    // number above zero and holds it under 2 147 483 647 ms (`resolvedInterval`,
+    // `@legion/envoy-client/envoy-settings`), so the hour stands.
+    process.env.ENVOY_HEARTBEAT_MS = "3600000";
     process.env.ENVOY_URL = envoyUrl;
     process.env.ENVOY_NATS_URL = proxy.url;
     globalThis.fetch = originalFetch;
@@ -26080,6 +26128,7 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     envoyExtension(fixture.pi);
     const context = sessionContext(sessionID);
     const stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
+    stopSession = stop;
     try {
       await fixture.handlers.get("session_start")?.({}, context);
       await waitFor(
@@ -26113,8 +26162,9 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
         waitFor,
       });
     } finally {
-      await stop();
-      await proxy.close();
+      // The shutdown, then the proxy's close, which waits for it: a shutdown that fails fails the
+      // row and still closes the proxy.
+      await Promise.all([stop(), closeProxy()]);
     }
     // A hang guard, not a bound on work: what can hang is a wait for the registration or a
     // message that never comes. The row's cost is the freeze's own recovery, about 30 s of
@@ -26127,7 +26177,8 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
     // infra-1580-krows-kf2-9tp5g (152 busy loops, row A at 37.7 s), 2026-11-22T11:58Z to 13:44Z,
     // and 53 995.87 ms in the Job infra-1580-krows-kfh-tgvmp (218 busy loops, row A at 33.5 s),
     // 2026-11-22T08:32Z to 09:41Z. 390_000 is 6.2 times the worst, and with the stack's slowest
-    // start, 249 s, it stays inside the 659 s that job leaves.
+    // start (249 s, the `beforeAll` above) and the 30 s kept it stays inside the room above,
+    // 879 s.
   }, 390_000);
 });
 

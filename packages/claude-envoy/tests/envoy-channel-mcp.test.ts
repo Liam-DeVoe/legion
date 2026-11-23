@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -28,6 +28,18 @@ function sessionHome(prefix: string): Promise<string> {
   return mkdtemp(join(SOCKET_ROOT, prefix))
 }
 
+/**
+ * Aborted by the file's `afterEach` once the row running now has ended, at its limit included,
+ * and then replaced for the next row. A row hands the signal it began with to its fake mod
+ * (`startFakeMod`'s `signal`): the server here is the MCP SDK's child process, which the row does
+ * not hold, so the mod's probe cannot stop on that server's exit and stops on the row's end.
+ */
+let rowEnd = new AbortController()
+afterEach(() => {
+  rowEnd.abort()
+  rowEnd = new AbortController()
+})
+
 // The rows below start each session in a home of its own and reach it at its mod socket; a home
 // under a deep TMPDIR named no socket, and two of them failed (the review of #4140's forward merge).
 test("a session home's mod socket fits however deep TMPDIR is", async () => {
@@ -53,6 +65,7 @@ test("a session home's mod socket fits however deep TMPDIR is", async () => {
 // PATH. A terminal session reaches the model only through its mod (INFRA-1026), so it advertises
 // no delivery mode until the mod connects, and Aside, BTW and Send once one has.
 test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, points at the dispatch command, and advertises nothing until its mod connects", async () => {
+  const ended = rowEnd.signal
   const broker = new FakeNatsServer()
   const dispatchRequests: string[] = []
   const dispatch = Bun.serve({
@@ -134,7 +147,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
 
     const socketPath = modSocketPath("ses_mcp", { XDG_RUNTIME_DIR: stateDirectory })
     if (socketPath === undefined) throw new Error("the session names no mod socket")
-    const mod = await startFakeMod(socketPath, { sessionId: "ses_mcp" })
+    const mod = await startFakeMod(socketPath, { sessionId: "ses_mcp", signal: ended })
     try {
       // The mod's hello makes the session register again, with what it can take now.
       await waitFor(
@@ -168,6 +181,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
 // then advertised nothing until the next heartbeat, up to 90 s later, and Dispatch showed it as
 // taking no messages (INFRA-1026 review). A poll says a mod is there just as well.
 test("the session advertises its delivery modes for a mod that polls and never says hello", async () => {
+  const ended = rowEnd.signal
   const broker = new FakeNatsServer()
   const advertised: unknown[] = []
   const listener = Bun.serve({
@@ -236,7 +250,11 @@ test("the session advertises its delivery modes for a mod that polls and never s
         ),
       "the server to bind its mod socket",
     )
-    const mod = await startFakeMod(socketPath, { sessionId: "ses_quiet", hello: false })
+    const mod = await startFakeMod(socketPath, {
+      sessionId: "ses_quiet",
+      hello: false,
+      signal: ended,
+    })
     try {
       await waitFor(
         async () => (advertised.at(-1) as string[] | undefined)?.length === 3,

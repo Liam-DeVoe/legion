@@ -24,6 +24,12 @@ export interface EnvoyStack {
   readonly natsHostPort: string;
   /** natsd's monitoring base URL, `http://127.0.0.1:<port>` (`/connz`, `/jsz`). */
   readonly monitorUrl: string;
+  /**
+   * Names the first of natsd and the listener found ended, with its exit code or signal and the
+   * last lines of its log, or undefined while both run. A live row's wait checks it on each poll,
+   * so a process that exits mid-row fails the wait by name rather than at the row's limit.
+   */
+  exited(): string | undefined;
   /** Stops the listener and natsd. Their scratch directory is the caller's, and goes with it. */
   stop(): Promise<void>;
 }
@@ -80,6 +86,12 @@ export interface EnvoyStackOptions {
   readonly listenerEnv?: Readonly<Record<string, string>>;
   /** Called with each port the stack chooses, before the server it is for starts. */
   readonly portChosen?: PortChosen;
+  /**
+   * Aborted to stop a start still in progress: the start ends the build or the wait it is in,
+   * stops each process it started, and rejects. A live describe's `afterAll` aborts it, so a
+   * `beforeAll` its limit cut off leaves no natsd or listener running.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /** The Go module both rigs build their binaries from. */
@@ -98,6 +110,8 @@ export interface GoBuild {
   readonly stack: string;
   /** What that same error says the rig would have built ("natsd and the listener"). */
   readonly binaries: string;
+  /** Aborted to stop the build: `go` is sent SIGTERM, and the build throws. */
+  readonly signal?: AbortSignal;
 }
 
 /** Builds `build.packages` from this checkout into `build.bin`, a binary each. */
@@ -111,8 +125,13 @@ export async function buildGoBinaries(build: GoBuild): Promise<void> {
     cwd: ENVOY_MODULE,
     stdout: "pipe",
     stderr: "pipe",
+    // Left out when unset: claude-envoy compiles this file with exactOptionalPropertyTypes.
+    ...(build.signal === undefined ? {} : { signal: build.signal }),
   });
   const [stderr, code] = await Promise.all([new Response(spawned.stderr).text(), spawned.exited]);
+  if (build.signal?.aborted === true) {
+    throw new Error(`go build ${build.packages.join(" ")} was stopped: its start was stopped`);
+  }
   if (code !== 0) {
     throw new Error(
       `go build ${build.packages.join(" ")} in ${ENVOY_MODULE} exited ${code}: ${stderr}`
@@ -199,6 +218,13 @@ export function tail(file: string, lines: number): string {
   }
 }
 
+/** That `what` exited, with its exit code or the signal that ended it and the last `lines` lines
+ *  of `log`; undefined while `child` runs. */
+function exitOf(what: string, child: Subprocess, log: string, lines: number): string | undefined {
+  if (child.exitCode === null && child.signalCode === null) return undefined;
+  return `${what} exited (${child.exitCode ?? child.signalCode}): ${tail(log, lines)}`;
+}
+
 /**
  * How long a rig gives a process to come up, and how much of its log an error quotes. With no
  * `timeoutMs` the wait has no deadline of its own: it ends when the process serves or exits, and
@@ -207,6 +233,8 @@ export function tail(file: string, lines: number): string {
 export interface ReadyBudget {
   readonly timeoutMs?: number;
   readonly tailLines: number;
+  /** Aborted to stop the wait, as a stopped start does (`EnvoyStackOptions.signal`). */
+  readonly signal?: AbortSignal;
 }
 
 // natsd, the listener and natsd's ENVOY_NOTIFICATIONS stream are given no deadline: the time from
@@ -225,7 +253,8 @@ const ENVOY_READY: ReadyBudget = { tailLines: TAIL_LINES };
  * name rather than holding it. A budget of 0 or less, a caller's deadline spent before the wait
  * began, ends the wait at once: one check, or two about 100 ms apart when the first answers false
  * before the spent signal fires. A budget with no `timeoutMs` hands `ready` a signal that never
- * aborts, so the wait ends only when the process serves or exits.
+ * aborts, so the wait ends only when the process serves or exits. A budget's `signal`, once
+ * aborted, aborts the check pending then and ends the wait at its next poll, by name.
  */
 export async function awaitReady(
   what: string,
@@ -237,15 +266,16 @@ export async function awaitReady(
   const timeoutMs = budget.timeoutMs === undefined ? undefined : Math.max(0, budget.timeoutMs);
   const spent =
     timeoutMs === undefined ? new AbortController().signal : AbortSignal.timeout(timeoutMs);
+  const checks = budget.signal === undefined ? spent : AbortSignal.any([spent, budget.signal]);
   const passed = Promise.withResolvers<false>();
-  spent.addEventListener("abort", () => passed.resolve(false), { once: true });
+  checks.addEventListener("abort", () => passed.resolve(false), { once: true });
   for (;;) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new Error(
-        `${what} exited (${child.exitCode ?? child.signalCode}): ${tail(log, budget.tailLines)}`
-      );
+    const ended = exitOf(what, child, log, budget.tailLines);
+    if (ended !== undefined) throw new Error(ended);
+    if (budget.signal?.aborted === true) {
+      throw new Error(`${what} was not ready: its wait was stopped`);
     }
-    if (await Promise.race([ready(spent).catch(() => false), passed.promise])) return;
+    if (await Promise.race([ready(checks).catch(() => false), passed.promise])) return;
     if (spent.aborted) {
       const why =
         (timeoutMs ?? 0) > 0
@@ -305,6 +335,9 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
  * {@link useEnvoyStackDirectory}: `stop` leaves it, and the fixture removes it when the file
  * that reserved it is done, whether or not the stack ever reached `stop`.
  *
+ * `options.signal`, aborted while the start runs, stops it: the build or the wait it is in ends,
+ * each process it started is stopped, and it rejects. An abort after it resolved changes nothing.
+ *
  * No port is free between its choice and its server's bind. natsd takes no socket, so it binds
  * ports the kernel chooses (`-p -1 -m -1`, nats-server's RANDOM_PORT) and the stack reads them
  * from natsd's own log; the listener serves on a socket the stack holds ({@link startOnHeldPort}).
@@ -316,6 +349,9 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
   const stop = async () => {
     for (const child of processes.reverse()) await stopProcess(child, "SIGTERM");
   };
+  // Left out when unset: claude-envoy compiles this file with exactOptionalPropertyTypes.
+  const stopping = options.signal === undefined ? {} : { signal: options.signal };
+  const readyBudget: ReadyBudget = { ...ENVOY_READY, ...stopping };
   try {
     const bin = path.join(work, "bin");
     await buildGoBinaries({
@@ -323,6 +359,7 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       packages: ["./internal/testnats/cmd/natsd", "./cmd/listener"],
       stack: "Envoy",
       binaries: "natsd and the listener",
+      ...stopping,
     });
     const natsHome = path.join(work, "nats-home");
     const listenerHome = path.join(work, "listener-home");
@@ -339,7 +376,7 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       log: natsLog,
     });
     processes.push(natsd);
-    await awaitReady("natsd", natsd, natsLog, ENVOY_READY, async (signal) => {
+    await awaitReady("natsd", natsd, natsLog, readyBudget, async (signal) => {
       const reported = natsdAddresses(natsLog);
       if (reported === undefined) return false;
       return (
@@ -380,7 +417,7 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       "the listener",
       listener,
       listenerLog,
-      ENVOY_READY,
+      readyBudget,
       async (signal) =>
         (await getJson(`${envoyUrl}/healthz`, StatusSchema, signal))?.status === "healthy"
     );
@@ -388,7 +425,7 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       "natsd's ENVOY_NOTIFICATIONS stream",
       natsd,
       natsLog,
-      ENVOY_READY,
+      readyBudget,
       async (signal) => {
         const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema, signal);
         return (jsz?.account_details ?? []).some((account) =>
@@ -396,7 +433,12 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
         );
       }
     );
-    return { envoyUrl, natsUrl, natsHostPort, monitorUrl: monitor, stop };
+    const exited = () =>
+      exitOf("natsd", natsd, natsLog, TAIL_LINES) ??
+      exitOf("the listener", listener, listenerLog, TAIL_LINES);
+    // A stop that came as the last wait answered: what started is stopped all the same.
+    if (options.signal?.aborted === true) throw new Error("the Envoy stack's start was stopped");
+    return { envoyUrl, natsUrl, natsHostPort, monitorUrl: monitor, exited, stop };
   } catch (error) {
     await stop();
     throw error;

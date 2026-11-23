@@ -45,7 +45,7 @@ async function startWithEarlyClear(broker?: SessionBroker) {
   try {
     const socketPath = modSocketPath(BEFORE, { XDG_RUNTIME_DIR: run.stateDirectory })
     if (socketPath === undefined) throw new Error("the session names no mod socket")
-    const mod = await startFakeMod(socketPath, { sessionId: BEFORE })
+    const mod = await startFakeMod(socketPath, { sessionId: BEFORE, exited: run.server.exited })
     // The link has the `/clear` before the session starts, so before the live view listens.
     await mod.send({ kind: "session-id", sessionId: AFTER })
     held.resolve()
