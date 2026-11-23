@@ -428,7 +428,7 @@ func TestABuildOneVersionBackRefusesOwner(t *testing.T) {
 	attribute := Element{Kind: AttributeElement, Block: "plan_task", Name: "owner"}
 	versions, declared := attribute.Versions()
 	if !declared || versions.Since != adds || versions.CreatableSince != adds {
-		t.Fatalf("attribute owner of plan_task = %+v, %t; want since and creatable_since %d", versions, declared, adds)
+		t.Errorf("attribute owner of plan_task = %+v, %t; want since and creatable_since %d", versions, declared, adds)
 	}
 	if SchemaVersion() < adds {
 		t.Fatalf("SchemaVersion() = %d, below the version %d that adds owner", SchemaVersion(), adds)

@@ -132,8 +132,8 @@
         },
         "owner": {
           "kind": "string",
-          "since": 12,
-          "creatable_since": 12
+          "since": 11,
+          "creatable_since": 11
         }
       },
       "since": 3,
