@@ -4,10 +4,10 @@
 // fills, the editor standing before its socket has synced, and the decision cards drawn a task
 // each. What the numbers of `large-documents-measured.e2e.ts` are read over is this build, and
 // these rows read what it does rather than how long it takes, and no row here is timed. The
-// three about the build itself read the page while the build runs: one throttles the renderer,
-// so its build lasts long enough for the page to draw frames while it runs, and two hold or pace
-// theirs between its batches through `holdTheBuild` (`large-documents-build-hold.ts`), which
-// gives them that state whatever the machine's speed.
+// three about the build itself read the page while the build runs, and none throttles its
+// renderer to make that build last: each holds or paces it between its batches through
+// `holdTheBuild` (`large-documents-build-hold.ts`), which gives it that state whatever the
+// machine's speed.
 //
 // Which document a row seeds is in its title. Every row here seeds the AHXV6-1-shaped document
 // of `large-documents.ts`, the plain document beside it or the one short section
@@ -33,7 +33,6 @@ import {
   smallDocument,
 } from "./large-documents";
 import { holdTheBuild } from "./large-documents-build-hold";
-import { throttleTheCpu } from "./large-documents-page";
 import {
   aDrawWithinMs,
   type BlockFrame,
@@ -62,20 +61,21 @@ import { asUser } from "./users";
 // and what that draw costs), and every other wait by one of the figures below, each sized from
 // what that wait costs.
 //
-// What the waits cost, on this pod, one worker on two CPUs at 4x CPU throttling where a row
-// throttles (dispatch://INFRA-341), the slower of `chromium` and `iphone`, each counted from the
+// What the waits cost, on this pod, one worker on two CPUs at 4x CPU throttling where a row then
+// throttled (dispatch://INFRA-341), the slower of `chromium` and `iphone`, each counted from the
 // navigation or from the release: the landmark half-way down the smaller document 8.7 s; the
 // whole plain document drawn 7.9 s; the editor open 3.6 s after the release over the reader's
 // place and 20.5 s over the framed build; and, with no socket held, the editor open 9.2 s from
 // the navigation and its five cards 0.7 s after it. Four workers wide on CI the rows cost no
 // more than they do here: 2.6 to 29.7 s each, against 1.8 to 34.5 s.
 //
-// The edit row and the per-frame count's row throttled the renderer too when those figures
-// were read, and theirs were the editor open 18.8 s under the other person's words and 18.7 s
-// under the per-frame count, and his words in the open editor 8.7 s after it opened. Neither
-// throttles now. The edit row holds its build while his words go in, and the per-frame count's
-// row has the page draw a frame between every two batches (`holdTheBuild`), so those are
-// readings of builds four times the cost of theirs, and no run has timed either row since.
+// The three build rows throttled the renderer when those figures were read: the framed build's
+// 20.5 s is the first's, and the edit row's and the per-frame count's were the editor open
+// 18.8 s under the other person's words and 18.7 s under the per-frame count, and his words in
+// the open editor 8.7 s after it opened. None throttles now. The first row and the per-frame
+// count's row have the page draw a frame between every two batches, and the edit row holds its
+// build while his words go in (`holdTheBuild`), so those are readings of builds four times the
+// cost of theirs, and no run has timed any of the three since.
 //
 // The bounds: `theLandmarkWithinMs` and `theWholeDrawWithinMs` 30 s, `theBuildWithinMs` 45 s,
 // `theOpenedEditorWithinMs` 30 s, `theCardsWithinMs` 20 s and `theSyncedEditorWithinMs` 20 s -
@@ -242,11 +242,10 @@ test(`the editor opens ${documentNames.small} where its reader had got to @phone
 // itself, and the last batch, that adoption and the swap are three tasks
 // (`packages/proof-editor/src/progressive-build.ts`). Each holds the document's
 // socket (`documentTransport`), so the build begins when the row releases it, and each reads a
-// state the page is in only while the build runs, without timing anything. The first throttles
-// the renderer as the measurement does, so its build lasts long enough for the page to draw
-// frames while it runs. The edit row holds its build between two batches while the other person
-// writes into it, and the per-frame count's row has the page draw a frame between every two
-// batches (`holdTheBuild`), so each has that state whatever the machine's speed.
+// state the page is in only while the build runs, without timing anything. The first row and
+// the per-frame count's row have the page draw a frame between every two batches, and the edit
+// row holds its build between two batches while the other person writes into it
+// (`holdTheBuild`), so each has that state whatever the machine's speed.
 
 test(`the editor opens ${documentNames.small} with every block of it in the DOM @phone`, async ({
   browser,
@@ -260,6 +259,9 @@ test(`the editor opens ${documentNames.small} with every block of it in the DOM 
   try {
     const page = await alice.newPage();
     await framesOfTheBuild(page);
+    // A frame of the page between every two batches, so the frames this row reads hold part of
+    // the document on every machine, however fast it builds.
+    await holdTheBuild(page, { eachBoundary: "a frame" });
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
     // The document's own draw is what the reader has while no socket has synced, and no editor
@@ -269,16 +271,14 @@ test(`the editor opens ${documentNames.small} with every block of it in the DOM 
     );
     expect(await blocksBuilt(page)).toBe(0);
 
-    // Throttled here and not before the load: the build this row reads begins with the release
-    // below, and the boot and the page's own draw above it are setup (`throttleTheCpu`).
-    await throttleTheCpu(page);
     await transport.release();
     // The wait is this row's own reading as much as it is the build: the per-frame count of
     // `framesOfTheBuild` scans every block element the editor holds in each frame the build
     // lets the browser draw, and this wait's role selector runs over the same document again
-    // on every mutation the batches make. Over the AHXV6-1-shaped document that costs 15.8 to
-    // 20.5 s from the release on this pod, against 402 s over the larger one, which it seeded
-    // until the browser shards ran out of their nine minutes (`theBuildWithinMs`).
+    // on every mutation the batches make. Over the AHXV6-1-shaped document that cost 15.8 to
+    // 20.5 s from the release on this pod while the row still throttled its renderer 4x, against
+    // 402 s over the larger one, which it seeded until the browser shards ran out of their nine
+    // minutes (`theBuildWithinMs`).
     await expect(documentEditor(page)).toBeVisible({ timeout: theBuildWithinMs });
 
     // Every block the server indexed the document under is in the editor's DOM, under the id a
