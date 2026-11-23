@@ -70,10 +70,6 @@ type RunConfig struct {
 	// every act of the instant has run, with the replay's store and the instant: a test's look at
 	// the replay's database at the moments its timeline reads (TestReplayStatesAreTheProjectionsStates).
 	atSettled func(ctx context.Context, st *store.Store, at time.Time) error
-	// noSkip, where set, has the stub run every try of a row it gave back to wait on its backoff,
-	// as the daemon's lanes do, rather than skip the tries no change of state can end
-	// (skipWaits): the run a test compares the skip's against (TestTheSkipOfAWaitingRowChangesNoOutput).
-	noSkip bool
 }
 
 // RunResult is what one replay made and measured.
@@ -118,9 +114,6 @@ type RunResult struct {
 
 	// snapshot is the snapshot timeline Scorecard is read from, which a test reads states from.
 	snapshot Timeline
-	// triesRun is how many tries of rows given back to wait on their backoff the stub ran, of the
-	// Divergence.Retried tries it counted: the rest it skipped (skipWaits).
-	triesRun int
 }
 
 // Segment is one work segment of an issue in a replay: the phase it worked, when it started, the
@@ -257,7 +250,6 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 		signOffs: map[string]bool{}, drops: map[string]string{}, used: map[int]bool{1: true, assumeRootRanksByNextStart: starts != nil},
 		snap:     newSnapshots(w.From, w.To, ranksOf(trace)),
 		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}},
-		waiting:  map[int64]waitingRow{}, rankMoments: rankChanges(trace),
 	}
 	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, merges, recordedLoops(script), map[string]time.Time{}
 	d.draws, d.numbers = rand.New(rand.NewPCG(uint64(cfg.Seed), conflictStream)), newPullRequestNumbers(trace)
@@ -285,7 +277,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if cfg.TraceSegments {
 		result.Segments = d.segments
 	}
-	result.snapshot, result.triesRun = d.snap.timelineAt(), d.triesRun
+	result.snapshot = d.snap.timelineAt()
 	// An issue that waits for a slot at the start began that wait where the record shows, its start
 	// state being the record's.
 	result.snapshot.beginWaitsAt(recordedWaitStarts(trace, ranksOf(trace), trace.ruleAt, w.From, result.snapshot.startWaiters()))

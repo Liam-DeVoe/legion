@@ -174,17 +174,6 @@ type driver struct {
 	held []*item
 	// wakeAt is the moment of the outbox wake queued, zero for none.
 	wakeAt time.Time
-	// waiting is each row the stub gave back to wait on its backoff, by its id, with the versions of
-	// the scopes its try read when it was given back and the moment it is due again (retry): a try
-	// of such a row while those versions stand fails as its last did (skipWaits). heldLeft is how
-	// many held acts the boot under way has still to run, each a change the queue does not show.
-	// rankMoments is each moment of the window at which an issue's rank in the record's trace
-	// changes, in order, which a settle of the snapshot timeline reads (rankChanges). triesRun is
-	// how many tries of rows given back the stub ran rather than skipped.
-	waiting     map[int64]waitingRow
-	heldLeft    int
-	rankMoments []time.Time
-	triesRun    int
 
 	// claims is every claim the stub holds, as last written, with its pending delivery, and
 	// working the piece each claim's turn under way stands in.
@@ -706,26 +695,19 @@ func (d *driver) settle() error {
 	return nil
 }
 
-// down says whether no daemon ran at at (downAt), and names assumption 24 where none did.
-func (d *driver) down(at time.Time) bool {
-	if d.downAt(at) {
-		d.used[24] = true
-		return true
-	}
-	return false
-}
-
-// downAt says whether no daemon ran at at: inside a downtime of the record, after its last line and
+// down says whether no daemon ran at at: inside a downtime of the record, after its last line and
 // before the next process started, or after the last process began to stop where no process
 // started after it (assumption 24).
-func (d *driver) downAt(at time.Time) bool {
+func (d *driver) down(at time.Time) bool {
 	for _, downtime := range d.trace.Downtimes {
 		if downtime.From.Before(at) && at.Before(downtime.To) {
+			d.used[24] = true
 			return true
 		}
 	}
 	if n := len(d.trace.Boots); n > 0 {
 		if stopped := d.trace.Boots[n-1].Stopped; !stopped.IsZero() && stopped.Before(at) {
+			d.used[24] = true
 			return true
 		}
 	}
@@ -1107,14 +1089,11 @@ func (d *driver) boot(boot Boot) error {
 		}
 		held := d.held
 		d.held = nil
-		for i, it := range held {
+		for _, it := range held {
 			if err := it.run(); err != nil {
 				return err
 			}
-			d.heldLeft = len(held) - i - 1
-			err := d.drain()
-			d.heldLeft = 0
-			if err != nil {
+			if err := d.drain(); err != nil {
 				return err
 			}
 		}
