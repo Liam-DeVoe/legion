@@ -22,6 +22,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   A change of `serves` alone changes no task.
 
 - This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow.
+  The role your `Production check` line names keeps it past the close, for that check.
   It cannot carry out your choice of a fresh or an earlier agent yet; write the choice all the same, because retro rates the plan's steps and the agent that worked each against it.
 
 ## The roles and their order

@@ -34,7 +34,8 @@ only with `stop_task` (`issue`, `task`) and a later version of its plan. You may
 subagents for your own work, for example to measure or investigate what the spec needs before the
 design gate opens; request no `isolated` work, since `LEGION_WORKSPACE` is the only workspace here.
 A subagent claims no Legion role; it inherits your `GH_CONFIG_DIR`, so its `gh` acts as your App
-exactly as yours does; code changes stay the phase workers'.
+exactly as yours does; code changes stay the phase workers'. So the commits and pushes that an
+update message's steps name are not yours or your subagents'.
 
 Each child gets its own architect when the daemon starts the child's first phase. That architect
 owns its child while it holds its role: it decomposes the child, files the child's own children

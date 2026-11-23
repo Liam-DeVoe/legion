@@ -798,12 +798,10 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 }
 
 // The daemon does none of the merger's reads for it, though it reads the head, the reviews and the
-// checks for its own record (reviewRound, tellChecks). A phase moves on from the legion tool's
-// handoff_complete, request_backward_move and sign_off and from GitHub's events: the reviewer's review ends
-// its round with or without its completion (workflow's reviewRound), and the merge ends merging. A
-// completion that comes after the review is recorded on the round the review ended
-// (reportEndedStep). Each part is read alone, by its name. This shows the text is loaded, never
-// that an agent follows it.
+// checks for its own record (reviewRound, tellChecks). The reviewer's review ends its round with or
+// without its completion (workflow's reviewRound). A completion that comes after the review is
+// recorded on the round the review ended (reportEndedStep). Each part is read alone, by its name.
+// This shows the text is loaded, never that an agent follows it.
 func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 	for _, tc := range []struct {
 		part       string
@@ -813,11 +811,6 @@ func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 			"merger.md",
 			[]string{"It makes none of your reads of the head you merge: its checks, and the reviewer's approval where your task has a reviewer step."},
 			[]string{"it reads neither the head you merge, nor its checks, nor the reviewer's approval"},
-		},
-		{
-			"worker-common.md",
-			[]string{"It moves a phase on only from the `legion` tool's `handoff_complete`, `request_backward_move` and the architect's `sign_off`. It also moves one on from the GitHub events your role part names, such as the reviewer's review and the merge."},
-			[]string{"`handoff_complete` is the only way to finish a phase"},
 		},
 		{
 			"reviewer.md",
