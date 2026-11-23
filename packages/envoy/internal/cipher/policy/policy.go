@@ -682,10 +682,11 @@ type Secret struct {
 	// is not in Version: it tells the judge how to decide requests to come and changes nothing a
 	// live grant may do, so writing it ends no grant.
 	Guidance string
-	// ProfileDigest is the fingerprint of the profile this secret is served as (Profiles.Digest),
-	// and "" for a stored secret served by its own name. A string, not a pointer, for the same
-	// reason as MaxGrant. It is in Version, so an edit of one profile's entry moves the policy
-	// version and ends the grants of that name (requests.Machine's checkRelease).
+	// ProfileDigest is the fingerprint of the profile this secret is served as: its entry's, with
+	// its source's judge seconds where its proxy block once held them (Profiles.servedDigest), and
+	// "" for a stored secret served by its own name. A string, not a pointer, for the same reason as
+	// MaxGrant. It is in Version, so an edit of one profile's entry, or of its source's judge tag,
+	// moves the policy version and ends the grants of that name (requests.Machine's checkRelease).
 	ProfileDigest string
 	// Profile is the profiles file's entry this secret is served as, and nil for a stored secret
 	// served by its own name. It points into the one Profiles the boot read, which never changes,

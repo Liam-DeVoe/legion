@@ -201,3 +201,39 @@ func TestAProfileTakesItsSourcesJudgeAndGuidance(t *testing.T) {
 		t.Errorf("RELEASE_READ is judged %d, %v with guidance %q; want its source's 600 seconds and guidance", seconds, judged, profile.Guidance)
 	}
 }
+
+// TestAJudgedProfileOfAnotherNameKeepsTheDigestItHadAtTheBase pins the served digest of a profile
+// made from a source of another name, with an allow list, to the one legion main 7c880c1556f6 gave
+// the same profile while its proxy block held "judge": 300 and guidance: once the judge is the
+// source's tag of 300, the profile is served with that digest, so a grant decided under the old
+// file goes on releasing at the first broker of this release (servedDigest). The control profile,
+// served from a source with no judge tag, keeps the digest the base gave it with no judge. Both
+// constants were printed by that commit's Profiles.Digest for the entries the test names, the
+// first with "judge": 300, "guidance": "grant for the release job" in its proxy block.
+func TestAJudgedProfileOfAnotherNameKeepsTheDigestItHadAtTheBase(t *testing.T) {
+	const (
+		judgedAtBase = "730e1a2b6efaa4bf291d6ec473ea3906901e989ae637cd676aa97b6ffe3faa72"
+		plainAtBase  = "8f350dd5333674d90fa6875e1e6764ab2b9798326536f6cec844eb1b866a9d0e"
+	)
+	for _, row := range []struct {
+		profile, judge, want string
+	}{
+		{"RELEASE_READ", "300", judgedAtBase},
+		{"RELEASE_PLAIN", "", plainAtBase},
+	} {
+		source := policytest.Secret("RELEASE_PAT", owner, policy.TierHuman, "v")
+		if row.judge != "" {
+			source = policytest.Judged(source, 300, "grant for the release job")
+		}
+		set := policytest.ProfiledCurrent(t, secrets.NewLocal(source), policytest.ProfilesFile(
+			`{"name": "`+row.profile+`", "source": "RELEASE_PAT", "proxy": {"hosts": ["api.github.com"], "allow": [{"method": "GET", "pathPrefix": "/repos/"}]}}`,
+		)).Get()
+		served, ok := set.Secrets[row.profile]
+		if !ok {
+			t.Fatalf("%s was not served: %+v", row.profile, set.Refused)
+		}
+		if served.ProfileDigest != row.want {
+			t.Errorf("%s from a source tagged judge %q is served with digest %s, want %s, the digest the base gave its entry", row.profile, row.judge, served.ProfileDigest, row.want)
+		}
+	}
+}

@@ -196,7 +196,7 @@ func readProfiles(entries []profileEntry) (Profiles, error) {
 	}
 	profiles := Profiles{list: list, digests: make([]string, len(list)), index: make(map[string]int, len(list))}
 	for i, profile := range list {
-		profiles.digests[i] = digestOf(profile)
+		profiles.digests[i] = digestOf(profile, 0)
 		if _, repeated := profiles.index[profile.Name]; !repeated {
 			profiles.index[profile.Name] = i
 		}
@@ -574,11 +574,14 @@ func (p Profiles) ProxyRules() proxyrules.Rules {
 	return rules
 }
 
-// Digest is the fingerprint of one profile, "" when p holds none of that name. It is the SHA-256,
-// in hex, of the profile's JSON as encoding/json marshals a Profile, in the form ParseProfiles
-// answers it (digestOf): two spellings of one profile fingerprint alike, and every field that
-// decides what a grant of it may do is in the fingerprint. The broker folds it into its policy
-// version, so an edit of a profile's entry ends that profile's grants and no others.
+// Digest is the fingerprint of one profile as the file writes it, "" when p holds none of that
+// name. It is the SHA-256, in hex, of the profile's JSON as encoding/json marshals a Profile, in
+// the form ParseProfiles answers it (digestOf): two spellings of one profile fingerprint alike,
+// and every field that decides what a grant of it may do is in the fingerprint. It is the served
+// profile's own fingerprint (Secret.ProfileDigest) while the profile's source carries no judge
+// tag; a profile whose source carries one is served with its judge seconds in the fingerprint too
+// (servedDigest). The broker folds the served one into its policy version, so an edit of a
+// profile's entry ends that profile's grants and no others.
 func (p Profiles) Digest(name string) string {
 	if i, held := p.index[name]; held {
 		return p.digests[i]
@@ -586,14 +589,30 @@ func (p Profiles) Digest(name string) string {
 	return ""
 }
 
-// digestOf is Digest's fingerprint of profile. Its proxy block is marshalled with "judge": null
-// after the block's own fields, the bytes every block wrote while it held the judge's seconds, a
-// block with no judge among them, and that is every block a broker of this release reads: each
-// request records the digest of the profile it was decided under (request_secrets.airlock_digest),
-// and a release ends a grant whose profile's digest moved, so a fingerprint that moved with the
-// field's removal would end every live grant of a proxied profile at the first broker without it
-// (TestAProfilesDigestIsTheOneItHadWhileTheBlockHeldAJudge).
-func digestOf(profile Profile) string {
+// servedDigest is the fingerprint the profile at index i is served with when its source's judge
+// tag gives the judge seconds of it (Secret.Judge, 0 for none): digestOf with those seconds, which
+// is the digest a profile whose proxy block held the same judge had while the judge was a field of
+// the block. A profile with no proxy block, or whose source carries no judge tag, is served with
+// its file's own fingerprint (Digest), which ParseProfiles computed once.
+func (p Profiles) servedDigest(i int, judge uint32) string {
+	if judge == 0 || p.list[i].Proxy == nil {
+		return p.digests[i]
+	}
+	return digestOf(p.list[i], judge)
+}
+
+// digestOf is the fingerprint of profile served under a source whose judge tag gives the judge
+// judge seconds of it, 0 for none. Its proxy block is marshalled with a "judge" field after the
+// block's own fields — the judge's seconds, or null for none — which are the bytes the block wrote
+// while the judge's seconds were a field of it: each request records the digest of the profile it
+// was decided under (request_secrets.airlock_digest), and a release ends a grant whose profile's
+// digest moved, so a fingerprint that moved when the field became the source's tag would end every
+// live grant of a proxied profile at the first broker that reads the tag
+// (TestAProfilesDigestIsTheOneItHadWhileTheBlockHeldAJudge,
+// TestAJudgedProfileKeepsItsDigestWhenItsJudgeMovesToTheSourcesTag). As a block edit did then, a
+// change of the source's judge tag moves the digest and so ends the profile's grants. The guidance
+// is in no fingerprint, as it never was: it decides nothing a live grant may do.
+func digestOf(profile Profile, judge uint32) string {
 	type digestProxy struct {
 		ProxyBlock
 		Judge *uint32 `json:"judge"`
@@ -606,9 +625,12 @@ func digestOf(profile Profile) string {
 	}{Profile: profile}
 	if profile.Proxy != nil {
 		form.Proxy = &digestProxy{ProxyBlock: *profile.Proxy}
+		if judge != 0 {
+			form.Proxy.Judge = &judge
+		}
 	}
 	// Marshal cannot fail for this form: every field is a string, a duration, a slice or map of
-	// strings, a slice of proxyrules.Allow, a nil *uint32 or a pointer to a struct of those.
+	// strings, a slice of proxyrules.Allow, a *uint32 or a pointer to a struct of those.
 	encoded, _ := json.Marshal(form)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])

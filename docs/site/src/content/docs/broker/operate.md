@@ -590,8 +590,11 @@ ignores the `judge` and `guidance` tags, so every request goes to its person unt
 them again. A broker of this release refuses a profiles file whose `proxy` block still sets
 `judge` or `guidance`, naming the tag to write instead, and does not start with one: tag the keys
 (`agent-secrets secret retag <NAME> --judge <seconds> --guidance '<text>'`) and take the two
-fields out of the file before you roll this release out. A profile's own fingerprint is the same
-with or without them, so taking them out ends no grant.
+fields out of the file before you roll this release out. A profile is served with its source's
+`judge` seconds in its fingerprint, where its block held them, so tagging the source with the
+seconds its block held and then taking the two fields out ends no grant. Tag it with other
+seconds, or leave it untagged, and each live grant of that profile ends at the first broker of
+this release.
 
 Whoever can get a token for a listed account logs in as its service. Kubernetes access control on
 the daemon's namespace is that boundary: anyone who may create pods there naming the account,

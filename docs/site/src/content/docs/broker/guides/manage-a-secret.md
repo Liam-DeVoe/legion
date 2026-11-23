@@ -250,7 +250,8 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   (`judge-out-of-range`). Without it a person decides every request that needs a decision. A
   profile is decided by its source's tag, so tag the stored secret. `retag --judge none` gives
   the decision back to a person, and ends each live grant the judge made of the secret at its
-  next release.
+  next release. Any change of the seconds also ends the live grants of each profile of it that
+  has a proxy block, since the seconds are in the profile's fingerprint.
 - **`--guidance TEXT`** is optional: your instruction to the judge, saying when it should grant a
   request for the secret, in at most 2000 characters, for example
   `--guidance 'grant for the release job when the reason names its run'`. The judge shows it to

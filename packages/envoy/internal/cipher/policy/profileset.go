@@ -128,7 +128,9 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	// allows, so every reader of a served Secret's project — Evaluate, the release, the airlock,
 	// the judge and the person rule — holds a profile to its source's project, and the profile's
 	// line in Version moves when the source is tagged. So are its judge and guidance tags, which
-	// say who decides a request for the source's credential, under whichever name it is asked for.
+	// say who decides a request for the source's credential, under whichever name it is asked for;
+	// its judge seconds are in its fingerprint too, where its proxy block once held them
+	// (servedDigest).
 	secret := Secret{
 		Name:            profile.Name,
 		Source:          source.Source,
@@ -145,7 +147,7 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 		Judge:           source.Judge,
 		Guidance:        source.Guidance,
 		SessionDefault:  source.SessionDefault,
-		ProfileDigest:   p.digests[i],
+		ProfileDigest:   p.servedDigest(i, source.Judge),
 		Profile:         profile,
 	}
 	// Each list is sorted and each entry once (readProfiles), which is the form the tag parsers

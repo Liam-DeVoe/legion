@@ -498,7 +498,9 @@ marked with tags or annotations:
   `15m`, a sign — is refused `judge-out-of-range`, so the secret goes to nobody rather than to a
   judge with no bound. A profile is decided as its source is, by the source's tag. The tag is in
   the policy version, so adding, lowering or removing it makes the broker check each live grant
-  the judge made of the secret again at its next release. Set it with
+  the judge made of the secret again at its next release. A profile of the secret that has a
+  `proxy` block carries the seconds in its fingerprint, where the block once held them, so a
+  change of the tag ends that profile's grants, as an edit of its entry does. Set it with
   `agent-secrets secret create|retag --judge 900`, and remove it with `--judge none`.
 - **`guidance`** is optional: the owner's instruction to the model judge, saying when to grant a
   request for the secret. The judge shows it whole to its model, so a value longer than 2000
@@ -1575,8 +1577,10 @@ not bound. On an entry that lists methods and paths, a request carrying
 `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` is refused the same way
 (`request carries a method override header`), because a service that honours one of those
 acts on the method the header names and not on the one the entry allowed.
-Each profile's own fingerprint, its whole entry, is part of what a grant was
-decided under, so an edit to one profile's entry ends that profile's grants and no others. The
+Each profile's own fingerprint, its whole entry and its source's `judge` seconds, is part of what
+a grant was decided under, so an edit to one profile's entry ends that profile's grants and no
+others. The seconds sit where the entry's `proxy` block wrote a `judge` before it became the
+source's tag, so moving the judge from the file to the tag, with the same seconds, ends none. The
 fingerprint a grant is held to is its approval's, the entry the approval was given under, and
 every release compares it: a grant approved after an entry's edit ends when the file rolls back
 to the entry the request was made under. The proxy keeps the values it read for a grant until

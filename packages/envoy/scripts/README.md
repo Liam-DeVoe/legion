@@ -705,13 +705,16 @@ from that wheel's own requirements.
 
 ## airlock-mutants.sh
 
-Proves that the airlock's differential fuzz test and the Lean proofs catch a defect
-in the decision code. Each file of `internal/cipher/proxyrules/testdata/mutants` is one
-defect as a unified diff; for each, the script copies `packages/envoy` to a fresh
-directory under `$TMPDIR`, applies that one patch there, and requires the copy to
-fail — a `go-*.patch` under the comparison fuzz test over the committed seed corpus,
-a `lean-*.patch` under `lake build` or, when it still builds, that same comparison
-against the mutated model. A mutant nothing catches fails the run.
+Proves that the airlock's differential fuzz test, the Lean proofs, the proxy's own tests and
+the policy's fingerprint tests catch a defect. Each file of
+`internal/cipher/proxyrules/testdata/mutants`, `internal/cipher/proxy/testdata/mutants` and
+`internal/cipher/policy/testdata/mutants` is one defect as a unified diff; for each, the script
+copies `packages/envoy` to a fresh directory under `$TMPDIR`, applies that one patch there, and
+requires the copy to fail — a `go-*.patch` under the comparison fuzz test over the committed
+seed corpus, a `lean-*.patch` under `lake build` or, when it still builds, that same comparison
+against the mutated model, and a `proxy-*.patch` or `policy-*.patch` under every test its own
+`# must fail: <Test>` lines name, in `./internal/cipher/proxy/` or `./internal/cipher/policy/`.
+A mutant nothing catches fails the run.
 
 ```bash
 AIRLOCK_MODEL=<the built airlock-model> packages/envoy/scripts/airlock-mutants.sh [<name>...]
