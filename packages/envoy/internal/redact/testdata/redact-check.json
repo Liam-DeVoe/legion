@@ -8190,7 +8190,7 @@
       "mutation": {
         "file": "packages/daemon/internal/appauth/exchange.go",
         "preimage": "redact.Unanswered(err, request, \"\")",
-        "replacement": "err"
+        "replacement": "func() error { _ = redact.Unanswered; return err }()"
       }
     },
     {
