@@ -274,7 +274,6 @@ func (r *roleLaneHealthRig) requireDelivers(t *testing.T) {
 // the machine's group is not the one the reconnect sends, which would keep the lane in that group
 // and have each listener's lane forward every role message.
 func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t *testing.T) {
-	t.Parallel()
 	t.Run("a reload gives the grant back", func(t *testing.T) {
 		rig := newRoleLaneHealthRig(t, "role-lane-health-reload")
 		rig.revoke(t)
@@ -352,7 +351,6 @@ func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t 
 // the lane's two queue groups, the shared one and the machine's, and no more: the server refuses
 // each SUB, and nothing else sends one.
 func TestTheSelfHealthProbeSendsARefusedRoleLaneAgainOncePerPeriod(t *testing.T) {
-	t.Parallel()
 	rig := newRoleLaneHealthRig(t, "role-lane-health-missing")
 	from := rig.traceFrom()
 	rig.revoke(t)
@@ -386,7 +384,6 @@ func TestTheSelfHealthProbeSendsARefusedRoleLaneAgainOncePerPeriod(t *testing.T)
 
 // A role lane that stays granted fails no probe, and the probe sends it no subscription.
 func TestTheSelfHealthProbeLogsNothingForAHealthyRoleLane(t *testing.T) {
-	t.Parallel()
 	rig := newRoleLaneHealthRig(t, "role-lane-health-control")
 	from := rig.traceFrom()
 	waitFor(t, 30*time.Second, "ten probes", func() bool { return rig.probes.Load() >= 10 })
