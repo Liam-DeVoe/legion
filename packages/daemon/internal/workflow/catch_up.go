@@ -18,8 +18,9 @@ import (
 )
 
 // claimReady tells an architect at each launch the issues it owns. For a child's own architect it
-// is the first instruction: a child's first phase start launches that architect with no task, and
-// a re-entered child resumes its session. A tree's root architect is launched with the task its
+// is the first instruction, beside the owner-step notice of a first step of the child's that is its
+// own: a child's first phase start launches that architect with no task, and a re-entered child
+// resumes its session. A tree's root architect is launched with the task its
 // record derives (ArchitectStartTask, Engine.StartArchitect), which names the decisions kept while
 // nobody in its tree could hear them (ParkedDecisionTask), or with none where the derivation gives
 // none, and a re-admitted tree resumes its session. A claim the provider refused out of its launch
@@ -298,16 +299,17 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // states no step and is neither handed over nor carried.
 //
 // With it comes what of the listed issues is the architect's own to do, by the one rule of the
-// owner's place (record.Issue.OwnersPlace): no worker does it, and the one notice that told it —
-// the phase-finished that moved an issue into accepting, the owner-step of a step of the key owner
-// — went to an architect that may have failed or lost its session since, so an architect that
-// comes back learns of it from its catch-up alone, which a revived architect reads as its issues
-// already running. The keys, in key order, of the listed issues waiting in accepting for this
-// architect's acceptance (awaitingAcceptance): an issue with no plan rows, or a step
-// `acceptance:owner`, whose sign_off an architect above takes as well. And, where issue's own task
-// stands at another step of its owner's or at the owner's retro, which only issue's own architect
-// reports (complete_step), that place in words ("" for none). An issue whose place another agent
-// works, the fresh agent of acceptance's among them, is neither: that agent ends it.
+// owner's place (record.Issue.OwnersPlace): no worker does it, and the notices that told it — the
+// phase-finished that moved an issue into accepting, the owner-step of a step of the key owner,
+// a step acceptance:owner among them — went to an architect that may have failed or lost its
+// session since, so an architect that comes back learns of it from its catch-up alone, which a
+// revived architect reads as its issues already running. The keys, in key order, of the listed
+// issues waiting in accepting for this architect's acceptance (awaitingAcceptance): an issue with
+// no plan rows, or a step `acceptance:owner`, whose sign_off an architect above takes as well.
+// And, where issue's own task stands at another step of its owner's or at the owner's retro, which
+// only issue's own architect reports (complete_step), that place in words ("" for none). An issue
+// whose place another agent works, the fresh agent of acceptance's among them, is neither: that
+// agent ends it.
 func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, []string, string, error) {
 	catchUp := record.CatchUp{Generation: issue.Generation, Gates: []record.CatchUpGate{}}
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
@@ -396,9 +398,11 @@ func ownersPlaceWords(ctx context.Context, tx pgx.Tx, store record.Store, issue 
 }
 
 // awaitingAcceptance is the keys, in the order given, of accepting — issues of issue's tree that
-// wait in accepting and are still in the workflow — whose acceptance is issue's architect's: the
-// architect the phase-finished notice that moved each there goes to, which is the owner walk from
-// the issue itself over the architect claims this transaction reads (record.ReadOwnerWalk). So a
+// wait in accepting at an acceptance their owner does (record.Issue.OwnersPlace: an issue with no
+// plan rows, or a step acceptance:owner) and are still in the workflow — whose acceptance is
+// issue's architect's: the architect the phase-finished notice that moved each there goes to,
+// which is the owner walk from the issue itself over the architect claims this transaction reads
+// (record.ReadOwnerWalk). So a
 // root's architect is not asked to accept an issue whose own architect, or an architect between
 // the two, holds its role, and is asked to accept one whose architects up to the root have all
 // failed, retired, never started, or been suspended by the workflow or an operator (a claim the

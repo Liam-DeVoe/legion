@@ -55,9 +55,11 @@ import (
 //     next start of its architect, which admit's architectClaimUnreachable tells the controller.
 //
 // It reaches no wider. Any other root past phase.Admitted holds no hand-over row of its
-// generation and stands there under its own power, with a phase role that owns its work; a root
-// in accepting is told by the notice that moved it there, and a root waiting on a person by the
-// resume the daemon composes when the answer lands. A child at phase.Admitted is not its tree's
+// generation and stands there under its own power, with the agent of its place owning its work; a
+// root in accepting, or at another step of its owner's, is told by the notices that moved it there
+// (the phase-finished of the step before, the owner-step of a step of the key owner), and a root
+// waiting on a person by the resume the daemon composes when the answer lands. A child at
+// phase.Admitted is not its tree's
 // root, so a child's own sub-architect claim is outside the rule, which ArchitectHears answers
 // for again before anything is sent.
 //
@@ -106,9 +108,10 @@ func resumeOwed(root record.Issue, entry record.PhaseEntry, run record.RoleRun) 
 
 // ArchitectCarried is the record of a hand-over that created root at the generation it stands at
 // (record.Store.HandedOverRoot), nil where none did: the run of that generation is the one the
-// hand-over carried the root into, with the phase records and the pull request it brought and,
-// where the row says so, its design gate (record.HandedOverRoot.GateCarried). A row of an earlier
-// generation belongs to a run that has ended, so it says nothing of this one. The row names no
+// hand-over carried the root into, with the phase records it brought, its pull request where it
+// has one and, where the row says so, its design gate (record.HandedOverRoot.GateCarried). A row
+// of an earlier generation belongs to a run that has ended, so it says nothing of this one. The
+// row names no
 // phase, so it does not say the root still stands in the phase that came with it, only that it
 // stands in that run (ArchitectAtWork says why no other fact says more). It is the one reading
 // of that question: the sweep's reach (ArchitectAtWork) and the reader of what a root
