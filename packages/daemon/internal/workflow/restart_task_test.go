@@ -52,8 +52,9 @@ func stoppedAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.I
 
 // A person's todo on a root held because its owner stopped its task starts the task again at its
 // first step, in one transaction (restartTask): the hold is cleared, the task runs at step 1 with
-// its stop's reason gone, the issue stands in the phase of step 1, and that step's role is
-// started at a raised entry with a task that names why; the task's pass rises by one, and no
+// its stop's reason gone, the issue stands in the phase of step 1, and that step's agent is
+// started at a raised entry with a task that names why (Engine.start: where step 1 is the
+// owner's, the owner is told it and no claim starts); the task's pass rises by one, and no
 // pair, round or hook is counted. The step the stop ended is not ended again, and the start of
 // step 1 is written. The Dispatch status of step 1's phase is written over the todo Dispatch
 // shows. A todo on a root held for the issues beneath it leaves the hold, writes back over the todo
