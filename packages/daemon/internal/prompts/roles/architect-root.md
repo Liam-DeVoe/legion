@@ -36,7 +36,8 @@ under the child, reviews their specs and signs the child off. So file every chil
 the root alone, never below a child. You hear a child's `child-status` and `child-closed` notices,
 its architect's `worker-died` and `worker-stalled` notices, and the child's other notices while its
 architect does not hold its role, all but an `owner-step`, which goes to the child's own architect
-alone and waits for it (`skill://legion-architect/references/wake-routing.md`).
+alone and waits for it while that step runs
+(`skill://legion-architect/references/wake-routing.md`).
 Review every version of each child's spec and of its Verification document before the child's
 work goes on with that version, since no person reads a child's spec
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). A child's
