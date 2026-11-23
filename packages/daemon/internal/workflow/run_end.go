@@ -245,6 +245,13 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 		if err != nil {
 			return err
 		}
+		// A run of an earlier generation is over, and so is that run's fix, which takes no way
+		// (dropFixWay): the new generation judges its head again.
+		if now != nil && row.Generation != now.Generation {
+			if err := e.dropFixWay(ctx, tx, stood, w, ""); err != nil {
+				return err
+			}
+		}
 		var onWalk bool
 		if stood.Phase, onWalk = phaseAt(w, row.Place); !onWalk {
 			if err := e.endOffWalk(ctx, tx, row, runs.endOf(run)); err != nil {
