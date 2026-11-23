@@ -41,6 +41,7 @@ var priorityTupleEnds = []string{
 }
 
 func TestPriorityNode(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 
@@ -259,6 +260,7 @@ func TestPriorityNode(t *testing.T) {
 // delete answered as a success writes history nobody can see and tells the caller a deleted
 // priority was changed.
 func TestPriorityGoneTakesNoWrite(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	createTestPriority(t, handler, map[string]any{"id": "retired-goal", "title": "Retired goal"}, "alice")
@@ -294,6 +296,7 @@ func TestPriorityGoneTakesNoWrite(t *testing.T) {
 // since a priority belongs to no project, and `notify` false, so it wakes nobody. A write the
 // route refuses rolls its transaction back and appends none.
 func TestPriorityWriteAppendsOneQuietOwnerlessEvent(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	var cursor int64
@@ -389,6 +392,7 @@ func TestPriorityWriteAppendsOneQuietOwnerlessEvent(t *testing.T) {
 // the word takes the hashed id instead (priorityIDFromTitle), trimmed title and all. An id that
 // merely begins with the word is a slug like any other and is written.
 func TestPriorityIDRefusesTheNoneKeyword(t *testing.T) {
+	t.Parallel()
 	assertPriorityKeywordID(t, noAdvancesFilter, "Whatever is left", map[string]string{
 		"None":     "priority-dc937b598926",
 		"  NONE  ": "priority-c627c09c14e5",
@@ -402,6 +406,7 @@ func TestPriorityIDRefusesTheNoneKeyword(t *testing.T) {
 // refused; a title whose slug is the word takes the hashed id instead. An id that merely begins
 // with the word is a slug like any other and is written.
 func TestPriorityIDRefusesTheAnyKeyword(t *testing.T) {
+	t.Parallel()
 	assertPriorityKeywordID(t, anyAdvancesFilter, "Whatever matters", map[string]string{
 		"Any":     "priority-2b505597daa7",
 		"  ANY  ": "priority-618c79503a3d",
@@ -454,6 +459,7 @@ func assertPriorityKeywordID(t *testing.T, keyword, namedTitle string, hashed ma
 // write leaves the store as it was. An id derived from a longer title is cut to the bound, so
 // that create is written.
 func TestPriorityTitleAndIDAreBounded(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	refuse := func(what string, response *httptest.ResponseRecorder, bound int) {

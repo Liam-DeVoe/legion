@@ -33,6 +33,7 @@ import (
 )
 
 func TestAdvancesInheritance(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	for _, project := range []string{"ALPHA", "BETA", "GAMMA"} {
 		createTestProject(t, handler, project)
@@ -290,6 +291,7 @@ func TestAdvancesInheritance(t *testing.T) {
 // the relation to the gone priority: the read never offers it, a write naming it is refused, and
 // the log keeps the tuple that stated it.
 func TestAdvancesToAGonePriorityReadAsNone(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	createTestProject(t, handler, "CORE")
@@ -421,6 +423,7 @@ func listedIssuePage(t *testing.T, handler http.Handler, target string) model.Is
 // status named, one value meaning what it meant when the key took one, a repeat of one status the
 // same as naming it once, and no value or a blank one every status.
 func TestListIssuesFiltersByRepeatedStatus(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "STAT")
 	keys := map[string]string{}
@@ -461,6 +464,7 @@ func TestListIssuesFiltersByRepeatedStatus(t *testing.T) {
 // list (an empty page, counting none, when paged) and beside a status of the lifecycle it adds
 // nothing. Neither is refused, so no caller the listing answered then meets a refusal now.
 func TestAStatusTheLifecycleDoesNotHoldIsNoRefusal(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "STAT")
 	seedPriorityIssue(t, handler, "STAT", "Work in triage", "", "", nil)
@@ -489,6 +493,7 @@ func TestAStatusTheLifecycleDoesNotHoldIsNoRefusal(t *testing.T) {
 // keywords together are the whole listing, a priority id beside `any` adds nothing to it, and
 // the complement holds inside a narrower listing too.
 func TestAdvancesAnyIsTheComplementOfNone(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	for _, project := range []string{"LEFT", "RIGHT"} {
 		createTestProject(t, handler, project)
@@ -557,6 +562,7 @@ func TestAdvancesAnyIsTheComplementOfNone(t *testing.T) {
 // write that moves no status leaving them where they are; an issue whose status was written with
 // no event, one moved there and out again, and one never moved carry neither field.
 func TestListIssuesAnswersTheMoveOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	createTestProject(t, handler, "MOVE")
@@ -660,6 +666,7 @@ const backlogTabListing = "/api/v1/issues?advances=any&own=true&status=backlog&s
 // icebox under no priority, work there under a priority it only inherits or restates from the
 // issue above it, work there with no recorded move, and finished work.
 func TestTheListingAnswersTheFaultLists(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	for _, project := range []string{"CORE", "OPS"} {
 		createTestProject(t, handler, project)

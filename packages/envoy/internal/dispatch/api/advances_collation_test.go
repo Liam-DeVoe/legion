@@ -80,6 +80,7 @@ func collatePriorityIDsAsADeploymentDoes(t *testing.T, database *store.Store) {
 // The issue stands in backlog and is the origin of `docs`, which no issue above it carries, so the
 // second fault of GET /api/v1/priorities, priority work in backlog or icebox, reads it as well.
 func TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	collatePriorityIDsAsADeploymentDoes(t, database)
 	createTestProject(t, handler, "COLL")
