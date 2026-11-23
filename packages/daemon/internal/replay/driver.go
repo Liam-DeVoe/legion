@@ -1058,7 +1058,11 @@ func (d *driver) boot(boot Boot) error {
 			keys[i] = root.Key
 		}
 		d.admission.HoldForCatchUp(keys...)
-		return d.admission.Reconcile(ctx, tx, listed, target, position)
+		// A summary the listing gives older than a fact already applied to its issue is refused and
+		// named for the daemon's next recovery pass (admit's Reconcile); the replay's listing is its
+		// copy of Dispatch at this instant, which every applied fact has reached, so it names none.
+		_, err = d.admission.Reconcile(ctx, tx, listed, target, position)
+		return err
 	}); err != nil {
 		return fmt.Errorf("replay: reconcile the boot at %s: %w", stamp(boot.At), err)
 	}
