@@ -117,6 +117,8 @@ func TestRefusalKeepsADSNWithNoAtPastItsUserPart(t *testing.T) {
 		"postgres://db.invalid/legion?application_name=https://ci.example/run/1",
 		"postgres://db.invalid/legion?hostaddr=::1&dbname=app:prod",
 		"host=db.invalid dbname=legion options='-c app.url=https://ci.example/run/1'",
+		"host=db.invalid dbname=legion options='-c app.url=https://ci.example -c app.owner=ops" + at + "acme.example'",
+		"postgres://db.invalid/legion?host= ::1",
 		"postgres://db.invalid/legion?options=-c%20app.url%3Dhttps://ci.example/run/1",
 		"host=db.invalid user=legion sslpassword=https://u:Postgres" + at + "h sslkey=/k dbname=legion",
 		"",
@@ -159,6 +161,7 @@ func TestEveryHostFormPgxTakesIsKept(t *testing.T) {
 		"postgres:///legion?host=/tmp,db.invalid,::1&port=5432,5433,5434",
 		"postgres:///legion?hostaddr=::1&port=5432",
 		"postgres://db.invalid/legion?hostaddr=2001:db8::1",
+		"postgres:///legion?host= ::1&port=5432",
 	}
 	for _, dsn := range forms {
 		if err := Refusal("postgres_dsn", dsn); err != nil {
@@ -247,12 +250,18 @@ var printedShapes = map[string]struct{ dsn, want string }{
 	"a URL credential glued in options": {"host=127.0.0.1 port=1 user=legion dbname=legion options='-cdatestyle=https://u:madeuphead0123" + "@" + "h/x'", urlCredentialWords},
 	"a URL's setting with a credential": {"postgres://127.0.0.1:1/legion?user=legion&datestyle=https://u:madeuphead0123%40h", urlCredentialWords},
 	"a URL's options with a credential": {"postgres://127.0.0.1:1/legion?user=legion&options=-c%20datestyle%3Dhttps://u:madeuphead0123%40h", urlCredentialWords},
+	"a URL's user after a space":        {"postgres://127.0.0.1:1/legion?sslmode=disable& user=app:madeuphead0123", userHoldsColonWords},
+	"a URL's user key with a space":     {"postgres://127.0.0.1:1/legion?user =app:madeuphead0123", userHoldsColonWords},
+	"a URL's dbname after a space":      {"postgres://127.0.0.1:1/legion?sslmode=disable& dbname=app:madeuphead0123%40h", databaseWords},
+	"a URL's host after a space":        {"postgres://127.0.0.1:1/legion?sslmode=disable& host=app:madeuphead0123", hostWords},
+	"a URL's query key holding a URL":   {"postgres://127.0.0.1:1/legion?user=legion&https://u:madeuphead0123%40h=1", queryKeyWords},
 }
 
 const (
 	keyMalformedWords   = "it is no postgres:// or postgresql:// URL, and a key of it holds a character"
 	urlWords            = "a value of it other than a password, its user, database, host or hostaddr, holds \"://\""
 	urlCredentialWords  = "a value of it other than a password holds a URL with a user name or a password"
+	queryKeyWords       = "a key of its query holds a character no keyword or parameter name has"
 	userHoldsColonWords = "its user holds a \":\""
 	hostWords           = "its host or hostaddr holds an \"@\", an \"=\", or a \":\" in an entry that is no IP address or socket directory"
 	databaseWords       = "its database name holds an \"@\""
@@ -475,7 +484,8 @@ func TestConnectErrorOfAShapePgxPrintsWithNoServerPrintsNoneOfIt(t *testing.T) {
 		"a URL's ?dbname holding a URL", "a URL's path holding a URL", "a URL's ?user holding a URL",
 		"a URL's ?dbname holding @", "a URL's ?database holding @", "a URL's path holding @", "a URL's ?host holding :",
 		"a URL's ?host holding @", "a URL's bracketed host with :", "a URL with a token in its path",
-		"a URL's ?dbname with a token path"} {
+		"a URL's ?dbname with a token path", "a URL's user after a space", "a URL's user key with a space",
+		"a URL's dbname after a space", "a URL's host after a space"} {
 		row, ok := printedShapes[name]
 		if !ok {
 			t.Fatalf("printedShapes holds no %q", name)
@@ -642,7 +652,8 @@ func TestADatabaseNameHoldingAnAtIsRefusedWrittenEitherWay(t *testing.T) {
 // search-measure (Python) splits share: each case checked against libpq's own PQconninfoParse.
 type pgURLCorpus struct {
 	Accepted []struct {
-		URL string `json:"url"`
+		URL          string `json:"url"`
+		LibpqRefuses string `json:"libpq_refuses"`
 	} `json:"accepted"`
 	Refused []struct {
 		URL   string `json:"url"`
@@ -662,7 +673,9 @@ var spillFaults = map[string]bool{
 var queryValueAt = map[string]bool{}
 
 // Refusal holds to the corpus: every URL it marks spilled is refused, and every URL it accepts is
-// kept, but one holding an unencoded "@" in a query value, which queryValueAt names.
+// kept, but one holding an unencoded "@" in a query value, which queryValueAt names, and one whose
+// query key no keyword's shape has, which libpq itself refuses (libpq_refuses) and pgx sends the
+// server as a parameter's name: it is refused by the query key rule, and named so.
 func TestRefusalHoldsToTheSharedPgURLCorpus(t *testing.T) {
 	body, err := os.ReadFile("../scripts/fixtures/pg-url.json")
 	if err != nil {
@@ -690,9 +703,11 @@ func TestRefusalHoldsToTheSharedPgURLCorpus(t *testing.T) {
 	}
 	for _, accepted := range corpus.Accepted {
 		err := Refusal("postgres_dsn", accepted.URL)
+		queryKey := err != nil && strings.HasPrefix(err.Error(), "postgres_dsn cannot be read: "+queryKeyWords)
 		switch {
 		case queryValueAt[accepted.URL] && err == nil:
 			t.Errorf("Refusal(%q) = nil, want the unencoded @ in its query value refused", accepted.URL)
+		case accepted.LibpqRefuses != "" && queryKey:
 		case !queryValueAt[accepted.URL] && err != nil:
 			t.Errorf("Refusal(%q) = %v, want the corpus's accepted URL kept", accepted.URL, err)
 		}

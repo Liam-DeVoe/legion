@@ -85,9 +85,13 @@ func Refusal(setting, dsn string) error {
 			" no keyword or parameter name has (only ASCII letters, digits, \"_\", \".\" and, after the first, \"$\"), so Postgres"+
 			" would send that key to the server as a parameter's name and can print it whole; write the DSN as a postgres:// URL"+
 			" or as keyword=value pairs", setting)
+	case queryKeyMalformed:
+		return fmt.Errorf("%s cannot be read: a key of its query holds a character no keyword or parameter name has (only"+
+			" ASCII letters, digits, \"_\", \".\" and, after the first, \"$\"), which Postgres sends the server as a parameter's"+
+			" name and the server can print whole; name each setting of the query by its keyword", setting)
 	case valueHoldsURLCredential:
 		return fmt.Errorf("%s cannot be read: a value of it other than a password holds a URL with a user name or a password"+
-			" (\"://\" and then an \"@\" before the next \"/\", \"?\" or \"#\"), which Postgres can print whole, as the server"+
+			" (\"://\" and then an \"@\" before the next \"/\", \"?\", \"#\" or space), which Postgres can print whole, as the server"+
 			" prints a setting's value it refuses; give the setting no credential", setting)
 	case valueHoldsURL:
 		return fmt.Errorf("%s cannot be read: a value of it other than a password, its user, database, host or hostaddr,"+
@@ -116,6 +120,7 @@ const (
 	atPast
 	schemeMistyped
 	keyMalformed
+	queryKeyMalformed
 	valueHoldsURLCredential
 	valueHoldsURL
 	userHoldsColon
@@ -135,7 +140,13 @@ func refusalOf(dsn string) refusal {
 		if atPastUserinfo(dsn) {
 			return atPast
 		}
-		return printedRefusal(urlSettings(dsn))
+		settings := urlSettings(dsn)
+		for _, setting := range settings {
+			if !keywordShape.MatchString(setting.key) {
+				return queryKeyMalformed
+			}
+		}
+		return printedRefusal(settings)
 	}
 	if trimmed := strings.ToLower(strings.TrimLeftFunc(dsn, unicode.IsSpace)); strings.HasPrefix(trimmed, "postgres:") || strings.HasPrefix(trimmed, "postgresql:") {
 		return schemeMistyped
@@ -189,8 +200,9 @@ func printedRefusal(settings []keywordSetting) refusal {
 }
 
 // urlCredential is a URL with a user name or a password in a value: "://", then an "@" before the
-// next "/", "?" or "#", which ends a URL's authority.
-var urlCredential = regexp.MustCompile(`://[^/?#]*@`)
+// next "/", "?", "#" or space, which ends a URL's authority, so two settings of options, a URL
+// and then an address (`-c app.url=https://ci.example -c app.owner=ops@acme.example`), are none.
+var urlCredential = regexp.MustCompile(`://[^/?#\s]*@`)
 
 // hostList says whether value reads as a host list pgx dials and no credential stands in: no "@"
 // or "=" anywhere, and a ":" only in an entry (pgx splits the list at ",") that is a socket
@@ -328,9 +340,11 @@ func urlSettings(dsn string) []keywordSetting {
 	return settings
 }
 
-// urlDecoded is part, a URL DSN's, percent-decoded as pgx decodes it ("+" is no space), or as
-// written where it does not decode.
+// urlDecoded is part, a URL DSN's, decoded as pgx's uriDecode decodes it: the spaces at its ends
+// dropped (`?x=1& user=…`, `?user =…` and `?host= ::1` name the user and the host), then
+// percent-decoded ("+" is no space), or as written, its ends dropped, where it does not decode.
 func urlDecoded(part string) string {
+	part = strings.Trim(part, " ")
 	if decoded, err := url.PathUnescape(part); err == nil {
 		return decoded
 	}
