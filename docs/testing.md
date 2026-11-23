@@ -492,9 +492,9 @@ bound, and on a loaded machine its call can take longer: the row then fails on t
 what it tests.
 
 - Such a test hands the product an arm in place of the bound: `cistore.WithWaitArm` on `Open` and
-  `OpenWriter`, `oidc.WithWaitArm` on `NewCodeFlow` and `NewLazyVerifier`, each given
-  `testwait.BoundArm(t)`. A lazy verifier's arm also bounds the listener's identity check of its
-  tokens (`LazyVerifier.WaitWithin`).
+  `OpenWriter`, and `oidc.WithWaitArm` on `NewCodeFlow`, `NewLazyVerifier`, `NewKeys` and
+  `DiscoveredVerifier`, each given `testwait.BoundArm(t)`. A lazy verifier's arm also bounds the
+  listener's identity check of its tokens (`LazyVerifier.WaitWithin`).
 - The arm ends each wait at `testwait.BoundEndAt`: 30 s before the test binary's deadline, never
   sooner than the product's own bound after the wait began, and never past the deadline. So under a
   short `-timeout` a wait still has the time the product gave it.

@@ -123,8 +123,9 @@ type keysFetch struct {
 // NewKeys reads issuer's OIDC discovery document now and returns the key source for the keys it
 // names, so a caller configures an issuer and nothing else. It refuses, naming the issuer, one
 // whose discovery document cannot be read or names no jwks_uri. No key is fetched here: the first
-// Key reads the set, and ctx bounds discovery alone.
-func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
+// Key reads the set, and ctx bounds discovery alone. Of opts, WithWaitArm arms each read of the
+// key set (fetchContext).
+func NewKeys(ctx context.Context, issuer string, opts ...Option) (*Keys, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
 		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
@@ -138,7 +139,9 @@ func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 	if discovery.JWKSURI == "" {
 		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", issuer)
 	}
-	return NewKeysAt(discovery.JWKSURI), nil
+	keys := NewKeysAt(discovery.JWKSURI)
+	keys.armFetch = collectOptions(opts).waitArm
+	return keys, nil
 }
 
 // NewKeysAt returns the key source for the key set published at jwksURI, for an issuer that

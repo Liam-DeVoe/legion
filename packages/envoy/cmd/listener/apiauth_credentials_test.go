@@ -191,13 +191,13 @@ func TestAListedGoogleIdentityIsAdmitted(t *testing.T) {
 func TestGoogleIssuerAliasesReachTheGoogleBranch(t *testing.T) {
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "google-signing-key")
-	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL(), oidc.WithWaitArm(testwait.BoundArm(t)))
 	if err != nil {
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
 	google := &googleIdentities{
 		audience: listenerGoogleAudience,
-		verifier: oidc.DiscoveredVerifier(oidc.NewWithKeys(oidc.GoogleIssuer, listenerGoogleAudience, keys)),
+		verifier: oidc.DiscoveredVerifier(oidc.NewWithKeys(oidc.GoogleIssuer, listenerGoogleAudience, keys), oidc.WithWaitArm(testwait.BoundArm(t))),
 		accounts: []string{listenerGoogleAccount},
 	}
 	cluster := newClusterIssuer(t)
@@ -664,7 +664,7 @@ func TestTheRouteLabelIsAPatternNeverAPath(t *testing.T) {
 // the projected-only listener retains its verifier's admission rule when the new lists are unset.
 func TestGoogleIssuerOnAProjectedOnlyListener(t *testing.T) {
 	cluster := newClusterIssuer(t)
-	keys, err := oidc.NewKeys(context.Background(), cluster.issuer.URL())
+	keys, err := oidc.NewKeys(context.Background(), cluster.issuer.URL(), oidc.WithWaitArm(testwait.BoundArm(t)))
 	if err != nil {
 		t.Fatalf("oidc.NewKeys: %v", err)
 	}
@@ -678,7 +678,7 @@ func TestGoogleIssuerOnAProjectedOnlyListener(t *testing.T) {
 		wantReason string
 	}{
 		{name: "the cluster verifier refuses Google's issuer", verifier: cluster.verifier, wantStatus: http.StatusUnauthorized, wantReason: "issuer"},
-		{name: "a verifier configured for Google still admits it without a Google account list", verifier: oidc.DiscoveredVerifier(oidc.NewWithKeys(oidc.GoogleIssuer, listenerTestAudience, keys)), wantStatus: http.StatusNoContent},
+		{name: "a verifier configured for Google still admits it without a Google account list", verifier: oidc.DiscoveredVerifier(oidc.NewWithKeys(oidc.GoogleIssuer, listenerTestAudience, keys), oidc.WithWaitArm(testwait.BoundArm(t))), wantStatus: http.StatusNoContent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logged bytes.Buffer

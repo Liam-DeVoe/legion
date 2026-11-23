@@ -252,14 +252,16 @@ func (v *LazyVerifier) Issues(raw string) bool {
 
 // DiscoveredVerifier is a LazyVerifier whose issuer is discovered already, verifying with v: for a
 // caller that builds a Verifier itself, from keys it holds (NewWithKeys), and hands it where a
-// LazyVerifier is taken. It is nil for a nil v, so an unconfigured verifier stays one.
-func DiscoveredVerifier(v *Verifier) *LazyVerifier {
+// LazyVerifier is taken. It is nil for a nil v, so an unconfigured verifier stays one. Of opts,
+// WithWaitArm arms each wait its caller bounds through WaitWithin; the keys v holds take their own
+// (NewKeys).
+func DiscoveredVerifier(v *Verifier, opts ...Option) *LazyVerifier {
 	if v == nil {
 		return nil
 	}
 	discovered := newDiscovery(v.issuer, func(context.Context) (*Verifier, error) { return v, nil })
 	discovered.value, discovered.discovered = v, true
-	return &LazyVerifier{discovery: discovered}
+	return &LazyVerifier{discovery: discovered, arm: collectOptions(opts).waitArm}
 }
 
 // Discover reads the issuer's discovery document unless it has been read; its error matches

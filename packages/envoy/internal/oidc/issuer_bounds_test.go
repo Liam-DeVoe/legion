@@ -217,6 +217,19 @@ func TestALazyVerifiersKeyReadRunsUnderItsBoundOrItsArm(t *testing.T) {
 	if len(calls) != 2 || calls[0].bound != discoveryAttemptTimeout || calls[1].bound != DefaultKeysFetchTimeout {
 		t.Fatalf("the arm was given %+v, want discoveryAttemptTimeout for the discovery read, then DefaultKeysFetchTimeout for the key-set read", calls)
 	}
+
+	// Keys a caller builds itself (NewKeys) take the same option.
+	var keyArms recordingArm
+	keys, err := NewKeys(context.Background(), issuer.URL(), WithWaitArm(keyArms.arm))
+	if err != nil {
+		t.Fatalf("NewKeys: %v", err)
+	}
+	ctx, cancel = keys.fetchContext(context.Background())
+	deadline, bounded = ctx.Deadline()
+	cancel()
+	if calls := keyArms.recorded(); len(calls) != 1 || calls[0].bound != DefaultKeysFetchTimeout || !bounded || !deadline.Equal(calls[0].deadline) {
+		t.Fatalf("keys NewKeys armed: the arm was given %+v and the read ends at %v (bounded %t), want one call with DefaultKeysFetchTimeout and the read at its deadline", calls, deadline, bounded)
+	}
 }
 
 // A caller's wait on a lazy verifier's issuer that the caller bounds (WaitWithin, the listener's
@@ -232,12 +245,21 @@ func TestALazyVerifiersCallerWaitsWithinItsBoundOrTheArm(t *testing.T) {
 		t.Fatalf("an unarmed verifier's wait ends at %v (bounded %t), want %s from the call", deadline, bounded, bound)
 	}
 
-	var arms recordingArm
-	ctx, cancel = NewLazyVerifier("https://issuer.example", testAudience, WithWaitArm(arms.arm)).WaitWithin(context.Background(), bound)
-	deadline, bounded = ctx.Deadline()
-	cancel()
-	calls := arms.recorded()
-	if len(calls) != 1 || calls[0].bound != bound || !bounded || !deadline.Equal(calls[0].deadline) {
-		t.Fatalf("an armed verifier's wait: the arm was given %+v and the wait ends at %v (bounded %t), want one call with %s and the wait at its deadline", calls, deadline, bounded, bound)
+	for name, armed := range map[string]func(WaitArm) *LazyVerifier{
+		"a lazy verifier": func(arm WaitArm) *LazyVerifier {
+			return NewLazyVerifier("https://issuer.example", testAudience, WithWaitArm(arm))
+		},
+		"a verifier discovered already": func(arm WaitArm) *LazyVerifier {
+			return DiscoveredVerifier(NewWithKeys("https://issuer.example", testAudience, NewKeysAt("https://issuer.example/keys")), WithWaitArm(arm))
+		},
+	} {
+		var arms recordingArm
+		ctx, cancel = armed(arms.arm).WaitWithin(context.Background(), bound)
+		deadline, bounded = ctx.Deadline()
+		cancel()
+		calls := arms.recorded()
+		if len(calls) != 1 || calls[0].bound != bound || !bounded || !deadline.Equal(calls[0].deadline) {
+			t.Fatalf("%s armed: the arm was given %+v and the wait ends at %v (bounded %t), want one call with %s and the wait at its deadline", name, calls, deadline, bounded, bound)
+		}
 	}
 }
