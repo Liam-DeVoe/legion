@@ -155,8 +155,9 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// role's step (record.WorkerClaim over the issue's phases rows): the claim the role's row names
 	// while that row runs a step of the issue's plan, and otherwise the role's own claim, which is
 	// the claim the admission pass weighs. Two claims can hold one role — the agent of a key on a
-	// step of another role, beside that role's own claim of an earlier version of the plan — so
-	// the issue and the role do not name the claim, and the worker's token does.
+	// step of another role, beside that role's own claim of an earlier version of the plan, or two
+	// agents at two steps of the role — so the issue and the role do not name the claim, and the
+	// worker's token does.
 	entries := make(map[claim.Token]claimEntry, len(in.Claims))
 	for _, current := range in.Claims {
 		entries[current.Token] = claimEntry{given: current.GivenEntry, handshake: current.Handshake}
