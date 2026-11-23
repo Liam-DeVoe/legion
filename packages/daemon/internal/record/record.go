@@ -496,11 +496,12 @@ func (i Issue) AwaitingPerson() bool { return i.Phase == phase.AwaitingPerson &&
 // (KeepsSlot).
 func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.AnsweredAt != nil }
 
-// WorkingPhase is the phase the issue's worker works: the phase its hold left while it is held —
-// the one whose worker's claim failed — and the phase it stands in otherwise. It is the one rule:
-// workflow.RoleFor(i.WorkingPhase()) is the role whose failure holds the issue, the role the
+// WorkingPhase is the phase the agent of the issue's place works: the phase its hold left while it
+// is held — the one whose agent's claim failed — and the phase it stands in otherwise. It is the
+// one rule: i.RoleAt(i.WorkingPhase()) is the role whose failure holds the issue, the role the
 // stranded report names, and the role the operator's retry of a phase worker acts for (api's
-// retryClaim), which read it here rather than each keeping a copy to drift from.
+// retryClaim): the role of the claim that works the task's place, the architect at a step or a
+// retro the owner does. Each reads it here rather than keeping a copy to drift from.
 func (i Issue) WorkingPhase() phase.Phase {
 	if i.Hold != nil {
 		return i.Hold.From
@@ -620,9 +621,10 @@ type PhaseRow struct {
 	// record and which the implementer's plugin holds to be its pushed @- on
 	// legion/<issue>@origin; and the commit retro and merging stand on.
 	HandoffCommit string
-	// Pass counts the moves the issue has made back into an earlier phase, each of which opens one
-	// more run of the implementing, testing and reviewing stretch. It tells one pass through a
-	// phase from the last, which is what the handoff completion key is built on (internal/api's
+	// Pass counts the moves the issue has made back to an earlier step (to an earlier phase, on an
+	// issue with no plan rows), each of which opens one more run of the steps from that one on. It
+	// tells one pass through a phase from the last, which is what the handoff completion key is
+	// built on (internal/api's
 	// handoffPosition), and so it is never reset while the record of the work stands: a completion
 	// at a commit an earlier pass already reported has to be a fact of its own.
 	Pass int
@@ -633,10 +635,12 @@ type PhaseRow struct {
 	HandoffRecord  string
 	HandoffVersion int
 	// Rounds is how many review rounds the issue has had while this role held it, counted on the
-	// implementer's row alone (workflow's recordRound): a review that requested changes ends one,
-	// and nothing else opens one — a tester's fail and a worker's backward move each raise Pass
-	// and leave this count where it stands. What review_round_cap bounds is Rounds less
-	// ConflictRounds.
+	// implementer's row alone (workflow's recordRound): a review step's request for changes ends one
+	// where the step's agent is not the owner — the reviewer's, the fail of the agent of a step
+	// `acceptance`, the fail of a step of the type review that runs as step — and nothing else opens
+	// one: a tester's fail, a worker's backward move and the owner's fail of its own review step
+	// each raise Pass and leave this count where it stands. What review_round_cap bounds is Rounds
+	// less ConflictRounds.
 	Rounds int
 	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
 	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
@@ -677,29 +681,40 @@ type PhaseRow struct {
 	// reviewer's own review-App session (told from any other review-App session's by its Legion
 	// footer) or an account with write access to the repository submitted for the round that carried
 	// one (workflow's DecidesRound), kept until the round ends, since the reviewer's completion can
-	// come after the review it posted. Nil until a review decides.
+	// come after the review it posted. Nil until a review decides. A review step no review on GitHub
+	// decides keeps none, since its verdict ends it: the reviewer's of an issue with no pull request
+	// record, and one the owner does (workflow's settleRound).
 	Decision *ReviewDecision
-	// ReviewedHead is the commit the daemon last recorded as read by the reviewer's own deciding
-	// review of the entry that stood: the head named in the Legion footer of a review that
-	// approved or requested changes, submitted as the review App from the session the claims
-	// record holds for the claim the daemon starts the reviewer under (workflow's review,
-	// byReviewer and reviewersClaim), in the first round as in every later one. Only the
-	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
-	// that commit; neither does another review-App session's review or a review that decides
-	// nothing, and while the reviewer's claim records no session no review-App review decides the
-	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
-	// no entry into a phase clears it (workflow's clearHandoff, whose list of fields does not hold
-	// it), so the task of the reviewer's next round names it (workflow's namingTheReviewRound) and
-	// the reviewer reads the difference from it to the head. Only a review of the entry that stands
-	// moves it: the row holds the task of an entry (EntryTask), and the review's footer names that
-	// entry (Entry, intake.PullRequestReview.LegionEntry). No time is compared. A review that names
-	// no entry, or another one, decides its round and leaves the commit where it stands, so the
-	// next round reads more: from an older commit, or the whole change. A new generation clears it
-	// (ClearGeneration), and the clear empties the entry's task until the next start raises an
-	// entry, so the first review of a re-admitted root, of a child run again and of an adopted
-	// member reads the whole change, and a review of an entry before the clear moves nothing,
-	// however late it is applied; a carried hand-over keeps its rows, and the commit with them.
-	// Empty until such a review, and on every row the release before the column wrote.
+	// ReviewedHead is the commit the daemon last recorded as read by this row's step of the type
+	// review. On the reviewer's row, where reviews on GitHub decide the round, it is the commit read
+	// by the reviewer's own deciding review of the entry that stood: the head named in the Legion
+	// footer of a review that approved or requested changes, submitted as the review App from the
+	// session the claims record holds for the claim the daemon starts the reviewer under
+	// (workflow's review, byReviewer and reviewersClaim), in the first round as in every later one.
+	// A person's review does not move it, since the reviewer did not read that commit; neither does
+	// another review-App session's review or a review that decides nothing, and while the reviewer's
+	// claim records no session no review-App review decides the round or moves it (workflow's
+	// RefusedWhileNoSession). On the row of any other step of the type review, which no review on
+	// GitHub decides — the reviewer of an issue with no pull request record, the agent of a step
+	// `acceptance`, a role of that type the deployment or the plan defines, and a review step the
+	// owner does — it is the commit that step's completion, or the owner's report of it, named with
+	// its verdict
+	// (workflow's recordStepReview), and where the owner ends a review step of its own with sign_off
+	// or request_backward_move, the head of the pull request it acted on (workflow's
+	// recordOwnersReview). Unlike Decision it outlives its round: no entry into a phase clears it
+	// (workflow's clearHandoff, whose list of fields does not hold it), so the task of the step's
+	// next run names it (workflow's namingTheReviewRound) and its agent reads the difference from it
+	// to the head. A review or a completion moves it only for the entry that stands: the row holds
+	// the task of an entry (EntryTask), and the review's footer names that entry (Entry,
+	// intake.PullRequestReview.LegionEntry), as a completion carries it. No time is compared. A
+	// review that names no entry, or another one, decides its round and leaves the commit where it
+	// stands, so the next round reads more: from an older commit, or the whole change. A new
+	// generation clears it (ClearGeneration), and the clear empties the entry's task until the next
+	// start raises an entry, so the first review of a re-admitted root, of a child run again and of
+	// an adopted member reads the whole change, and a review of an entry before the clear moves
+	// nothing, however late it is applied; a carried hand-over keeps its rows, and the commit with
+	// them. Empty until such a review or completion, and on every row the release before the column
+	// wrote.
 	ReviewedHead string
 	// CompletedAt is when the workflow applied the role's completion of its current phase, zero until
 	// then. The reviewer's orders the reviews its round receives against the completion (workflow's
@@ -773,8 +788,9 @@ type PhaseRow struct {
 	// take.
 	EntryMovedBack bool
 	// StepTask and StepPlace are the step this row runs, for an issue with plan rows: the plan's
-	// task (PlanTask.Task) and the step's place in it, from 1 for a step and 0 for the retro on the
-	// implementer's row and for the merge on the merger's row, written by the start that raises the
+	// task (PlanTask.Task) and the step's place in it, from 1 for a step and 0 for the retro, on the
+	// row of the role its agent runs as (the implementer's where the owner does it, RetroAgentOf),
+	// and for the merge on the merger's row, written by the start that raises the
 	// entry (workflow's enter). With the issue and the role they are the row's key, so a role that
 	// stands at two steps of a task has a row for each, and each row's handoff, completion, entry and
 	// decision above are the facts of its step's run (PhaseRowAt reads the row of a step). An issue
@@ -823,7 +839,9 @@ type PhaseEntry struct {
 }
 
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
-// handed to the next implementer, and the head it was written on, whose code an approval approves.
+// handed to the step the work goes back to (the implementer, in the default steps), and the head
+// it was written on, whose code an approval approves. A review step no review on GitHub decides
+// keeps none (PhaseRow.Decision).
 //
 // ToldStuckHead and ToldStuckState are the daemon's own mark beside it rather than anything the
 // review said: the head and GitHub's merge state an approval of this decision was last reported
@@ -1164,12 +1182,17 @@ const (
 	ConflictCheckNotGreen ConflictWhy = "required-check-not-green"
 )
 
-// MergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
-// already is, every phase after it up to the merge, which the issue keeps while the implementer
-// merges (dispatch://INFRA-4374 R1), and step, where a role the deployment defines runs, after the
-// implementer or before it (a step before it has no pull request, so nothing is asked there). An
-// issue that stands in none of them - before its implementation, or out of the workflow - has no
-// pull request work to merge forward. They are also the phases a head move is read for a conflict
+// MergeForwardPhases is the phases a merge forward is asked in: implementing, testing, reviewing,
+// step, accepting, retro and merging — every phase a step runs as but planning, then the retro and
+// the merge, which the issue keeps while the agent asked merges (dispatch://INFRA-4374 R1): the
+// agent of the task's last step of the type implementation before its place, the owner where that
+// step's key is owner, and the implementer for a run with no plan rows. Step is where a role the
+// deployment or the plan defines runs. A step
+// that stands in one of them before any step opened the pull request has none to merge forward,
+// so nothing is asked there. An issue that stands in none of them is asked nothing: out of the
+// workflow, at admitted, and in planning, which in the default steps comes before the pull request
+// (a planner step a plan puts after its implementer step is asked nothing until the issue moves on
+// into one of these phases). They are also the phases a head move is read for a conflict
 // in (classify.MergeStateReadOwed), since that read is what can lead to the ask. Both read it
 // through StandsIn, so a hold from one of them counts as standing there.
 var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Step, phase.Accepting, phase.Retro, phase.Merging}
@@ -1755,8 +1778,8 @@ type ReleaseRetry struct {
 }
 
 // HandedOverRoot is a root a hand-over created: the generation at which the child became a root of
-// its own, carrying its phase, phase rows and pull request, and whether its old root's gate came
-// with them.
+// its own, carrying its phase, its phase rows and its pull request where it has one, and whether
+// its old root's gate came with them.
 type HandedOverRoot struct {
 	Issue       string
 	Generation  uint64
@@ -2679,14 +2702,17 @@ func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool
 
 // ArchitectOfTree says whether architect is an architect of issue's tree now: the architect of the
 // tree's root (issue.Tree), or of a member the record holds in that tree, a sub-architect. It is
-// the one rule of who owns an issue, and both readers of that hold to it: an architect's call on a
-// recorded issue (api's architectForIssue and register_plan) and the giver of a stored plan at the
+// the rule of which architects own an issue, and both its readers hold to it: an architect's call
+// on a recorded issue (api's architectForIssue and register_plan) and the giver of a stored plan
+// at the
 // issue's first step (PlansOfEarlierOwners, which the workflow's gateOpened reads). So an
 // architect whose issue moved to another tree, or whose tree the issue left, is no owner of it any
 // longer, whatever tree its claim was registered in. A claim whose agent is not the architect is
 // none; a member whose key yields no claim token holds no claim, so it matches nothing. The tree
 // root's architect, the owner of most issues, is answered from issue alone; only another
-// architect costs the read of the tree.
+// architect costs the read of the tree. The owner of a task's steps of the key owner is narrower:
+// the issue's own architect alone (OwnerClaim), whom the notice owner-step reaches and whose
+// report of such a step alone is taken.
 func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect claim.Token, issue Issue) (bool, error) {
 	if _, agent, ok := architect.Cut(); !ok || agent != claim.Agent(claim.RoleArchitect) {
 		return false, nil
@@ -2893,7 +2919,7 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 // task's last step of the type implementation, so the row read there is the row its entry raises.
 func rolePlace(role claim.Role, task string, at TaskPlace, steps []PlanStep) int {
 	// Each place of role, by its rank on the task's line: a step's place from 1, then the retro,
-	// then the merge.
+	// then the merge, which a task whose issue has no pull request never reaches.
 	type stand struct{ rank, place int }
 	var stands []stand
 	for _, step := range steps {
@@ -3017,15 +3043,18 @@ func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase !
 
 // HoldsQueued says whether work of role queued for phase queuedFor — a start, an owed start, or the
 // task a start delivers — is the work of the place the issue stands at now: the issue stands in
-// queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment defines
-// runs as step, so a start or a task queued for the step of one role names a phase that still
+// queuedFor and, at the phase step, at a step of role (StepRole). Every role a deployment or a
+// plan defines runs as step, so a start or a task queued for the step of one role names a phase
+// that still
 // reads the same while the task stands at the step of another; the role is what tells the two
 // apart. At step the role names the step. A role can stand at two steps of a task, one agent doing
 // both (plan.Supported), and work queued for either reads the same here: the entry the work is of
 // tells the two apart, which the outbox's fence on a start (the entry of the role's row now,
 // PhaseRowOf) and the claim's given entry compare beside this. Away from step the phase alone is
-// compared: one role works several phases (the implementer implementing and retro), and a phase
-// names its one role. It is the one definition of that question, which the four judges of queued
+// compared: a role can work several phases (the implementer implementing and the retro, where the
+// retro is its), and away from step work is queued for a phase only for the role that works the
+// issue's place there (a step's own role; at the retro, the role its agent runs as). It is the one
+// definition of that question, which the four judges of queued
 // work ask, each on its own read: the outbox before it runs a start (daemon's supervise), the
 // admission pass before it lets an owed start take a slot (admit's finishFencedStarts), the
 // supervisor before it sends a queued task (PhaseHolds), and the supervisor again before it

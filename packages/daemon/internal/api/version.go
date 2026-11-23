@@ -3141,9 +3141,11 @@ package api
 // sign-off of an acceptance that is not its owner's own step, a step `acceptance` with no key,
 // whose fresh agent ends it with its own verdict, `409 SIGNOFF_NOT_THE_OWNERS`. Each issue of the
 // state, and the record route's issue, gains `placeRole`, the role of the claim that works its
-// task's place (record.Issue.PlaceRole): the architect at a step or a retro the owner does,
-// `acceptance` for the fresh agent of a step `acceptance` with no key, so a reader such as `legion
-// state` names who works an issue at accepting, which the phase alone names as the architect. A
+// task's place (record.Issue.PlaceRole): the architect at a step or a retro the owner does, and
+// otherwise the step's own role (`acceptance` for the fresh agent of a step `acceptance` with no
+// key) or, at the retro, the role its agent runs as; it is absent on an issue with no plan rows
+// and at the merge. So a reader such as `legion state` names who works an issue at accepting,
+// which the phase alone names as the architect. A
 // caller below 227 is served each issue without it (one band of shaping.go at
 // `completeStepContract`, withoutPlaceRole): a plugin before INFRA-1048 reads an issue as a strict
 // object. The request records of 227 hold the new route's request, and no recorded request field
