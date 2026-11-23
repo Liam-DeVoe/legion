@@ -59,6 +59,12 @@ func launcherReadEnv(home string) []string {
 // readUserConfig is the empty file in the read's home that JJ_CONFIG names.
 const readUserConfig = "jj-config.toml"
 
+// launcherReadConfig is the one setting the read names on the command line, the daemon's own and
+// not any configuration's: the pod's clones keep the commits a fetch leaves unreachable
+// (git.abandon-unreachable-commits false, workspace's ensureFetchConfiguration), and the read's
+// first command imports git refs, which with jj's default would abandon those commits.
+var launcherReadConfig = []string{"--config=git.abandon-unreachable-commits=false"}
+
 // inRepositoryConfig is the first jj configuration file the workspace dir holds inside its own
 // directories, "" where it holds none: the workspace's `.jj/workspace-config.toml`, and the
 // repository's `config.toml`, the repository being `.jj/repo` itself or, in a workspace that
@@ -156,5 +162,5 @@ func (m *manager) workspaceWork(ctx context.Context, request shimwire.WorkspaceW
 	run := func(args ...string) (string, error) {
 		return workspace.RunCommand(bounded, start, budget, started, env, dir, nil, args)
 	}
-	return workspace.ReadWork(run, jj, dir)
+	return workspace.ReadWork(run, jj, dir, launcherReadConfig...)
 }
