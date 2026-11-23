@@ -8,7 +8,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"io"
 	"net"
 	"net/http"
@@ -18,6 +20,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 )
 
@@ -189,5 +194,52 @@ func TestABrokerOfAnotherResultsEntryServesNoGrant(t *testing.T) {
 	}
 	if bound := tokensBoundTo(t, e.databaseURL, d.thumbprint); bound == 0 {
 		t.Errorf("no access-token session carries D's key %s; want the token D minted for A's grant, which shows the count reads a pod's key", d.thumbprint)
+	}
+}
+
+// TestTheEntryDigestHoldsTheDestinationsSchemeHostAndPort: resultEntryDigest is the SHA-256 of
+// the profile DISPATCH_RESULTS_TOKEN's fingerprint, a newline, and the destination's scheme,
+// "://" and host with its port, so two brokers of one profile whose destinations differ in the
+// scheme alone, the port alone or the host alone are two entries and refuse each other's grants.
+// The real-broker test above moves address and port together, so it holds neither part alone.
+// The URL's root path is no part of the entry, and a broker with no destination or no results
+// profile has none.
+func TestTheEntryDigestHoldsTheDestinationsSchemeHostAndPort(t *testing.T) {
+	profiles, err := policy.ParseProfiles([]byte(`{"profiles": [{"name": "DISPATCH_RESULTS_TOKEN", "proxy": {"hosts": ["dispatch.ci-results.test"], "headers": ["Authorization"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}]}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := func(url string) config.PrivateUpstream {
+		t.Helper()
+		upstream, err := config.ParsePrivateUpstream("dispatch.ci-results.test=" + url)
+		if err != nil {
+			t.Fatalf("ParsePrivateUpstream(%s): %v", url, err)
+		}
+		return upstream
+	}
+	const base = "https://10.0.0.5:8443"
+	sum := sha256.Sum256([]byte(profiles.Digest(oauthwire.AirlockResultsName) + "\n" + base))
+	digest := resultEntryDigest(profiles, destination(base))
+	if want := hex.EncodeToString(sum[:]); digest != want {
+		t.Fatalf("resultEntryDigest(%s) = %s; want %s, the SHA-256 of the profile's fingerprint, a newline and %s", base, digest, want, base)
+	}
+	for _, row := range []struct{ name, url string }{
+		{"the scheme alone", "http://10.0.0.5:8443"},
+		{"the port alone", "https://10.0.0.5:8444"},
+		{"the port written out against none", "https://10.0.0.5"},
+		{"the host alone", "https://10.0.0.6:8443"},
+	} {
+		if other := resultEntryDigest(profiles, destination(row.url)); other == digest {
+			t.Errorf("a destination that differs from %s in %s (%s) has the same digest; want another entry", base, row.name, row.url)
+		}
+	}
+	if same := resultEntryDigest(profiles, destination(base+"/")); same != digest {
+		t.Errorf("the destination %s/ has the digest %s; want %s, as its root path is no part of the entry", base, same, digest)
+	}
+	if none := resultEntryDigest(profiles, config.PrivateUpstream{}); none != "" {
+		t.Errorf("a broker with no destination has the digest %q; want none", none)
+	}
+	if none := resultEntryDigest(policy.Profiles{}, destination(base)); none != "" {
+		t.Errorf("a broker with no results profile has the digest %q; want none", none)
 	}
 }
