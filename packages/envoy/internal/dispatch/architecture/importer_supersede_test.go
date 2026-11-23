@@ -140,7 +140,8 @@ func TestAHeldGitHubRateLimitEmitsOneSyncFailedEvent(t *testing.T) {
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, server.URL, githubapp.WithLimits(limits))
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, server.URL, githubapp.WithLimits(limits),
+		githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
 	if err != nil {
 		t.Fatalf("new github client: %v", err)
 	}

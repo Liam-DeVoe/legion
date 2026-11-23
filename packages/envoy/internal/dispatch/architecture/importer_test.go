@@ -353,8 +353,19 @@ func writeStatus(w http.ResponseWriter, status int) {
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
+// requestTimeoutPastTheRun is the GitHub client's own bound on each call it sends
+// (githubapp.WithRequestTimeout): past any run, so a read the fake holds (releasableHold) ends
+// only where the row releases it, moves the importer's clock to the flight's deadline, closes the
+// importer, or ends. At githubapp.RequestTimeout (20 s) of the wall clock, a held read would end on
+// its own whenever the row's next step came later than that, and the flight would take that end
+// for GitHub's own failure: a held sync would fail before its release or record a failure before
+// Close, a try a save superseded would be retried, and reach GitHub, before the flight's deadline,
+// and a flight held to its deadline would end before it, on the client's (moveToTheFlightsDeadline).
+const requestTimeoutPastTheRun = 24 * time.Hour
+
 // newGitHubClient serves handler as the GitHub API and returns an App client
-// pointed at it.
+// pointed at it, whose own bound on each call is past any run
+// (requestTimeoutPastTheRun).
 func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -363,7 +374,8 @@ func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	base := githubtest.Server(t, githubtest.Spec{Handle: handler.ServeHTTP})
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, base)
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, base,
+		githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
 	if err != nil {
 		t.Fatalf("new github client: %v", err)
 	}
@@ -1450,7 +1462,8 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 	importer, database, clock := newImporterFixtureOn(t, fake)
 
 	// The flight's deadline is armed on the clock once its blob read is held; the test moves the
-	// clock there and nowhere else, so the sync ends on its own bound and on nothing's timing.
+	// clock there and nowhere else, and only while that deadline is still pending
+	// (moveToTheFlightsDeadline), so the sync ends on its own bound and on nothing's timing.
 	answered := syncInBackground(importer)
 	fake.blobs.waitHeld(t)
 	began := clock.Now()
@@ -1458,7 +1471,7 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 	if want := began.Add(syncTimeout); len(armed) != 1 || !armed[0].Equal(want) {
 		t.Fatalf("the flight armed %v, want its deadline alone at %s, syncTimeout from its start", armed, want)
 	}
-	clock.Set(armed[0])
+	moveToTheFlightsDeadline(t, clock, armed[0], "the flight")
 	answer := waitForSync(t, answered, "the caller whose flight met its deadline")
 	if answer.err == nil || !errors.Is(answer.err, context.DeadlineExceeded) {
 		t.Fatalf("held blob: err=%v, want the deadline", answer.err)
@@ -1492,7 +1505,7 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 	// Close would cancel the flight, which is the one thing that suppresses
 	// the record, so the flight meets its deadline first, and Close waits it
 	// out before the row is read.
-	clock2.Set(armed2[0])
+	moveToTheFlightsDeadline(t, clock2, armed2[0], "the abandoned flight")
 	var lastError *string
 	testwait.Eventually(t, "the abandoned flight to record the deadline it met", func() bool {
 		if err := database2.Pool.QueryRow(context.Background(),
@@ -1511,6 +1524,26 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 	}
 	if got := projectEvents(t, database2); len(got) != 1 || !strings.HasPrefix(got[0], "architecture.sync_failed") {
 		t.Fatalf("events = %#v, want one sync_failed", got)
+	}
+}
+
+// moveToTheFlightsDeadline moves clock to deadline, the deadline a flight armed (syncTimeout), and
+// fails the row by name unless that deadline is still pending alone as the move begins
+// (clocktest.Fake.SetWhen: nothing is armed, fired or stopped between the question and the move).
+// A flight stops its deadline as it ends (flight's cancel), so a deadline still pending is a
+// flight nothing ended before the move, whose held read then ends on that deadline. A read that
+// ended first on another bound, such as the GitHub client's own on each call
+// (requestTimeoutPastTheRun), ends the flight with context.DeadlineExceeded too, and with
+// "deadline" in last_error, so only this check tells that end from the flight's own.
+func moveToTheFlightsDeadline(t *testing.T, clock *clocktest.Fake, deadline time.Time, flight string) {
+	t.Helper()
+	pending, moved := clock.SetWhen(func(_ time.Time, armed []time.Time) (time.Time, bool) {
+		return deadline, len(armed) == 1 && armed[0].Equal(deadline)
+	})
+	if !moved {
+		t.Fatalf("%s's deadline %s was not pending alone when the row moved the clock to it (pending: %v): "+
+			"the flight ended before its deadline, so its held read ended on another bound, such as the GitHub client's own on the call",
+			flight, deadline.Format(time.RFC3339Nano), pending)
 	}
 }
 
