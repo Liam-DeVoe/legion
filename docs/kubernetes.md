@@ -1367,9 +1367,11 @@ A pod that holds another session store than a pod created now would holds a move
 Under `postgres` the image probe's container is told `OMP_SESSION_SQL_DSN_FILE` too, so `legion probe-image`, which reads the providers directory as the shim does, never exports the URL into Oh My Pi's environment;
 under `cloudsql-iam` the probe's pod mounts no session key and is told no pointer at all (`sessionDSNPointer`, `manifest.go`).
 
-A resumed session also restores the model it last used, and the Oh My Pi `.omp-pin` names refuses, in `--mode rpc`, to resume one whose model the profile no longer has (`Could not restore model <provider>/<model>`, exit 1).
-So a change to the pods' model route (`runtime.kubernetes.pod`, `provider_keys`) that drops a model fails the launch of every agent resuming a session on it until the route offers that model again.
-Keep the route unchanged across the copy below in particular: there every session outlives the volume it was written on.
+A resumed Oh My Pi session runs the model its launch names, not the one it last used.
+Every launch of a pod's Oh My Pi names one with `--model`: the `model` of a role of `roles`, or `@default` (`agentArgv`, `internal/runtime/sandbox/manifest.go`).
+The Oh My Pi `.omp-pin` names restores a session's saved model only for a launch that names none (read in its `sdk.ts`, not run).
+Only such a launch is refused, in `--mode rpc`, when the profile no longer has that model (`Could not restore model <provider>/<model>`, exit 1).
+So a change to the pods' model route (`runtime.kubernetes.pod`, `provider_keys`) that drops a model a session last used fails none of its resumes.
 
 ### What `cloudsql-iam` puts in a pod
 
@@ -8938,8 +8940,8 @@ each issue's pod (every role of it alike) and the image probe's.
   a forced one writes its copy back, and one without force fails on any key whose value differs and leaves the operator's copy;
   either way, stop it declaring the ConfigMap first.
   To change a role's model, edit its line under `modelRoles` in that `overlay.yml` and run the same command again.
-  A role of `roles` that names a `model` runs on it, and its line under `modelRoles` does not apply to it.
   Pods started after that use it; a running pod keeps the files it started with until it restarts, since both are mounted by `subPath`, which the kubelet never refreshes.
+  A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under `modelRoles` applies to it.
   The example overlay also turns `retry.modelFallback` on (LEGION-578's decision:
   a failed model call is retried on another model;
   which model is the repository's `retry.fallbackChains` to name):
