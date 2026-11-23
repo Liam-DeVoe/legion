@@ -37,7 +37,21 @@
  *   link the press landed on (`Press`): ProseMirror reads a press beside a link and its release
  *   on it as a click too, whose `click` the browser sends to no link. It answers true, so
  *   ProseMirror prevents the release's default and selects nothing for it (`selectClickedLeaf`,
- *   `selectClickedNode`).
+ *   `selectClickedNode`). It also adds to the anchor a once-only `click` listener for the click
+ *   still to come (`preventUnheardClick`). A tap sends its press and its release, and its click
+ *   only later: by then the host has moved the page for the link `handleClick` opened, the editor
+ *   has left the page and its view's listeners are gone (prosemirror-view's `destroyInput`), so
+ *   the click lands on the anchor out of the page, where no listener of the editor hears it, and
+ *   the browser would follow the anchor's own `href`, which resolves against the new address: a
+ *   new load of the application. Measured on a phone (Chromium with touch) in the tester's probe
+ *   D10b/D10c, 2026-11-23, in the editable spec and in a past version. A listener on the click's
+ *   target hears it in the page or out of it, and this one prevents the default of a click no
+ *   listener of the view hears. While the view is live and holds the anchor it prevents nothing
+ *   and stops no propagation, so the editor's own `click` handler hears that click and prevents
+ *   it, as it prevents every primary click on a link. One no click consumes - Chromium sends no
+ *   click for a press held across a reconfigure of the editor's plugins - stays on the anchor
+ *   until its next click, and a later click no pointer made on that anchor still reaches the
+ *   editor's `click` handler and opens.
  * - The DOM `click` event opens, with neither Shift nor Alt held, and in a new tab with Ctrl or
  *   Cmd: a click no pointer made (`noPointerMade`: Enter on a focused link, assistive
  *   technology, a script); a primary click whose press `takeLinkPress` took, a Ctrl or Cmd one,
@@ -168,12 +182,14 @@ function pressReachesEditor(view: EditorView, anchor: Element): boolean {
   return true;
 }
 
-/** A link the editor drew, the target it opens, and whether a press on it reaches ProseMirror
- *  (`pressReachesEditor`), which says the path its pointer clicks open through. The target is the
- *  `dispatch://` reference the link carries as `data-dispatch-href` (a link mark to a reference, a
- *  title, the picture fallback and a header's pointer carry one), else its `href`; it is empty for
- *  a link whose target the sanitizer emptied (a scheme it refuses), which opens nothing. */
+/** A link the editor drew: its anchor, the target it opens, and whether a press on it reaches
+ *  ProseMirror (`pressReachesEditor`), which says the path its pointer clicks open through. The
+ *  target is the `dispatch://` reference the link carries as `data-dispatch-href` (a link mark to
+ *  a reference, a title, the picture fallback and a header's pointer carry one), else its `href`;
+ *  it is empty for a link whose target the sanitizer emptied (a scheme it refuses), which opens
+ *  nothing. */
 interface EditorLink {
+  readonly anchor: Element;
   readonly pressReachesEditor: boolean;
   readonly target: string;
 }
@@ -186,6 +202,7 @@ function linkAt(view: EditorView, target: EventTarget | null): EditorLink | unde
     return undefined;
   }
   return {
+    anchor,
     pressReachesEditor: pressReachesEditor(view, anchor),
     target: anchor.getAttribute("data-dispatch-href") ?? anchor.getAttribute("href") ?? "",
   };
@@ -396,6 +413,34 @@ function noPointerMade(event: MouseEvent): boolean {
   return typeof pointerType === "string" ? pointerType === "" : event.detail === 0;
 }
 
+/** Prevents the browser's default of the next click on `anchor`, the link `handleClick` opened on
+ *  a release, when that click comes where no listener of `view` hears it: the view destroyed, or
+ *  the anchor out of its DOM. A tap's click comes only after the host moved the page for the link
+ *  and the editor left it, onto the anchor out of the page, where the browser would follow the
+ *  anchor's own `href`, which resolves against the new address: a new load of the application
+ *  (the tester's probe D10b/D10c, 2026-11-23, on a phone). A listener on the anchor itself hears
+ *  that click in the page or out of it, once-only, so the click consumes it.
+ *
+ *  While the view hears the click, the listener prevents nothing and stops no propagation: the
+ *  editor's own `click` handler prevents every primary click on a link. ProseMirror counts an
+ *  event prevented before it reaches the view as handled by the first plugin with a handler for
+ *  it (`runCustomHandler`: `handler(view, event) || event.defaultPrevented`), here upstream's task
+ *  checkboxes, before this plugin's `click`, so a click prevented on the anchor would never reach
+ *  this plugin's `click`. One no click consumes - Chromium sends no click for a press held
+ *  across a reconfigure of the editor's plugins - waits for the anchor's next click, and a click
+ *  no pointer made on the anchor later still reaches the editor's `click` handler and opens. */
+function preventUnheardClick(view: EditorView, anchor: Element): void {
+  anchor.addEventListener(
+    "click",
+    (event) => {
+      if (view.isDestroyed || !view.dom.contains(anchor)) {
+        event.preventDefault();
+      }
+    },
+    { once: true }
+  );
+}
+
 /** The plugin that opens the document's links through the host's `openLink` (the module's doc
  *  says which links, through which path, and why). */
 export function dispatchLinkOpenPlugin(openLink: OpenLink) {
@@ -417,6 +462,12 @@ export function dispatchLinkOpenPlugin(openLink: OpenLink) {
               return false;
             }
             press.opened = true;
+            // The release's click comes later. A tap's comes on a phone once the host has moved
+            // the page and the editor has left it, onto the anchor out of the page, where no
+            // listener of the editor hears it and the browser would follow the anchor's `href`,
+            // a new load of the application (the tester's probe D10b/D10c, 2026-11-23): the
+            // anchor's own listener prevents it there (`preventUnheardClick`).
+            preventUnheardClick(view, link.anchor);
             open(link, false);
             return true;
           },

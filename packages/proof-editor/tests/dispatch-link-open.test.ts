@@ -158,20 +158,22 @@ function release(
 /** Sends `target` a click, `init` naming its place, its keys and its `detail` - 1 for a pointer's,
  *  0 for one no pointer makes (Enter on a focused link, assistive technology, a script) - and
  *  answers whether the editor prevented its default, so the browser would follow no `href`. The
- *  page's last listener reads that, then prevents the default itself: happy-dom follows an
- *  unprevented click on a link by navigating its window. */
+ *  click's last listener reads that, then prevents the default itself: happy-dom follows an
+ *  unprevented click on a link by navigating its window. That listener is the page's, and for a
+ *  target out of the page, which no listener of the page hears, the target's own, added after
+ *  every listener the editor added to it. */
 function click(target: Element, init: MouseEventInit): boolean {
-  const page = target.ownerDocument;
+  const last: EventTarget = target.isConnected ? target.ownerDocument : target;
   let prevented = false;
   const read = (event: Event) => {
     prevented = event.defaultPrevented;
     event.preventDefault();
   };
-  page.addEventListener("click", read);
+  last.addEventListener("click", read);
   try {
     dispatch(target, "click", init);
   } finally {
-    page.removeEventListener("click", read);
+    last.removeEventListener("click", read);
   }
   return prevented;
 }
@@ -853,6 +855,63 @@ test("a press and a release on a link that no click followed, then a click on it
       expect({ opened, prevented: { released, second } }).toEqual({
         opened: [["dispatch://CORE-2", false]],
         prevented: { released: true, second: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a tap sends its press and its release, and its click only later.
+// `handleClick` opens the link at the release, the host moves the page, the editor leaves it, and
+// the click lands on the anchor out of the page, where no listener of the editor hears it: the
+// tester's probe D10b/D10c, 2026-11-23, on a phone (Chromium with touch). That click is prevented
+// all the same, so the browser follows no `href`, and it opens nothing more.
+test("a tap's click that lands on a link out of the page after its release opened the link is prevented, and opens nothing more", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      press(view, issue, [60, 10]);
+      release(issue, [60, 10]);
+      // The host moved the page at the release, and the editor left it.
+      issue.remove();
+      const clicked = click(issue, { clientX: 60, clientY: 10, detail: 1 });
+
+      expect({ connected: issue.isConnected, opened, prevented: clicked }).toEqual({
+        connected: false,
+        opened: [["dispatch://CORE-2", false]],
+        prevented: true,
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a release `handleClick` opened a link on, with no click after it
+// (Chromium sends none for a press held across a reconfigure), leaves the link a listener for its
+// next click that prevents nothing the editor hears and stops nothing: Enter's click on the link
+// later opens it.
+test("a press and a release on a link that no click followed, then Enter's click on it, open it twice", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      press(view, issue, [60, 10]);
+      release(issue, [60, 10]);
+      // No click; Enter's click on the link, still in the page.
+      const keyboard = keyboardClick(issue);
+
+      expect({ connected: issue.isConnected, opened, prevented: keyboard }).toEqual({
+        connected: true,
+        opened: [
+          ["dispatch://CORE-2", false],
+          ["dispatch://CORE-2", false],
+        ],
+        prevented: true,
       });
     },
     { openLink }
