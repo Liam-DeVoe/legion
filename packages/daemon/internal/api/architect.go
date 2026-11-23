@@ -1485,7 +1485,7 @@ func (s *server) issueFix(ctx context.Context, key string) (*record.TaskFix, err
 	if err != nil {
 		return nil, err
 	}
-	fix, err := runningFix(ctx, tx, s.records, issue, running.Task)
+	fix, err := RunningFixOf(ctx, tx, s.records, issue, running.Task)
 	if err != nil {
 		return nil, err
 	}

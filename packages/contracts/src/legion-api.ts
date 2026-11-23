@@ -910,6 +910,28 @@ const legionIssue = z.object({
    * from an issue no experiment holds an answer for, and from every issue of the body the route
    * serves a caller before 141, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
+  /** The fix that runs beside the issue's step (contract 236): a check a CI job runs failed at
+   * the task's head, and the task's first implementation step runs again, in a working copy of
+   * its own, while the other steps go on. `task` is the task the fix is of and `step` the place in
+   * it of the step it runs again; `check` and `head` are the check that failed and the head it
+   * failed at. `dir` is the directory of the fix's working copy beside the issue's workspace,
+   * where the implementer's `handoff_complete` finds the fix's report, and is absent where the
+   * daemon cannot place the issue's workspace. `entry` is the entry the fix raised on the
+   * implementer's phases row and `givenEntry` the entry of the last task the implementer's claim
+   * was given, each absent where it is 0. The key is absent while no fix runs and from every issue
+   * of the body the route serves a caller before 236 (the daemon's `withoutFix`), and plugin code
+   * reads `dir` alone, so every member is optional. */
+  fix: z
+    .object({
+      task: nonEmptyString.optional(),
+      step: z.number().int().positive().optional(),
+      check: nonEmptyString.optional(),
+      head: nonEmptyString.optional(),
+      dir: nonEmptyString.optional(),
+      entry: z.number().int().nonnegative().optional(),
+      givenEntry: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
@@ -2189,7 +2211,8 @@ export const LegionTaskStopRequest = z.strictObject({
   task: nonEmptyString,
 });
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
- * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` and
+ * issue's phase, its open check and the directory of a running fix for `handoff_complete`,
+ * `phase-reminder.ts` reads whether a fix runs, `phase-reminder.ts` and
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
  * design gate, and the state and both turn times of the architect's claim and of every worker's.
@@ -2225,6 +2248,8 @@ const ISSUE_RECORD_READS = [
   "slot.index",
   "slot.admittedAt",
   "slot.lentTo",
+  "fix",
+  "fix.dir",
 ] as const;
 
 /**

@@ -867,6 +867,34 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// Fix is the fix that runs beside the issue's step (record.TaskFix, whose number the issue
+	// record names in record.Issue.RunningFix), absent while none runs: a fix that still reads its
+	// failed job has raised no entry, and none of its task is the implementer's work yet. It
+	// arrived at FixBesideReviewContract, and a caller below it is served every issue without it
+	// (shaping.go's withoutFix).
+	Fix *FixView `json:"fix,omitempty"`
+}
+
+// FixView is the fix that runs beside an issue's step as the state shows it (record.TaskFix): a
+// check a CI job runs failed at the task's head, and the task's first implementation step runs
+// again, in a working copy of its own, while the other steps go on. Task is the task the fix is
+// of, and Step the place in that task of the step it runs again, 1 for the task's first. Check
+// and Head are the check that failed and the head it failed at, which the fix started for. Dir is
+// the directory of the fix's working copy, beside the issue's workspace in the runtime the
+// daemon runs (workspace.FixDir), where the implementer's completion of the fix finds its report;
+// it is absent where the daemon cannot place the issue's workspace, which no launch can work
+// either. Entry is the entry the fix raised on the implementer's phases row and GivenEntry the
+// entry of the last task the implementer's claim was queued, as the issue's own PhaseEntry and
+// GivenEntry are for the role of its phase: a reader tells a fix whose task its claim holds from
+// one the daemon has still to send it. Each is absent where it is 0.
+type FixView struct {
+	Task       string `json:"task"`
+	Step       int    `json:"step"`
+	Check      string `json:"check"`
+	Head       string `json:"head"`
+	Dir        string `json:"dir,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
+	GivenEntry int64  `json:"givenEntry,omitempty"`
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it

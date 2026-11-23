@@ -459,8 +459,14 @@ export interface PhaseOpRuntime {
    * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
    * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
-   * record's head is not that pushed commit. */
-  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+   * record's head is not that pushed commit. `dir`, where given, is the directory the report is
+   * found in, in place of the pane's workspace: a running fix's working copy (the record's
+   * `fix.dir`). */
+  readonly handoffReport: (
+    phase: LegionPhase,
+    role: LegionRole,
+    dir?: string
+  ) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
    * throw leaves the head out of the signal, which is still sent, and the throw's message goes
@@ -971,8 +977,22 @@ async function completeHandoff(
     );
   }
   // The record and the commit are found before the grant is minted. The phase is the issue
-  // record's, the role the claim's.
-  const report = await runtime.handoffReport(record.phase, claim.role);
+  // record's, the role the claim's. A fix runs the task's first implementation step again beside
+  // the step the issue stands at, in a working copy of its own (the record's `fix`): while one
+  // runs, the implementer's completion is the fix's, so its report is the implementing step's,
+  // found in the fix's directory and never in the shared workspace, where `@-` is another
+  // step's. A fix the daemon names no directory for cannot be reported, and is refused before
+  // anything is minted or posted.
+  const fix = claim.role === "implementer" ? record.fix : undefined;
+  if (fix !== undefined && fix.dir === undefined) {
+    throw new Error(
+      `${claim.issue} runs a fix, and the daemon names no directory of its working copy, so handoff_complete cannot find the fix's report; nothing was posted; tell the architect`
+    );
+  }
+  const report =
+    fix?.dir === undefined
+      ? await runtime.handoffReport(record.phase, claim.role)
+      : await runtime.handoffReport("implementing", claim.role, fix.dir);
   return daemon.handoffComplete({
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,
