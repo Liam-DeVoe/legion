@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The contract carries the per-project delivery settings route (`/api/v1/projects/{key}/settings/delivery`,
+  with its deploy sources and each source's `reconciled_through`) and the record of deploys and
+  failed changes (`/api/v1/projects/{key}/production-events`, `ProductionEvent`). The change
+  fail rate's `upper_bound` and `per_pr` parts and the pending flag counts are removed.
+time: 2026-11-23T02:13:17Z
+custom:
+    Issue: INFRA-978

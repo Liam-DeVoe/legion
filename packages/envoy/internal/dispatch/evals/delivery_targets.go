@@ -123,7 +123,7 @@ func VerdictOf(entry Entry, window map[string]Statistics) *Verdict {
 // delivery measures (measures.Compute), and unownedP0, the count of open P0 issues with no owner,
 // by slug and then by series: each figure under the name the eval's own fold gives it, read off
 // the folded value the fold reads it off (deployFrequencyOf, deployRunSuccessOf,
-// changeFailureRateOf, a lead time's spread and count), so a judge of the measures answer reads
+// changeFailRateOf, a lead time's spread and count), so a judge of the measures answer reads
 // the figure the eval's read of the same parts states. It states every statistic the eval route
 // states of those evals but one, unowned-p0's `n`, its count of the window's stored days, which a
 // count of the issues open now has no figure of; a register write refuses that one as a judge
@@ -134,7 +134,7 @@ func ResultStatistics(result measures.Result, unownedP0 int) map[string]map[stri
 	}
 	stats := map[string]map[string]Statistics{
 		SlugDeployFrequency:   {measures.SeriesDeploys: deployFrequencyOf(&result.DeployFrequency)},
-		SlugChangeFailRate:    changeFailureRateOf(result.ChangeFailureRate),
+		SlugChangeFailRate:    {measures.SeriesPerDeploy: changeFailRateOf(result.ChangeFailureRate)},
 		SlugMergeToProduction: {measures.SeriesMinutes: spread(result.LeadTime.MergeToProduction)},
 		SlugPROpenToMerge:     {measures.SeriesMinutes: spread(result.LeadTime.OpenedToMerge)},
 		SlugDeployRunSuccess:  {measures.SeriesRuns: deployRunSuccessOf(&result.DeployRunSuccess)},

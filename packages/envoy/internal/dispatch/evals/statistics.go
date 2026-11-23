@@ -45,13 +45,14 @@ type computedSource struct {
 
 // computedSources is each computed eval's fold and headline, by its source.
 var computedSources = map[string]computedSource{
-	SourceFoldDeployFrequency:   {oneSeries(measures.SeriesDeploys, deployFrequencyStatistics), stated("per_day")},
-	SourceFoldDeployRunSuccess:  {oneSeries(measures.SeriesRuns, deployRunSuccessStatistics), stated("rate")},
-	SourceFoldLeadTime:          {oneSeries(measures.SeriesMinutes, leadTimeStatistics), stated("median")},
-	SourceFoldReworkShare:       {oneSeries(measures.SeriesPRs, reworkShareStatistics), stated("rate")},
-	SourceFoldChangeFailureRate: {changeFailureRateStatistics, stated("rate")},
-	SourceFoldTimeToRestore:     {oneSeries(measures.SeriesMinutes, timeToRestoreStatistics), stated("median")},
-	SourceFoldTiming:            {oneSeries(measures.SeriesMinutes, timingStatistics), stated("median")},
+	SourceFoldDeployFrequency:  {oneSeries(measures.SeriesDeploys, deployFrequencyStatistics), stated("per_day")},
+	SourceFoldDeployRunSuccess: {oneSeries(measures.SeriesRuns, deployRunSuccessStatistics), stated("rate")},
+	SourceFoldLeadTime:         {oneSeries(measures.SeriesMinutes, leadTimeStatistics), stated("median")},
+	SourceFoldReworkShare:      {oneSeries(measures.SeriesPRs, reworkShareStatistics), stated("rate")},
+	SourceFoldChangeFailRate:   {oneSeries(measures.SeriesPerDeploy, changeFailRateStatistics), stated("rate")},
+	SourceFoldRecovery:         {oneSeries(measures.SeriesMinutes, recoveryStatistics), stated("median")},
+	SourceFoldReworkRate:       {oneSeries(measures.SeriesReworkDeploys, reworkRateStatistics), stated("rate")},
+	SourceFoldTiming:           {oneSeries(measures.SeriesMinutes, timingStatistics), stated("median")},
 	// unowned-p0's day row is the count at the day's last refresh, which delivery.CountUnownedP0
 	// counts by delivery.ListUnownedP0's rule; a window reads its newest day's, the `last` fold.
 	SourceListUnownedP0: {oneSeries(SeriesUnownedP0, func(parts []measures.DayPart, _ Range) Statistics {
@@ -452,44 +453,41 @@ func reworkShareStatistics(parts []measures.DayPart, _ Range) Statistics {
 	return Statistics{"rate": measures.FoldReworkShare(parts)}
 }
 
-// change-fail-rate's three shares (measures.FoldChangeFailureRate): `per_deploy` and `per_pr`,
-// each its rate, confirmed, pending, rejected and total (and per_pr its reverts), and
-// `upper_bound`, its rate and confirmed_or_pending.
-func changeFailureRateStatistics(parts []measures.DayPart, _ Range, names []string) map[string]Statistics {
-	shares := changeFailureRateOf(measures.FoldChangeFailureRate(parts))
-	folded := make(map[string]Statistics, len(names))
-	for _, name := range names {
-		folded[name] = shares[name]
-		if folded[name] == nil {
-			folded[name] = Statistics{}
-		}
-	}
-	return folded
+// change-fail-rate's `per_deploy` (measures.FoldChangeFailRate): rate, failed (the deploys with a
+// counted failure) and total (every deploy).
+func changeFailRateStatistics(parts []measures.DayPart, _ Range) Statistics {
+	return changeFailRateOf(measures.FoldChangeFailRate(parts))
 }
 
-// changeFailureRateOf is change-fail-rate's three shares' statistics of a folded failure rate, by
-// series, every figure nil where folded is the zero ChangeFailureRate (no part was folded: no
-// failure source), whose counts of 0 counted nothing.
-func changeFailureRateOf(folded measures.ChangeFailureRate) map[string]Statistics {
-	perDeploy := blank("rate", "confirmed", "pending", "rejected", "total")
-	perPR := blank("rate", "confirmed", "pending", "rejected", "reverts", "total")
-	upperBound := blank("rate", "confirmed_or_pending")
-	if folded != (measures.ChangeFailureRate{}) {
-		flagged := func(stats Statistics, flags measures.FlagCounts) {
-			stats["rate"], stats["confirmed"], stats["pending"] = flags.Rate, new(float64(flags.Confirmed)), new(float64(flags.Pending))
-			stats["rejected"], stats["total"] = new(float64(flags.Rejected)), new(float64(flags.Total))
-		}
-		flagged(perDeploy, folded.PerDeploy.FlagCounts)
-		flagged(perPR, folded.PerPR)
-		perPR["reverts"] = new(float64(folded.PerPR.Reverts))
-		upperBound["rate"], upperBound["confirmed_or_pending"] = folded.PerDeploy.UpperBoundRate, new(float64(folded.PerDeploy.ConfirmedOrPending))
+// changeFailRateOf is change-fail-rate's `per_deploy` statistics of a folded change fail rate,
+// every figure nil where folded is (no part was folded: "no data").
+func changeFailRateOf(folded *measures.ChangeFailRate) Statistics {
+	stats := blank("rate", "failed", "total")
+	if folded != nil {
+		stats["rate"], stats["failed"], stats["total"] = folded.Rate, new(float64(folded.Failed)), new(float64(folded.Total))
 	}
-	return map[string]Statistics{measures.SeriesPerDeploy: perDeploy, measures.SeriesPerPR: perPR, measures.SeriesUpperBound: upperBound}
+	return stats
 }
 
-// failed-deploy-recovery's `minutes` (measures.FoldTimeToRestore): median.
-func timeToRestoreStatistics(parts []measures.DayPart, _ Range) Statistics {
-	return Statistics{"median": measures.FoldTimeToRestore(parts).MedianMinutes}
+// failed-deploy-recovery's `minutes` (measures.FoldRecovery): n (the restores timed), median and
+// not_restored, every figure nil where no part was folded, and the median nil where no failure was
+// restored.
+func recoveryStatistics(parts []measures.DayPart, _ Range) Statistics {
+	stats := blank("n", "median", "not_restored")
+	if folded := measures.FoldRecovery(parts); folded != nil {
+		stats["n"], stats["median"], stats["not_restored"] = new(float64(folded.N)), folded.MedianMinutes, new(float64(folded.NotRestored))
+	}
+	return stats
+}
+
+// deployment-rework-rate's `deploys` (measures.FoldReworkRate): rate, restoring (the deploys that
+// restored a counted failure) and total (every deploy), every figure nil where no part was folded.
+func reworkRateStatistics(parts []measures.DayPart, _ Range) Statistics {
+	stats := blank("rate", "restoring", "total")
+	if folded := measures.FoldReworkRate(parts); folded != nil {
+		stats["rate"], stats["restoring"], stats["total"] = folded.Rate, new(float64(folded.Restoring)), new(float64(folded.Total))
+	}
+	return stats
 }
 
 // A CI eval's `minutes` (measures.FoldTiming): n, median, p90, success, failure, cancelled,

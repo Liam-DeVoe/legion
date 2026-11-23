@@ -73,11 +73,9 @@ type measuresFixture struct {
 
 const measuresFixtureWindow = "from=2026-08-30T00:00:00Z&to=2026-09-27T20:00:00Z"
 
-// noFailureSourceJSON is a measures answer's change_failure_rate while no failure source exists
-// (flags_source none): the object, every count 0 and every rate null. A page of an earlier build
-// reads its rates with no null guard, so the object is never null.
-const noFailureSourceJSON = `"change_failure_rate":{"per_pr":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null},` +
-	`"per_deploy":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null,"confirmed_or_pending":0,"upper_bound_rate":null}}`
+// noFailureMeasuresJSON is a measures answer's three failure measures while no builder writes
+// their evals' day rows: each null, "no data", which no target judges.
+const noFailureMeasuresJSON = `"change_failure_rate":null,"time_to_restore":null,"deployment_rework_rate":null`
 
 // seedMeasuresFixture writes the fixture's settings, issues, pull requests, runs and jobs through
 // the same store calls intake and reconcile use, so Dispatch derives each PR's deploy from the
@@ -382,8 +380,8 @@ func TestGetDeliveryTimelineCarriesTheMeasuresOfItsWindow(t *testing.T) {
 			t.Fatalf("timeline?%s carries no measures", query)
 		}
 		got, want := *timeline.Measures, getDeliveryMeasures(t, handler, query)
-		if !strings.Contains(response.Body.String(), noFailureSourceJSON) {
-			t.Errorf("timeline?%s carries no %s with no failure source", query, noFailureSourceJSON)
+		if !strings.Contains(response.Body.String(), noFailureMeasuresJSON) {
+			t.Errorf("timeline?%s carries no %s with no stored row of the failure measures", query, noFailureMeasuresJSON)
 		}
 		if got.ComputedAt.IsZero() {
 			t.Errorf("timeline?%s: measures.computed_at is zero", query)
@@ -430,20 +428,14 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 		t.Errorf("len(daily) = %d, want 29", len(result.Daily))
 	}
 
-	if body.FlagsSource != "none" {
-		t.Errorf("flags_source = %q, want none", body.FlagsSource)
+	// No row of the three failure measures' evals is stored, so each reads no value: a 0 would be
+	// a measured rate, which a target would judge met.
+	if result.ChangeFailureRate != nil || result.TimeToRestore != nil || result.DeploymentReworkRate != nil {
+		t.Errorf("the failure measures = %+v, %+v, %+v with no stored row, want each null", result.ChangeFailureRate, result.TimeToRestore, result.DeploymentReworkRate)
 	}
-	// No failure source exists, so the change failure rate measures nothing and time to restore
-	// has no median: a 0 would be a measured rate, which a target would judge met.
-	if result.ChangeFailureRate != (measures.ChangeFailureRate{}) {
-		t.Errorf("change_failure_rate = %+v with flags_source none, want every count 0 and every rate null", result.ChangeFailureRate)
-	}
-	if !strings.Contains(string(raw), noFailureSourceJSON) {
+	if !strings.Contains(string(raw), noFailureMeasuresJSON) {
 		_, answered, _ := strings.Cut(string(raw), `"change_failure_rate"`)
-		t.Errorf("the answer carries no %s with flags_source none; it answers %.400s", noFailureSourceJSON, answered)
-	}
-	if result.TimeToRestore.MedianMinutes != nil {
-		t.Errorf("time_to_restore.median_minutes = %v, want null", *result.TimeToRestore.MedianMinutes)
+		t.Errorf("the answer carries no %s with no stored row; it answers %.400s", noFailureMeasuresJSON, answered)
 	}
 	if len(body.UnownedP0) != 1 || body.UnownedP0[0] != (delivery.UnownedIssue{Key: "ACME-103", Title: "Production deploy gate flakes"}) {
 		t.Errorf("unowned_p0 = %+v, want [{ACME-103 Production deploy gate flakes}]", body.UnownedP0)
@@ -457,9 +449,9 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	if body.Status.DeploysPerDay == nil || *body.Status.DeploysPerDay || body.Status.MergeToProduction == nil || *body.Status.MergeToProduction {
 		t.Errorf("status = %+v, want the fixture to miss deploys a day and merge to production", body.Status)
 	}
-	if verdict, upper := body.Status.ChangeFailureRate, body.Status.ChangeFailureRateUpperBound; verdict != nil || upper != nil {
-		// flags_source none measures no failure rate, so there is nothing to judge, met or missed.
-		t.Errorf("status.change_failure_rate is set %t and its upper bound %t, want no verdict with no failure source", verdict != nil, upper != nil)
+	if body.Status.ChangeFailureRate != nil {
+		// No stored row measures the change failure rate, so there is nothing to judge, met or missed.
+		t.Errorf("status.change_failure_rate = %v, want no verdict with no stored row", *body.Status.ChangeFailureRate)
 	}
 	timeline := getDeliveryTimeline(t, handler, measuresFixtureWindow)
 	if body.Freshness != timeline.Freshness {

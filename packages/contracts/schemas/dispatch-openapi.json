@@ -4257,7 +4257,7 @@
     },
     "/api/v1/delivery/measures": {
       "get": {
-        "description": "The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy, time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. flags_source says whether a failure source fed the change failure rate and time to restore: with none (none) every change_failure_rate count is 0 and every rate null, time_to_restore has no median, and both verdicts are null, since a rate nothing measured is no 0; change_failure_rate itself is never null. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per deploy, failed deployment recovery time with the failures not restored, deployment rework rate, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. The three failure measures fold their evals' stored day rows: each is null where no row holds a part of it, \"no data\" with no verdict, since a rate nothing measured is no 0. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
         "operationId": "getApiV1DeliveryMeasures",
         "parameters": [
           {
@@ -17174,21 +17174,6 @@
         ],
         "type": "object"
       },
-      "ChangeFailureRate": {
-        "properties": {
-          "per_deploy": {
-            "$ref": "#/components/schemas/DeliveryDeployFlagCounts"
-          },
-          "per_pr": {
-            "$ref": "#/components/schemas/DeliveryFlagCounts"
-          }
-        },
-        "required": [
-          "per_pr",
-          "per_deploy"
-        ],
-        "type": "object"
-      },
       "CheckBasis": {
         "properties": {
           "branch": {
@@ -19523,6 +19508,28 @@
         },
         "type": "object"
       },
+      "DeliveryChangeFailRate": {
+        "properties": {
+          "failed": {
+            "type": "integer"
+          },
+          "rate": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "failed",
+          "total",
+          "rate"
+        ],
+        "type": "object"
+      },
       "DeliveryComponent": {
         "properties": {
           "parent": {
@@ -19579,51 +19586,6 @@
         ],
         "type": "object"
       },
-      "DeliveryDeployFlagCounts": {
-        "properties": {
-          "confirmed": {
-            "type": "integer"
-          },
-          "confirmed_or_pending": {
-            "type": "integer"
-          },
-          "pending": {
-            "type": "integer"
-          },
-          "rate": {
-            "type": [
-              "null",
-              "number"
-            ]
-          },
-          "rejected": {
-            "type": "integer"
-          },
-          "reverts": {
-            "type": "integer"
-          },
-          "total": {
-            "type": "integer"
-          },
-          "upper_bound_rate": {
-            "type": [
-              "null",
-              "number"
-            ]
-          }
-        },
-        "required": [
-          "confirmed",
-          "pending",
-          "rejected",
-          "reverts",
-          "total",
-          "rate",
-          "confirmed_or_pending",
-          "upper_bound_rate"
-        ],
-        "type": "object"
-      },
       "DeliveryDeployJobTiming": {
         "properties": {
           "days": {
@@ -19674,40 +19636,6 @@
           "results",
           "last_failed_at",
           "last_run_url"
-        ],
-        "type": "object"
-      },
-      "DeliveryFlagCounts": {
-        "properties": {
-          "confirmed": {
-            "type": "integer"
-          },
-          "pending": {
-            "type": "integer"
-          },
-          "rate": {
-            "type": [
-              "null",
-              "number"
-            ]
-          },
-          "rejected": {
-            "type": "integer"
-          },
-          "reverts": {
-            "type": "integer"
-          },
-          "total": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "confirmed",
-          "pending",
-          "rejected",
-          "reverts",
-          "total",
-          "rate"
         ],
         "type": "object"
       },
@@ -19778,12 +19706,6 @@
               "boolean"
             ]
           },
-          "change_failure_rate_upper_bound": {
-            "type": [
-              "null",
-              "boolean"
-            ]
-          },
           "deploy_run_success": {
             "type": [
               "null",
@@ -19824,7 +19746,6 @@
         "required": [
           "deploys_per_day",
           "change_failure_rate",
-          "change_failure_rate_upper_bound",
           "merge_to_production_median",
           "merge_to_production",
           "opened_to_merge",
@@ -19929,7 +19850,14 @@
       "DeliveryMeasures": {
         "properties": {
           "change_failure_rate": {
-            "$ref": "#/components/schemas/ChangeFailureRate"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryChangeFailRate"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "daily": {
             "items": {
@@ -19946,6 +19874,16 @@
           "deploy_run_success": {
             "$ref": "#/components/schemas/DeployRunSuccess"
           },
+          "deployment_rework_rate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryReworkRate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "lead_time": {
             "$ref": "#/components/schemas/LeadTime"
           },
@@ -19954,7 +19892,14 @@
             "type": "number"
           },
           "time_to_restore": {
-            "$ref": "#/components/schemas/TimeToRestore"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryRecovery"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -19962,6 +19907,7 @@
           "lead_time",
           "change_failure_rate",
           "time_to_restore",
+          "deployment_rework_rate",
           "rework_share",
           "deploy_run_success",
           "daily"
@@ -19972,9 +19918,6 @@
         "properties": {
           "computed_at": {
             "format": "date-time",
-            "type": "string"
-          },
-          "flags_source": {
             "type": "string"
           },
           "freshness": {
@@ -20006,7 +19949,6 @@
           "window",
           "computed_at",
           "measures",
-          "flags_source",
           "unowned_p0",
           "targets",
           "status",
@@ -20290,6 +20232,50 @@
         "required": [
           "merge_to_production",
           "opened_to_merge"
+        ],
+        "type": "object"
+      },
+      "DeliveryRecovery": {
+        "properties": {
+          "median_minutes": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "n": {
+            "type": "integer"
+          },
+          "not_restored": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "n",
+          "median_minutes",
+          "not_restored"
+        ],
+        "type": "object"
+      },
+      "DeliveryReworkRate": {
+        "properties": {
+          "rate": {
+            "type": [
+              "null",
+              "number"
+            ]
+          },
+          "restoring": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "restoring",
+          "total",
+          "rate"
         ],
         "type": "object"
       },
@@ -20785,23 +20771,13 @@
                 "minutes.median",
                 "minutes.n",
                 "minutes.p90",
-                "per_deploy.confirmed",
-                "per_deploy.pending",
+                "per_deploy.failed",
                 "per_deploy.rate",
-                "per_deploy.rejected",
                 "per_deploy.total",
-                "per_pr.confirmed",
-                "per_pr.pending",
-                "per_pr.rate",
-                "per_pr.rejected",
-                "per_pr.reverts",
-                "per_pr.total",
                 "runs.cancelled",
                 "runs.concluded",
                 "runs.rate",
-                "runs.reached_production",
-                "upper_bound.confirmed_or_pending",
-                "upper_bound.rate"
+                "runs.reached_production"
               ],
               "type": "string"
             },
@@ -31353,20 +31329,6 @@
         },
         "required": [
           "read_through"
-        ],
-        "type": "object"
-      },
-      "TimeToRestore": {
-        "properties": {
-          "median_minutes": {
-            "type": [
-              "null",
-              "number"
-            ]
-          }
-        },
-        "required": [
-          "median_minutes"
         ],
         "type": "object"
       },

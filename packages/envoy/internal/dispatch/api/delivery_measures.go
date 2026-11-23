@@ -10,18 +10,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 )
 
-// deliveryFlagsSource is flags_source: whether stored failed-change flags fed the change failure
-// rate and time to restore. packages/contracts/src/dispatch-api.ts's DeliveryMeasuresResponse
-// declares its closed set, "none" | "stored"; this server writes only "none".
-type deliveryFlagsSource string
-
-// deliveryFlagsSourceNone is every answer while Dispatch stores no failed-change flags: no failure
-// source exists (a flag counts only once the dora role holder confirms it, LEGION-294), so
-// measures.Compute is handed none, the change failure rate's rates are null and its counts 0, and
-// time to restore holds no median, each with no verdict, as their evals read "no data" (root R11:
-// 0 is a value).
-const deliveryFlagsSourceNone deliveryFlagsSource = "none"
-
 // deliveryMeasuresResponse is GET /api/v1/delivery/measures, and the timeline's `measures`: the
 // measures for the window over the pull requests the timeline's search and facets select, the
 // target of the eval that states each (deliveryTargets), whether each is met by that eval's own
@@ -30,14 +18,13 @@ const deliveryFlagsSourceNone deliveryFlagsSource = "none"
 // here rather than beside the timeline's views in delivery/model.go because the measures package
 // imports delivery.
 type deliveryMeasuresResponse struct {
-	Window      delivery.DeliveryWindowView    `json:"window"`
-	ComputedAt  time.Time                      `json:"computed_at"`
-	Measures    measures.Result                `json:"measures"`
-	FlagsSource deliveryFlagsSource            `json:"flags_source"`
-	UnownedP0   []delivery.UnownedIssue        `json:"unowned_p0"`
-	Targets     measures.Targets               `json:"targets"`
-	Status      measures.Status                `json:"status"`
-	Freshness   delivery.DeliveryFreshnessView `json:"freshness"`
+	Window     delivery.DeliveryWindowView    `json:"window"`
+	ComputedAt time.Time                      `json:"computed_at"`
+	Measures   measures.Result                `json:"measures"`
+	UnownedP0  []delivery.UnownedIssue        `json:"unowned_p0"`
+	Targets    measures.Targets               `json:"targets"`
+	Status     measures.Status                `json:"status"`
+	Freshness  delivery.DeliveryFreshnessView `json:"freshness"`
 }
 
 // getDeliveryMeasures answers GET /api/v1/delivery/measures, computed from stored facts on
@@ -90,9 +77,9 @@ func deliveryMeasuresCompute(settings delivery.DeliverySettings, pop deliveryPop
 }
 
 // deliveryMeasuresOver measures [from, to) over population and what derive computed from it.
-// Facets narrow the pull-request measures (lead time, rework share, the per-PR failure rate)
-// exactly as they narrow the timeline's prs[]; deploys and runs follow the window alone: every
-// deploy-workflow run on main started in [from, to), each a deploy when its production job
+// Facets narrow the pull-request measures (lead time, rework share) exactly as they narrow the
+// timeline's prs[]; deploys and runs follow the window alone: every deploy-workflow run on main
+// started in [from, to), each a deploy when its production job
 // succeeded. A deploy is one with pull requests (deploys_with_prs, with_prs_per_day) when it ships
 // any population pull request first, whenever that pull request merged and whatever the facets
 // (pop.windowShipped, delivery.Deploys.ShippedBy), so deploys_with_prs belongs to the deploy, not
@@ -103,6 +90,11 @@ func deliveryMeasuresCompute(settings delivery.DeliverySettings, pop deliveryPop
 // so the two never disagree. measures.Compute builds the window's rows into day parts with the
 // day builders and folds them with the folds the delivery evals read stored parts with, one fold
 // per measure, and each KPI is judged by its eval's target as the population read it.
+//
+// The three failure measures fold their evals' stored day parts (measures.FailureParts). No
+// builder writes those parts yet, so the route hands Compute none: change fail rate, recovery time
+// and rework rate read null, "no data", each with no verdict, as their evals read a window with
+// no row.
 func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopulation, derived deliveryDerived, from, to, now time.Time) deliveryMeasuresResponse {
 	applies := delivery.ProductionApplies(pop.windowRuns, pop.windowJobs, settings.Production()).Applies
 	reached := map[int64]bool{}
@@ -120,43 +112,39 @@ func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopula
 	if unowned == nil {
 		unowned = []delivery.UnownedIssue{}
 	}
-	result := measures.Compute(derived.measuresPRs(), runs, nil, measures.Window{From: from, To: to})
+	result := measures.Compute(derived.measuresPRs(), runs, measures.FailureParts{}, measures.Window{From: from, To: to})
 	return deliveryMeasuresResponse{
-		Window:      delivery.DeliveryWindowView{From: from, To: to},
-		ComputedAt:  now,
-		Measures:    result,
-		FlagsSource: deliveryFlagsSourceNone,
-		UnownedP0:   unowned,
-		Targets:     deliveryTargets(pop.targetEvals),
-		Status:      measuresStatus(pop.targetEvals, evals.ResultStatistics(result, len(unowned))),
-		Freshness:   derived.freshness,
+		Window:     delivery.DeliveryWindowView{From: from, To: to},
+		ComputedAt: now,
+		Measures:   result,
+		UnownedP0:  unowned,
+		Targets:    deliveryTargets(pop.targetEvals),
+		Status:     measuresStatus(pop.targetEvals, evals.ResultStatistics(result, len(unowned))),
+		Freshness:  derived.freshness,
 	}
 }
 
 // measuresStatus judges each KPI of a measures answer by its eval's target: figures is the
 // answer's own statistics of each eval (evals.ResultStatistics), so each verdict is the one the
 // eval's read states of the same figures (deliveryVerdictOf), judged once per eval.
-// MergeToProductionMedian and ChangeFailureRateUpperBound are each the verdict of one statistic of
-// an eval, the median merge to production and the failure rate's upper bound, against that eval's
-// target, answered only where the eval's judges name that statistic (deliveryJudgeVerdict): a
-// figure no judge holds to the target has no verdict, so the judges a person sets decide which
-// figures are judged (R5). The catalogue's judges answer the median's verdict (merge to production
-// judges its longest change and its median) and no upper-bound verdict (the change failure rate
-// judges its per-deploy rate).
+// MergeToProductionMedian is the verdict of one statistic of an eval, the median merge to
+// production, against that eval's target, answered only where the eval's judges name that
+// statistic (deliveryJudgeVerdict): a figure no judge holds to the target has no verdict, so the
+// judges a person sets decide which figures are judged (R5). The catalogue's judges answer the
+// median's verdict (merge to production judges its longest change and its median).
 func measuresStatus(entries map[string]evals.Entry, figures map[string]map[string]evals.Statistics) measures.Status {
 	verdict := func(slug string) *evals.Verdict {
 		return deliveryVerdictOf(entries, slug, figures[slug])
 	}
-	changeFailRate, mergeToProduction := verdict(evals.SlugChangeFailRate), verdict(evals.SlugMergeToProduction)
+	mergeToProduction := verdict(evals.SlugMergeToProduction)
 	return measures.Status{
-		DeploysPerDay:               verdictMet(verdict(evals.SlugDeployFrequency)),
-		ChangeFailureRate:           verdictMet(changeFailRate),
-		ChangeFailureRateUpperBound: deliveryJudgeVerdict(changeFailRate, measures.SeriesUpperBound+".rate"),
-		MergeToProductionMedian:     deliveryJudgeVerdict(mergeToProduction, measures.SeriesMinutes+".median"),
-		MergeToProduction:           verdictMet(mergeToProduction),
-		OpenedToMerge:               verdictMet(verdict(evals.SlugPROpenToMerge)),
-		DeployRunSuccess:            verdictMet(verdict(evals.SlugDeployRunSuccess)),
-		UnownedP0:                   verdictMet(verdict(evals.SlugUnownedP0)),
+		DeploysPerDay:           verdictMet(verdict(evals.SlugDeployFrequency)),
+		ChangeFailureRate:       verdictMet(verdict(evals.SlugChangeFailRate)),
+		MergeToProductionMedian: deliveryJudgeVerdict(mergeToProduction, measures.SeriesMinutes+".median"),
+		MergeToProduction:       verdictMet(mergeToProduction),
+		OpenedToMerge:           verdictMet(verdict(evals.SlugPROpenToMerge)),
+		DeployRunSuccess:        verdictMet(verdict(evals.SlugDeployRunSuccess)),
+		UnownedP0:               verdictMet(verdict(evals.SlugUnownedP0)),
 	}
 }
 

@@ -212,8 +212,9 @@ func seriesNames(entry catalogueEntry) []string {
 // children cut of each of those, which no day row is ever written for.
 // Each delivery and CI eval's series are exactly those of its rows in the day builders' zero day
 // (ZeroDeliveryDay, under settings naming both staging jobs), pr-ci's job series row beside them.
-// change-fail-rate and failed-deploy-recovery, which get no day rows, are the only evals with no
-// row of the zero day.
+// The three failure measures (change-fail-rate, failed-deploy-recovery and deployment-rework-rate),
+// whose rows the record of deploys and failures builds rather than a delivery day, are the only
+// evals with no row of the zero day.
 func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 	day := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
 	built := map[string][]string{}
@@ -247,7 +248,7 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 	for _, entry := range catalogue {
 		slug := entry.definition.Slug
 		want, has := built[slug]
-		if slug == SlugChangeFailRate || slug == SlugFailedDeployRecovery {
+		if slug == SlugChangeFailRate || slug == SlugFailedDeployRecovery || slug == SlugDeploymentReworkRate {
 			if has {
 				t.Errorf("%s has day rows %v, and it gets none", slug, want)
 			}
@@ -263,7 +264,7 @@ func TestTheCatalogueSeriesAreTheSeriesTheDayBuildersBuild(t *testing.T) {
 		t.Errorf("the builders build the series of %v, which the catalogue holds no eval of", slices.Sorted(maps.Keys(built)))
 	}
 	t.Logf("%d series of %d evals are the series the day builders build, %d of them the root figures' children cut no day row holds",
-		compared, len(catalogue)-2, unwritten)
+		compared, len(catalogue)-3, unwritten)
 }
 
 // TestEveryCatalogueSeriesIsStatedByItsHeadline: each listed series of each catalogue eval states

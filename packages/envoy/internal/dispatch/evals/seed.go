@@ -258,7 +258,7 @@ type seedWrite struct {
 // work of the missing sections and the methods it takes over, one write of the document, runs in
 // the transaction's read phase, holding no transaction id; the document's writes and then the
 // versions are queued on the write's ledger, whose Commit sends them as one batch: a project's
-// first seed writes 20 versions and 95 of series, which one round trip each would make 115.
+// first seed writes 21 versions and 94 of series, which one round trip each would make 115.
 func (s *Store) ensure(ctx context.Context, w *writeTx) (Seeded, error) {
 	ids := make([]string, len(catalogue))
 	for i, entry := range catalogue {
@@ -488,9 +488,17 @@ func holdsRegistrationSentence(markdown string, blocks []model.ArtifactBlock, id
 // person set, one a reading or a register write of a logged eval registered, takes the
 // catalogue's, as its eval's target does (the seed's rules above). A series the release did not
 // change is left as it is, whatever a person set on it since.
+//
+// A series the eval holds listed that the catalogue no longer states (a release dropped it, or a
+// logged eval the seed takes over registered it) gets its next version unlisted and not primary,
+// every other field carried forward: the series are the computation's (computationField), a
+// listed series is one every read folds and states, and a series no day builder writes would
+// read "no data" in every window. It stays a row of the registry, as every version does.
 func seriesToWrite(id string, catalogue []Series, current, seeded map[string]Series) []Series {
 	var writes []Series
+	stated := make(map[string]bool, len(catalogue))
 	for _, want := range catalogue {
+		stated[want.Series] = true
 		existing, has := current[want.Series]
 		last, wasSeeded := seeded[want.Series]
 		if has && wasSeeded && want.SeriesComputation.same(last.SeriesComputation) {
@@ -502,6 +510,16 @@ func seriesToWrite(id string, catalogue []Series, current, seeded map[string]Ser
 		if has && (wasSeeded || existing.MinN != nil || setByPerson(existing.SetByPerson, fieldMinN)) {
 			next.MinN = existing.MinN
 		}
+		writes = append(writes, next)
+	}
+	for _, name := range slices.Sorted(maps.Keys(current)) {
+		existing := current[name]
+		if stated[name] || (!existing.Listed && !existing.IsPrimary) {
+			continue
+		}
+		next := existing
+		next.Version++
+		next.Listed, next.IsPrimary = false, false
 		writes = append(writes, next)
 	}
 	return writes

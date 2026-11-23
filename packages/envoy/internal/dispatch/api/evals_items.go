@@ -186,22 +186,24 @@ var (
 )
 
 // evalComputedItems is the row kinds each computed eval answers beside its readings and its day
-// rows, by the source it names: the rows its fold counts.
+// rows, by the source it names: the rows its fold counts. A failure is a fact about its deploy
+// (dispatch://INFRA-978, D7), so the three failure measures answer their deploys.
 var evalComputedItems = map[string][]evalItemKind{
-	evals.SourceFoldDeployFrequency:   {deployItems},
-	evals.SourceFoldDeployRunSuccess:  {deployItems},
-	evals.SourceFoldLeadTime:          {pullRequestItems},
-	evals.SourceFoldReworkShare:       {pullRequestItems},
-	evals.SourceFoldTimeToRestore:     {pullRequestItems},
-	evals.SourceFoldChangeFailureRate: {pullRequestItems, deployItems},
-	evals.SourceFoldTiming:            {{kind: evalRowRun, read: (*server).runItemRows}, {kind: evalRowJob, read: (*server).jobItemRows}},
-	evals.SourceListUnownedP0:         {{kind: evalRowIssue, read: (*server).unownedItemRows}},
-	evals.SourceFoldWorkTime:          {legionItems},
-	evals.SourceFoldPhaseTime:         {legionItems},
-	evals.SourceFoldIdleTime:          {legionItems},
-	evals.SourceFoldSlotWait:          {legionItems},
-	evals.SourceFoldRework:            {legionItems},
-	evals.SourceFoldSplitting:         {legionItems},
+	evals.SourceFoldDeployFrequency:  {deployItems},
+	evals.SourceFoldDeployRunSuccess: {deployItems},
+	evals.SourceFoldLeadTime:         {pullRequestItems},
+	evals.SourceFoldReworkShare:      {pullRequestItems},
+	evals.SourceFoldChangeFailRate:   {deployItems},
+	evals.SourceFoldRecovery:         {deployItems},
+	evals.SourceFoldReworkRate:       {deployItems},
+	evals.SourceFoldTiming:           {{kind: evalRowRun, read: (*server).runItemRows}, {kind: evalRowJob, read: (*server).jobItemRows}},
+	evals.SourceListUnownedP0:        {{kind: evalRowIssue, read: (*server).unownedItemRows}},
+	evals.SourceFoldWorkTime:         {legionItems},
+	evals.SourceFoldPhaseTime:        {legionItems},
+	evals.SourceFoldIdleTime:         {legionItems},
+	evals.SourceFoldSlotWait:         {legionItems},
+	evals.SourceFoldRework:           {legionItems},
+	evals.SourceFoldSplitting:        {legionItems},
 }
 
 // evalItemSource is one row kind of one range as the page reads it: the rows from skip on, at

@@ -290,8 +290,8 @@ func liveTimelineOf(to time.Time, prs []delivery.DeliveryPRView, waiting []deliv
 func liveMeasuresOf(window delivery.DeliveryWindowView, computedAt time.Time, deploys int) deliveryMeasuresResponse {
 	return deliveryMeasuresResponse{
 		Window: window, ComputedAt: computedAt,
-		Measures:    measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}},
-		FlagsSource: deliveryFlagsSourceNone, UnownedP0: []delivery.UnownedIssue{}, Targets: catalogueTargets(),
+		Measures:  measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}},
+		UnownedP0: []delivery.UnownedIssue{}, Targets: catalogueTargets(),
 		Status:    measures.Status{UnownedP0: new(true)},
 		Freshness: delivery.DeliveryFreshnessView{LastEventAt: &computedAt},
 	}
