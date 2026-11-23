@@ -5,7 +5,8 @@ body: |-
   `DispatchClient` sends `Dispatch-Accepts-Kept-Write: 1` on every write, and Dispatch keeps such a
   write only when it gets that header, answering it `202` with only the id it keeps the write under
   and `held`. `DispatchClient` throws `DispatchWriteKept` for that answer, with the method, the URL,
-  the kept id and `held`, even for an upload, whose `202` carries no `Idempotency-Key`. The command
+  the kept id and `held`, an upload's included, which Dispatch keeps inside its keyed layer like any
+  other write, so a repeat under the same `Idempotency-Key` gets the same `202`. The command
   prints `Kept until held text <id> posts: Dispatch keeps this write as <kept id> and runs it right
   after that text posts.`, then names `dispatch held <kept id>` to read it, and exits 0.
   `dispatch result`, `dispatch artifact` to an issue, `dispatch claim`, `dispatch claim --release`
