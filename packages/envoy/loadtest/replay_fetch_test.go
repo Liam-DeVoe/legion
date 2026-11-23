@@ -361,7 +361,8 @@ func TestStateCountsWrittenDocs(t *testing.T) {
 
 // TestFetchCreatedSpecs fetches version 1 of each window-created issue's spec into created-docs/:
 // by the event's primary_artifact_id, else by the issue's listing, and records the readable ones.
-// Its ids are in Dispatch's shape, so each file is named after its id (bundleFileName).
+// Its ids are in Dispatch's shape, as replay-fetch requires (eventInShape, listingInShape), and each
+// file is named after its id.
 func TestFetchCreatedSpecs(t *testing.T) {
 	const (
 		art1  = "a1000000-0000-4000-8000-000000000001"
@@ -385,7 +386,7 @@ func TestFetchCreatedSpecs(t *testing.T) {
 	}
 	routes := map[string][]byte{
 		"/api/v1/issues":              []byte(`[{"key":"PRJ-1"},{"key":"PRJ-2"},{"key":"PRJ-3"}]`),
-		"/api/v1/issues/PRJ-1/events": raw(mkEvent(t, 1, "PRJ-1", "issue.created", mins(-100), sess("s0"), issueSnap("PRJ-1", "t", "open", nil))),
+		"/api/v1/issues/PRJ-1/events": raw(mkEvent(t, 1, "PRJ-1", "issue.created", mins(-100), sess("s0"), issueSnap("PRJ-1", "t", "open", map[string]any{"primary_artifact_id": art1}))),
 		"/api/v1/issues/PRJ-2/events": raw(mkEvent(t, 2, "PRJ-2", "issue.created", mins(5), sess("s0"), issueSnap("PRJ-2", "t", "open", map[string]any{"primary_artifact_id": spec2})),
 			mkEvent(t, 3, "PRJ-2", "artifact.created", mins(6), sess("s0"), map[string]any{"artifact": map[string]any{"id": doc9, "kind": "doc"}}),
 			mkEvent(t, 4, "PRJ-2", "artifact.created", mins(7), sess("s0"), map[string]any{"artifact": map[string]any{"id": spec2, "kind": "doc"}})),
@@ -457,7 +458,7 @@ func TestAnArtifactListingThatDoesNotDecodePrintsNoTokenItEchoes(t *testing.T) {
 		case "/api/v1/issues":
 			_, _ = w.Write([]byte(`[{"key":"PRJ-1"}]`))
 		case "/api/v1/issues/PRJ-1/events":
-			_, _ = w.Write(raw(mkEvent(t, 1, "PRJ-1", "issue.created", mins(-100), sess("s0"), issueSnap("PRJ-1", "t", "open", nil))))
+			_, _ = w.Write(raw(mkEvent(t, 1, "PRJ-1", "issue.created", mins(-100), sess("s0"), issueSnap("PRJ-1", "t", "open", map[string]any{"primary_artifact_id": nil}))))
 		case "/api/v1/issues/PRJ-1/artifacts":
 			echo := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			b, _ := json.Marshal([]map[string]any{{"id": "art-1", "name": "spec", "kind": "doc", "created_at": echo}})

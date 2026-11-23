@@ -164,12 +164,13 @@ type issueLog struct {
 }
 
 // fetchLog pages an issue's events from the cache or Dispatch, stopping at a short page or at a
-// page ending more than replayPageSlack past until.
+// page ending more than replayPageSlack past until. It refuses a page holding an event that names an
+// id or a key out of Dispatch's shape (eventInShape), so no bundle keeps one.
 func (f *replayFetcher) fetchLog(ctx context.Context, key string, number int, until time.Time) (issueLog, error) {
 	lg := issueLog{Key: key, Number: number}
 	after := 0
 	for {
-		rel := filepath.Join("events", bundleFileName(key), strconv.Itoa(after)+".json")
+		rel := filepath.Join("events", key, strconv.Itoa(after)+".json")
 		path := fmt.Sprintf("/api/v1/issues/%s/events?after=%d&limit=%d", url.PathEscape(key), after, replayPageLimit)
 		body, err := f.cached(ctx, rel, "/api/v1/issues/{key}/events", path)
 		if err != nil {
@@ -186,6 +187,9 @@ func (f *replayFetcher) fetchLog(ctx context.Context, key string, number int, un
 				// words of Dispatch, or of whatever answers in its place, which can echo the bearer.
 				// The error names the event's place in the page, and none of it.
 				return lg, fmt.Errorf("%s events after %d: event %d of the page is not an event replay-fetch reads", key, after, i+1)
+			}
+			if !eventInShape(ev) {
+				return lg, fmt.Errorf("%s events after %d: event %d of the page names an id or a key that is not in Dispatch's shape", key, after, i+1)
 			}
 			lg.Events = append(lg.Events, ev)
 		}
@@ -231,11 +235,10 @@ func versionAt(versions []listedVersion, at time.Time) (listedVersion, bool) {
 }
 
 // docText reads a document version's markdown: ok is false when Dispatch will not serve it (any
-// non-2xx but 401 and 403 once retries are spent), which is cached as <n>.unreadable. id is
-// Dispatch's word (a listing's or an event's), which an error names only in Dispatch's shape
-// (shownID).
+// non-2xx but 401 and 403 once retries are spent), which is cached as <n>.unreadable. id is a
+// listing's or an event's, so in Dispatch's shape (listingInShape, eventInShape).
 func (f *replayFetcher) docText(ctx context.Context, id string, n int) ([]byte, bool, error) {
-	dir := filepath.Join(f.raw, "versions", bundleFileName(id))
+	dir := filepath.Join(f.raw, "versions", id)
 	okPath := filepath.Join(dir, strconv.Itoa(n)+".json")
 	badPath := filepath.Join(dir, strconv.Itoa(n)+".unreadable")
 	body, err := os.ReadFile(okPath)
@@ -262,7 +265,7 @@ func (f *replayFetcher) docText(ctx context.Context, id string, n int) ([]byte, 
 		Markdown *string `json:"markdown"`
 	}
 	if err := json.Unmarshal(body, &v); err != nil {
-		return nil, false, fmt.Errorf("artifact %s version %d: %w", shownID(id), n, err)
+		return nil, false, fmt.Errorf("artifact %s version %d: %w", id, n, err)
 	}
 	if v.Markdown == nil {
 		return nil, false, nil
@@ -339,13 +342,16 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 	g.SetLimit(f.conc)
 	for i, k := range existing {
 		g.Go(func() error {
-			body, err := f.cached(gctx, filepath.Join("artifacts", bundleFileName(k)+".json"), "/api/v1/issues/{key}/artifacts",
+			body, err := f.cached(gctx, filepath.Join("artifacts", k+".json"), "/api/v1/issues/{key}/artifacts",
 				"/api/v1/issues/"+url.PathEscape(k)+"/artifacts")
 			if err != nil {
 				return err
 			}
 			if json.Unmarshal(body, &listingsByIdx[i]) != nil {
 				return fmt.Errorf("%s artifacts: the listing is not the shape replay-fetch reads", k)
+			}
+			if !listingInShape(listingsByIdx[i]) {
+				return fmt.Errorf("%s artifacts: the listing names an artifact by an id that is not in Dispatch's shape", k)
 			}
 			return nil
 		})
@@ -530,10 +536,11 @@ func (f *replayFetcher) run(ctx context.Context, project string, at, until time.
 }
 
 // issueNumber is the integer after the dash of a project's issue key. A key that is not one of the
-// project's is Dispatch's listing's, named only in an issue key's shape (shownKey).
+// project's issue keys (isIssueKey) is refused, so the bundle keeps none, and named only in an issue
+// key's shape (shownKey): it is Dispatch's listing's.
 func issueNumber(project, key string) (int, error) {
 	n, err := strconv.Atoi(strings.TrimPrefix(key, project+"-"))
-	if err != nil || !strings.HasPrefix(key, project+"-") || n < 1 {
+	if err != nil || !isIssueKey(key) || !strings.HasPrefix(key, project+"-") || n < 1 {
 		return 0, fmt.Errorf("issue key %s is not %s-<number>", shownKey(key), project)
 	}
 	return n, nil

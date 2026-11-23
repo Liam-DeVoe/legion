@@ -5831,28 +5831,28 @@
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestACreatedIssuesListingNamesNoneOfItsWords",
-      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).createdSpecs: an event's issue key named only in an issue key's shape (shownKey), and no decoder's error of the listing"
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose issue.created names a key out of an issue key's shape (eventInShape), so createdSpecs is handed issue keys alone, and createdSpecs names no decoder's error of the listing"
     },
     {
       "id": "loadtest-answer-members-anchored-meta",
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords/meta",
-      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchBlockMaps: an anchor's document id named only in Dispatch's shape (shownID), and no decoder's error of its artifact answer"
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose anchor names a document id out of Dispatch's shape (eventInShape), so fetchBlockMaps is handed ids in Dispatch's shape alone, and fetchBlockMaps names no decoder's error of the artifact answer"
     },
     {
       "id": "loadtest-answer-members-anchored-version",
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords/version",
-      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).docText: a document id named only in Dispatch's shape (shownID)"
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose anchor names a document id out of Dispatch's shape (eventInShape), so docText is handed ids in Dispatch's shape alone"
     },
     {
       "id": "loadtest-answer-members-anchored-blocks",
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnAnchoredDocumentsAnswersNameNoneOfTheirWords/blocks",
-      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchBlockMaps: a document id whose blocks do not decode named only in Dispatch's shape (shownID)"
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose anchor names a document id out of Dispatch's shape (eventInShape), so fetchBlockMaps is handed ids in Dispatch's shape alone"
     },
     {
       "id": "loadtest-answer-members-listed-key",
@@ -5860,6 +5860,41 @@
       "package": "./loadtest",
       "test": "TestAListedKeyThatIsNotTheProjectsNamesNoneOfIt",
       "production": "loadtest issueNumber: a listed key that is not the project's named only in an issue key's shape (shownKey)"
+    },
+    {
+      "id": "loadtest-answer-members-listed-key-shape",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestAListedKeyIsTheProjectsIssueKeyAlone",
+      "production": "loadtest issueNumber: a listed key is taken only where it is one of the project's issue keys (isIssueKey), so the bundle keeps no other and raw/events/ is named after none"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-listing",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundleHoldsNoIDThatEchoesItsRequest/listing",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).run refuses an artifact listing that names an artifact by an id out of Dispatch's shape (listingInShape), so no bundle keeps one and the seed's docText prints none"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-ask",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundleHoldsNoIDThatEchoesItsRequest/ask",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose ask names an id out of Dispatch's shape (eventInShape), so no bundle keeps one and the seed's ask errors print none"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-comment",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundleHoldsNoIDThatEchoesItsRequest/comment",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose comment names an id out of Dispatch's shape (eventInShape), so no bundle keeps one and the seed's comment errors print none"
+    },
+    {
+      "id": "loadtest-answer-members-bundle-window-key",
+      "requirement": "r3-each-site",
+      "package": "./loadtest",
+      "test": "TestABundleHoldsNoIDThatEchoesItsRequest/window-key",
+      "production": "(*github.com/sjawhar/envoy/loadtest.replayFetcher).fetchLog refuses a page whose window event names an issue key out of an issue key's shape (eventInShape), so bundle.meta.json's created_specs names none"
     },
     {
       "id": "loadtest-answer-members-refs-etag",
@@ -5901,14 +5936,14 @@
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnIDThatClimbsOutOfTheBundleNamesNoFileOutsideIt",
-      "production": "loadtest replay-fetch: a cache or bundle file is named after a document id or issue key only in Dispatch's shape, after its SHA-256 otherwise (bundleFileName), so an id with ../ writes no file outside raw/ or the bundle"
+      "production": "loadtest replay-fetch refuses a listing or an event naming a document id or issue key out of Dispatch's shape where it decodes it (listingInShape, eventInShape), before a cache or bundle file is named after it, so an id with ../ writes no file outside raw/ or the bundle"
     },
     {
       "id": "loadtest-answer-members-file-names-long",
       "requirement": "r3-each-site",
       "package": "./loadtest",
       "test": "TestAnIDLongerThanAFileNameNamesNoneOfIt",
-      "production": "loadtest replay-fetch: an id longer than a file name names its files after its SHA-256 (bundleFileName), so no *os.PathError prints it"
+      "production": "loadtest replay-fetch refuses a listing or an event naming an id longer than Dispatch's shapes where it decodes it (listingInShape, eventInShape), before a file is named after it, so no *os.PathError prints it"
     },
     {
       "id": "print-loadtest.dispatchCoverage.readCoverage.embedder",
@@ -8609,6 +8644,31 @@
       "site": "loadtest replay-fetch issueNumber: a listed issue key, decoded into a plain string, quoted raw when it is not the project's",
       "source": "the class search of round 5's deep review",
       "guard": "loadtest-answer-members-listed-key"
+    },
+    {
+      "site": "loadtest replay-fetch issueNumber: a listed key with a leading zero or a sign after the project's prefix, or under a project given as ../x, kept in the bundle and naming a file of raw/events/",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-listed-key-shape"
+    },
+    {
+      "site": "loadtest replay-fetch: a listed artifact's id, decoded into a plain string and kept in state.json as it came, printed raw by the seed's document errors (docText)",
+      "source": "the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-listing"
+    },
+    {
+      "site": "loadtest replay-fetch: an ask's id, decoded from its event into a plain string and kept in state.json as it came, printed raw by the seed's ask errors",
+      "source": "the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-ask"
+    },
+    {
+      "site": "loadtest replay-fetch: a comment's id, decoded from its event into a plain string and kept in state.json as it came, printed raw by the seed's comment errors",
+      "source": "the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-comment"
+    },
+    {
+      "site": "loadtest replay-fetch: a window event's issue key, decoded into a plain string and written raw to bundle.meta.json's created_specs",
+      "source": "the class search of the review of #4368 at de683f95d2, finding 4",
+      "guard": "loadtest-answer-members-bundle-window-key"
     },
     {
       "site": "loadtest refs-fetch: a references answer's ETag header written raw to the TSV it records",
