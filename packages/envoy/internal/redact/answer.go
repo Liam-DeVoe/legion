@@ -251,8 +251,8 @@ func whole(t reflect.Type) bool {
 }
 
 // decodeText is the fixed text of err, encoding/json's error decoding data into a value of type
-// t: the destination's type, the member that did not decode and, where encoding/json names it,
-// the JSON kind it held; never a value.
+// t: the destination's type, the member that did not decode as t names it (member) and, where
+// encoding/json names it, the JSON kind it held; never a value.
 func decodeText(err error, data []byte, t reflect.Type) string {
 	var syntax *json.SyntaxError
 	if errors.As(err, &syntax) {
@@ -264,7 +264,7 @@ func decodeText(err error, data []byte, t reflect.Type) string {
 	var typed *json.UnmarshalTypeError
 	if errors.As(err, &typed) && (typed.Field != "" || name == "") {
 		kind, _, _ := strings.Cut(typed.Value, " ")
-		return fmt.Sprintf("the answer's %s is a JSON %s where %s holds %s", member(typed.Field), kind, typeName(t), typeName(typed.Type))
+		return fmt.Sprintf("the answer's %s is a JSON %s where %s holds %s", member(typed.Field, t), kind, typeName(t), typeName(typed.Type))
 	}
 	if name != "" {
 		return fmt.Sprintf("the answer's %q does not decode where %s holds %s", name, typeName(t), typeName(field))
@@ -290,12 +290,74 @@ func typeName(t reflect.Type) string {
 	return "the value"
 }
 
-// member is a decoded field's path as a message names it, "value" for the top level.
-func member(field string) string {
+// member is the member that did not decode as a message names it: "value" for the top level,
+// and otherwise field, encoding/json's path to it (UnmarshalTypeError.Field), as t, the
+// destination's type, names it: each struct field by its own JSON name (memberField), each map
+// key as "(key)" and each list item as "(item)". No segment of field is printed: since Go 1.27
+// runs json v1 on v2, that path holds the answer's own map keys, and its own spelling of a
+// member's name, which encoding/json matches in any case. The path ends at the first segment t
+// does not name, and one whose first segment t does not name is "a member".
+func member(field string, t reflect.Type) string {
 	if field == "" {
 		return "value"
 	}
-	return fmt.Sprintf("%q", field)
+	var names []string
+walk:
+	for _, segment := range strings.Split(field, ".") {
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		switch t.Kind() {
+		case reflect.Map:
+			names, t = append(names, "(key)"), t.Elem()
+		case reflect.Slice, reflect.Array:
+			names, t = append(names, "(item)"), t.Elem()
+		case reflect.Struct:
+			f, ok := memberField(t, segment)
+			if !ok {
+				break walk
+			}
+			names, t = append(names, jsonName(f)), f.Type
+		default:
+			break walk
+		}
+	}
+	if len(names) == 0 {
+		return "a member"
+	}
+	return fmt.Sprintf("%q", strings.Join(names, "."))
+}
+
+// memberField is the field of the struct type t that encoding/json decodes the member name into,
+// as it matches a name: the field of that JSON name (jsonName), else one whose JSON name is name
+// in another case (strings.EqualFold), at t's own level or promoted from a struct embedded with no
+// JSON name of its own; and whether there is one.
+func memberField(t reflect.Type, name string) (reflect.StructField, bool) {
+	folded, found := reflect.StructField{}, false
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if !decoded(f) {
+			continue
+		}
+		inner := f.Type
+		for inner.Kind() == reflect.Pointer {
+			inner = inner.Elem()
+		}
+		if tag, _, _ := strings.Cut(f.Tag.Get("json"), ","); f.Anonymous && tag == "" && inner.Kind() == reflect.Struct {
+			if promoted, ok := memberField(inner, name); ok {
+				return promoted, true
+			}
+			continue
+		}
+		switch own := jsonName(f); {
+		case own == "":
+		case own == name:
+			return f, true
+		case !found && strings.EqualFold(own, name):
+			folded, found = f, true
+		}
+	}
+	return folded, found
 }
 
 // failingMember is the JSON name of the first member of data, an object decoded into the struct

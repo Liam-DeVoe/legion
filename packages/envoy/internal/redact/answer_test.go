@@ -47,20 +47,33 @@ func answerOf(t *testing.T, status int, answer func(auth string) string) redact.
 
 // TestAnAnswersDecodeErrorQuotesNoValue: a 200 answer echoes the request's bearer into a member
 // the client decodes as a time, as a number, or into nothing JSON at all, or answers a number
-// where the client holds the box. encoding/json's error, and time.Time's, quote the value;
-// Decode's names the member and the destination's type and quotes none of it, the box's member
-// among them, whose own type error names no field. Captures redact.answer-decode/<case>.
+// where the client holds the box, or echoes the bearer as a key of an object the client decodes
+// into a map. encoding/json's error, and time.Time's, quote the value, and since Go 1.27 runs json
+// v1 on v2 the path of its type error holds the answer's own map keys and its own spelling of a
+// member's name; Decode's error names the member as the destination's type names it, a map's key
+// and a list's item by a fixed word, and the destination's type, and quotes none of it, the box's
+// member among them, whose own type error names no field. Captures redact.answer-decode/<case>.
 func TestAnAnswersDecodeErrorQuotesNoValue(t *testing.T) {
+	type item struct {
+		N int `json:"n"`
+	}
 	type renewed struct {
 		LeaseExpiresAt time.Time         `json:"lease_expires_at"`
 		Seconds        int               `json:"seconds"`
 		Code           redact.RemoteText `json:"code"`
+		Values         map[string]int    `json:"values"`
+		Nested         map[string]item   `json:"nested"`
+		List           []item            `json:"list"`
 	}
 	for _, c := range []struct{ name, body, names string }{
 		{"time", `{"lease_expires_at":"renewed with {auth}"}`, `"lease_expires_at"`},
 		{"number", `{"seconds":"renewed with {auth}"}`, `"seconds"`},
 		{"box", `{"code":7}`, `"code"`},
 		{"not-json", `renewed with {auth}`, "not JSON"},
+		{"map-key", `{"values":{"{auth}":"renewed"}}`, `"values.(key)"`},
+		{"map-key-nested", `{"nested":{"{auth}":{"n":"renewed"}}}`, `"nested.(key).n"`},
+		{"map-key-name-case", `{"VALUES":{"{auth}":"renewed"}}`, `"values.(key)"`},
+		{"list", `{"list":[{"n":1},{"n":"renewed"}]}`, `"list.(item).n"`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			answer := answerOf(t, http.StatusOK, func(auth string) string { return strings.ReplaceAll(c.body, "{auth}", auth) })

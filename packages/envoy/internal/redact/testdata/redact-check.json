@@ -4707,6 +4707,20 @@
       "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box member's own type error, which names no field, names its member through failingMember"
     },
     {
+      "id": "redact-answer-decode-map-key",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersDecodeErrorQuotesNoValue/map-key",
+      "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a type error's member named as the destination's type names it, a map's key and a list's item by a fixed word (member), never by encoding/json's path, which holds the answer's own map keys",
+      "function": "github.com/sjawhar/envoy/internal/redact.decodeText",
+      "capture": "redact.answer-decode/map-key",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "member(typed.Field, t)",
+        "replacement": "fmt.Sprintf(\"%q\", typed.Field)"
+      }
+    },
+    {
       "id": "print-agent-secrets.RequestResult",
       "requirement": "r2-held",
       "package": "./cmd/cipher",
@@ -8799,6 +8813,11 @@
       "site": "Answer.Decode fills a **json.RawMessage or a **any with the body whole",
       "source": "the review of #4368 at c82c3a0d9f, finding 7",
       "guard": "answer-decode-whole-behind-pointers"
+    },
+    {
+      "site": "Answer.Decode's error printed encoding/json's type-error path, which since Go 1.27 runs json v1 on v2 holds the answer's own map keys: a key that echoes the request's credential printed it",
+      "source": "the review of #4368 at de683f95d2, finding 2",
+      "guard": "redact-answer-decode-map-key"
     },
     {
       "site": "daemon dispatchError: Dispatch's code taken through SendBack, so a message that quotes ISSUE_NOT_FOUND made a permanent refusal codeless and retried for ever",
