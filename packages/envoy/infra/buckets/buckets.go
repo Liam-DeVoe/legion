@@ -826,8 +826,8 @@ var listenerBuckets = slices.DeleteFunc(bus.CopiedBuckets(), func(bucket string)
 type podContainer struct {
 	Name    string   `json:"name"`
 	Command []string `json:"command"`
-	// Args are the words Kubernetes appends to Command, a shell's script among them when the
-	// command is `sh -c` and the script is given as args.
+	// Args are the words Kubernetes appends to Command, or to the image's entrypoint when Command is
+	// empty: a launcher's program or a shell's script among them (launches).
 	Args []string `json:"args"`
 	Env  []envVar `json:"env"`
 	// EnvFrom are the Secrets and ConfigMaps each of whose keys becomes a variable of the
@@ -848,13 +848,13 @@ type envVar struct {
 // writes is the copied buckets container c may write, read from its configuration by the writer
 // map:
 //
-//   - a shell that runs a listener - a command whose program is one of shells and whose script, a
-//     later word of the command or its args, names envoy-listener (shellRuns), such as
-//     [/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec envoy-listener'] - writes every copied bucket: the
-//     script may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS itself, which the pod does not show, so
-//     the proof fails closed;
-//   - envoy-dispatch - named so, running envoy-dispatch, or a shell whose script names
-//     envoy-dispatch - writes the CI state bucket;
+//   - a listener started through a launcher - a command whose first word is not one of the two
+//     writer binaries (a shell, env, tini, dumb-init or any other program, or the image's
+//     entrypoint when the container sets args alone) and whose later words name envoy-listener
+//     (launches), such as [/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec envoy-listener'] or [tini, --,
+//     envoy-listener] - writes every copied bucket: the launcher may set ENVOY_MACHINE_ID and
+//     ENVOY_WEBHOOKS itself, which the pod does not show, so the proof fails closed;
+//   - envoy-dispatch - named so, or running envoy-dispatch - writes the CI state bucket;
 //   - a listener - a container whose environment sets ENVOY_MACHINE_ID, which every listener
 //     requires, or that is named or runs as a listener (listener, envoy-listener, or a command
 //     running envoy-listener or the held-port wrapper envoy-listener-heldport) - writes
@@ -866,19 +866,21 @@ type envVar struct {
 //     listener, and a listener whose envFrom may set ENVOY_WEBHOOKS writes the CI state bucket.
 //     A container nothing else names a writer, with an envFrom source of no prefix, so writes
 //     every copied bucket: the proof fails closed;
-//   - any other container writes none, a shell whose script names neither program among them.
+//   - a container whose launcher's words name envoy-dispatch writes the CI state bucket too,
+//     beside whatever the rest of the map reads it to write;
+//   - any other container writes none, a launcher whose words name neither binary among them.
 //
 // The proof reads only the namespaces the operator names, so a container elsewhere that is named
 // listener, such as an Actions runner's, is never read.
 func (c podContainer) writes() []string {
-	if c.shellRuns("envoy-listener") {
+	if c.launches("envoy-listener") {
 		return bus.CopiedBuckets()
 	}
 	command := ""
 	if len(c.Command) > 0 {
 		command = path.Base(c.Command[0])
 	}
-	if c.Name == "envoy-dispatch" || command == "envoy-dispatch" || c.shellRuns("envoy-dispatch") {
+	if c.Name == "envoy-dispatch" || command == "envoy-dispatch" {
 		return []string{bus.CIStateBucket}
 	}
 	listener := c.Name == "listener" || c.Name == "envoy-listener" || command == "envoy-listener" || command == "envoy-listener-heldport"
@@ -894,43 +896,54 @@ func (c podContainer) writes() []string {
 	}
 	listener = listener || c.envFromMaySet("ENVOY_MACHINE_ID")
 	github = github || c.envFromMaySet("ENVOY_WEBHOOKS")
-	if !listener {
-		return nil
+	var written []string
+	if listener {
+		written = slices.Clone(listenerBuckets)
 	}
-	if github {
-		return append(slices.Clone(listenerBuckets), bus.CIStateBucket)
+	if (listener && github) || c.launches("envoy-dispatch") {
+		written = append(written, bus.CIStateBucket)
 	}
-	return slices.Clone(listenerBuckets)
+	return written
 }
 
-// shells are the programs, by the base name of a container's command, that run a script their
-// later words give them, as `sh -c` does: the shells an image carries (busybox's among them,
-// through `busybox sh`).
-var shells = []string{"sh", "bash", "dash", "ash", "zsh", "ksh", "mksh", "busybox"}
-
-// shellRuns reports whether c's command is a shell whose script names program: the command's
-// program is one of shells, by path or not, and a later word of the command, or one of its args,
-// which Kubernetes appends to it, holds program, such as the script of [/bin/sh, -c,
-// 'ENVOY_MACHINE_ID=x exec envoy-listener'] or of command [bash, -c] with that script as args. Any
-// word that holds the name counts, so a script that only mentions the program blocks too: the
-// proof fails closed. A shell given a script file names no program, and is read as any other
-// container.
-func (c podContainer) shellRuns(program string) bool {
-	if len(c.Command) == 0 || !slices.Contains(shells, path.Base(c.Command[0])) {
-		return false
+// launches reports whether c starts program through a launcher: c's command's first word, by its
+// base name, is not one of the two writer binaries, envoy-listener and envoy-dispatch - a shell,
+// env, tini, dumb-init or any other program, or the image's entrypoint when c sets args alone, which
+// Kubernetes appends to it - and a later word of the command, or one of its args, holds program,
+// such as the script of [/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec envoy-listener'], the program of
+// [env, ENVOY_MACHINE_ID=x, envoy-listener], or args [envoy-listener] under an entrypoint of
+// [tini, --]. Any word that holds the name counts, so a launcher that only mentions the program,
+// such as a probe that reads the listener's URL, blocks too: the proof fails closed. A launcher
+// given a script file names no program, and is read as any other container. A writer binary's own
+// command is no launcher: the later words of [envoy-dispatch, --listener=http://envoy-listener] are
+// its flags.
+func (c podContainer) launches(program string) bool {
+	words := c.Args
+	if len(c.Command) > 0 {
+		switch path.Base(c.Command[0]) {
+		case "envoy-listener", "envoy-dispatch":
+			return false
+		}
+		words = slices.Concat(c.Command[1:], c.Args)
 	}
-	return slices.ContainsFunc(slices.Concat(c.Command[1:], c.Args), func(word string) bool { return strings.Contains(word, program) })
+	return slices.ContainsFunc(words, func(word string) bool { return strings.Contains(word, program) })
 }
 
-// shellNote is what a blocker on c adds when a shell's script is what makes it a writer
-// (shellRuns): the program the script names, and for a listener that the script may set the
-// variables the writer map reads, which the pod does not show. It is "" for any other container.
-func (c podContainer) shellNote() string {
+// launchNote is what a blocker on c, which writes written of the buckets, adds when a launcher is
+// what makes c a writer of them (launches): the binary the launcher's words name and the launcher,
+// and for a listener that the launcher may set the variables the writer map reads, which the pod
+// does not show. envoy-dispatch is named only on a blocker of the CI state bucket, the one bucket
+// it adds. It is "" for any other container.
+func (c podContainer) launchNote(written []string) string {
+	through := "the image's entrypoint"
+	if len(c.Command) > 0 {
+		through = path.Base(c.Command[0])
+	}
 	switch {
-	case c.shellRuns("envoy-listener"):
-		return " (its command is a shell whose script names envoy-listener, and the script may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS, which the pod does not show)"
-	case c.shellRuns("envoy-dispatch"):
-		return " (its command is a shell whose script names envoy-dispatch)"
+	case c.launches("envoy-listener"):
+		return fmt.Sprintf(" (its command or args name envoy-listener, run through %s, which may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS where the pod does not show them)", through)
+	case c.launches("envoy-dispatch") && slices.Contains(written, bus.CIStateBucket):
+		return fmt.Sprintf(" (its command or args name envoy-dispatch, run through %s)", through)
 	}
 	return ""
 }
@@ -1179,7 +1192,7 @@ func (f fence) provePods(ctx context.Context, out io.Writer, kube string) []stri
 						continue
 					}
 					blockers = append(blockers, fmt.Sprintf("kubernetes %s: pod %s/%s (uid %s, node %s) runs %s %s, which writes %s%s%s",
-						label, namespace, pod.Metadata.Name, pod.Metadata.UID, pod.Spec.NodeName, kind.name, container.Name, strings.Join(written, ", "), container.shellNote(), container.envFromNote(f.buckets)))
+						label, namespace, pod.Metadata.Name, pod.Metadata.UID, pod.Spec.NodeName, kind.name, container.Name, strings.Join(written, ", "), container.launchNote(written), container.envFromNote(f.buckets)))
 				}
 			}
 		}

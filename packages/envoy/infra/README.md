@@ -3517,21 +3517,23 @@ without one:
   `envoy_known_sessions`, and `envoy_ci_state` too when its `ENVOY_WEBHOOKS` names `github` (read
   as the listener reads it: split at commas, each entry trimmed of white space), holds a `$(VAR)`
   reference, or comes from a Secret, a ConfigMap or a field; `envoy-dispatch` writes
-  `envoy_ci_state`. A container whose command is a shell (`sh`, `bash`, `dash`, `ash`, `zsh`,
-  `ksh`, `mksh` or `busybox`, by path or not) whose script - any later word of the command or its
-  `args` - names `envoy-listener`, such as `[/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec
-  envoy-listener']`, counts as a writer of every bucket, since the script may set
-  `ENVOY_MACHINE_ID` and `ENVOY_WEBHOOKS` where the pod does not show them, and its blocker says
-  so; one whose script names `envoy-dispatch` writes `envoy_ci_state`, and a shell whose script
-  names neither writes none. A container whose `envFrom` may set `ENVOY_MACHINE_ID` or
-  `ENVOY_WEBHOOKS` (a source with no prefix, or a prefix that starts the name, and no `env` entry
-  of that name, which takes precedence) counts as a writer of each bucket that variable could
-  select, and its blocker says so: one nothing else names a writer, with a source of no prefix,
-  blocks every bucket. No other container writes any. A pod of another namespace is never read, so
-  an Actions runner's container named `listener` does not block. No node's kubelet runtime list is
-  read (Autopilot refuses `nodes/proxy`), so a pod deleted with `--force` whose containers still
-  run gets past the check: that is the third way the warning names, and `--connz` still sees its
-  open connection.
+  `envoy_ci_state`. A container started through a launcher - a command whose first word is not
+  `envoy-listener` or `envoy-dispatch`, such as a shell, `env`, `tini` or `dumb-init`, or the
+  image's entrypoint when the container sets `args` alone - whose later words (of the command or
+  its `args`) name `envoy-listener`, such as `[/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec
+  envoy-listener']` or `[tini, --, envoy-listener]`, counts as a writer of every bucket, since the
+  launcher may set `ENVOY_MACHINE_ID` and `ENVOY_WEBHOOKS` where the pod does not show them, and its
+  blocker says so. One whose later words name `envoy-dispatch` writes `envoy_ci_state` too, and a
+  launcher whose words name neither writes none. Any word holding the name counts, a probe that
+  reads the listener's URL among them, so the check fails closed. A container whose `envFrom` may
+  set `ENVOY_MACHINE_ID` or `ENVOY_WEBHOOKS` (a source with no prefix, or a prefix that starts the
+  name, and no `env` entry of that name, which takes precedence) counts as a writer of each bucket
+  that variable could select, and its blocker says so: one nothing else names a writer, with a
+  source of no prefix, blocks every bucket. No other container writes any. A pod of another
+  namespace is never read, so an Actions runner's container named `listener` does not block. No
+  node's kubelet runtime list is read (Autopilot refuses `nodes/proxy`), so a pod deleted with
+  `--force` whose containers still run gets past the check: that is the third way the warning
+  names, and `--connz` still sees its open connection.
 - `--host <target>`, once for each machine, through `ssh -o BatchMode=yes` (`--ssh <program>`
   names another program taking ssh's arguments, such as a wrapper over SSM): no process on the
   machine runs under a name this repository runs a writer as - `envoy-listener`, `listener`, the

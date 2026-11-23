@@ -13,8 +13,10 @@
 **/build
 **/coverage
 *.log
-.env
-.env.*
+# An operator's untracked environment files (.env, .env.local and the like, which .gitignore
+# ignores anywhere), at the root and under every directory a COPY takes whole.
+**/.env
+**/.env.*
 .vscode
 .idea
 **/docker-data
@@ -48,10 +50,6 @@ packages/envoy/infra/scripts/
 packages/envoy/infra/**/testdata/
 packages/envoy/infra/host/heldportwrapper/Dockerfile
 packages/envoy/infra/host/heldportwrapper/Dockerfile.dockerignore
-# An operator's untracked environment files under the module (.env, .env.local and the like, which
-# .gitignore ignores anywhere): the .env lines above match at the context's root alone, and
-# `COPY packages/envoy ./` would take one under the module into the build stage.
-packages/envoy/infra/**/.env*
 
 # Every package's changelog fragments, which no build reads.
 packages/*/.changes/

@@ -5,8 +5,10 @@
 **/build
 **/coverage
 *.log
-.env
-.env.*
+# An operator's untracked environment files (.env, .env.local and the like, which .gitignore
+# ignores anywhere), at the root and under every directory a COPY takes whole.
+**/.env
+**/.env.*
 .vscode
 .idea
 **/docker-data
