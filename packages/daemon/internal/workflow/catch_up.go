@@ -95,7 +95,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 	// The catch-up names the owner's own step (treeCatchUp) and points at its owner-step notice,
 	// which the session ready now may never have been given: the step is told again after it,
 	// where it started and has not ended, no owner-step of it is still queued (owedOwnersStep), and
-	// no owner-step of its run reached this launch or the session it runs in (toldThisSession).
+	// no owner-step of its run reached the session it runs in (toldThisSession).
 	owed, ok, err := e.owedOwnersStep(ctx, tx, *issue)
 	if err != nil || !ok {
 		return intake.Result{}, err
