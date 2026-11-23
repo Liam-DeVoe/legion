@@ -260,7 +260,7 @@ func (r *podRefusalRig) refuseTheTestersResume() {
 // neither stops the workflow, so a report that fails, the hourly one included, costs the daemon no
 // restart. Failing once and then passing, the issue and the controller are told and the claim's
 // owed entry is queued. Failing for ever, the line is logged at each try, nothing reaches the
-// workflow's failure channel (failed), and nothing is queued.
+// workflow's failure channel (failed), nothing is queued, and the daemon's stop ends the tries.
 func TestARefusalsReportTheStoreDidNotTakeIsTriedAgainUntilApplied(t *testing.T) {
 	withFailing := func(answers **workflowRuntime, failing intake.Handler, log *slog.Logger) func(pool *store.Pool, records record.Store) *workflowRuntime {
 		return func(pool *store.Pool, records record.Store) *workflowRuntime {
@@ -297,6 +297,9 @@ func TestARefusalsReportTheStoreDidNotTakeIsTriedAgainUntilApplied(t *testing.T)
 		logs := &syncBuffer{}
 		failing := failingRefusals(-1)
 		r := newPodRefusalRig(t, withFailing(&answers, failing, slog.New(slog.NewJSONHandler(logs, nil))), nil)
+		stopping, stop := context.WithCancel(context.Background())
+		defer stop()
+		answers.stopped = stopping
 		r.refuseTheTestersResume()
 		deadline := time.Now().Add(20 * time.Second)
 		for len(loggedLines(t, logs.String(), refusalReportLine)) < 3 {
@@ -314,6 +317,12 @@ func TestARefusalsReportTheStoreDidNotTakeIsTriedAgainUntilApplied(t *testing.T)
 		notStopped(t, answers)
 		if got := r.starts(); len(got) != 0 {
 			t.Fatalf("with the report never applied the outbox holds the starts %+v, want none", got)
+		}
+		stop()
+		ended := failing.count()
+		time.Sleep(5 * time.Second)
+		if n := failing.count(); n > ended+1 {
+			t.Fatalf("after the daemon's stop the report was tried %d more times, want the tries ended", n-ended)
 		}
 	})
 }

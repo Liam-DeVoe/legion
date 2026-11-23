@@ -445,7 +445,7 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 		r.log.Error("outbox row finish not recorded; it runs again when its lease expires", "row", row.ID, "error", err)
 		return
 	}
-	r.startRowEnded(row)
+	r.startRowEnded(ctx, row)
 }
 
 // startRowEnded asks the workflow to read a claim's queued starts again (intake.RefusedStartEnded)
@@ -468,9 +468,12 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 // finishes, whose end would ask again, at the database's speed.
 //
 // It runs on a goroutine of its own, since the read waits out the decision in flight on the
-// claim's machine, which can hold a Sandbox relaunch for minutes, and the lane goes on meanwhile; a
-// fact it cannot apply is logged at ERROR.
-func (r *outbox) startRowEnded(row record.OutboxRow) {
+// claim's machine, which can hold a Sandbox relaunch for minutes, and the lane goes on meanwhile.
+// A fact it cannot apply is logged at ERROR and tried again on a backoff (retryUntilApplied, from
+// refusalRetryFirst doubling to refusalRetryMost) until it is applied or ctx, the lane's, ends
+// with the outbox's stop, as the refusal's own report is (workflowRuntime.podRefused): the fact is
+// the one thing that brings such a claim back short of a boot.
+func (r *outbox) startRowEnded(ctx context.Context, row record.OutboxRow) {
 	if row.Kind != record.OutboxKindSupervise || r.supervisor == nil || len(r.handlers) == 0 {
 		return
 	}
@@ -482,10 +485,12 @@ func (r *outbox) startRowEnded(row record.OutboxRow) {
 	go func() {
 		// This goroutine runs beside every lane, so it takes a hold mark of its own
 		// (store.ForConcurrentWorker).
-		ctx := store.ForConcurrentWorker(context.Background())
+		ctx := store.ForConcurrentWorker(ctx)
 		token, err := r.workerToken(ctx, row.Issue, request.Role, request.Claim)
 		if err != nil {
-			r.log.Error("read the claim of a finished start row for its pod's refusal", "row", row.ID, "issue", row.Issue, "error", err)
+			if ctx.Err() == nil {
+				r.log.Error("read the claim of a finished start row for its pod's refusal", "row", row.ID, "issue", row.Issue, "error", err)
+			}
 			return
 		}
 		machine, found := r.supervisor.Machine(token)
@@ -497,9 +502,11 @@ func (r *outbox) startRowEnded(row record.OutboxRow) {
 			return
 		}
 		fact := intake.RefusedStartEnded{Issue: held.Issue, Role: held.Role, Claim: token}
-		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("refused-start-ended:%s:%d", token, row.ID), fact, r.handlers...); err != nil {
-			r.log.Error("apply the end of a start row of a claim its pod refused", "row", row.ID, "claim", token, "error", err)
-		}
+		id := fmt.Sprintf("refused-start-ended:%s:%d", token, row.ID)
+		retryUntilApplied(ctx, r.log, "apply the end of a start row of a claim its pod refused", refusalRetryFirst, refusalRetryMost, func(ctx context.Context) error {
+			_, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...)
+			return err
+		}, "row", row.ID, "claim", token)
 	}()
 }
 

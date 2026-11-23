@@ -282,12 +282,15 @@ type workflowRuntime struct {
 	// goroutine of its own (reviewRefused).
 	readMemoMu     sync.Mutex
 	refusedReviews map[int64]bool
-	// failed carries the first supervision terminal fact, or the first report of a launch its
-	// issue's pod refused (podRefused), that could not be applied. serve stops the daemon with it:
-	// the claim's terminal state, or its suspension for the daemon, is durable, so the next boot's
-	// replay applies the terminal fact the failed callback lost, and its resume by rule starts the
-	// suspended claim.
+	// failed carries the first supervision terminal fact that could not be applied. serve stops
+	// the daemon with it: the claim's terminal state is durable, so the next boot's replay applies
+	// the terminal fact the failed callback lost.
 	failed chan error
+	// stopped ends at the daemon's stop: the facts a machine reports on goroutines of their own and
+	// that are tried again until applied (podRefused) are tried until it ends (untilStop). run
+	// opens the runtime on its own context (openWorkflow), which the stop ends; a runtime a test
+	// builds by hand holds none.
+	stopped context.Context
 	// readied is the architects claimReady recorded whose waiting notices releaseReadied has not
 	// released yet.
 	readied *wakeSet[claim.Token]
@@ -661,6 +664,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		tokens: tokens, apps: tokens, deployed: deploymentApps(cfg.Roles), forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
+		stopped:    ctx,
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
@@ -1802,25 +1806,36 @@ const (
 	bootRetryMax   = 30 * time.Second
 )
 
+// Each retry of a fact about a launch its issue's pod refused — the refusal's report
+// (workflowRuntime.podRefused) and the end of a start row of a refused claim (outbox's
+// startRowEnded) — waits twice the last, from refusalRetryFirst to at most refusalRetryMost, so a
+// fact the store keeps refusing is logged at ERROR at least hourly for as long as it fails.
+const (
+	refusalRetryFirst = time.Second
+	refusalRetryMost  = time.Hour
+)
+
 // runBooted applies this boot's fact (booted) beside the serving API, retrying every failure — a
 // timeout included — on a backoff, each logged at ERROR, until it lands or the daemon stops. The
 // fact is keyed by the boot, so a retry after a commit whose answer was lost is a duplicate, not a
 // second census. Only the daemon's stop leaves it unapplied, and the next boot applies its own.
 func (w *workflowRuntime) runBooted(ctx context.Context, bootID int64) {
-	retryUntilApplied(ctx, w.log, bootRetryFirst, bootRetryMax, func(ctx context.Context) error { return w.booted(ctx, bootID) })
+	retryUntilApplied(ctx, w.log, "legion daemon could not apply its boot; retrying", bootRetryFirst, bootRetryMax,
+		func(ctx context.Context) error { return w.booted(ctx, bootID) })
 }
 
 // retryUntilApplied runs apply until it succeeds or ctx ends, waiting first, then twice as long up
-// to most, between attempts, and logging each failure at ERROR. A failure once ctx has ended is the
-// stop, and logs nothing.
-func retryUntilApplied(ctx context.Context, log *slog.Logger, first, most time.Duration, apply func(context.Context) error) {
+// to most, between attempts, and logging each failure at ERROR as line, with attrs, the attempt,
+// the wait before the next and the error. A failure once ctx has ended is the stop, and logs
+// nothing.
+func retryUntilApplied(ctx context.Context, log *slog.Logger, line string, first, most time.Duration, apply func(context.Context) error, attrs ...any) {
 	wait := first
 	for attempt := 1; ; attempt++ {
 		err := apply(ctx)
 		if err == nil || ctx.Err() != nil {
 			return
 		}
-		log.Error("legion daemon could not apply its boot; retrying", "attempt", attempt, "retryIn", wait, "error", err)
+		log.Error(line, append(attrs[:len(attrs):len(attrs)], "attempt", attempt, "retryIn", wait, "error", err)...)
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -2480,12 +2495,19 @@ func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 // podRefusedLaunch). The machine decides how often this is called — at the first refusal, then
 // hourly — so each call is a report, and the event id names the moment.
 //
-// The fact is the one thing that queues that start, so it is applied as a claim's terminal fact
-// is (terminal), not as a report: on a goroutine of its own, since the machine calls this inside
-// its own decision, with no deadline, so a queue of facts ahead of it on the serializer is waited
-// out rather than lost, and a failure stops the workflow, and with it the daemon (failed). The
-// claim's suspension for the daemon is durable, so the next boot's resume by rule starts it
-// (workflow's booted), and its launch, refused again while the pod stands, is reported again.
+// The fact is the one thing that queues that start, so it is never only logged: it is applied on
+// a goroutine of its own, since the machine calls this inside its own decision, each try with no
+// deadline, so a queue of facts ahead of it on the serializer is waited out rather than lost, and
+// a try that fails is logged at ERROR and tried again on a backoff (retryUntilApplied, from
+// refusalRetryFirst doubling to refusalRetryMost) until it is applied or the daemon stops
+// (untilStop), as the end of a start row of a refused claim is (outbox's startRowEnded). The
+// event id is kept across the tries, so a try after a commit whose answer was lost is a
+// duplicate. It does not stop the daemon, as a terminal fact does (failed): the restart would
+// recover nothing a try does not, since the boot's resume by rule brings back only a claim that
+// owns its issue's step, launches it into the same pod and is refused and reported again, while
+// every other claim of the deployment would be stopped and started for it; and an hourly report,
+// which finds the start the first one queued, would restart the daemon for a fact that queues
+// nothing.
 func (w *workflowRuntime) podRefused(c supervise.Claim, pod, detail string) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return
@@ -2494,16 +2516,22 @@ func (w *workflowRuntime) podRefused(c supervise.Claim, pod, detail string) {
 	fact := intake.PodRefusedLaunch{Issue: c.Issue, Role: c.Role, Claim: c.Token, Pod: pod, Detail: detail}
 	go func() {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
-		// hold mark of its own (store.ForConcurrentWorker), and no deadline, for the reasons above.
-		ctx := store.ForConcurrentWorker(context.Background())
-		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
-			w.log.Error("apply a launch its issue's pod refused", "claim", c.Token, "error", err)
-			select {
-			case w.failed <- err:
-			default:
-			}
-		}
+		// hold mark of its own (store.ForConcurrentWorker).
+		ctx := store.ForConcurrentWorker(w.untilStop())
+		retryUntilApplied(ctx, w.log, "apply a launch its issue's pod refused", refusalRetryFirst, refusalRetryMost, func(ctx context.Context) error {
+			_, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...)
+			return err
+		}, "claim", c.Token, "issue", c.Issue, "role", c.Role)
 	}()
+}
+
+// untilStop is the context the runtime's retries of a fact run on, which ends at the daemon's
+// stop (stopped), or one that never ends for a runtime a test builds by hand without it.
+func (w *workflowRuntime) untilStop() context.Context {
+	if w.stopped == nil {
+		return context.Background()
+	}
+	return w.stopped
 }
 
 // applySessionFact applies one of the two session facts, a lost session and a session store
