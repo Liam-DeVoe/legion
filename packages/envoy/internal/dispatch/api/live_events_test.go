@@ -27,8 +27,9 @@ import (
 // sends an event only once the horizon has passed its id. The horizon's proof is instance-wide, so
 // a frame of the feed is as late as the longest transaction open anywhere on the Postgres
 // instance, which CI shares between every package of the module, and no clock bounds the wait for
-// one: it keys on the horizon's own account of itself (internal/dispatch/horizontest). Every server
-// these tests build warns at horizontest.StallWarning (newRegisteredTestServer).
+// one: it reads the instance's holder itself, and only a hold of the server's own database past
+// horizontest.OwnHoldBound or the drain before the run's deadline ends it
+// (internal/dispatch/horizontest).
 
 // eventFeedFrame is the next frame but a heartbeat client is sent, which what names: a frame of
 // the event feed, so the wait for it is the horizon's (horizontest.WaitInProcess), on the store of

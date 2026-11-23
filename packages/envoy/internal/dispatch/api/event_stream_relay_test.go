@@ -53,7 +53,7 @@ func secondProcess(t *testing.T, database *store.Store) (http.Handler, *eventStr
 		ServerURL:   "https://dispatch.example",
 		Docs:        documentService,
 		Events:      broker,
-		// Its sockets' event feeds are waited on as the first process's are (eventFeedFrame).
+		// Its horizon warns as the first process's does (newRegisteredTestServer).
 		HorizonStallAfter: horizontest.StallWarning,
 		HorizonWarnEvery:  horizontest.StallWarning,
 	})

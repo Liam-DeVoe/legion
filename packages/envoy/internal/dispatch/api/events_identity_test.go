@@ -202,7 +202,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	deps, err := NewDeps(DepsInput{
 		Store: database, Identity: lookups, AgentTokens: sharedAgentTokens(t, "agent-token"), Docs: documents, Events: broker,
 		StreamHeartbeat: lookupHeartbeat,
-		// The subscribe below waits on the event feed (eventFeedFrame).
+		// Its horizon warns as every test server's does (newRegisteredTestServer).
 		HorizonStallAfter: horizontest.StallWarning, HorizonWarnEvery: horizontest.StallWarning,
 	})
 	if err != nil {
