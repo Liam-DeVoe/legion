@@ -1595,12 +1595,12 @@ These arrive as messages on the Dispatch issue:
   never the refused completion's record, commit or verdict. A testing entry after such a move is
   for the head the fix pushed, and the verdict on the head before it answers for nothing there.
   A completion at the head the record holds is taken rather than refused, where the phase ends
-  with a handoff record this role writes and no move back raised the entry it is behind: the
-  phase was handed out again at that same head, so the work the new entry's task asks for is the
-  work that turn did. The same code on a completion of an entry above the one the row of the step
-  the task stands at names is one the record never produces, since the daemon raises the row in
-  the transaction
-  that composes the entry's task; that refusal tells the worker to end the turn and tell the
+  with a handoff record this role writes, no move back raised the entry it is behind, and that
+  entry is of the step the task stands at: the phase was handed out again at that same head, so
+  the work the new entry's task asks for is the work that turn did. The same code on a completion
+  of an entry above the one the row of the step the task stands at names is one the record never
+  produces, since the daemon raises the row in the transaction that composes the entry's task;
+  that refusal tells the worker to end the turn and tell the
   architect. Either refusal comes only while the role works the phase the issue stands in. A
   completion of an entry that no phases row of the role stands on, from a role that no longer
   works the issue's phase — a taken completion sent again once it has moved the issue on, or one

@@ -793,6 +793,8 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"Each reviewer step of a task has a phase row of its own, and the first round of a later reviewer step starts from the row of the reviewer step before it. It keeps the commit that row holds only where one agent works both steps, as the steps of one key are one claim; where the step before is another agent's, your row holds no commit until your own first deciding review, so your task names `Last reviewed commit: none.`, and where that agent's review read a commit, the daemon writes ` Commit another agent's review read: <sha>.` just before the two sentences that end your task (`AnotherAgentsSentence` in `packages/daemon/internal/reviewround/reviewround.go`), so you read the whole change and can see what changed since that review. That sentence is the daemon's too.",
 		"on a reviewer's task, the sentences of its round after it, `Last reviewed commit:` and then `Review entry:`, with `Commit another agent's review read:` before them in the first round of a reviewer step that follows another agent's.",
 		"read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
+		"by a later step of the task that pushes, such as a second implementer step, or after your architect sends the issue back",
+		"Retro commits nothing, so where no step after yours pushes, your approved head",
 		"over the diff that round reads, when that diff touches runtime code",
 		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
 		"The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other",
@@ -1067,6 +1069,8 @@ func TestEveryWorkerPromptSaysWhichReportsItsTaskNames(t *testing.T) {
 				{"after a return", "the step that sent the work back", "`Reason:` line"},
 				{"your handoff on the Dispatch issue (`dispatch handoff-read --issue <issue> --phase <word>`)"},
 				{"Read the report your task's `Handoff:` line names with the command that line quotes"},
+				{"the first report of a run an event ended, which is taken unless your role works the issue's phase again at another of its steps"},
+				{"Where your role works the issue's phase again at another of its steps", "refused instead, at any head", "`HANDOFF_STALE_ENTRY` where your agent works the step the task stands at", "`HANDOFF_NOT_CURRENT_PHASE` where another agent's claim works it"},
 			} {
 				if !clauseHolds(text, terms...) {
 					t.Errorf("no clause of the composed %s prompt holds %q, in that order", role, terms)

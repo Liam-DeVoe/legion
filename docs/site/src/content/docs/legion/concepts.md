@@ -414,7 +414,7 @@ it moves the issue: it refuses a record another session wrote, one of another is
 version, and the record the role named for its previous phase. No handoff is a commit, so the
 issue branch carries only work, every push gets its own CI, and the merge brings no handoff onto
 the default branch. Retro commits nothing, so the head that merges is the head the issue's last
-step passed — the head the reviewer approved, where its plan has a review step — and nothing in
+step passed — the head the reviewer approved, where its last step is a review step — and nothing in
 Legion compares the two in any case: a repository that wants a later push reviewed says so in its
 own rulesets, and GitHub holds the merge to them.
 
@@ -499,7 +499,11 @@ Legion uses GitHub's own review mechanisms rather than labels:
   answered `HANDOFF_NOT_CURRENT_PHASE`. A completion at another commit is refused; so is one that
   names no commit, and so is any while the record holds no pull request for the issue. A
   completion is refused whatever head it names when the entry the phase stands on was raised by a
-  move back, which asks for that phase's work to be done again.
+  move back, which asks for that phase's work to be done again, or when the entry it serves is of
+  another of the role's steps than the one the task stands at, such as step 3 of
+  `implementer:a reviewer implementer:a` once a move back has taken the work to step 1:
+  `HANDOFF_STALE_ENTRY` where one agent works both steps, and `HANDOFF_NOT_CURRENT_PHASE` where
+  another agent's claim works the step the task stands at.
 - **An implementer that completes with no pull request** is refused (`HANDOFF_NO_PULL_REQUEST`)
   until one is open on its branch, and the daemon's read of that issue tells its architect
   `pull-request-missing`, once per handoff commit, so an issue never waits in `implementing`
