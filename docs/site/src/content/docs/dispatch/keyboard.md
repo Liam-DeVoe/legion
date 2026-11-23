@@ -69,7 +69,7 @@ opened while it stands in place of the list. In the Inbox drawer they act on the
 | `x` | Tick or untick the selected ask, for a snooze of several at once |
 | `h` | Snooze the selected ask, or every ticked ask; below 1280 px, on a focused row, open it at its **Snooze** |
 | `f` | Move the focus to the **Search asks** box above the list |
-| `Escape` | From the search box, to the selected row, or the first row where none is selected; from the right column, back to the row `l` was pressed on, else the row it is showing; then back to the row, then off it; below 1280 px, from an open row, back to the list (from inside its question, first out of the question); from the bulk snooze menu, back to the list; with no row focused, drop every tick |
+| `Escape` | From the search box, to the selected row, or the first row where none is selected; from the right column, back to the row `l` was pressed on, else the row it is showing; then back to the row, then off it; below 1280 px, from an open row - its **Snooze** and **Priority** included - back to the list (from inside its question, first out of the question; in a text field, Escape is the field's); from the bulk snooze menu, back to the list; with no row focused, drop every tick |
 
 `Enter`, `1` – `9`, `x` and `h` are an open question's: a thread row has no options, no answer
 box and no snooze, so they do nothing on one. An agent-message row has no `dispatch://`

@@ -1,5 +1,5 @@
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
 
 import { buildInboxPath, type InboxRoute } from "../refs/routes";
 import { answerDraft } from "./answer-drafts";
@@ -61,8 +61,14 @@ export interface PaneSelectionOptions {
   columns: boolean;
   /** The address this list is on. The selection is written into its `?item=`. */
   filter: InboxRoute;
+  /** Whether the reader's own write took the row with this id out of the list - their answer,
+   *  snooze or dismiss - rather than the server on its own. */
+  leftByReader: (id: string) => boolean;
   /** The list's root, where the selected row's own element is looked up. */
   listRef: RefObject<HTMLElement | null>;
+  /** Below the column's width, the row the reading view showed left the Inbox on its own, and
+   *  the list is back at that place. */
+  onOpenRowLeft: () => void;
   /** Opens the folded band, for an `?item=` naming a row the reader deferred. */
   openFoldedBand: () => void;
   /** Whether this list selects at all: the Inbox page does at every width, the drawer never
@@ -126,7 +132,9 @@ export function usePaneSelection({
   candidates,
   columns,
   filter,
+  leftByReader,
   listRef,
+  onOpenRowLeft,
   openFoldedBand,
   pane,
   presented,
@@ -134,6 +142,7 @@ export function usePaneSelection({
 }: PaneSelectionOptions): PaneSelection {
   const navigate = useNavigate();
   const location = useLocation();
+  const navigationType = useNavigationType();
   const entry = inboxEntryState(location.state);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const selectedNow = useRef<string | undefined>(undefined);
@@ -174,6 +183,9 @@ export function usePaneSelection({
    *  names the row the reader closed: read as a new address, it would select that row again. */
   const leaving = useRef<string | undefined>(undefined);
   const listAnswered = useRef(false);
+  /** Below the column's width, the row that now stands where the row the reading view showed
+   *  stood, when that row left the list on its own: the list comes back with the focus there. */
+  const returnTo = useRef<string | undefined>(undefined);
 
   const select = (id: string | undefined, mode: SelectMode = "replace"): void => {
     if (!columns && id === undefined && entry.inboxOverList === true) {
@@ -250,6 +262,9 @@ export function usePaneSelection({
     [listRef, selectedId]
   );
 
+  /** Below the column's width, a row the column picked by itself is no row the reader opened:
+   *  nothing is drawn for it, not even for the one commit before the effect below clears it. */
+  const columnPickNarrowed = !columns && entry.inboxDefaultPick === true;
   /**
    * What the column shows this commit, given the selected row among the ones the list renders
    * (none, where it renders none at all). Normally that row, which leaves the column as it
@@ -278,7 +293,7 @@ export function usePaneSelection({
    */
   const paneRow = (listed: InboxListRow | undefined): InboxListRow | undefined => {
     const subject = paneSubject.current;
-    if (!pane || selectedId === undefined) {
+    if (!pane || selectedId === undefined || columnPickNarrowed) {
       paneSubject.current = undefined;
       return undefined;
     }
@@ -351,8 +366,10 @@ export function usePaneSelection({
       select(undefined);
       return;
     }
-    // A list that holds nothing - still loading, failed, or genuinely empty - answers no
-    // address: `?item=` is left unread until there are rows to read it against.
+    // Before the Inbox's read has landed there are no rows to read `?item=` against, so it is
+    // left unread. Once the list has answered and holds nothing, below the column's width the
+    // row the address names cannot be shown: the view gives way to the list - saying so when the
+    // row left on its own - unless it is keeping a question for an unsent answer.
     if (listedRows.current.length === 0) {
       if (
         !columns &&
@@ -360,6 +377,7 @@ export function usePaneSelection({
         filter.item !== undefined &&
         paneSubject.current?.kept !== true
       ) {
+        if (selectedId !== undefined && !leftByReader(selectedId)) onOpenRowLeft();
         select(undefined);
       }
       return;
@@ -372,6 +390,14 @@ export function usePaneSelection({
         const id = rowId(wanted.row);
         setSelectedId(id);
         if (!visible.some((placed) => rowId(placed.row) === id)) openFoldedBand();
+        return;
+      }
+      // Beside the list, Back onto an entry that names no row - the one a row opened below the
+      // column's width was pushed over - is the reader's own way back: the column takes its
+      // first row by itself, rather than writing back the row the Back left.
+      const top = visible[0];
+      if (columns && filter.item === undefined && navigationType === "POP" && top !== undefined) {
+        select(rowId(top.row), "column-default");
         return;
       }
     }
@@ -391,6 +417,15 @@ export function usePaneSelection({
     // address naming a row the list does not hold.
     const next = nextAfterSelected();
     const first = visible[0];
+    // Below the column's width the list is hidden behind the view, so a row that left on its
+    // own is not swapped for one the reader never opened: the list comes back at that place,
+    // and says the row left.
+    if (!columns && selectedId !== undefined && !leftByReader(selectedId)) {
+      returnTo.current = visible.some((placed) => rowId(placed.row) === next) ? next : undefined;
+      onOpenRowLeft();
+      select(undefined);
+      return;
+    }
     if (visible.some((placed) => rowId(placed.row) === next)) {
       select(next, entry.inboxDefaultPick === true ? "column-default" : "replace");
       return;
@@ -423,16 +458,18 @@ export function usePaneSelection({
     if (!pane || columns || left === undefined || selectedId !== undefined) {
       return;
     }
-    const row = listRef.current?.querySelector<HTMLElement>(
-      `[${ROW_ATTRIBUTE}="${CSS.escape(left)}"]`
-    );
+    const back = returnTo.current;
+    returnTo.current = undefined;
+    const rowOf = (id: string) =>
+      listRef.current?.querySelector<HTMLElement>(`[${ROW_ATTRIBUTE}="${CSS.escape(id)}"]`) ?? null;
+    const row = rowOf(left) ?? (back === undefined ? null : rowOf(back));
     row?.focus({ preventScroll: true });
     row?.scrollIntoView?.({ block: "center" });
   });
 
   return {
     close: () => select(undefined),
-    id: selectedId,
+    id: columnPickNarrowed ? undefined : selectedId,
     nextAfterSelected,
     open: (id) => select(id, columns ? "replace" : "push"),
     select,

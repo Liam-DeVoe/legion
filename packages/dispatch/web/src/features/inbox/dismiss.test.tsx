@@ -212,6 +212,37 @@ test("below 1280 px a dismiss refused from the reading view's head is said where
   expect(screen.getByTestId("inbox-reading-view")).toBeTruthy();
 });
 
+test("below 1280 px a plain click on a thread row's title opens the row in place; a modified click follows the link", async () => {
+  const user = userEvent.setup();
+  renderInbox(seeded([replyRow("c1"), replyRow("c9")]));
+  await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+  // What the browser would do with each click is read here and then stopped, so no click leaves
+  // the test's page.
+  const followed: boolean[] = [];
+  const record = (event: Event) => {
+    followed.push(!event.defaultPrevented);
+    event.preventDefault();
+  };
+  document.addEventListener("click", record);
+  try {
+    const title = () =>
+      document.querySelector<HTMLElement>('[data-inbox-row="reply:c9"] a[data-inbox-owner]');
+
+    await user.keyboard("{Control>}");
+    await user.click(title() as HTMLElement);
+    await user.keyboard("{/Control}");
+    expect(followed).toEqual([true]);
+    expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+
+    await user.click(title() as HTMLElement);
+    expect(followed).toEqual([true, false]);
+    const view = await screen.findByTestId("inbox-reading-view");
+    expect(view.getAttribute("data-inbox-reading-row")).toBe("reply:c9");
+  } finally {
+    document.removeEventListener("click", record);
+  }
+});
+
 test("a row a refused dismiss put back is the reader's hand's again, held under the next read", async () => {
   const user = userEvent.setup();
   const dismissed = answerInboxDismisses();

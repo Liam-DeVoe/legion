@@ -380,6 +380,9 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("Inbox | - | form | (pane && !paneShown) ? …", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | if (pane && !paneShown) return …", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | (reading) ? …", { reason: REASONS[13] }),
+  ...answers("Inbox | - | form | if (pending.id !== paneSelection.id) return …", {
+    reason: REASONS[13],
+  }),
   ...answers(
     "Inbox | - | form | if (pane && !paneShown && inHand(COPY_REF_SELECTOR) === null && id !== undefined) return …",
     { reason: REASONS[13] }
@@ -396,9 +399,11 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("usePaneSelection | - | form | if (!columns || selectedId === undefined) return …", {
     reason: REASONS[13],
   }),
-  ...answers("usePaneSelection | - | form | if (!pane || selectedId === undefined) return …", {
-    reason: REASONS[13],
-  }),
+  ...answers(
+    "usePaneSelection | - | form | if (!pane || selectedId === undefined || columnPickNarrowed) return …",
+    { reason: REASONS[13] }
+  ),
+  ...answers("usePaneSelection | - | form | (columnPickNarrowed) ? …", { reason: REASONS[13] }),
   ...answers(
     "usePaneSelection | - | form | if (!columns && id === undefined && entry.inboxOverList === true) return …",
     { reason: REASONS[13] }
@@ -411,6 +416,18 @@ export const coverage: readonly CoverageEntry[] = [
   }),
   ...answers(
     "usePaneSelection | - | form | if (!columns && listAnswered.current && filter.item !== undefined && paneSubject.current?.kept !== true)",
+    { reason: REASONS[13] }
+  ),
+  ...answers(
+    "usePaneSelection | - | form | if (selectedId !== undefined && !leftByReader(selectedId))",
+    { reason: REASONS[13] }
+  ),
+  ...answers(
+    'usePaneSelection | - | form | if (columns && filter.item === undefined && navigationType === "POP" && top !== undefined) return …',
+    { reason: REASONS[13] }
+  ),
+  ...answers(
+    "usePaneSelection | - | form | if (!columns && selectedId !== undefined && !leftByReader(selectedId)) return …",
     { reason: REASONS[13] }
   ),
   ...answers(

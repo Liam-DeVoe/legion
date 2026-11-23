@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
+import { handTo } from "./hand-on";
 import { backToList, inboxList, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { READING_PANE_WIDTH } from "./reading-pane";
@@ -52,17 +53,6 @@ const asker = {
  *  card's own ask rather than to a bare role. */
 function handOnControl(scope: Locator | Page, askId: string): Locator {
   return scope.locator(`select[data-ask-hand-on="${askId}"]`);
-}
-
-/**
- * Hands the ask the control belongs to over to `login`, as a reader does: the people it offers
- * are read only once the reader reaches for it, so the control is focused first and the option
- * waited for. Naming the assignee of the ask's own issue is how a reader hands it back.
- */
-async function handTo(control: Locator, login: string): Promise<void> {
-  await control.focus();
-  await expect(control.locator(`option[value="${login}"]`)).toHaveCount(1);
-  await control.selectOption(login);
 }
 
 /** Every band heading the Inbox list is drawing, with its count. */

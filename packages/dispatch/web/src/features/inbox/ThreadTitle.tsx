@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 
 import type { MyReplyRow } from "../../api/types";
 import { textMutedOnCanvas, textPrimaryOnCanvas, unreadDotBg } from "../../theme/classes";
@@ -28,22 +28,41 @@ export function useThreadLine(thread: MyReplyRow): string {
  * part of a short row that is neither the owner link nor a control, where the pointer selects
  * the row (`selectRow` in the browser suite).
  *
- * Both layouts draw it: the short row beside the reading column, where it is the link `o`
- * follows (`data-inbox-owner`), and the card below that width, where **Open** is that link and
- * the title is plain text. Each host sizes its own line, as the three-site owner line does
- * (`ThreadOwnerLine` in `AskOwnerLink.tsx`); what unread looks like is this one place.
+ * The short row draws it as the link `o` follows (`data-inbox-owner`); the drawer's card draws it
+ * as plain text, beside its **Open**. Each host sizes its own line, as the three-site owner line
+ * does (`ThreadOwnerLine` in `AskOwnerLink.tsx`); what unread looks like is this one place.
  */
 export function ThreadTitle({
   className,
   href,
+  onOpen,
   thread,
 }: {
   /** The classes the host's line gives the title; the unread weight is added to them. */
   className: string;
   /** Where the title links, for the host that draws it as a link; plain text without one. */
   href?: string;
+  /** What a plain click on the link does instead of following it: below 1280 px the Inbox opens
+   *  the row in place. A click with a modifier or another button still follows the link. */
+  onOpen?: () => void;
   thread: MyReplyRow;
 }): ReactNode {
+  const openInPlace =
+    onOpen === undefined
+      ? undefined
+      : (event: MouseEvent<HTMLAnchorElement>) => {
+          if (
+            event.button !== 0 ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.shiftKey ||
+            event.altKey
+          ) {
+            return;
+          }
+          event.preventDefault();
+          onOpen();
+        };
   const title = useThreadLine(thread);
   const deleted = postDeletion(thread);
   const words =
@@ -64,7 +83,7 @@ export function ThreadTitle({
           {words}
         </span>
       ) : (
-        <a className={text} data-inbox-owner="" href={href} title={title}>
+        <a className={text} data-inbox-owner="" href={href} onClick={openInPlace} title={title}>
           {words}
         </a>
       )}

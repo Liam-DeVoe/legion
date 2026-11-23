@@ -94,6 +94,7 @@ import {
   sectionOf,
   sectionTitles,
 } from "./sections";
+import { isSnoozed } from "./snooze";
 import { ThreadRowCard } from "./ThreadRowCard";
 import { ThreadTitle, useThreadLine } from "./ThreadTitle";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
@@ -127,6 +128,28 @@ const BULK_PICKER_SELECTOR = "[data-inbox-bulk-snooze]";
 const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
 
 const SNOOZE_SELECTOR = "[data-inbox-snooze]";
+
+/** The `<input>` types that take no typed text, so Escape in one is the page's, not the field's. */
+const NON_TEXT_INPUTS: Record<string, true> = {
+  button: true,
+  checkbox: true,
+  color: true,
+  file: true,
+  hidden: true,
+  image: true,
+  radio: true,
+  range: true,
+  reset: true,
+  submit: true,
+};
+
+/** Whether `element` is a field the reader types into: a text box, a text-type input or an
+ *  editor. A `<select>` is not one: it takes no typed text of its own. */
+function typingIn(element: Element | null): boolean {
+  if (element instanceof HTMLTextAreaElement) return true;
+  if (element instanceof HTMLInputElement) return NON_TEXT_INPUTS[element.type] !== true;
+  return element instanceof HTMLElement && element.isContentEditable;
+}
 
 interface ReadingViewTarget {
   act: (element: HTMLElement) => void;
@@ -426,7 +449,14 @@ function ThreadShortRow({
   section,
   selected,
   thread,
-}: InboxRowProps & ShortRowProps & { thread: MyReplyRow }): ReactNode {
+  titleOpensRow,
+}: InboxRowProps &
+  ShortRowProps & {
+    thread: MyReplyRow;
+    /** Below 1280 px a plain click on the title opens the row in place, as a click anywhere
+     *  else on the row does; a modified or middle click still follows the link. */
+    titleOpensRow: boolean;
+  }): ReactNode {
   const reference = threadReferenceRoute(thread);
   const line = useThreadLine(thread);
   return (
@@ -449,7 +479,12 @@ function ThreadShortRow({
       section={section}
       selected={selected}
       title={
-        <ThreadTitle className="min-w-0 grow truncate text-sm" href={thread.ref} thread={thread} />
+        <ThreadTitle
+          className="min-w-0 grow truncate text-sm"
+          href={thread.ref}
+          onOpen={titleOpensRow ? () => onSelect(rowId(row)) : undefined}
+          thread={thread}
+        />
       }
     />
   );
@@ -693,6 +728,12 @@ export interface InboxProps {
   scroller?: RefObject<HTMLElement | null>;
 }
 
+/**
+ * The Inbox: the bar, the bands of rows, and the row the reader is reading. Below 1280 px that
+ * row is read in place of the list under a toolbar of two groups, in this order: **Back**, the
+ * Inbox control that returns to the list, and **Mark**, the row's own checkbox, which `x` ticks
+ * there as on the row.
+ */
 export function Inbox({
   filter: filterOverride,
   keymapScope = "inbox",
@@ -700,7 +741,7 @@ export function Inbox({
   pane = true,
   scroller,
 }: InboxProps = {}): ReactNode {
-  const { search } = useLocation();
+  const { search, state: entryState } = useLocation();
   const navigate = useNavigate();
   const filter = filterOverride ?? parseInboxSearch(search);
   // The reading column stands beside the list from 1280 px, on the page alone (`columns`).
@@ -757,7 +798,12 @@ export function Inbox({
       // Replace rather than push: a reader trying filters out would otherwise have to walk Back
       // through every pick, the rule every URL-backed filter here holds to
       // (`lib/url-array-params.ts`).
-      navigate(buildInboxPath(next), { replace: true });
+      // A rewrite that keeps the row the address names keeps what its history entry says of it
+      // too: who picked the row, and whether opening it pushed over the list (`pane-selection.ts`).
+      navigate(buildInboxPath(next), {
+        replace: true,
+        state: next.item === filter.item ? entryState : undefined,
+      });
     }
   };
   /** The search box, so `f` can land the reader's focus in it from anywhere on the page. */
@@ -799,7 +845,14 @@ export function Inbox({
   // when Later is folded, so `Snoozing…` and a refusal are not unmounted by the fold the
   // optimistic update triggers (see `SnoozeControl`).
   const [snoozing, setSnoozing] = useState<ReadonlySet<string>>(() => new Set());
+  /** Below 1280 px, whether the row the reader was reading left the Inbox on its own - withdrawn,
+   *  resolved, answered elsewhere - so the list they are back at says so. */
+  const [rowLeft, setRowLeft] = useState(false);
+  /** The asks the reader snoozed from this list, kept past the write: a snooze that lands before
+   *  the read that drops its row is still the reader's own move when that row leaves. */
+  const snoozedHere = useRef<Set<string>>(new Set());
   const onSnoozeLive = useCallback((askId: string, live: boolean) => {
+    if (live) snoozedHere.current.add(askId);
     setSnoozing((current) => {
       if (current.has(askId) === live) return current;
       const next = new Set(current);
@@ -986,7 +1039,15 @@ export function Inbox({
     candidates,
     columns,
     filter,
+    leftByReader: (id) =>
+      snoozedHere.current.has(id) ||
+      snoozing.has(id) ||
+      bulkSnoozing > 0 ||
+      dismissedHere(id) ||
+      dismissWrite.pending.has(id) ||
+      answered.current === id,
     listRef,
+    onOpenRowLeft: () => setRowLeft(true),
     openFoldedBand: useCallback(() => openFoldedBand(LATER_GROUP_KEY), [openFoldedBand]),
     pane,
     presented,
@@ -999,10 +1060,19 @@ export function Inbox({
   /** Below 1280 px on the page: whether a row's reading view stands in the list's place. The
    *  list is the level out of it, so Escape and the view's own Inbox control go back there. */
   const reading = paneShown && !columns;
-  const pendingReadingViewTarget = useRef<ReadingViewTarget | null>(null);
+  /** Where the reading view below 1280 px takes the reader once it has drawn, for the row it
+   *  was asked for alone: a selection that moves to another row first drops it. */
+  const pendingReadingViewTarget = useRef<{ id: string; target: ReadingViewTarget } | null>(null);
   const openRow = (id: string, target: ReadingViewTarget = READING_VIEW_SCROLLER_TARGET) => {
-    if (!columns) pendingReadingViewTarget.current = target;
+    setRowLeft(false);
+    if (!columns) pendingReadingViewTarget.current = { id, target };
     paneSelection.open(id);
+  };
+  /** Below 1280 px with no row open, whether the focused short row is a question its view's head
+   *  draws a Snooze for: one the reader has not snoozed already. */
+  const focusedAskToSnooze = (): boolean => {
+    const row = handRow();
+    return row?.kind === "ask" && !isSnoozed(row.ask);
   };
   const focusedAskWithOptions = (): string | undefined => {
     const row = handRow();
@@ -1408,15 +1478,17 @@ export function Inbox({
     },
     {
       // Below 1280 px the reading view stands in the list's place, so one level out of it is
-      // the list, at the row the reader left (`pane-selection.ts`). Not `inEditable`: inside the
-      // answer box, a text input or the document's editor, Escape is that field's own, and
-      // leaving the whole view from there would be a bigger move than the reader pressed for.
-      // Inside the question's card - an option, a button - one level out is the view itself,
-      // its scroller, where the next Escape is the list: the options the reader picked are the
-      // card's own state, and closing the view would drop them. Registered ahead of
-      // `clear-selection`, so the marks the bulk bar holds outlast it. Not a palette row, for
-      // the reason `clear-selection` gives.
+      // the list, at the row the reader left (`pane-selection.ts`). In the answer box, a text
+      // input or the document's editor Escape is that field's own, and leaving the whole view
+      // from there would be a bigger move than the reader pressed for; a select in the view's
+      // head - Snooze, Priority - takes no typed text, so Escape there is the way back to the row,
+      // as it was from the card's own Snooze. Inside the question's card - an option, a button -
+      // one level out is the view itself, its scroller, where the next Escape is the list: the
+      // options the reader picked are the card's own state, and closing the view would drop
+      // them. Registered ahead of `clear-selection`, so the marks the bulk bar holds outlast it.
+      // Not a palette row, for the reason `clear-selection` gives.
       id: "leave-reading",
+      inEditable: true,
       keys: "Escape",
       label: "Back to the list",
       palette: false,
@@ -1427,7 +1499,11 @@ export function Inbox({
         }
         paneScroller()?.focus();
       },
-      when: () => reading && (outsideAskCard() || paneScroller() !== null),
+      when: () =>
+        reading &&
+        !typingIn(document.activeElement) &&
+        document.activeElement?.matches(BULK_PICKER_SELECTOR) !== true &&
+        (outsideAskCard() || paneScroller() !== null),
     },
     {
       // The column is the other half of the page, and `l` is the step into it: the scroller
@@ -1514,7 +1590,7 @@ export function Inbox({
       // column's own.
       when: () =>
         (selectedAsks.length > 0 && outsideAskCard()) ||
-        (pane && !paneShown && handRow()?.kind === "ask") ||
+        (pane && !paneShown && focusedAskToSnooze()) ||
         (inHand(SNOOZE_SELECTOR) !== null && (!paneShown || outsideAskCard())),
     },
     {
@@ -1581,19 +1657,24 @@ export function Inbox({
   // target, and never on the Inbox control in its place, whose own Enter closes the view. A
   // reader who has put the focus somewhere of their own meanwhile keeps it there.
   useLayoutEffect(() => {
-    const target = pendingReadingViewTarget.current;
+    const pending = pendingReadingViewTarget.current;
     const view = paneRef.current;
-    if (target === null || view === null) return;
+    if (pending === null) return;
+    if (pending.id !== paneSelection.id) {
+      pendingReadingViewTarget.current = null;
+      return;
+    }
+    if (view === null) return;
     const land = (): boolean => {
       const active = document.activeElement;
       if (active !== null && active !== document.body && rowAround(active) === null) {
         pendingReadingViewTarget.current = null;
         return true;
       }
-      const element = target.find(view);
+      const element = pending.target.find(view);
       if (element === null) return false;
       pendingReadingViewTarget.current = null;
-      target.act(element);
+      pending.target.act(element);
       return true;
     };
     if (land()) return;
@@ -1679,6 +1760,7 @@ export function Inbox({
           <Link
             aria-label="Clear agent filter"
             className="inline-flex min-h-11 items-center rounded-full"
+            state={entryState}
             to={buildInboxPath({ assignees: filter.assignees, item: filter.item, q: filter.q })}
           >
             <LabelPill selected>
@@ -1700,7 +1782,10 @@ export function Inbox({
       barRef={bulkBarRef}
       onClear={clearSelection}
       onDismiss={dismissPick}
-      onPick={snoozePick}
+      onPick={(until) => {
+        for (const id of selectedAsks) snoozedHere.current.add(id);
+        snoozePick(until);
+      }}
       onPickerFocus={(from) => {
         pickerOrigin.current = rowAround(from)?.dataset.inboxRow ?? null;
       }}
@@ -1786,6 +1871,11 @@ export function Inbox({
         </p>
       )}
       {bulkBar}
+      {rowLeft ? (
+        <p className={`text-sm ${textMutedOnCanvas}`} data-inbox-row-left="" role="status">
+          This item left your Inbox.
+        </p>
+      ) : null}
     </>
   );
 
@@ -1870,9 +1960,7 @@ export function Inbox({
                 <div hidden={readingView}>{listColumn}</div>
                 {readingView ? (
                   // Two rows, the view's own line and `minmax(0, 1fr)` for the view, for the
-                  // reason the columns' grid above has one: the view scrolls in itself. The
-                  // line holds two groups, in this order: **Back**, the Inbox control, and
-                  // **Mark**, the row's own checkbox, which `x` ticks here as on the row.
+                  // reason the columns' grid above has one: the view scrolls in itself.
                   <div
                     className="grid min-h-0 min-w-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-2"
                     data-inbox-reading-row={rowId(subject)}
@@ -2005,6 +2093,7 @@ export function Inbox({
           onSelect={openRow}
           selected={id === paneSelection.id}
           thread={row.thread}
+          titleOpensRow={!columns}
         />
       );
     }

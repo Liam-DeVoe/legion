@@ -62,7 +62,9 @@ me**, **Snooze** and the copy button, then the question's card, the document or 
 **← Inbox**, above it, goes back to the list, at the row you opened, and so do the browser's
 **Back** and `Escape`. The checkbox beside **← Inbox** ticks that row, as the row's own checkbox
 does. Answering, snoozing or dismissing the row opens the next one, as the right column does;
-after the last one you are back at the list.
+after the last one you are back at the list. A row that leaves your Inbox while you read it -
+the agent withdraws it, or it is answered elsewhere - takes you back to the list at its place,
+which says "This item left your Inbox."
 
 The row you opened is in the address, so a link or a reload opens it again. The first row the
 right column picks by itself at 1280 px is not one you opened: when the window narrows, the list

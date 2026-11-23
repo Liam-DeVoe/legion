@@ -9,6 +9,7 @@ import {
   patchIssue,
   resolveAsk,
 } from "./api";
+import { handTo } from "./hand-on";
 import { inboxList, inboxPane, selectedRow, selectRow } from "./inbox-pane";
 import {
   ADDED_WORD,
@@ -37,7 +38,7 @@ import {
   watchShown,
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Page, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -430,15 +431,6 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     await alice.close();
   }
 });
-
-/** Hands the ask the control belongs to over to `login`, as a reader does: the people it offers
- *  are read only once the reader reaches for it, so the control is focused first and the option
- *  waited for. */
-async function handTo(control: Locator, login: string): Promise<void> {
-  await control.focus();
-  await expect(control.locator(`option[value="${login}"]`)).toHaveCount(1);
-  await control.selectOption(login);
-}
 
 // Below 1280 px the Inbox lists short rows and reads the row a reader opens in place of the list
 // (INFRA-5200), in the column's own pane: what the column offers beside the list, the view offers
