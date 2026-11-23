@@ -40,7 +40,7 @@ Read it when a step of your issue's plan has the key `owner`, when its task has 
    Add what that role's completion carries: the `verdict` `pass` or `fail` where the role reports one, `return_to` with a `fail`, and on the retro `plan_rating` and `plan_reason` (`skill://legion-retro`, step 6).
 
 - At your acceptance step, `pass` is your sign-off and `fail` sends the task back, to `return_to` or to its first step of the type implementation before the acceptance;
-  a `fail` that names no `return_to` where no such step stands before it is refused (`RETURN_TO_REQUIRED`).
+  a `fail` that names no `return_to` where no such step stands before it stops the task, and Legion tells you (`task-stopped`).
   `sign_off` and `request_backward_move` still work there.
 
 - The daemon refuses, changing nothing, a report from any architect but the issue's own (`NOT_THE_OWNER`), one of a step that does not run now with you as its agent (`OWNER_STEP_NOT_RUNNING`, naming where the task stands and who works that place), and one that breaks that step's completion rules, with the codes `handoff_complete` gets.

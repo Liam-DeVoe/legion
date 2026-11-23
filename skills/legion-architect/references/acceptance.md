@@ -34,7 +34,7 @@ Read, against the goal, every check and every requirement:
 ## The last round
 
 A parent has a last round only where its task names `acceptance:owner` and it has a pull request.
-Sign it off only on a head that carries the merges of every child its checks need.
+Sign it off only on a head that carries the merges of every child whose merge its checks need.
 Each check needs a pass at that head; one in another repository needs a pass standing since the close of each child it needs, at a commit on the branch that issue's pull request merged into or on its default branch;
 a `default_branch` check needs the default branch.
 A criterion proven on a deployed system is proven after that child's deploy, as the repository's deploy skill says.
@@ -79,15 +79,15 @@ When the merger reports:
   Do not wait for a reviewer phase the task does not have;
 
 - a squash into a base other than the default branch:
-  tell the implementer of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward in its implementing round.
+  tell the implementer step's agent of each open pull request of the tree built on that branch whose issue is yours and still in `implementing` to merge that base forward in that round.
   Past `implementing`, the daemon asks for that merge itself (*A conflicting head*, below).
 
 ## A conflicting head
 
 A head that conflicts with its base keeps the issue in its phase.
-The daemon asks the implementer to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
+The daemon asks the implementer step's agent to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
 A conflict it does not act on yet is recorded:
-the task's steps go on at that head, a reviewer step's approval of it (your verdict, at `reviewer:owner`) ends its review round, and the daemon acts on entry to `accepting`, or `retro` without `acceptance:owner`.
+the task's steps go on at that head, a reviewer step's approval of it (your verdict, at `reviewer:owner`) ends its review round, and the daemon acts on the move into `accepting`, `retro` or `merging`.
 When it asks outside `implementing`, it tells you once by `checks-red`, naming the phase the issue stays in, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
@@ -99,7 +99,7 @@ A task with no reviewer step has no review to await.
 ## A review thread GitHub will not resolve
 
 Only the pull request author's App resolves a thread, so the agent of the step that opened it resolves them all.
-When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the thread's URL and GitHub's message, for a person to resolve it, with the options resolved and could not.
+When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the thread's URL and GitHub's message for a person to resolve, with the options resolved and could not.
 The merger does not complete while it is open.
 
 ## The close
@@ -107,7 +107,7 @@ The merger does not complete while it is open.
 The merge closes the issue (`done`), or, with no pull request, its retro's end does.
 One whose merge lands while an issue beneath it is still in the workflow stays in `merging` until the last of them is done or parked;
 one `pr-merged` notice names what it waits for.
-The production check after the close is not yours.
+A production check after the close is not yours.
 A root's close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger

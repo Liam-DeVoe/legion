@@ -1,6 +1,6 @@
 # Decomposing a tree
 
-Read this before you read a child's handoff, create, adopt or review children, split work across repositories, record a wait, or attach architecture components.
+Read this before you act on a child or its handoff, split work across repositories, record a wait, or attach architecture components.
 
 ## Reading the tree
 
@@ -21,7 +21,7 @@ A refused release writes nothing: release the rest again without the child it na
 - `ISSUE_NOT_OWNED`: the issue is another architect's; send the move to the architect above you.
 
 - `CHILD_UNDER_ACCEPTED_PARENT`: an ancestor is in `retro` or `merging`.
-  Take it back with `request_backward_move`, or release once it has closed.
+  Only the agent of that phase moves it back (`request_backward_move`): the retro's (you, at your own retro) or the merger; else release once it has closed.
 
 ## Creating children
 
@@ -37,7 +37,6 @@ A refused release writes nothing: release the rest again without the child it na
    A repeated change is one child, and deleting what this tree replaced is this tree's work.
 
 3. Post the verdict and your folds as one `dispatch comment` on your own issue whose first line is exactly `Red-team verdict for <your issue key>:`.
-   The controller's weekly audit reads that line.
 
 4. Check each survivor's spec with a fresh `task(agent="plan-gap-analyst")` against `skill://dispatch-writing-specs`, `wait` for it, and fix what it flags.
 
@@ -65,11 +64,11 @@ A refused release writes nothing: release the rest again without the child it na
 
 - Where the project has architecture components, give each child a `check` for the update of `.dispatch/architecture/<id>.md` of each component its pull request changes.
 
-- A role token is `legion-<project>-<key>-<role>` with the daemon's project and the key lower-cased: `legion-acme-legion-41-architect`.
+- A role token is `legion-<project>-<key>-<agent>`, project and key lower-cased, the agent named by its first step's role (`<role>-2` for a second): `legion-acme-legion-41-architect`.
 
 ## Reviewing a child's spec
 
-No person reads a child's spec: review every version of it and of its Verification document, whoever wrote it, before the child's work goes on with that version.
+No person reads a child's spec: review every version of it and of its Verification document, whoever wrote it, before its work goes on with that version.
 
 1. Have a fresh `task(agent="plan-reviewer")`, told the documents are a child's spec and its Verification document, read them against your own spec (a root's at its approved version, a child's at the version its parent approved) with this mandate:
    "Does this version serve each requirement of the parent spec that it names?
@@ -88,7 +87,7 @@ No person reads a child's spec: review every version of it and of its Verificati
    Spec review of <child key> v<n> by <parent key>: changes requested
    ```
 
-As the child's architect: tell the architect above you of each new version, naming each document and its version;
+As the child's architect: tell the architect above you of each new version of each document;
 tell your workers of it only after its approving comment; answer `changes requested` with a new version.
 A decision only a person can make goes to the architect above you, never into your spec.
 
@@ -96,7 +95,7 @@ A decision only a person can make goes to the architect above you, never into yo
 
 Split a change across repositories into children of one repository each, choosing it at creation (`dispatch issue … --repo <owner/name>`).
 Release a child that builds on another repository's change only after that pull request merges, never by `--blocked-by`, which starts it at the blocker's close, and name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`);
-for a repository that pins the other one by commit (a lock file or dependency pin), the pin is that merged commit.
+for a repository that pins the other one by commit, the pin is that merged commit.
 Your `gh` reads every repository your App is installed on (`-R owner/repo`).
 
 ## Recording a wait on other work
