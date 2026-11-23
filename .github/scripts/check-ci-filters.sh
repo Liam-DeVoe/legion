@@ -69,10 +69,12 @@
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), a
-#      RULES source file that is gone, or a why citing a step the job no longer has. A gate's
-#      step is looked for in the file that gate names - ci.yaml, or the workflow it calls that
-#      holds that job's steps - and a why's in the file its citation names, so a step that moved
-#      between the two fails here until the table says where it went,
+#      RULES source file that is gone, a why citing a step the job no longer has, or a why of a
+#      RULES row that cites a line of the row's own file as the one a call is on (`<file>:<line>
+#      calls <name>`) where that line does not call <name>, naming the line the call is on. A
+#      gate's step is looked for in the file that gate names - ci.yaml, or the workflow it calls
+#      that holds that job's steps - and a why's in the file its citation names, so a step that
+#      moved between the two fails here until the table says where it went,
 #   6. a go command that fails or a first-party package go list cannot load, since its closure
 #      is then unknown, and a `!` pattern under `some` or a brace in a gate's filter,
 #   7. a CI_OK_SELECTED_BY in ci.yaml's env that is not exactly {job: the output its if: tests}

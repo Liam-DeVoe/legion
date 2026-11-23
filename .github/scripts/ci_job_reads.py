@@ -626,12 +626,8 @@ RULES = {
         (f"{DAEMON}/**/*.go", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
     f"{DAEMON}/internal/textcheck/test_executables_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/test_executables_test.go:16 calls testexec.Unguarded on ../.., whose walk "
-                              "(packages/envoy/testexec/unguarded.go:66) passes over node_modules, vendor, testdata and dot "
-                              "directories (:75), and :115 parses every .go file under packages/daemon it finds, test files included")),
-    f"{DAEMON}/internal/textcheck/lock_wait_reads_test.go": reads(
-        (f"{DAEMON}/**/*.go", "internal/textcheck/lock_wait_reads_test.go:27 calls lockWaitEventReads on ../.., whose walk (:48) "
-                              "passes over node_modules, vendor, testdata and dot directories (:57) and any directory holding a "
-                              "go.mod (:60), and :68 reads every .go file under packages/daemon it finds, test files included")),
+                              "(packages/envoy/testexec/unguarded.go:76) passes over node_modules, vendor, testdata and dot "
+                              "directories (:85), and :125 parses every .go file under packages/daemon it finds, test files included")),
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
@@ -1007,14 +1003,19 @@ RULES = {
         (f"{DAEMON}/**/*.go", "internal/textcheck/refusal_codes_test.go:44 calls refusalCodeCopies on ../../../daemon (refusalCodeRoots, :32), whose walk at :108 reads every .go file under packages/daemon")),
     f"{ENVOY}/internal/textcheck/test_executables_test.go": [
         Read(g, "internal/textcheck/test_executables_test.go:17 calls testexec.Unguarded on ../.., whose walk "
-                "(testexec/unguarded.go:66) passes over node_modules, vendor, testdata and dot directories (:75) and "
-                "infra, a directory holding a go.mod of its own (:78), and :115 parses every .go file it finds, test files included")
+                "(testexec/unguarded.go:76) passes over node_modules, vendor, testdata and dot directories (:85) and "
+                "infra, a directory holding a go.mod of its own (:88), and :125 parses every .go file it finds, test files included")
         for g in envoy_go_files_but_infra()],
     f"{ENVOY}/internal/textcheck/lock_wait_reads_test.go": [
-        Read(g, "internal/textcheck/lock_wait_reads_test.go:28 calls lockWaitEventReads on ../.., whose walk (:49) passes "
-                "over node_modules, vendor, testdata and dot directories (:58) and infra, a directory holding a go.mod of "
-                "its own (:61), and :69 reads every .go file it finds, test files included")
-        for g in envoy_go_files_but_infra()],
+        *[Read(g, "internal/textcheck/lock_wait_reads_test.go:56 calls lockWaitReads on ../.. (lockWaitRoots, :20), whose "
+                  "walk (:158) passes over node_modules, vendor, testdata and dot directories (:167) and infra, a "
+                  "directory holding a go.mod of its own (:169-170), and :177 reads every .go file it finds, test files included")
+          for g in envoy_go_files_but_infra()],
+        *reads(
+            (f"{INFRA}/**/*.go", "internal/textcheck/lock_wait_reads_test.go:56 calls lockWaitReads on ../../infra "
+                                 "(lockWaitRoots, :20), whose walk at :158 reads every .go file under packages/envoy/infra (:177)"),
+            (f"{DAEMON}/**/*.go", "internal/textcheck/lock_wait_reads_test.go:56 calls lockWaitReads on ../../../daemon "
+                                  "(lockWaitRoots, :20), whose walk at :158 reads every .go file under packages/daemon (:177)"))],
     f"{ENVOY}/internal/textcheck/visible_markdown_copy_test.go": reads(
         (f"{DAEMON}/internal/textcheck/visible_markdown_test.go", "internal/textcheck/visible_markdown_copy_test.go:50 os.ReadFile (readGoTokens, called with daemonVisibleMarkdown :14, ../../../daemon/internal/textcheck/visible_markdown_test.go, at :21)")),
     # The listener's Go clients held to its wire package: wirecheck.Check type-checks them over
@@ -1049,9 +1050,9 @@ RULES = {
     f"{INFRA}/internal/textcheck/gcp_imports_test.go": [
         run(INFRA, ["./gcp"], "infra/internal/textcheck/gcp_imports_test.go:16 moduleDeps, whose go list -deps ./gcp runs in ../.. (core_imports_test.go:31-32)", mode="build")],
     f"{INFRA}/internal/textcheck/test_executables_test.go": reads(
-        (f"{INFRA}/**/*.go", "infra/internal/textcheck/test_executables_test.go:16 calls testexec.Unguarded on ../.., whose walk "
-                             "(packages/envoy/testexec/unguarded.go:66) passes over node_modules, vendor, testdata and dot "
-                             "directories (:75), and :115 parses every .go file under packages/envoy/infra it finds, test files included")),
+        (f"{INFRA}/**/*.go", "infra/internal/textcheck/test_executables_test.go:17 calls testexec.Unguarded on ../.., whose walk "
+                             "(packages/envoy/testexec/unguarded.go:76) passes over node_modules, vendor, testdata and dot "
+                             "directories (:85), and :125 parses every .go file under packages/envoy/infra it finds, test files included")),
 }
 
 

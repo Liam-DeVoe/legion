@@ -8,7 +8,8 @@
 # entry's pinned script or directory is refused naming the first line that differs, or both
 # directories, and on a -run or -skip list each test one side names and the other lacks, a step
 # an exact entry pins under an env, shell, container or job that could move it is refused naming
-# what does, a why that cites a step must name a workflow file that still holds it,
+# what does, a why that cites a step must name a workflow file that still holds it, a RULES why
+# that cites its own file's line of a call must name the line the call is on,
 # CI_OK_SELECTED_BY must map every job changes gates, it and CI_OK_PULL_REQUEST_ONLY must say what
 # each job's if: tests, every job of ci.yaml must be in exactly one of ci-ok's three classes
 # (CI_OK_SELECTED_BY, CI_OK_ALWAYS_RUN, CI_OK_EXEMPT) and a CI_OK_ALWAYS_RUN job must be gated by
@@ -597,6 +598,18 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the stale Run" "$(contains "$out" 'job app step "Test the app" no longer runs `go test ./cmd/app ./lib`')"
 check "and the command nothing claims" "$(contains "$out" 'runs `go test ./...`, which no Run in ci_job_reads.py lists')"
+
+echo "case: a RULES why that cites a line of its own file the call is not on"
+root=$(fixture own-call-line)
+replace "$root/.github/scripts/ci_job_reads.py" '"lib_test.go reads ../../fixtures/data.json"' \
+  '"lib_test.go:100 calls os.ReadFile on ../../fixtures/data.json"'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the row, the cited line and the line the call is on" \
+  "$(contains "$out" "RULES' row for mod/lib/lib_test.go cites lib_test.go:100 as calling os.ReadFile, which that line does not; the call is at :101")"
+replace "$root/.github/scripts/ci_job_reads.py" 'lib_test.go:100 calls' 'lib_test.go:101 calls'
+run_check "$root"
+check "passes once the why cites the line the call is on" "$(is "$status" 0)"
 
 echo "case: a gate whose filter the changes job does not define"
 root=$(fixture no-filter)
