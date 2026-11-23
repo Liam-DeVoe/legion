@@ -645,9 +645,9 @@ release_smoke_main() {
   exec {smoke_main_fd}>&-
   note "released $repo main ($smoke_main_lock)"
 }
-# smoke_main_leftovers prints each path on the smoke repository's main under docs/solutions/, the
-# retro learnings a merged proof pull request carries there, or under .legion/, which only a merge
-# from before handoffs moved to Dispatch can have left.
+# smoke_main_leftovers prints each path on the smoke repository's main under docs/solutions/ or
+# under .legion/, which only a merge from before retro stopped committing and handoffs moved to
+# Dispatch can have left.
 smoke_main_leftovers() {
   gh api "repos/$repo/git/trees/main?recursive=1" \
     --jq '.tree[] | select(.type == "blob") | .path | select(startswith(".legion/") or startswith("docs/solutions/"))'
@@ -913,7 +913,7 @@ clean_smoke_main() {
     gh api -X DELETE "repos/$repo/contents/$path" -f message="proof fixture: remove $path" -f sha="$sha" -f branch="$branch" >/dev/null
   done <<<"$paths"
   url=$(gh -R "$repo" pr create --base main --head "$branch" --title "proof fixture: remove the handoffs and learnings Stage 3 runs merged ($project)" \
-    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which each proof merge carries, and any .legion/ handoffs a merge from before retro removed them left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
+    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings and .legion/ handoffs that merges from before retro stopped committing left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
   smoke_cleanup_url=$url
   pr=${url##*/}
   timeout_hook=report_smoke_pr_merge_state
