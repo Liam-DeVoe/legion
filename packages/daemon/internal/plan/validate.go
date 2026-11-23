@@ -114,17 +114,17 @@ var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "accept
 // accepting step in this release, so a key on it but owner would name an agent Legion does not run
 // it in.
 func stepReasons(t Task, d Deployment) []string {
-	var keys []string
+	var reasons []string
 	implementerAt := 0 // the place of the first step of the implementer, 0 before it
 	var unopened, retro []string
 	for i, step := range t.Steps {
 		at := i + 1
 		switch {
 		case step.Role == "acceptance" && step.Key == "":
-			keys = append(keys, fmt.Sprintf("step %d of task %s names acceptance with no key, which asks for a fresh agent of the role acceptance.", at, t.ID))
+			reasons = append(reasons, fmt.Sprintf("step %d of task %s names acceptance with no key, which asks for a fresh agent of the role acceptance.", at, t.ID))
 		// The key owner and the role acceptance go together: either one without the other is refused.
 		case step.Key != "" && (step.Key == "owner") != (step.Role == "acceptance"):
-			keys = append(keys, fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, step.Key))
+			reasons = append(reasons, fmt.Sprintf("step %d of task %s names the key %s.", at, t.ID, step.Key))
 		}
 		if readsPullRequest[step.Role] && implementerAt == 0 {
 			unopened = append(unopened, fmt.Sprintf("step %d of task %s names %s, and no step before it names the role implementer, whose pull request %s reads; a role of this deployment that reports pass or fail needs none.",
@@ -138,7 +138,6 @@ func stepReasons(t Task, d Deployment) []string {
 			implementerAt = at
 		}
 	}
-	reasons := keys
 	if implementerAt == 0 {
 		reasons = append(reasons, fmt.Sprintf("task %s has no step implementer.", t.ID))
 	}
