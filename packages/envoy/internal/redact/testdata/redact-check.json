@@ -569,6 +569,12 @@
         "why": "the xid window rig's get_mempolicy and set_mempolicy system calls, given a local mode and node mask by address: they print nothing and reach no answer"
       },
       {
+        "file": "packages/envoy/cmd/listener/role_frame.go",
+        "function": "(github.com/sjawhar/envoy/cmd/listener.roleFrame).envelope",
+        "operands": ["*github.com/sjawhar/envoy/internal/contracts.Envelope", "*int64"],
+        "why": "the listener's read of a stored message's envelope field by field: it sets each field of a contracts.Envelope from that field's JSON, and every field is a string, an integer, a map of strings or a sender of strings and string lists, so none can hold a box; it reads no field's value back and prints nothing"
+      },
+      {
         "file": "packages/envoy/internal/bus/kv.go",
         "function": "github.com/sjawhar/envoy/internal/bus.readsDirect",
         "operands": [],
