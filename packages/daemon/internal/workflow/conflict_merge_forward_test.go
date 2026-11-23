@@ -1026,11 +1026,11 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 
 // A push onto the base can make a head conflict with it, and GitHub sends no event of the pull
 // request while it computes that (dispatch://INFRA-4374 R0, R4). So a base push reads the merge
-// state of each open pull request on the base whose issue stands in testing, reviewing,
-// accepting, retro or merging, where in the default steps the merge is next in the last three; an
-// issue in implementing is read for at its next head push instead, and a base push reads nothing
-// for it.
-func TestAConflictKeepsPhaseWhenABasePushReadsAnIssuePastReview(t *testing.T) {
+// state of each open pull request on the base whose issue stands in a phase after implementing on
+// its task's line (classify.MergeForwardStands), here the default steps' testing, reviewing and
+// accepting; an issue in implementing is read for at its next head push instead, and a base push
+// reads nothing for it.
+func TestAConflictKeepsPhaseWhenABasePushReadsAnIssueAfterImplementing(t *testing.T) {
 	for _, tc := range []struct {
 		at     phase.Phase
 		status string

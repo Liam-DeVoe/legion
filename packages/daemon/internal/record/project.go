@@ -937,8 +937,8 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
 // the cap's own half (KeepsSlot) and the mark a start of a phase worker carries for the slot it
 // waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable while the issue holds
-// no slot. PastReview is the complement of the three phases this refuses, for the repair that
-// must reach an issue holding no row.
+// no slot. InSlotlessPhase is the complement of the three working phases this refuses, for the
+// repair that must reach an issue holding no row.
 func PhaseKeepsSlot(at phase.Phase) bool {
 	switch at {
 	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
@@ -987,25 +987,28 @@ func KeepsSlot(issue Issue) bool {
 	return InWorkflow(issue) && PhaseKeepsSlot(StandsAt(issue))
 }
 
-// PastReview says whether issue stands in accepting, retro or merging, or is held from one of them
-// (StandsIn, as Accepted is written): in the default steps, past its review. Those are exactly the
-// three phases that hold none of the cap's slots (PhaseKeepsSlot), so this is that list read the
-// other way round.
+// InSlotlessPhase says whether issue stands in a working phase that holds none of the cap's slots,
+// or is held from one (StandsAt): a phase of phase.Order that PhaseKeepsSlot refuses, which in
+// this release is accepting, retro or merging in every order a task's steps run in. It is
+// PhaseKeepsSlot read the other way round over the working phases, and it reads that list rather
+// than a copy of its own.
 //
 // It exists so that the list lives in this package alone. The repair of a worker with no task
-// (admit's resumeSlottedWorkers) must reach an issue standing in one of those three phases,
-// because such an issue holds no row and the repair's own domain is the slot holders. Written
-// there as a list of its own, a phase added to or taken out of PhaseKeepsSlot would move the cap
-// and leave the repair behind, and the worker of that phase would be repaired by nothing. Read
-// from here, the two move together.
+// (admit's resumeSlottedWorkers) must reach an issue standing in one of those phases, because
+// such an issue holds no row and the repair's own domain is the slot holders; and the `why` of an
+// issue at work in one of them is no answer (projection's atWorkInSlotlessPhase). Written there
+// as a list of their own, a phase added to or taken out of PhaseKeepsSlot would move the cap and
+// leave them behind, and the worker of that phase would be repaired by nothing. Read from here,
+// they move together.
 //
 // It is not Accepted, and the two must not be merged: Accepted names the two phases whose head,
 // the one the last step of the task passed, the daemon has accepted, which is the rule the
 // acceptance order is written over (its doc names them there and nowhere else), and leaves out a
 // parent held before its retro for its children; this one is the slot rule's complement and
 // counts accepting, and that parent, with them.
-func PastReview(issue Issue) bool {
-	return StandsIn(issue, phase.Accepting, phase.Retro, phase.Merging)
+func InSlotlessPhase(issue Issue) bool {
+	at := StandsAt(issue)
+	return slices.Contains(phase.Order, at) && !PhaseKeepsSlot(at)
 }
 
 // NeedsSlot says whether issue must hold one of the cap's slots now: its tree is running — live,

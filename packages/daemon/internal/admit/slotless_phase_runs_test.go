@@ -16,10 +16,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// pastReviewRoot records key as a root of a live tree of its own, standing in stands with the
+// slotlessRoot records key as a root of a live tree of its own, standing in stands with the
 // Dispatch status that phase shows: its record, its mirror row and its tree lifecycle, open
 // under the workflow. It writes no row of the cap's, which is what every reading below is about.
-func pastReviewRoot(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase, status, rank string) {
+func slotlessRoot(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase, status, rank string) {
 	t.Helper()
 	putIssue(t, pool, record.Issue{Key: key, Tree: key, Repo: "acme/widgets", DefaultBranch: "main",
 		GitHubRepo: "acme/widgets", Project: testProject, Title: key, Phase: stands, Generation: 1,
@@ -58,11 +58,11 @@ func theOneStart(t *testing.T, pool *pgxpool.Pool, issue string) midPhaseStart {
 	return starts[0]
 }
 
-// startPastReview writes one start of key's worker in the phase it stands in, through the path
+// startSlotless writes one start of key's worker in the phase it stands in, through the path
 // every phase worker's start is written by (workflow.StartOrOwe). It is oweMemberStart with a
 // task and a role of the caller's, which is what tells the row a second start wrote from the
 // row it was written over.
-func startPastReview(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase, role claim.Role, task string) {
+func startSlotless(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase, role claim.Role, task string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start",
@@ -88,8 +88,8 @@ func leaseStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 	})
 }
 
-// Accepting, retro and merging (record.PastReview; in the default steps, the phases after the
-// review) run on no row of the cap's at all. The cap counts the issues whose change is still to
+// Accepting, retro and merging (record.InSlotlessPhase, in every order a task's steps run in) run
+// on no row of the cap's at all. The cap counts the issues whose change is still to
 // write, and the sign-off, the retro and the merge write no more of it (record.KeepsSlot), so the
 // start of each of those phases waits for no row (workflow.StartOrOwe reads
 // record.PhaseKeepsSlot) and is claimable the moment it is written.
@@ -108,7 +108,7 @@ func leaseStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 // delivering. The last reads where the rule stops: a start that waits for a row is written over
 // no queued start that waits for none, since the place in the line belongs to the row that
 // waits, and the two never name one phase, so the outbox's phase fence ends the stale one.
-func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
+func TestAcceptingRetroAndMergingRunWithNoSlot(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
 	// The cap's two rows, held by two trees already at work.
@@ -118,11 +118,11 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	// The issue the architect accepts. Its design gate stands open, so the READY its merger
 	// builds is held by nobody.
 	const accepted = "LEGION-200"
-	pastReviewRoot(t, pool, accepted, phase.Accepting, "needs_review", "C")
+	slotlessRoot(t, pool, accepted, phase.Accepting, "needs_review", "C")
 	seedGate(t, pool, record.DesignGate{Issue: accepted, ArtifactID: "spec-200", LatestVersion: 1, ApprovedVersion: new(1)})
 	// An issue at work that holds no row, whose start waits for one throughout.
 	const atWork = "LEGION-300"
-	pastReviewRoot(t, pool, atWork, phase.Implementing, "in_progress", "D")
+	slotlessRoot(t, pool, atWork, phase.Implementing, "in_progress", "D")
 	oweMemberStart(t, pool, atWork, atWork, phase.Implementing)
 
 	by, generation, entry := rootArchitectsRead(t, pool, accepted)
@@ -164,7 +164,7 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	// change again, so its start waits for a row, as the start of a worker in any phase that
 	// keeps one does (record.PhaseKeepsSlot).
 	const sentBack = "LEGION-400"
-	pastReviewRoot(t, pool, sentBack, phase.Accepting, "needs_review", "E")
+	slotlessRoot(t, pool, sentBack, phase.Accepting, "needs_review", "E")
 
 	by, generation, entry = rootArchitectsRead(t, pool, sentBack)
 	applyFact(t, pool, admission, "sent-back", intake.BackwardMove{Issue: sentBack, Requester: claim.RoleArchitect,
@@ -207,13 +207,13 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	// generation, and the retry sends the entry the row already names.
 	t.Run("a retry past the review is written over the queued start", func(t *testing.T) {
 		const retried = "LEGION-500"
-		pastReviewRoot(t, pool, retried, phase.Retro, "in_progress", "F")
-		startPastReview(t, pool, retried, phase.Retro, claim.RoleImplementer, "Run the retro.")
+		slotlessRoot(t, pool, retried, phase.Retro, "in_progress", "F")
+		startSlotless(t, pool, retried, phase.Retro, claim.RoleImplementer, "Run the retro.")
 		if start := theOneStart(t, pool, retried); start.task != "Run the retro." || start.needsSlot || !start.claimable {
 			t.Fatalf("the first start of %s = %+v, want the retro's task, marked for no row and claimable at once", retried, start)
 		}
 
-		startPastReview(t, pool, retried, phase.Retro, claim.RoleImplementer, "Run the retro again.")
+		startSlotless(t, pool, retried, phase.Retro, claim.RoleImplementer, "Run the retro again.")
 
 		start := theOneStart(t, pool, retried)
 		if start.role != claim.RoleImplementer || start.task != "Run the retro again." || start.needsSlot || !start.claimable {
@@ -228,11 +228,11 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	// rule, store.go's outboxLaneFree).
 	t.Run("a row a live lease holds is not written over", func(t *testing.T) {
 		const leased = "LEGION-510"
-		pastReviewRoot(t, pool, leased, phase.Merging, "in_progress", "G")
-		startPastReview(t, pool, leased, phase.Merging, claim.RoleMerger, "Merge the change.")
+		slotlessRoot(t, pool, leased, phase.Merging, "in_progress", "G")
+		startSlotless(t, pool, leased, phase.Merging, claim.RoleMerger, "Merge the change.")
 		leaseStart(t, pool, leased)
 
-		startPastReview(t, pool, leased, phase.Merging, claim.RoleMerger, "Merge the change again.")
+		startSlotless(t, pool, leased, phase.Merging, claim.RoleMerger, "Merge the change again.")
 
 		starts := startsOf(t, pool, leased)
 		if len(starts) != 2 || starts[0].task != "Merge the change." || starts[1].role != claim.RoleMerger ||
@@ -250,16 +250,16 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	// before it (record.Store.EnqueueStart).
 	t.Run("a start that waits for a row is written over no queued one that waits for none", func(t *testing.T) {
 		const ahead, behind = "LEGION-520", "LEGION-530"
-		pastReviewRoot(t, pool, behind, phase.Retro, "in_progress", "H")
-		startPastReview(t, pool, behind, phase.Retro, claim.RoleImplementer, "Run the retro.")
-		pastReviewRoot(t, pool, ahead, phase.Implementing, "in_progress", "I")
+		slotlessRoot(t, pool, behind, phase.Retro, "in_progress", "H")
+		startSlotless(t, pool, behind, phase.Retro, claim.RoleImplementer, "Run the retro.")
+		slotlessRoot(t, pool, ahead, phase.Implementing, "in_progress", "I")
 		oweMemberStart(t, pool, ahead, ahead, phase.Implementing)
 
 		// The architect sends the retro's work back to implementing, whose start waits for a row.
 		sentBack := issue(t, pool, behind)
 		sentBack.Phase, sentBack.Status, sentBack.DispatchStatus = phase.Implementing, "in_progress", "in_progress"
 		putIssue(t, pool, sentBack)
-		startPastReview(t, pool, behind, phase.Implementing, claim.RoleImplementer, "Write the change again.")
+		startSlotless(t, pool, behind, phase.Implementing, claim.RoleImplementer, "Write the change again.")
 
 		starts := startsOf(t, pool, behind)
 		if len(starts) != 2 || starts[0].task != "Run the retro." || starts[0].needsSlot ||
@@ -272,7 +272,7 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 }
 
 // The repair of a worker that has lost its task reaches an issue standing in accepting, retro or
-// merging (record.PastReview), which holds no row to be found by (admit's resumeSlottedWorkers).
+// merging (record.InSlotlessPhase), which holds no row to be found by (admit's resumeSlottedWorkers).
 // The retro's implementer and the merger are started again, exactly as a row holder's worker is,
 // and nothing else would ever start them: the start their transition wrote has been finished
 // without acting, so the entry their phases row names is one their claim was never given
@@ -280,7 +280,7 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 //
 // What the repair does not reach is an issue at work that holds no row, because it waits in the
 // line for one and starting it would put a worker to work on an issue the cap has not admitted.
-func TestTheRepairReachesAWorkerPastReview(t *testing.T) {
+func TestTheRepairReachesAWorkerInASlotlessPhase(t *testing.T) {
 	pool := migratedPool(t)
 	rows := []struct {
 		name string
