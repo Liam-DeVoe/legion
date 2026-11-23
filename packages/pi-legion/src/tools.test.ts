@@ -237,8 +237,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-  "The architect that owns an issue in accepting moves it, named by `issue`, back to an earlier step of its task. That move " +
-  "counts no review round. " +
+  "The architect that owns an issue moves it, named by `issue`, back to an earlier step of its task from a step it does itself: " +
+  "its acceptance in accepting, or a step whose key is owner. That move counts no review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
@@ -314,6 +314,7 @@ const COMPLETE_STEP_TERMS = {
     "dispatch handoff-write",
     "(NOT_THE_OWNER)",
     "(OWNER_STEP_NOT_RUNNING",
+    "stops the task, and Legion tells you (task-stopped)",
   ],
 } as const;
 
@@ -1563,8 +1564,9 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   // A role that does not work the issue's phase reports its own newest record of the phase it
   // left: the tester at implementing its test record and the head it names, with the verdict as
   // given. A role whose left phase writes no record reports the commit the workspace stands on and
-  // no record: the merger, and a sub-architect, which leaves no phase, each posting @- (the daemon
-  // then refuses the sub-architect's, ACCEPTANCE_IS_SIGN_OFF; this stand-in daemon records it).
+  // no record: the merger, and a sub-architect, which completes no phase with handoff_complete (it
+  // reports its own steps with complete_step), each posting @- (the daemon then refuses the
+  // sub-architect's, ACCEPTANCE_IS_SIGN_OFF; this stand-in daemon records it).
   await run(claimSession("tester"), { op: "handoff_complete", summary: "Red.", verdict: "fail" });
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
@@ -1790,14 +1792,15 @@ test("the retro's handoff_complete posts its rating of the plan as planRating an
 test("a completion once the issue moved on posts the role's own newest record of the phase it left, and @- where that phase writes none", async () => {
   const recorded = { commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version };
   for (const [phase, role, issue, read, report] of [
-    // A review ends its round on its own: a request for changes moves the issue to implementing at
-    // once, an approval to accepting once the pull request is mergeable, and the reviewer
-    // completes after it.
+    // Where the issue has a pull request and its review step is not the owner's, a review ends its
+    // round on its own: a request for changes moves the issue back at once, an approval on to the
+    // task's next step once the pull request is mergeable, and the reviewer completes after it.
     ["implementing", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["accepting", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["reviewing", "tester", "LEGION-208", ["LEGION-208 test"], recorded],
-    // At merging the implementer left retro, which writes no record; a sub-architect leaves no
-    // phase, so it posts @- in another role's file-backed phase as well.
+    // At merging the implementer, which did the retro here, has left retro, which writes no record;
+    // a sub-architect completes no phase with handoff_complete, so it posts @- in another role's
+    // file-backed phase as well.
     ["merging", "implementer", "LEGION-208", [], { commit: STANDING }],
     ["implementing", "architect", "LEGION-209", [], { commit: STANDING }],
   ] as const) {

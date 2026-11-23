@@ -421,9 +421,9 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    // A claim's role, one of Legion's six or a role of the deployment (contract 221): the role
-    // grammar of Dispatch's step record. The operation's own check (`isStepRole`) also refuses the
-    // controller, whose claim holds no issue.
+    // A claim's role, one of Legion's six, the role acceptance, or a role of the deployment or of
+    // the plan: the role grammar of Dispatch's step record. The operation's own check
+    // (`isStepRole`) also refuses the controller, whose claim holds no issue.
     role: z
       .string()
       .regex(/^[a-z][a-z0-9-]{0,31}$/)
@@ -574,7 +574,7 @@ export function createLegionTool(deps: {
         "the rating of the plan on the retro; it reads the handoff record of a planning, implementing, testing or reviewing step, which " +
         "you write first with dispatch handoff-write, and the commit, as handoff_complete reads them. Your acceptance step's pass is " +
         "your sign-off, and its fail sends the task back, to return_to or to the first implementation step before it; a fail that " +
-        "names no return_to where no implementation step stands before it is refused (RETURN_TO_REQUIRED). The daemon " +
+        "names no return_to where no implementation step stands before it stops the task, and Legion tells you (task-stopped). The daemon " +
         "refuses, changing nothing, a report from any architect but the issue's own (NOT_THE_OWNER), one of a step that does not run " +
         "now or is not yours (OWNER_STEP_NOT_RUNNING, naming where the task stands and who works that place), and one that breaks " +
         "the rules of that step's completion, with the codes handoff_complete gets. " +
