@@ -530,6 +530,27 @@ function carriedTo(
   };
 }
 
+/** Whether the refused send `held` holds already what a keep of `draft` would write over it
+ *  (`HeldSends.keep`): the same text and replacement, and the same ask - whether it takes more
+ *  than one answer, its urgency, and each option's id, label and description, in order. Compared
+ *  by value, since a composer builds each keep afresh from its fields. */
+function holdsAlready(held: HeldSend, { ask, draft }: HeldDraft): boolean {
+  const options = held.draft.ask.options;
+  return (
+    draft.body === held.draft.draft.body &&
+    draft.replacement === held.draft.draft.replacement &&
+    ask.multiple === held.draft.ask.multiple &&
+    ask.urgency === held.draft.ask.urgency &&
+    ask.options.length === options.length &&
+    ask.options.every(
+      (option, at) =>
+        option.id === options[at]?.id &&
+        option.label === options[at]?.label &&
+        option.description === options[at]?.description
+    )
+  );
+}
+
 /**
  * The app's held sends, as its composers read and make them, over the one write store
  * (`writesOf`): one send per composer's name, which a composer that mounts under that name shows,
@@ -621,12 +642,16 @@ export class HeldSends {
     return held !== undefined && this.#writes.discard(held.id);
   }
 
-  /** Keeps what the reader wrote over a refusal, as its composer unmounts. */
+  /** Keeps what the reader wrote over a refusal. Its composer keeps its draft as it unmounts, as
+   *  the page goes, and a short wait after it mounts as well as after each change, so one that
+   *  mounts over a refusal keeps the very draft the send holds. A keep of what the send holds
+   *  already writes nothing (`holdsAlready`): writing it again would only rewrite the entry and
+   *  draw everything that reads the store again, for no change. */
   keep(mutationKey: MutationKey, draft: HeldDraft): void {
     const held = this.get(mutationKey);
-    if (held?.status === "refused") {
-      this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft }));
-    }
+    if (held?.status !== "refused") return;
+    if (holdsAlready(held, draft)) return;
+    this.#writes.amend(held.id, composerSend, (detail) => ({ ...detail, draft }));
   }
 
   /** Re-addresses the refused send under `mutationKey`: a margin compose's kind switch after a

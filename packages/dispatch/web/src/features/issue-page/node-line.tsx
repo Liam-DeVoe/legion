@@ -1,7 +1,9 @@
 import { type ReactNode, useMemo } from "react";
 import { Link } from "react-router-dom";
 
+import type { DisplayTree } from "../../api/types";
 import { pageQuietText } from "../../theme/classes";
+import { useLoadedEngine } from "../refs/parsed-references";
 import { usePlainHeadline } from "../refs/plain-text";
 import { parseNodeReference, referenceHref } from "../refs/routes";
 import { drawnLine, firstLineOf, lineReading, type ParentLine, type TreeNode } from "./issue-tree";
@@ -11,9 +13,10 @@ import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
 /**
  * A node's one line (R1), as every place that draws one draws it - a folded branch's line
  * (`FirstLine`), a parent's line under a filter (`NodeParentLine`), a crumb above a zoom
- * (`IssueTree.tsx`'s `CrumbName`) and a pin in Details (`IssuePins.tsx`'s `PinLine`): its node's
- * first line, projected from its words by the shared plain-text projection (`lineReading`) and
- * cut by R1's first-line rule (`firstLineOf`), with an ellipsis only where the cut ended inside a
+ * (`IssueTree.tsx`'s `CrumbName`), a pin in Details (`IssuePins.tsx`'s `PinLine`) and a task's
+ * line in the Plan view (`plan-filter/PlanFilterBody.tsx`'s `useTaskLine`): its node's first
+ * line, projected from its words by the shared plain-text projection (`lineReading`) and cut by
+ * R1's first-line rule (`firstLineOf`), with an ellipsis only where the cut ended inside a
  * sentence (`drawnLine`), so a heading never runs into the paragraph after it. A reference in it
  * reads as the same reference in the node's row does (`RowText.tsx`): as its target's current
  * name once it resolves, and as the words its author wrote until then (R8, INFRA-1196 decision
@@ -33,7 +36,8 @@ export function useNodeLine(
       | "issue-pin"
       | "node-row-first-line"
       | "node-row-parent-line"
-      | "outline-crumb";
+      | "outline-crumb"
+      | "plan-task-line";
   }
 ): { line: string | undefined; reads: ReactNode } {
   const { id, source, text: stored, tree, type } = node;
@@ -41,10 +45,26 @@ export function useNodeLine(
     () => lineReading({ id, text: stored, tree, type }),
     [id, stored, tree, type]
   );
+  const markdown = "markdown" in reading ? reading.markdown : undefined;
+  // A stored text with no reading is parsed here, once for as long as the line draws it, as the
+  // row's own words are (`RowText.tsx`'s `ParsedText`), and its parse is drawn as a reading is:
+  // the projection runs again on every name the page publishes, and handed the text alone it
+  // would parse it again each time. The parse keeps soft breaks as line breaks, as the
+  // projection's parse of a first line does, and the text goes beside it, so the line names only
+  // what the text cites. Until the engine loads, and for a text it refuses, the line is
+  // `undefined`, as the projection answers for either.
+  const { engine } = useLoadedEngine();
+  const parsed = useMemo(
+    () =>
+      markdown === undefined || engine === undefined
+        ? undefined
+        : (engine.parse(markdown, "line")?.toJSON() as DisplayTree | undefined),
+    [engine, markdown]
+  );
   const { reads, text } = usePlainHeadline(
-    "tree" in reading ? reading.tree : undefined,
-    "markdown" in reading ? reading.markdown : undefined,
-    { firstLine: "markdown" in reading, issue: source?.issue, surface }
+    "tree" in reading ? reading.tree : parsed,
+    parsed === undefined ? undefined : markdown,
+    { firstLine: markdown !== undefined, issue: source?.issue, surface }
   );
   const words = "none" in reading ? "" : text?.text;
   const key = "key" in reading ? reading.key : undefined;
@@ -55,9 +75,10 @@ export function useNodeLine(
 }
 
 /** The words a place that names a node by its one line draws where it must name it by
- *  something - a parent's line under a filter (`NodeParentLine`) and a crumb above a zoom
- *  (`IssueTree.tsx`'s `CrumbName`): the line (`useNodeLine`), and the page's word for the node's
- *  kind where its words hold none (R22). Nothing until the projection has answered. */
+ *  something - a parent's line under a filter (`NodeParentLine`), a crumb above a zoom
+ *  (`IssueTree.tsx`'s `CrumbName`) and a task's line in the Plan view (`useTaskLine`): the line
+ *  (`useNodeLine`), and the page's word for the node's kind where its words hold none (R22).
+ *  Nothing until the projection has answered. */
 export function lineOrKindWord(line: string | undefined, type: NodeType): string {
   return line === "" ? NODE_TYPE_NAMES[type] : (line ?? "");
 }

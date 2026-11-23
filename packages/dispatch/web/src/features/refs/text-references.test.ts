@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
 
+import { referenceHref } from "./routes";
 import { readTextReferences } from "./text-references";
 
 const origin = "https://dispatch.test";
@@ -110,6 +111,36 @@ test("a text with nothing to resolve asks nothing", () => {
   expect(needs).toEqual({ keys: [], prefixes: [], questions: false });
   expect(references.map((found) => found.reference)).toEqual(["dispatch://CORE-1"]);
   expect(references[0].unresolved).toBe(false);
+});
+
+// The pills under a draft read it through this reader, each reference with the page it opens
+// (`draft-pills.tsx`). A project's own page is no node a text can name, so a pasted URL of it
+// cites nothing and gets no pill: of a project's pages, only its documents are references.
+test("Composer ignores a pasted project page URL because only documents are references", () => {
+  expect(cited(`${origin}/projects/CORE`, { origin })).toEqual([]);
+});
+
+// A project's document is a reference whether the draft pastes its page's URL or writes its
+// address, and the page its pill opens is the document's own.
+test("Composer preserves a project document reference with its document page href", () => {
+  for (const body of [
+    `${origin}/projects/CORE/documents/design-notes`,
+    "dispatch://CORE/artifact/design-notes",
+  ]) {
+    const { references } = readTextReferences(body, { origin });
+    expect(
+      references.map(({ reference, route }) => ({
+        href: route === undefined ? undefined : referenceHref(route),
+        reference,
+      })),
+      body
+    ).toEqual([
+      {
+        href: "/projects/CORE/documents/design-notes",
+        reference: "dispatch://CORE/artifact/design-notes",
+      },
+    ]);
+  }
 });
 
 // The id prefix pattern, which the server spells `text.IsIDPrefix`: a hex digit and seven or

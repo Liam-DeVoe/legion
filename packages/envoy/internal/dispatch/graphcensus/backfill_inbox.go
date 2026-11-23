@@ -315,7 +315,7 @@ func lockOwnersOf(ctx context.Context, tx pgx.Tx, read string, ids []string) err
 	owners := events.OwnerRows{}
 	var id, issue, document string
 	if _, err := pgx.ForEachRow(rows, []any{&id, &issue, &document}, func() error {
-		owners.Add(issue, document, id)
+		owners.Add(issue, document)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("read the owners of a batch: %w", err)

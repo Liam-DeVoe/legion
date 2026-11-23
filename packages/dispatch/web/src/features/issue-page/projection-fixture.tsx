@@ -219,9 +219,10 @@ export function namesOf(reads: IssueTreeReads): ReadonlyMap<string, string> {
 }
 
 /** The name a chip draws for its target, as every chip draws it: a block's line, the first block
- *  of its words, and any other target's name, as the store projects them from the chip's reading
- *  (`KnownReferences.lines`, `.names`), cut as a chip cuts it (`chipName`); `""` where it has
- *  none. A tie's chip (`NodeRow.tsx`'s `Chip`) and a chip in a node's words read the same. */
+ *  of its words, a whole document's, the page's word for it, and any other target's name, as the
+ *  store projects them from the chip's reading (`KnownReferences.lines`, `.names`), cut as a chip
+ *  cuts it (`chipName`); `""` where it has none. A tie's chip (`NodeRow.tsx`'s `Chip`) and a chip
+ *  in a node's words read the same. */
 export function nameOf(chip: NodeChip): string {
   if (chip.reading === undefined) return "";
   const { lines, names } = projectedKnown(new Map([[chip.ref, chip.reading]]));

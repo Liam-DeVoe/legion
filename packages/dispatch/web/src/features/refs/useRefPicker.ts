@@ -24,6 +24,7 @@ import {
   REF_PICKER_SEARCH_LIMIT,
   REF_PICKER_SEARCHED_KINDS,
   REF_PICKER_TEXT_MAX,
+  type RefPickerAgent,
   type RefPickerDoor,
   type RefPickerGroup,
   type RefPickerInsertion,
@@ -163,14 +164,23 @@ function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
 
 /** A party's row: a session, or a role a session holds, by the one list the composer's delivery
  *  modes read (`party-options.ts`), so a party offered here and the same party offered as a
- *  mention cannot be two rules about who is running. A session's row opens its conversation's
- *  documents, as a node's opens its blocks; a role holds none of its own. */
+ *  mention cannot be two rules about who is running. Each row carries the session it names - the
+ *  session itself, or the one holding the role - which the list draws with its running state. A
+ *  session's row opens its conversation's documents, as a node's opens its blocks; a role holds
+ *  none of its own. */
 function partyRow(option: MentionOption): RefPickerRow {
   // A `role:<token>` option names a role; a `session:` one names a session, which is the pair
   // `partyOfAddress` reads an address by (`routes.ts`).
   const party = partyOfAddress(option.target);
+  // A session option's holder is its own name, which is its row's label.
+  const agent: RefPickerAgent = {
+    sessionId: option.sessionId,
+    storedTitle: option.sessionTitle,
+    words: option.holder,
+  };
   if (party?.kind === "role") {
     return {
+      agent,
       detail: `${option.holder} · ${option.detail}`,
       id: `ref-picker-role-${party.role}`,
       kind: "role",
@@ -180,6 +190,7 @@ function partyRow(option: MentionOption): RefPickerRow {
   }
   const reference = buildDispatchReference({ kind: "agent-session", session: option.sessionId });
   return {
+    agent,
     detail: option.detail,
     id: `ref-picker-agent-${option.sessionId}`,
     kind: "agent",
@@ -446,13 +457,15 @@ export function useRefPicker({
   );
   const ordered = useMemo(() => orderedRows(groups), [groups]);
   const active = ordered.find((row) => row.id === activeId) ?? ordered[0];
-  // Each read the open depends on, with whether this open asked for it: a read nobody asked for
-  // is neither pending nor failed, whatever its own query says while it is disabled.
+  // Each Dispatch read the open depends on, with whether this open asked for it: a read nobody
+  // asked for is neither pending nor failed, whatever its own query says while it is disabled.
+  // The agent list is not one of them. It is Envoy's list, and its failure - refilling, or the
+  // listener unreachable - is said by its own line alone (`parties` below, drawn where its rows
+  // would be), never as Dispatch unreachable; a Dispatch that is down fails the reads here as
+  // well, since every open asks for its people. While the list is on its way, the picker waits
+  // for it as for any read.
   const reads = [
     { asked: searching, failed: search.isError, pending: search.isPending },
-    // An agent list that is refilling is a list not ready yet, not a failure to report; what
-    // it is instead is `parties` below, which the reader is told where its rows would be.
-    { asked: open, failed: live.isError && !live.refilling, pending: live.isPending },
     { asked: readsCollaborators, failed: collaborators.isError, pending: collaborators.isPending },
     { asked: readsUsers, failed: users.isError, pending: users.isPending },
     {
@@ -471,6 +484,7 @@ export function useRefPicker({
   ];
   const waiting =
     (open && typing && query.length >= REF_PICKER_QUERY_MIN) ||
+    (open && live.isPending) ||
     reads.some((read) => read.asked && read.pending);
   const failed = reads.some((read) => read.asked && read.failed);
   const state: RefPickerState =

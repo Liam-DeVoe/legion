@@ -1517,6 +1517,12 @@ func TestCensusRefusesATouchedTableWhoseReadOutlastsTheStatementTimeout(t *testi
 // a database migrated through N-1, and the set cut at N, so N is the one pending migration. The
 // census refuses a census naming what its schema lacks, so a shipped one that did would refuse
 // every deploy carrying it; this catches it at review instead.
+//
+// One database walks the set once: each census is taken just before the runner applies its
+// migration, when the database holds every migration below N and nothing else, against the set
+// loaded once and cut at N, which is what loading the files numbered up to N gives. Migrating
+// through N-1 afresh for each census, and loading each cut again, would read every migration
+// below N once per census after it, a cost that grows with the square of the set.
 func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
 	ctx := context.Background()
 	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
@@ -1524,21 +1530,25 @@ func TestEveryShippedCensusAnswersAtTheSchemaBeforeItsMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := openEmptyTestStore(t)
+	if err := store.prepareVersionTable(ctx, migrations); err != nil {
+		t.Fatalf("prepare schema migrations table: %v", err)
+	}
 	url := store.Pool.Config().ConnString()
 	answered := 0
-	for _, migration := range migrations {
-		if migration.Census == "" {
-			continue
+	for i, migration := range migrations {
+		if migration.Census != "" {
+			report, err := censusOf(ctx, url, migrations[:i+1], pgmigrate.CensusOptions{})
+			if err != nil {
+				t.Fatalf("census of %s: %v", migration.CensusName, err)
+			}
+			if len(report.Pending) != 1 || report.Pending[0].Count == nil || report.Refused() {
+				t.Errorf("%s did not answer one integer at schema %d:\n%s", migration.CensusName, migration.Version-1, reportText(report))
+			}
+			answered++
 		}
-		migrateThrough(t, store, migration.Version-1)
-		report, err := census(ctx, url, migrationsThrough(t, migration.Version), pgmigrate.CensusOptions{})
-		if err != nil {
-			t.Fatalf("census of %s: %v", migration.CensusName, err)
+		if err := store.applyMigration(ctx, migrations, migration); err != nil {
+			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
-		if len(report.Pending) != 1 || report.Pending[0].Count == nil || report.Refused() {
-			t.Errorf("%s did not answer one integer at schema %d:\n%s", migration.CensusName, migration.Version-1, reportText(report))
-		}
-		answered++
 	}
 	if answered == 0 {
 		t.Fatal("the set declares no census")

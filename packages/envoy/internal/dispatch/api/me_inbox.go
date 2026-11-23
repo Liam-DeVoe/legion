@@ -370,9 +370,14 @@ const (
 	// (state=unread&limit=1) ran in about 27 ms and planned in about 27 ms more, so after its one
 	// warm-up run its first four measured runs read 54 to 60 ms and every run after them about
 	// 27.5 ms - a p95 of 57.6 ms against its 50 ms bound with the pile, and 52.2 ms with no
-	// dismissed row at all. The statement is built to run the same under either plan (meInboxBuild,
-	// meInboxPageRows, meInboxDismissedCut), so no request's own values are worth planning it
-	// again for.
+	// dismissed row at all. The statement is built so that its generic plan, the plan every request
+	// runs, reads one page of the Dismissed view however many threads the person has dismissed:
+	// each arm is cut to the page by a cursor compared as one row (meInboxDismissedCut), and an
+	// owner's test is written only into the shape that names that owner (meInboxPageRows), since a
+	// test of an argument the request does not use took that plan to read a whole arm before it cut
+	// it - every one of 960 dismissed Reply threads for a page of 201
+	// (TestTheDismissedPageReadsOnePageUnderTheGenericPlan). So no request's own values are worth
+	// planning it again for.
 	meInboxGenericPlan = `set local plan_cache_mode = force_generic_plan`
 )
 
@@ -1065,7 +1070,10 @@ func (args *meInboxArgs) bind(value any) string {
 // shape (meInboxShape), built once a process, and the request's own arguments before that shape's
 // constants.
 func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest, trees, readsRoster bool, known *time.Time) (string, []any, error) {
-	shape := meInboxShape{state: request.state, owned: request.owned(), trees: trees, readsRoster: readsRoster}
+	shape := meInboxShape{
+		state: request.state, issue: request.issue != "", artifact: request.artifact != nil,
+		trees: trees, readsRoster: readsRoster,
+	}
 	text := meInboxTextOf(shape)
 	if text.err != nil {
 		return "", nil, text.err
@@ -1074,16 +1082,21 @@ func meInboxStatement(caller model.Actor, horizon int64, request meInboxRequest,
 }
 
 // meInboxShape is what the text of the read's statement depends on, and nothing a request carries
-// but this: its state, whether an owner narrows it, whether the page asks for display trees and
-// whether the listener's stored roster is read. Every other value of a request is an argument, so
-// a shape is one text, built once a process (meInboxTextOf) and prepared once on each connection,
-// whose plan Postgres plans once there, on its first execution, and runs from then on
-// (meInboxGenericPlan): the text is tens of kilobytes and takes tens of milliseconds to plan and to
-// build, which a request pays only where it is new.
+// but this: its state, which owner narrows it - an issue, a document or neither - whether the page
+// asks for display trees and whether the listener's stored roster is read. Every other value of a
+// request is an argument, so a shape is one text, built once a process (meInboxTextOf) and prepared
+// once on each connection, whose plan Postgres plans once there, on its first execution, and runs
+// from then on (meInboxGenericPlan): the text is tens of kilobytes and takes tens of milliseconds to
+// plan and to build, which a request pays only where it is new.
 type meInboxShape struct {
 	state              string
-	owned              bool
+	issue, artifact    bool
 	trees, readsRoster bool
+}
+
+// owned is whether an owner narrows the shape (meInboxRequest.owned).
+func (shape meInboxShape) owned() bool {
+	return shape.issue || shape.artifact
 }
 
 // The arguments every request binds first, in meInboxRequestArgs's order. $1, $2 and $3 are
@@ -1268,6 +1281,8 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	direct_args(login, actor_id, session_id) as (select $1::text, $2::text, $3::text),
 	-- The cursor, typed once: the Dismissed view's key takes no kind (meInboxOrder).
 	cursor_args(moment, kind, id) as (select ` + meInboxCursorMoment + `::timestamptz, ` + meInboxCursorKind + `::text, ` + meInboxCursorID + `::text),
+	-- The owner, typed once: a shape's text names only the owner it narrows by (meInboxPageRows).
+	owner_args(issue, artifact) as (select ` + meInboxIssue + `::text, ` + meInboxArtifact + `::uuid),
 	person_nodes(kind, id) as (
 		select '` + graphstore.KindPerson + `'::text, $1::text
 		union
@@ -1325,7 +1340,7 @@ func meInboxBuild(shape meInboxShape) (string, []any, error) {
 	),`)
 	if shape.state == "" {
 		ownedRows := ``
-		if shape.owned {
+		if shape.owned() {
 			ownedRows = `
 		  and g.page is not null`
 		}
@@ -1445,19 +1460,37 @@ func meInboxKindSkip(name, end string) string {
 // arms is cut to the page before the walk meets it (meInboxDismissedCut), so a page of that state
 // reads the rows it answers however many threads the person has dismissed.
 //
+// The owner's tests are written only into a shape that names that owner. The plan Postgres keeps
+// from the sixth execution, and the one this read forces (meInboxGenericPlan), knows nothing of
+// the arguments: it takes a test of an argument against a column to keep almost no row. The Reply
+// rows read myRepliesOwner's two tests, one of the issue and one of the document, each written as
+// an `or` with the argument left out, and a shape binds the owner it does not name to the value
+// that names none - the empty text, or null - so that the test is a constant the planner drops;
+// the owner it names keeps its own test. Bound to arguments on every shape, the two tests took the
+// Dismissed view's Reply arm to keep one row of the 320 it estimated off user_threads_dismissed,
+// at a seed of 960 dismissed Reply threads on one issue and no document, and a plan that takes an
+// arm to hold one row reads the whole of it and sorts it: all 960 rows read for the 201 the cut
+// kept (TestTheDismissedPageReadsOnePageUnderTheGenericPlan). A request narrowed to an issue still
+// reads the arm in its index's order, and stops once the page is full, so it reads the page where
+// the issue holds the rows the page is made of.
+//
 // The Ask rows are the open asks first, read by their row's state alone, then the ones of those
 // that wait on the person, and last the ones of those that are open as every read of open asks
 // across owners picks them, by their row's state and their node's (askOpenOf, R3), each with its
-// newest reply; and an owner's test is written only into a shape that names an owner. The plan
-// Postgres keeps from the sixth execution knows nothing of the arguments: it takes a test of an
-// argument against a column to keep almost no row, and with the owner's tests on every shape it
-// took the open asks to be one and read each one's issue, document and project by a scan of that
-// whole table, and its newest reply, before it knew whether the ask waits on the person at all
-// (13.6 ms of that plan's 21.6 for the person whose history is empty, against 0.4 ms in the plan
-// of their own arguments). The node's test probes the ask's node, so it reads only the asks that
-// wait on the person, which are materialized before it as the open asks are before them.
+// newest reply. With the owner's tests on every shape that plan took the open asks to be one and
+// read each one's issue, document and project by a scan of that whole table, and its newest reply,
+// before it knew whether the ask waits on the person at all (13.6 ms of that plan's 21.6 for the
+// person whose history is empty, against 0.4 ms in the plan of their own arguments). The node's
+// test probes the ask's node, so it reads only the asks that wait on the person, which are
+// materialized before it as the open asks are before them.
 func meInboxPageRows(shape meInboxShape) string {
-	issue, artifact := meInboxIssue, meInboxArtifact
+	issue, artifact := `''`, `null`
+	if shape.issue {
+		issue = meInboxIssue
+	}
+	if shape.artifact {
+		artifact = meInboxArtifact
+	}
 	state := shape.state
 	if state == "" {
 		state = myRepliesStateInbox
@@ -1483,10 +1516,13 @@ func meInboxPageRows(shape meInboxShape) string {
 		` + threads}
 	if state == myRepliesStateInbox {
 		owner := ``
-		if shape.owned {
+		if shape.issue {
 			owner = `
-			  and (` + issue + `::text = '' or a.issue_key = ` + issue + `::text)
-			  and (` + artifact + `::uuid is null or a.artifact_id = ` + artifact + `::uuid)`
+			  and a.issue_key = ` + meInboxIssue + `::text`
+		}
+		if shape.artifact {
+			owner = `
+			  and a.artifact_id = ` + meInboxArtifact + `::uuid`
 		}
 		arms = append(arms, `
 		select '`+graphstore.KindAsk+`', a.id::text, '`+meInboxPageAsk+`', coalesce(lr.created_at, a.created_at), null::text, null::record
@@ -1504,7 +1540,7 @@ func meInboxPageRows(shape meInboxShape) string {
 			where `+askOpenOf("a")+`
 		) a`+lastReplyJoin)
 	}
-	if !shape.owned {
+	if !shape.owned() {
 		arms = append(arms, `
 		select '`+graphstore.KindMessage+`', listed.root_id, '`+meInboxPageAgent+`', `+agentMoment+`, listed.session_id, row(listed.*)
 		from (`+agents+myAgentRowsSelect+`
@@ -1534,7 +1570,9 @@ func meInboxPageRows(shape meInboxShape) string {
 // kind keeps the whole arm, since whether a row holds one of those kinds is the walk's to say,
 // which the cut comes before; no caller sends one to this state. The request always holds a limit
 // under this state, since one it does not name is myRepliesDismissedPage (parseMeInboxRequest), so
-// the cut always takes one page.
+// the cut always takes one page. That the generic plan reads the cut off the index in its order and
+// stops at it, rather than reading the whole arm and sorting it, rests on the arm's other tests as
+// well: an owner's test is in the text only where the request names that owner (meInboxPageRows).
 func meInboxDismissedCut(kind, id, moment string) string {
 	return `
 		  and (` + moment + `, ` + id + `) < (coalesce(` + meInboxCursorMoment + `::timestamptz, 'infinity'),

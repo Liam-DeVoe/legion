@@ -70,7 +70,7 @@ test("a party picked after a `](` typed in a document is its mention", async () 
     // One letter after the door, below what the search route takes, so the rows are the parties.
     const text = "[the plan](@p";
     act(() => seen.picker?.onCaret({ bottom: 20, left: 0, text, top: 10 }));
-    await screen.findByText("Planner");
+    await screen.findByRole("option", { name: /^Planner\b/ });
     act(() => {
       expect(seen.picker?.pressKey("Enter")).toBe(true);
     });
