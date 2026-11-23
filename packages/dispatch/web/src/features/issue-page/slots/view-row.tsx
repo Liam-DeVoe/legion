@@ -1,9 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useLayoutEffect, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { whoAmIQuery } from "../../../api/queries";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { contentsEntries } from "../contents-entries";
@@ -15,6 +13,7 @@ import { useOutlineReads } from "../outline-reads";
 import { filterSignals, isFilter, presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { useIssueKeymap } from "../useIssueKeymap";
+import { useWhoIsReading } from "../useIssueTree";
 import { useViewRowTools } from "../view-row-tools";
 
 /**
@@ -49,7 +48,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   // Who the reader is, which Conversation's count is read for: a thread is counted where the
   // reader began it.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   // What each control draws after its name: a view's count of its main kind and what of it asks
   // something of the reader, and for Conversation how many entries the Contents list holds, as
   // the prototype's signal counts its branches. Each follows `?q=`. None while the reads or the

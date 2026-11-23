@@ -74,6 +74,7 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
           checks={checks}
           context={view.context}
           reads={reads}
+          startsOn={named}
           view={view.root}
           whole={whole}
         />

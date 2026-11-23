@@ -23,6 +23,7 @@ import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, AuthenticatedUser, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import { copyText } from "../../lib/clipboard";
 import {
   badgeMed,
@@ -193,6 +194,10 @@ export interface ProofDocumentProps {
     readonly markId: string | null;
   };
   artifact: Artifact;
+  /** How the document's reads of who is reading, the issue's decisions and an open question's
+   *  thread are kept fresh: by events where the host says so (the new issue page's opened
+   *  document, `EVENT_FRESH`), else by the app's defaults. */
+  freshness?: EventFreshness;
   highlight: Highlight | undefined;
   highlightTerm?: string;
   isClosed: boolean;
@@ -261,6 +266,7 @@ function setSearchHighlights(root: HTMLElement, query: string): void {
 export function ProofDocument({
   anchoredThread,
   artifact,
+  freshness,
   highlight,
   highlightTerm = "",
   isClosed,
@@ -496,6 +502,7 @@ export function ProofDocument({
   const specMarks = useSpecMarks({
     artifact,
     enabled: page && version === undefined && artifact.primary && owner.kind === "issue",
+    freshness,
     issueKey: owner.kind === "issue" ? owner.key : "",
     shownVersion: versions[0]?.number,
   });
@@ -1270,6 +1277,7 @@ export function ProofDocument({
           return (
             <AskBlockCard
               ask={blockAsks.find((candidate) => candidate.block_id === blockId)}
+              freshness={freshness}
               host={host}
               inBody={false}
               key={host.key}
@@ -1346,6 +1354,7 @@ export function ProofDocument({
             artifactId={artifact.id}
             asks={blockAsks}
             createdAt={versions.find((item) => item.number === version)?.created_at}
+            freshness={freshness}
             highlight={highlight}
             owner={owner.kind === "document" ? owner : undefined}
             version={version}

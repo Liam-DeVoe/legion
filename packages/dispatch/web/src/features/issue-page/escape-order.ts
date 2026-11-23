@@ -6,7 +6,6 @@ import { useKeymap } from "../shell/keymap";
 import { useOutlineAddress } from "./document-address";
 import { WORDS_FILTER_ATTRIBUTE } from "./IssuePresets";
 import { presetPath } from "./issue-address";
-import { useAskOutline, useFocusBranch } from "./outline-request";
 import { CONTROL_LABELS } from "./page-words";
 import { useFollowing } from "./slots/following";
 import { nodeRowSelectorOf } from "./tree-focus";
@@ -42,8 +41,9 @@ const VERIFICATION_BODY = "[data-verification-body]";
  * 4. words in `?q=`, with the focus outside the box, are cleared (`words-clear`), which shuts the
  *    box: the box's own write, a replace marked with the following it was typed in, so the view
  *    stays and the following with it (`slots/following.ts`);
- * 5. a view on is turned off (`filters-off`), which is Conversation's address, and the outline is
- *    asked for the node the reader was on in the view, which it draws focused (R14);
+ * 5. a view on is turned off (`filters-off`), which is Conversation's address; the stage then
+ *    asks the outline for the node the reader was last on in the view, which it draws focused
+ *    (R14, `stage-landing.tsx`'s `ViewNodeKeeper`, which `t c` and Conversation reach too);
  * 6. a row of the outline gives the outline up (`useTreeKeymap.ts`'s `tree-leave`).
  *
  * Steps 3 to 5 are these. The keymap runs the first binding of a scope whose `when` holds, and
@@ -73,8 +73,6 @@ export function useEscapeOrder({
   const { hash, pathname, search } = useLocation();
   const following = useFollowing();
   const outline = useOutlineAddress(issueKey);
-  const ask = useAskOutline();
-  const [focusBranch] = useFocusBranch();
   const before = useRowBeforeWords();
   // Clearing the words is the box's own write (`view-row-tools.tsx`): `?q=` taken out in place,
   // by a replace marked with the following the words were typed in, which keeps the outline an
@@ -143,11 +141,7 @@ export function useEscapeOrder({
       keys: "Escape",
       label: "Turn every view off",
       palette: false,
-      run: () => {
-        const on = document.activeElement?.closest<HTMLElement>(ROW)?.dataset.nodeId;
-        navigate(presetPath(issueKey, "conversation"));
-        if (on !== undefined) ask(on, focusBranch);
-      },
+      run: () => navigate(presetPath(issueKey, "conversation")),
       when: () => viewOn && filter === "" && pageEscapes(),
     },
   ]);

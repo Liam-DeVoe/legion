@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   type RefObject,
@@ -10,11 +9,9 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
@@ -44,6 +41,7 @@ import {
   zoomBreadcrumb,
 } from "./tree-fold";
 import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
+import { useWhoIsReading } from "./useIssueTree";
 import { abortOnReaderAct, type OnEditing, useNodeEditing } from "./useNodeEditing";
 import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
 
@@ -234,7 +232,7 @@ export function IssueTree({
   const navigate = useNavigate();
   const takeRequest = useTakeOutlineRequest();
   // The reader, whose own new words a write from the line takes them to.
-  const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const reader = useWhoIsReading().data?.login;
   const body = useRef<HTMLDivElement | null>(null);
   const crumbLine = useRef<HTMLParagraphElement | null>(null);
   // The failed reads' lines over the tree, and the one whose Retry the page opens on where no

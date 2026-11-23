@@ -8,7 +8,7 @@ import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
-import { useStageLanding } from "../stage-landing";
+import { useStageLanding, ViewNodeKeeper } from "../stage-landing";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
@@ -124,6 +124,7 @@ export function StageSlot({
   return (
     <DocumentStages>
       <ReaderActsWatch into={acts} key={following} />
+      <ViewNodeKeeper lands={beside} viewOn={View !== undefined} />
       {View === undefined ? (
         <StageBox>
           <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />

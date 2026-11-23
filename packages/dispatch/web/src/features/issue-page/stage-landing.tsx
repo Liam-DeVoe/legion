@@ -9,9 +9,11 @@ import { useWholeRouteRead } from "../refs/reference-target";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import { useOpenedDocument, useOutlineAddress } from "./document-address";
 import { useEscapeOrder } from "./escape-order";
+import { useFocusedNode } from "./focused-node";
 import { issueAddress } from "./issue-address";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
 import { OpenedDocument } from "./OpenedDocument";
+import { useAskOutline, useFocusBranch } from "./outline-request";
 import { isFilter } from "./presets";
 import type { SlotProps } from "./slot-props";
 import { useFollowing } from "./slots/following";
@@ -158,6 +160,50 @@ export function useStageLanding({ issue, route }: SlotProps): {
       />
     ),
   };
+}
+
+/**
+ * Keeps the node the reader was last on in a view while the stage turns the view off - by
+ * Escape, `t c`, Conversation or Back - and then asks the outline for it, which draws it focused
+ * (R14). Each view's tree sets that node as its rows take the focus (`focused-node.tsx`); the
+ * focus leaving a view gives Details the issue back, by the outline's rule (`useReleaseFocus`) or
+ * the Decisions view's own, so what is kept is the last node a view set, not what F holds as the
+ * view goes. A node F held before the view was drawn is no node of the view's. Where the address
+ * names a node of its own to land on, the outline lands there instead, and nothing is asked.
+ *
+ * It is an element of its own, so a move of the focus draws it alone and not the stage.
+ */
+export function ViewNodeKeeper({
+  lands,
+  viewOn,
+}: {
+  /** Whether the address names a node beside the view for the outline to land on. */
+  readonly lands: boolean;
+  /** Whether the stage draws a view in the outline's place. */
+  readonly viewOn: boolean;
+}): null {
+  const focused = useFocusedNode();
+  const ask = useAskOutline();
+  const [focusBranch] = useFocusBranch();
+  const kept = useRef<string | undefined>(undefined);
+  const seen = useRef(focused);
+  const wasOn = useRef(viewOn);
+  // In the commit that draws the outline, before its own effects take the request.
+  useLayoutEffect(() => {
+    const from = wasOn.current;
+    wasOn.current = viewOn;
+    if (from === viewOn) return;
+    const node = kept.current;
+    kept.current = undefined;
+    seen.current = focused;
+    if (from && node !== undefined && !lands) ask(node, focusBranch);
+  }, [ask, focusBranch, focused, lands, viewOn]);
+  useLayoutEffect(() => {
+    if (focused === seen.current) return;
+    seen.current = focused;
+    if (viewOn && focused !== undefined) kept.current = focused.id;
+  }, [focused, viewOn]);
+  return null;
 }
 
 /** An approval request's own address puts the focus on the approval the header draws for the

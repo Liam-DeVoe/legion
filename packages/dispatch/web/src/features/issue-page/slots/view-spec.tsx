@@ -1,10 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
-import { whoAmIQuery } from "../../../api/queries";
-import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
 import { NoTooltips } from "../NoTooltips";
@@ -14,6 +11,7 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { nodesInOrder } from "../tree-keys";
+import { useWhoIsReading } from "../useIssueTree";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
 
@@ -42,7 +40,7 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
   // Who is reading, so a decision of theirs reads as their own words (R5), read as the tree reads
   // it (`useIssueTree`, `EVENT_FRESH`): staleness is per observer, so under the app's 30 s
   // `staleTime` the view opened later would ask for it again.
-  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   // The address's own node, resolved against the whole tree and kept by the view
   // (`useAddressTarget`, as the outline reads it).
   const { named, reveal } = useAddressTarget(root, address);

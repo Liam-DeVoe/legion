@@ -3,7 +3,7 @@ import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } 
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
+import { projectsQuery, referenceTargetsQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, ReferenceTargets, UserState } from "../../api/types";
 import {
   pageAvatar,
@@ -75,6 +75,7 @@ import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
+import { useWhoIsReading } from "./useIssueTree";
 import { useMarginSections } from "./useMarginSections";
 import { usePriorityHandOffs } from "./usePriorityHandOffs";
 import { waitingOnReader } from "./waiting";
@@ -455,7 +456,7 @@ export function IssueMarginPanel({
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
   // hands it no decisions.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useWhoIsReading().data?.login;
   const approvalWaits =
     waitingOnReader(issue, viewer, undefined, () => false, undefined, undefined).approvals.length >
     0;

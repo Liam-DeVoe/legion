@@ -5,6 +5,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact, IDCandidate } from "../../api/types";
+import type { EventFreshness } from "../../hooks/useIsHuman";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { ItemMatchList } from "../issue/ItemMatchList";
@@ -101,6 +102,7 @@ export function ArtifactDocument({
   artifact,
   askId,
   commentId,
+  freshness,
   highlightTerm,
   isClosed,
   owner,
@@ -112,6 +114,10 @@ export function ArtifactDocument({
   artifact: Artifact;
   askId?: string;
   commentId?: string;
+  /** How the document's reads of who is reading, its decisions and an open question's thread are
+   *  kept fresh, where its host keeps them fresh by events (the new issue page's opened document,
+   *  `EVENT_FRESH`); by default, the app's. */
+  freshness?: EventFreshness;
   highlightTerm?: string;
   isClosed: boolean;
   owner: MarginOwner;
@@ -120,7 +126,7 @@ export function ArtifactDocument({
   onVersionChange: (version: number | null) => void;
   version: number | undefined;
 }): ReactNode {
-  const user = useQuery(whoAmIQuery());
+  const user = useQuery({ ...whoAmIQuery(), ...freshness });
   const selected: SelectedItem | undefined =
     commentId === undefined
       ? askId === undefined
@@ -194,6 +200,7 @@ export function ArtifactDocument({
       {landing.rewrite === undefined ? null : <Navigate replace to={landing.rewrite} />}
       <ProofDocument
         artifact={artifact}
+        freshness={freshness}
         highlight={highlight}
         highlightTerm={highlightTerm}
         isClosed={isClosed}

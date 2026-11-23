@@ -6,6 +6,7 @@ import { pageHeaderControl } from "../../theme/classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
+import { EVENT_FRESH } from "../refs/reference-target";
 import type { IssueRoute } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { ArtifactRoutePanel } from "./ArtifactRoutePanel";
@@ -227,6 +228,10 @@ function OpenedEditor({
             artifact={artifact}
             askId={askId}
             commentId={commentId}
+            // The editor's reads of who is reading, the decisions and an open question's thread
+            // are kept fresh by events, as the outline's are: under the app's 30 s `staleTime`, a
+            // document opened later would ask for each again (R14).
+            freshness={EVENT_FRESH}
             highlightTerm={highlightTerm}
             isClosed={isClosed}
             onToolbarChange={onToolbarChange}
