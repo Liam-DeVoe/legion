@@ -414,6 +414,10 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"pr", "list"}, env: pane, remotes: func() ([]ghRemote, error) { return nil, fmt.Errorf("bad config line 3") }, err: "cannot be read (bad config line 3)"},
 		{argv: []string{"-R", "acme/widgets", "pr", "view", "1"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: paneWith("GH_REPO", "acme/widgets"), remotes: remotes(sjawharClone), owner: "acme"},
+		{argv: []string{"pr", "list", "-R", "ssh://git@github.com/acme/widgets"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
+		{argv: []string{"pr", "list", "-R", "https://github.com/acme/widgets"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
+		{argv: []string{"pr", "list", "-R", "ssh://git:" + madeUpGhToken + "@github.com/acme/widgets"}, env: pane, remotes: remotes(sjawharClone), err: "a -R value holds a user name or a password"},
+		{argv: []string{"pr", "list", "-R", "https://git@github.com/acme/widgets"}, env: pane, remotes: remotes(sjawharClone), err: "a -R value holds a user name or a password"},
 		{argv: []string{"pr", "view", "--help"}, env: pane, remotes: remotes(sjawharClone)},
 		// R1 of dispatch://INFRA-3399, in the marked fork checkout unless a row says otherwise: its
 		// conditions as unit rows, among them the remote lists real git cannot print (a push line
