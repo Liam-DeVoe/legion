@@ -35,7 +35,11 @@ const specWriterGuardPkg = "api"
 // suggestion, which change a document's text too (plan, "Where the plan departs from the spec's
 // words"). A call names one through the interface the handlers hold (docs.API) or through the
 // service itself (docs.Service), and either is a call of the sink. KeepAskBlockInStep is the write
-// of an ask's state into its block, which SetBlockAttributes made before it.
+// of an ask's state into its block, which SetBlockAttributes made before it. ReviseQueries is no
+// sink: the version it appends when a check result is recorded or retracted re-renders the
+// issue's query documents for that result, and a result is no requirement, criterion or check
+// node, nor is its tuple to its check a relation out of one, so the version writes nothing the
+// check guards; specWriterRevisions names the routes that reach it, each with that reason.
 var specWriterSinks = []string{
 	"AcceptSuggestion", "ApplyOps", "KeepAskBlockInStep", "NamedVersion", "RebuildDocument", "RejectSuggestion",
 	"ReplaceText", "SeedText", "SetAskBlockText", "SnapshotVersion", "WriteIssueAskStates",
@@ -43,6 +47,35 @@ var specWriterSinks = []string{
 
 // specWriterSinkTypes are the two types a sink is called through, as the graph names them.
 var specWriterSinkTypes = []string{"docs.API.", "docs.Service."}
+
+// specWriterRevision is the write of the document service that appends a version of each query
+// document of an issue whose record a write moved (docs.Service.ReviseQueries), by method name,
+// called through either of specWriterSinkTypes. It is no sink (specWriterSinks), and the routes
+// whose path reaches it are the ones specWriterRevisions names.
+const specWriterRevision = "ReviseQueries"
+
+// resultRevisionExemption is why specWriterRevisions leaves the two result routes' versions
+// unchecked.
+const resultRevisionExemption = "a result recorded or retracted moves the record of its check's Verification query, and the " +
+	"version ReviseQueries appends re-renders that document from the store and writes no requirement, criterion or check " +
+	"node and no value or relation out of one: a result is none of those nodes, and its tuple to its check is a relation " +
+	"out of the result (TestARecordedResultAndItsRetractionChangeNoRequirementCriterionOrCheck)"
+
+// specWriterRevisions names every route whose path reaches specWriterRevision, with the reason
+// the version it appends there is left unchecked. TestEveryRouteThatWritesADocumentChecksItsWriter
+// holds the table to it both ways (unheldQueryRevisions): a route that reaches the revision and is
+// not named here fails, naming it, and so does a route named here that the table does not serve or
+// whose path no longer reaches the revision, so no reason is left describing a route it does not.
+//
+// One call of the revision is outside the walk, which reads package api alone: the issue room's
+// settlement (settlement.reviseQueries, docs/settlement.go) revises the query documents a
+// settled edit moved. It needs no writer check of its own: what it settles reached the room
+// through a document socket, which admits a person alone (requestActor, docs/socket_admission.go),
+// or through a route whose own path this test holds to the check.
+var specWriterRevisions = map[string]string{
+	"POST /api/v1/issues/{key}/results": resultRevisionExemption,
+	"POST /api/v1/results/{id}/retract": resultRevisionExemption,
+}
 
 // anchoredWriteExemption is why specWriterExempt leaves the four anchored comment and ask routes
 // unchecked (dispatch://INFRA-4764/spec, Design, "The two writes R1 leaves as they are").
@@ -76,6 +109,11 @@ var specWriterExempt = map[string]string{
 // when specWriterExempt names it with its reason. Its failure names each route and each sink it
 // reaches, with the calls that reach it.
 //
+// The same walk finds each route whose path reaches the query revision (specWriterRevision), which
+// is no sink, and the test holds those routes to specWriterRevisions: a route that reaches it and
+// is not named there fails, naming it and the calls that reach it, and so does a route named there
+// that the table does not serve or whose path no longer reaches it (unheldQueryRevisions).
+//
 // The walk is decisionBlockChecked's: every call of every function on the path inside package api,
 // followed as the copy-lock graph resolves it, plus every function handed to it as an argument. It
 // reads each body whole, branches included, so a route reaches every sink of every function on its
@@ -99,9 +137,16 @@ func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 			t.Errorf("no route of the table reaches %s, so the guard sees none of its calls", sink)
 		}
 	}
+	if graph.named["docs.Service."+specWriterRevision] == nil {
+		t.Errorf("docs.Service.%s, the query revision specWriterRevisions names the routes of, is gone: "+
+			"point specWriterRevision at its replacement", specWriterRevision)
+	}
 
 	for _, name := range slices.Sorted(maps.Keys(routes)) {
 		reach := routes[name]
+		if reason, listed := specWriterRevisions[name]; listed && len(reach.revises) > 0 {
+			t.Logf("%s: reaches %s (%s); a revision route - %s", name, specWriterRevision, strings.Join(reach.revises, ", "), reason)
+		}
 		if len(reach.sinks) == 0 {
 			continue
 		}
@@ -120,6 +165,13 @@ func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 			"Call refuseSpecWriter on the route's path before its first document call (spec_writer.go), "+
 			"declare model.ScopePerson for the route in routeScopes, or name it in specWriterExempt with the reason it is left.",
 			strings.Join(unchecked, "\n\t"))
+	}
+	if unheld := unheldQueryRevisions(routes, specWriterRevisions); len(unheld) > 0 {
+		t.Errorf("the routes that reach %s are not the ones specWriterRevisions names:\n\t%s\n"+
+			"Name a route that reaches it in specWriterRevisions with the reason its version writes no requirement, criterion "+
+			"or check node and no value or relation out of one, and delete a line whose route no longer reaches it, or point it "+
+			"at the row that replaced it.",
+			specWriterRevision, strings.Join(unheld, "\n\t"))
 	}
 }
 
@@ -142,7 +194,10 @@ func TestTheSpecWriterExemptionsStillHold(t *testing.T) {
 // the guard names a planted route that reaches ApplyOps with no check, and the exemption test names
 // a planted exempt route whose path calls the check. The planted table also holds a route that
 // checks its writer, one that needs the person scope, and one that writes nothing, and neither
-// helper names any of them.
+// helper names any of them. A third control holds the revision list the same way: over a planted
+// list naming one route that reaches ReviseQueries and one that reaches nothing, the decision names
+// the planted route that reaches ReviseQueries unnamed and the named route that does not reach it,
+// and neither the named revision route nor any route of the first two controls.
 func TestTheSpecWriterGuardSeesAPlantedWriter(t *testing.T) {
 	graph := plantedSpecWriterGraph(t)
 	routes := specWriterReaches(graph, specWriterRouteHandlers(t, graph))
@@ -159,13 +214,25 @@ func TestTheSpecWriterGuardSeesAPlantedWriter(t *testing.T) {
 		t.Errorf("the exemption test names %q over the planted table, want the one exempt route whose path calls %s, "+
 			"POST /planted/exempt", stale, specWriterCheck)
 	}
+	revisions := map[string]string{
+		"POST /planted/revised": "a planted revision route",
+		"GET /planted/read":     "a planted revision route whose path reaches no revision",
+	}
+	unheld := unheldQueryRevisions(routes, revisions)
+	if len(unheld) != 2 || !strings.HasPrefix(unheld[0], "POST /planted/revised-unnamed: reaches "+specWriterRevision+" (") ||
+		!strings.HasPrefix(unheld[1], "GET /planted/read: its path no longer reaches "+specWriterRevision) {
+		t.Errorf("the revision list's decision names %q over the planted table, want the route that reaches %[2]s unnamed, "+
+			"POST /planted/revised-unnamed, then the named route whose path does not reach %[2]s, GET /planted/read", unheld, specWriterRevision)
+	}
 }
 
 // specWriterReach is what one route's path runs: each sink it reaches, by method name, with every
-// call on the path that reaches it ("<file>:<line>", sorted), and whether it calls the check.
+// call on the path that reaches it ("<file>:<line>", sorted); every call on the path that reaches
+// the query revision (specWriterRevision), sorted; and whether it calls the check.
 type specWriterReach struct {
-	sinks  map[string][]string
-	checks bool
+	sinks   map[string][]string
+	revises []string
+	checks  bool
 }
 
 // describe names each sink reach reaches, in order, with the calls that reach it.
@@ -212,6 +279,33 @@ func staleSpecWriterExemptions(routes map[string]specWriterReach, exempt map[str
 		}
 	}
 	return stale
+}
+
+// unheldQueryRevisions is the revision list's decision over routes: each route whose path reaches
+// the query revision (specWriterRevision) and that revisions does not name, with the calls that
+// reach it, then each route revisions names that routes does not hold, or whose path no longer
+// reaches the revision, with the reason it was named.
+// TestEveryRouteThatWritesADocumentChecksItsWriter runs it over the server's table and
+// TestTheSpecWriterGuardSeesAPlantedWriter over a planted one.
+func unheldQueryRevisions(routes map[string]specWriterReach, revisions map[string]string) []string {
+	var unheld []string
+	for _, name := range slices.Sorted(maps.Keys(routes)) {
+		if _, named := revisions[name]; !named && len(routes[name].revises) > 0 {
+			unheld = append(unheld, fmt.Sprintf("%s: reaches %s (%s), and specWriterRevisions does not name it",
+				name, specWriterRevision, strings.Join(routes[name].revises, ", ")))
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(revisions)) {
+		reach, served := routes[name]
+		switch {
+		case !served:
+			unheld = append(unheld, name+": the table serves no such route")
+		case len(reach.revises) == 0:
+			unheld = append(unheld, fmt.Sprintf("%s: its path no longer reaches %s, so its reason (%s) describes nothing it does",
+				name, specWriterRevision, revisions[name]))
+		}
+	}
+	return unheld
 }
 
 // specWriterRoutes is every route of the server's table with what its path runs, held to the table
@@ -271,11 +365,13 @@ type specWriterWalk struct {
 }
 
 // specWriterStep is what one function's own body runs: the sinks it calls, by method name, with
-// where; whether it calls the check; and the functions of package api its calls run.
+// where; where it calls the query revision; whether it calls the check; and the functions of
+// package api its calls run.
 type specWriterStep struct {
-	sinks  map[string][]string
-	checks bool
-	next   []*lockFunction
+	sinks   map[string][]string
+	revises []string
+	checks  bool
+	next    []*lockFunction
 }
 
 // reach is what running any of handlers runs.
@@ -297,6 +393,11 @@ func (w *specWriterWalk) reach(handlers []*lockFunction) specWriterReach {
 				}
 			}
 		}
+		for _, call := range step.revises {
+			if !slices.Contains(reach.revises, call) {
+				reach.revises = append(reach.revises, call)
+			}
+		}
 		for _, next := range step.next {
 			walk(next)
 		}
@@ -307,6 +408,7 @@ func (w *specWriterWalk) reach(handlers []*lockFunction) specWriterReach {
 	for sink := range reach.sinks {
 		slices.Sort(reach.sinks[sink])
 	}
+	slices.Sort(reach.revises)
 	return reach
 }
 
@@ -323,8 +425,13 @@ func (w *specWriterWalk) step(fn *lockFunction) *specWriterStep {
 		if name == specWriterCheck {
 			step.checks = true
 		}
-		if sink, isSink := specWriterSinkOf(name); isSink {
-			step.sinks[sink] = append(step.sinks[sink], w.graph.line(fn.source, call))
+		if method, called := specWriterServiceMethod(name); called {
+			switch {
+			case slices.Contains(specWriterSinks, method):
+				step.sinks[method] = append(step.sinks[method], w.graph.line(fn.source, call))
+			case method == specWriterRevision:
+				step.revises = append(step.revises, w.graph.line(fn.source, call))
+			}
 		}
 		for _, callee := range w.graph.calleesAndPassed(call) {
 			if callee != nil && callee.pkg == specWriterGuardPkg && !slices.Contains(step.next, callee) {
@@ -335,11 +442,13 @@ func (w *specWriterWalk) step(fn *lockFunction) *specWriterStep {
 	return step
 }
 
-// specWriterSinkOf is the sink name names, as calledFunctionName gives a call's function, and
-// whether it is one.
-func specWriterSinkOf(name string) (string, bool) {
+// specWriterServiceMethod is the method of the document service name names, as
+// calledFunctionName gives a call's function, called through either of specWriterSinkTypes, and
+// whether it names one: a sink where specWriterSinks holds it, the query revision where it is
+// specWriterRevision.
+func specWriterServiceMethod(name string) (string, bool) {
 	for _, through := range specWriterSinkTypes {
-		if method, called := strings.CutPrefix(name, through); called && slices.Contains(specWriterSinks, method) {
+		if method, called := strings.CutPrefix(name, through); called {
 			return method, true
 		}
 	}
@@ -347,11 +456,12 @@ func specWriterSinkOf(name string) (string, bool) {
 }
 
 // plantedSpecWriterSources is the planted module TestTheSpecWriterGuardSeesAPlantedWriter reads, by
-// import path: a document service with ApplyOps behind an interface, as docs.API holds it; the
-// stand-ins for net/http's method names the table's rows spell; and a server whose routes table
-// holds a route that writes through a function literal with no check, a route whose path calls the
-// check through a helper before the same write, a route that needs the person scope and writes the
-// same way, an exempt route that checks its writer all the same, and a route that writes nothing.
+// import path: a document service with ApplyOps and ReviseQueries behind an interface, as docs.API
+// holds them; the stand-ins for net/http's method names the table's rows spell; and a server whose
+// routes table holds a route that writes through a function literal with no check, a route whose
+// path calls the check through a helper before the same write, a route that needs the person scope
+// and writes the same way, an exempt route that checks its writer all the same, a route that writes
+// nothing, and two routes that revise an issue's queries through a helper and write nothing else.
 // Each package's name is the one the guard reads (docs, http, api), so the graph names its
 // functions as it names the server's.
 var plantedSpecWriterSources = map[string]string{
@@ -359,11 +469,14 @@ var plantedSpecWriterSources = map[string]string{
 
 type API interface {
 	ApplyOps(artifactID string) error
+	ReviseQueries(issueKey string) error
 }
 
 type Service struct{}
 
 func (s *Service) ApplyOps(artifactID string) error { return nil }
+
+func (s *Service) ReviseQueries(issueKey string) error { return nil }
 `,
 	"planted/http": `package http
 
@@ -396,6 +509,8 @@ func (s *server) routes() []routeRow {
 		{http.MethodPost, "/planted/exempt", "any", "Is exempt, and checks its writer all the same.", s.writeChecked},
 		{http.MethodGet, "/planted/read", "any", "Writes nothing.", s.read},
 		{http.MethodPost, "/planted/nothing", "any", "Writes nothing either.", s.read},
+		{http.MethodPost, "/planted/revised", "any", "Revises the issue's queries, and is named.", s.revise},
+		{http.MethodPost, "/planted/revised-unnamed", "any", "Revises the issue's queries, and is not named.", s.revise},
 	}
 }
 
@@ -415,6 +530,10 @@ func (s *server) checkWriter() error { return refuseSpecWriter() }
 func (s *server) inTransaction(write func() error) { _ = write() }
 
 func (s *server) read() {}
+
+func (s *server) revise() {
+	s.inTransaction(func() error { return s.documents.ReviseQueries("KEY-1") })
+}
 `,
 }
 

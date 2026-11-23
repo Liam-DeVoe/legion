@@ -954,3 +954,267 @@ func TestEveryWriteThatMovesAQuerysRecordAppendsAVersionOfIt(t *testing.T) {
 		t.Errorf("ReviseQueries of %s, which has not converted, leaves its documents at the versions %v, want %v", unconverted.Key, inside, before)
 	}
 }
+
+// specWriterNodeTypes are the types of the nodes only a person or an architect writes on an issue
+// Legion runs - a criterion, a requirement and a check - as the issue's tree types each node
+// (refs.TreeNodeType: a block by the typed block its text opens).
+var specWriterNodeTypes = []string{"criterion", "requirement", "check"}
+
+// specWriterNodeColumns are the columns of a node's graph_nodes row readSpecWriterNodes reads, in
+// the order its statement reads them, each as text.
+var specWriterNodeColumns = []string{"supertag", "state", "visibility", "attributes", "project_key", "parties", "made_at", "made_by", "source_event"}
+
+// specWriterNode is what the store holds of one criterion, requirement or check node of an issue:
+// its type, and its type and address as a failure names it; each column of its graph_nodes row,
+// with its parent and its rank as the issue's tree walks them; and every tuple out of it, each
+// graph_tuples row from it by seq, written kind>to_kind:to_id - a value's to_id being the value -
+// with whether it asserts.
+type specWriterNode struct {
+	typ, named string
+	columns    map[string]string
+	tuples     map[int64]string
+}
+
+// readSpecWriterNodes reads, at the store, every criterion, requirement and check node of the tree
+// of issueKey at the head (docs.WalkIssueTree), by store address.
+func readSpecWriterNodes(t *testing.T, database *store.Store, issueKey string) map[string]specWriterNode {
+	t.Helper()
+	ctx := context.Background()
+	tree, err := docs.WalkIssueTree(ctx, database.Pool, issueKey, refs.TreeCut{})
+	if err != nil {
+		t.Fatalf("walk the tree of %s: %v", issueKey, err)
+	}
+	nodes := map[string]specWriterNode{}
+	for _, walked := range tree.Nodes {
+		if !slices.Contains(specWriterNodeTypes, walked.Type) {
+			continue
+		}
+		node := specWriterNode{typ: walked.Type, named: walked.Type + " " + walked.Address(), tuples: map[int64]string{},
+			columns: map[string]string{"parent": walked.Parent.Kind + ":" + walked.Parent.ID, "rank": "none"}}
+		if walked.Ranked {
+			node.columns["rank"] = fmt.Sprintf("%q", walked.Rank)
+		}
+		values := make([]string, len(specWriterNodeColumns))
+		targets := make([]any, len(values))
+		for index := range values {
+			targets[index] = &values[index]
+		}
+		if err := database.Pool.QueryRow(ctx, `
+			select supertag, state, visibility, attributes::text, coalesce(project_key, ''), coalesce(parties::text, ''),
+			       made_at::text, made_by::text, source_event::text
+			from graph_nodes where kind = $1 and id = $2`, walked.Kind, walked.ID).Scan(targets...); err != nil {
+			t.Fatalf("read the graph_nodes row of the %s: %v", node.named, err)
+		}
+		for index, column := range specWriterNodeColumns {
+			node.columns[column] = values[index]
+		}
+		rows, err := database.Pool.Query(ctx, `
+			select seq, kind, to_kind, to_id, asserted from graph_tuples where from_kind = $1 and from_id = $2`, walked.Kind, walked.ID)
+		if err != nil {
+			t.Fatalf("read the tuples out of the %s: %v", node.named, err)
+		}
+		for rows.Next() {
+			var seq int64
+			var kind, toKind, toID string
+			var asserted bool
+			if err := rows.Scan(&seq, &kind, &toKind, &toID, &asserted); err != nil {
+				rows.Close()
+				t.Fatalf("read the tuples out of the %s: %v", node.named, err)
+			}
+			node.tuples[seq] = fmt.Sprintf("%s>%s:%q asserted=%t", kind, toKind, toID, asserted)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the tuples out of the %s: %v", node.named, err)
+		}
+		nodes[walked.Address()] = node
+	}
+	return nodes
+}
+
+// documentVersion is one version of a document of an issue: its document's slug, and whether the
+// version holds its version_renders row.
+type documentVersion struct {
+	slug     string
+	rendered bool
+}
+
+// revisionSnapshot is what TestARecordedResultAndItsRetractionChangeNoRequirementCriterionOrCheck
+// reads at the store around each write: the issue's criterion, requirement and check nodes
+// (readSpecWriterNodes); the store address, <kind>:<id>, of every node the store holds; and every
+// version of every document of the issue, by its version node's id (graphstore.VersionID).
+type revisionSnapshot struct {
+	authored map[string]specWriterNode
+	nodes    map[string]bool
+	versions map[string]documentVersion
+}
+
+// readRevisionSnapshot reads the snapshot of issueKey as the store holds it now.
+func readRevisionSnapshot(t *testing.T, database *store.Store, issueKey string) revisionSnapshot {
+	t.Helper()
+	ctx := context.Background()
+	snapshot := revisionSnapshot{authored: readSpecWriterNodes(t, database, issueKey), nodes: map[string]bool{}, versions: map[string]documentVersion{}}
+	rows, err := database.Pool.Query(ctx, `select kind, id from graph_nodes`)
+	if err != nil {
+		t.Fatalf("read the store's nodes: %v", err)
+	}
+	for rows.Next() {
+		var kind, id string
+		if err := rows.Scan(&kind, &id); err != nil {
+			rows.Close()
+			t.Fatalf("read the store's nodes: %v", err)
+		}
+		snapshot.nodes[kind+":"+id] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the store's nodes: %v", err)
+	}
+	rows, err = database.Pool.Query(ctx, `
+		select a.ref_key, a.slug, v.number, r.artifact_id is not null
+		from artifacts a
+		join artifact_versions v on v.artifact_id = a.id
+		left join version_renders r on r.artifact_id = v.artifact_id and r.number = v.number
+		where a.issue_key = $1`, issueKey)
+	if err != nil {
+		t.Fatalf("read the versions of %s: %v", issueKey, err)
+	}
+	for rows.Next() {
+		var refKey string
+		var number int
+		var version documentVersion
+		if err := rows.Scan(&refKey, &version.slug, &number, &version.rendered); err != nil {
+			rows.Close()
+			t.Fatalf("read the versions of %s: %v", issueKey, err)
+		}
+		snapshot.versions[graphstore.VersionID(refKey, number)] = version
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the versions of %s: %v", issueKey, err)
+	}
+	return snapshot
+}
+
+// requireTheRevisionAlone fails unless what, a write read before and after, changed no criterion,
+// requirement or check node of the issue - each stands with every column, its parent, its rank
+// and every tuple out of it as before - and the only nodes the store gained are the node of
+// result, where result is not "", and the version node of each version the issue's documents
+// gained, each a version of the spec, the Verification document or the plan holding its
+// version_renders row, the Verification document gaining one. Each failure names the node and
+// what moved.
+func requireTheRevisionAlone(t *testing.T, what string, before, after revisionSnapshot, result string) {
+	t.Helper()
+	for _, address := range slices.Sorted(maps.Keys(after.authored)) {
+		if _, held := before.authored[address]; !held {
+			t.Errorf("%s: the issue's tree holds a new %s", what, after.authored[address].named)
+		}
+	}
+	for _, address := range slices.Sorted(maps.Keys(before.authored)) {
+		was := before.authored[address]
+		now, held := after.authored[address]
+		if !held {
+			t.Errorf("%s: the %s is gone from the issue's tree", what, was.named)
+			continue
+		}
+		for _, column := range slices.Sorted(maps.Keys(was.columns)) {
+			if now.columns[column] != was.columns[column] {
+				t.Errorf("%s: the %s moved its %s from %s to %s", what, was.named, column, was.columns[column], now.columns[column])
+			}
+		}
+		for _, seq := range slices.Sorted(maps.Keys(now.tuples)) {
+			if prior, held := was.tuples[seq]; !held {
+				t.Errorf("%s: the %s holds a new tuple out of it, %s (seq %d)", what, was.named, now.tuples[seq], seq)
+			} else if prior != now.tuples[seq] {
+				t.Errorf("%s: the tuple at seq %d out of the %s reads %s, where it read %s", what, seq, was.named, now.tuples[seq], prior)
+			}
+		}
+		for _, seq := range slices.Sorted(maps.Keys(was.tuples)) {
+			if _, held := now.tuples[seq]; !held {
+				t.Errorf("%s: the tuple %s (seq %d) out of the %s is gone", what, was.tuples[seq], seq, was.named)
+			}
+		}
+	}
+
+	gained := map[string]bool{}
+	if result != "" {
+		gained[graphstore.KindResult+":"+result] = true
+	}
+	revised := false
+	for _, id := range slices.Sorted(maps.Keys(after.versions)) {
+		if _, held := before.versions[id]; held {
+			continue
+		}
+		version := after.versions[id]
+		if !slices.Contains([]string{"spec", model.ArtifactSlugVerification, model.ArtifactSlugPlan}, version.slug) {
+			t.Errorf("%s: the issue's document %s gained the version %s, and it is no query document", what, version.slug, id)
+		}
+		if !version.rendered {
+			t.Errorf("%s: the version %s of the issue's %s holds no version_renders row, so the query revision did not write it", what, id, version.slug)
+		}
+		revised = revised || version.slug == model.ArtifactSlugVerification
+		gained[graphstore.KindVersion+":"+id] = true
+	}
+	if !revised {
+		t.Errorf("%s: the Verification document gained no version, so the query revision wrote nothing and nothing here holds it", what)
+	}
+	for _, address := range slices.Sorted(maps.Keys(after.nodes)) {
+		if !before.nodes[address] && !gained[address] {
+			t.Errorf("%s: the store gained the node %s, want only %v", what, address, slices.Sorted(maps.Keys(gained)))
+		}
+	}
+	for _, address := range slices.Sorted(maps.Keys(gained)) {
+		if before.nodes[address] || !after.nodes[address] {
+			t.Errorf("%s: the store did not gain the node %s", what, address)
+		}
+	}
+	for _, address := range slices.Sorted(maps.Keys(before.nodes)) {
+		if !after.nodes[address] {
+			t.Errorf("%s: the store lost the node %s", what, address)
+		}
+	}
+}
+
+// A result recorded on a check through POST /api/v1/issues/{key}/results, and its retraction
+// through POST /api/v1/results/{id}/retract, change no criterion, requirement or check node of the
+// issue: on an issue born converted whose spec holds a criterion and two requirements under it and
+// whose Verification document holds one check serving the first, the test reads at the store,
+// around each write, each such node's graph_nodes row, its parent and its rank as the tree walks
+// them, and every tuple out of it, and requires each to stand as it stood. The only nodes the store
+// gains are the result's, at its record, and the version node of each version the write's query
+// revision (docs.Service.ReviseQueries) appended, each holding its version_renders row, the
+// Verification document taking one at each write. This is what keeps those versions outside the
+// spec-writer check (specWriterRevisions): a result is no requirement, criterion or check node,
+// and its tuple to its check is a relation out of the result. A failure names the node and the
+// column or the tuple that moved.
+func TestARecordedResultAndItsRetractionChangeNoRequirementCriterionOrCheck(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createDigestIssue(t, handler, database, "CORE", "The revised issue", digestSpec, false)
+	if issue.Key != "CORE-1" {
+		t.Fatalf("the issue is %s, want CORE-1, which its spec's references name", issue.Key)
+	}
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", digestChecks("The list reads urgent asks first.", ""))
+
+	before := readRevisionSnapshot(t, database, issue.Key)
+	types := map[string]int{}
+	for _, node := range before.authored {
+		types[node.typ]++
+	}
+	if want := map[string]int{"criterion": 1, "requirement": 2, "check": 1}; !maps.Equal(types, want) {
+		t.Fatalf("the tree of %s holds the criterion, requirement and check nodes %v, want %v: the spec's criterion and two requirements and the Verification document's check",
+			issue.Key, types, want)
+	}
+
+	recorded := recordResult(t, handler, issue.Key, resultBody("c1", "fail", headCommit, map[string]any{"failed": 1}))
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("record a result of c1: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+	result := decodeBody[recordedResult](t, recorded).Result
+	withResult := readRevisionSnapshot(t, database, issue.Key)
+	requireTheRevisionAlone(t, "a recorded result", before, withResult, result.ID)
+
+	retraction := dispatchRequest(t, handler, http.MethodPost, "/api/v1/results/"+result.ID+"/retract",
+		map[string]any{"reason": "The run measured the wrong build."}, "alice")
+	if retraction.Code != http.StatusCreated {
+		t.Fatalf("retract the result: status=%d body=%s", retraction.Code, retraction.Body.String())
+	}
+	requireTheRevisionAlone(t, "its retraction", withResult, readRevisionSnapshot(t, database, issue.Key), "")
+}
