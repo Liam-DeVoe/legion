@@ -58,16 +58,17 @@ jobs:
     #
     # Budget (ci-budgets.md's Budgets note): 1800 s, the 30 minutes the paragraph above derives and
     # the budget this job was written with, plus its slowest retried step alone: setup-bun's two
-    # `ci_tools_fetch` calls, 3416 s, above the ci-ok report's 2460 s, the Go module download and
-    # the workspace install at 1050 s each, and the two steps that run scripts outside
-    # .github/scripts/: the cluster test's 1423 s (render-nats.sh's one retried fetch, the helm
-    # install at 5 x 180 + 150 = 1050 s, beside the 373 s that step measured) and the pack's
-    # 1087 s (go-third-party-notices.sh's install of go-licenses at that same 1050 s, beside the
-    # 37 s the pack measured). 1800 + 3416 = 5216 s -> 87 min. The gate reads no script outside
-    # .github/scripts/, so it prices neither of those two steps: their figures are a reader's,
-    # derived in .github/ci-notes/ci-job-envoy-go-checks.md, and dispatch://INFRA-2899 owns the
-    # reach that would make them the check's. The 3416 is the check's own, and rule 8's
-    # job-derivation clause refused this key until it carried it.
+    # `ci_tools_fetch` calls, 3416 s, above the ci-ok report's 2460 s, install-helm's one
+    # `ci_tools_fetch` at 1708 s, the Go module download and the workspace install at 1050 s
+    # each, and the two steps that run scripts outside .github/scripts/: the cluster test's
+    # 1423 s (render-nats.sh's one retried fetch, the helm install at 5 x 180 + 150 = 1050 s
+    # where the helm on PATH does not answer HELM's version, beside the 373 s that step measured)
+    # and the pack's 1087 s (go-third-party-notices.sh's install of go-licenses at that same
+    # 1050 s, beside the 37 s the pack measured). 1800 + 3416 = 5216 s -> 87 min. The gate reads
+    # no script outside .github/scripts/, so it prices neither of those two steps: their figures
+    # are a reader's, derived in .github/ci-notes/ci-job-envoy-go-checks.md, and
+    # dispatch://INFRA-2899 owns the reach that would make them the check's. The 3416 is the
+    # check's own, and rule 8's job-derivation clause refused this key until it carried it.
     timeout-minutes: 87
     env:
       JOB_TIMEOUT_MINUTES: 87 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
@@ -281,6 +282,14 @@ jobs:
       - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
         run: bash loadtest/common.test.sh
         working-directory: packages/envoy
+      # The cluster suite's render of nats.yaml runs this helm, the version render-nats.sh pins,
+      # instead of building helm from its module, which downloads and compiles it first: the
+      # render took 40.6 s that way in job 137308591036, 60.0 s in job 137294623668 and 52.1 s in
+      # job 137388344183.
+      # Its own retry arithmetic, which is the action's: one `ci_tools_fetch`, 1708 s
+      # (ci-budgets.md's Budgets note) -> 29 min.
+      - uses: ./.github/actions/install-helm
+        timeout-minutes: 29
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         # why: .github/ci-notes/ci-job-envoy-go-checks.md#the-two-steps-whose-scripts-the-gate-does-not-read
         # 373 + 1050 = 1423 s -> 24 min.

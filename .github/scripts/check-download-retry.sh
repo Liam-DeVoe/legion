@@ -5514,7 +5514,7 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
                     "once: 1 x 1708 s, the figure the step's comment writes for its 29 minutes"),
     DeclaredLibrary(TOOL_FALLBACK, "Print what every tool answers now", CI_TOOLS, 1708,
                     "the step sources ci-tools.sh and runs ci-tools-proof.sh `version-answers` "
-                    "for crane, changie and jj, which fetches nothing, and calls "
+                    "for crane, changie, jj and helm, which fetches nothing, and calls "
                     "ci_tools_verify, a digest read off disk: 1 x 1708 s, the figure the step's "
                     "comment writes for its 29 minutes"),
     # A script that sources the library, run more than once by one step, each run a shell of its
@@ -10408,8 +10408,9 @@ for path in sorted(set(budget.path for budget in budgets)):
 #     both ways, so it is no instance of this: .github/ci-budgets.md's "The tool-fallback job's
 #     budget, part by part" states the construction, `114 was the 104 this construction gives
 #     with ten minutes added` and, at the staging step's 114 minutes, 114 + 18 = 132 and 142 with
-#     the ten, and the comment above its key (.github/workflows/ci-job-tool-fallback.yaml:17-18,
-#     since the merge of main's #3675) also writes the Budgets note's sum, `1722 + 6832 = 8554 s -> 143 min`, which this clause
+#     the ten, and the comment above its key (.github/workflows/ci-job-tool-fallback.yaml:17-19,
+#     since the merge of main's #3675) also writes the Budgets note's sum, `1727 + 6832 = 8559 s
+#     -> 143 min` since the merge of main's #5152 added the helm row's steps, which this clause
 #     reads and which the key's 8580 s strictly exceeds.
 # Each of the three has a harness case that pins it, so a change that starts or stops reading one
 # of them is one a reader sees in the harness rather than in the tree.

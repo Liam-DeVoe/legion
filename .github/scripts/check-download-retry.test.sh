@@ -2950,7 +2950,7 @@ check "says what to write" "$(contains "$out" 'timeout-minutes: 30. or more')"
 # silenced (the case "a job whose comment derives its key another way is passed over" below).
 # `tool-fallback` of this repository derives its key both ways: .github/ci-budgets.md states its
 # construction, `114 was the 104 this construction gives with ten minutes added`, and the comment
-# above its key also writes `1722 + 6832 = 8554 s -> 143 min`, which the clause reads.
+# above its key also writes `1727 + 6832 = 8559 s -> 143 min`, which the clause reads.
 # The arrow rule, which is this issue's own control moved into the check: a key lowered while
 # its comment is left alone. Before it, each of the nine keys dispatch://INFRA-1545 raised could
 # be put back with its sentence untouched and this check stayed green, because the derivation

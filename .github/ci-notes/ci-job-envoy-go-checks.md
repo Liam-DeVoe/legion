@@ -17,13 +17,16 @@ slowest of the 53 runs of each step in the 60 successful ci.yaml runs created fr
 - `Test loadtest/cluster/cluster.sh … and compare nats.yaml with a fresh render` runs
   `packages/envoy/loadtest/cluster/cluster.test.sh`, which runs
   `packages/envoy/loadtest/cluster/render-nats.sh` twice. Its refused-chart case stops before
-  any fetch, and its fresh render makes the script's one retried fetch, `go install` of helm
-  through `.github/scripts/ci-retry.sh` at the 180 s module bound, 5 x 180 + 150 = 1050 s; the
-  chart is the vendored archive and the images are pinned from the committed render, so nothing
-  else of it reaches the network. That step measured 373 s at most (job 136783645230 of run
-  44883029327), so 373 + 1050 = 1423 s -> 24 min. The job's comment wrote 1950 s for this
-  script until this change, three retried fetches, of which the chart index and the chart
-  archive, 450 s each, stopped being fetches when main's #4272 vendored the chart.
+  any fetch, and its fresh render runs the helm the job's install-helm step put on PATH; only
+  where that helm does not answer the version render-nats.sh's `HELM` pins does it make the
+  script's one retried fetch, `go install` of helm through `.github/scripts/ci-retry.sh` at the
+  180 s module bound, 5 x 180 + 150 = 1050 s, which this budget prices as the step's worst case;
+  the chart is the vendored archive and the images are pinned from the committed render, so
+  nothing else of it reaches the network. That step measured 373 s at most (job 136783645230 of
+  run 44883029327), when it still built helm, so 373 + 1050 = 1423 s -> 24 min. The job's
+  comment wrote 1950 s for this script until this change, three retried fetches, of which the
+  chart index and the chart archive, 450 s each, stopped being fetches when main's #4272
+  vendored the chart.
 - `Pack envoy binaries` runs `scripts/go-third-party-notices.sh` once per release architecture.
   The script installs go-licenses through the same helper at the same bound, 1050 s, and only
   where `$tool` is not already executable; the tool's directory is named by the go-licenses
