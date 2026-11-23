@@ -20,11 +20,12 @@
 // Dispatch nothing, so it stands whatever project the request belongs to; the checks that lead to
 // a refusal read Dispatch as every check does. A run whose checks pass reads what the reason
 // points at in Dispatch — the issue it names and the ask it cites — as data, and, if the machine
-// still shows the request pending (Runner.stillPending), puts it to one model through
-// packages/envoy/agentloop, with the guidance of each key it decides as the instruction to follow
-// and everything an agent wrote as data to judge (D15). Grant is written with the approval itself,
-// in one transaction, and deny with the refusal itself; a model that gives no verdict hands the
-// request over.
+// still shows the request pending (Runner.stillPending), puts each key it decides to one model
+// through packages/envoy/agentloop, in a call of its own (Runner.askEachKey): the call holds that
+// key's guidance as the instruction to follow, no other key's, and everything an agent wrote as
+// data to judge (D15). A request is granted only when every key's call grants; one that denies
+// refuses it. Grant is written with the approval itself, in one transaction, and deny with the
+// refusal itself; a model that gives no verdict for a key hands the request over.
 //
 // Nothing a run does is on a caller's path. A run that goes past its budget, and a broker that
 // stops serving under one, write nothing at all, and the hold then runs out, which hands the
@@ -37,6 +38,8 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
@@ -48,8 +51,9 @@ import (
 
 // runBudget is how long one run has, taken when the run starts (D9): the Dispatch phase, bounded
 // at dispatchBound; then the ask read, made only when the reason cites an ask and bounded at a
-// dispatchBound of its own; and the model call, bounded at modelBound (model.go), with room left
-// over for everything else a run asks of the request machine.
+// dispatchBound of its own; and the model calls, one for each key the run decides, made side by
+// side and each bounded at modelBound (model.go), so they take one modelBound however many keys a
+// request names; with room left over for everything else a run asks of the request machine.
 const runBudget = 35 * time.Second
 
 // dispatchBound is how long one read of Dispatch has. The Dispatch phase is one: every read of
@@ -226,7 +230,7 @@ func New(ctx context.Context, o Options) *Runner {
 // There is no bound on the runs in flight and no queue. A queue would leave a legitimate request
 // waiting while another request's model call ran, which is the wait the judge exists to take
 // away, and no load the broker has met needs one: a run is its Dispatch reads under two bounds,
-// one model call and one short transaction.
+// one model call for each key it decides, made side by side, and one short transaction.
 func (r *Runner) Consider(p requests.PendingRequest) {
 	go func() {
 		ctx, cancel := context.WithTimeout(r.ctx, runBudget)
@@ -245,10 +249,91 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 	if firstFailure(checks) == nil || r.opts.SkipChecks {
 		if row.notPending = r.stillPending(ctx, p); row.notPending == "" {
 			row.asked = true
-			row.verdict, row.usage, row.raw, row.err = r.opts.Model.Ask(ctx, data)
+			row.calls = r.askEachKey(ctx, data)
+			row.verdict, row.usage, row.raw, row.err = combine(row.calls)
 		}
 	}
 	r.write(ctx, p, row)
+}
+
+// keyCall is one model call of a run: the one key it decided, and what the model answered for it.
+type keyCall struct {
+	key     string
+	verdict Verdict
+	usage   agentloop.Usage
+	raw     string
+	err     error
+}
+
+// askEachKey decides each key of data in a model call of its own, all at once, each shown that
+// one key, its seconds and its own owner's guidance beside the request's reason, issue and ask, and
+// nothing of any other key. One owner's guidance is an instruction only for that owner's key: a
+// guidance that tries to steer another key cannot reach that key's call, which never holds it.
+// The calls run side by side, each under modelBound, so a request of N judge keys makes N calls
+// and waits as long as the slowest of them, not their sum. The answers come back in data's key
+// order.
+func (r *Runner) askEachKey(ctx context.Context, data Data) []keyCall {
+	calls := make([]keyCall, len(data.Keys))
+	var wg sync.WaitGroup
+	for i, key := range data.Keys {
+		one := data
+		one.Keys = []KeyData{key}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := keyCall{key: key.Name}
+			c.verdict, c.usage, c.raw, c.err = r.opts.Model.Ask(ctx, one)
+			calls[i] = c
+		}()
+	}
+	wg.Wait()
+	return calls
+}
+
+// combine is the run's verdict from its calls: grant only when every call granted; deny, final,
+// when any call denied, with the first denying key's reason; and otherwise no verdict, handed to
+// the request's person, when a call failed to give one. A deny beats a failed call: a key's owner
+// said no, and asking the person would only ask past that. Usage is the sum of every call's. Where
+// the run decided several keys, each reason and error it carries names its key; one key's reason
+// is the model's own words, as it always was.
+func combine(calls []keyCall) (Verdict, agentloop.Usage, string, error) {
+	var usage agentloop.Usage
+	for _, c := range calls {
+		usage.Input += c.usage.Input
+		usage.Output += c.usage.Output
+		usage.CacheWrite += c.usage.CacheWrite
+		usage.CacheRead += c.usage.CacheRead
+		usage.Reasoning += c.usage.Reasoning
+		usage.CostUSD += c.usage.CostUSD
+		usage.Metered = usage.Metered || c.usage.Metered
+	}
+	if len(calls) == 0 {
+		return Verdict{Word: Deny}, usage, "", errors.New("the request named no key for the model to decide")
+	}
+	said := func(c keyCall) string {
+		if len(calls) == 1 {
+			return c.verdict.Reason
+		}
+		return c.key + ": " + c.verdict.Reason
+	}
+	for _, c := range calls {
+		if c.err == nil && c.verdict.Word == Deny {
+			return Verdict{Word: Deny, Reason: record.Sanitize(said(c), maxReasonRunes)}, usage, "", nil
+		}
+	}
+	for _, c := range calls {
+		if c.err != nil {
+			if len(calls) == 1 {
+				return Verdict{Word: Deny}, usage, c.raw, c.err
+			}
+			return Verdict{Word: Deny}, usage, c.raw, fmt.Errorf("the call deciding %s: %w", c.key, c.err)
+		}
+	}
+	reasons := make([]string, 0, len(calls))
+	for _, c := range calls {
+		reasons = append(reasons, said(c))
+	}
+	return Verdict{Word: Grant, Reason: record.Sanitize(strings.Join(reasons, "; "), maxReasonRunes)}, usage, "", nil
 }
 
 // stillPending is the one read a run makes between its checks and the model call, and the last
@@ -263,9 +348,9 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 // and the requester is told nothing by it either.
 //
 // What it does not do is bound how many model calls one session can start: each create makes a
-// request of its own, live for the milliseconds this run spends before the model call, so a
-// session that loops create, cancel, create pays for one model call per round. D8 decides not
-// to cap the runs in flight or limit a session's creates.
+// request of its own, live for the milliseconds this run spends before the model calls, so a
+// session that loops create, cancel, create pays for one model call per judge key per round. D8
+// decides not to cap the runs in flight or limit a session's creates.
 //
 // A run stopped here still writes its row. No request row is ever deleted — a cancel and an
 // expiry are state changes — so LogJudged finds the request and the enrollment it hangs off,
@@ -535,7 +620,10 @@ func (r *Runner) ask(ctx context.Context, p requests.PendingRequest, data *Data)
 type verdictRow struct {
 	checks []check
 	// asked is whether the model was asked at all: a run stopped by a check was not.
-	asked   bool
+	asked bool
+	// calls is each key's own model call, in the request's key order (askEachKey); verdict,
+	// usage, raw and err are what combine made of them.
+	calls   []keyCall
 	verdict Verdict
 	usage   agentloop.Usage
 	// raw is the model's reply when it did not parse, and err what failed when the call
@@ -584,6 +672,17 @@ func (v verdictRow) detail(modelID string) map[string]any {
 			"cache_write": v.usage.CacheWrite, "cache_read": v.usage.CacheRead,
 			"reasoning": v.usage.Reasoning, "metered": v.usage.Metered,
 		}
+		// Each key's own call: the key, the word its call answered with and its reason, or the
+		// error where it gave none, so the row says which key's owner's guidance decided.
+		calls := make([]map[string]any, 0, len(v.calls))
+		for _, c := range v.calls {
+			call := map[string]any{"key": c.key, "verdict": c.verdict.Word, "reason": c.verdict.Reason}
+			if c.err != nil {
+				call["error"] = record.Sanitize(c.err.Error(), maxRawAnswer)
+			}
+			calls = append(calls, call)
+		}
+		detail["calls"] = calls
 	}
 	if v.raw != "" {
 		detail["raw_answer"] = v.raw

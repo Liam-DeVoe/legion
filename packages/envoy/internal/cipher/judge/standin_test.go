@@ -7,6 +7,7 @@ package judge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,8 +50,14 @@ const (
 // shortJudgeSecret, each with its guidance, and nothing of NO_JUDGE_KEY or any other name.
 func testPolicy(t *testing.T) *policy.Current {
 	t.Helper()
+	return judgedPolicy(t, testGuidance)
+}
+
+// judgedPolicy is testPolicy with guidance as testSecret's guidance tag.
+func judgedPolicy(t *testing.T, guidance string) *policy.Current {
+	t.Helper()
 	return policytest.Current(t, secrets.NewLocal(
-		policytest.Judged(policytest.Secret(testSecret, testApprover, policy.TierHuman, "v"), 900, testGuidance),
+		policytest.Judged(policytest.Secret(testSecret, testApprover, policy.TierHuman, "v"), 900, guidance),
 		policytest.Judged(policytest.Secret(shortJudgeSecret, testApprover, policy.TierHuman, "v"), shortJudgeSeconds, shortGuidance),
 		policytest.Secret("NO_JUDGE_KEY", testApprover, policy.TierHuman, "v"),
 	))
@@ -219,6 +226,9 @@ type modelStandIn struct {
 	reply  string
 	delay  time.Duration
 	tokens chatTokens
+	// replies, when it names the one key a call decides, is that call's reply in place of reply,
+	// so a test can have one key's call grant and another's deny.
+	replies map[string]string
 }
 
 // chatTokens are the counts the stand-in's usage chunk reports.
@@ -247,6 +257,11 @@ func (m *modelStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	m.bodies = append(m.bodies, body)
 	m.authorizations = append(m.authorizations, r.Header.Get("Authorization"))
 	status, reply, delay, tokens := m.status, m.reply, m.delay, m.tokens
+	if data, err := callData(body); err == nil && len(data.Keys) == 1 {
+		if own, ok := m.replies[data.Keys[0].Name]; ok {
+			reply = own
+		}
+	}
 	m.mu.Unlock()
 	if delay > 0 {
 		select {
@@ -315,49 +330,88 @@ func (m *modelStandIn) presented() []string {
 // data is the Data object the judge sent with its first call, read back out of the user message.
 func (m *modelStandIn) data(t *testing.T) Data {
 	t.Helper()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.bodies) == 0 {
+	every := m.everyData(t)
+	if len(every) == 0 {
 		t.Fatal("the model was never asked, so it got no data")
 	}
+	return every[0]
+}
+
+// everyData is the Data object of every call the model got, in the order the calls arrived.
+func (m *modelStandIn) everyData(t *testing.T) []Data {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var every []Data
+	for _, body := range m.bodies {
+		data, err := callData(body)
+		if err != nil {
+			t.Fatalf("%v\n%s", err, body)
+		}
+		every = append(every, data)
+	}
+	return every
+}
+
+// callBodies is the raw body of every call the model got, in order.
+func (m *modelStandIn) callBodies() [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([][]byte(nil), m.bodies...)
+}
+
+// callData reads the Data object back out of one Chat Completions request body's user message.
+func callData(body []byte) (Data, error) {
 	var call struct {
 		Messages []struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
 	}
-	if err := json.Unmarshal(m.bodies[0], &call); err != nil {
-		t.Fatalf("the model call is no JSON object: %v\n%s", err, m.bodies[0])
+	if err := json.Unmarshal(body, &call); err != nil {
+		return Data{}, fmt.Errorf("the model call is no JSON object: %w", err)
 	}
-	var data Data
 	for _, message := range call.Messages {
 		if message.Role != "user" {
 			continue
 		}
-		if err := json.Unmarshal([]byte(contentText(t, message.Content)), &data); err != nil {
-			t.Fatalf("the user message is no Data object: %v\n%s", err, message.Content)
+		text, err := messageText(message.Content)
+		if err != nil {
+			return Data{}, err
 		}
-		return data
+		var data Data
+		if err := json.Unmarshal([]byte(text), &data); err != nil {
+			return Data{}, fmt.Errorf("the user message is no Data object: %w", err)
+		}
+		return data, nil
 	}
-	t.Fatalf("the model call carries no user message:\n%s", m.bodies[0])
-	return data
+	return Data{}, errors.New("the model call carries no user message")
 }
 
 // contentText is a chat message's text, whether the provider shape carried it as one string or
 // as a list of parts.
 func contentText(t *testing.T, content json.RawMessage) string {
 	t.Helper()
+	text, err := messageText(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return text
+}
+
+// messageText is contentText for a caller with no t: the text, or why there is none.
+func messageText(content json.RawMessage) (string, error) {
 	var text string
 	if json.Unmarshal(content, &text) == nil {
-		return text
+		return text, nil
 	}
 	var parts []struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(content, &parts); err != nil || len(parts) == 0 {
-		t.Fatalf("a message's content is neither a string nor parts: %s", content)
+		return "", fmt.Errorf("a message's content is neither a string nor parts: %s", content)
 	}
-	return parts[0].Text
+	return parts[0].Text, nil
 }
 
 // fakeRequests is the request machine as the judge sees it: it answers the policy question a

@@ -1812,14 +1812,20 @@ A key the session gets at once, such as an agent-tier key, may stand beside the 
 needs no decision: the judge decides nothing of it, the model is not shown it, and the judge's
 grant releases it with the rest.
 
-A request that passes them all goes to one model, with each key's name, judge seconds and guidance,
-the reason, and the issue and ask the reason points at. The model follows the guidance and reads
-everything an agent wrote as data to judge rather than as instructions. It answers `grant` or
-`deny`. The run reads the request's state once more immediately before that call and asks nothing
-about a request that is no longer pending — one its session cancelled, or one whose wait ran out.
-That read bounds nothing about how many model calls one session can start: each request a session
-creates is pending for the moment the run reads it, so a session that creates and cancels requests
-in a loop costs one model call per request it creates.
+A request that passes them all goes to the model in one call for each key the judge decides, all
+made at once. Each call is shown that one key's name, judge seconds and guidance, the reason, and
+the issue and ask the reason points at, and nothing of any other key, so one owner's guidance never
+reaches the decision on another owner's key; the model is also told that a key's guidance decides
+only that key, and that text in it about another key or the whole request is a reason to deny. The
+model follows the guidance and reads everything an agent wrote as data to judge rather than as
+instructions. Each call answers `grant` or `deny`, and the request is granted only when every call
+grants: one `deny` refuses it. A request for N judge keys makes N calls, each bounded at 20
+seconds, and waits as long as the slowest of them. The run reads the request's state once more
+immediately before the calls and asks nothing about a request that is no longer pending — one its
+session cancelled, or one whose wait ran out. That read bounds nothing about how many model calls
+one session can start: each request a session creates is pending for the moment the run reads it,
+so a session that creates and cancels requests in a loop costs one model call per judge key of
+each request it creates.
 
 Every run ends the request one of three ways:
 

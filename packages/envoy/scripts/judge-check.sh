@@ -836,18 +836,34 @@ k10_final() { # <detail>
 }
 
 # k10_other_keys names each of the stack's own keys, other than the ones given, that the model
-# stand's last call carried: the prompt holds each key the judge decides and no other key, so
-# what this prints for a judged request is "". No one of the names is part of another, so each is
-# looked for as it is, as the request body carries it inside the escaped user message.
+# stand's last K10_CALLS calls carried (1 unless it names more): each call holds the one key it
+# decides and no other key, so what this prints for a judged request is "". No one of the names is
+# part of another, so each is looked for as it is, as the request body carries it inside the
+# escaped user message.
 k10_other_keys() { # <name the request decided>...
 	local body name others=()
-	body="$(records model | jq -r 'last // {} | .body // ""')"
+	body="$(records model | jq -r --argjson n "${K10_CALLS:-1}" '.[-$n:] | map(.body // "") | join("\n")')"
 	for name in "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_SECOND_JUDGED_SECRET" "$AIRLOCK_UNJUDGED_SECRET" \
 		"$AIRLOCK_SHARED_SECRET" "$AIRLOCK_ADMIN_SECRET" AIRLOCK_DEMO_TOKEN; do
 		case " $* " in *" $name "*) continue ;; esac
 		if contains "$name" "$body"; then others+=("$name"); fi
 	done
 	printf '%s' "${others[*]}"
+}
+
+# k10_pair_calls reads the model stand's last two calls, the two a request for both judge keys
+# makes, and answers "first,second" when one call holds the first key and its guidance and nothing
+# of the second, and the other the second key and its guidance and nothing of the first: each key
+# decided in a call of its own, on its own owner's guidance. Any other pair of calls names itself
+# "mixed" in place of the call that holds both keys, either guidance beside the other key, or
+# neither.
+k10_pair_calls() {
+	records model | jq -r --arg ka "$AIRLOCK_JUDGED_SECRET" --arg kb "$AIRLOCK_SECOND_JUDGED_SECRET" \
+		--arg ga "$AIRLOCK_JUDGE_GUIDANCE" --arg gb "$AIRLOCK_SECOND_JUDGE_GUIDANCE" '
+		.[-2:] | map(.body // "") |
+		map(if (contains($ka) and contains($ga) and (contains($kb) | not) and (contains($gb) | not)) then "first"
+			elif (contains($kb) and contains($gb) and (contains($ka) | not) and (contains($ga) | not)) then "second"
+			else "mixed" end) | sort | join(",")'
 }
 
 # k10_base_control is k10's negative control: the stack's first request — the judge key, with
@@ -919,7 +935,7 @@ check_k10() {
 	expect "a model answer that is not JSON, a model that does not answer for 2 minutes, a broker with no judge, and a broker stopped during the model call each give the request to its person once: an ordinary card with its approve_url, on the approver's list"
 	expect "while the judge holds the request, its page offers no decision, a POST naming it decides nothing while the same POST decides a card, and the decision route answers 403 JUDGE_DECIDES while it names a card's page"
 	expect "a --ttl 20m request, past the key's judge tag, is refused when the request is written, naming --ttl 15m, and the model is not asked"
-	expect "a request for the two judge keys with no --ttl is decided by the judge for 600 seconds, the shorter judge tag, and the model is shown both keys' guidance and no other key; a judge key beside a key with no judge tag, an administrator's key with a judge tag, and a key with no judge tag are each the person's card from the start, whole, and the model is not asked"
+	expect "a request for the two judge keys with no --ttl is decided by the judge for 600 seconds, the shorter judge tag, in one model call for each key, each call shown that key's guidance and no other key; a judge key beside a key with no judge tag, an administrator's key with a judge tag, and a key with no judge tag are each the person's card from the start, whole, and the model is not asked"
 	expect "a request for a judge key beside AIRLOCK_DEMO_TOKEN, an agent-tier key the session gets at once, is held for the judge and granted by judge:<model id>, the model shown the judge key alone, and a release of that grant hands over both keys"
 	expect "each judge decision has exactly one request.judged row, carrying the six checks in order, the model, the verdict and the reason"
 	expect "the owner's list shows the judged grant, the owner ends it, and the next call gets 407"
@@ -1090,9 +1106,9 @@ check_k10() {
 	# --- Several keys, and keys a person decides. ---
 	model_answers '{"verdict":"grant","reason":"both keys meet their guidance"}'
 	k10_case two_judged "" "$(run_reason)" "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_SECOND_JUDGED_SECRET"
-	local two_saw_guidances two_other_keys
-	two_saw_guidances="$(records model | jq -r --arg a "$AIRLOCK_JUDGE_GUIDANCE" --arg b "$AIRLOCK_SECOND_JUDGE_GUIDANCE" 'if (last // {} | .body // "" | (contains($a) and contains($b))) then "yes" else "no" end')"
-	two_other_keys="$(k10_other_keys "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_SECOND_JUDGED_SECRET")"
+	local two_calls two_other_keys
+	two_calls="$(k10_pair_calls)"
+	two_other_keys="$(K10_CALLS=2 k10_other_keys "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_SECOND_JUDGED_SECRET")"
 	# A judge key beside a key the session gets at once: the judge's, decided on the judge key
 	# alone, and its grant a grant of both. k10_case ends the grant it made, so the exec form
 	# below asks again, waits for the judge's grant, and runs only once the release — whose
@@ -1109,7 +1125,7 @@ check_k10() {
 	k10_case mixed 10m "$(run_reason)" "$AIRLOCK_JUDGED_SECRET" "$AIRLOCK_UNJUDGED_SECRET"
 	k10_case admin 10m "$(run_reason)" "$AIRLOCK_ADMIN_SECRET"
 	k10_case unjudged 10m "$(run_reason)" "$AIRLOCK_UNJUDGED_SECRET"
-	observe "two judge keys ($AIRLOCK_JUDGED_SECRET, judge $AIRLOCK_JUDGE_SECONDS; $AIRLOCK_SECOND_JUDGED_SECRET, judge $AIRLOCK_SECOND_JUDGE_SECONDS) with no --ttl: judge_deciding '${K10[two_judged_deciding]}', lifetime ${K10[two_judged_lifetime]}s, ${K10[two_judged_state]}, decided by '${K10[two_judged_decider]}', stand asked ${K10[two_judged_asked]} time(s), shown both guidances: $two_saw_guidances, other keys in its prompt: [${two_other_keys}]"
+	observe "two judge keys ($AIRLOCK_JUDGED_SECRET, judge $AIRLOCK_JUDGE_SECONDS; $AIRLOCK_SECOND_JUDGED_SECRET, judge $AIRLOCK_SECOND_JUDGE_SECONDS) with no --ttl: judge_deciding '${K10[two_judged_deciding]}', lifetime ${K10[two_judged_lifetime]}s, ${K10[two_judged_state]}, decided by '${K10[two_judged_decider]}', stand asked ${K10[two_judged_asked]} time(s), its two calls held (each key with its own guidance alone): [$two_calls], other keys in those calls: [${two_other_keys}]"
 	observe "a judge key beside a key with no judge tag: judge_deciding '${K10[mixed_deciding]}', approve_url '${K10[mixed_url]}', listed '${K10[mixed_listed0]}', ${K10[mixed_state]}, asked ${K10[mixed_asked]}"
 	observe "an administrator's key with a judge tag: judge_deciding '${K10[admin_deciding]}', approve_url '${K10[admin_url]}', listed '${K10[admin_listed0]}', ${K10[admin_state]}, asked ${K10[admin_asked]}"
 	observe "a key with no judge tag: judge_deciding '${K10[unjudged_deciding]}', approve_url '${K10[unjudged_url]}', listed '${K10[unjudged_listed0]}', ${K10[unjudged_state]}, asked ${K10[unjudged_asked]}"
@@ -1118,10 +1134,10 @@ check_k10() {
 		[ "${K10[${case_label}_deciding]}" = false ] && [ -n "${K10[${case_label}_url]}" ] && [ "${K10[${case_label}_listed0]}" = yes ] &&
 			[ "${K10[${case_label}_state]}" = pending ] && [ "${K10[${case_label}_asked]}" = 0 ] || person_cards=1
 	done
-	assert "$([ "${K10[two_judged_deciding]}" = true ] && [ "${K10[two_judged_state]}" = granted ] && [ "${K10[two_judged_decider]}" = "$JUDGE_ACTOR" ] && [ "$two_saw_guidances" = yes ] &&
+	assert "$([ "${K10[two_judged_deciding]}" = true ] && [ "${K10[two_judged_state]}" = granted ] && [ "${K10[two_judged_decider]}" = "$JUDGE_ACTOR" ] && [ "${K10[two_judged_asked]}" = 2 ] && [ "$two_calls" = first,second ] &&
 		[ "${K10[two_judged_lifetime]}" = "$AIRLOCK_SECOND_JUDGE_SECONDS" ] && [ -z "$two_other_keys" ] && [ "$person_cards" = 0 ] && echo 0 || echo 1)" \
-		"a request for the two judge keys with no --ttl is decided by the judge for the shorter judge tag's seconds, and the model is shown both keys' guidance and no other key; a judge key beside a key with no judge tag, an administrator's key with a judge tag, and a key with no judge tag are each the person's card from the start, and the model is not asked" \
-		"two judge keys '${K10[two_judged_state]}' by '${K10[two_judged_decider]}' for ${K10[two_judged_lifetime]}s against ${AIRLOCK_SECOND_JUDGE_SECONDS}s, both guidances $two_saw_guidances, other keys [${two_other_keys}]; mixed '${K10[mixed_state]}' listed ${K10[mixed_listed0]}; admin '${K10[admin_state]}' listed ${K10[admin_listed0]}; unjudged '${K10[unjudged_state]}' listed ${K10[unjudged_listed0]}"
+		"a request for the two judge keys with no --ttl is decided by the judge for the shorter judge tag's seconds, in one model call for each key, each call shown that key's guidance and no other key; a judge key beside a key with no judge tag, an administrator's key with a judge tag, and a key with no judge tag are each the person's card from the start, and the model is not asked" \
+		"two judge keys '${K10[two_judged_state]}' by '${K10[two_judged_decider]}' for ${K10[two_judged_lifetime]}s against ${AIRLOCK_SECOND_JUDGE_SECONDS}s, ${K10[two_judged_asked]} call(s) holding [$two_calls] against first,second, other keys [${two_other_keys}]; mixed '${K10[mixed_state]}' listed ${K10[mixed_listed0]}; admin '${K10[admin_state]}' listed ${K10[admin_listed0]}; unjudged '${K10[unjudged_state]}' listed ${K10[unjudged_listed0]}"
 	observe "a judge key beside AIRLOCK_DEMO_TOKEN, which the pod session gets at once: judge_deciding '${K10[with_agent_deciding]}', approve_url '${K10[with_agent_url]}', listed '${K10[with_agent_listed0]}', ${K10[with_agent_state]}, decided by '${K10[with_agent_decider]}', stand asked ${K10[with_agent_asked]} time(s), the agent-tier key in what the model was shown: $agent_shown; the release exited $agent_exit with '$agent_out' — ${K10[with_agent_summary]}"
 	assert "$([ "${K10[with_agent_deciding]}" = true ] && [ -z "${K10[with_agent_url]}" ] && [ "${K10[with_agent_listed0]}" = no ] && [ "${K10[with_agent_state]}" = granted ] &&
 		[ "${K10[with_agent_decider]}" = "$JUDGE_ACTOR" ] && [ "${K10[with_agent_asked]}" = 1 ] && [ "$agent_shown" = no ] &&
