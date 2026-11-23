@@ -263,3 +263,32 @@ func TestAWorkersMoveBackOfAPlanOfOneTaskNamesItsTask(t *testing.T) {
 		}
 	}
 }
+
+// A completion sent again is refused HANDOFF_ALREADY_RECORDED in words that name its task, since
+// the pass the refusal counts is that task's own (completionPosition): with task a of LEGION-211 at
+// its tester's step at pass 3 and task b at its implementer's at pass 1, the tester's completion
+// sent again is refused naming task a, a's phase and a's pass, and nothing of b. The completion of
+// LEGION-215, which has no plan rows, sent again is refused in the words it was before plans.
+//
+// The fault it catches is a refusal that tells one task's pass as the issue's, so the worker reading
+// it cannot say whose pass it was (its control: the task left out of the refusal's words).
+func TestACompletionSentAgainIsRefusedNamingItsTask(t *testing.T) {
+	h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	const several, none = "LEGION-211", "LEGION-215"
+	seedIssueAt(t, h, several, phase.Implementing)
+	seedTwoTasks(t, h, several)
+	seedIssueAt(t, h, none, phase.Testing)
+
+	for _, tc := range []struct{ key, words string }{
+		{several, "the tester completion of phase testing of task a (pass 3 through it)"},
+		{none, "the tester completion of phase testing (pass 0 through it)"},
+	} {
+		tester := newLiveClaim(t, h, tc.key, claim.RoleTester)
+		written := tester.writeHandoff("test", 1)
+		request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1}
+		completion(t, h.complete(request))
+		request.GrantID = tester.grant(t)
+		refusedSaying(t, h.complete(request), http.StatusConflict, "HANDOFF_ALREADY_RECORDED",
+			tc.words+" naming handoff record "+written+" (test version 1) was already received; this call changed nothing")
+	}
+}

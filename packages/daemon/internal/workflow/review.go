@@ -1510,13 +1510,26 @@ func taskLabel(w Walk) string {
 	return "task " + w.Task + ": "
 }
 
+// taskSentence is what a message on the issue about the returns of w's task ends with: ` Task:
+// <id>.`, the sentence a step's task names its task by (standingText), for a run with plan rows,
+// which can hold more than one task, and "" for a run with none, which reads as it did before
+// plans. The message keeps its fixed start, which a reader of a fleet greps the cap's messages and
+// the hooks' firings out by, where a notice or a prompt puts the task before its reason (taskLabel).
+func taskSentence(w Walk) string {
+	if !w.Stored {
+		return ""
+	}
+	return fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
+}
+
 // recordRound counts w's task one more review round, which only a review that requested changes
 // ends, and tells the architect once for each value review_round_cap holds, its notice naming the
 // task (taskLabel). The counts are the task's, where recordPass keeps them. The move's own pair and
 // the deployment's hooks are counted where every backward move passes (recordPass), so a round and
 // a move are counted apart: this one is the cap's, and everything it writes it writes in the move's
-// own transaction. The cap's message on the issue keeps its one fixed line, which a reader of a
-// fleet counts the cap by; the notice to the architect names the task.
+// own transaction. The cap's message on the issue keeps its fixed start, which a reader of a fleet
+// counts the cap by, and ends naming the task (taskSentence); the notice to the architect names the
+// task before its reason.
 //
 // What the cap reads is Rounds less the rounds a conflict with the base caused
 // (classify.ConflictRound, record.ReturnCounts.ConflictRounds). A round opened while the record
@@ -1564,7 +1577,7 @@ func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if tell {
 		message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
 			e.cfg.ReviewRoundCap, counted, counts.ConflictRounds)
-		if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: message}); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: message + taskSentence(w)}); err != nil {
 			return err
 		}
 		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: taskLabel(w) + message}); err != nil {
