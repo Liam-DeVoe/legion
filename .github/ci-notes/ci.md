@@ -761,8 +761,9 @@ install copies; the packages it copies whole (the daemon with the Dockerfile, th
 plugins and the workspace packages they inline, the Claude Code plugin, whose source
 the plugin stage builds into the image's dist/ and legion/ with the .bun-version that
 build is pinned to, the skills and the prepack that stages them); the Go workspace; packages/envoy, copied whole for its agent-secrets
-binary but for packages/envoy/infra, which the .dockerignore drops, so each of its
-top-level directories but infra is named; the scripts that write the image's
+binary, so each of its top-level directories is named, and of packages/envoy/infra the
+module and workspace files and the Go sources, all the .dockerignore lets in of it (the
+Envoy image builds envoy-infra from them); the scripts that write the image's
 third-party notices; the Oh My Pi pin; and the context's .dockerignore. Then a `!`
 pattern for each .dockerignore line that drops part of those packages, of
 packages/envoy or of skills/, which the step's some-with-excludes reads as an

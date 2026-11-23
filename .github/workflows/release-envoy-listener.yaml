@@ -9,12 +9,19 @@ on:
     # sources it builds the SPA and the Go contracts from, the context's .dockerignore, and this
     # workflow. A commit touching only one of them would otherwise publish no image, so no pin
     # could name it. .github/scripts/check-image-trigger-paths.sh fails the build when this list
-    # misses a file the image build reads. The envoy-infra plugin's module (packages/envoy/infra)
-    # is no input of the image or of this release's binaries, and release-envoy-infra.yaml
-    # releases it.
+    # misses a file the image build reads. Of the envoy-infra module (packages/envoy/infra), which
+    # release-envoy-infra.yaml releases, the image builds /usr/local/bin/envoy-infra from its
+    # module and workspace files and its Go sources but its tests, the files the .dockerignore
+    # lets in.
     paths:
       - "packages/envoy/**"
       - "!packages/envoy/infra/**"
+      - "packages/envoy/infra/go.mod"
+      - "packages/envoy/infra/go.sum"
+      - "packages/envoy/infra/go.work"
+      - "packages/envoy/infra/go.work.sum"
+      - "packages/envoy/infra/**/*.go"
+      - "!packages/envoy/infra/**/*_test.go"
       - "packages/contracts/**"
       - "packages/dispatch/**"
       - "packages/proof-editor/**"

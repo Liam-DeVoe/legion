@@ -197,6 +197,12 @@ runner, so an archive attested by any other workflow, branch or runner in the re
 explains each flag). `--version` prints the release's version, `<version>`. Put the binary on your
 `PATH`; the commands below call it `envoy-infra`.
 
+The Envoy image (`ghcr.io/cybermonklabs/legion/envoy`) carries the same command at
+`/usr/local/bin/envoy-infra`, built from the image's own commit, so a Kubernetes Job can run it from
+the image a deployment already pins. The image's entrypoint is `envoy-listener`, so such a Job sets
+its command: `command: [envoy-infra, buckets, create, --inbox-prefix, _INBOX., ...]`. The image's
+`/usr/share/doc/legion/THIRD_PARTY_NOTICES` names the modules it compiles in.
+
 To install it with mise, give it a tool alias: `github:cybermonklabs/legion` is also where the `legion`
 command's releases come from, so a second pin of that repository needs a name of its own. Pin the
 tag, and name each platform's archive with its digest, since each release holds the plugin's

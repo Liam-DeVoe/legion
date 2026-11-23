@@ -3796,20 +3796,22 @@ GATES = [
         ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:38 and :69 COPY packages/dispatch packages/dispatch, which :80 runs build:web in"),
         ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:39, :42 and :70 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
         ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:74 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
-        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98 and :118"),
-        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :120"),
-        # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile:106
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :98, :124 and :126"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:97 COPY, run by :127"),
+        # The image's Go stage copies the Envoy module whole (packages/envoy/docker/Dockerfile:112
         # COPY packages/envoy ./), and the held-port image's build copies it whole with the
         # envoy-infra module under it (packages/envoy/infra/host/heldportwrapper/Dockerfile:30
         # COPY packages/envoy /src/packages/envoy). Each reads every file of it but what its
         # .dockerignore drops: test files, internal/integration, internal/smoke (the smoke step
-        # compiles that one), deploy and the changelog fragments, and infra for the first. No go
+        # compiles that one), deploy and the changelog fragments, and for the first, of infra, all
+        # but its module and workspace files and Go sources, which build envoy-infra (:104 and
+        # :154). No go
         # command of this gate reaches most of those files, so rule 9 of check-ci-filters.sh reads
         # the filter's module pattern as matching unread files without these rows, while
         # check-image-trigger-paths.sh refuses the filter without it: the read is the image
         # builds', and this is where the two checks meet. listenerwire's envelope_generated.go is
-        # among them, which the Go stage then replaces with the web stage's fresh generation (:110).
-        *[(path, "packages/envoy/docker/Dockerfile:106 COPY packages/envoy ./, and "
+        # among them, which the Go stage then replaces with the web stage's fresh generation (:116).
+        *[(path, "packages/envoy/docker/Dockerfile:112 COPY packages/envoy ./, and "
                  "packages/envoy/infra/host/heldportwrapper/Dockerfile:30 COPY packages/envoy /src/packages/envoy")
           for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
           if not path.startswith(tuple(f"{ENVOY}/{d}/" for d in ("internal/integration", "internal/smoke", "deploy")))],
