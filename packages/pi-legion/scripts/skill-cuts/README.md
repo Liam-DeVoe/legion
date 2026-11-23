@@ -55,8 +55,10 @@ bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> \
   [--after-case <command>] [--request-log <file>] \
   [--models <models.yml>] [--omp <binary>] [--repos <dir>] [--hint-model <model>] \
   [--omp-config <file>]... [--cache-dir <dir>] [--scratch <dir>] \
-  [--reading-models <file>] [--again <case id>]... [--confirm-flagged]
-                                 (--again, --confirm-flagged: confirm only)
+  [--reading-models <file>] [--again <case id>]... [--confirm-flagged] \
+  [--old-role-prompt-at <commit> --new-role-prompt-at <commit>]
+                                 (--again, --confirm-flagged: confirm only; the role-prompt
+                                 commits: "Role prompts at commits", below)
 ```
 
 One skill per run: `--old` and `--new` are that skill's own directories, and `--cases` holds that
@@ -1221,6 +1223,75 @@ removed once the summary is written. With neither bound the search runs to 60 me
 the last candidate, and writes no file. A bound is refused without `--model` or `--profiles-out`
 (no search runs) and with `--first-read` (it stops at `--max`). Build a load test's tasks with
 `--max-candidates 60 --max-search-minutes 90`.
+
+### Role prompts at commits: `behaviour --old-role-prompt-at` and `build-role-cases`
+
+A line of a Legion role's prompt (a part under `packages/daemon/internal/prompts/` that
+`prompts.Composer.Compose` names) is tested as a skill's line is, with the role prompt in place of
+the skill's text. By default every arm of a case gets one role prompt, composed at the case's
+daemon image's commit (else its plugin's), so no arm differs in it. Two options, both or neither,
+give the arms two:
+
+```
+bun scripts/skill-cuts/cli.ts behaviour <screen|confirm|control|report> ... \
+  --old-role-prompt-at <commit> --new-role-prompt-at <commit>
+```
+
+Each arm's capture composes its role prompt at a commit of the case's plugin repository (the first
+plugin repository of its profile that holds `prompts.go` at that commit) in place of the daemon
+image's: `new` at `--new-role-prompt-at`, `old`, `none`, `minus` and `twin` at
+`--old-role-prompt-at`. Each capture's record names it (`context.rolePrompt.commitOf: "arm"`, with
+`commit`). `--old` and `--new` may name one skill directory, so only the role prompt differs between
+old and new. A case file may hold role-line cases (`rolePromptLine: {role, part}`, below) beside
+skill cases of the same skill. A skill case's arms are as without the options, each at its commit.
+A role-line case's `none` and `minus` keep the skill as `old` has it (the old directory, its reads,
+its profile) and leave out of the old arm's prompt each line equal (trimmed) to the case's line
+(`minus`: to `--planted-line` where one is given), so "informative" (old at least 2 above none)
+measures the role line and not the skill; `twin` is the old arm again. Either kind of control case
+gives both controls. A role-line case is checked, as it loads, against its prompt part at
+`--old-role-prompt-at` (its line a whole line of the part there at its `lineNumber`, the part of
+`lineCount` lines), in place of the skill's directory; every other case against `--old`.
+
+Refused, exit 2, before any model call, naming the reason: one option alone; a case file that
+holds a role-line case with neither option (no commit to check its line against); with them, a case
+with no Legion role context, a case that holds `profile.appendSystemPrompt` (its own role prompt
+text), and a commit at which no plugin repository of a case holds the composer (the repository does
+not hold the commit); and an `--out` that holds a capture whose role prompt was composed at another
+commit than this run composes its arm's at (without the options: a capture composed at an arm's
+commit). `report` takes the options and is refused the same way. A role-line case's `none` and
+`minus` are captured under `<arm>-<old text digest>-less-<digest of the line>`, so another planted
+line is captured again.
+
+```
+bun scripts/skill-cuts/cli.ts build-role-cases --config <skill-cuts.json> --key-file <file> \
+  --cut <id> --skill <name> --old <skill dir at the base> --role <role> --line <the role line> \
+  --old-role-prompt-at <base commit> --sessions <file> --seed <n> --copies <dir> --count <dir> \
+  --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--repos <dir>] [--cache-dir <dir>]
+```
+
+`build-role-cases` (`rolecases.ts`) writes role-line cases of one line from sessions of one role,
+with build-cases' store, seed, copies and count options and its `case` reader; it reuses what
+`build.ts` exports and changes nothing there. `--skill` is the skill the role loads first
+(`legion-worker` for a worker role, `legion-retro` for a retro session), `--old` its directory at
+the base, `--cut` the cut whose repository ships it. The candidates of `--sessions` are taken in
+the order `--seed` gives, until `--max` cases. Each session is pulled from its store and read; one
+of a store with no Legion project, a subagent's, one of another role than `--role` (build.ts's
+`sessionRole`) or none of whose models before its first compaction the gateway serves is dropped.
+Its profile is built as `build-cases --reprofile` builds a case's (through `build.ts`'s `main`,
+with `--config`, `--old`, `--copies` and `--count`), and its role prompt composed at its daemon
+image's commit (else its plugin's): a session whose prompt holds no line equal to `--line` is
+dropped as `line-absent` before any reader call, and one whose part that holds the line does not
+hold it at `--old-role-prompt-at` as `line-not-at-base`. The `case` reader is offered that one line,
+under its number in the part at the base, and reads the session from its first message in windows
+of at most 40 messages, at most 6 windows, as build-cases reads one from the skill's read. The case
+keeps build-cases' `source` (`store`, `pathHash`) and adds no `source.kind`; its `skill` is
+`--skill`, its `baseFile` and `rolePromptLine.part` the part, its `line` the part's line at the base
+with its number and the part's line count, its `skillReads` the read results of `skill://<skill>`
+files before the step, and its `evidence` the role, the profile and `role prompt line` (the commit
+the session's prompt was composed at, and the line's place at the base). Drops are counted by
+reason in `<out>.summary.json`, as build-cases counts them, with each session's record. A file of
+role-line cases loads at `--old-role-prompt-at`, as `behaviour` loads it. An `--out` that exists is
+refused: a build does not go on from another.
 
 ## The request log
 
