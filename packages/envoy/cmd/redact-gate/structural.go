@@ -933,7 +933,10 @@ func (g *gate) recordImports(path string, deps []string) {
 }
 
 // closureClean reports whether pkg's import closure (recordImports) holds neither the box's
-// package nor the package of an external error type, and says why.
+// package nor the package of an external error type, and pkg declares no generic type, and says
+// why. The closure stands for every type pkg declares only where those types are pkg's own: an
+// instance of a generic type of pkg holds whatever its type argument is, the box among them,
+// while reflect names pkg as its package (PkgPath) and pkg's import closure shows no box.
 func (w *walker) closureClean(pkg string) (bool, string) {
 	closure := w.g.imports[pkg]
 	if closure == nil {
@@ -951,7 +954,42 @@ func (w *walker) closureClean(pkg string) (bool, string) {
 	if len(held) > 0 {
 		return false, "guarded_package names " + pkg + ", whose import closure holds " + strings.Join(held, " and ")
 	}
-	return true, "its guard holds its value's type to " + pkg + ", whose import closure holds neither the box's package nor an external error type's"
+	declared := w.declaredPackage(pkg)
+	if declared == nil {
+		return false, "guarded_package names " + pkg + ", whose declarations this package's type-check does not read"
+	}
+	var generic []string
+	for _, name := range declared.Scope().Names() {
+		tn, ok := declared.Scope().Lookup(name).(*types.TypeName)
+		if !ok {
+			continue
+		}
+		switch t := tn.Type().(type) {
+		case *types.Named:
+			if t.TypeParams().Len() > 0 {
+				generic = append(generic, name)
+			}
+		case *types.Alias:
+			if t.TypeParams().Len() > 0 {
+				generic = append(generic, name)
+			}
+		}
+	}
+	if len(generic) > 0 {
+		return false, "guarded_package names " + pkg + ", which declares the generic type " + strings.Join(generic, ", ") + ": an instance is " + pkg + "'s to reflect and holds whatever its type argument is, the box among them, which no import closure shows"
+	}
+	return true, "its guard holds its value's type to " + pkg + ", whose import closure holds neither the box's package nor an external error type's, and which declares no generic type"
+}
+
+// declaredPackage is the package at path as the walked package's type-check read it: the package
+// of an object the walked package uses, nil where it uses none.
+func (w *walker) declaredPackage(path string) *types.Package {
+	for _, obj := range w.info.Uses {
+		if obj != nil && obj.Pkg() != nil && obj.Pkg().Path() == path {
+			return obj.Pkg()
+		}
+	}
+	return nil
 }
 
 func (w *walker) listed(t types.Type, operands []string) bool {

@@ -33,6 +33,7 @@ func (v Value) IsNil() bool                  { return false }
 func (v Value) Elem() Value                  { return v }
 func (v Value) Type() Type                   { return nil }
 func (v Value) FieldByName(name string) Value { return v }
+func (v Value) FieldByIndex(index []int) Value { return v }
 func (v Value) Bool() bool                   { return false }
 `
 
@@ -43,6 +44,42 @@ const libStub = `package lib
 type Conn struct{ n int }
 
 type KeyValue interface{ Bucket() string }
+`
+
+// genericLibStub is libStub with one generic type, as listenerwire declares APIErrorAs[Text]: a
+// type of the guarded package whose instance holds whatever its type argument is.
+const genericLibStub = libStub + `
+type Holder[T any] struct{ V T }
+`
+
+// boxStub stands for package redact: the box keeps its text in an unexported field.
+const boxStub = `package box
+
+type Text struct{ text *string }
+`
+
+// genericRead holds a box in the guarded package's generic type and reads the box's storage under
+// the guard main's readsDirect uses: an instance of lib.Holder[box.Text] is lib's to reflect, so
+// the guard holds it to lib's package, while lib's import closure holds no box.
+const genericRead = `package pkg
+
+import (
+	"reflect"
+
+	"example.com/box"
+	"example.com/lib"
+)
+
+var libPackage = reflect.TypeFor[lib.Conn]().PkgPath()
+
+func readsDirect(held lib.Holder[box.Text]) bool {
+	kvs := reflect.ValueOf(held)
+	if kvs.Kind() != reflect.Struct || kvs.Type().PkgPath() != libPackage {
+		return true
+	}
+	text := kvs.FieldByIndex([]int{0, 0})
+	return text.IsNil()
+}
 `
 
 // guardedRead is main's readsDirect (internal/bus/kv.go) over the stubs: the handle's type is
@@ -83,12 +120,18 @@ func (s stubImporter) Import(path string) (*types.Package, error) {
 
 // guardedCensus runs the census over source, package example.com/pkg in /repo/pkg/kv.go, with
 // entry its one reflection entry (none where nil) and closure lib's import closure (none recorded
-// where nil), and answers the one reflection finding it lists.
+// where nil), and answers the one reflection finding it lists. lib is libStub.
 func guardedCensus(t *testing.T, source string, entry *reflectionExempt, closure map[string]bool) finding {
+	t.Helper()
+	return guardedCensusOf(t, libStub, source, entry, closure)
+}
+
+// guardedCensusOf is guardedCensus with lib's source given.
+func guardedCensusOf(t *testing.T, lib, source string, entry *reflectionExempt, closure map[string]bool) finding {
 	t.Helper()
 	fset := token.NewFileSet()
 	stubs := stubImporter{}
-	for _, stub := range []struct{ path, source string }{{"reflect", reflectStub}, {"example.com/lib", libStub}} {
+	for _, stub := range []struct{ path, source string }{{"reflect", reflectStub}, {"example.com/lib", lib}, {"example.com/box", boxStub}} {
 		f, err := parser.ParseFile(fset, stub.path+".go", stub.source, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -132,9 +175,9 @@ func guardedCensus(t *testing.T, source string, entry *reflectionExempt, closure
 
 // TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage: a guarded_package entry
 // passes main's read of a library handle's unexported field, behind an interface, only where its
-// guard holds the handle's type to the named package and that package's import closure holds
-// neither the box's package nor an external error type's; every other shape is refused, each
-// with its reason, and with no entry the site is refused as before.
+// guard holds the handle's type to the named package, that package's import closure holds
+// neither the box's package nor an external error type's, and it declares no generic type; every
+// other shape is refused, each with its reason, and with no entry the site is refused as before.
 func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *testing.T) {
 	entry := &reflectionExempt{File: "pkg/kv.go", Function: "example.com/pkg.readsDirect", GuardedPackage: "example.com/lib", Why: "test"}
 	clean := map[string]bool{"example.com/lib": true, "fmt": true}
@@ -172,6 +215,21 @@ func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *test
 			got := guardedCensus(t, c.source, c.entry, c.closure)
 			if got.OK != c.ok || !strings.Contains(got.Why, c.why) {
 				t.Fatalf("the census answered ok=%t %q at %s:%d; want ok=%t and %q in its reason", got.OK, got.Why, got.File, got.Line, c.ok, c.why)
+			}
+		})
+	}
+	// A generic type of the guarded package: an instance is lib's to reflect and holds whatever its
+	// type argument is, so the guard holds lib.Holder[box.Text] to lib while lib's import closure
+	// shows no box. A package that declares one is refused for every read under its guard.
+	for _, c := range []struct{ name, source string }{
+		{"a generic type of the guarded package holds the box", genericRead},
+		{"the guarded package declares a generic type", guardedRead},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			const why = "which declares the generic type Holder"
+			got := guardedCensusOf(t, genericLibStub, c.source, entry, clean)
+			if got.OK || !strings.Contains(got.Why, why) {
+				t.Fatalf("the census answered ok=%t %q at %s:%d; want ok=false and %q in its reason", got.OK, got.Why, got.File, got.Line, why)
 			}
 		})
 	}
