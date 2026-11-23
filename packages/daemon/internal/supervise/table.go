@@ -647,6 +647,14 @@ type RequestDeliver struct {
 	// gives way to a task of an entry while no turn has taken it (Machine.supersedes), since the
 	// start of an entry carries the same news itself.
 	NewsOnly bool
+	// Fix is the fix of the issue's task this task is of, from the start row that queued it
+	// (record.SuperviseRequest.Fix), 0 for a task of no fix: such a task is its issue's work while
+	// that fix runs, whatever phase the issue stands in (record.PhaseHolds). FixFrom is the head the
+	// fix's working copy is made at, which only a fix's task names, and MoveTo the head the task's
+	// working copy moves to before the task, "" for none. An operator's task names none of them.
+	Fix     int
+	FixFrom string
+	MoveTo  string
 }
 
 // RequestExit is the agent reporting its own end.

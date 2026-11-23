@@ -60,7 +60,12 @@ func TestAPendingFixJobReadKeepsThePod(t *testing.T) {
 			if view := idleViewOf(t, st, rootIssue); !view.Waiting {
 				t.Fatal("the idle view reads nothing waiting, though a fix's read of its CI job is queued: a release would stop the implementer before the fix starts")
 			}
-
+			// A row that waits for a role of the pod overtakes a release from below its rows as
+			// well as from above them, so the release below starts on an issue whose rows the view
+			// read are gone, as an idle pod's are when the tick releases it.
+			if _, err := st.Pool().Exec(ctx, `delete from outbox where issue = $1`, rootIssue); err != nil {
+				t.Fatal(err)
+			}
 			_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
 			queue(stepRecord)
 			if decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary); err != nil || decision.Act != ReleaseActs {
