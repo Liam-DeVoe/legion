@@ -4271,15 +4271,18 @@ func stoppedByHold(held supervise.Claim) bool {
 // gate opened (workflow.OpeningTellsTheGate): the start that ends the hold gives the claim the
 // opening's sentences, today's open message among them. A record that shows a hold that stands, or
 // no opening that names the gate, settles nothing, so an opening the record cannot name stays owed
-// to the news.
+// to the news. A tree root the record does not hold is an error, and the start asks again.
 func (r *outbox) settleHeldOpening(ctx context.Context, issue record.Issue, role claim.Role) error {
 	if workflow.RoleFor(issue.Phase) != role {
 		return nil
 	}
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		root, err := r.records.Issue(ctx, tx, issue.Tree)
-		if err != nil || root == nil {
+		if err != nil {
 			return err
+		}
+		if root == nil {
+			return fmt.Errorf("the tree root %s is not recorded", issue.Tree)
 		}
 		hold, err := r.records.TreeWorkHold(ctx, tx, issue.Tree)
 		if err != nil || !workflow.OpeningTellsTheGate(hold, *root) {
