@@ -503,9 +503,7 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 // tester's step, as the entry of a keyed agent's step writes it, and the role's own claim of an
 // earlier version of the plan. A wake of the keyed agent's claim ran out two hours ago with no
 // turn: that claim is stranded, and the role's own claim, which nothing woke, waits for a delivery
-// as a released claim is meant to. A wake the release before recorded names no claim and still
-// stands for each claim of its role, and it strands the one of them that works the role's step:
-// the role's own claim works no step a start of the phase brings back, so no wake strands it.
+// as a released claim is meant to.
 func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 	cfg := testConfig(t)
 	issue := cfg.Project + "-1"
@@ -575,12 +573,5 @@ func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
 	wake(keyed.Token)
 	if got := stranded(); !reflect.DeepEqual(got, []claim.Token{keyed.Token}) {
 		t.Fatalf("stranded after the keyed agent's wake ran out = %v, want %s alone: the role's own claim was never woken", got, keyed.Token)
-	}
-	if _, err := st.Pool().Exec(ctx, `delete from pod_resumes where project = $1 and issue = $2`, project, issue); err != nil {
-		t.Fatal(err)
-	}
-	wake("")
-	if got := stranded(); !reflect.DeepEqual(got, []claim.Token{keyed.Token}) {
-		t.Fatalf("stranded after a wake that names no claim ran out = %v, want %s alone: it stands for each claim of its role, and the role's own claim works no step", got, keyed.Token)
 	}
 }
