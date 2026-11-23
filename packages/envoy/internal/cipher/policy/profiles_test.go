@@ -93,12 +93,14 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 		{"a whole scope URL", `{"name": "GOOGLE_READ", "google": {"scopes": ["https://www.googleapis.com/auth/cloud-platform"]}}`, "google.scopes[0]", []string{"after https://www.googleapis.com/auth/"}},
 		{"a scope twice", `{"name": "GOOGLE_READ", "google": {"scopes": ["cloud-platform", "cloud-platform"]}}`, "google.scopes[1]", []string{"twice"}},
 		{"github and google together", `{"name": "GITHUB_WRITE", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}}, "google": {"scopes": ["cloud-platform"]}}`, "github and google", []string{"both"}},
-		{"a proxy block with no hosts", adminPAT(`{"judge": 300}`), "proxy.hosts", []string{"required"}},
+		{"a proxy block with no hosts", adminPAT(`{"headers": ["x-api-key"]}`), "proxy.hosts", []string{"required"}},
 		{"a proxy block with an empty hosts list", adminPAT(`{"hosts": []}`), "proxy.hosts", []string{"required"}},
 		{"a proxy host with a scheme", adminPAT(`{"hosts": ["api.github.com", "https://github.com"]}`), "proxy.hosts[1]", []string{"holds a scheme"}},
-		{"a judge above the longest lifetime", adminPAT(`{"hosts": ["api.github.com"], "judge": 1800}`), "proxy", []string{"judge 1800", "900"}},
+		{"a judge in the proxy block", adminPAT(`{"hosts": ["api.github.com"], "judge": 900}`), "proxy.judge", []string{"judge tag", "GITHUB_ADMIN_PAT", "--judge"}},
+		{"a judge of null in the proxy block", adminPAT(`{"hosts": ["api.github.com"], "judge": null}`), "proxy.judge", []string{"judge tag"}},
+		{"guidance in the proxy block", adminPAT(`{"hosts": ["api.github.com"], "guidance": "grant it for the release job"}`), "proxy.guidance", []string{"guidance tag", "GITHUB_ADMIN_PAT", "--guidance"}},
+		{"a judge in the proxy block of a profile of another source", `{"name": "GITHUB_ADMIN_READ", "source": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "judge": 300}}`, "proxy.judge", []string{"judge tag", "the source, GITHUB_ADMIN_PAT"}},
 		{"a kind the proxy does not know", adminPAT(`{"hosts": ["api.github.com"], "kind": "gcp"}`), "proxy", []string{`kind "gcp"`}},
-		{"guidance longer than the judge reads", adminPAT(`{"hosts": ["api.github.com"], "judge": 600, "guidance": "` + strings.Repeat("g", 2001) + `"}`), "proxy.guidance", []string{"2001", "2000"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := policy.ParseProfiles([]byte(profilesFile(githubRead, c.profile)))
@@ -119,7 +121,7 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 		valid := profilesFile(githubRead,
 			githubWrite(`{"accounts": ["example-org", "ada"], "repositories": ["example-org/legion", "ada/proofs"], "permissions": {"contents": "write", "metadata": "read", "workflows": "write", "profile": "write", "administration": "admin"}, "value": "installations"}`),
 			`{"name": "GOOGLE_READ", "source": "GCS_READER", "requesters": ["ada@example.com", "legion-daemon"], "maxGrant": "1h", "google": {"scopes": ["devstorage.read_only"]}}`,
-			adminPAT(`{"hosts": ["api.github.com", "*.githubusercontent.com"], "headers": [], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": "", "judge": 900, "guidance": "`+strings.Repeat("g", 2000)+`"}`),
+			adminPAT(`{"hosts": ["api.github.com", "*.githubusercontent.com"], "headers": [], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": ""}`),
 		)
 		if _, err := policy.ParseProfiles([]byte(valid)); err != nil {
 			t.Fatalf("ParseProfiles of a file of valid profiles: %v", err)
@@ -161,7 +163,7 @@ func TestParseProfilesRefusesUnknownFieldsAndASecondValue(t *testing.T) {
 		"an empty file":                {"", []string{"empty"}},
 		"a file of white space":        {"\n  \n", []string{"empty", "no JSON object"}},
 		"profiles that is no list":     {`{"profiles": {"name": "GITHUB_READ"}}`, []string{"profiles", "byte offset 14, line 1, column 14"}},
-		"a judge that is not a number": {profilesFile(adminPAT(`{"hosts": ["api.github.com"], "judge": "300"}`)), []string{"profiles.0.proxy.judge"}},
+		"a kind that is not a string":  {profilesFile(adminPAT(`{"hosts": ["api.github.com"], "kind": 3}`)), []string{"profiles.0.proxy.kind"}},
 		"a file that is null":          {"null\n", []string{"the file is null", "no JSON object"}},
 		"a file that is a list":        {`[{"name": "GITHUB_READ"}]`, []string{"the file is a JSON array", "not one JSON object", "line 1, column 1"}},
 		"a file that is a string":      {`"profiles"`, []string{"the file is a JSON string", "not one JSON object"}},
@@ -333,11 +335,10 @@ func TestCheckRequestersRefusesAServiceTheDeploymentDoesNotRegister(t *testing.T
 	}
 }
 
-// TestProfilesDigestLeavesGuidanceOut: a profile's digest moves with every field of its entry
-// that decides what a live grant of it may do, and not with its guidance, which tells the judge
-// how to decide requests to come: writing guidance ends no grant. A name the file does not hold
+// TestProfilesDigestMovesWithEachFieldOfTheEntry: a profile's digest moves with every field of
+// its entry, each of which decides what a live grant of it may do. A name the file does not hold
 // has no digest, as a deployment with no profiles file gives every name none.
-func TestProfilesDigestLeavesGuidanceOut(t *testing.T) {
+func TestProfilesDigestMovesWithEachFieldOfTheEntry(t *testing.T) {
 	digest := func(t *testing.T, name, profile string) string {
 		t.Helper()
 		profiles, err := policy.ParseProfiles([]byte(profilesFile(githubRead, profile)))
@@ -346,32 +347,28 @@ func TestProfilesDigestLeavesGuidanceOut(t *testing.T) {
 		}
 		return profiles.Digest(name)
 	}
-	const pat = `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "judge": 300%s}}`
-	plain := digest(t, "GITHUB_ADMIN_PAT", fmt.Sprintf(pat, ""))
+	const pat = `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"]}}`
+	plain := digest(t, "GITHUB_ADMIN_PAT", pat)
 	if len(plain) != 64 || strings.Trim(plain, "0123456789abcdef") != "" {
 		t.Fatalf("Digest = %q, want SHA-256 in hex", plain)
 	}
-	if guided := digest(t, "GITHUB_ADMIN_PAT", fmt.Sprintf(pat, `, "guidance": "grant it for the release job"`)); guided != plain {
-		t.Errorf("guidance moved the digest: %s, want %s", guided, plain)
-	}
-	if other := digest(t, "GITHUB_READ", fmt.Sprintf(pat, "")); other == plain || other == "" {
+	if other := digest(t, "GITHUB_READ", pat); other == plain || other == "" {
 		t.Errorf("GITHUB_READ's digest = %q beside GITHUB_ADMIN_PAT's %q; want one of its own", other, plain)
 	}
-	if absent := digest(t, "GITHUB_WRITE", fmt.Sprintf(pat, "")); absent != "" {
+	if absent := digest(t, "GITHUB_WRITE", pat); absent != "" {
 		t.Errorf("the digest of a name no profile holds = %q, want none", absent)
 	}
 	for name, edited := range map[string]string{
-		"a host added":        `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com", "github.com"], "judge": 300}}`,
-		"a judge longer":      `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "judge": 600}}`,
-		"no header":           `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "headers": [], "judge": 300}}`,
-		"nothing allowed":     `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "allow": [], "judge": 300}}`,
-		"another kind":        `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "kind": "aws", "judge": 300}}`,
-		"the source's tier":   `{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "judge": 300}}`,
-		"requesters named":    `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "requesters": ["ada@example.com"], "proxy": {"hosts": ["api.github.com"], "judge": 300}}`,
-		"a maxGrant":          `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "maxGrant": "1h", "proxy": {"hosts": ["api.github.com"], "judge": 300}}`,
-		"another source":      `{"name": "GITHUB_ADMIN_PAT", "source": "OTHER_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "judge": 300}}`,
+		"a host added":        `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com", "github.com"]}}`,
+		"no header":           `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "headers": []}}`,
+		"nothing allowed":     `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "allow": []}}`,
+		"another kind":        `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "kind": "aws"}}`,
+		"the source's tier":   `{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"]}}`,
+		"requesters named":    `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "requesters": ["ada@example.com"], "proxy": {"hosts": ["api.github.com"]}}`,
+		"a maxGrant":          `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "maxGrant": "1h", "proxy": {"hosts": ["api.github.com"]}}`,
+		"another source":      `{"name": "GITHUB_ADMIN_PAT", "source": "OTHER_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"]}}`,
 		"no proxy block":      `{"name": "GITHUB_ADMIN_PAT", "tier": "human"}`,
-		"a header of its own": `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "headers": ["x-api-key"], "judge": 300}}`,
+		"a header of its own": `{"name": "GITHUB_ADMIN_PAT", "tier": "human", "proxy": {"hosts": ["api.github.com"], "headers": ["x-api-key"]}}`,
 	} {
 		if moved := digest(t, "GITHUB_ADMIN_PAT", edited); moved == plain {
 			t.Errorf("%s left the digest where it was: %s", name, moved)
@@ -395,25 +392,51 @@ func TestProfilesDigestLeavesGuidanceOut(t *testing.T) {
 	}
 }
 
-// TestProxyRulesHoldOneEntryPerProxyBlock: the airlock's rules are the profiles' proxy blocks,
-// one entry for each, under its profile's name and in the file's order, every field carried as
-// the file writes it, the guidance the judge reads among them, and the absent lists kept apart
-// from the empty ones. A profile with no proxy block has no entry, so its credential is released
-// as it is today for a name the rules do not hold.
-func TestProxyRulesHoldOneEntryPerProxyBlock(t *testing.T) {
+// TestAProfilesDigestIsTheOneItHadWhileTheBlockHeldAJudge pins the digest of four profiles to the
+// values a broker computed while a proxy block still held judge and guidance fields (legion main
+// 7c880c1556f6, before the judge's setting became the key's tags). Each request records the
+// digest of the profile it was decided under (request_secrets.airlock_digest), and a release ends
+// a grant whose profile's digest moved, so a digest that moved with the fields' removal would end
+// the live grant of every profile in production at the first broker of this release.
+func TestAProfilesDigestIsTheOneItHadWhileTheBlockHeldAJudge(t *testing.T) {
 	profiles, err := policy.ParseProfiles([]byte(profilesFile(
 		githubRead,
-		`{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "write", "metadata": "read"}}}`,
-		`{"name": "AWS_KEY", "proxy": {"hosts": ["*.amazonaws.com"], "headers": [], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": "aws", "judge": 300, "guidance": "grant it for the backup job"}}`,
+		`{"name": "AWS_KEY", "proxy": {"hosts": ["*.amazonaws.com"], "headers": [], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": "aws"}}`,
+		`{"name": "SLACK_TOKEN", "tier": "human", "requesters": ["ada@example.com"], "maxGrant": "1h", "proxy": {"hosts": ["slack.com"]}}`,
+		`{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "repositories": ["example-org/legion"], "permissions": {"contents": "write", "metadata": "read"}}}`,
 	)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	judge := uint32(300)
+	for name, want := range map[string]string{
+		"GITHUB_READ":  "5400437f6915585e269424e3bb67949cf127ca7a1d3129aca47a1730f8ffbc38",
+		"AWS_KEY":      "0ee0477738a1c0a9a210ba22fb9a829a283c6aec97ff68625d2a76d659caf038",
+		"SLACK_TOKEN":  "6189bffaf236587e9d31ce0efbaf5fc375fdd5d170a8df7f67fe26299aa6800e",
+		"GITHUB_WRITE": "5d1ba4af9bda69953e64e56c42517f3fd8c535012f0d76ac38b301a0063907ed",
+	} {
+		if got := profiles.Digest(name); got != want {
+			t.Errorf("Digest(%s) = %s, want %s, the digest it had while a proxy block held a judge field", name, got, want)
+		}
+	}
+}
+
+// TestProxyRulesHoldOneEntryPerProxyBlock: the airlock's rules are the profiles' proxy blocks,
+// one entry for each, under its profile's name and in the file's order, every field carried as
+// the file writes it, and the absent lists kept apart from the empty ones. A profile with no proxy
+// block has no entry, so its credential is released as it is today for a name the rules do not
+// hold.
+func TestProxyRulesHoldOneEntryPerProxyBlock(t *testing.T) {
+	profiles, err := policy.ParseProfiles([]byte(profilesFile(
+		githubRead,
+		`{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "write", "metadata": "read"}}}`,
+		`{"name": "AWS_KEY", "proxy": {"hosts": ["*.amazonaws.com"], "headers": [], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": "aws"}}`,
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 		{Name: "GITHUB_READ", Hosts: []string{"api.github.com", "github.com"}},
-		{Name: "AWS_KEY", Hosts: []string{"*.amazonaws.com"}, Headers: []string{}, Allow: []proxyrules.Allow{{Method: "GET", PathPrefix: "/"}},
-			Kind: proxyrules.KindAWS, Judge: &judge, Guidance: "grant it for the backup job"},
+		{Name: "AWS_KEY", Hosts: []string{"*.amazonaws.com"}, Headers: []string{}, Allow: []proxyrules.Allow{{Method: "GET", PathPrefix: "/"}}, Kind: proxyrules.KindAWS},
 	}}
 	rules := profiles.ProxyRules()
 	if !reflect.DeepEqual(rules, want) {
@@ -429,12 +452,14 @@ func TestProxyRulesHoldOneEntryPerProxyBlock(t *testing.T) {
 
 // TestDecodeProfilesReadsAFileTheRulesRefuse: the profiles in force are read for the report of
 // what a change does to them, and may be a file a stricter rule of this broker refuses; that file
-// is read as it is, with its values in the form ParseProfiles answers. A file that is not JSON,
-// holds a field the broker does not know, holds a maxGrant that is no duration, or is not the one
-// object {"profiles": [...]} has no profiles to compare, and is refused: a null file read as no
-// profiles would report every profile of the change as added.
+// is read as it is, with its values in the form ParseProfiles answers. A proxy block of a file
+// written before a key's judge seconds and guidance became its tags is read too, those two fields
+// left out, so the pull request that takes them out of the file can still report against it. A
+// file that is not JSON, holds a field the broker does not know, holds a maxGrant that is no
+// duration, or is not the one object {"profiles": [...]} has no profiles to compare, and is
+// refused: a null file read as no profiles would report every profile of the change as added.
 func TestDecodeProfilesReadsAFileTheRulesRefuse(t *testing.T) {
-	refused := profilesFile(adminPAT(`{"hosts": ["api.github.com"], "judge": 1800}`),
+	refused := profilesFile(adminPAT(`{"hosts": ["api.github.com"], "judge": 900, "guidance": "grant it for the release job"}`),
 		githubWrite(`{"accounts": ["Example-Org"], "permissions": {"workflows": "read"}}`))
 	if _, err := policy.ParseProfiles([]byte(refused)); err == nil {
 		t.Fatal("ParseProfiles served the file this row reads as one the rules refuse")
@@ -443,8 +468,8 @@ func TestDecodeProfilesReadsAFileTheRulesRefuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeProfiles: %v", err)
 	}
-	if pat := profiles.Lookup("GITHUB_ADMIN_PAT"); pat == nil || pat.Proxy == nil || pat.Proxy.Judge == nil || *pat.Proxy.Judge != 1800 {
-		t.Errorf("Lookup(GITHUB_ADMIN_PAT) = %+v, want its proxy block's judge of 1800", pat)
+	if pat := profiles.Lookup("GITHUB_ADMIN_PAT"); pat == nil || pat.Proxy == nil || !reflect.DeepEqual(pat.Proxy.Hosts, []string{"api.github.com"}) {
+		t.Errorf("Lookup(GITHUB_ADMIN_PAT) = %+v, want its proxy block's hosts", pat)
 	}
 	if write := profiles.Lookup("GITHUB_WRITE"); write == nil || !reflect.DeepEqual(write.GitHub.Accounts, []string{"example-org"}) || write.GitHub.Value != githubname.ValueInstallations {
 		t.Errorf("Lookup(GITHUB_WRITE) = %+v, want its account lowercased and value installations", write)

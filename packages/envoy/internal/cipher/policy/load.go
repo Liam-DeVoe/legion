@@ -171,6 +171,15 @@ const (
 	// anthropic-federation, is agent tier (TagRules). Its token can be an organization
 	// administrator's, which a person approves each release of.
 	ReasonTypeHumanTier = "type-human-tier"
+	// ReasonJudgeOutOfRange: the judge tag is not a whole number of seconds from 1 to
+	// MaxJudgeSeconds (ParseJudge): above the 900 seconds the model judge may grant, 0, signed,
+	// with a unit, or no number at all. A tag the broker cannot read as such a bound names no
+	// judge it could hold a grant to, so the key goes to nobody rather than to a judge with no
+	// bound or to a person its owner did not choose.
+	ReasonJudgeOutOfRange = "judge-out-of-range"
+	// ReasonGuidanceTooLong: the guidance tag is longer than MaxGuidanceRunes (TagRules). The
+	// judge shows a key's guidance whole to its model, and a cut instruction is not its owner's.
+	ReasonGuidanceTooLong = "guidance-too-long"
 	// ReasonScopesMalformed: the scopes tag holds a comma, names no scope, names one twice, or
 	// holds an entry that is no scope name — a whole https://www.googleapis.com/auth/… URL
 	// included (ParseScopes).
@@ -538,7 +547,8 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	// Read after max-grant and type, both of which the tag rules weigh: Secret.Type reads the type
 	// back off the Source the branch above froze it into. The admin and scopes tags are
 	// read here too, since the rules weigh them against the type, the tier and the requesters
-	// alike. A type whose own rules demand a list is refused for a missing one, so TagRules runs
+	// alike, and so is the guidance tag, whose length they weigh, beside the judge tag it goes
+	// with. A type whose own rules demand a list is refused for a missing one, so TagRules runs
 	// whether the tags are there or not.
 	// The project tags' rollback guard is no requester (RequestersRollbackGuard): it is taken out
 	// before the list is read, and a tag that held it alone is no list.
@@ -560,6 +570,12 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 			return Secret{}, ReasonScopesMalformed, nil
 		}
 	}
+	if raw, tagged := ls.Tags[TagJudge]; tagged {
+		if s.Judge, err = ParseJudge(raw); err != nil {
+			return Secret{}, ReasonJudgeOutOfRange, nil
+		}
+	}
+	s.Guidance = ls.Tags[TagGuidance]
 	if reason := TagRules(TagSet{
 		Type:         s.Type(),
 		Owner:        s.Owner,
@@ -568,6 +584,7 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 		Scopes:       s.Scopes,
 		Admin:        s.Admin,
 		MaxGrant:     s.MaxGrant,
+		Guidance:     s.Guidance,
 		BoundAccount: l.ServiceAccounts[s.Name],
 	}); reason != "" {
 		return Secret{}, reason, nil

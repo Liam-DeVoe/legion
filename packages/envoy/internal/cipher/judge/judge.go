@@ -1,14 +1,14 @@
 // Package judge is the secrets broker's model judge: the background run that decides a pending
-// request for keys the airlock rules let it decide — every key that needs a decision has a judge
-// entry, and none carries an administrator's tag (requests.Machine.judgeDecides). A key the
+// request for keys whose tags let it decide — every key that needs a decision carries a judge tag
+// (policy.TagJudge), and none an administrator's tag (requests.Machine.judgeDecides). A key the
 // session gets at once may stand beside them; it needs no decision, so the judge decides nothing
 // of it and its grant releases it with the rest. The broker holds such a request for the judge
 // (requests.judge_until): it is on no person's list and no person may decide it while the run
 // lasts. The judge grants it or refuses it, and a refusal is final; a run that cannot decide
 // hands the request to its person, once.
 //
-// One run is one request. It makes six checks of its own before any model is asked — the rules
-// entry of every key it decides, the request's lifetime against each of those keys' judge
+// One run is one request. It makes six checks of its own before any model is asked — the judge
+// tag of every key it decides, the request's lifetime against each of those keys' judge
 // seconds, the tag policy re-read now (a key it decides must still need approval, and a key the
 // session got at once must still need none), whether a key has become an administrator's, what
 // the session has had withheld from it, and whether the request belongs to a private project —
@@ -42,7 +42,6 @@ import (
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
@@ -79,9 +78,9 @@ const runBudget = 35 * time.Second
 // behind it.
 const dispatchBound = requests.JudgeDispatchBound
 
-// maxJudgedLifetime is the longest grant lifetime the judge decides, whatever judge seconds a
-// rules entry allows: the bound of the class itself.
-const maxJudgedLifetime = 15 * time.Minute
+// maxJudgedLifetime is the longest grant lifetime the judge decides, whatever a key's judge tag
+// says: the bound of the class itself, which the policy load holds every judge tag to.
+const maxJudgedLifetime = policy.MaxJudgeSeconds * time.Second
 
 // notFound is the state an issue or an ask is shown to the model in when Dispatch holds none
 // under the key or id the reason gave.
@@ -91,8 +90,8 @@ const notFound = "not found"
 // a request.judged row calls them by, so a reader of the row and a reader of this package see
 // one set of words.
 //
-// They read from the request outwards: what the rules say of each key, what the request itself
-// asks for, what the policy answers for each key now, what each key is, what this session has had
+// They read from the request outwards: what each key's tags give the judge, what the request
+// itself asks for, what the policy answers for each key now, what each key is, what this session has had
 // taken back, and the project each key belongs to. checkAdmin sits directly after checkPolicy
 // because the two are one read of the machine per key (Requests.JudgePolicy): the policy's
 // outcome and the key's admin tag come back together. Two of them refuse the request for good when
@@ -101,7 +100,7 @@ const notFound = "not found"
 // last, before the reads of what the reason points at, so that a private project's request costs
 // no Dispatch read of its issue or its ask: the judge leaves every such request to a person.
 const (
-	checkRulesJudge = "rules-judge"
+	checkJudgeTag   = "judge-tag"
 	checkLifetime   = "lifetime"
 	checkPolicy     = "policy"
 	checkAdmin      = "admin"
@@ -191,9 +190,10 @@ type Requests interface {
 
 // Options are what a Runner judges with.
 type Options struct {
-	// Rules is the airlock rules as the broker last read them, which say which keys the judge
-	// may decide at all, for how long, and on what guidance.
-	Rules proxyrules.Rules
+	// Policy is the broker's live policy, whose tags say which keys the judge may decide at all,
+	// for how long, and on what guidance (policy.Set.JudgeSeconds, policy.Secret.Guidance). A run
+	// reads it once, so every check and the data it builds are of one snapshot.
+	Policy *policy.Current
 	// Dispatch is the read of what a request's reason points at, and Model the one model the
 	// run asks.
 	Dispatch Dispatch
@@ -291,8 +291,8 @@ func (r *Runner) stillPending(ctx context.Context, p requests.PendingRequest) st
 }
 
 // beforeTheModel makes the six checks, in order, then the reads of what the reason points at,
-// and builds the data the model would be shown. It stops at the first failure, so a request the
-// rules do not let the judge decide costs no Dispatch read and no model call. Under
+// and builds the data the model would be shown. It stops at the first failure, so a request whose
+// keys' tags do not let the judge decide it costs no Dispatch read and no model call. Under
 // Options.SkipChecks it makes every check all the same, recording each, so the negative control
 // shows the model a request a check would have stopped.
 func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) ([]check, Data) {
@@ -309,17 +309,21 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 		return ok || r.opts.SkipChecks
 	}
 
+	// The judge's own two checks and the data are read off one snapshot of the policy, so the
+	// seconds a check held the request to and the guidance the model is shown are the same tags.
 	// The model is shown the keys the judge decides and nothing of a key the session gets at
 	// once beside them, which no guidance is about.
+	set := r.opts.Policy.Get()
 	data := Data{Reason: p.Reason}
 	for _, name := range p.Decided {
-		data.Keys = append(data.Keys, KeyData{Name: name, Rules: r.opts.Rules.Lookup(name), Guidance: r.opts.Rules.Guidance(name)})
+		seconds, _ := set.JudgeSeconds(name)
+		data.Keys = append(data.Keys, KeyData{Name: name, JudgeSeconds: seconds, Guidance: set.Secrets[name].Guidance})
 	}
 
-	if ok, detail := r.rulesJudge(p); !add(checkRulesJudge, ok, detail, false) {
+	if ok, detail := judgeTags(set, p); !add(checkJudgeTag, ok, detail, false) {
 		return checks, data
 	}
-	if ok, detail := r.lifetimeAllowed(p); !add(checkLifetime, ok, detail, false) {
+	if ok, detail := lifetimeAllowed(set, p); !add(checkLifetime, ok, detail, false) {
 		return checks, data
 	}
 
@@ -417,16 +421,16 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 	return checks, data
 }
 
-// rulesJudge is the first check: every key the judge decides has a judge entry in the rules the
-// broker holds now. Create held the request for the judge on the rules it read then; a reload
-// since may have taken an entry away, and such a request is its person's to decide. A key the
-// session gets at once needs no decision, so no entry of it is asked for.
-func (r *Runner) rulesJudge(p requests.PendingRequest) (bool, string) {
+// judgeTags is the first check: every key the judge decides carries a judge tag in the policy the
+// broker holds now. Create held the request for the judge on the policy it read then; a retag
+// since may have taken the tag away, and such a request is its person's to decide. A key the
+// session gets at once needs no decision, so no tag of it is asked for.
+func judgeTags(set *policy.Set, p requests.PendingRequest) (bool, string) {
 	if len(p.Decided) == 0 {
 		return false, "the request names no key that needs a decision"
 	}
 	for _, name := range p.Decided {
-		if _, judged := r.opts.Rules.JudgeSeconds(name); !judged {
+		if _, judged := set.JudgeSeconds(name); !judged {
 			return false, decidesNothingFor(name)
 		}
 	}
@@ -436,8 +440,8 @@ func (r *Runner) rulesJudge(p requests.PendingRequest) (bool, string) {
 // lifetimeAllowed is the second check: the grant has a lifetime — the one the request signed,
 // else the broker's default, which for a judge key is its judge seconds — within the class's 15
 // minutes and within the judge seconds of every key the judge decides. Create refuses a request
-// that asks for longer, so a failure here is rules that moved under the request.
-func (r *Runner) lifetimeAllowed(p requests.PendingRequest) (bool, string) {
+// that asks for longer, so a failure here is a judge tag that moved under the request.
+func lifetimeAllowed(set *policy.Set, p requests.PendingRequest) (bool, string) {
 	switch {
 	case p.LifetimeSeconds == nil:
 		return false, "the request signed no lifetime, and the judge decides none that lasts as long as the session"
@@ -445,28 +449,28 @@ func (r *Runner) lifetimeAllowed(p requests.PendingRequest) (bool, string) {
 		return false, fmt.Sprintf("the request asks for %d seconds, past the %s the judge decides", *p.LifetimeSeconds, maxJudgedLifetime)
 	}
 	for _, name := range p.Decided {
-		seconds, judged := r.opts.Rules.JudgeSeconds(name)
+		seconds, judged := set.JudgeSeconds(name)
 		if !judged {
 			return false, decidesNothingFor(name)
 		}
 		if !record.JudgeAllowsLifetime(seconds, *p.LifetimeSeconds) {
-			return false, fmt.Sprintf("the request asks for %d seconds of %s, past the %d the rules let the judge decide", *p.LifetimeSeconds, name, seconds)
+			return false, fmt.Sprintf("the request asks for %d seconds of %s, past the %d its judge tag lets the judge decide", *p.LifetimeSeconds, name, seconds)
 		}
 	}
 	return true, ""
 }
 
-// decidesNothingFor is the sentence the first two checks write for a key the rules give the judge
-// nothing of.
+// decidesNothingFor is the sentence the first two checks write for a key whose tags give the
+// judge nothing of it.
 func decidesNothingFor(name string) string {
-	return fmt.Sprintf("the airlock rules let the judge decide nothing for %s", name)
+	return fmt.Sprintf("%s carries no judge tag, so the judge decides nothing of it", name)
 }
 
 // decidedByAPerson is the sentence the admin check writes, and the one a person reads in the
 // request.judged row of a request the judge handed over for naming a secret a person approves
 // every release of (policy.Secret.PersonApprovesEveryRelease). It says both halves of why: what
 // the key is, and that the promise is unconditional — every release of such a credential is
-// approved by a person, and no rules file that gives the judge seconds of the name can undo that
+// approved by a person, and no judge tag on the key can undo that
 // (policy.TagAdmin, the broker's concepts document).
 func decidedByAPerson(name string) string {
 	return fmt.Sprintf("%s is an administrator's secret or an Anthropic federation secret, and a person approves every release of one", name)

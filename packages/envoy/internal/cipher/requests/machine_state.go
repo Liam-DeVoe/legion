@@ -468,13 +468,15 @@ func limitOr(limit *ratelimit.Limit, fallback ratelimit.Limit) ratelimit.Limit {
 }
 
 // NewChainVerifier builds the record.ChainVerifier VerifyChain uses, scoped to agent_secret
-// records. rules are the airlock's, the ones the machine itself holds (Machine.Airlock): they
-// reach the verifier as record.ChainVerifier.JudgeSeconds, so a grant the model judge approved
-// re-verifies against the same bound the judge decided under. Zero rules give the judge nothing,
-// which refuses every such approval.
-func NewChainVerifier(st *store.Store, audience string, skew time.Duration, rules proxyrules.Rules) *record.ChainVerifier {
+// records. cur is the live policy, the one the machine itself holds (Machine.Policy): its judge
+// tags reach the verifier as record.ChainVerifier.JudgeSeconds, read at each verification, so a
+// grant the model judge approved re-verifies against the bound its keys' tags give the judge now.
+// A nil cur gives the judge nothing, which refuses every such approval.
+func NewChainVerifier(st *store.Store, audience string, skew time.Duration, cur *policy.Current) *record.ChainVerifier {
 	chain := st.ChainVerifier(record.KindAgentSecret, audience, skew)
-	chain.JudgeSeconds = rules.JudgeSeconds
+	if cur != nil {
+		chain.JudgeSeconds = func(name string) (uint32, bool) { return cur.Get().JudgeSeconds(name) }
+	}
 	// The keys of a judged record's request that needed a decision, off the request's own
 	// rows; every other key is one its session got at once, which the release's own re-check
 	// (stillAllowed) holds to the live policy.
@@ -799,10 +801,10 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 	// decides the request: a request naming no lifetime gets the shortest judge seconds of the
 	// keys the judge decides, and one that asks for longer is refused here, before anyone is
 	// asked, as a max-grant tag refuses it. A key the session gets at once beside them is no key
-	// the judge decides, so its own rules entry bounds nothing. The bound comes before the
+	// the judge decides, so its own judge tag bounds nothing. The bound comes before the
 	// max-grant tags, which then read the lifetime the judge would grant. Whether the judge will
 	// hold the request is read now off the same evaluation the transaction below makes; a request
-	// a person decides — a judge key beside a key with no judge entry, or any request on a broker
+	// a person decides — a judge key beside a key with no judge tag, or any request on a broker
 	// that runs no judge — keeps the ordinary lifetime rules.
 	// What Dispatch holds of the requested names' projects, read here on the pool, before the
 	// transaction below takes its locks, so no call to Dispatch holds one; a request holding no
@@ -1891,7 +1893,7 @@ func (m *Machine) ApplyDecision(ctx context.Context, recordID string, approve bo
 // an approval can commit and grant nothing (decider.judgedRow). The caller's own map is left
 // as it was.
 //
-// This is the judge's one approval. A record the airlock rules do not let it decide is refused
+// This is the judge's one approval. A record its keys' judge tags do not let it decide is refused
 // with record.ErrNotJudgeable and nothing is written; a record a person decided first, or one
 // that expired, comes back as ErrTerminal or ErrExpired, and one the judge no longer holds as
 // ErrJudgeHoldEnded, which are the ordinary answers for a judge that lost the race and no fault
@@ -1935,12 +1937,12 @@ func (m *Machine) DenyJudged(ctx context.Context, recordID, modelID string, judg
 	return m.applyDecision(ctx, recordID, false, who)
 }
 
-// judgeKey reports whether the model judge decides a request for name: the airlock rules give
-// the judge seconds of it, and it is no secret a person approves every release of — one tagged
-// admin, or an anthropic-federation secret (policy.Secret.PersonApprovesEveryRelease) — whatever
-// the rules say.
+// judgeKey reports whether the model judge decides a request for name, and for how long: its
+// judge tag gives the judge seconds of it (policy.Set.JudgeSeconds), and it is no secret a person
+// approves every release of — one tagged admin, or an anthropic-federation secret
+// (policy.Secret.PersonApprovesEveryRelease) — whatever the judge tag says.
 func (m *Machine) judgeKey(set *policy.Set, name string) (uint32, bool) {
-	seconds, judged := m.Airlock.JudgeSeconds(name)
+	seconds, judged := set.JudgeSeconds(name)
 	if !judged || set.Secrets[name].PersonApprovesEveryRelease() {
 		return 0, false
 	}
@@ -2503,7 +2505,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		if err := verifyObject(); err != nil {
 			return Decision{}, false, err
 		}
-		// The judge's grant is held to the rules' bound on what a judge decides; its refusal
+		// The judge's grant is held to the bound its keys' judge tags give it; its refusal
 		// is not, since a refusal grants nothing. Whether it may write at all is the hold's,
 		// read below once the request's own state has been.
 		if approve {
@@ -2514,7 +2516,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 			if err != nil {
 				return Decision{}, false, err
 			}
-			if err := record.MayJudge(parsed, obj, m.Airlock.JudgeSeconds, neededADecision(requested)); err != nil {
+			if err := record.MayJudge(parsed, obj, set.JudgeSeconds, neededADecision(requested)); err != nil {
 				return Decision{}, false, fmt.Errorf("judge record %s: %w", recordID, err)
 			}
 		}
@@ -2557,7 +2559,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// denial before the policy is read, naming the request's first name, so it writes no grant
 	// whatever its names: currentPolicyAdmits passes over a name the policy no longer serves, so a
 	// request whose every name left the policy has no name for Evaluate to deny, and would
-	// otherwise be granted. currentPolicyAdmits still runs, so its refusals (the judge's own rules,
+	// otherwise be granted. currentPolicyAdmits still runs, so its refusals (the judge's own two,
 	// a withheld name no one may approve now) leave the request pending as they always did, and a
 	// name it denies is the one the denial names.
 	var denied *policyDenial
@@ -2802,12 +2804,11 @@ const PolicyDeniedActor = "broker:policy"
 //
 // A withheld name is hard to reach, since only names granted automatically are withheld and the
 // name must have changed tier while the request waited. An admin secret is easier: its owner
-// adds the tag while the model is answering, or a deployment writes a judge entry for a name
-// that already carries it, and the judge's own check — made against the policy snapshot of a
-// moment ago — would be the only thing refusing a credential whose tag promises that a person
-// approves every release of it (policy.TagAdmin). That promise is the secret's and not the rules
-// file's to make, so the author of the rules file cannot undo it here either. Both are one
-// comparison to close.
+// adds the tag while the model is answering, or someone writes a judge tag on a secret that
+// already carries it, and the judge's own check — made against the policy snapshot of a moment
+// ago — would be the only thing refusing a credential whose tag promises that a person approves
+// every release of it (policy.TagAdmin). That promise outranks the judge tag, so no judge tag
+// undoes it here either. Both are one comparison to close.
 //
 // A person's path never reaches either guard: a withheld name a person may approve is still
 // theirs to approve, and an admin secret is approved by the person its owner tag names, both on

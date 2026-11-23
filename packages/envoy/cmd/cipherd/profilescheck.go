@@ -7,7 +7,6 @@ import (
 	"io"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -53,9 +52,10 @@ const removedAirlockCheckCommand = "airlock-check"
 // field as old → new, and a block added or removed whole. Every field is in the report because each
 // decides what a credential may reach or who may have it: its source, tier, requesters and
 // maxGrant; its accounts, repositories, permissions and value; its scopes; and where it may go,
-// the proxy's hosts, headers, the methods and paths it may travel on (allow), the sort of
-// credential (kind) and the longest grant a judge may give (judge), with the guidance the judge
-// reads. What is left for the reviewer is whether each is right for its source.
+// the proxy's hosts, headers, the methods and paths it may travel on (allow) and the sort of
+// credential (kind). What is left for the reviewer is whether each is right for its source. Who
+// decides a request for a credential is no field of the file: a proxy block that sets judge or
+// guidance is refused, naming the source key's tag that took its place.
 //
 // On a file it would not serve it exits 1 with one line on stderr naming the file and what the
 // refusal says: the profile and the field, or the parse position for a file that is not JSON. A
@@ -63,8 +63,9 @@ const removedAirlockCheckCommand = "airlock-check"
 // nothing: the file and the --against file are all it reads.
 //
 // The --against file is decoded and never held to the file's rules (policy.DecodeProfiles): the
-// profiles in force may be a file this broker would refuse, and what changed is the point of the
-// report, which would otherwise also refuse the pull request that fixes that file.
+// profiles in force may be a file this broker would refuse, one whose proxy blocks still set judge
+// and guidance among them, and what changed is the point of the report, which would otherwise also
+// refuse the pull request that fixes that file.
 func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("broker "+profilesCheckName, flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -213,8 +214,6 @@ func reportOf(p *policy.Profile) profileReport {
 			listField("proxy.headers", proxyrules.SecretRule{Headers: b.Headers}.HeaderNames()),
 			textField("proxy.allow", allowText(b.Allow)),
 			textField("proxy.kind", shown(b.Kind)),
-			textField("proxy.judge", judgeText(b.Judge)),
-			textField("proxy.guidance", strconv.Quote(b.Guidance)),
 		}
 	}
 	report.blocks = []reportBlock{github, google, proxy}
@@ -370,15 +369,6 @@ func allowText(allow []proxyrules.Allow) string {
 		rows[i] = shown(a.Method) + " " + shown(a.PathPrefix)
 	}
 	return strings.Join(rows, ", ")
-}
-
-// judgeText reads a proxy block's judge lifetime as a line of the report. No judge at all and a
-// judge of zero seconds are different answers, so the empty one is a word and not a blank.
-func judgeText(judge *uint32) string {
-	if judge == nil {
-		return noneWord
-	}
-	return fmt.Sprintf("%d seconds", *judge)
 }
 
 // shown writes an empty field as a pair of quotes, so that a line of the report never ends in a

@@ -20,8 +20,9 @@ import (
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 )
 
@@ -44,18 +45,19 @@ const (
 	testAnswerText    = "Yes, on this issue's own runs."
 )
 
-// testRules give the judge 900 seconds of testSecret and 300 of shortJudgeSecret, each with its
-// guidance, and nothing of any other name. Each entry binds a host, as every proxy block does.
-func testRules() proxyrules.Rules {
-	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: testSecret, Hosts: []string{"api.deel.example"}, Judge: new(uint32(900)), Guidance: testGuidance},
-		{Name: shortJudgeSecret, Hosts: []string{"release.example"}, Judge: new(uint32(shortJudgeSeconds)), Guidance: shortGuidance},
-		{Name: "NO_JUDGE_KEY", Hosts: []string{"other.example"}},
-	}}
+// testPolicy is a live policy whose tags give the judge 900 seconds of testSecret and 300 of
+// shortJudgeSecret, each with its guidance, and nothing of NO_JUDGE_KEY or any other name.
+func testPolicy(t *testing.T) *policy.Current {
+	t.Helper()
+	return policytest.Current(t, secrets.NewLocal(
+		policytest.Judged(policytest.Secret(testSecret, testApprover, policy.TierHuman, "v"), 900, testGuidance),
+		policytest.Judged(policytest.Secret(shortJudgeSecret, testApprover, policy.TierHuman, "v"), shortJudgeSeconds, shortGuidance),
+		policytest.Secret("NO_JUDGE_KEY", testApprover, policy.TierHuman, "v"),
+	))
 }
 
 // agentKey is a key the requesting session gets at once, which a request names beside a judge
-// key: it needs no decision, the judge decides nothing of it, and the rules give it no entry.
+// key: it needs no decision, the judge decides nothing of it, and it carries no judge tag.
 const agentKey = "AGENT_KEY"
 
 // pending is a request the judge holds: one judge key, which is the key it decides, a signed
@@ -603,11 +605,12 @@ func tokenFile(t *testing.T, token string) string {
 	return path
 }
 
-// testOptions judges with the three stand-ins, under the rules that give the judge testSecret.
+// testOptions judges with the three stand-ins, under the policy whose tags give the judge
+// testSecret.
 func testOptions(t *testing.T, d *dispatchStandIn, m *modelStandIn, r *fakeRequests) Options {
 	t.Helper()
 	return Options{
-		Rules:    testRules(),
+		Policy:   testPolicy(t),
 		Dispatch: Dispatch{BaseURL: d.server.URL, Account: ciphertoken.NewAccountToken(tokenFile(t, "projected-token")), HTTP: d.server.Client()},
 		Model: Model{
 			ID: testModel,

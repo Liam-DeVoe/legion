@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -51,14 +52,14 @@ func TestTheChecksBeforeTheModel(t *testing.T) {
 		dispatch      func(*dispatchStandIn)
 	}{
 		{
-			name: "a key the rules give the judge nothing of", want: checkRulesJudge,
-			wantDetail: "decide nothing for NO_JUDGE_KEY",
+			name: "a key whose tags give the judge nothing of it", want: checkJudgeTag,
+			wantDetail: "NO_JUDGE_KEY carries no judge tag",
 			request: func(p *requests.PendingRequest) {
 				p.Secrets, p.Decided = []string{"NO_JUDGE_KEY"}, []string{"NO_JUDGE_KEY"}
 			},
 		},
 		{
-			name: "a judge key beside a key the rules give the judge nothing of", want: checkRulesJudge,
+			name: "a judge key beside a key whose tags give the judge nothing of it", want: checkJudgeTag,
 			request: func(p *requests.PendingRequest) {
 				p.Secrets, p.Decided = []string{testSecret, "NO_JUDGE_KEY"}, []string{testSecret, "NO_JUDGE_KEY"}
 			},
@@ -277,9 +278,9 @@ func TestAModelThatGivesNoVerdictHandsTheRequestOver(t *testing.T) {
 
 // TestTheModelReadsEachKeysGuidanceAndWhatTheReasonPointsAt: the whole of what the model is shown,
 // for a request for two judge keys whose reason names an issue and cites an ask: each key with its
-// rules entry and its guidance, the signed reason, the issue with the extract of its spec, and the
-// ask with its question and the answer and who gave it. A reason that points at nothing costs no
-// Dispatch read and shows no issue and no ask.
+// judge seconds and its guidance, read off its tags, the signed reason, the issue with the extract
+// of its spec, and the ask with its question and the answer and who gave it. A reason that points
+// at nothing costs no Dispatch read and shows no issue and no ask.
 func TestTheModelReadsEachKeysGuidanceAndWhatTheReasonPointsAt(t *testing.T) {
 	t.Run("a reason naming an issue and citing an ask", func(t *testing.T) {
 		dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
@@ -288,12 +289,12 @@ func TestTheModelReadsEachKeysGuidanceAndWhatTheReasonPointsAt(t *testing.T) {
 		New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), request)
 
 		data := model.data(t)
-		if len(data.Keys) != 2 || data.Keys[0].Name != testSecret || data.Keys[0].Guidance != testGuidance ||
-			data.Keys[1].Name != shortJudgeSecret || data.Keys[1].Guidance != shortGuidance {
-			t.Errorf("the keys in front of the model are %+v; want both, each with its own guidance", data.Keys)
+		want := []KeyData{
+			{Name: testSecret, JudgeSeconds: 900, Guidance: testGuidance},
+			{Name: shortJudgeSecret, JudgeSeconds: shortJudgeSeconds, Guidance: shortGuidance},
 		}
-		if data.Keys[0].Rules == nil || data.Keys[0].Rules.Judge == nil || *data.Keys[0].Rules.Judge != 900 {
-			t.Errorf("the first key's rules entry is %+v; want its own entry with its judge seconds", data.Keys[0].Rules)
+		if !slices.Equal(data.Keys, want) {
+			t.Errorf("the keys in front of the model are %+v; want %+v, each with its own tags' seconds and guidance", data.Keys, want)
 		}
 		if data.Reason != request.Reason {
 			t.Errorf("the data's reason is %q; want the request's signed reason", data.Reason)

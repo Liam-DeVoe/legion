@@ -39,14 +39,14 @@ type settingsResponse struct {
 	// With gcp-secret-manager, the number of the project every agent secret is in, the one the
 	// prefix names; absent otherwise.
 	GCPProject string `json:"gcp_project,omitempty"`
-	// JudgeKeys is each key the airlock rules give the model judge, by name, with its judge
-	// seconds and the guidance the judge decides it on — the rules file's own words, never a
-	// value — and absent where the rules give the judge nothing. It is what `agent-secrets secret
-	// show` reads to say who decides a request for a key and what the judge will look for, so an
-	// agent can meet the guidance on its first request. It is the rules' answer and the same on
-	// every broker with the same rules; one that runs no judge sends such a request to its
-	// person. An administrator's key is named here when the rules give it seconds, and its
-	// person decides it all the same; `secret show` reads its tag.
+	// JudgeKeys is each key the broker serves whose judge tag gives the model judge seconds of it
+	// (policy.TagJudge), by name, with those seconds and the guidance the judge decides it on — the
+	// key's own guidance tag, never a value — and absent where no key carries one. It is what
+	// `agent-secrets secret show` reads to say who decides a request for a key and what the judge
+	// will look for, so an agent can meet the guidance on its first request. It is the live
+	// policy's answer; a broker that runs no judge sends such a request to its person. An
+	// administrator's key is named here when its judge tag gives it seconds, and its person
+	// decides it all the same; `secret show` reads its tag.
 	JudgeKeys map[string]judgeKey `json:"judge_keys,omitempty"`
 	// The audience a machine's Google identity token must carry at the token exchange
 	// (BROKER_GOOGLE_OIDC_AUDIENCE), on either store; absent where no machine can trade one, which
@@ -66,7 +66,7 @@ type settingsResponse struct {
 type judgeKey struct {
 	// Seconds is the longest grant the judge makes of the key, its default lifetime too.
 	Seconds int64 `json:"seconds"`
-	// Guidance is the key owner's instruction to the judge, "" for an entry that gives none.
+	// Guidance is the key owner's instruction to the judge, "" for a key that carries none.
 	Guidance string `json:"guidance,omitempty"`
 }
 
@@ -87,14 +87,17 @@ func (s *server) readSettings(w http.ResponseWriter, r *http.Request) {
 		resp.KMSKeyARN = s.deps.SecretsKMSKey
 		resp.AWSRegion, resp.AWSAccountID = secrets.AWSKeyARNParts(s.deps.SecretsKMSKey)
 	}
-	if m := s.deps.Machine; m != nil {
-		for _, rule := range m.Airlock.Secrets {
-			if rule.Judge != nil {
-				if resp.JudgeKeys == nil {
-					resp.JudgeKeys = map[string]judgeKey{}
-				}
-				resp.JudgeKeys[rule.Name] = judgeKey{Seconds: int64(*rule.Judge), Guidance: rule.Guidance}
+	if m := s.deps.Machine; m != nil && m.Policy != nil {
+		set := m.Policy.Get()
+		for name, secret := range set.Secrets {
+			seconds, judged := set.JudgeSeconds(name)
+			if !judged {
+				continue
 			}
+			if resp.JudgeKeys == nil {
+				resp.JudgeKeys = map[string]judgeKey{}
+			}
+			resp.JudgeKeys[name] = judgeKey{Seconds: int64(seconds), Guidance: secret.Guidance}
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)

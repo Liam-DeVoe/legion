@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -79,16 +78,32 @@ type GoogleBlock struct {
 
 // ProxyBlock is where a profile's credential may go: the fields of an airlock rules entry, with
 // their meanings there (proxyrules.SecretRule), under the profile's name. A profile with one is
-// behind the proxy (ProxyRules).
+// behind the proxy (ProxyRules). Who decides a request for the credential is no part of it: that
+// is the source key's own judge and guidance tags (TagJudge, TagGuidance).
 type ProxyBlock struct {
 	Hosts   []string           `json:"hosts"`
 	Headers []string           `json:"headers"` // nil: the default ["authorization"]; empty: no header
 	Allow   []proxyrules.Allow `json:"allow"`   // nil: any method and path; empty: nothing allowed
 	Kind    string             `json:"kind"`    // "", "aws" or "azure"
-	Judge   *uint32            `json:"judge"`   // the judge's longest lifetime, in seconds
-	// Guidance is what the model judge reads when it decides a request for the profile. It is
-	// no part of Digest's fingerprint.
-	Guidance string `json:"guidance,omitempty"`
+}
+
+// proxyEntry is a proxy block as the file writes it: the block, and the judge and guidance a block
+// held before they became the source key's own tags (TagJudge, TagGuidance). The two are read
+// only so that ParseProfiles refuses a file that still sets either, naming the tag that replaced
+// it, rather than as a field it does not know, and so that DecodeProfiles reads a file in force
+// written before the move, without them.
+type proxyEntry struct {
+	ProxyBlock
+	Judge    json.RawMessage `json:"judge"`
+	Guidance json.RawMessage `json:"guidance"`
+}
+
+// block is the proxy block of e, nil for none.
+func (e *proxyEntry) block() *ProxyBlock {
+	if e == nil {
+		return nil
+	}
+	return &e.ProxyBlock
 }
 
 // profileEntry is one profile as the file writes it, which Profile is but for maxGrant: a Go
@@ -101,14 +116,8 @@ type profileEntry struct {
 	MaxGrant   string       `json:"maxGrant"`
 	GitHub     *GitHubBlock `json:"github"`
 	Google     *GoogleBlock `json:"google"`
-	Proxy      *ProxyBlock  `json:"proxy"`
+	Proxy      *proxyEntry  `json:"proxy"`
 }
-
-// maxGuidanceRunes is the longest guidance a proxy block may give the judge. The judge shows the
-// whole text to its model beside the request's reason and what Dispatch holds of it, all within
-// one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
-// at the boot and in `profiles check`, where its author reads why.
-const maxGuidanceRunes = 2000
 
 // ParseProfiles reads a profiles file and refuses one the broker would not serve. It decodes the
 // file strictly (decodeProfiles: a field the broker does not know, and anything after the file's
@@ -120,8 +129,8 @@ const maxGuidanceRunes = 2000
 // names any, one of each account at least, and permissions at levels GitHub gives, metadata at read
 // among them; a google block of scope names; never both; and a proxy block whose hosts are in the
 // one grammar a rules host is written in (rulehost.Refusal), which proxyrules.Validate, the Lean
-// model's answer, accepts, and whose guidance the judge reads whole. Each refusal names the
-// profile by its index and name and the field it refuses.
+// model's answer, accepts, and which sets no judge and no guidance, the source key's own tags.
+// Each refusal names the profile by its index and name and the field it refuses.
 //
 // It reads no secret: whether a profile fits its source, and is no looser than it, is the policy
 // load's question. Nor does it read the deployment's services: CheckRequesters does, at the boot.
@@ -149,9 +158,10 @@ func ParseProfiles(data []byte) (Profiles, error) {
 // DecodeProfiles reads a profiles file as ParseProfiles does, into the same form, and holds it to
 // none of the file's shape rules. It exists for `profiles check --against`, which reports what a
 // change does to the file in force: that file may be one a stricter rule of this broker refuses,
-// and a report that refused it would also refuse the pull request that fixes it. It still refuses
-// a file that is not JSON or holds a field the broker does not know, and a maxGrant that is no
-// duration, since such a file has no profiles to compare.
+// and a report that refused it would also refuse the pull request that fixes it. So it reads a
+// proxy block's judge and guidance, which a file written before they became the source key's tags
+// still sets, and drops them. It still refuses a file that is not JSON or holds a field the broker
+// does not know, and a maxGrant that is no duration, since such a file has no profiles to compare.
 func DecodeProfiles(data []byte) (Profiles, error) {
 	entries, err := decodeProfiles(data)
 	if err != nil {
@@ -173,7 +183,7 @@ func readProfiles(entries []profileEntry) (Profiles, error) {
 			Requesters: sortedOnce(e.Requesters),
 			GitHub:     e.GitHub.read(),
 			Google:     e.Google.read(),
-			Proxy:      e.Proxy,
+			Proxy:      e.Proxy.block(),
 		}
 		if e.MaxGrant != "" {
 			maxGrant, err := ParseMaxGrant(e.MaxGrant)
@@ -300,7 +310,26 @@ func (e profileEntry) check(i int, seen map[string]int) error {
 	if err := e.Google.check(refuse); err != nil {
 		return err
 	}
-	return e.Proxy.check(e.Name, refuse)
+	if err := e.Proxy.judgeFields(cmp.Or(e.Source, e.Name), refuse); err != nil {
+		return err
+	}
+	return e.Proxy.block().check(e.Name, refuse)
+}
+
+// judgeFields refuses a proxy block that still sets judge or guidance, a JSON null among them,
+// naming the tag of source, the stored secret the profile is made from, that took its place: a
+// profile's requests are decided as its source's are (Profiles.serve), so the tag goes on the
+// source.
+func (e *proxyEntry) judgeFields(source string, refuse func(field, why string) error) error {
+	switch {
+	case e == nil:
+		return nil
+	case e.Judge != nil:
+		return refuse("proxy.judge", fmt.Sprintf("is no field of a proxy block: a key's judge seconds are its own %s tag, so tag the source, %s (agent-secrets secret retag %s --judge <seconds>)", TagJudge, source, source))
+	case e.Guidance != nil:
+		return refuse("proxy.guidance", fmt.Sprintf("is no field of a proxy block: a key's guidance is its own %s tag, so tag the source, %s (agent-secrets secret retag %s --guidance '<text>')", TagGuidance, source, source))
+	}
+	return nil
 }
 
 // checkRequesters holds the requesters list to a requesters tag's shape (ParseRequesterShapes),
@@ -445,10 +474,9 @@ func (b *GoogleBlock) check(refuse func(field, why string) error) error {
 // check holds a proxy block to what the airlock serves, in the order the boot always has: a
 // block names at least one host, since a block binds its credential to the hosts it names; then
 // each host in the one grammar a rules host is written in (rulehost.Refusal), whose refusal names
-// the host's reason and repeats no text of it but the form to write; then proxyrules.Validate's
-// answer for the block as the entry ProxyRules makes of it, which is the Lean model's (a judge
-// above 900 seconds, a kind other than "", aws or azure); and last the guidance's length, this
-// program's own rule and not the model's. The grammar serves a host only where Validate's
+// the host's reason and repeats no text of it but the form to write; and last proxyrules.Validate's
+// answer for the block as the entry ProxyRules makes of it, which is the Lean model's (a kind
+// other than "", aws or azure). The grammar serves a host only where Validate's
 // proxyrules.HostShapeOK accepts it, so Validate refuses no host here.
 func (b *ProxyBlock) check(name string, refuse func(field, why string) error) error {
 	if b == nil {
@@ -467,15 +495,12 @@ func (b *ProxyBlock) check(name string, refuse func(field, why string) error) er
 		// The profile is named already, so its words follow the field's.
 		return refuse("proxy", strings.TrimPrefix(err.Error(), fmt.Sprintf("secrets[0] %q: ", name)))
 	}
-	if n := utf8.RuneCountInString(b.Guidance); n > maxGuidanceRunes {
-		return refuse("proxy.guidance", fmt.Sprintf("is %d characters, longer than the %d the judge is shown", n, maxGuidanceRunes))
-	}
 	return nil
 }
 
 // rule is the airlock rules entry of this block under the profile's name.
 func (b *ProxyBlock) rule(name string) proxyrules.SecretRule {
-	return proxyrules.SecretRule{Name: name, Hosts: b.Hosts, Headers: b.Headers, Allow: b.Allow, Kind: b.Kind, Judge: b.Judge, Guidance: b.Guidance}
+	return proxyrules.SecretRule{Name: name, Hosts: b.Hosts, Headers: b.Headers, Allow: b.Allow, Kind: b.Kind}
 }
 
 // CheckRequesters reads each profile's requesters against the deployment's registered services
@@ -551,11 +576,9 @@ func (p Profiles) ProxyRules() proxyrules.Rules {
 
 // Digest is the fingerprint of one profile, "" when p holds none of that name. It is the SHA-256,
 // in hex, of the profile's JSON as encoding/json marshals a Profile, in the form ParseProfiles
-// answers it, with its proxy block's guidance left out: two spellings of one profile fingerprint
-// alike, and every field that decides what a grant of it may do is in the fingerprint. The broker
-// folds it into its policy version, so an edit of a profile's entry ends that profile's grants and
-// no others. Guidance is left out because it tells the judge how to decide requests to come and
-// changes nothing a live grant may do, so writing it ends no grant.
+// answers it (digestOf): two spellings of one profile fingerprint alike, and every field that
+// decides what a grant of it may do is in the fingerprint. The broker folds it into its policy
+// version, so an edit of a profile's entry ends that profile's grants and no others.
 func (p Profiles) Digest(name string) string {
 	if i, held := p.index[name]; held {
 		return p.digests[i]
@@ -563,16 +586,30 @@ func (p Profiles) Digest(name string) string {
 	return ""
 }
 
-// digestOf is Digest's fingerprint of profile.
+// digestOf is Digest's fingerprint of profile. Its proxy block is marshalled with "judge": null
+// after the block's own fields, the bytes every block wrote while it held the judge's seconds, a
+// block with no judge among them, and that is every block a broker of this release reads: each
+// request records the digest of the profile it was decided under (request_secrets.airlock_digest),
+// and a release ends a grant whose profile's digest moved, so a fingerprint that moved with the
+// field's removal would end every live grant of a proxied profile at the first broker without it
+// (TestAProfilesDigestIsTheOneItHadWhileTheBlockHeldAJudge).
 func digestOf(profile Profile) string {
-	if profile.Proxy != nil {
-		block := *profile.Proxy
-		block.Guidance = ""
-		profile.Proxy = &block
+	type digestProxy struct {
+		ProxyBlock
+		Judge *uint32 `json:"judge"`
 	}
-	// Marshal cannot fail for a Profile: every field is a string, a duration, a slice or map of
-	// strings, a slice of proxyrules.Allow, a *uint32 or a pointer to a struct of those.
-	encoded, _ := json.Marshal(profile)
+	// Proxy, at the top level, takes the place of the Profile's own: encoding/json writes the
+	// shallower field and keeps the field order, so the block is still the last field written.
+	form := struct {
+		Profile
+		Proxy *digestProxy `json:"proxy,omitempty"`
+	}{Profile: profile}
+	if profile.Proxy != nil {
+		form.Proxy = &digestProxy{ProxyBlock: *profile.Proxy}
+	}
+	// Marshal cannot fail for this form: every field is a string, a duration, a slice or map of
+	// strings, a slice of proxyrules.Allow, a nil *uint32 or a pointer to a struct of those.
+	encoded, _ := json.Marshal(form)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
 }

@@ -213,7 +213,6 @@ var (
 	// kindPool holds the three kinds Validate takes, a wrong one, and a right one in the
 	// wrong case, so validate's kind refusal is reached from both sides of the comparison.
 	kindPool   = []string{"", "aws", "azure", "gcp", "AWS"}
-	judgePool  = []uint32{0, 300, 900, 901, 65535}
 	piecePool  = []string{"user", "token ", " ", "\t", "x"}
 	schemePool = []string{"Basic ", "basic ", "BASIC ", "Basic  ", "Basic\t", "Basi "}
 	tailPool   = []string{"\v", " ", "\t", "\n", "\u00a0", "\u0085"}
@@ -313,14 +312,6 @@ func genCase(data []byte) wireCase {
 				sr.Allow = append(sr.Allow, Allow{Method: s.pick(methodPool), PathPrefix: s.pick(prefixPool)})
 			}
 		}
-		switch s.u8() % 6 {
-		case 1, 2:
-			j := judgePool[int(s.u8())%len(judgePool)]
-			sr.Judge = &j
-		case 3:
-			j := uint32(s.u8())<<8 | uint32(s.u8())
-			sr.Judge = &j
-		}
 		rules.Secrets = append(rules.Secrets, sr)
 	}
 	g := Grant{Secret: s.pick(namePool), Placeholder: s.pick(phPool)}
@@ -390,21 +381,15 @@ func FuzzAirlock(f *testing.F) {
 
 // TestTheModelRefusesAHostlessEntry: a rules file whose entry binds no host is refused on both
 // sides, since an entry is a proxy block and every proxy block names a host (theorem T4 of the
-// model). The entry carries a judge and guidance, so this case also puts guidance on the wire to
-// the model, which the generator never writes and whose derived FromJson must read past it. A
-// proxy request for the entry is still refused as a secret not behind the airlock, on both sides.
-// It needs the model, as TestModelAgreesOnHostShapes does, so scripts/database-skips.sh expects
-// its skip and the airlock-lean job's seed step runs it by name.
+// model). A proxy request for the entry is still refused as a secret not behind the airlock, on
+// both sides. It needs the model, as TestModelAgreesOnHostShapes does, so scripts/database-skips.sh
+// expects its skip and the airlock-lean job's seed step runs it by name.
 func TestTheModelRefusesAHostlessEntry(t *testing.T) {
 	if modelPath() == "" {
 		t.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
 	}
-	judge := uint32(600)
 	c := wireCase{
-		Rules: Rules{Secrets: []SecretRule{{
-			Name: "HOSTLESS", Hosts: []string{}, Judge: &judge,
-			Guidance: "grant only for the release job named in the reason",
-		}}},
+		Rules: Rules{Secrets: []SecretRule{{Name: "HOSTLESS", Hosts: []string{}}}},
 		Grant: Grant{Secret: "HOSTLESS", Placeholder: "PH"},
 		Value: "the-value-not-a-secret",
 		Request: &Request{

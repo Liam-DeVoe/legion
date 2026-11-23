@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,6 +45,16 @@ func Secret(name, owner, tier, value string) secrets.LocalSecret {
 		Tags:     map[string]string{policy.TagOwner: owner, policy.TagTier: tier},
 		Value:    value,
 	}
+}
+
+// Judged is s with a judge tag of seconds (policy.TagJudge), which makes it a key the model judge
+// decides for that long, and a guidance tag of guidance (policy.TagGuidance) unless guidance is "".
+func Judged(s secrets.LocalSecret, seconds int, guidance string) secrets.LocalSecret {
+	s.Tags[policy.TagJudge] = strconv.Itoa(seconds)
+	if guidance != "" {
+		s.Tags[policy.TagGuidance] = guidance
+	}
+	return s
 }
 
 // FixtureGitHubOwners is the github-owners tag TypeSecret gives a github-app secret, in the

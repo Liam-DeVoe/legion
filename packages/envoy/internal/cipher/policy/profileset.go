@@ -127,7 +127,8 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 	// name, and no profile field can change them: a profile never widens what its source
 	// allows, so every reader of a served Secret's project — Evaluate, the release, the airlock,
 	// the judge and the person rule — holds a profile to its source's project, and the profile's
-	// line in Version moves when the source is tagged.
+	// line in Version moves when the source is tagged. So are its judge and guidance tags, which
+	// say who decides a request for the source's credential, under whichever name it is asked for.
 	secret := Secret{
 		Name:            profile.Name,
 		Source:          source.Source,
@@ -141,6 +142,8 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 		Project:         source.Project,
 		ProjectChannels: source.ProjectChannels,
 		Admin:           source.Admin,
+		Judge:           source.Judge,
+		Guidance:        source.Guidance,
 		SessionDefault:  source.SessionDefault,
 		ProfileDigest:   p.digests[i],
 		Profile:         profile,
@@ -167,6 +170,7 @@ func (p Profiles) serve(i int, set *Set, prefix string) (Secret, Refusal) {
 		Scopes:     secret.Scopes,
 		Admin:      secret.Admin,
 		MaxGrant:   secret.MaxGrant,
+		Guidance:   secret.Guidance,
 	}); reason != "" {
 		return refuse(reason, "the tag rules refuse the profile's tags, its own over its source's")
 	}

@@ -32,29 +32,16 @@ type Allow struct {
 	PathPrefix string `json:"pathPrefix"`
 }
 
-// SecretRule is one secret's entry: where its value may go and in which headers, and who decides
-// a request for it. An entry is a proxy block, so it binds its value to at least one host:
-// Validate refuses an entry that names none.
+// SecretRule is one secret's entry: where its value may go and in which headers. An entry is a
+// proxy block, so it binds its value to at least one host: Validate refuses an entry that names
+// none. Who decides a request for the secret is no part of it: that is the key's own judge tag
+// (policy.TagJudge).
 type SecretRule struct {
 	Name    string   `json:"name"`
 	Hosts   []string `json:"hosts"`
 	Headers []string `json:"headers"` // nil: the default ["authorization"]; empty: no header
 	Allow   []Allow  `json:"allow"`   // nil: any method and path; empty: nothing allowed
 	Kind    string   `json:"kind"`    // "", "aws" or "azure"
-	Judge   *uint32  `json:"judge"`   // the judge's longest lifetime, in seconds
-	// Guidance is what the model judge reads, as the key owner's instruction, when it decides a
-	// request for this key: when to grant it. It is no part of the Lean model, which decides
-	// nothing a request for the key may become, and no part of Digest's fingerprint.
-	Guidance string `json:"guidance,omitempty"`
-}
-
-// Guidance is the judge's guidance for this name, "" when the file names no such secret or its
-// entry carries none.
-func (r Rules) Guidance(name string) string {
-	if s := r.Lookup(name); s != nil {
-		return s.Guidance
-	}
-	return ""
 }
 
 // HeaderNames is the headers this entry's value travels in: the entry's own list, or the one
@@ -112,25 +99,20 @@ type Request struct {
 	Body        string      `json:"body"`
 }
 
-// maxJudgeSeconds is the longest lifetime a judge entry may ask for.
-const maxJudgeSeconds = 900
-
 // Validate reports why the file is not valid, naming the entry by its secret name and its
-// index. It reads the entries in order and reports the first failure: a repeated name, a judge
-// above 900 seconds, a kind other than "", "aws" or "azure", an entry that names no host, or a
-// host that binds the secret nowhere (HostShapeOK). An entry is a proxy block, and one that binds
-// its value to no host would hold the value back and carry it nowhere, so it is refused here
-// (theorem T4 of the model) rather than left to Decide, which still refuses every proxy request
-// for one ("secret not behind airlock"). Whether it answers nil is the same answer as the Lean
-// model's validate, so a new refusal here is a new refusal there.
+// index. It reads the entries in order and reports the first failure: a repeated name, a kind
+// other than "", "aws" or "azure", an entry that names no host, or a host that binds the secret
+// nowhere (HostShapeOK). An entry is a proxy block, and one that binds its value to no host would
+// hold the value back and carry it nowhere, so it is refused here (theorem T4 of the model)
+// rather than left to Decide, which still refuses every proxy request for one ("secret not
+// behind airlock"). Whether it answers nil is the same answer as the Lean model's validate, so a
+// new refusal here is a new refusal there.
 func Validate(rules Rules) error {
 	seen := make(map[string]bool, len(rules.Secrets))
 	for i, s := range rules.Secrets {
 		switch {
 		case seen[s.Name]:
 			return fmt.Errorf("%s: the name is repeated", entry(i, s))
-		case s.Judge != nil && *s.Judge > maxJudgeSeconds:
-			return fmt.Errorf("%s: judge %d is above %d seconds", entry(i, s), *s.Judge, maxJudgeSeconds)
 		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
 			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
 		case len(s.Hosts) == 0:
@@ -164,22 +146,6 @@ func (r Rules) Lookup(name string) *SecretRule {
 		}
 	}
 	return nil
-}
-
-// JudgeSeconds is the longest lifetime the file lets the judge decide for this secret, and
-// whether it lets it decide at all: (0, false) when the file names no such secret, and when the
-// entry it names has no "judge". Every reader of the bound goes through it, so no caller holds
-// a *SecretRule of its own and decides for itself what a nil Judge means.
-//
-// It is no new rule: Validate refuses a file whose entry asks for more than maxJudgeSeconds, and
-// the Lean model's judgeOK and theorem T3 are that same bound proved, so what this answers for a
-// valid file is at most 900 seconds.
-func (r Rules) JudgeSeconds(name string) (uint32, bool) {
-	s := r.Lookup(name)
-	if s == nil || s.Judge == nil {
-		return 0, false
-	}
-	return *s.Judge, true
 }
 
 // HostBound reports whether host matches one of hosts: the same name, or a "*.suffix"

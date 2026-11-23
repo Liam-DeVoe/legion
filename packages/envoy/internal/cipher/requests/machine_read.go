@@ -22,7 +22,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
@@ -183,8 +182,8 @@ type grantRelease struct {
 // grant is a person's pod's (personPodGrant: the policy's version does not cover which person
 // BROKER_POD_OPERATORS maps the pod's account to) — that the current policy still allows the
 // session, with the names its operator withheld from it, every granted name under the login that
-// decided it, or, for a grant the model judge decided, under the judge the rules still give that
-// name (stillAllowed), and that no granted name's max-grant is now shorter than the lifetime the
+// decided it, or, for a grant the model judge decided, under the judge the name's tags still give
+// it (stillAllowed), and that no granted name's max-grant is now shorter than the lifetime the
 // grant's request signed (overMaxGrant). On every release, whatever the version says, no granted
 // name's profile may differ from the one its request recorded as decided under, which ends the
 // grant for good.
@@ -287,7 +286,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 	}
 	for _, g := range granted {
 		if recheck {
-			if err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
+			if err := stillAllowed(set, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
 				// A grant whose frozen source is not the one the name is served from now (its
 				// type was changed or removed) ends for good: setting the type back serves the
 				// same source again, and the grant must not come back with it. So does one whose
@@ -754,11 +753,11 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 // so, and the grant is not ended (policy.ReasonRequesterGroupUnread): the list may still name the
 // person, and a fresh read says so.
 // A grant the model judge decided — record.JudgeLogin reads a judge actor off its decidedBy — is
-// held to the rules instead of to that login, and to the admin tag over both: the secret must not
-// be an administrator's now, and the rules in force must still give the name a judge of at least
-// the seconds the grant was given (judgeStillDecides, which set and lifetime carry here).
+// held to the name's judge tag instead of to that login, and to the admin tag over both: the
+// secret must not be an administrator's now, and its judge tag must still give the name a judge of
+// at least the seconds the grant was given (judgeStillDecides, which set and lifetime carry here).
 // No judge login goes through record.MayDecide, which refuses every one of them.
-func stillAllowed(set *policy.Set, rules proxyrules.Rules, name, frozenSource, frozenDecision, decidedBy string, lifetime *int, requester policy.Requester) error {
+func stillAllowed(set *policy.Set, name, frozenSource, frozenDecision, decidedBy string, lifetime *int, requester policy.Requester) error {
 	d, err := set.Evaluate(name, requester)
 	if errors.Is(err, policy.ErrUnknownSecret) {
 		return noLongerServed(name)
@@ -785,7 +784,7 @@ func stillAllowed(set *policy.Set, rules proxyrules.Rules, name, frozenSource, f
 	case frozenDecision == policy.Automatic && !set.Withholds(requester, name):
 		return fmt.Errorf("%w: the current policy requires approval for %s", ErrGrantNotLive, name)
 	case judged:
-		return judgeStillDecides(set, rules, name, lifetime)
+		return judgeStillDecides(set, name, lifetime)
 	case !record.MayDecide(record.KindAgentSecret, d.Approver, "", decidedBy, set.Groups()):
 		// A group-approved record whose group does not admit its decider now is the chain
 		// check's to refuse and log (record.ChainVerifier.Verify, noteLapsedApprover), which runs
@@ -797,43 +796,39 @@ func stillAllowed(set *policy.Set, rules proxyrules.Rules, name, frozenSource, f
 
 // judgeStillDecides is stillAllowed's arm for a grant the model judge decided: the secret must
 // not be one a person approves every release of under the live policy (an administrator's, or an
-// Anthropic federation secret: policy.Secret.PersonApprovesEveryRelease), and the rules in force
-// must still give name a
-// judge of at least lifetime, the seconds the grant was given. The judge's authority is that
-// entry and not a person's, so this arm reads the entry where the person's arm reads a login: a
-// secret handed to another person ends a grant that person must approve and did not, and leaves
-// a judged one alone, no person's approval being what it rested on, while a rules file that
-// stops letting the judge decide this name, or that lowers it below what this grant holds, ends
-// it. An entry that changed at all already ends the grant through the frozen
-// request_secrets.airlock_digest, so this states the same rule where a reader of the release
-// checks it, over the one thing the judge's approval rested on.
+// Anthropic federation secret: policy.Secret.PersonApprovesEveryRelease), and its judge tag must
+// still give name a judge of at least lifetime, the seconds the grant was given. The judge's
+// authority is that tag and not a person's, so this arm reads the tag where the person's arm
+// reads a login: a secret handed to another person ends a grant that person must approve and did
+// not, and leaves a judged one alone, no person's approval being what it rested on, while a judge
+// tag taken off the secret, or lowered below what this grant holds, ends it. The tag is in the
+// policy version (policy.Secret.Judge), so the release reaches this arm whenever it moved.
 //
-// The admin tag is read first and off the live policy set, because it outranks whatever seconds
-// a rules file gives the name: the tag's promise is that a person approves every release of the
-// credential (policy.TagAdmin), and a release is exactly what this is deciding, so an owner who
-// tags a secret an administrator's after the judge decided it stops the releases a model
-// approved rather than only the next decision (judge's admin check, currentPolicyAdmits). The
-// promise is the secret's and not the rules file's to make, so no judge entry answers it, and
-// the refusal ends the grant for good (errJudgedAdminSecret): the session asks again, and the
-// judge then refuses it at decision time. A person's own grant of an admin secret is untouched,
-// this arm being a judged grant's alone — a person approved it, which is all the tag asks.
+// The admin tag is read first, because it outranks whatever the judge tag says: the admin tag's
+// promise is that a person approves every release of the credential (policy.TagAdmin), and a
+// release is exactly what this is deciding, so an owner who tags a secret an administrator's
+// after the judge decided it stops the releases a model approved rather than only the next
+// decision (judge's admin check, currentPolicyAdmits). The refusal ends the grant for good
+// (errJudgedAdminSecret): the session asks again, and the judge then refuses it at decision time.
+// A person's own grant of an admin secret is untouched, this arm being a judged grant's alone — a
+// person approved it, which is all the tag asks.
 //
 // A grant with no lifetime — one that lasts until its session ends — is not live under a judge
 // decider: record.MayJudge refuses a record that names no lifetime, since an unbounded grant is
 // exactly what the judge's seconds are there to bound, so the judge made no such grant and no
 // such grant is its.
-func judgeStillDecides(set *policy.Set, rules proxyrules.Rules, name string, lifetime *int) error {
+func judgeStillDecides(set *policy.Set, name string, lifetime *int) error {
 	if set.Secrets[name].PersonApprovesEveryRelease() {
 		return judgedAdminSecret(name)
 	}
-	bound, ok := rules.JudgeSeconds(name)
+	bound, ok := set.JudgeSeconds(name)
 	switch {
 	case lifetime == nil:
 		return fmt.Errorf("%w: %s was granted until its session ends, which the judge never decides", ErrGrantNotLive, name)
 	case !ok:
-		return fmt.Errorf("%w: the rules no longer let the judge decide %s", ErrGrantNotLive, name)
+		return fmt.Errorf("%w: %s carries no judge tag now, so the judge no longer decides it", ErrGrantNotLive, name)
 	case !record.JudgeAllowsLifetime(bound, *lifetime):
-		return fmt.Errorf("%w: the rules now let the judge decide at most %d seconds of %s, short of this grant's %d", ErrGrantNotLive, bound, name, *lifetime)
+		return fmt.Errorf("%w: %s's judge tag now lets the judge decide at most %d seconds of it, short of this grant's %d", ErrGrantNotLive, name, bound, *lifetime)
 	}
 	return nil
 }
@@ -1284,8 +1279,8 @@ func writtenBeforeMigration13(alias string) string {
 // is tagged with a project (anyProjectTagged: whether it is private is Dispatch's) and the grant
 // is no person's pod's (personPodGrant: the policy's version does not cover which person
 // BROKER_POD_OPERATORS maps the pod's account to), or the current policy still allows it to the
-// session (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules
-// still give its name, over the lifetime this reuse matched it on, the grant's own, and refuses
+// session (stillAllowed, the check Values makes, which holds a judged grant to the judge its
+// name's tags still give it, over the lifetime this reuse matched it on, the grant's own, and refuses
 // one whose secret the policy now tags as an administrator's), and its whole approval chain still
 // verifies (verifyChainForRelease, the same check Values makes, read first). A caller that already
 // holds a live grant for these exact names never re-asks a human who already approved it, a policy
@@ -1382,7 +1377,7 @@ candidates:
 		}
 		for _, g := range granted {
 			if recheck {
-				err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
+				err := stillAllowed(set, g.name, g.source, g.decision, decidedBy, lifetime, requester)
 				switch {
 				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret) || errors.Is(err, errProjectNotNamed):
 					// The list dropped this requester while the grant was live, the secret
