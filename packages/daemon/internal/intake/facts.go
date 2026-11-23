@@ -1465,11 +1465,12 @@ type PodRefusedLaunch struct {
 
 func (f PodRefusedLaunch) namedIssue() (string, bool) { return f.Issue, true }
 
-// RefusedStartEnded is a start row of a claim that the outbox finished while the claim's last
-// launch stands refused by its issue's pod (supervise's Machine.RefusedPod): the row ended after
-// the refusal's own fact (PodRefusedLaunch) may have read it as the start that brings the claim
-// back, so the workflow reads the claim's queued starts again, now the row is gone, and queues its
-// start wherever none stands (workflow's refusedStartEnded). It tells nobody: the refusal did.
+// RefusedStartEnded is a start row that reached a claim (supervise.Claim.LastStartRow) and that the
+// outbox finished while the claim's last launch stands refused by its issue's pod (supervise's
+// Machine.RefusedPod): the row ended after the refusal's own fact (PodRefusedLaunch) may have read
+// it as the start that brings the claim back, so the workflow reads the claim's queued starts
+// again, now the row is gone, and queues its start wherever none stands (workflow's
+// refusedStartEnded). It tells nobody: the refusal did.
 type RefusedStartEnded struct {
 	Issue string
 	Role  claim.Role

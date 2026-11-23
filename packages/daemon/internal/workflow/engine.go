@@ -1929,15 +1929,16 @@ func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.Po
 	return intake.Result{}, e.startRefusedClaim(ctx, tx, *issue, fact)
 }
 
-// refusedStartEnded reads the claim's queued starts again once a start row of a claim whose last
-// launch its pod refused has ended (intake.RefusedStartEnded), and queues the claim's start where
-// none stands (startRefusedClaim). The refusal's own fact reads the outbox in its transaction, and a
-// start row the wake pacing parked a launch for has delivered its task and returned when that
-// launch's turn comes, so the refusal can read the row as the claim's start while its finish has not
-// committed yet, and queue none. The outbox applies this once the row's finish has committed and it
-// has read the refusal on the claim's machine (internal/daemon's startRowEnded); facts are applied
-// one at a time (intake.ApplyFact), so whichever of the two comes second reads what the first left,
-// and the claim has one start whichever order they run in. It tells nobody.
+// refusedStartEnded reads the claim's queued starts again once a start row that reached a claim
+// whose last launch its pod refused has ended (intake.RefusedStartEnded), and queues the claim's
+// start where none stands (startRefusedClaim). The refusal's own fact reads the outbox in its
+// transaction, and a start row the wake pacing parked a launch for has delivered its task and
+// returned when that launch's turn comes, so the refusal can read the row as the claim's start
+// while its finish has not committed yet, and queue none. The outbox applies this once the row's
+// finish has committed and it has read the refusal on the claim's machine (internal/daemon's
+// startRowEnded); facts are applied one at a time (intake.ApplyFact), so whichever of the two comes
+// second reads what the first left, and the claim has one start whichever order they run in. It
+// tells nobody.
 func (e *Engine) refusedStartEnded(ctx context.Context, tx pgx.Tx, fact intake.RefusedStartEnded) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
