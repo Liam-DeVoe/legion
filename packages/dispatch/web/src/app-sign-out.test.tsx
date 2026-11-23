@@ -510,6 +510,8 @@ test("a sign-out forgets the command bar's runs and stops reading their streams"
     mode: "ask",
     state: "queued",
     stop_reason: null,
+    undoable: false,
+    undone_at: null,
     used: { calls: 0, tokens: 0, working_ms: 0 },
     words: "count the moons",
   });

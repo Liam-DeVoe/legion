@@ -532,6 +532,92 @@ test("each frame of the stream is drawn as its own line, and the item frames are
   }
 });
 
+// The real model's short answer named LEGION-3 twice - the issue, then "the spec of LEGION-3" -
+// and cited the issue and its spec, which the server names by the issue's title: the panel drew
+// the chip twice and a stray link of the issue's title beneath. The chip is drawn once, the
+// second mention stays the key, and the spec of an issue the text already draws is no link of
+// its own.
+test("an issue the short answer names twice is its chip once, and its spec draws no second link of its title", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+
+  try {
+    await type(user, "astrolabe");
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    send(
+      streams[0],
+      { data: { text: "LEGION\\-3 is mapped; the spec of LEGION\\-3 says why\\." }, event: "text" },
+      {
+        data: { href: "/issues/LEGION-3", id: "LEGION-3", kind: "issue", title: "Instruments" },
+        event: "item",
+      },
+      {
+        data: {
+          href: "/issues/LEGION-3/spec",
+          id: "spec-3",
+          kind: "document",
+          title: "Instruments",
+        },
+        event: "item",
+      },
+      { data: { items: 2, words: 9 }, event: "end" }
+    );
+    await tick(0);
+    const text = await screen.findByTestId("going-answer-text");
+    await waitFor(() =>
+      expect(within(text).getByTestId("item-chip")).toHaveTextContent("LEGION-3TodoInstruments")
+    );
+    expect(within(text).getAllByTestId("item-chip")).toHaveLength(1);
+    expect(text).toHaveTextContent(
+      "LEGION-3TodoInstruments is mapped; the spec of LEGION-3 says why."
+    );
+    expect(screen.queryByTestId("going-answer-items")).toBeNull();
+    const links = screen.getByTestId("going-answer").querySelectorAll("a");
+    expect([...links].map((link) => link.getAttribute("href"))).toEqual([
+      "/issues/LEGION-3",
+      "/issues/LEGION-3",
+    ]);
+  } finally {
+    bar.unmount();
+  }
+});
+
+// The server's filter passes on a time the model wrote as a link to its instant, its words
+// escaped as every word is: the short answer draws it as that time, the full date on hover, and
+// no link.
+test("a time the short answer writes as a link to its instant draws as that time, with no link", async () => {
+  await warmMarkdownRenderer();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+
+  try {
+    await type(user, "astrolabe");
+    await tick(pauseRest);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    send(
+      streams[0],
+      {
+        data: { text: "It moved [5 days ago](dispatch-time:2026-11-18T11:35:00Z)\\." },
+        event: "text",
+      },
+      { data: { items: 0, words: 4 }, event: "end" }
+    );
+    await tick(0);
+    const text = await screen.findByTestId("going-answer-text");
+    await waitFor(() => expect(text.querySelector("time")).not.toBeNull());
+    const time = text.querySelector("time");
+    expect(time?.textContent).toBe("5 days ago");
+    expect(time?.getAttribute("datetime")).toBe("2026-11-18T11:35:00Z");
+    expect(time?.getAttribute("title")).toBe(new Date("2026-11-18T11:35:00Z").toLocaleString());
+    expect(text.querySelector("a")).toBeNull();
+    expect(text).toHaveTextContent("It moved 5 days ago.");
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("no answer text says none was found, and an answer citing nothing says it rests on no source", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();

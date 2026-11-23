@@ -1,4 +1,12 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 
 import type { GoingRun } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
@@ -344,14 +352,27 @@ export function focusConversationBox(): boolean {
   return box !== undefined && box !== null;
 }
 
-/** The input the person types in, inside the box's frame (`BoxFrame`), which draws its border. */
-export const boxInputClassName = `block min-w-0 flex-1 px-1.5 py-2 text-sm outline-none ${bgTransparent}`;
+/** The input the person types in, inside the box's frame (`BoxFrame`), which draws its border.
+ *  The clear button a browser draws in a search box keeps a gap from the words before it, which
+ *  it would otherwise touch where the words fill the box. */
+export const boxInputClassName = `block min-w-0 flex-1 px-1.5 py-2 text-sm outline-none [&::-webkit-search-cancel-button]:ms-2 ${bgTransparent}`;
+
+/**
+ * The least width of the box's input, from what it says it does now (`placeholder`, `boxWords`):
+ * room for those words whole - counted in the width of a digit (`ch`), which no letter of them
+ * much outgrows - and the input's padding, so the 420 px panel never cuts "Ask a follow-up…" to
+ * "Ask a follow-u". The context chip beside it gives way first (`BoxFrame`).
+ */
+export function boxInputStyle(placeholder: string): CSSProperties {
+  return { minWidth: `calc(${[...placeholder].length}ch + 0.75rem)` };
+}
 
 /**
  * The conversation's box, in the bar and in the panel (design v3, states 1, 2 and 10): one frame
  * holding the context chip on its left (`chip`, cut where the chip ends, its whole words in
  * `chipTitle`), then `children` - the input, and in the bar before Enter its Filters button - so
- * the chip stands in the same place on every surface.
+ * the chip stands in the same place on every surface. Where the frame is narrow, the chip is cut
+ * before the input's words are (`boxInputStyle`).
  */
 export function BoxFrame({
   children,
@@ -368,7 +389,8 @@ export function BoxFrame({
     >
       {chip === undefined ? null : (
         <span
-          className={`${pillClassName("label")} max-w-48 shrink-0`}
+          // `shrink!` over the pill's own `shrink-0`: the chip, not what the box says, gives way.
+          className={`${pillClassName("label")} max-w-48 min-w-0 shrink!`}
           data-testid="going-box-chip"
           title={chipTitle}
         >

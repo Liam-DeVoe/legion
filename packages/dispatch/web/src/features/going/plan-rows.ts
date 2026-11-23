@@ -728,8 +728,9 @@ export function cardTitle(
 }
 
 /** How a row stands in its card (design v2, state 7): waiting for the person, sent and waiting
- *  its turn, running (a spinner), run (a check), failed, or not run. */
-export type RowMark = "waits" | "turn" | "running" | "done" | "failed" | "not_run";
+ *  its turn, running (a spinner), run (a check), failed, not run, or run and then taken back
+ *  whole by Undo. */
+export type RowMark = "waits" | "turn" | "running" | "done" | "failed" | "not_run" | "reverted";
 
 /** Each row state's mark. */
 export const ROW_MARKS: Readonly<Record<GoingPlanRow["state"], RowMark>> = {
@@ -747,6 +748,7 @@ export const MARK_WORDS: Readonly<Record<RowMark, string>> = {
   done: "Done",
   failed: "Failed",
   not_run: "Not run",
+  reverted: "Reverted",
   running: "Running",
   turn: "Waits its turn",
   waits: "Waits for you",
@@ -821,6 +823,18 @@ export function keptValue(
 export function undoWords(line: GoingUndoLine): string {
   if (line.undo === "not_undone") return "Sent, not undone";
   return line.outcome.ok ? "Reverted" : `Not reverted: ${line.outcome.message}`;
+}
+
+/** Whether Undo took a row's change back whole (design v3, state 7): no field of it kept as
+ *  another writer left it, nothing refused, and no message, which is sent, not undone. Such a row
+ *  reads reverted - grey, its old value restored, and no check - where a change that stayed keeps
+ *  its check and says why. */
+export function wasReverted(line: GoingUndoLine): boolean {
+  return (
+    line.undo !== "not_undone" &&
+    line.outcome.ok &&
+    (line.fields ?? []).every((field) => field.ok || field.message === "")
+  );
 }
 
 /** The approval modes, as the person's setting names them (`CommandBarSection.tsx`). */

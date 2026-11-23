@@ -1125,9 +1125,11 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           tabIndex={-1}
         >
           {/* The command bar's run chip (design v3, state 11): at the top of the page, over the
-              middle of its column, and still there as the page scrolls. It takes no room of the
-              page's own, and only the chip takes the pointer. */}
-          <div className="pointer-events-none sticky top-2 z-30 flex h-0 justify-center overflow-visible *:pointer-events-auto">
+              middle of its column, and still there as the page scrolls. While it shows, its row
+              takes its own height above the page, so it sits clear of the page's title at every
+              width; with no chip the row is not drawn and the page keeps its place. Only the
+              chip takes the pointer. */}
+          <div className="pointer-events-none sticky top-0 z-30 flex justify-center py-2 empty:hidden *:pointer-events-auto">
             <RunChip />
           </div>
           <ErrorBoundary region="this page" resetKey={location.pathname}>

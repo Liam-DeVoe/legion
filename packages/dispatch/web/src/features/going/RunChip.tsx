@@ -156,8 +156,8 @@ function ChipMark({ state }: { readonly state: RunState }): ReactNode {
 
 /** The chip on the screen: the conversation it names, and how many more go on. A plan that waits
  *  is named by its card's title once read. It is a pill of its own - a background, a border and a
- *  small shadow - as tall as its words: the row the shell holds it in takes no height of the
- *  page's, and the chip does not stretch to that row, so its words never sit bare on the page. */
+ *  small shadow - as tall as its words: the shell holds it in a row of its own above the page,
+ *  clear of the page's title, and the chip does not stretch to that row. */
 function Chip({ going, more }: { readonly going: GoingOn; readonly more: number }): ReactNode {
   const waiting = going.state === "waiting";
   const plan = useQuery({ ...goingPlanQuery(going.run.id), enabled: waiting });

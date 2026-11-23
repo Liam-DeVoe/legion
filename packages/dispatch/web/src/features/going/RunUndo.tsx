@@ -42,7 +42,7 @@ export interface RunUndoing {
  */
 export function useRunUndo(run: string): RunUndoing {
   const queryClient = useQueryClient();
-  const lines = useGoingValue((of) => of.undone.get(run));
+  const lines = useGoingValue((of) => of.undone.get(run)?.lines);
   const [refusal, setRefusal] = useState<string>();
   const undo = useKeyedWrite<GoingUndoAnswer, string>({
     inline: true,

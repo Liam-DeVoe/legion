@@ -24,8 +24,10 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { timeWords } from "../refs/dispatch-time";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { AnswerBlock } from "../search/blocks/AnswerBlock";
+import { clockWords } from "../search/blocks/block-cells";
 import {
   asksPerson,
   dropQueued,
@@ -36,6 +38,7 @@ import {
   type StartingRun,
   shownState,
   useGoing,
+  useGoingValue,
 } from "./going-store";
 import { PlanCard } from "./PlanRows";
 import { RunUndo } from "./RunUndo";
@@ -149,10 +152,22 @@ function earliest(read: number | undefined, record: GoingRun): number | undefine
 }
 
 /**
+ * When `record`'s run was undone, for the line under its answer: when this page's Undo of it
+ * answered (`pressed`), else when Dispatch says its undo landed (`undone_at`), as a run undone
+ * before this page was opened reads; undefined for a run not undone.
+ */
+function undoneAt(pressed: number | undefined, record: GoingRun): number | undefined {
+  if (pressed !== undefined || record.undone_at === null) return pressed;
+  const landed = Date.parse(record.undone_at);
+  return Number.isNaN(landed) ? undefined : landed;
+}
+
+/**
  * What stands under an answer (design v2, state 4), small and grey - the page's grey, which no
  * reader takes for a link: `status` ("Done", "Waits for your answer" where the answer asks the
  * person a question (R8), or that nothing changed); and on hover or focus, Copy, which copies the
- * answer's text, and Retry, a new run of the same words.
+ * answer's text with each time in it as the words it shows (`timeWords`), and Retry, a new run of
+ * the same words.
  */
 function AnswerFoot({
   answer,
@@ -169,7 +184,7 @@ function AnswerFoot({
         {status}
       </p>
       <div className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
-        <CopyButton label="Copy the answer" value={answer} what="answer" />
+        <CopyButton label="Copy the answer" value={timeWords(answer)} what="answer" />
         <button
           className={`inline-flex min-h-11 items-center rounded-lg px-2 text-xs md:min-h-8 ${linkText} ${linkHoverText}`}
           data-testid="going-run-retry"
@@ -293,9 +308,11 @@ interface WholeBlock {
  *  chips and blocks, its plan - as the card of the newest run (the one `answering` is given for),
  *  folded to one line in an older one - how it ended, with Continue on a bound and Try again on a
  *  failure, "Nothing changed" in place of "Done" on a run of the line Do that proposed no plan,
- *  and Undo of a run with no plan that changed something. `asks` is whether its answer asks the
- *  person a question and waits for their answer; `onShowAll` opens one of its tables whole over
- *  the bar or the panel. */
+ *  and Undo of a run with no plan that changed something. Its steps' fold line, its answer and
+ *  its plan's card come in that order, as the answer (state 4) then the applied plan (state 7)
+ *  do, and once its Undo answered, "Undone at 16:42" under its answer. `asks` is whether its
+ *  answer asks the person a question and waits for their answer; `onShowAll` opens one of its
+ *  tables whole over the bar or the panel. */
 function RunTurn({
   answering,
   asks,
@@ -303,6 +320,7 @@ function RunTurn({
   onRetry,
   onShowAll,
   run,
+  undoneAt,
 }: {
   readonly answering: PlanAnswering | undefined;
   readonly asks: boolean;
@@ -310,6 +328,8 @@ function RunTurn({
   readonly onRetry: (words: string) => void;
   readonly onShowAll: (whole: WholeBlock) => void;
   readonly run: RunEntry;
+  /** When the run was undone, in this page's clock (`undoneAt`); undefined where it was not. */
+  readonly undoneAt: number | undefined;
 }): ReactNode {
   const newest = answering !== undefined;
   const own = usePlan(newest ? undefined : run.id, newest ? 0 : run.frames.planReads);
@@ -318,6 +338,10 @@ function RunTurn({
   const answer = run.frames.replies.at(-1);
   const waitsForSteps = thinking(run);
   const working = state === "working";
+  // A run undone before this page was opened, as Dispatch says (`undone_at`), offers no Undo: the
+  // page holds no answer of its Undo to show, and there is nothing left to take back.
+  const undoneHere = useGoingValue((of) => of.undone.has(run.id));
+  const undoneBefore = undoneAt !== undefined && !undoneHere;
   // A call with no words draws no line, and nor does a change of an approved plan, which its
   // row's tick on the plan's card shows.
   const steps = run.frames.steps.filter((step) => step.label !== "" && step.kind !== "write");
@@ -362,6 +386,14 @@ function RunTurn({
           <MarkdownBody chips markdown={answer} referenceText="" softBreaks="line" />
         </div>
       )}
+      {undoneAt === undefined ? null : (
+        // Undo takes the run's changes back and leaves its answer as it was written, so a line
+        // under the answer says when the changes it speaks of were taken back (design v3,
+        // state 7).
+        <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-run-undone">
+          Undone at {clockWords(undoneAt)}
+        </p>
+      )}
       {run.frames.withheld > 0 ? (
         <p className={`text-xs ${textSecondaryOnSurface}`} data-testid="going-run-withheld">
           {run.frames.withheld === 1
@@ -378,7 +410,12 @@ function RunTurn({
           onShowAll={() => onShowAll({ block: index, run: run.id })}
         />
       ))}
-      <PlanCard answering={plan} appliedAt={earliest(run.endedAt, run.record)} folded={!newest} />
+      <PlanCard
+        answering={plan}
+        appliedAt={earliest(run.endedAt, run.record)}
+        folded={!newest}
+        undone={undoneBefore}
+      />
       {state === "done" && answer !== undefined ? (
         <AnswerFoot
           answer={answer}
@@ -403,7 +440,10 @@ function RunTurn({
           {state === "done" && changedNothing(run) ? NOTHING_CHANGED : STATE_TEXT[state]}
         </p>
       )}
-      {run.frames.plan === undefined && runEnded(state) && (run.record.issues ?? []).length > 0 ? (
+      {run.frames.plan === undefined &&
+      runEnded(state) &&
+      (run.record.issues ?? []).length > 0 &&
+      !undoneBefore ? (
         <RunUndo run={run.id} />
       ) : null}
       {run.unreadable === undefined ? null : (
@@ -605,6 +645,7 @@ export function ConversationView({
                 onRetry={onRetry}
                 onShowAll={setWhole}
                 run={run}
+                undoneAt={undoneAt(going.undone.get(run.id)?.at, run.record)}
               />
             ))}
             {starting === undefined ? null : <StartingTurn starting={starting} />}

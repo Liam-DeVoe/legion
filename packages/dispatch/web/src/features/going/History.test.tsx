@@ -16,8 +16,8 @@ import { useOpenPlan } from "./usePlan";
 // History as the person reads it (spec R6, R11; design v3, state 11): the conversations of the
 // last 7 days grouped Today, Yesterday and This week, each row its title, its state in words and
 // its time; a box that filters them as the person types; the keys that move through them and open
-// one; the Undo of a row whose newest run changed something, as a filing from the line on top
-// does; and a press that shows a conversation in the bar.
+// one; the Undo of a row whose newest run holds a write Undo can still take back, as a filing
+// from the line on top does; and a press that shows a conversation in the bar.
 
 const now = Date.now();
 /** The reader's midnight today: a turn an hour before it was yesterday, one 3 days before it
@@ -39,6 +39,8 @@ function run(id: string, words: string, at: number, extra: Partial<GoingRun> = {
     mode: "ask",
     state: "done",
     stop_reason: null,
+    undoable: false,
+    undone_at: null,
     used: { calls: 2, tokens: 10, working_ms: 1000 },
     words,
     ...extra,
@@ -57,6 +59,7 @@ const conversations: GoingConversation[] = [
         continues: "r-3",
         conversation: "c-3",
         issues: ["CORE-1", "CORE-3"],
+        undoable: true,
       }),
       run("r-3", "split CORE-1 in two", now, { conversation: "c-3" }),
     ],
@@ -79,6 +82,7 @@ const conversations: GoingConversation[] = [
       run("r-1", "file the telescope's mirror as a new issue", midnight - 3 * 86_400_000, {
         issues: ["CORE-46"],
         level: "fast",
+        undoable: true,
       }),
     ],
   },
@@ -144,6 +148,57 @@ test("History groups the conversations Today, Yesterday and This week, each row 
     // holds its run's Undo. The plan that waits changed nothing yet.
     const undos = screen.getAllByTestId("going-undo");
     expect(undos.map((undo) => undo.getAttribute("data-run"))).toEqual(["r-4", "r-1"]);
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// R6: History offers Undo only while the run holds a write Undo can take back, as Dispatch keeps
+// it (`undoable`): a run undone already - on this page or another, before a reload - and a run
+// whose writes Undo cannot take back offer none, whatever issues they touched.
+test("History offers Undo only while the run holds a write Undo can still take back", async () => {
+  const read = listConversations([
+    {
+      id: "c-5",
+      newest_at: new Date(now).toISOString(),
+      runs: [
+        run("r-5", "raise CORE-5", now, {
+          conversation: "c-5",
+          issues: ["CORE-5"],
+          undone_at: new Date(now).toISOString(),
+        }),
+      ],
+    },
+    {
+      id: "c-6",
+      newest_at: new Date(now - 60_000).toISOString(),
+      runs: [
+        run("r-6", "tell CORE-6's agent to stop", now - 60_000, {
+          conversation: "c-6",
+          issues: ["CORE-6"],
+        }),
+      ],
+    },
+    {
+      id: "c-7",
+      newest_at: new Date(now - 120_000).toISOString(),
+      runs: [
+        run("r-7", "raise CORE-7", now - 120_000, {
+          conversation: "c-7",
+          issues: ["CORE-7"],
+          undoable: true,
+        }),
+      ],
+    },
+  ]);
+  try {
+    renderHistory();
+    await waitFor(() =>
+      expect(screen.getAllByTestId("going-history-conversation")).toHaveLength(3)
+    );
+    expect(
+      screen.getAllByTestId("going-undo").map((undo) => undo.getAttribute("data-run"))
+    ).toEqual(["r-7"]);
   } finally {
     read.mockRestore();
   }

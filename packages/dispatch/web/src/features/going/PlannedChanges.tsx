@@ -5,6 +5,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { TimedWords } from "../refs/dispatch-time";
 import { drawOnPage } from "./going-store";
 import { PlanControls, PlanRowView, usePlanDraft } from "./PlanRows";
 import { type PlanSurface, rowsOnSurface } from "./plan-surfaces";
@@ -46,7 +47,9 @@ export function PlannedChanges({ surface }: { readonly surface: PlanSurface }): 
     >
       <h2 className={`text-sm font-semibold ${textPrimaryOnSurface}`}>Planned changes</h2>
       {plan.summary === "" ? null : (
-        <p className={`text-sm ${textSecondaryOnSurface}`}>{plan.summary}</p>
+        <p className={`text-sm ${textSecondaryOnSurface}`}>
+          <TimedWords text={plan.summary} />
+        </p>
       )}
       <ul>
         {(plan.rows ?? [])

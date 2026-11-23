@@ -41,6 +41,8 @@ function record(id: string, conversation: string, words: string): GoingRun {
     mode: "ask",
     state: "queued",
     stop_reason: null,
+    undoable: false,
+    undone_at: null,
     used: { calls: 0, tokens: 0, working_ms: 0 },
     words,
   };
@@ -169,9 +171,9 @@ test("the chip is a pill of its own, apart from the page: a background, a border
       expect(chip).toHaveClass(name);
     }
     expect(chip).toHaveClass("border", "rounded-full", "shadow-md");
-    // The shell holds the chip in a row of no height, so the page keeps its own (`app.tsx`). The
-    // chip keeps the height of its words rather than stretching to that row, where its
-    // background and its border would shrink to a line through its words.
+    // The shell holds the chip in a row of its own above the page (`app.tsx`), which is as tall
+    // as the chip and its gap. The chip keeps the height of its words rather than stretching to
+    // that row, where its background and its border would grow past its words.
     expect(chip).toHaveClass("self-start");
   } finally {
     runs.restore();

@@ -389,3 +389,40 @@ test("a tool frame of a slip keeps the slip on its step, which is not refused", 
   expect(framed([call(2)]).steps[0]?.slip).toBe(false);
   expect(framed([ended(2)]).steps[0]?.slip).toBe(false);
 });
+
+// A call that drew a block is a chart as its frames name it (the label's kind), and the block
+// frame the agent stores right after that call's tool frame says what it drew: the step then says
+// so, so its fold names a table a table. Two drawings that run at once each take their own block.
+test("the block a call drew gives its step the block's kind: a table, a chart or one number", () => {
+  const drawing = (step: number): readonly [string, unknown] => [
+    "call",
+    { kind: "chart", label: "Drawing a block", step, tool: "call_tool" },
+  ];
+  const drew = (step: number, kind: string): readonly [string, unknown] => [
+    "tool",
+    { items: [], kind: "chart", label: `Drew a ${kind} of the work`, step, tool: "call_tool" },
+  ];
+  const block = (kind: string): readonly [string, unknown] => [
+    "block",
+    { kind, rows: [], spec: {}, title: "The work" },
+  ];
+  const run = framed([
+    drawing(3),
+    drawing(4),
+    drew(4, "table"),
+    block("table"),
+    drew(3, "chart"),
+    block("chart"),
+    drawing(5),
+    drew(5, "metric"),
+    block("metric"),
+  ]);
+  expect(run.steps.map((step) => [step.step, step.kind])).toEqual([
+    [3, "chart"],
+    [4, "table"],
+    [5, "metric"],
+  ]);
+  expect(run.blocks.map((drawn) => drawn.kind)).toEqual(["table", "chart", "metric"]);
+  // A block no drawing step came right before changes no step's kind.
+  expect(framed([ended(2), block("table")]).steps.map((step) => step.kind)).toEqual(["read"]);
+});

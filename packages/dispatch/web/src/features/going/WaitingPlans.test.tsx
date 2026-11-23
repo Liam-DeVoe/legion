@@ -73,6 +73,8 @@ test("a row names the plan as its card does and its conversation by its first qu
     mode: "ask",
     state: "done",
     stop_reason: null,
+    undoable: false,
+    undone_at: null,
     used: { calls: 1, tokens: 10, working_ms: 1000 },
     words: "what blocks the release",
   };
@@ -132,6 +134,41 @@ test("a row names the plan as its card does and its conversation by its first qu
     history.mockRestore();
     plan.mockRestore();
     stream.mockRestore();
+  }
+});
+
+// Until its plan is read, a row names the plan by the summary the agent wrote, and a time the
+// agent wrote there as a link to its instant draws as that time, the full date on hover.
+test("until its plan is read a row names it by its summary, each time in it drawn as its time", async () => {
+  const list = spyOn(api, "myGoingPlans").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: [
+      {
+        ...waiting,
+        summary: "Close CORE-5, idle since [5 days ago](dispatch-time:2026-11-18T11:35:00Z).",
+      },
+    ],
+    total: 1,
+  });
+  const history = spyOn(api, "myGoingRuns").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: [],
+    total: 0,
+  });
+  const plan = spyOn(api, "goingPlan").mockImplementation(() => new Promise(() => {}));
+  try {
+    renderWithQueries(<WaitingPlans />);
+    const title = await screen.findByTestId("inbox-going-plan-title");
+    expect(title.textContent).toBe("Close CORE-5, idle since 5 days ago.");
+    const time = title.querySelector("time");
+    expect(time?.getAttribute("datetime")).toBe("2026-11-18T11:35:00Z");
+    expect(time?.getAttribute("title")).toBe(new Date("2026-11-18T11:35:00Z").toLocaleString());
+  } finally {
+    list.mockRestore();
+    history.mockRestore();
+    plan.mockRestore();
   }
 });
 

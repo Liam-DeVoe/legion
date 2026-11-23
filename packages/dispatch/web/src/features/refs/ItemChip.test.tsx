@@ -7,9 +7,9 @@ import { pageStatusProgressText } from "../../theme/classes";
 import { ItemChip } from "./ItemChip";
 
 // An issue a command-bar answer names (design v2, state 4) is a chip: its key, a dot in its
-// status's colour and its title on one line, read from the issue's summary; the key alone until
-// that read answers, and for an issue the reader cannot read. `MarkdownBody.test.tsx` draws one
-// in an answer's body.
+// status's colour and its title, flowing as words, read from the issue's summary; the key alone
+// until that read answers, and for an issue the reader cannot read. `MarkdownBody.test.tsx` draws
+// one in an answer's body.
 
 afterEach(cleanup);
 
@@ -31,6 +31,32 @@ test("a chip reads its key, a dot in its status's colour, and its title from the
     expect(dot).toHaveAttribute("title", "In progress");
     expect(dot).toHaveAttribute("aria-hidden", "true");
     expect(summary).toHaveBeenCalledWith("DEMO-7");
+  } finally {
+    summary.mockRestore();
+  }
+});
+
+// A chip takes the room the bar has (design v3, state 4): it is words, inline, so a title too long
+// for the rest of its line goes on onto the next line, each piece in the chip's frame, rather than
+// being cut where the bar still has room; and as words it keeps the comma after it on its line.
+test("a chip flows as words: its title goes on onto the next line rather than being cut", async () => {
+  const summary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "DEMO-15",
+    project: "DEMO",
+    status: "in_progress",
+    title: "Board: drag handle hidden on narrow screens",
+  });
+  try {
+    renderWithQueries(<ItemChip issue="DEMO-15" />);
+    const chip = screen.getByTestId("item-chip");
+    const title = await within(chip).findByTestId("item-chip-title");
+    const classes = chip.className.split(" ");
+    expect(classes).toContain("inline");
+    expect(classes).toContain("box-decoration-clone");
+    expect(classes).not.toContain("inline-flex");
+    expect(title.className.split(" ")).not.toContain("truncate");
+    expect(title.textContent).toBe("Board: drag handle hidden on narrow screens");
   } finally {
     summary.mockRestore();
   }

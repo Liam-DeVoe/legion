@@ -7,6 +7,7 @@ import type { GoingContextInput } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { borderDefault, card, dangerText } from "../../theme/classes";
 import { nodeRouteFromHref, routeProjectOf } from "../refs/routes";
+import { useFollowInPlace } from "../refs/useFollowInPlace";
 import { issueOfPage, scopeOfPage } from "../search/bar-scope";
 import { ConversationView } from "./ConversationView";
 import {
@@ -27,6 +28,7 @@ import {
   BoxRow,
   boxHint,
   boxInputClassName,
+  boxInputStyle,
   boxWords,
   ConversationHeader,
 } from "./RunControls";
@@ -98,9 +100,11 @@ function chipWords(pathname: string, search: string, clicked: ClickedItem | unde
  * box asks with the page as the context, and a click on the page that opens or selects an item
  * makes that item the chip and the context of the next request. The box is the bar's: the mode
  * control, the context chip inside the box's frame, Stop while the run works, the plan card's
- * keys while a plan waits, and words sent during a run held until it ends. Esc in the panel puts
- * the focus on the page and the panel stays, except that Esc in its empty box while a run works
- * stops the run (R10); Ctrl-K brings the conversation back over the page.
+ * keys while a plan waits, and words sent during a run held until it ends. A link in the panel,
+ * such as an item's chip in an answer, opens its item in the page with the router, and the panel
+ * stays. Esc in the panel puts the focus on the page and the panel stays, except that Esc in its
+ * empty box while a run works stops the run (R10); Ctrl-K brings the conversation back over the
+ * page.
  */
 export function SidePanel(): ReactNode {
   const going = useGoing();
@@ -115,6 +119,9 @@ export function SidePanel(): ReactNode {
   const chip = chipWords(location.pathname, location.search, clicked);
   const asking = useAsk(context);
   const cardKeys = usePlanCardKeys();
+  // A link in the panel - an item's chip in an answer, a row of the plan - opens its item in the
+  // page with the router, and the panel stays (R1): a load of the whole page would drop it.
+  const follow = useFollowInPlace();
   // Words sent while the run worked go once it no longer works, from the panel while it shows the
   // conversation (the bar sends them while it is over the page).
   useSendQueued((held) => side && asking.enter(held));
@@ -142,12 +149,20 @@ export function SidePanel(): ReactNode {
   if (!side) {
     return null;
   }
+  // What the box says it does now (design v2, rule 5).
+  const placeholder = boxWords({
+    asked: asksPerson(going),
+    open: going.conversation !== undefined || going.starting !== undefined,
+    planWaits: asking.planWaits || asking.runWaits,
+    search: false,
+  });
   return (
     <aside
       aria-label="Command bar at the side"
       className={`fixed top-0 right-0 bottom-0 z-40 flex w-full flex-col border-l shadow-2xl sm:w-[420px] ${card} ${borderDefault}`}
       data-testid="going-side-panel"
       id={SIDE_PANEL_ID}
+      onClick={follow}
       // Esc in the panel puts the focus on the page, and the panel stays. An Esc the panel's own
       // parts answered (the plan card, the mode menu, a run it stopped) is theirs.
       onKeyDown={(event) => {
@@ -204,12 +219,8 @@ export function SidePanel(): ReactNode {
                     asking.escape(words);
                   }
                 }}
-                placeholder={boxWords({
-                  asked: asksPerson(going),
-                  open: going.conversation !== undefined || going.starting !== undefined,
-                  planWaits: asking.planWaits || asking.runWaits,
-                  search: false,
-                })}
+                placeholder={placeholder}
+                style={boxInputStyle(placeholder)}
                 type="text"
                 value={words}
               />

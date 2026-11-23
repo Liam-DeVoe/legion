@@ -47,8 +47,8 @@ function groupOf(at: number, now: Date): HistoryGroup {
 }
 
 /** One conversation as History lists it: its title (its first question), how its newest run
- *  stands, its group, and that run where it changed something and ended, whose Undo the row
- *  holds. */
+ *  stands, its group, and that run where it ended holding a write Undo can take back, or where
+ *  this page undid it, whose Undo the row holds. */
 interface Listed {
   readonly conversation: GoingConversation;
   readonly title: string;
@@ -63,8 +63,8 @@ interface Listed {
  * Yesterday and This week, the newest first. Each row is the conversation's title, how it stands
  * - Working, Needs you, Done, Failed or Stopped, as this page follows its newest run, else as
  * Dispatch keeps it - and the time of its newest turn; a press opens it in the bar, where a
- * follow-up sees the turns before it. A row whose newest run changed something and ended, as a
- * filing from the line on top does (R9), holds that run's Undo (R6).
+ * follow-up sees the turns before it. A row whose newest run ended holding a write Undo can still
+ * take back (`undoable`), as a filing from the line on top does (R9), holds that run's Undo (R6).
  *
  * The box at its top takes the focus as it opens, and typing filters the rows by the words of
  * every question of a conversation. Enter in it opens the first row; Down and Up move the focus
@@ -74,6 +74,7 @@ interface Listed {
 export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode {
   const conversations = useQuery(goingConversationsQuery());
   const runs = useGoingValue((of) => of.runs);
+  const undone = useGoingValue((of) => of.undone);
   const [filter, setFilter] = useState("");
   const box = useRef<HTMLInputElement>(null);
   const list = useRef<HTMLDivElement>(null);
@@ -108,7 +109,11 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
         group: groupOf(Date.parse(conversation.newest_at), now),
         state,
         title: held.at(-1)?.words ?? "",
-        undo: runEnded(state) && (newest.issues ?? []).length > 0 ? newest.id : undefined,
+        // Undo is offered only while the run holds a write Undo can still take back, as
+        // Dispatch keeps it: not once it was undone, on this page or another, and not for a
+        // run whose writes were all messages, which are sent, not undone. An Undo pressed on
+        // this page keeps its row, which says what it did.
+        undo: runEnded(state) && (newest.undoable || undone.has(newest.id)) ? newest.id : undefined,
       },
     ];
   });

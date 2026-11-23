@@ -2073,6 +2073,71 @@ test("a body drawn with chips draws each link to an issue as its chip, and any o
   }
 });
 
+// An issue is its chip once in a body drawn with chips (design v3, state 4): the answer of a real
+// model named DEMO-7 twice and drew its chip, title and all, at both places. A later link to it
+// keeps the words it was written with, as a plain link to the issue.
+test("a body drawn with chips draws an issue's chip at its first link, and a later link to it as its words", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "DEMO-7",
+    project: "DEMO",
+    status: "done",
+    title: "Map the lunar craters",
+  });
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown="Mapped in [DEMO-7](dispatch://DEMO-7); the notes of [DEMO-7](dispatch://DEMO-7) say why."
+      referenceText=""
+    />
+  );
+  try {
+    const chip = await view.findByTestId("item-chip");
+    await waitFor(() => expect(chip.textContent).toBe("DEMO-7DoneMap the lunar craters"));
+    expect(view.getAllByTestId("item-chip")).toHaveLength(1);
+    const links = view.getAllByRole("link");
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "/issues/DEMO-7",
+      "/issues/DEMO-7",
+    ]);
+    expect(links[1]?.textContent).toBe("DEMO-7");
+    expect(view.container.textContent).toBe(
+      "Mapped in DEMO-7DoneMap the lunar craters; the notes of DEMO-7 say why."
+    );
+  } finally {
+    view.unmount();
+    getIssueSummary.mockRestore();
+  }
+});
+
+// A time the command bar's agent writes is a link to its instant under `dispatch-time:`: the
+// body draws a `<time>` of that instant showing the link's words, with the instant whole on
+// hover as every time the page draws in words has it, and no link; an address that names no
+// instant draws the words alone.
+test("a time link draws as a time showing its words with the full date on hover, and a bad one as its words", async () => {
+  await warmMarkdownRenderer();
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown="Bob wrote [5 days ago](dispatch-time:2026-11-18T11:35:00Z), then [later](dispatch-time:last-week)."
+      referenceText=""
+      softBreaks="line"
+    />
+  );
+  try {
+    await waitFor(() => expect(view.container.querySelector("time")).not.toBeNull());
+    const time = view.container.querySelector("time");
+    expect(time?.textContent).toBe("5 days ago");
+    expect(time?.getAttribute("datetime")).toBe("2026-11-18T11:35:00Z");
+    expect(time?.getAttribute("title")).toBe(new Date("2026-11-18T11:35:00Z").toLocaleString());
+    expect(view.container.querySelectorAll("time")).toHaveLength(1);
+    expect(view.container.querySelector("a")).toBeNull();
+    expect(view.container.textContent).toBe("Bob wrote 5 days ago, then later.");
+  } finally {
+    view.unmount();
+  }
+});
+
 // A long question titles its link cut on a word, and the sentence the link ends draws one stop:
 // the link's "…", never "…." with the full stop the answer's own sentence adds after it.
 test("a link whose title is cut ends on a word, and the full stop after it is not drawn twice", async () => {

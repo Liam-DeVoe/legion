@@ -118,10 +118,17 @@ export interface GoingState {
   readonly queued: QueuedWords | undefined;
   /** Why the last start, stop or Continue was refused, in Dispatch's words. */
   readonly refusal: string | undefined;
-  /** What each run's Undo answered, by run, once it was pressed on this page: one line for each
-   *  change it reversed or kept. Dispatch answers a second press from the same landings, so this
-   *  only keeps the answer on the screen while the page lives. */
-  readonly undone: ReadonlyMap<string, readonly GoingUndoLine[]>;
+  /** What each run's Undo answered, by run, once it was pressed on this page, with when it
+   *  answered in this page's clock: one line for each change it reversed or kept. Dispatch answers
+   *  a second press from the same landings, so this only keeps the answer on the screen while the
+   *  page lives. */
+  readonly undone: ReadonlyMap<string, RunUndone>;
+}
+
+/** What one run's Undo answered (`GoingState.undone`), and when, in this page's clock. */
+export interface RunUndone {
+  readonly at: number;
+  readonly lines: readonly GoingUndoLine[];
 }
 
 const INITIAL: GoingState = {
@@ -564,9 +571,9 @@ export function continueRun(
   return startRun("Continue", context, login, { continues: id, level: level ?? run.record.level });
 }
 
-/** Holds what the Undo of `run` answered (`GoingState.undone`). */
+/** Holds what the Undo of `run` answered (`GoingState.undone`), as of now. */
 export function setUndone(run: string, lines: readonly GoingUndoLine[]): void {
-  set({ ...state, undone: new Map(state.undone).set(run, lines) });
+  set({ ...state, undone: new Map(state.undone).set(run, { at: Date.now(), lines }) });
 }
 
 /** Opens a conversation History lists: its runs, oldest first, each read from its stream's first

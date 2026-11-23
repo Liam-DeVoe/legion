@@ -3,11 +3,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { GoingRun } from "../../api/types";
-import { goingState, resetGoingStore, setPlace } from "./going-store";
+import { goingState, openConversation, resetGoingStore, setPlace } from "./going-store";
 import { SidePanel } from "./SidePanel";
 
 // The conversation kept at the side of the page (spec R1, R11; design v3, state 10): a panel
@@ -33,6 +33,8 @@ const started: GoingRun = {
   mode: "ask",
   state: "queued",
   stop_reason: null,
+  undoable: false,
+  undone_at: null,
   used: { calls: 0, tokens: 0, working_ms: 0 },
   words: "what does the runbook say",
 };
@@ -298,5 +300,68 @@ test("the panel's box says what Enter does, and words sent while its run works g
   } finally {
     start.mockRestore();
     stream.mockRestore();
+  }
+});
+
+/** The page's own address, as the router holds it. */
+function Here(): ReactNode {
+  return <p data-testid="here">{useLocation().pathname}</p>;
+}
+
+// Design v3, state 10 (R1): a chip in the panel opens its item in the page with the router, and
+// the panel stays; a load of the whole page would drop the panel and the conversation in it.
+test("an item's chip in the panel's answer opens the item in the page with the router, and the panel stays", async () => {
+  const user = userEvent.setup();
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    onFrame("reply", { labels: [], text: "The comet is [CORE-7](dispatch://CORE-7).", tools: [] });
+    onFrame("end", { offers: [], reason: "", state: "done" });
+    return Promise.withResolvers<void>().promise;
+  });
+  const summary = spyOn(api, "getIssueSummary").mockImplementation(async (key: string) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "todo",
+    title: key === "CORE-7" ? "Track the comet" : "The page's issue",
+  }));
+  try {
+    openConversation({
+      id: started.conversation,
+      newest_at: started.created_at,
+      runs: [{ ...started, finished_at: started.created_at, state: "done" }],
+    });
+    renderPanel(<Here />);
+    const chip = await within(screen.getByTestId("going-run-answer")).findByTestId("item-chip");
+    await waitFor(() => expect(chip).toHaveTextContent("Track the comet"));
+    await user.click(chip);
+    expect(screen.getByTestId("here")).toHaveTextContent("/issues/CORE-7");
+    expect(window.location.pathname).toBe(PAGE);
+    expect(goingState().place).toBe("side");
+    expect(screen.getByTestId("going-side-panel")).toBeInTheDocument();
+    // The box's chip follows the page the panel now sits beside.
+    expect(screen.getByTestId("going-box-chip")).toHaveTextContent("CORE-7");
+  } finally {
+    stream.mockRestore();
+    summary.mockRestore();
+  }
+});
+
+// The 420 px panel cut "Ask a follow-up…" to "Ask a follow-u" beside a long chip and Stop: the box
+// keeps room for what it says whole, and the context chip gives way first.
+test("the panel's box keeps room for what it says whole, and its chip gives way first", async () => {
+  const user = userEvent.setup();
+  const starts = answerStarts();
+  try {
+    renderPanel();
+    const box = screen.getByRole("textbox", { name: "Ask the command bar" });
+    await user.type(box, `${started.words}{Enter}`);
+    await screen.findByTestId("going-run");
+    expect(box).toHaveAttribute("placeholder", "Ask a follow-up…");
+    expect(box.style.minWidth).toBe("calc(16ch + 0.75rem)");
+    const chip = screen.getByTestId("going-box-chip").className.split(" ");
+    expect(chip).toContain("min-w-0");
+    expect(chip).toContain("shrink!");
+  } finally {
+    starts.restore();
   }
 });

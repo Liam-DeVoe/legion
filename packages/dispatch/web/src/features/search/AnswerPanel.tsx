@@ -18,6 +18,7 @@ import {
 import { endWords } from "../going/run-states";
 import { ItemChip } from "../refs/ItemChip";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { nodeRouteFromHref } from "../refs/routes";
 import { AnswerBlock } from "./blocks/AnswerBlock";
 import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
 
@@ -67,6 +68,14 @@ function writesKey(text: string, key: string): boolean {
     .some((part, index) => index % 2 === 1 && part === key);
 }
 
+/** The issue an item's `href` belongs to - an issue's own page, its spec, one of its documents,
+ *  asks, comments or messages - and undefined for an item of no issue, such as a project's
+ *  document. */
+function issueOf(href: string): string | undefined {
+  const route = nodeRouteFromHref(href);
+  return route !== undefined && "key" in route ? route.key : undefined;
+}
+
 /**
  * Dispatch's short answer to the words in the bar (R3), in its own panel under the rows. Its
  * text shows at most 3 lines; Enter on the line Ask starts the run that gives the full answer,
@@ -74,13 +83,14 @@ function writesKey(text: string, key: string): boolean {
  * stream's `text` frames drawn through the page's markdown renderer as plain text: the server
  * escaped every punctuation byte of it, so no link, image, tag or code span comes of anything the
  * model wrote. The answer's links are its `item` frames, and nothing else: an issue an item frame
- * names is its chip (design v3, state 4), in the text where the text writes its key - the one
- * reference the renderer reads in it - and beneath the text where it does not, as is every other
- * item, by its title. The block, where the answer draws one, follows the text, as its frame
- * follows the text's. Each line below says what the stream said about the answer: that it was
- * cut, that the server changed it, that the model wrote none, that it rests on no source, how
- * fresh the roster it read was, or that it failed. A failure says why and its own next step
- * (`errorText`), so the foot does not say the full answer again.
+ * names is its chip (design v3, state 4), once, in the text where the text writes its key - the
+ * one reference the renderer reads in it - and beneath the text where it does not, as is every
+ * other item, by its title, but for an item of an issue the text draws as its chip. The block,
+ * where the answer draws one, follows the text, as its frame follows the text's. Each line below
+ * says what the stream said about the answer: that it was cut, that the server changed it, that
+ * the model wrote none, that it rests on no source, how fresh the roster it read was, or that it
+ * failed. A failure says why and its own next step (`errorText`), so the foot does not say the
+ * full answer again.
  *
  * An answer to words the person has typed past (`stale`) is drawn as it stood when they typed
  * on, its links, block and lines with it, inside a dashed outline with its text muted, under a
@@ -134,12 +144,17 @@ function AnswerBody({
   // An answer that ended citing nothing rests on no source of Dispatch's; one the model wrote no
   // text for says that instead, and its end frame's count of nothing says nothing more.
   const restsOnNothing = answer.end !== undefined && answer.end.items === 0 && !answer.none;
-  // The issues of the item frames whose keys the text writes are drawn there, as their chips;
-  // every other item is drawn beneath it.
+  // The issues of the item frames whose keys the text writes are drawn there, as their chips,
+  // each once however often the text writes its key (`MarkdownBody`); every other item is drawn
+  // beneath it, but for an item of an issue the text draws as its chip, such as that issue's spec:
+  // the server names such an item by its issue's title, so it would draw that title a second
+  // time, as a link of its own, where the chip already opens the issue.
   const inText = answer.items
     .filter((item) => item.kind === "issue" && writesKey(answer.text, item.id))
     .map((item) => item.id);
-  const beneath = answer.items.filter((item) => item.kind !== "issue" || !inText.includes(item.id));
+  const beneath = answer.items.filter(
+    (item) => !inText.includes(item.kind === "issue" ? item.id : (issueOf(item.href) ?? ""))
+  );
   // The wrapper is drawn whether or not the answer is stale, so going stale moves no part of the
   // answer to another element: only the wrapper's classes change.
   return (

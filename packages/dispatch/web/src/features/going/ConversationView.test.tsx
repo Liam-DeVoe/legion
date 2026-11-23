@@ -6,9 +6,10 @@ import type { ReactNode } from "react";
 
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries } from "../../__tests__/query-provider";
-import { api } from "../../api/client";
-import type { GoingPlanAnswer, GoingPlanRow, GoingRun } from "../../api/types";
-import { dangerText, linkText, pageQuietText } from "../../theme/classes";
+import { answerRoute } from "../../__tests__/send-answers";
+import { api, type WriteBounds } from "../../api/client";
+import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from "../../api/types";
+import { dangerText, linkText, pageQuietText, textMutedOnSurface } from "../../theme/classes";
 import { clockWords } from "../search/blocks/block-cells";
 import { ConversationView } from "./ConversationView";
 import { goingState, openConversation, resetGoingStore, startRun } from "./going-store";
@@ -46,6 +47,8 @@ function record(
     mode: "ask",
     state,
     stop_reason: null,
+    undoable: false,
+    undone_at: null,
     used: { calls: 1, tokens: 10, working_ms: workingMs },
     words: "where is DEMO-15",
     ...extra,
@@ -881,6 +884,150 @@ test("under the answer, Done in grey, with Copy of the answer's text and Retry o
   } finally {
     restore();
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+  }
+});
+
+// Copy gives the words a reader sees: a time the agent wrote as a link to its instant is copied
+// as the words it shows, never as its address.
+test("Copy of an answer gives each time in it as the words it shows, never its link", async () => {
+  const user = userEvent.setup();
+  const writeText = spyOn({ writeText: async (_text: string) => undefined }, "writeText");
+  const clipboard = navigator.clipboard;
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  const restore = await showRun("done", [
+    [
+      "reply",
+      {
+        labels: [],
+        text: "Bob wrote [5 days ago](dispatch-time:2026-11-18T11:35:00Z) that it is stuck.",
+        tools: [],
+      },
+    ],
+    ["end", { offers: [], reason: "", state: "done" }],
+  ]);
+  try {
+    const foot = await screen.findByTestId("going-run-foot");
+    await user.click(within(foot).getByRole("button", { name: "Copy the answer" }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith("Bob wrote 5 days ago that it is stuck.")
+    );
+  } finally {
+    restore();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+  }
+});
+
+/** A plan of one change of DEMO-10's priority, approved and run. */
+const appliedPlan: GoingPlanAnswer = {
+  mode: "ask",
+  plan: 1,
+  rows: [
+    {
+      arguments: { issue: "DEMO-10", priority: 2 },
+      changed: false,
+      claim: null,
+      class: "field",
+      fields: ["priority"],
+      issue: "DEMO-10",
+      item: "DEMO-10",
+      needs: [],
+      now: { priority: null },
+      result: { code: "", delivery: null, message: "", status: 200 },
+      row: 0,
+      state: "done",
+      tool: "dispatch_issue_update",
+      waits: [],
+    },
+  ],
+  run: "r-1",
+  state: "done",
+  summary: "",
+  version: "v1",
+};
+
+/** The answer of the run that made `appliedPlan`, once its change ran. */
+const appliedAnswer = "DEMO-10 is P2 now.";
+
+/** The frames of that run: a read, the plan proposed and run, then the answer. */
+const appliedFrames: readonly (readonly [string, unknown])[] = [
+  ["tool", { items: ["DEMO-10"], kind: "read", label: "Read DEMO-10", step: 2, tool: "read" }],
+  ["plan", { plan: 1, state: "waiting" }],
+  ["plan", { plan: 1, state: "done" }],
+  ["reply", { labels: [], text: appliedAnswer, tools: [] }],
+  ["end", { offers: [], reason: "", state: "done" }],
+];
+
+// Design v3, state 7: an applied plan draws its steps' fold line, its answer, then its card, in
+// that order. Undo takes the changes back and leaves the answer as it was written, and a grey line
+// under the answer says when they were taken back.
+test("an applied plan's run draws the fold line, the answer, then the card, and after Undo says when under the answer", async () => {
+  const user = userEvent.setup();
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
+  const undo = answerRoute<
+    (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
+  >("POST", "/api/v1/going/runs/*/undo");
+  undo.mockImplementation(async () => ({
+    lines: [
+      {
+        fields: [{ field: "priority", message: "written back", ok: true }],
+        item: "DEMO-10",
+        outcome: { code: "", message: "written back", ok: true, status: 200 },
+        plan: 1,
+        row: 0,
+        tool: "dispatch_issue_update",
+        undo: "write_back",
+      },
+    ],
+  }));
+  const restore = await showRun("done", appliedFrames);
+  try {
+    const card = await screen.findByTestId("going-plan");
+    const undoButton = await within(card).findByTestId("going-undo-button");
+    const fold = screen.getByTestId("going-steps-fold");
+    const answered = screen.getByTestId("going-run-answer");
+    expect(fold.compareDocumentPosition(answered)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(answered.compareDocumentPosition(card)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByTestId("going-run-undone")).toBeNull();
+
+    const before = Date.now();
+    await user.click(undoButton);
+    const undone = await screen.findByTestId("going-run-undone");
+    const after = Date.now();
+    expect([before, after].map((at) => `Undone at ${clockWords(at)}`)).toContain(
+      undone.textContent ?? ""
+    );
+    expect(answered.compareDocumentPosition(undone)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(undone.compareDocumentPosition(card)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(undone.className).toContain(textMutedOnSurface);
+    // The answer stays as it was written.
+    expect(answered.textContent).toBe(appliedAnswer);
+  } finally {
+    read.mockRestore();
+    restore();
+  }
+});
+
+// A run undone before this page was opened - in another tab, or before a reload - says so as
+// Dispatch keeps it (`undone_at`): "Undone at" under its answer, at that time, and its card offers
+// no Undo, which has nothing left to take back.
+test("a run undone before this page was opened says when under its answer, as Dispatch keeps it, and offers no Undo", async () => {
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
+  const undoneAt = "2026-11-18T11:35:00Z";
+  const restore = await showRun("done", appliedFrames, { run: { undone_at: undoneAt } });
+  try {
+    const card = await screen.findByTestId("going-plan");
+    await waitFor(() =>
+      expect(within(card).getByTestId("going-plan-title")).toHaveTextContent(/^Applied 1 change/u)
+    );
+    const undone = screen.getByTestId("going-run-undone");
+    expect(undone.textContent).toBe(`Undone at ${clockWords(Date.parse(undoneAt))}`);
+    expect(screen.getByTestId("going-run-answer").compareDocumentPosition(undone)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
+    expect(within(card).queryByTestId("going-undo-button")).toBeNull();
+  } finally {
+    read.mockRestore();
+    restore();
   }
 });
 

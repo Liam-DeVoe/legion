@@ -51,6 +51,7 @@ import {
   BoxRow,
   boxHint,
   boxInputClassName,
+  boxInputStyle,
   boxWords,
   ConversationHeader,
 } from "../going/RunControls";
@@ -60,12 +61,13 @@ import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildProjectPath, type DispatchReferenceRoute, nodeRouteFromHref } from "../refs/routes";
+import { useFollowInPlace } from "../refs/useFollowInPlace";
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AnswerPanel } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
-import { dropFiling, fileNewIssue, useFiling } from "./filing";
+import { dropFiling, fileNewIssue, filingParent, useFiling } from "./filing";
 import { barNoteClassName, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
 import { SearchFilterBar } from "./SearchFilterBar";
@@ -153,8 +155,8 @@ interface LineRow {
   readonly id: string;
   readonly kind: "line";
   readonly line: "ask" | "do" | "file" | "filing" | "failed";
-  /** What the row says before the words: "Ask", "Do", "File as a new issue in DEMO",
-   *  "Filing in DEMO…", "Not filed". */
+  /** What the row says before the words: "Ask", "Do", "File as a new issue in DEMO", "File as a
+   *  new issue under DEMO-6", "Filing in DEMO…", "Not filed". */
   readonly label: string;
   readonly words: string;
   readonly select: () => void;
@@ -782,6 +784,7 @@ function PaletteDialog({
   // key once its hit is listed above it. Its first row reads Ask, Do or File as a new issue;
   // where it reads Do or File, the second reads Ask, so the person can always ask instead. A
   // filing that is out, or that failed, takes the first row's place, and nothing else changes.
+  // A filing line draws no short answer: Enter on it files the words, and answers nothing.
   const lineOffered = answers && queryEnabled && (!ISSUE_KEY.test(searchText) || showHits);
   const askRow: LineRow = {
     id: LINE_ASK_OPTION_ID,
@@ -815,17 +818,19 @@ function PaletteDialog({
           };
     lineRows = lineOffered ? [first, askRow] : [first];
   } else if (lineOffered) {
+    // The filing says what it will do: the issue it files under, where the page's issue becomes
+    // the parent (`filingParent`), else the project it files in.
+    const parent = filingParent(searchText, scope.context.issue ?? "");
+    const filed =
+      parent !== undefined
+        ? `File as a new issue under ${parent}`
+        : project === ""
+          ? "File as a new issue"
+          : `File as a new issue in ${project}`;
     const first: LineRow = {
       id: LINE_OPTION_ID,
       kind: "line",
-      label:
-        line === "file"
-          ? project === ""
-            ? "File as a new issue"
-            : `File as a new issue in ${project}`
-          : line === "do"
-            ? "Do"
-            : "Ask",
+      label: line === "file" ? filed : line === "do" ? "Do" : "Ask",
       line,
       // Enter acts on the label on the screen at the moment of the key, never on a later one, and
       // the run records that line.
@@ -841,6 +846,7 @@ function PaletteDialog({
     };
     lineRows = line === "ask" ? [first] : [first, askRow];
   }
+  const filingOnTop = lineRows[0]?.line === "file" || filing !== undefined;
   // Continue on the empty box: the newest conversation History lists, where it is from the last
   // hour, by its first question.
   const newest = conversations.data?.rows?.[0];
@@ -1004,6 +1010,9 @@ function PaletteDialog({
   }, [shownId]);
 
   useCloseOnNavigation(true, onClose);
+  // A link in the bar - an item's chip in an answer or the short answer - opens its item with the
+  // router, which closes the bar as any other navigation does, rather than loading the whole page.
+  const follow = useFollowInPlace();
 
   const selectRow = (row: PaletteRow) => {
     if (row.kind === "offer" || row.kind === "line") {
@@ -1134,6 +1143,7 @@ function PaletteDialog({
         onKeyDown={talking ? handleTalkKey : handleSearchKey}
         placeholder={placeholder}
         ref={inputRef}
+        style={boxInputStyle(placeholder)}
         type={talking ? "text" : "search"}
         value={query}
       />
@@ -1166,11 +1176,15 @@ function PaletteDialog({
           its foot. The children keep their places in both states (an empty place where a part
           does not show), so the box is the same element throughout. */}
       <div className="pointer-events-none fixed inset-x-0 top-12 bottom-0 z-50 flex items-start justify-center xl:top-20 xl:bottom-4 xl:px-4">
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this
+            follows in place: an item's chip in an answer opens its item with the router, rather
+            than loading the whole page again. */}
         <div
           aria-label="Search"
           aria-modal="true"
           className={`pointer-events-auto relative flex max-h-full w-full flex-col overflow-hidden rounded-b-lg border shadow-2xl xl:max-w-[720px] xl:rounded-lg ${talking ? "h-[80vh]" : ""} ${card} ${borderDefault}`}
           data-state={talking ? "conversation" : "search"}
+          onClick={follow}
           ref={dialog.containerRef}
           role="dialog"
         >
@@ -1314,8 +1328,9 @@ function PaletteDialog({
                   ))}
                 </div>
               )}
-              {/* The short answer of the pause (R3), in its own panel under the rows. */}
-              {shownAnswer === undefined ? null : (
+              {/* The short answer of the pause (R3), in its own panel under the rows; none under
+                  a filing line, whose Enter files the words and answers nothing. */}
+              {shownAnswer === undefined || filingOnTop ? null : (
                 <AnswerPanel
                   answer={shownAnswer}
                   fullAnswer={activeRow?.kind === "line" && activeRow.line === "ask"}

@@ -38,6 +38,7 @@
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 
 import { dangerText, linkHoverText, linkText, textMutedOnSurface } from "../../../theme/classes";
+import { TimedWords } from "../../refs/dispatch-time";
 import { buildReferencePath } from "../../refs/routes";
 import type { RunStep } from "../run-frames";
 
@@ -78,7 +79,8 @@ function counted(count: number, noun: string): string {
 
 /** What each kind of step adds to a fold's words, in the order a fold names them. A read that
  *  answered a list counts its results as the items it read, and any other read the one thing it
- *  read. */
+ *  read. A step that drew a block says what it drew - a chart, a table or one number - as its kind
+ *  does once its block came (`run-frames.ts`). */
 const KIND_WORDS: readonly (readonly [string, (steps: readonly RunStep[]) => string])[] = [
   [
     "read",
@@ -91,6 +93,11 @@ const KIND_WORDS: readonly (readonly [string, (steps: readonly RunStep[]) => str
   ["search", (steps) => `searched ${times(steps.length)}`],
   ["look", (steps) => `looked for a way ${times(steps.length)}`],
   ["chart", (steps) => (steps.length === 1 ? "drew a chart" : `drew ${steps.length} charts`)],
+  ["table", (steps) => (steps.length === 1 ? "drew a table" : `drew ${steps.length} tables`)],
+  [
+    "metric",
+    (steps) => (steps.length === 1 ? "showed a number" : `showed ${steps.length} numbers`),
+  ],
   ["plan", (steps) => (steps.length === 1 ? "proposed a plan" : `proposed ${steps.length} plans`)],
   [
     "review",
@@ -345,7 +352,7 @@ function StepList({
         <div className="space-y-0.5" key={group.first}>
           {group.header === "" ? null : (
             <p className={`truncate text-xs ${textMutedOnSurface}`} data-testid="going-step-words">
-              {group.header}
+              <TimedWords text={group.header} />
             </p>
           )}
           <ol aria-label="Steps" className={`space-y-0.5 ${group.header === "" ? "" : "pl-3"}`}>

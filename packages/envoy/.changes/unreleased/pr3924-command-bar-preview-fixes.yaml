@@ -1,0 +1,19 @@
+kind: Changed
+body: |-
+  The command bar mends what a real-model preview showed. A chip in the side panel opens its item
+  in the page with the router, and the panel stays; a chip in the bar opens it without loading the
+  whole page. History offers Undo only while the run still holds a change Undo can take back, as
+  the run's record says (`undoable`). A row Undo took back reads reverted - grey, the value it
+  wrote struck out beside the old value it put back, and no check - and a grey line "Undone at
+  16:42" stands under that run's answer, which stays as it was written; a run undone before the
+  page was opened reads that time from its record (`undone_at`) and offers no Undo. The run chip
+  takes a row of its own above the page, clear of the page's title at every width. A run's fold
+  line names what each block step drew: "drew a table", "drew a chart", "showed a number". The
+  filing line names the parent the new issue takes ("File as a new issue under DEMO-6") and draws
+  no short answer, and the box's clear button keeps a gap from the words before it. An issue the
+  short answer names twice is its chip once, and an item of an issue the text already draws, such
+  as its spec, is no second link of its title. A chip flows as words, so a long title goes on onto
+  the next line rather than being cut, and the comma after it stays on its line; the box keeps
+  room for what it says whole, and its context chip gives way first. A time the agent writes as a
+  `dispatch-time:` link draws as that time with its full date on hover, in an answer, the short
+  answer, a plan's summary and the line beside the agent's calls, and Copy takes the words shown.

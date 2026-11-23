@@ -46,6 +46,7 @@ import { PriorityEditor } from "../issue/PriorityControl";
 import { StatusMenu } from "../issue-page/StatusMenu";
 import { issueStatuses } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
+import { TimedWords } from "../refs/dispatch-time";
 import { ItemChip } from "../refs/ItemChip";
 import { objectOf, textOf } from "./fields";
 import { draftOf, type PlanDraft, setDraft, useGoing, useGoingValue } from "./going-store";
@@ -83,6 +84,7 @@ import {
   toggledDraft,
   valuesNowWords,
   valueWords,
+  wasReverted,
   withChangesUnticked,
 } from "./plan-rows";
 import { focusConversationBox } from "./RunControls";
@@ -90,12 +92,14 @@ import { UndoResult, useRunUndo } from "./RunUndo";
 import type { PlanAnswering } from "./usePlan";
 
 /** Each mark of a row as it draws (design v2, state 7): a ring while it waits its turn, a
- *  spinner while it runs, a check once it ran, a cross where it failed, and a dash where it did
- *  not run. Motion stops where the person asked for less. */
+ *  spinner while it runs, a check once it ran, a cross where it failed, a dash where it did not
+ *  run, and a grey arrow back, never a check, once Undo took its change back. Motion stops where
+ *  the person asked for less. */
 const MARK_GLYPHS: Readonly<Record<Exclude<RowMark, "waits">, ReactNode>> = {
   done: <span className={successText}>✓</span>,
   failed: <span className={dangerText}>✕</span>,
   not_run: <span className={textMutedOnSurface}>–</span>,
+  reverted: <span className={textMutedOnSurface}>↺</span>,
   running: (
     <span className="inline-block size-3 rounded-full border-2 border-current border-t-transparent motion-safe:animate-spin" />
   ),
@@ -265,11 +269,12 @@ function PieceDiff({ piece }: { readonly piece: ChangePiece }): ReactNode {
 }
 
 /** The issue a row changes, as an answer names an item (design v3, state 6): its chip, with its
- *  key, a dot in its status's colour and its title (`ItemChip`), the title cut where the slot ends
- *  so the fields keep their place beside it. */
+ *  key, a dot in its status's colour and its title (`ItemChip`). The chip takes the room the row
+ *  has: where the row has no room for both, the fields beside it go under it, and a title longer
+ *  than the whole row goes on onto the next line, never cut. */
 function ItemSlot({ item }: { readonly item: string }): ReactNode {
   return (
-    <span className="min-w-0 max-w-64" data-item={item} data-testid="going-plan-item">
+    <span className="min-w-0" data-item={item} data-testid="going-plan-item">
       {item === "" ? null : <ItemChip issue={item} />}
     </span>
   );
@@ -375,7 +380,8 @@ const VALUE_BUTTON = `rounded text-left underline decoration-dotted underline-of
  * title and "(new)" (`newIssues`), and its edit box holds the value itself, which the person may
  * replace with an issue's key. The edit box starts from the new value of the plan it is drawn
  * for, and its caller keys it to that plan, so a revised plan or a new run's never opens with an
- * earlier plan's value or the person's unsaved typing. An edited value says "Edited".
+ * earlier plan's value or the person's unsaved typing. An edited value says "Edited". Once Undo
+ * took the change back (`reverted`), a line reads "Priority: ~~P2~~ → No priority", all grey.
  */
 function FieldChange({
   change,
@@ -384,6 +390,7 @@ function FieldChange({
   newIssues,
   onEdit,
   project,
+  reverted,
   shape,
 }: {
   readonly change: RowChange;
@@ -392,6 +399,9 @@ function FieldChange({
   readonly newIssues: ReadonlyMap<number, string>;
   readonly onEdit: (value: unknown) => void;
   readonly project: string;
+  /** Whether Undo took the row's change back whole, which a line draws as the value it wrote,
+   *  struck out, and the old value it put back. */
+  readonly reverted: boolean;
   readonly shape: "line" | "title" | "part";
 }): ReactNode {
   const { field, next, now } = change;
@@ -405,6 +415,29 @@ function FieldChange({
   const shown = change.namesNewIssue ? newIssues : undefined;
   const edit = editable ? change.edit : undefined;
   const nextValue = <FieldValue against={now} field={field} newIssues={shown} value={next} />;
+  if (reverted && shape === "line") {
+    // Undo took the change back: the value it wrote, struck out, then the old value it put back,
+    // all in the page's grey (design v3, state 7).
+    return (
+      <div
+        className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs"
+        data-field={field}
+        data-reverted="true"
+        data-testid="going-plan-field"
+      >
+        <span className={`font-medium ${textMutedOnSurface}`}>{fieldWords(field)}:</span>{" "}
+        <del className={pageQuietText} data-testid="going-plan-next">
+          <FieldValue field={field} newIssues={shown} value={next} />
+        </del>{" "}
+        <span aria-hidden="true" className={pageQuietText}>
+          →
+        </span>{" "}
+        <span className={pageQuietText} data-testid="going-plan-now">
+          <FieldValue field={field} newIssues={undefined} value={now} />
+        </span>
+      </div>
+    );
+  }
   let value: ReactNode;
   if (edit === "priority" && (editing || next !== null)) {
     value = (
@@ -679,7 +712,7 @@ function DocumentBody({
         )}
       </p>
       <p className={textSecondaryOnSurface} data-testid="going-plan-sentences">
-        {document.sentences}
+        <TimedWords text={document.sentences} />
       </p>
       <details data-testid="going-plan-diff">
         <summary className={`cursor-pointer text-xs ${textMutedOnSurface}`}>The diff</summary>
@@ -758,7 +791,9 @@ function NewIssueBody({
  * v2, state 7) it ticks in place - a ring while it waits its turn, a spinner while it runs, a
  * check once it ran - and says how it stands (`rowOutcome`): a message's result, a failure's
  * reason with "Say what to do instead" (`onFix`, where given), "Not run: it needs the change
- * above". Once its run was undone, it says what became of its change (`undo`).
+ * above". Once its run was undone, it says what became of its change (`undo`): a change Undo took
+ * back whole reads reverted - grey, the value it wrote struck out beside the old value it put
+ * back, and no check - while a change that stayed keeps its check and says why.
  */
 export function PlanRowView({
   draft,
@@ -799,7 +834,11 @@ export function PlanRowView({
       ? rowOutcome(row)
       : undefined;
   const resultMessage = outcome === undefined ? rowResultMessage(row) : "";
-  const mark: RowMark = plan.state === "rejected" ? "not_run" : ROW_MARKS[row.state];
+  // A change Undo took back whole reads reverted, with no check; one that stayed keeps its check
+  // and its line says why.
+  const reverted = undo !== undefined && wasReverted(undo);
+  const mark: RowMark =
+    plan.state === "rejected" ? "not_run" : reverted ? "reverted" : ROW_MARKS[row.state];
   const item = row.item || row.issue;
   const project = textOf(args.project) || issueProject(item);
   const field = (change: RowChange, shape: "line" | "title" | "part") => (
@@ -811,6 +850,7 @@ export function PlanRowView({
       newIssues={newIssues}
       onEdit={(value) => setDraft(editedDraft(draft, row.row, change.field, value))}
       project={project}
+      reverted={reverted}
       shape={shape}
     />
   );
@@ -841,7 +881,9 @@ export function PlanRowView({
       </div>
     );
   }
-  const marked = removes
+  // What a row takes out is marked in red until Undo puts it back.
+  const removing = removes && !reverted;
+  const marked = removing
     ? `border-l-4 pl-2 ${calloutDangerBorder}`
     : changed
       ? `border-l-4 pl-2 ${calloutWarningBorder}`
@@ -879,7 +921,7 @@ export function PlanRowView({
         )}
         <div className="min-w-0 flex-1 space-y-1 text-sm">
           {body}
-          {removes ? (
+          {removing ? (
             <p className={`text-xs font-medium ${dangerText}`} data-testid="going-plan-removes">
               {removalWords(changes)}
             </p>
@@ -1039,16 +1081,21 @@ function useRanAt(plan: GoingPlanAnswer | undefined): number | undefined {
  * the card keeps one Undo (R6); once pressed, its title reads "Undone · 3 changes reverted" and
  * each row says what became of its change. An old turn's card (`folded`, design v2, state 8)
  * draws a plan that no longer waits as its one line, "Applied 3 changes · Undo", which opens it.
- * A plan that could not be read says so, with Retry.
+ * A run undone before this page was opened (`undone`) offers no Undo. A plan that could not be
+ * read says so, with Retry.
  */
 export function PlanCard({
   answering,
   appliedAt,
   folded = false,
+  undone = false,
 }: {
   readonly answering: PlanAnswering;
   readonly appliedAt?: number;
   readonly folded?: boolean;
+  /** Whether the plan's run was undone before this page was opened, as Dispatch says: its card
+   *  offers no Undo, which has nothing left to take back. */
+  readonly undone?: boolean;
 }): ReactNode {
   const going = useGoing();
   const plan = answering.plan;
@@ -1099,7 +1146,7 @@ export function PlanCard({
     (line) => line.plan !== plan.plan || !rows.some((row) => row.row === line.row)
   );
   const undo =
-    lines === undefined && (plan.rows ?? []).some((row) => row.state === "done") ? (
+    lines === undefined && !undone && (plan.rows ?? []).some((row) => row.state === "done") ? (
       <button
         className={secondaryButtonCompact}
         data-testid="going-undo-button"
@@ -1180,7 +1227,9 @@ export function PlanCard({
         {waiting ? <ModeLink mode={plan.mode} /> : null}
       </header>
       {plan.summary === "" ? null : (
-        <p className={`text-sm ${textSecondaryOnSurface}`}>{plan.summary}</p>
+        <p className={`text-sm ${textSecondaryOnSurface}`}>
+          <TimedWords text={plan.summary} />
+        </p>
       )}
       {rows.length === 0 ? null : (
         // The rows take the card's keys (`onRowKey`): the focus reaches them from the box.

@@ -109,17 +109,19 @@ export function spyOnGoingBar(): GoingBarSpies {
   };
 }
 
-/** The bar, open over a project's issue list, with the page's notice beside it. `onCommit` is
- *  called as each render of the bar reaches the page, in the commit itself: after its layout
- *  effects and before any useEffect of that render runs; `onClose` as the bar asks to close. */
+/** The bar, open over `page` (a project's issue list unless a row names another), with the page's
+ *  notice beside it. `onCommit` is called as each render of the bar reaches the page, in the
+ *  commit itself: after its layout effects and before any useEffect of that render runs;
+ *  `onClose` as the bar asks to close. */
 export function renderBar(
   onCommit?: () => void,
-  onClose: () => void = () => {}
+  onClose: () => void = () => {},
+  page = "/projects/LEGION/issues"
 ): { unmount: () => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const palette = <SearchPalette onClose={onClose} open />;
   const view = render(
-    <MemoryRouter initialEntries={["/projects/LEGION/issues"]}>
+    <MemoryRouter initialEntries={[page]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           {onCommit === undefined ? (

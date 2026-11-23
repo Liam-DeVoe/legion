@@ -77,6 +77,8 @@ const created: GoingRun = {
   mode: "ask",
   state: "queued",
   stop_reason: null,
+  undoable: false,
+  undone_at: null,
   used: { calls: 0, tokens: 0, working_ms: 0 },
   words: "tidy DEMO-10",
 };
@@ -179,6 +181,9 @@ test("a change row names its item and each field in the page's words, the values
     const chip = within(within(drawn).getByTestId("going-plan-item")).getByTestId("item-chip");
     expect(chip).toHaveTextContent("DEMO-10");
     await waitFor(() => expect(chip).toHaveTextContent("DEMO-10In progressThe issue DEMO-10"));
+    // The chip takes the room the row has: no width of its own cuts its title, and the fields
+    // go under it where the row has no room for both.
+    expect(within(drawn).getByTestId("going-plan-item").className).not.toMatch(/max-w-/u);
     const priority = fieldOf(drawn, "priority");
     expect(priority).toHaveTextContent(/^Priority: No priority → P2/u);
     const now = within(priority).getByTestId("going-plan-now");
@@ -1067,6 +1072,16 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
       "Sent, not undone"
     );
     expect(screen.queryByTestId("going-undo-button")).toBeNull();
+    // The change Undo took back reads reverted: no check, and its line grey, the value it wrote
+    // struck out beside the old value it put back. The change someone else kept, and the message
+    // sent, keep their check.
+    expect(marks()).toEqual(["reverted", "done", "done"]);
+    const priority = fieldOf(drawnRow(0), "priority");
+    expect(priority).toHaveAttribute("data-reverted", "true");
+    expect(shownText(priority)).toBe("Priority: P1 → P3");
+    expect(within(priority).getByTestId("going-plan-next").tagName).toBe("DEL");
+    expect(within(priority).getByTestId("going-plan-now")).toHaveTextContent("P3");
+    expect(fieldOf(drawnRow(1), "title")).not.toHaveAttribute("data-reverted");
     expect(screen.getByTestId("going-plan").textContent ?? "").not.toMatch(/[{}"]|GOING_/u);
   } finally {
     restore();

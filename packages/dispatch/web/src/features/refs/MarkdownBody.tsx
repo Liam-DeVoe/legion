@@ -290,8 +290,10 @@ function* paintBlockInSlices(
  * `referenceText`.
  *
  * With `chips`, as the command bar draws an answer (design v2, state 4), each link to an issue
- * draws as the issue's chip (`ItemChip`): its key, a dot in its status's colour and its title, on
- * one line. Every other reference keeps its `RefLink`.
+ * draws as the issue's chip (`ItemChip`): its key, a dot in its status's colour and its title. An
+ * issue is its chip once, at the first link to it: a later link to the same issue keeps the words
+ * it was written with, as a plain link, so the answer shows the issue's title once however often
+ * its words name it. Every other reference keeps its `RefLink`.
  */
 export function MarkdownBody({
   chips = false,
@@ -344,14 +346,27 @@ export function MarkdownBody({
   const inline = variant === "inline";
   const references = useTextReferences(referenceText, source);
   // A body drawn with `chips` takes the links to issues from the link pass's anchors and draws
-  // each one's chip itself; every other anchor goes back to the pass, which draws its `RefLink`.
+  // the first one of each issue as its chip itself; a later link to an issue that already has its
+  // chip keeps the words it was written with, and every other anchor goes back to the pass, which
+  // draws its `RefLink`.
   const [chipAnchors, setChipAnchors] = useState<readonly ReferenceAnchor[]>(NO_CHIPS);
   const takeIssueLinks = useCallback<DecorateMarkdown>((_element, anchors) => {
-    const issues = anchors.filter((reference) => reference.route.kind === "issue");
-    setChipAnchors(issues.length === 0 ? NO_CHIPS : issues);
-    return issues.length === 0
-      ? anchors
-      : anchors.filter((reference) => reference.route.kind !== "issue");
+    const chipped = new Set<string>();
+    const chips: ReferenceAnchor[] = [];
+    const others: ReferenceAnchor[] = [];
+    for (const reference of anchors) {
+      if (reference.route.kind !== "issue") {
+        others.push(reference);
+      } else if (chipped.has(reference.route.key)) {
+        // The link pass emptied it for a portal; it gets none, so its words go back in.
+        reference.anchor.textContent = reference.text;
+      } else {
+        chipped.add(reference.route.key);
+        chips.push(reference);
+      }
+    }
+    setChipAnchors(chips.length === 0 ? NO_CHIPS : chips);
+    return chips.length === 0 ? anchors : others;
   }, []);
   const { isFallback, isPending, portals } = useRenderedMarkdown(
     inline ? inlineRoot : blockRoot,

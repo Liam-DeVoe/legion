@@ -245,6 +245,21 @@ async function chipsRead(where: Locator, count: number): Promise<void> {
   await expect(where.getByTestId("item-chip-status")).toHaveCount(count);
 }
 
+/** Whether two boxes a locator measured share any point. A box that is not drawn is refused: the
+ *  row asks about two that are. */
+function boxesMeet(
+  one: { x: number; y: number; width: number; height: number } | null,
+  other: { x: number; y: number; width: number; height: number } | null
+): boolean {
+  if (one === null || other === null) throw new Error("a box to compare is not drawn");
+  return (
+    one.x < other.x + other.width &&
+    other.x < one.x + one.width &&
+    one.y < other.y + other.height &&
+    other.y < one.y + one.height
+  );
+}
+
 /** Moves the conversation to the panel at the side with its key. */
 async function keepAtTheSide(page: Page): Promise<void> {
   await page.keyboard.press("Control+Shift+K");
@@ -858,6 +873,20 @@ const barRows: readonly BarRow[] = [
       await expect(chip).toHaveAttribute("data-state", "working");
       await expect(chip.getByTestId("going-chip-text")).toHaveText(`Working · ${working}`);
       await shoot(page, "11-chip");
+      // The chip sits clear of the page's title at every width (design v3, state 11): its row
+      // stands above the page, so the two never meet, from the wide layout down to a phone's.
+      const shotSize = page.viewportSize();
+      const title = page.locator("#main-content h1").first();
+      for (const width of [1440, 1024, 768, 390]) {
+        await page.setViewportSize({ height: 900, width });
+        await expect(chip).toBeVisible();
+        await expect(title).toBeVisible();
+        expect(
+          boxesMeet(await chip.boundingBox(), await title.boundingBox()),
+          `the chip and the title meet at ${width} px`
+        ).toBe(false);
+      }
+      if (shotSize !== null) await page.setViewportSize(shotSize);
       await chip.getByTestId("going-chip-open").click();
       await expect(bar(page)).toBeVisible();
       await searchBox(page).press("Escape");

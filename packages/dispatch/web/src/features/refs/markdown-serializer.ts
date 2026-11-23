@@ -2,9 +2,11 @@ import { documentFromJSON } from "@legion/proof-editor/document-json";
 import type { HeadlessProofEditor } from "@legion/proof-editor/headless";
 import { DOMSerializer, Schema } from "prosemirror-model";
 
+import { instantOf, isTimeAddress } from "./dispatch-time";
 import type { MarkdownEngine, RenderSpecWithAttrs } from "./markdown-engine";
 import type { DocumentJSON } from "./markdown-parse.worker";
 import { buildDispatchReference, buildReferencePath, pictureReference } from "./routes";
+import { timeTitle } from "./Timestamp";
 
 /**
  * The half of the Markdown engine written against ProseMirror's own classes, behind the same
@@ -64,6 +66,34 @@ function pictureSerializer(schema: Schema): DOMSerializer {
   );
 }
 
+/**
+ * `base`, except for a link to a time the command bar's agent wrote
+ * (`[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`, `dispatch-time.tsx`): a `<time>` of the
+ * instant its address names, showing the link's words, with the instant whole on hover as every
+ * other time the page draws in words has it (`Timestamp`). An address that names no instant draws
+ * the words alone. Every other link is serialized as `base` serializes it: Proof's link sanitizer
+ * would draw a time's address as an empty link back to the page.
+ */
+function timeSerializer(base: DOMSerializer): DOMSerializer {
+  const link = base.marks.link;
+  if (link === undefined) {
+    return base;
+  }
+  return new DOMSerializer(base.nodes, {
+    ...base.marks,
+    link: (mark, inline) => {
+      const href: unknown = mark.attrs.href;
+      if (!isTimeAddress(href)) {
+        return link(mark, inline);
+      }
+      const instant = instantOf(href);
+      return instant === undefined
+        ? ["span", 0]
+        : ["time", { datetime: instant, title: timeTitle(new Date(instant)) }, 0];
+    },
+  });
+}
+
 /** The mark Go puts over the words a search matched in a snippet's tree
  *  (`pmdoc.DisplayHighlightMark`). It is a mark of the display tree alone: no document stores
  *  it, no write accepts it, and Proof's own schema therefore has no node for it. */
@@ -91,7 +121,7 @@ export function buildEngine(proof: HeadlessProofEditor): MarkdownEngine {
     displaySchema,
     schema: proof.schema,
     renderSpec: DOMSerializer.renderSpec as RenderSpecWithAttrs,
-    serializer: pictureSerializer(displaySchema),
+    serializer: timeSerializer(pictureSerializer(displaySchema)),
     draw(tree) {
       try {
         // Built node by node rather than through `Node.fromJSON`, for the reason

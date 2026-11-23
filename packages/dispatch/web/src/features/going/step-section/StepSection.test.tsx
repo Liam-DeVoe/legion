@@ -68,6 +68,19 @@ test("a fold says what its steps were made of: items read, how often it searched
   expect(
     foldWords([step(0, { kind: "chart", tool: "draw_block" }), step(1, { kind: "chart" })])
   ).toBe("drew 2 charts");
+  // A step that drew a table or one number says so, as its kind does once its block came.
+  expect(foldWords([step(0, { kind: "table", tool: "draw_block" })])).toBe("drew a table");
+  expect(
+    foldWords([step(0, { kind: "table", tool: "draw_block" }), step(1, { kind: "table" })])
+  ).toBe("drew 2 tables");
+  expect(foldWords([step(0, { kind: "metric", tool: "draw_block" })])).toBe("showed a number");
+  expect(
+    foldWords([
+      step(0),
+      step(1, { kind: "chart", tool: "draw_block" }),
+      step(2, { kind: "table", tool: "draw_block" }),
+    ])
+  ).toBe("read 1 item, drew a chart, drew a table");
   // Each kind in one order, joined with ", "; a failed call counts as failed, not as its kind.
   expect(
     foldWords([

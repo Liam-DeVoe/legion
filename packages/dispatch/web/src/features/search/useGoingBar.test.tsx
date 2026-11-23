@@ -7,7 +7,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
 import type { GoingEvent, GoingLine, GoingRun } from "../../api/types";
 import { resetGoingStore } from "../going/going-store";
-import { FILED_NOTICE_MS } from "./filing";
+import { FILED_NOTICE_MS, filingParent } from "./filing";
 import {
   CONFIGURED_CAPABILITY,
   type GoingBarSpies,
@@ -315,6 +315,8 @@ function newIssueRun(id: string): GoingRun {
     mode: "ask",
     state: "queued",
     stop_reason: null,
+    undoable: false,
+    undone_at: null,
     used: { calls: 0, tokens: 0, working_ms: 0 },
     words: FILE_WORDS,
   };
@@ -447,4 +449,37 @@ test("a filing Dispatch refuses to start says so in the bar, and a word typed af
   } finally {
     bar.unmount();
   }
+});
+
+// The filing line says what it will do (R9, design v3, state 13): over an issue's page the new
+// issue goes under that issue, as the new-issue run files it, and the line names that parent
+// before Enter. A filing line draws no short answer - Enter files the words and answers nothing -
+// and the box's clear button keeps a gap from the words it follows.
+test("over an issue's page the filing line names the issue it files under, and draws no short answer", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar(undefined, undefined, "/issues/LEGION-7");
+  try {
+    await typeAndPause(user, FILE_WORDS);
+    act(() => streams[0]?.send({ data: { text: "No answer to that\\." }, event: "text" }));
+    decide("file", "dispatch_issue");
+    await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "file"));
+    expect(lineWords()).toHaveTextContent(`File as a new issue under LEGION-7: ${FILE_WORDS}`);
+    act(() => streams[0]?.send({ data: { items: 0, words: 4 }, event: "end" }));
+    await tick(0);
+    expect(screen.queryByTestId("going-answer")).toBeNull();
+    const box = screen.getByRole("combobox", { name: "Search" });
+    expect(box.className.split(" ")).toContain("[&::-webkit-search-cancel-button]:ms-2");
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("the page's issue is the filing's parent unless the words say top-level or name another issue", () => {
+  expect(filingParent("we need a dome", "DEMO-6")).toBe("DEMO-6");
+  expect(filingParent("we need a dome for demo-6", "DEMO-6")).toBe("DEMO-6");
+  expect(filingParent("we need a dome", "")).toBeUndefined();
+  expect(filingParent("a top-level issue for a dome", "DEMO-6")).toBeUndefined();
+  expect(filingParent("a dome, top level", "DEMO-6")).toBeUndefined();
+  expect(filingParent("a dome with no parent", "DEMO-6")).toBeUndefined();
+  expect(filingParent("a dome under DEMO-12", "DEMO-6")).toBeUndefined();
 });

@@ -26,7 +26,8 @@ export interface RunStep {
   readonly label: string;
   /** What the call is - read, search, look, chart, plan, review or write - as its call frame or
    *  its tool frame says it; empty for a call only a reply named. A write is a change of an
-   *  approved plan, which the plan's card shows. */
+   *  approved plan, which the plan's card shows. A call that drew a block is a chart until its
+   *  block comes, and then the kind of block it drew: a chart, a table or a metric. */
   readonly kind: string;
   /** The prose the model wrote beside this call and the others of the same model call, which the
    *  bar shows as their header line: the first call frame's of that model call, or its reply's.
@@ -75,6 +76,9 @@ export interface RunFrames {
    *  the turn says, or its end frame. */
   readonly waitsForPerson: boolean;
   readonly blocks: readonly GoingBlockData[];
+  /** The id of the step the newest tool frame ended, which the block frame of a call that drew
+   *  one follows at once (the agent stores the two together); undefined before any. */
+  readonly lastEnded: number | undefined;
   /** The plan's number and state as the last plan frame said them. */
   readonly plan: { readonly number: number; readonly state: string } | undefined;
   /** How many frames told the bar to read the plan again: each plan frame, and the end of a run
@@ -87,6 +91,7 @@ export interface RunFrames {
 export const STARTED_RUN: RunFrames = {
   blocks: [],
   end: undefined,
+  lastEnded: undefined,
   plan: undefined,
   planReads: 0,
   replies: [],
@@ -108,6 +113,10 @@ function textsOf(value: unknown): readonly string[] {
 function numberOf(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
+
+/** The kinds of block a call of a run draws (`going.RunBlockKinds`), each the kind its step takes
+ *  once the block comes. */
+const DRAWN_KINDS: Readonly<Record<string, true>> = { chart: true, metric: true, table: true };
 
 /** The id `run`'s next step takes: one past its last step's, so no two of its steps share one,
  *  though an end drops the steps that never ended. */
@@ -288,12 +297,27 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
         at === -1
           ? [...run.steps, ended]
           : run.steps.map((known, index) => (index === at ? ended : known));
-      return { ...run, state: runNext(run.state, "step").state, steps };
+      return { ...run, lastEnded: ended.id, state: runNext(run.state, "step").state, steps };
     }
-    case "block":
-      return typeof data === "object" && data !== null
-        ? { ...run, blocks: [...run.blocks, data as GoingBlockData] }
-        : run;
+    case "block": {
+      if (typeof data !== "object" || data === null) {
+        return run;
+      }
+      const block = data as GoingBlockData;
+      // The step that drew the block says what it drew, so its fold names a table a table: its
+      // tool frame's kind is the label's, chart, whatever it drew.
+      const drawn = DRAWN_KINDS[block.kind] === true ? block.kind : undefined;
+      return {
+        ...run,
+        blocks: [...run.blocks, block],
+        steps:
+          drawn === undefined
+            ? run.steps
+            : run.steps.map((step) =>
+                step.id === run.lastEnded && step.kind === "chart" ? { ...step, kind: drawn } : step
+              ),
+      };
+    }
     case "plan": {
       const number = typeof fields.plan === "number" ? fields.plan : 0;
       const state = textOf(fields.state);

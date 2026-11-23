@@ -14,6 +14,7 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { TimedWords } from "../refs/dispatch-time";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { openConversation } from "./going-store";
@@ -121,7 +122,7 @@ function WaitingPlanRow({
           className={`font-medium ${textPrimaryOnSurface}`}
           data-testid="inbox-going-plan-title"
         >
-          {shown === undefined ? plan.summary : planTitle(shown.rows ?? [])}
+          {shown === undefined ? <TimedWords text={plan.summary} /> : planTitle(shown.rows ?? [])}
         </span>
         {dot}
         <span data-testid="inbox-going-plan-from">from {title}</span>

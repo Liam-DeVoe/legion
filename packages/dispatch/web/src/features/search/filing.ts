@@ -25,6 +25,31 @@ import { buildIssuePath } from "../refs/routes";
 /** How long the notice of a filed issue shows. */
 export const FILED_NOTICE_MS = 10_000;
 
+/** Words that say a new issue stands at the top of its project, under no issue. */
+const TOP_LEVEL = /\b(?:top[- ]?level|no parent|without (?:a |any )?parent)\b/iu;
+
+/** An issue's key as words write one, in either case: `DEMO-12`, `demo-12`. */
+const KEY_IN_WORDS = /\b[A-Za-z][A-Za-z0-9]*-\d+\b/gu;
+
+/**
+ * The issue a filing of `words` files its new issue under, as the new-issue run decides it
+ * (`newIssuePrompt`, `going/agent/prompt.go`): the issue of the page the words are asked from
+ * (`pageIssue`, "" for a page of none), unless the words say the issue is top-level or name
+ * another parent, which the run keeps (R9). The line on top says it before Enter, so the person
+ * sees the parent their filing takes. Words that name any other issue may name it as the parent,
+ * so they answer none rather than a parent the run may not take; undefined is no parent the line
+ * can name.
+ */
+export function filingParent(words: string, pageIssue: string): string | undefined {
+  if (pageIssue === "" || TOP_LEVEL.test(words)) {
+    return undefined;
+  }
+  const named = words.match(KEY_IN_WORDS) ?? [];
+  return named.every((key) => key.toUpperCase() === pageIssue.toUpperCase())
+    ? pageIssue
+    : undefined;
+}
+
 /** The filing the bar shows: out, or ended with nothing filed and why, in words. `project` is the
  *  project it files in, "" where the chip names none. */
 export type Filing =

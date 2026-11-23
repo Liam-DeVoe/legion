@@ -40,6 +40,8 @@ function record(id: string, conversation: string, words: string): GoingRun {
     mode: "ask",
     state: "queued",
     stop_reason: null,
+    undoable: false,
+    undone_at: null,
     used: { calls: 0, tokens: 0, working_ms: 0 },
     words,
   };
