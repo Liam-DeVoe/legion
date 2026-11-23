@@ -240,31 +240,82 @@ func TestALaunchItsPodRefusesAfterItsStartRowFinishedQueuesAStartOfTheClaim(t *t
 	}
 }
 
-// A refusal's fact is how the workflow learns that a claim waits for its pod and is what queues
-// the start that brings the claim back, so a fact the workflow cannot apply is never only logged:
-// it stops the workflow, and with it the daemon, as a claim's terminal fact does (terminal). The
-// claim's suspension for the daemon is durable, so the next boot's resume by rule starts it
-// (workflow's booted). Here every fact the workflow applies fails.
-func TestARefusalsFactTheWorkflowCannotApplyStopsTheWorkflow(t *testing.T) {
-	failing := errors.New("the fact's transaction failed")
-	var answers *workflowRuntime
-	r := newPodRefusalRig(t, func(pool *store.Pool, records record.Store) *workflowRuntime {
-		answers = &workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{&outboxFactHandler{err: failing}}, log: quietLogger(),
-			failed: make(chan error, 1)}
-		return answers
-	}, nil)
+// refusalReportLine is the line the workflow logs at ERROR at each failed apply of a refusal's
+// report (intake.PodRefusedLaunch).
+const refusalReportLine = "apply a launch its issue's pod refused"
+
+// refuseTheTestersResume refuses the tester's resume by rule on pod-1, as a boot's resume of a
+// claim that owns its issue's step meets a pod built without its slot.
+func (r *podRefusalRig) refuseTheTestersResume() {
+	r.t.Helper()
 	r.refuseOnPod1()
 	if err := r.machine.Handle(context.Background(), supervise.RequestRuleResume{Claim: r.token, Reason: "it owns its issue's step"}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
-		t.Fatalf("the resume answered %v, want the refusal, which is runtime.ErrAwaitsPodUpdate", err)
+		r.t.Fatalf("the resume answered %v, want the refusal, which is runtime.ErrAwaitsPodUpdate", err)
 	}
-	select {
-	case err := <-answers.failed:
-		if !errors.Is(err, failing) {
-			t.Fatalf("the workflow stopped on %v, want the fact's failure", err)
+}
+
+// A refusal's report is how the workflow learns that a claim waits for its pod and is what queues
+// the start that brings the claim back, so a report the store does not take is tried again on a
+// backoff until it is applied, each failure logged at ERROR, as a RefusedStartEnded fact is; and
+// neither stops the workflow, so a report that fails, the hourly one included, costs the daemon no
+// restart. Failing once and then passing, the issue and the controller are told and the claim's
+// owed entry is queued. Failing for ever, the line is logged at each try, nothing reaches the
+// workflow's failure channel (failed), and nothing is queued.
+func TestARefusalsReportTheStoreDidNotTakeIsTriedAgainUntilApplied(t *testing.T) {
+	withFailing := func(answers **workflowRuntime, failing intake.Handler, log *slog.Logger) func(pool *store.Pool, records record.Store) *workflowRuntime {
+		return func(pool *store.Pool, records record.Store) *workflowRuntime {
+			*answers = engineAnswers(pool, records)
+			(*answers).handlers = append([]intake.Handler{failing}, (*answers).handlers...)
+			if log != nil {
+				(*answers).log = log
+			}
+			return *answers
 		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the refusal's fact failed and the workflow went on: a lost fact leaves the claim suspended with nothing to start it")
 	}
+	notStopped := func(t *testing.T, answers *workflowRuntime) {
+		t.Helper()
+		select {
+		case err := <-answers.failed:
+			t.Fatalf("the workflow stopped on %v, want the report tried again and the workflow going on", err)
+		default:
+		}
+	}
+	t.Run("failing once, then applied", func(t *testing.T) {
+		var answers *workflowRuntime
+		failing := failingRefusals(1)
+		r := newPodRefusalRig(t, withFailing(&answers, failing, nil), nil)
+		r.refuseTheTestersResume()
+		r.toldTheController()
+		r.owedEntryQueued()
+		if n := failing.count(); n != 1 {
+			t.Fatalf("the report failed %d times, want the one failure before it was applied", n)
+		}
+		notStopped(t, answers)
+	})
+	t.Run("failing for ever", func(t *testing.T) {
+		var answers *workflowRuntime
+		logs := &syncBuffer{}
+		failing := failingRefusals(-1)
+		r := newPodRefusalRig(t, withFailing(&answers, failing, slog.New(slog.NewJSONHandler(logs, nil))), nil)
+		r.refuseTheTestersResume()
+		deadline := time.Now().Add(20 * time.Second)
+		for len(loggedLines(t, logs.String(), refusalReportLine)) < 3 {
+			if time.Now().After(deadline) {
+				t.Fatalf("20 s after the refusal the log holds %d lines %q, want at least three: the report is tried again on its backoff",
+					len(loggedLines(t, logs.String(), refusalReportLine)), refusalReportLine)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		for _, line := range loggedLines(t, logs.String(), refusalReportLine) {
+			if line["level"] != "ERROR" {
+				t.Fatalf("the line %v is not at ERROR", line)
+			}
+		}
+		notStopped(t, answers)
+		if got := r.starts(); len(got) != 0 {
+			t.Fatalf("with the report never applied the outbox holds the starts %+v, want none", got)
+		}
+	})
 }
 
 // The turn of a resume the wake pacing held can come, and its launch be refused, while the start
@@ -429,17 +480,30 @@ func (r *podRefusalRig) owedEntryQueued() {
 	}
 }
 
-// failingEnded fails every apply of a RefusedStartEnded fact while fails is above zero, counting
+// failingKind fails every apply of a fact of one kind (of) while fails is above zero, counting
 // down, and every one for ever where fails is negative; it passes every other fact. It stands
 // before the engine in a runner's handlers, so a failure rolls the engine's writes back with it.
-type failingEnded struct {
+type failingKind struct {
+	of     func(intake.Fact) bool
 	mu     sync.Mutex
 	fails  int
 	failed int
 }
 
-func (f *failingEnded) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (intake.Result, error) {
-	if _, ok := fact.(intake.RefusedStartEnded); !ok {
+// failingEnded fails the first fails applies of a RefusedStartEnded fact, or every one where fails
+// is negative.
+func failingEnded(fails int) *failingKind {
+	return &failingKind{fails: fails, of: func(fact intake.Fact) bool { _, ok := fact.(intake.RefusedStartEnded); return ok }}
+}
+
+// failingRefusals fails the first fails applies of a refusal's report (intake.PodRefusedLaunch),
+// or every one where fails is negative.
+func failingRefusals(fails int) *failingKind {
+	return &failingKind{fails: fails, of: func(fact intake.Fact) bool { _, ok := fact.(intake.PodRefusedLaunch); return ok }}
+}
+
+func (f *failingKind) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	if !f.of(fact) {
 		return intake.Result{}, nil
 	}
 	f.mu.Lock()
@@ -452,7 +516,7 @@ func (f *failingEnded) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (int
 	return intake.Result{}, errors.New("the store did not take the fact")
 }
 
-func (f *failingEnded) count() int {
+func (f *failingKind) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.failed
@@ -466,11 +530,11 @@ const refusedStartEndedLine = "apply the end of a start row of a claim its pod r
 // applied, each failure logged at ERROR, so a claim refused while its start row was finishing
 // gets its start once the store answers, with no boot. Failing once and then passing, the claim
 // gets exactly one start. Failing for ever, the line is logged at each try; the backoff doubles up
-// to an hour (refusedStartRetryMost), so an operator sees it hourly. The stop ends the tries.
+// to an hour (refusalRetryMost), so an operator sees it hourly. The stop ends the tries.
 func TestARefusedStartEndedTheStoreDidNotTakeIsTriedAgainUntilApplied(t *testing.T) {
 	t.Run("failing once, then applied", func(t *testing.T) {
 		r := newPodRefusalRig(t, engineAnswers, pacedTurn)
-		failing := &failingEnded{fails: 1}
+		failing := failingEnded(1)
 		r.runner.handlers = append([]intake.Handler{failing}, r.runner.handlers...)
 		row := r.refusedWhileItsRowFinishes()
 		r.runner.settle(context.Background(), row, nil)
@@ -483,7 +547,7 @@ func TestARefusedStartEndedTheStoreDidNotTakeIsTriedAgainUntilApplied(t *testing
 		r := newPodRefusalRig(t, engineAnswers, pacedTurn)
 		logs := &syncBuffer{}
 		r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
-		failing := &failingEnded{fails: -1}
+		failing := failingEnded(-1)
 		r.runner.handlers = append([]intake.Handler{failing}, r.runner.handlers...)
 		row := r.refusedWhileItsRowFinishes()
 		ctx, stop := context.WithCancel(context.Background())
