@@ -16,11 +16,18 @@ import (
 // wholeTestLines is the rows of the tests of the whole text, then each line of ste-lint's corpus.
 // The rows hold what joins or splits a piece of ste-lint across two sentences, and what moves the
 // first place of a verb: a stop before a closing quote or bracket, an initialism, code font that
-// holds a stop and a space, a verb of a group in code font and in a name, and list items. The last
-// four hold the two ways a piece runs on into a sentence from the one before it, from an open
-// sentence of one piece and of two (left: the initialism ends a piece of ste-lint and no sentence),
-// with a closed sentence as the control, and one sentence written twice with an open sentence
-// between, whose closing quote a way out takes away at both places (changedRuns).
+// holds a stop and a space, a verb of a group in code font and in a name, and list items. The rows
+// after them hold each half of what the judge reads of a piece that crosses a changed sentence
+// (wholeText.load, changedRuns, writesNoNewFinding), each where a count one word off, or the other
+// half alone, changes the verdict: the two ways a piece runs on into a sentence from the one before
+// it, from an open sentence of one piece and of two (left: the initialism ends a piece of ste-lint
+// and no sentence), with a closed sentence as the control, and a way out that brings the piece of
+// two pieces' last to the bound of 25 words and one past it, also where a piece runs on into that
+// sentence too; one sentence written twice with an open sentence between, whose closing quote a way
+// out takes away at both places, and a closed one that a way out opens at both places (a changed
+// sentence's run, as the text holds it and as the way out writes it); and a sentence of one word
+// that a way out writes in code font, open with no word in its last piece, before a long piece,
+// which it then runs on into (the piece after a run, as the way out writes it).
 func wholeTestLines(t *testing.T) []string {
 	t.Helper()
 	lines := []string{
@@ -39,7 +46,12 @@ func wholeTestLines(t *testing.T) []string {
 		`It runs in the U.S. and it said "wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp." It keeps it. It ends.`,
 		`He said "wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp wq wr." It keeps it. It ends.`,
 		`He said wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp wq wr. It keeps it. It ends.`,
+		`It runs in the U.S. and it said "wa wb wc wd we wf wg wh wi wj wk wl wm." It keeps it. It ends.`,
+		`It runs in the U.S. and it said "wa wb wc wd we wf wg wh wi wj wk wl wm wn." It keeps it. It ends.`,
+		`He said "Go." It runs in the U.S. and it said "wa wb wc wd we wf wg wh wi wj wk wl wm." It keeps it. It ends.`,
 		`He said "sa sb sc sd se sf sg sh si last." He said "ma mb mc md me mf." He said "sa sb sc sd se sf sg sh si last." It ends.`,
+		`It logs. He said "wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp wq wr." It logs. It ends.`,
+		`Go. Then each of the twenty-six words of this long sentence runs on and on past the bound that the rule sets for each sentence of a text today.`,
 	}
 	corpus, err := os.Open("ste/testdata/corpus.jsonl")
 	if err != nil {
@@ -118,17 +130,26 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 // closing marks taken away. They end a piece of ste-lint where it ran on into the next sentence,
 // make one run on where it ended, and move a verb's first place, so the count of each piece after
 // the change, from the sentences before it (left) and into those after it (runs), is read for each
-// way a piece can cross the changed sentence: also after an open sentence of two pieces, whose last
-// piece runs on into it, and in a sentence written twice that a run of open sentences joins, where
-// the way out closes it at both places (counted). Each line is one that the judge reads by its
-// sentences, with no backtick that nothing closes before a sentence (opened), which the judge
-// refuses a backtick after on purpose. Each change is read by a reading of its own, as a judgment
-// reads one finding's ways out, so the charge of a sentence (charge.Texts.Read) holds each. The
-// text that ste-lint reads is written from the line's own split (sentencesOf), not from what the
-// judge keeps.
+// way a piece can cross the changed sentence, each where a count one word off, or one half of what
+// the judge reads alone, changes the verdict (counted): after an open sentence of two pieces, whose
+// last piece runs on into it, where the way out brings that piece to the bound of 25 words and one
+// past it, also where a piece runs on into the sentence of two pieces too; in a sentence written
+// twice that a run of open sentences joins, where the way out closes it at both places, and in one
+// that the way out opens at both places, so that only the text it writes joins them; and in a
+// closed sentence that the way out leaves open with no word in its last piece, before a long piece
+// that it then runs on into. Each line is one that the judge reads by its sentences, with no
+// backtick that nothing closes before a sentence (opened), which the judge refuses a backtick after
+// on purpose. Each change is read by a reading of its own, as a judgment reads one finding's ways
+// out, so the charge of a sentence (charge.Texts.Read) holds each. The text that ste-lint reads is
+// written from the line's own split (sentencesOf), not from what the judge keeps.
 func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *testing.T) {
 	verbs := []string{"checks", "verifies", "validated", "confirm", "deletes", "removed", "starts", "begin", "halted", "display"}
 	texts, ways, opened, closed, refused, afterTwo, joinedTwice := 0, 0, 0, 0, 0, 0, 0
+	atBound, pastBound, leftAfterLeft, openedTwice, emptyOpened := 0, 0, 0, 0, 0
+	long := func(words int) bool {
+		_, breaks := ste.LongSentence(words)
+		return breaks
+	}
 	for _, text := range wholeTestLines(t) {
 		line := oneLine(text)
 		sentences := sentencesOf(line)
@@ -211,21 +232,53 @@ func TestTheWholeTextReadsAChangeOfASentenceAsSteLintReadsTheTextItWrites(t *tes
 						joinedTwice++
 					}
 					span := line[each.start:each.end]
-					was, now := ste.SpreadOf(span).Open, ste.SpreadOf(strings.ReplaceAll(span, way.from, way.to)).Open
-					switch {
-					case was && !now:
+					now := ste.SpreadOf(strings.ReplaceAll(span, way.from, way.to))
+					switch was := spreads[index].Open; {
+					case was && !now.Open:
 						closed++
-					case !was && now:
+					case !was && now.Open:
 						opened++
+						// The way out joins two places of the sentence that the text does not: each
+						// sentence between them is open.
+						for at := 1; at < len(places); at++ {
+							run := true
+							for between := places[at-1] + 1; between < places[at]; between++ {
+								run = run && spreads[between].Open
+							}
+							if run {
+								openedTwice++
+								break
+							}
+						}
+						// The way out leaves no word in the sentence's last piece, where no piece runs on
+						// into the sentence, and the piece of the next sentence is long.
+						if now.Pieces[len(now.Pieces)-1] == 0 && (index == 0 || !spreads[index-1].Open) && index+1 < len(sentences) && long(spreads[index+1].Pieces[0]) {
+							emptyOpened++
+						}
+					}
+					// The piece that runs on into the sentence from an open sentence of two pieces ends in
+					// the sentence as the way out writes it, at the bound or one word past it.
+					if leftOfTwo && (len(now.Pieces) > 1 || !now.Open) {
+						piece := spreads[index-1].Pieces[len(spreads[index-1].Pieces)-1] + now.Pieces[0]
+						switch {
+						case !long(piece) && long(piece+1):
+							atBound++
+							if index > 1 && spreads[index-2].Open {
+								leftAfterLeft++
+							}
+						case long(piece) && !long(piece-1):
+							pastBound++
+						}
 					}
 				}
 			}
 		}
 	}
-	t.Logf("%d lines, %d changes, %d refused, %d that end a piece that ran on, %d that make one run on, %d after an open sentence of two pieces, %d in a sentence that a run joins at two places",
-		texts, ways, refused, closed, opened, afterTwo, joinedTwice)
-	if texts < 700 || refused == 0 || refused == ways || closed == 0 || opened == 0 || afterTwo == 0 || joinedTwice == 0 {
-		t.Errorf("%d lines, %d changes, %d refused, %d and %d that end and make a piece that runs on, %d after an open sentence of two pieces and %d in a sentence that a run joins at two places: the test reads too little",
-			texts, ways, refused, closed, opened, afterTwo, joinedTwice)
+	t.Logf("%d lines, %d changes, %d refused, %d that end a piece that ran on, %d that make one run on, %d after an open sentence of two pieces (%d that end its piece at the bound, %d of them after a piece that runs on into it, and %d one past it), %d in a sentence that a run joins at two places, %d that join two places, %d that leave no word in an open last piece before a long one",
+		texts, ways, refused, closed, opened, afterTwo, atBound, leftAfterLeft, pastBound, joinedTwice, openedTwice, emptyOpened)
+	if texts < 700 || refused == 0 || refused == ways || closed == 0 || opened == 0 || afterTwo == 0 || joinedTwice == 0 ||
+		atBound == 0 || leftAfterLeft == 0 || pastBound == 0 || openedTwice == 0 || emptyOpened == 0 {
+		t.Errorf("%d lines, %d changes, %d refused, %d and %d that end and make a piece that runs on, %d after an open sentence of two pieces (%d, %d and %d at the bound, after a piece into it and past it), %d in a sentence that a run joins at two places, %d that join two, and %d that leave no word in an open last piece: the test reads too little",
+			texts, ways, refused, closed, opened, afterTwo, atBound, leftAfterLeft, pastBound, joinedTwice, openedTwice, emptyOpened)
 	}
 }
