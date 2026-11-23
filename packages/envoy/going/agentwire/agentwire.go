@@ -48,7 +48,7 @@ const (
 	CallEnd    = "end"
 )
 
-// The six kinds of call (CallRequest.Kind).
+// The seven kinds of call (CallRequest.Kind).
 const (
 	// KindRoute is one read or write of Dispatch: a tool by its name and its arguments, run
 	// through the server's route table as the run's person. A write runs only as a row of the
@@ -70,7 +70,30 @@ const (
 	// from the run's saved tool results: the server runs the block's chain over their rows and
 	// answers the block it drew (going.BlockData), or refuses it BLOCK_REFUSED, saying why.
 	KindBlock = "block"
+	// KindLine asks the server which line on top the decision model Jev reads the run's words
+	// as, with the page the run was started on (LineAnswer). It sets no other field of the
+	// request and records nothing, so its step and call are 0. The agent makes it as a turn of
+	// the run's words starts, beside the turn's first model call, for a run whose line is Ask or
+	// none (ClaimedRun.Line): a turn of such a run that Jev reads as Ask needs no check of its
+	// reply in prose for a plan it left out.
+	KindLine = "line"
 )
+
+// The lines on top of the command bar a run may be started from (ClaimedRun.Line), as
+// going_runs.line holds them, and the line a line call answers (LineAnswer.Line): Ask for words
+// that ask for no change, Do for any other action, and File for a new issue's create.
+const (
+	LineAsk  = "ask"
+	LineDo   = "do"
+	LineFile = "file"
+)
+
+// LineAnswer is a line call's answer: the line on top Jev's choice of action gives the run's
+// words, "" where Jev gave none - the server names no decision model, or the decision call failed,
+// timed out or named no action it was offered, which the server logs.
+type LineAnswer struct {
+	Line string `json:"line"`
+}
 
 // PlanProposal is the plan a run's model proposed: what it does, in one or two sentences, and
 // its changes, in the order they run.
@@ -376,8 +399,9 @@ type Budget struct {
 }
 
 // ClaimedRun is a run under the lease a claim took: what the person asked, the conversation it
-// belongs to and the run it continues, its kind, its level and mode, what it spent, its lease, its
-// history, and the turns of its conversation before it.
+// belongs to and the run it continues, its kind, the line on top it was started from and whether
+// the server can ask Jev of its words, its level and mode, what it spent, its lease, its history,
+// and the turns of its conversation before it.
 type ClaimedRun struct {
 	ID           string          `json:"id"`
 	Conversation string          `json:"conversation"`
@@ -386,7 +410,16 @@ type ClaimedRun struct {
 	Context      json.RawMessage `json:"context,omitempty"`
 	// Kind is RunNewIssue for a run of the line File as a new issue, and "" for a run of the
 	// person's words.
-	Kind        string    `json:"kind,omitempty"`
+	Kind string `json:"kind,omitempty"`
+	// Line is the line on top the run was started from (LineAsk, LineDo or LineFile), "" for a
+	// run not started from the line: a follow-up typed in the box, the side panel's box, a
+	// Continue. An Ask may be Jev's answer or the line the bar reads before Jev answers, so the
+	// agent asks Jev again for a run of Ask or of none (KindLine), where the server names a
+	// decision model to ask (Decider).
+	Line string `json:"line,omitempty"`
+	// Decider is whether the server names a decision model, so a line call can draw Jev's
+	// answer: with none, the agent makes no line call, and Jev answers nothing.
+	Decider     bool      `json:"decider,omitempty"`
 	Level       string    `json:"level"`
 	Mode        string    `json:"mode"`
 	Shape       int       `json:"shape"`

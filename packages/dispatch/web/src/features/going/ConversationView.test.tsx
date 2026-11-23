@@ -212,6 +212,72 @@ test("a bound is a grey card with what the run did so far, Continue and Continue
   }
 });
 
+// A run the model's provider stopped, refusing part of what it found (`filterStopped`,
+// `going/agent/run.go`): its end says so in words, never as a level's limit and never as its
+// code, with Continue where the end frame offers it - and no Continue in Deep, which Deep's
+// larger bounds do not help with - else "Ask in other words" and no button.
+test("a stop the model's provider refused says so, with Continue where its end offers it and Ask in other words where not", async () => {
+  const user = userEvent.setup();
+  const continued: (readonly [string, GoingRun["level"] | undefined])[] = [];
+  const reason =
+    "MODEL_CONTENT_FILTER: the chat model's provider refused to read part of what this run found, also with the 2 results it could not vouch for withheld (jailbreak); Continue starts a follow-up with a new budget, or ask in other words";
+  const read: readonly [string, unknown] = [
+    "tool",
+    { items: ["DEMO-2"], kind: "read", label: "Read DEMO-2", step: 2, tool: "read" },
+  ];
+  const restore = await showRun(
+    "stopped",
+    [read, ["end", { offers: ["continue"], reason, state: "stopped" }]],
+    {
+      onContinue: (run, level) => continued.push([run, level]),
+      run: { stop_reason: reason },
+    }
+  );
+  try {
+    const card = await screen.findByTestId("going-run-bound");
+    expect(within(card).getByTestId("going-run-state").textContent).toBe(
+      "The model's provider refused to read part of what this run found. Continue, or ask in other words."
+    );
+    expect(screen.getByTestId("going-run").textContent ?? "").not.toMatch(/limit|MODEL_/u);
+    expect(within(card).queryByTestId("going-run-continue-deep")).toBeNull();
+    await user.click(within(card).getByTestId("going-run-continue"));
+    expect(continued).toEqual([["r-1", undefined]]);
+  } finally {
+    restore();
+  }
+});
+
+test("a refused stop that offers no Continue says Ask in other words, as one read from its record alone does", async () => {
+  const reason =
+    "MODEL_CONTENT_FILTER: the chat model's provider refused to read this run's model call, which held nothing the run found, only the person's words, the page and the agent's rules (jailbreak); ask in other words";
+  const restore = await showRun("stopped", [["end", { offers: [], reason, state: "stopped" }]], {
+    run: { stop_reason: reason },
+  });
+  try {
+    const line = await screen.findByTestId("going-run-state");
+    expect(line.textContent).toBe(
+      "The model's provider refused to read part of what this run found. Ask in other words."
+    );
+    expect(screen.queryByTestId("going-run-bound")).toBeNull();
+    expect(screen.queryByTestId("going-run-continue")).toBeNull();
+  } finally {
+    restore();
+    cleanup();
+    resetGoingStore();
+  }
+  // The record holds no offers: a refused run read from its record, before any frame of it came,
+  // draws the same, until its end frame says whether it offers Continue.
+  const unread = await showRun("stopped", [], { run: { stop_reason: reason } });
+  try {
+    expect((await screen.findByTestId("going-run-state")).textContent).toBe(
+      "The model's provider refused to read part of what this run found. Ask in other words."
+    );
+    expect(screen.queryByTestId("going-run-continue")).toBeNull();
+  } finally {
+    unread();
+  }
+});
+
 // Design v2, state 5: a block is a card with a caption that says what it counts and when, and a
 // table past 8 rows opens whole, over the whole bar that draws the conversation, with a way back.
 test("a table's caption says what it counts and when, and Show all opens it over the whole bar until Esc or Back", async () => {
@@ -1071,8 +1137,11 @@ test("a run of the line Do that ended done with no plan says nothing changed in 
   const restore = await showRun("done", ANSWERED_DONE, { run: { line: "do" } });
   try {
     expect(await footWords()).toBe(NOTHING_CHANGED);
-    expect(screen.getByTestId("going-run-answer")).toHaveTextContent(
-      "DEMO-15 is marked as started."
+    // The answer is a Markdown body, which a cold engine draws a moment later.
+    await waitFor(() =>
+      expect(screen.getByTestId("going-run-answer")).toHaveTextContent(
+        "DEMO-15 is marked as started."
+      )
     );
     expect(within(screen.getByTestId("going-run")).queryByText("Done")).toBeNull();
   } finally {

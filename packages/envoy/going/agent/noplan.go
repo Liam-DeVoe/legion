@@ -8,7 +8,9 @@ package agent
 // (checkProse). A reply the check flags is held back once: it is saved with a note to the model,
 // and the turn goes on. A reply flagged again, or on the run's last model call, ends the turn
 // with noPlanSaid before its text. A new-issue run is held back the same way with no check: its
-// words always ask to file an issue.
+// words always ask to file an issue. A turn whose words the decision model Jev reads as Ask makes
+// no check: its words ask for no change, so its answer waits for no check (readWords). Jev is
+// asked beside the turn's first model call, so its call adds nothing to the turn's time.
 
 import (
 	"context"
@@ -16,6 +18,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -98,18 +102,133 @@ type checkCost struct {
 	tokens int
 }
 
+// The lines a reply frame says Jev read the turn's words as (replyFrame.JevLine), beside
+// agentwire's ask, do and file: jevNone, Jev answered no line - the server names no decision
+// model, Jev's call failed, timed out or named no action it was offered, or the line call failed
+// - and jevLate, the line call had not answered by the time the guard decided.
+const (
+	jevNone = "none"
+	jevLate = "late"
+)
+
+// checkSkippedJevAsk is why the guard made no check of a reply (replyFrame.CheckSkipped): Jev
+// read the turn's words as Ask.
+const checkSkippedJevAsk = "jev_read_ask"
+
+// jevRead is Jev's reading of the turn's words (readWords): the line the line call answered, ""
+// for none, set before answered is closed.
+type jevRead struct {
+	line     string
+	answered chan struct{}
+}
+
+// asksJev reports whether the guard reads Jev's line of the turn's words: a run of the person's
+// words started from the line Ask or from none (a follow-up typed in a box, a Continue), in the
+// turn of those words, before the person answered a plan of the run. A run started from Do, and a
+// new-issue run, File, keep the line the person pressed, and a turn the person's answer to a plan
+// starts is a turn of other words, so the guard checks their replies as before.
+func (w *worker) asksJev() bool {
+	if w.run.Kind == agentwire.RunNewIssue || (w.run.Line != agentwire.LineAsk && w.run.Line != "") {
+		return false
+	}
+	return !slices.ContainsFunc(w.history, func(step agentwire.SavedStep) bool { return step.Kind == agentwire.StepPerson })
+}
+
+// readWords starts the reading of the turn's words where the guard reads it (asksJev), and
+// answers what work calls as the turn ends. Where the server names a decision model
+// (ClaimedRun.Decider), the line call (agentwire.KindLine) goes on a goroutine of its own, beside
+// the turn's first model call, so it adds no wait: the guard takes its answer only where it came
+// before the guard decides (jevLine). A call that fails is logged once and reads as no line: it is
+// never the run's failure. The function it answers ends the call, where it still runs, and waits
+// for its goroutine, so nothing of the run outlives work. With no decision model, Jev answers
+// nothing at once.
+func (w *worker) readWords() func() {
+	if !w.asksJev() {
+		return func() {}
+	}
+	read := &jevRead{answered: make(chan struct{})}
+	w.jev.Store(read)
+	if !w.run.Decider {
+		close(read.answered)
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(w.ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		line, err := w.askJev(ctx)
+		if ctx.Err() != nil {
+			// The turn ended before the answer, which no guard reads now.
+			return
+		}
+		if err != nil {
+			slog.Warn("agent: the line call of the run's words failed, so the guard checks the turn's replies in prose", "run", w.run.ID, "error", err)
+		}
+		read.line = line
+		close(read.answered)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// askJev makes the line call and answers the line it answered, "" for none.
+func (w *worker) askJev(ctx context.Context) (string, error) {
+	answer, err := w.agent.client.Call(ctx, agentwire.CallRequest{Run: w.run.ID, LeaseToken: w.run.LeaseToken, Kind: agentwire.KindLine})
+	if err != nil {
+		return "", err
+	}
+	var read agentwire.LineAnswer
+	if answer.Status != http.StatusOK || json.Unmarshal(answer.Body, &read) != nil {
+		return "", fmt.Errorf("the line call answered status %d with a body that reads as no line", answer.Status)
+	}
+	switch read.Line {
+	case "", agentwire.LineAsk, agentwire.LineDo, agentwire.LineFile:
+		return read.Line, nil
+	}
+	return "", fmt.Errorf("the line call answered the line %q, which is none of ask, do and file", read.Line)
+}
+
+// jevLine is the line Jev read the turn's words as at the moment the guard decides: ask, do or
+// file, jevNone, jevLate, or "" for a turn the guard asks Jev nothing of (asksJev).
+func (w *worker) jevLine() string {
+	read := w.jev.Load()
+	if read == nil {
+		return ""
+	}
+	select {
+	case <-read.answered:
+	default:
+		return jevLate
+	}
+	if read.line == "" {
+		return jevNone
+	}
+	return read.line
+}
+
 // endProse ends the run's turn with prose, or holds it back and goes on. A new-issue run's prose is
-// flagged with no check; any other is checked (checkProse), and a check that fails flags nothing:
-// the reply ends the turn as it is, and the failure is logged. A reply that passes ends the turn
-// done as it is. A flagged reply is held back where the turn held back none before it and the
-// run's level leaves it a model call (saveNoPlan): the turn goes on, and the next step's model is
-// told noPlanTold. Any other flagged reply ends the turn done with noPlanSaid before its text. The
-// frame of a reply the check was made for says what the check took (replyFrame.CheckMS), held back
-// or not, and whatever the check answered. A run that is no longer the worker's to go on with by
-// the check's end saves nothing.
+// flagged with no check. Prose of a turn whose words Jev read as Ask, by the time the guard
+// decides, is not checked: its words ask for no change, and it ends the turn done as it is. Any
+// other is checked (checkProse), and a check that fails flags nothing: the reply ends the turn as
+// it is, and the failure is logged. A reply that passes ends the turn done as it is. A flagged
+// reply is held back where the turn held back none before it and the run's level leaves it a
+// model call (saveNoPlan): the turn goes on, and the next step's model is told noPlanTold. Any
+// other flagged reply ends the turn done with noPlanSaid before its text. The frame of a reply the
+// check was made for says what the check took (replyFrame.CheckMS), held back or not, and whatever
+// the check answered; that of a reply Jev's Ask spared says so (replyFrame.CheckSkipped); and
+// each says what Jev read the words as where the guard asked (replyFrame.JevLine). A run that is no
+// longer the worker's to go on with by the check's end saves nothing.
 func (w *worker) endProse(prose *proseReply) stepOutcome {
 	flagged := w.run.Kind == agentwire.RunNewIssue
-	if !flagged {
+	jev := w.jevLine()
+	prose.frame.JevLine = jev
+	switch {
+	case flagged:
+	case jev == agentwire.LineAsk:
+		prose.frame.CheckSkipped = checkSkippedJevAsk
+	default:
 		var cost *checkCost
 		var err error
 		flagged, cost, err = w.checkProse(prose.body.Text)

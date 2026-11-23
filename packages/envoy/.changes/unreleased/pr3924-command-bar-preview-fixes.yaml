@@ -17,3 +17,7 @@ body: |-
   room for what it says whole, and its context chip gives way first. A time the agent writes as a
   `dispatch-time:` link draws as that time with its full date on hover, in an answer, the short
   answer, a plan's summary and the line beside the agent's calls, and Copy takes the words shown.
+  A run the model's provider stopped reads "The model's provider refused to read part of what
+  this run found", then "Continue, or ask in other words" with Continue (and no Continue in Deep)
+  where its end offers Continue, else "Ask in other words"; never as a level's limit, and never
+  "Stopped · kept what it did". A History row of such a run says so under it.

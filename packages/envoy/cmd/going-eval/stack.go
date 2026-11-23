@@ -179,6 +179,26 @@ type chatSettings struct {
 	TenantID, ClientID, TokenFile           string
 }
 
+// decisionSettingNames are the decision model's settings the eval reads from its own environment
+// and gives its server under the same names (cmd/dispatch's DISPATCH_DECISION_MODEL, its endpoint
+// and its token file), each where it is set. With them, a run's agent asks the decision model Jev
+// what each turn's words ask, and the no-plan guard skips the check of a turn Jev reads as Ask;
+// with none, the server names no decision model, and the report counts every turn the guard
+// decided on as one with no line from Jev. The server reaches the endpoint directly, not through
+// the chat proxy, trusting it by the system's authorities the proxy's bundle holds.
+var decisionSettingNames = []string{"DISPATCH_DECISION_MODEL", "DISPATCH_DECISION_MODEL_ENDPOINT", "DISPATCH_DECISION_MODEL_TOKEN_FILE"}
+
+// decisionSettings is each decision model setting set in the eval's environment, as NAME=value.
+func decisionSettings() []string {
+	var settings []string
+	for _, name := range decisionSettingNames {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			settings = append(settings, name+"="+value)
+		}
+	}
+	return settings
+}
+
 // server is one try's Dispatch server: its process, its origin, its log and the shared token its
 // agents present.
 type server struct {
@@ -189,8 +209,9 @@ type server struct {
 }
 
 // startServer starts the Dispatch server binary on the database databaseURL names, with its agent
-// process on the seed's clock, now (seedClock), the chat model behind the proxy, the fake Envoy, a
-// person named by personHeader and a log in dir, and waits until it serves.
+// process on the seed's clock, now (seedClock), the chat model behind the proxy, the decision
+// model the eval's environment names (decisionSettings), the fake Envoy, a person named by
+// personHeader and a log in dir, and waits until it serves.
 func startServer(ctx context.Context, binary, dir, databaseURL, agentToken string, chat chatSettings, proxy *chatProxy,
 	envoyURL string, tokensPerMinute int, now time.Time) (*server, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -245,6 +266,7 @@ func startServer(ctx context.Context, binary, dir, databaseURL, agentToken strin
 		"SSL_CERT_FILE=" + proxy.bundle,
 	}
 	command.Env = append(command.Env, seedClock(now)...)
+	command.Env = append(command.Env, decisionSettings()...)
 	if chat.APIVersion != "" {
 		command.Env = append(command.Env, "DISPATCH_AZURE_CHAT_API_VERSION="+chat.APIVersion)
 	}

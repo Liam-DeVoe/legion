@@ -617,9 +617,10 @@ const goingPersonLock = `select pg_advisory_xact_lock(hashtextextended('going_ru
 // not nil, names the runs it may take. most, where it is above 0, is how many runs the instance
 // may hold: an instance that holds that many already takes none, counted under a transaction lock
 // on the instance, so its claims at once never pass it. It sets a fresh lease token, the instance
-// as the owner and the lease's end, and answers the run with its history; nil where no run is
-// ready. A run whose history no claim can answer fails with goingRunHistoryTooLarge, and the next
-// is taken.
+// as the owner and the lease's end, and answers the run with its history and whether this server
+// names a decision model, which a line call of the run asks (agentwire.KindLine); nil where no run
+// is ready. A run whose history no claim can answer fails with goingRunHistoryTooLarge, and the
+// next is taken.
 func (a *AgentListener) claimOne(ctx context.Context, instance string, only []string, most int64) (*agentwire.ClaimedRun, error) {
 	tx, err := a.s.deps.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -692,6 +693,7 @@ func (a *AgentListener) claimOne(ctx context.Context, instance string, only []st
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
 		}
+		run.Decider = a.s.deps.Decider != nil
 		return run, nil
 	}
 	return nil, tx.Commit(ctx)
@@ -714,9 +716,9 @@ func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agent
 		    else budget_used || jsonb_build_object('queued_ms',
 		      greatest(floor(extract(epoch from clock_timestamp() - created_at) * 1000), 0)::bigint) end
 		where id = $1::uuid
-		returning coalesce(conversation_id, id)::text, continues::text, words, context, coalesce(kind, ''), coalesce(level, ''), coalesce(mode, ''),
+		returning coalesce(conversation_id, id)::text, continues::text, words, context, coalesce(kind, ''), coalesce(line, ''), coalesce(level, ''), coalesce(mode, ''),
 		  shape, budget_used, lease_token::text, lease_ends_at
-	`, run, instance, goingLeaseTerm.Seconds()).Scan(&claimed.Conversation, &continues, &claimed.Words, &chip, &claimed.Kind,
+	`, run, instance, goingLeaseTerm.Seconds()).Scan(&claimed.Conversation, &continues, &claimed.Words, &chip, &claimed.Kind, &claimed.Line,
 		&claimed.Level, &claimed.Mode, &claimed.Shape, &budget, &claimed.LeaseToken, &claimed.LeaseEndsAt); err != nil {
 		return nil, fmt.Errorf("lease run %s: %w", run, err)
 	}

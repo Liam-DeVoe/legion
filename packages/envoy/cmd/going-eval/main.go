@@ -1,10 +1,12 @@
 // Command going-eval is the eval of the command bar's agent (R13 of dispatch://INFRA-1588/spec),
-// over the tasks and the seeded Dispatch of going/eval. It has three subcommands:
+// over the tasks and the seeded Dispatch of going/eval. It has four subcommands:
 //
 //	go run ./cmd/going-eval seed --database-url <url> [--envoy-fixture-out <file>]
 //	go run ./cmd/going-eval run [--database-url <url>] [--server-bin <file>] [--tasks <ids or kinds>] [--tries <n>]
 //	    [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>] [--keep-databases] [--source <text>]
 //	go run ./cmd/going-eval calibrate [--judge-deployment <name>] [--print-rendered-labels]
+//	go run ./cmd/going-eval replay --body <file> [--tries <n>] [--parallel <n>] [--variants <names>] [--bisect <part>]
+//	    [--system <file>] [--replace <old>=><new>]...
 //
 // seed, which the browser harness runs to serve a Dispatch on the eval's seed with the real
 // models (DISPATCH_E2E_MODELS=real, packages/dispatch/e2e/harness-eval-seed.ts), migrates the
@@ -41,12 +43,28 @@
 // and its agent call it through an https proxy of the eval's on loopback, whose limiter holds
 // every chat call of the run, the judge's too, under 500,000 tokens a minute and counts what each
 // spent. Each server paces its own calls to its share of that limit, the limit over --parallel.
+// The proxy writes chat-calls.log into the work dir, a line for each call, and keeps the request
+// body of each call the deployment's content filter refused as refused/<n>.json beside it, which
+// that call's line names (refused_body=): the server logs no request body.
 // The judge is --judge-deployment, on the same sign-in (by default the chat deployment).
+// The decision model is the one DISPATCH_DECISION_MODEL, DISPATCH_DECISION_MODEL_ENDPOINT and
+// DISPATCH_DECISION_MODEL_TOKEN_FILE name in run's environment, which each server is given as they
+// are (decisionSettings): its agent asks it what each turn's words ask, and the no-plan guard
+// skips the check of a turn it reads as Ask. With none set, no turn is read and every one checked.
 // Before the tries, run puts each calibration answer of going/eval's labels.json to the judge,
 // rendered against the seed as it stands before any task; calibrate does that alone and writes
 // the same judge section, to stand beside a run's report. calibrate --print-rendered-labels calls
 // no model: it prints each calibration answer as the judge reads it, one JSON object a line,
 // {task, words, facts, rendered}.
+//
+// replay sends one kept body to the chat deployment, on the same settings and sign-in, --tries
+// times for each variant of it, the body with one named part taken out - the system message or
+// half its lines, the tool list, the page and its read, one message's text - and prints how many
+// calls of each the content filter refused, with its label, and how many were answered;
+// --bisect narrows the refusal to the lines, sentences and words of one part, and --system and
+// --replace change the body's words before any variant, to measure a rewording (replayCommand).
+// It lives here, not in a command of its own, since it reads the settings run reads, signs in as
+// the judge does, and replays the bodies run's proxy keeps.
 //
 // The report goes to stdout: each task's tries and why each failed one failed, pass^1 and pass^3
 // of each kind and of all tasks with the floors of going/eval and whether each is met, the tries
@@ -58,14 +76,16 @@
 // tokens (OUTPUT_TOKEN_BUDGET) with the tokens of that call, and each run stopped at its working
 // time (TIME_BUDGET) with how long the agent's pacer held its model calls, the checks the no-plan
 // guard made of replies in prose, with the median and the p99 of the time they added to the turns
-// of each kind and how many the run made, and the tasks whose tries read the reference graph
+// of each kind, the turns whose check it skipped and those it decided on with no line from the
+// decision model, and how many the run made, and the tasks whose tries read the reference graph
 // (GET /api/v1/references and an issue's and a document's references), with how many tries of
 // each did, to run again after a change to those routes. No floor is given over a kind that holds
 // an unjudged try, and the report's RESULT then says the run is incomplete. Each failing or
 // unjudged try keeps its database, which its line names. --answers-out writes each try as one
 // JSON line, with its answer, its level, its run's working time and the pacer's hold of it, the
 // turns its run ended, the output and reasoning tokens of each of its model calls and the turn,
-// time and tokens of each check of the no-plan guard, the tools its runs called and how many of
+// time and tokens of each check of the no-plan guard, or why it skipped one, with what the
+// decision model read the turn's words as, the tools its runs called and how many of
 // those calls read the reference graph, and a try the judge read again at the run's end once more.
 // run exits 0 when the report meets every floor, 1 when it misses one, is incomplete or fails, and
 // 2 on a usage error.
@@ -95,7 +115,8 @@ func main() {
 // usage is what the command prints for no subcommand or one it does not know.
 const usage = "usage: going-eval seed --database-url <url> [--envoy-fixture-out <file>]\n" +
 	"       going-eval run [--database-url <url>] [--server-bin <file>] [--tasks <ids or kinds>] [--tries <n>] [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>] [--keep-databases] [--source <text>]\n" +
-	"       going-eval calibrate [--judge-deployment <name>] [--print-rendered-labels]"
+	"       going-eval calibrate [--judge-deployment <name>] [--print-rendered-labels]\n" +
+	replayUsage
 
 // run answers the exit status of the subcommand args name: 0 done, 1 refused or failed, 2 a usage
 // error. Every refusal goes to stderr.
@@ -105,6 +126,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if len(args) > 0 && args[0] == "calibrate" {
 		return calibrateCommand(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "replay" {
+		return replayCommand(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || args[0] != "seed" {
 		fmt.Fprintln(stderr, usage)

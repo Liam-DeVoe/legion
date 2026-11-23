@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 
-import { STARTED_RUN, withRunFrame } from "./run-frames";
+import { STARTED_RUN, stateOfRecord, withRunFrame } from "./run-frames";
 import {
   endWords,
   NO_MODEL_WORDS,
+  providerRefused,
   type RunEvent,
   type RunRequest,
   type RunState,
@@ -185,6 +186,7 @@ test("a bound reads as a pause at the run's level with what it did so far, and o
     )
   ).toEqual({
     action: "continue",
+    continueInDeep: true,
     noModel: false,
     text: "Stopped at Standard's time limit · read 14 items so far",
   });
@@ -209,9 +211,12 @@ test("a bound reads as a pause at the run's level with what it did so far, and o
   expect(endWords("stopped_bound", "CALL_BUDGET: …", "fast", "")?.text).toBe(
     "Stopped at Fast's step limit"
   );
-  expect(endWords("stopped_bound", "OUTPUT_TOKEN_BUDGET: …", "deep", "searched twice")?.text).toBe(
-    "Stopped at Deep's reply length limit · searched twice so far"
-  );
+  expect(endWords("stopped_bound", "OUTPUT_TOKEN_BUDGET: …", "deep", "searched twice")).toEqual({
+    action: "continue",
+    continueInDeep: false,
+    noModel: false,
+    text: "Stopped at Deep's reply length limit · searched twice so far",
+  });
   expect(endWords("stopped_bound", "", "standard", "")?.text).toBe(
     "Stopped at a limit of Standard"
   );
@@ -221,6 +226,7 @@ test("a Stop keeps what it did, and never repeats the reason's code", () => {
   const stopped = endWords("stopped_person", "STOPPED: its person stopped it", "standard", "");
   expect(stopped).toEqual({
     action: undefined,
+    continueInDeep: false,
     noModel: false,
     text: "Stopped · kept what it did",
   });
@@ -234,6 +240,43 @@ test("a Stop keeps what it did, and never repeats the reason's code", () => {
   );
 });
 
+// A run the model's provider stopped - its content filter refused part of what the run found,
+// also with every result the agent could not vouch for withheld (`filterStopped`,
+// `going/agent/run.go`) - says so in words, never its code, and what the person can do: Continue,
+// or ask in other words, where its end offers Continue (a stop that offers it is
+// `stopped_bound`), else ask in other words. Continue in Deep is no help with a refusal, which
+// Deep would meet again, so it is not offered.
+test("a stop the model's provider refused says so, with Continue where its end offers it, else Ask in other words", () => {
+  const refused =
+    "MODEL_CONTENT_FILTER: the chat model's provider refused to read part of what this run found, also with the 3 results it could not vouch for withheld (jailbreak); Continue starts a follow-up with a new budget, or ask in other words";
+  expect(endWords("stopped_bound", refused, "standard", "read 3 items")).toEqual({
+    action: "continue",
+    continueInDeep: false,
+    noModel: false,
+    text: "The model's provider refused to read part of what this run found. Continue, or ask in other words.",
+  });
+  const wordsAlone =
+    "MODEL_CONTENT_FILTER: the chat model's provider refused to read this run's model call, which held nothing the run found, only the person's words, the page and the agent's rules (jailbreak); ask in other words";
+  expect(endWords("stopped_person", wordsAlone, "standard", "")).toEqual({
+    action: undefined,
+    continueInDeep: false,
+    noModel: false,
+    text: "The model's provider refused to read part of what this run found. Ask in other words.",
+  });
+  expect(providerRefused(refused)).toBe(true);
+  expect(providerRefused("CALL_BUDGET: …")).toBe(false);
+  // The end frame's offer decides which: the record holds none, so a refusal read from it alone
+  // has nothing to continue until its end frame comes.
+  expect(
+    withRunFrame(STARTED_RUN, "end", { offers: ["continue"], reason: refused, state: "stopped" })
+      .state
+  ).toBe("stopped_bound");
+  expect(
+    withRunFrame(STARTED_RUN, "end", { offers: [], reason: wordsAlone, state: "stopped" }).state
+  ).toBe("stopped_person");
+  expect(stateOfRecord("stopped", refused)).toBe("stopped_person");
+});
+
 test("a failure is one sentence and one action, with no code", () => {
   const cases: readonly (readonly [string, string, string])[] = [
     ["MODEL_FAILED: azure: 502 Bad Gateway", "Dispatch could not reach the model.", "retry"],
@@ -243,7 +286,6 @@ test("a failure is one sentence and one action, with no code", () => {
       "retry",
     ],
     ["MODEL_REFUSED: the chat model refused to answer", "The model refused to answer.", "retry"],
-    ["MODEL_CONTENT_FILTER: …", "The model's content filter refused this request.", "retry"],
     ["MODEL_REPLY_TOO_LARGE: …", "The model's reply was too long to read.", "retry"],
     [
       "HISTORY_TOO_LARGE: the last 8 model turns …",
@@ -264,7 +306,12 @@ test("a failure is one sentence and one action, with no code", () => {
   ];
   for (const [reason, text, action] of cases) {
     const words = endWords("failed", reason, "standard", "read 2 items");
-    expect(words).toEqual({ action: action as "retry" | "new", noModel: false, text });
+    expect(words).toEqual({
+      action: action as "retry" | "new",
+      continueInDeep: false,
+      noModel: false,
+      text,
+    });
     expect(words?.text).not.toMatch(/[A-Z]{2,}_/u);
   }
 });
@@ -277,7 +324,7 @@ test("a run that failed because the Dispatch has no answering model says the one
       "standard",
       ""
     )
-  ).toEqual({ action: undefined, noModel: true, text: NO_MODEL_WORDS });
+  ).toEqual({ action: undefined, continueInDeep: false, noModel: true, text: NO_MODEL_WORDS });
   expect(NO_MODEL_WORDS).toBe("Answers are off on this Dispatch: it has no answering model.");
 });
 

@@ -41,7 +41,7 @@ const (
 	codeModelTooLarge = "MODEL_REPLY_TOO_LARGE"
 	codeModelCallTime = "MODEL_CALL_TIME"
 	// codeContentFilter is a model call the chat model's content filter refused with every
-	// tool result of the run withheld from it (withhold).
+	// tool result of the run withheld from it (withhold), which stops the run.
 	codeContentFilter = "MODEL_CONTENT_FILTER"
 	// codeAgentFailed is a run the agent's own code failed on: a step it could not save, a
 	// history it could not read, a callback of its loop that panicked.
@@ -112,7 +112,8 @@ type toolFrame struct {
 // the provider's cache included, of its reply, its reasoning among them, and of that reasoning,
 // the tokens the pacer reserved for it before it was made, and the tokens the pacer charged it in
 // the end. A reply in prose that the guard checked before it could end the turn (checkProse), held
-// back or not, also says what the check took: its milliseconds and its tokens.
+// back or not, also says what the check took: its milliseconds and its tokens; one it did not
+// check because Jev read the turn's words as Ask says so; and each says what Jev read them as.
 type replyFrame struct {
 	Step           int      `json:"step"`
 	Text           string   `json:"text"`
@@ -150,9 +151,19 @@ type replyFrame struct {
 	// endProse sets both, 0 included, on a reply the check was made for, held back or not, and
 	// whatever the check answered; every other reply leaves both out: one that called a tool,
 	// asked the person or was cut, one in a turn that holds a plan, a new-issue run's, which is
-	// held back with no check, and one whose run had no working time left for the check.
+	// held back with no check, one whose run had no working time left for the check, and one
+	// whose check was skipped (CheckSkipped).
 	CheckMS     *int64 `json:"check_ms,omitempty"`
 	CheckTokens *int   `json:"check_tokens,omitempty"`
+	// CheckSkipped is why endProse made no check of a reply in prose it would have checked:
+	// checkSkippedJevAsk, the decision model Jev read the turn's words as Ask, so the reply adds
+	// no check's time to its turn. It is left out on every other reply.
+	CheckSkipped string `json:"check_skipped,omitempty"`
+	// JevLine is what Jev read the turn's words as when endProse decided on the reply (jevLine):
+	// ask, do or file, none for no line, late for a line call still out. It is left out where the
+	// guard asks Jev nothing (asksJev): a run started from Do or File, a turn the person's answer
+	// to a plan started, and every reply endProse does not decide on.
+	JevLine string `json:"jev_line,omitempty"`
 }
 
 // errStepTaken ends agentloop.Run once its one model call of a step finished and was saved: each
@@ -218,6 +229,9 @@ type worker struct {
 	// drawn is the block the server drew for a draw_block call (going.BlockData), by the step
 	// of the call, until that step is saved with it as its block frame.
 	drawn sync.Map
+	// jev is Jev's reading of the turn's words (readWords), nil where the guard asks Jev nothing.
+	// It is set as the turn starts and read where the guard decides; a test's model reads it too.
+	jev atomic.Pointer[jevRead]
 	// withheld is the tool steps of the run whose results the model is no longer given, by their
 	// numbers, each with its tool: the content filter refused a model call that held them
 	// (withhold); filterRefused is set once the filter refused a call that is made again as it
@@ -269,7 +283,9 @@ func (w *worker) endGrant(reason string) {
 // being the agent's to work. A plan proposed in Auto-review is reviewed before the turn ends
 // (review), and the rows the server approved with the plan run at once, which ends the turn
 // (runApproved): the create of a new-issue run. A new-issue run whose create ran ends there.
-// A run whose saved steps name a tool this build does not know fails at once (unknownTool). The
+// A run whose saved steps name a tool this build does not know fails at once (unknownTool). Before
+// its first model call, a turn of the person's words asks Jev for their line on a goroutine of its
+// own where the guard reads it (readWords), which work ends and waits for as it returns. The
 // run's context ends as work returns, however the turn ended: a context left live stays among the
 // children of the agent's, with all made from it, until the agent's process exits. Nothing of the
 // run outlives work but the failed end agent.work makes after a panic, which end makes on the
@@ -307,6 +323,7 @@ func (w *worker) work() {
 	if w.halted() {
 		return
 	}
+	defer w.readWords()()
 	if len(w.history) == 0 {
 		w.readPage()
 		if w.halted() {
@@ -437,7 +454,8 @@ type stepOutcome struct {
 // (endProse): it ends the turn, or it is held back and the turn goes on. The watchdog gives up the
 // run when the step runs past its model call's time and watchdogGrace. A call the chat model's
 // content filter refused, or whose reply it stopped, saves nothing, and the step is made again
-// (withhold). The run's last model call, which is offered no tool, is told so (lastCallNote).
+// (withhold). The run's last model call, which is offered no tool, is told so at the end of its
+// system message (lastCallNote).
 func (w *worker) step() stepOutcome {
 	messages, err := conversation(w.run, lastWhole(w.history), w.withheld, w.now)
 	if err != nil {
@@ -449,10 +467,11 @@ func (w *worker) step() stepOutcome {
 	var prose *proseReply
 	w.proposed.Store(false)
 	request := w.level.request(w.agent.config.Model, w.used)
+	system := w.system()
 	if request.Bounds.Calls == 1 {
-		messages = withLastCallNote(messages)
+		system += "\n\n" + lastCallNote
 	}
-	request.System, request.Input, request.Tools = w.system(), messages, w.tools(base)
+	request.System, request.Input, request.Tools = system, messages, w.tools(base)
 	estimate := w.level.estimate(going.PromptChars(request.System, request.Input, request.Tools))
 	request.Model = w.agent.pacer.Paced(request.Model, func() int { return estimate }, w.charge)
 	request.OnStep = func(step agentloop.Step) error {
@@ -504,9 +523,8 @@ func (w *worker) step() stepOutcome {
 // web page wrote (storedDataNote), which the agent cannot vouch for, and that is not yet withheld,
 // so the model is told of each that its result was withheld (conversation), and the step is made
 // again; a reply that ends the turn then tells the person which results were withheld
-// (saveReply). A call refused with no such result left to withhold ends the run failed with
-// codeContentFilter and the provider's detail. A step that saves its model call makes the next
-// refusal a first one again.
+// (saveReply). A step that saves its model call makes the next refusal a first one again.
+// A call refused with no such result left to withhold stops the run (filterStopped).
 func (w *worker) withhold(detail string) stepOutcome {
 	if !w.filterRefused {
 		w.filterRefused = true
@@ -528,31 +546,45 @@ func (w *worker) withhold(detail string) stepOutcome {
 		}
 	}
 	if added == 0 {
-		return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf(
-			"%s: the chat model's content filter refused a model call of this run with every tool result of the run withheld from it (%s)",
-			codeContentFilter, note(detail))}
+		return w.filterStopped(detail)
 	}
 	slog.Warn("agent: the chat model's content filter refused a model call again; its tool results are withheld and the call is made again",
 		"run", w.run.ID, "withheld", added, "detail", note(detail))
 	return stepOutcome{}
 }
 
+// filterStopped is how a run ends whose model call the content filter refused with every result
+// it could withhold withheld (withhold). The refusal is the model's provider's, not a failure of
+// Dispatch or of the model: the run stops with codeContentFilter, its reason the provider's
+// detail, with the label the filter named (agentloop's ContentFilterRefusal), and what the person
+// can do. A run that withheld results it had found offers Continue: the follow-up reads this
+// run's steps as their one-line notes and its page anew, so its calls hold other words than the
+// refused one. A run that withheld nothing was refused for the words of the call itself - the
+// person's words, the page, the agent's own rules - which a follow-up sends again, so it offers
+// nothing, and its reason says to ask in other words.
+func (w *worker) filterStopped(detail string) stepOutcome {
+	slog.Warn("agent: the chat model's content filter refused a model call with every result it could withhold withheld; the run stops",
+		"run", w.run.ID, "withheld", len(w.withheld), "detail", note(detail))
+	if len(w.withheld) == 0 {
+		return stepOutcome{state: agentwire.StateStopped, reason: fmt.Sprintf(
+			"%s: the chat model's provider refused to read this run's model call, which held nothing the run found, only the person's words, the page and the agent's rules (%s); ask in other words",
+			codeContentFilter, note(detail))}
+	}
+	return stepOutcome{state: agentwire.StateStopped, offers: []string{agentwire.OfferContinue}, reason: fmt.Sprintf(
+		"%s: the chat model's provider refused to read part of what this run found, also with the %d results it could not vouch for withheld (%s); Continue starts a follow-up with a new budget, or ask in other words",
+		codeContentFilter, len(w.withheld), note(detail))}
+}
+
 // lastCallNote is what the run's last model call is told, which agentloop offers no tool: a model
 // that is not told so writes that it will read more, and ends the turn without an answer, or
 // repeats that until its output tokens are spent. A change the words ask for can no longer be
 // proposed in that call, so the answer says nothing changed and why, rather than that it is made.
+// It ends the call's system message, as the agent's own rules do, and never stands in the
+// person's turn: said there as the person's last words, Azure's jailbreak shield refused the call
+// for it (the c13 rerun at 8465df75: every refused call of chart-08 and change-14 was a run's last
+// call; replayed, a body with the note in the person's turn was refused 5 of 5, and with it at
+// the end of the system message, word for word, 0 of 10).
 const lastCallNote = "This is the last model call this run's level allows, and it is offered no tool: answer the person now, from what the results above hold, and say what you did not read. Write no promise to read more. Where the words ask for a change that no plan of this run proposed, say that nothing changed and what stopped it."
-
-// withLastCallNote is messages with lastCallNote said as the person's last words after them, in
-// a message of their own or added to the person's last message.
-func withLastCallNote(messages []agentloop.Message) []agentloop.Message {
-	told := agentloop.Block{Kind: agentloop.TextBlock, Text: lastCallNote}
-	if last := len(messages) - 1; last >= 0 && messages[last].Role == agentloop.User {
-		messages[last].Blocks = append(slices.Clone(messages[last].Blocks), told)
-		return messages
-	}
-	return append(messages, agentloop.Message{Role: agentloop.User, Blocks: []agentloop.Block{told}})
-}
 
 // runModel makes request's one model call on the run's context, under the watchdog, adds what it
 // spent to the run's budget, and adds the steps it saved to the run's history. It reports false

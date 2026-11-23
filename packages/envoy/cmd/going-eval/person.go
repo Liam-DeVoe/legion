@@ -122,8 +122,8 @@ type tryOutcome struct {
 	WorkingMS int64 `json:"working_ms"`
 	PaceMS    int64 `json:"pace_ms"`
 	// Turns is how many turns of the run ended (its end frames); ModelCalls is each model call of
-	// the run, in order, and Checks each check the no-plan guard made of a reply in prose, each
-	// read off the reply frame of the model call it belongs to (readFrame).
+	// the run, in order, and Checks each decision the no-plan guard made on a reply in prose, a
+	// check or a skip, each read off the reply frame of the model call it belongs to (readFrame).
 	Turns      int          `json:"turns"`
 	ModelCalls []modelCall  `json:"model_calls,omitempty"`
 	Checks     []proseCheck `json:"checks,omitempty"`
@@ -137,14 +137,19 @@ type modelCall struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
-// proseCheck is one check the no-plan guard made of a reply in prose before the reply could end
-// its turn (going/agent's checkProse), as the reply's frame says it: the turn of the run it was
-// made in, counted from 1, its milliseconds (check_ms), which the run's working time counts, and
-// the tokens it spent, its prompt's and its reply's (check_tokens).
+// proseCheck is one decision the no-plan guard made on a reply in prose before the reply could end
+// its turn (going/agent's endProse), as the reply's frame says it: the turn of the run it was made
+// in, counted from 1; for a check (checkProse), its milliseconds (check_ms), which the run's
+// working time counts, and the tokens it spent, its prompt's and its reply's (check_tokens); for a
+// check the guard skipped, why (check_skipped), with no time; and what the decision model Jev
+// read the turn's words as when the guard decided (jev_line): ask, do, file, none for no line,
+// late for a line call still out, "" where the guard asked Jev nothing.
 type proseCheck struct {
-	Turn   int   `json:"turn"`
-	MS     int64 `json:"ms"`
-	Tokens int   `json:"tokens"`
+	Turn    int    `json:"turn"`
+	MS      int64  `json:"ms"`
+	Tokens  int    `json:"tokens"`
+	Skipped string `json:"skipped,omitempty"`
+	Jev     string `json:"jev,omitempty"`
 }
 
 // mostPlans is how many plans the person answers in one run; a run that proposes more is stopped.
@@ -280,9 +285,9 @@ func (p *person) readFrames(ctx context.Context, run string, outcome *tryOutcome
 
 // readFrame takes one frame the run stored into the outcome and answers the prose of a reply
 // frame, "" for none: each reply frame is one model call of the run, whose tokens go to ModelCalls,
-// and whose check by the no-plan guard, where its frame says one (check_ms), goes to Checks, under
-// the turn it was made in; each block frame is a block the answer drew; and each end frame ends a
-// turn.
+// and whose check by the no-plan guard, where its frame says one (check_ms), or whose skipped
+// check (check_skipped), goes to Checks, under the turn it was made in, with what Jev read the
+// words as; each block frame is a block the answer drew; and each end frame ends a turn.
 func (o *tryOutcome) readFrame(name string, data []byte) string {
 	switch name {
 	case "reply":
@@ -292,13 +297,18 @@ func (o *tryOutcome) readFrame(name string, data []byte) string {
 			ReasoningTokens int    `json:"reasoning_tokens"`
 			CheckMS         *int64 `json:"check_ms"`
 			CheckTokens     int    `json:"check_tokens"`
+			CheckSkipped    string `json:"check_skipped"`
+			JevLine         string `json:"jev_line"`
 		}
 		if json.Unmarshal(data, &reply) != nil {
 			return ""
 		}
 		o.ModelCalls = append(o.ModelCalls, modelCall{OutputTokens: reply.OutputTokens, ReasoningTokens: reply.ReasoningTokens})
-		if reply.CheckMS != nil {
-			o.Checks = append(o.Checks, proseCheck{Turn: o.Turns + 1, MS: *reply.CheckMS, Tokens: reply.CheckTokens})
+		switch {
+		case reply.CheckMS != nil:
+			o.Checks = append(o.Checks, proseCheck{Turn: o.Turns + 1, MS: *reply.CheckMS, Tokens: reply.CheckTokens, Jev: reply.JevLine})
+		case reply.CheckSkipped != "":
+			o.Checks = append(o.Checks, proseCheck{Turn: o.Turns + 1, Skipped: reply.CheckSkipped, Jev: reply.JevLine})
 		}
 		return strings.TrimSpace(reply.Text)
 	case "block":

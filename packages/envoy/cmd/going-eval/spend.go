@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -101,12 +100,24 @@ func checkKinds() []eval.Kind {
 	return kinds
 }
 
-// checkTally is the checks the no-plan guard made in the tries of some tasks: the turns their runs
-// ended, the checks made and the tokens they spent, and, for each turn that made a check, the
-// milliseconds its checks took, summed.
+// checkTally is what the no-plan guard did in the tries of some tasks: the turns their runs ended,
+// the checks made and the tokens they spent, for each turn that made a check the milliseconds its
+// checks took, summed, the turns whose check it skipped and that made none, which add nothing, and
+// the turns it decided on with no line from Jev, those whose line call was still out among them.
 type checkTally struct {
 	turns, calls, tokens int
 	added                []int64
+	skipped, unread      int
+	late                 int
+}
+
+// guardedTurn is what the guard did in one turn: the milliseconds its checks took, summed,
+// whether it checked a reply and whether it skipped one, and what Jev read the turn's words as
+// when it last decided (proseCheck.Jev), which only moves from late to a line.
+type guardedTurn struct {
+	ms               int64
+	checked, skipped bool
+	jev              string
 }
 
 // tallyChecks is the checkTally of the tries of tasks.
@@ -115,34 +126,71 @@ func tallyChecks(tasks []eval.Task, byTask map[string][]tryResult) checkTally {
 	for _, task := range tasks {
 		for _, r := range byTask[task.ID] {
 			tally.turns += r.Outcome.Turns
-			byTurn := map[int]int64{}
+			byTurn := map[int]*guardedTurn{}
 			for _, check := range r.Outcome.Checks {
-				byTurn[check.Turn] += check.MS
+				turn := byTurn[check.Turn]
+				if turn == nil {
+					turn = &guardedTurn{}
+					byTurn[check.Turn] = turn
+				}
+				turn.jev = check.Jev
+				if check.Skipped != "" {
+					turn.skipped = true
+					continue
+				}
+				turn.checked = true
+				turn.ms += check.MS
 				tally.calls++
 				tally.tokens += check.Tokens
 			}
-			tally.added = slices.AppendSeq(tally.added, maps.Values(byTurn))
+			for _, turn := range byTurn {
+				switch {
+				case turn.checked:
+					tally.added = append(tally.added, turn.ms)
+				case turn.skipped:
+					tally.skipped++
+				}
+				switch turn.jev {
+				case jevLate:
+					tally.late++
+					tally.unread++
+				case jevNone:
+					tally.unread++
+				}
+			}
 		}
 	}
 	return tally
 }
 
-// writeChecks writes the checks the no-plan guard made of replies in prose (tryOutcome.Checks),
-// each one more call of the chat model on a turn that would end in prose with no plan, and the
-// time they added to the turns of each kind of task: for each kind of the tasks run, in
-// checkKinds' order, and for all of them, the turns its tries' runs ended, how many of those made a
-// check, the checks they made, and the median and the p99 of the time a turn's checks took, summed,
-// over the turns that made one; then how many checks the run made, and the tokens they spent.
+// The lines a reply frame says Jev read the turn's words as where Jev gave the guard none (going/
+// agent's replyFrame.JevLine): no line, and a line call still out when the guard decided.
+const (
+	jevNone = "none"
+	jevLate = "late"
+)
+
+// writeChecks writes what the no-plan guard did with replies in prose (tryOutcome.Checks): each
+// check is one more call of the chat model on a turn that would end in prose with no plan, and a
+// turn whose words the decision model Jev read as Ask skips it. For each kind of the tasks run, in
+// checkKinds' order, and for all of them, it writes the turns its tries' runs ended, how many of
+// those made a check, the checks they made, the turns that skipped it and made none, the turns
+// the guard decided on with no line from Jev, and the median and the p99 of the time a turn's
+// checks took, summed, over the turns that made one; then how many checks the run made, the
+// tokens they spent, the turns it skipped, and of the turns with no line from Jev those whose
+// line call was still out. A run whose server names no decision model reads no line for any turn.
 func writeChecks(w io.Writer, tasks []eval.Task, byTask map[string][]tryResult) {
 	fmt.Fprintln(w, "## The no-plan guard's checks")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "A turn that would end in prose with no plan first makes one more call of the chat model, which checks the reply; a turn whose reply the check holds back makes a second. "+
+		"A turn whose words the decision model Jev read as Ask skips the check and adds nothing to its time; a turn Jev gave no line by the time the guard decided is checked. "+
 		"The time the check added to a turn is its checks' milliseconds summed; the median and the p99 are over the turns that made a check.")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "| kind | turns | turns checked | check calls | median ms | p99 ms |")
-	fmt.Fprintln(w, "| --- | --- | --- | --- | --- | --- |")
+	fmt.Fprintln(w, "| kind | turns | turns checked | check calls | turns skipped | turns with no line from Jev | median ms | p99 ms |")
+	fmt.Fprintln(w, "| --- | --- | --- | --- | --- | --- | --- | --- |")
 	row := func(name string, tally checkTally) {
-		fmt.Fprintf(w, "| %s | %d | %d | %d | %s | %s |\n", name, tally.turns, len(tally.added), tally.calls, rankCell(tally.added, 0.5), rankCell(tally.added, 0.99))
+		fmt.Fprintf(w, "| %s | %d | %d | %d | %d | %d | %s | %s |\n", name, tally.turns, len(tally.added), tally.calls, tally.skipped, tally.unread,
+			rankCell(tally.added, 0.5), rankCell(tally.added, 0.99))
 	}
 	for _, kind := range checkKinds() {
 		var of []eval.Task
@@ -157,7 +205,9 @@ func writeChecks(w io.Writer, tasks []eval.Task, byTask map[string][]tryResult) 
 	}
 	all := tallyChecks(tasks, byTask)
 	row("all", all)
-	fmt.Fprintf(w, "\nThe run made %d check calls, which spent %d tokens.\n\n", all.calls, all.tokens)
+	fmt.Fprintf(w, "\nThe run made %d check calls, which spent %d tokens, and skipped the check of %d turns. "+
+		"%d turns had no line from Jev when the guard decided, %d of them with the line call still out.\n\n",
+		all.calls, all.tokens, all.skipped, all.unread, all.late)
 }
 
 // rankCell is the nearest-rank share q of values (nearestRank) as a cell of the report's tables,

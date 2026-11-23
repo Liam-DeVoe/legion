@@ -178,7 +178,9 @@ function withReplySteps(
 }
 
 /** The event an `end` frame is to the run's state: a turn that waits on its plan, done, failed,
- *  stopped by a bound of its level (it offers Continue), or stopped by its person. */
+ *  stopped where it offers Continue - a bound of its level, or the model's provider refusing part
+ *  of what the run found, whose words its reason gives (`endWords`) - or stopped with nothing to
+ *  continue. */
 function endEvent(end: RunEnd): RunEvent {
   switch (end.state) {
     case "waiting":
@@ -366,7 +368,9 @@ const BOUND_REASONS: Readonly<Record<string, true>> = {
 };
 
 /** The run's state as its record says it, for a run whose frames are not read yet (History): a
- *  stop is a bound's only where its reason's code is one of `BOUND_REASONS`. */
+ *  stop is a bound's only where its reason's code is one of `BOUND_REASONS`. The record holds no
+ *  offers, so a stop the model's provider refused reads as one with nothing to continue - "Ask in
+ *  other words" - until its end frame says whether it offers Continue. */
 export function stateOfRecord(
   state: GoingRun["state"],
   stopReason: GoingRun["stop_reason"]

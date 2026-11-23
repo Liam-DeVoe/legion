@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -414,5 +415,219 @@ func TestACheckThatFailsEndsTheTurnAsBefore(t *testing.T) {
 				t.Errorf("the log holds %q, want a warning naming run-1 and the cause %s", warned, c.cause)
 			}
 		})
+	}
+}
+
+// jevRun is a fast run of words started from line, "" for none, at a server that names a
+// decision model.
+func jevRun(line, words string) *agentwire.ClaimedRun {
+	return &agentwire.ClaimedRun{ID: "run-1", Words: words, Line: line, Decider: true, Level: "fast", Mode: "ask", LeaseToken: "lease-1"}
+}
+
+// answeredLine answers a line call with line, and every other call as keptPlan does.
+func answeredLine(line string) func(agentwire.CallRequest) agentwire.CallAnswer {
+	return func(call agentwire.CallRequest) agentwire.CallAnswer {
+		if call.Kind == agentwire.KindLine {
+			return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"line":"` + line + `"}`)}
+		}
+		return keptPlan(call)
+	}
+}
+
+// lineCalls is the line calls the run made of the server.
+func (s *fakeServer) lineCalls() []agentwire.CallRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var lines []agentwire.CallRequest
+	for _, call := range s.calls {
+		if call.Kind == agentwire.KindLine {
+			lines = append(lines, call)
+		}
+	}
+	return lines
+}
+
+// workAfterJev works one turn of run at the server client calls, on a chat model whose every
+// reply, as script writes it, waits until Jev's reading of the turn's words is in: so the guard
+// decides with the reading in hand, as it does wherever Jev answers within the turn's first model
+// call. A turn the guard asks Jev nothing of waits for nothing.
+func workAfterJev(t *testing.T, client agentwire.Client, run *agentwire.ClaimedRun, script func(*agenttest.Request) agenttest.Reply) *agenttest.Model {
+	t.Helper()
+	var working atomic.Pointer[worker]
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		reply := script(request)
+		if read := working.Load().jev.Load(); read != nil {
+			reply.Hold = read.answered
+		}
+		return reply
+	})
+	a := &agent{client: client, config: Config{Model: fake.Model()}, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
+	w := newWorker(t.Context(), a, run, func() {})
+	working.Store(w)
+	w.work()
+	return fake
+}
+
+// requireChecked fails t unless the run made one step's call and its one check, ended done with
+// prose as written, and the reply's frame says what the check took, no skip, and jev, what Jev
+// read the words as.
+func requireChecked(t *testing.T, server *fakeServer, fake *agenttest.Model, prose, jev string) {
+	t.Helper()
+	end, bodies := server.end(t)
+	if end.State != agentwire.StateDone || len(bodies) != 1 || bodies[0].Text != prose {
+		t.Fatalf("the run ended %s with %q, saving %+v; want done with the reply as written", end.State, end.Reason, bodies)
+	}
+	if steps, checks := len(stepRequests(fake)), len(checkRequests(fake)); steps != 1 || checks != 1 {
+		t.Errorf("the run made %d steps' calls and %d checks, want the reply and its one check", steps, checks)
+	}
+	if frame := server.lastReply(t); frame.CheckMS == nil || frame.CheckSkipped != "" || frame.JevLine != jev {
+		t.Errorf("the reply's frame says check_ms %v, check_skipped %q and jev_line %q; want the check's time, no skip and %q",
+			frame.CheckMS, frame.CheckSkipped, frame.JevLine, jev)
+	}
+}
+
+// TestATurnJevReadsAsAskEndsWithNoCheck: c13 checked 243 of 626 turns, each check adding a median
+// 3.4 s to its turn, answers and statuses among them, whose words ask for no change. A run started
+// from the line Ask, or from none (a follow-up typed in the box), asks Jev again what its words
+// ask, with one line call beside its first model call: a turn Jev reads as Ask ends with its prose
+// as written and no check, and its frame says the check was skipped because Jev read Ask, with no
+// check's time.
+func TestATurnJevReadsAsAskEndsWithNoCheck(t *testing.T) {
+	const words = "who is ACME-7 assigned to"
+	const prose = "[ACME-7](dispatch://ACME-7) is assigned to kim@example.com."
+	for name, line := range map[string]string{"started from Ask": agentwire.LineAsk, "a follow-up of no line": ""} {
+		t.Run(name, func(t *testing.T) {
+			server, client := newFakeServer(t, answeredLine(agentwire.LineAsk))
+			fake := workAfterJev(t, client, jevRun(line, words), func(request *agenttest.Request) agenttest.Reply {
+				if isCheck(request) {
+					return verdict(noPlanPasses)
+				}
+				return agenttest.Reply{Text: prose}
+			})
+			end, bodies := server.end(t)
+			if end.State != agentwire.StateDone || len(bodies) != 1 || bodies[0].Text != prose || bodies[0].NoPlan {
+				t.Fatalf("the run ended %s with %q, saving %+v; want done with the answer as written", end.State, end.Reason, bodies)
+			}
+			if steps, checks := len(stepRequests(fake)), len(checkRequests(fake)); steps != 1 || checks != 0 {
+				t.Errorf("the run made %d steps' calls and %d checks, want the answer and no check", steps, checks)
+			}
+			frame := server.lastReply(t)
+			if frame.Text != prose || frame.CheckSkipped != checkSkippedJevAsk || frame.JevLine != agentwire.LineAsk || frame.CheckMS != nil || frame.CheckTokens != nil {
+				t.Errorf("the answer's frame is %+v, want its prose, check_skipped %q, jev_line ask and no check's time or tokens", frame, checkSkippedJevAsk)
+			}
+			if calls := server.lineCalls(); len(calls) != 1 || calls[0].Run != "run-1" || calls[0].LeaseToken != "lease-1" {
+				t.Errorf("the run made the line calls %+v, want one of run-1 under its lease", calls)
+			}
+		})
+	}
+}
+
+// TestATurnJevReadsAsAChangeIsChecked: a turn of an Ask run whose words Jev reads as Do or File
+// asks for a change, so its prose is checked as every such reply was.
+func TestATurnJevReadsAsAChangeIsChecked(t *testing.T) {
+	const prose = "Reopening ACME-7 as todo."
+	for _, line := range []string{agentwire.LineDo, agentwire.LineFile} {
+		t.Run("Jev reads "+line, func(t *testing.T) {
+			server, client := newFakeServer(t, answeredLine(line))
+			fake := workAfterJev(t, client, jevRun(agentwire.LineAsk, "reopen ACME-7 as todo"), func(request *agenttest.Request) agenttest.Reply {
+				if isCheck(request) {
+					return verdict(noPlanPasses)
+				}
+				return agenttest.Reply{Text: prose}
+			})
+			requireChecked(t, server, fake, prose, line)
+		})
+	}
+}
+
+// TestATurnJevGivesNoLineIsChecked: a reading that never came is no Ask. The line call refused
+// (the failure logged once, naming the run, and never the run's), a server that names no decision
+// model, which the agent asks nothing, and a line call still out when the guard decides, which the
+// turn's end cuts off: each turn's prose is checked, and its frame says Jev gave no line, or none
+// yet.
+func TestATurnJevGivesNoLineIsChecked(t *testing.T) {
+	const words = "who is ACME-7 assigned to"
+	const prose = "[ACME-7](dispatch://ACME-7) is assigned to kim@example.com."
+	script := func(request *agenttest.Request) agenttest.Reply {
+		if isCheck(request) {
+			return verdict(noPlanPasses)
+		}
+		return agenttest.Reply{Text: prose}
+	}
+
+	t.Run("the line call is refused", func(t *testing.T) {
+		var log logtest.Buffer
+		logtest.SetDefault(t, slog.NewTextHandler(&log, nil))
+		server, client := newFakeServer(t, keptPlan)
+		server.refuse = func(call agentwire.CallRequest) *agentwire.Error {
+			if call.Kind == agentwire.KindLine {
+				return &agentwire.Error{Code: agentwire.CodeCallFailed, Message: "the decision slot is busy"}
+			}
+			return nil
+		}
+		fake := workAfterJev(t, client, jevRun(agentwire.LineAsk, words), script)
+		requireChecked(t, server, fake, prose, jevNone)
+		warned := log.Lines("the line call of the run's words failed")
+		if strings.Count(warned, "\n") != 1 || !strings.Contains(warned, "level=WARN") || !strings.Contains(warned, "run=run-1") || !strings.Contains(warned, "the decision slot is busy") {
+			t.Errorf("the log holds %q, want one warning naming run-1 and the refusal", warned)
+		}
+	})
+
+	t.Run("the server names no decision model", func(t *testing.T) {
+		server, client := newFakeServer(t, keptPlan)
+		run := jevRun(agentwire.LineAsk, words)
+		run.Decider = false
+		fake := workAfterJev(t, client, run, script)
+		requireChecked(t, server, fake, prose, jevNone)
+		if calls := server.lineCalls(); len(calls) != 0 {
+			t.Errorf("the run made the line calls %+v at a server with no decision model, want none", calls)
+		}
+	})
+
+	t.Run("the line call is still out", func(t *testing.T) {
+		var log logtest.Buffer
+		logtest.SetDefault(t, slog.NewTextHandler(&log, nil))
+		// The line call is answered only once the run's turn has ended, and the step's reply waits
+		// until the server holds the line call: so the guard decides while the call is out, and
+		// the turn's answer waits for no reading.
+		asked, release := make(chan struct{}), make(chan struct{})
+		server, client := newFakeServer(t, func(call agentwire.CallRequest) agentwire.CallAnswer {
+			if call.Kind == agentwire.KindLine {
+				close(asked)
+				<-release
+			}
+			return answeredLine(agentwire.LineAsk)(call)
+		})
+		fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+			reply := script(request)
+			reply.Hold = asked
+			return reply
+		})
+		workClaimed(t, fake.Model(), client, jevRun(agentwire.LineAsk, words))
+		close(release)
+		requireChecked(t, server, fake, prose, jevLate)
+		if calls := server.lineCalls(); len(calls) != 1 {
+			t.Errorf("the run made the line calls %+v, want the one cut off at the turn's end", calls)
+		}
+		if warned := log.Lines("the line call"); warned != "" {
+			t.Errorf("the log holds %q, want nothing of a line call the turn's end cut off", warned)
+		}
+	})
+}
+
+// TestADoLineRunIsCheckedWithNoLineCall: a run started from the line Do keeps the line the person
+// pressed: Jev is asked nothing, and its prose is checked as before, its frame naming no reading.
+func TestADoLineRunIsCheckedWithNoLineCall(t *testing.T) {
+	const prose = "Reopening ACME-7 as todo."
+	server, client := newFakeServer(t, answeredLine(agentwire.LineAsk))
+	fake := workAfterJev(t, client, jevRun(agentwire.LineDo, "reopen ACME-7 as todo"), func(request *agenttest.Request) agenttest.Reply {
+		if isCheck(request) {
+			return verdict(noPlanPasses)
+		}
+		return agenttest.Reply{Text: prose}
+	})
+	requireChecked(t, server, fake, prose, "")
+	if calls := server.lineCalls(); len(calls) != 0 {
+		t.Errorf("the Do run made the line calls %+v, want none", calls)
 	}
 }

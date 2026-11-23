@@ -13,19 +13,16 @@ import (
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going/eval"
-	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
 
 // newJudge is the judge on the chat deployment named deployment, at the endpoint and on the
 // keyless Azure sign-in of chat, through limits, reading facts written for the moment written.
 func newJudge(chat chatSettings, deployment string, limits *limiter, written time.Time) (*judge, error) {
-	tokens, err := embed.NewEntraTokenSource(embed.EntraConfig{
-		TenantID: chat.TenantID, ClientID: chat.ClientID, TokenFile: chat.TokenFile, Scope: cmp.Or(chat.Scope, embed.DefaultEntraScope),
-	})
+	token, err := chatToken(chat)
 	if err != nil {
-		return nil, fmt.Errorf("the judge's Azure sign-in: %w", err)
+		return nil, fmt.Errorf("the judge's %w", err)
 	}
-	model := agentloop.Model{Endpoint: agentloop.Endpoint{Kind: agentloop.OpenAIChat, BaseURL: chat.Endpoint, Token: tokens.Token}, ID: deployment}
+	model := agentloop.Model{Endpoint: agentloop.Endpoint{Kind: agentloop.OpenAIChat, BaseURL: chat.Endpoint, Token: token}, ID: deployment}
 	if chat.APIVersion != "" {
 		model.Endpoint.Query = url.Values{"api-version": {chat.APIVersion}}
 	}

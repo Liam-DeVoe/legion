@@ -128,7 +128,11 @@ type chatProxy struct {
 // startChatProxy serves a proxy of upstream, the deployment's chat endpoint, on loopback, and
 // writes into dir the bundle of certificate authorities the server is given as SSL_CERT_FILE, and
 // chat-calls.log, a line for each call: its status, time, tokens and size, and the start of the
-// answer of a call that failed.
+// answer of a call that failed. A call the deployment's content filter refused - an answer that
+// is no 2xx and names content_filter (agentloop.ContentFilterRefusal) - also keeps its request
+// body, the eval seed's data and the server's prompt and no header, in refused/<n>.json under
+// dir, n counting those calls from 1, which its line names (refused_body=), so the refusal can
+// be replayed (going-eval replay).
 func startChatProxy(upstream *url.URL, limits *limiter, dir string) (*chatProxy, error) {
 	certificate, certPEM, err := selfSigned()
 	if err != nil {
@@ -155,6 +159,23 @@ func startChatProxy(upstream *url.URL, limits *limiter, dir string) (*chatProxy,
 		logMu.Lock()
 		defer logMu.Unlock()
 		fmt.Fprintf(calls, time.Now().UTC().Format(time.RFC3339Nano)+" "+format+"\n", args...)
+	}
+	var refusedMu sync.Mutex
+	refused := 0
+	// keepRefused writes body as the next refused/<n>.json under dir, and answers its path
+	// under dir, or why it could not.
+	keepRefused := func(body []byte) string {
+		refusedMu.Lock()
+		defer refusedMu.Unlock()
+		if err := os.MkdirAll(filepath.Join(dir, "refused"), 0o700); err != nil {
+			return "none (" + err.Error() + ")"
+		}
+		refused++
+		name := filepath.Join("refused", strconv.Itoa(refused)+".json")
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+			return "none (" + err.Error() + ")"
+		}
+		return name
 	}
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
@@ -199,6 +220,9 @@ func startChatProxy(upstream *url.URL, limits *limiter, dir string) (*chatProxy,
 			counter.finish, jsonOrNone(bound.MaxTokens), jsonOrNone(bound.MaxCompletionTokens), len(body), writer.written)
 		if writer.status >= 300 || tokens == 0 {
 			line += " answer=" + strconv.Quote(string(writer.head))
+		}
+		if _, filtered := agentloop.ContentFilterRefusal(writer.head); filtered && writer.status/100 != 2 {
+			line += " refused_body=" + keepRefused(body)
 		}
 		logCall("%s", line)
 	})}

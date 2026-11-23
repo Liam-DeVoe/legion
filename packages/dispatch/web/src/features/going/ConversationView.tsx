@@ -200,22 +200,21 @@ function AnswerFoot({
 
 /**
  * How a run that stopped or failed ended (design v2, state 9), in one sentence (`endWords`) and,
- * on the conversation's newest run (`actions`), its one action. A bound is a grey card, a pause
- * and not an error: "Stopped at Standard's time limit · read 14 items so far", then Continue (↵,
- * which Enter in the empty box also does) and, below Deep, "Continue in Deep". A Stop reads
- * "Stopped · kept what it did". A failure is its sentence and Try again, or "Start a new
- * conversation" where this one grew too long; a Dispatch with no answering model says so in the
- * one sentence of state 13, and offers nothing.
+ * on the conversation's newest run (`actions`), its one action. A stop that offers Continue is a
+ * grey card, a pause and not an error: a bound, "Stopped at Standard's time limit · read 14 items
+ * so far", then Continue (↵, which Enter in the empty box also does) and, below Deep, "Continue
+ * in Deep"; or the model's provider refusing part of what the run found, "…, Continue, or ask in
+ * other words", with Continue alone. A Stop reads "Stopped · kept what it did". A failure is its
+ * sentence and Try again, or "Start a new conversation" where this one grew too long; a Dispatch
+ * with no answering model says so in the one sentence of state 13, and offers nothing.
  */
 function RunEnd({
   actions,
-  level,
   onContinue,
   onRetry,
   words,
 }: {
   readonly actions: boolean;
-  readonly level: GoingRun["level"];
   readonly onContinue: (level?: GoingRun["level"]) => void;
   readonly onRetry: () => void;
   readonly words: EndWords;
@@ -257,7 +256,7 @@ function RunEnd({
                 ↵
               </span>
             </button>
-            {level === "deep" ? null : (
+            {words.continueInDeep ? (
               <button
                 className={secondaryButtonCompact}
                 data-testid="going-run-continue-deep"
@@ -266,7 +265,7 @@ function RunEnd({
               >
                 Continue in Deep
               </button>
-            )}
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -425,7 +424,6 @@ function RunTurn({
       ) : ended !== undefined ? (
         <RunEnd
           actions={newest}
-          level={run.record.level}
           onContinue={(level) => onContinue(run.id, level)}
           onRetry={() => onRetry(run.record.words)}
           words={ended}

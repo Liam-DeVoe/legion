@@ -15,7 +15,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { openConversation, shownState, useGoingValue } from "./going-store";
 import { RunUndo } from "./RunUndo";
 import { stateOfRecord } from "./run-frames";
-import { type RunState, runEnded } from "./run-states";
+import { PROVIDER_REFUSED_WORDS, providerRefused, type RunState, runEnded } from "./run-states";
 
 /** How a conversation stands, as History names it by its newest run (design v3, state 11). */
 const STATE_WORDS: Readonly<Record<RunState, string>> = {
@@ -47,12 +47,14 @@ function groupOf(at: number, now: Date): HistoryGroup {
 }
 
 /** One conversation as History lists it: its title (its first question), how its newest run
- *  stands, its group, and that run where it ended holding a write Undo can take back, or where
- *  this page undid it, whose Undo the row holds. */
+ *  stands, whether the model's provider refused that run part of what it found, its group, and
+ *  that run where it ended holding a write Undo can take back, or where this page undid it, whose
+ *  Undo the row holds. */
 interface Listed {
   readonly conversation: GoingConversation;
   readonly title: string;
   readonly state: RunState;
+  readonly refused: boolean;
   readonly group: HistoryGroup;
   readonly undo: string | undefined;
 }
@@ -63,8 +65,11 @@ interface Listed {
  * Yesterday and This week, the newest first. Each row is the conversation's title, how it stands
  * - Working, Needs you, Done, Failed or Stopped, as this page follows its newest run, else as
  * Dispatch keeps it - and the time of its newest turn; a press opens it in the bar, where a
- * follow-up sees the turns before it. A row whose newest run ended holding a write Undo can still
- * take back (`undoable`), as a filing from the line on top does (R9), holds that run's Undo (R6).
+ * follow-up sees the turns before it. A row whose newest run the model's provider stopped,
+ * refusing to read part of what it found, says so under it, by its reason's code; the row offers
+ * no Continue, as no row does, and the conversation it opens draws Continue where the run's end
+ * offers it. A row whose newest run ended holding a write Undo can still take back (`undoable`),
+ * as a filing from the line on top does (R9), holds that run's Undo (R6).
  *
  * The box at its top takes the focus as it opens, and typing filters the rows by the words of
  * every question of a conversation. Enter in it opens the first row; Down and Up move the focus
@@ -103,10 +108,13 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
       followed === undefined
         ? stateOfRecord(newest.state, newest.stop_reason)
         : shownState(followed);
+    const reason = followed?.frames.end?.reason ?? newest.stop_reason ?? "";
     return [
       {
         conversation,
         group: groupOf(Date.parse(conversation.newest_at), now),
+        refused:
+          (state === "stopped_bound" || state === "stopped_person") && providerRefused(reason),
         state,
         title: held.at(-1)?.words ?? "",
         // Undo is offered only while the run holds a write Undo can still take back, as
@@ -215,6 +223,14 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
                       <Timestamp at={row.conversation.newest_at} />
                     </span>
                   </button>
+                  {row.refused ? (
+                    <p
+                      className={`px-2 pb-1 text-xs ${textSecondaryOnSurface}`}
+                      data-testid="going-history-refused"
+                    >
+                      {PROVIDER_REFUSED_WORDS}
+                    </p>
+                  ) : null}
                   {row.undo === undefined ? null : (
                     <div className="px-2 pb-1">
                       <RunUndo run={row.undo} />

@@ -67,10 +67,11 @@ func TestTheReportGivesEachLevelsCallTokensAndEveryBudgetStop(t *testing.T) {
 
 // TestTheReportGivesTheChecksOfEachKindAnswerAndStatusFirst: the report counts the no-plan guard's
 // checks of each kind of task, answer and status first, and of all tasks: the turns the tries'
-// runs ended, those that made a check, the checks made, and the median and the p99 of a turn's
-// checks' time summed, over the turns that made one; then how many checks the run made and the
-// tokens they spent. A turn whose reply the check held back makes two checks, which the turn's
-// time adds up. A kind none of whose turns made a check has no time.
+// runs ended, those that made a check, the checks made, the turns that skipped it, those Jev gave
+// no line, and the median and the p99 of a turn's checks' time summed, over the turns that made
+// one; then how many checks the run made and the tokens they spent. A turn whose reply the check
+// held back makes two checks, which the turn's time adds up. A kind none of whose turns made a
+// check has no time.
 func TestTheReportGivesTheChecksOfEachKindAnswerAndStatusFirst(t *testing.T) {
 	tasks := []eval.Task{
 		{ID: "find-01", Kind: eval.KindFind, Level: eval.LevelFast},
@@ -93,13 +94,13 @@ func TestTheReportGivesTheChecksOfEachKindAnswerAndStatusFirst(t *testing.T) {
 	writeReport(&report, reportInput{options: runOptions{tries: 3, parallel: 1}, all: tasks, tasks: tasks, results: results})
 	text := report.String()
 	rows := []string{
-		"| answer | 4 | 4 | 5 | 400 | 1400 |\n",
-		"| status | 2 | 1 | 1 | 800 | 800 |\n",
-		"| find | 1 | 1 | 1 | 700 | 700 |\n",
-		"| change | 2 | 0 | 0 | none | none |\n",
-		"| all | 9 | 6 | 7 | 600 | 1400 |\n",
+		"| answer | 4 | 4 | 5 | 0 | 0 | 400 | 1400 |\n",
+		"| status | 2 | 1 | 1 | 0 | 0 | 800 | 800 |\n",
+		"| find | 1 | 1 | 1 | 0 | 0 | 700 | 700 |\n",
+		"| change | 2 | 0 | 0 | 0 | 0 | none | none |\n",
+		"| all | 9 | 6 | 7 | 0 | 0 | 600 | 1400 |\n",
 	}
-	for _, held := range append([]string{"## The no-plan guard's checks", "The run made 7 check calls, which spent 3040 tokens."}, rows...) {
+	for _, held := range append([]string{"## The no-plan guard's checks", "The run made 7 check calls, which spent 3040 tokens, and skipped the check of 0 turns."}, rows...) {
 		if !strings.Contains(text, held) {
 			t.Errorf("the report holds no %q:\n%s", held, text)
 		}
@@ -108,6 +109,59 @@ func TestTheReportGivesTheChecksOfEachKindAnswerAndStatusFirst(t *testing.T) {
 		if strings.Index(text, rows[i-1]) > strings.Index(text, rows[i]) {
 			t.Errorf("the report gives %q after %q, want answer and status first, then the kinds in eval.Kinds' order, then all:\n%s",
 				strings.TrimSpace(rows[i-1]), strings.TrimSpace(rows[i]), text)
+		}
+	}
+}
+
+// TestTheReportCountsTheGuardsSkipsAndTheTurnsJevGaveNoLine: read from fixed reply frames, the
+// report counts for each kind the turns whose check the guard skipped, since Jev read their words
+// as Ask, which add nothing to the median and the p99, and the turns the guard decided on with no
+// line from Jev - none, or a line call still out - which it checked; a turn of a Do reading is
+// checked and read. So a run whose server names no decision model shows its turns with no line,
+// rather than reading as a run where Jev read no turn as Ask.
+func TestTheReportCountsTheGuardsSkipsAndTheTurnsJevGaveNoLine(t *testing.T) {
+	tasks := []eval.Task{
+		{ID: "answer-01", Kind: eval.KindAnswer, Level: eval.LevelFast},
+		{ID: "status-01", Kind: eval.KindStatus, Level: eval.LevelFast},
+		{ID: "change-01", Kind: eval.KindChange, Level: eval.LevelFast},
+	}
+	const end = `{"state":"done","reason":"","offers":[]}`
+	tries := []struct {
+		task   string
+		frames [][2]string
+	}{
+		{"answer-01", [][2]string{{"reply", `{"step":1,"text":"ACME-7 is open.","check_skipped":"jev_read_ask","jev_line":"ask"}`}, {"end", end}}},
+		{"answer-01", [][2]string{{"reply", `{"step":1,"text":"ACME-7 is open.","check_ms":3400,"check_tokens":500,"jev_line":"late"}`}, {"end", end}}},
+		{"status-01", [][2]string{{"reply", `{"step":1,"text":"ACME is on track.","check_skipped":"jev_read_ask","jev_line":"ask"}`}, {"end", end}}},
+		{"status-01", [][2]string{{"reply", `{"step":1,"text":"ACME is on track.","check_ms":3200,"check_tokens":480,"jev_line":"none"}`}, {"end", end}}},
+		{"change-01", [][2]string{
+			{"reply", `{"step":1,"text":"","no_plan":true,"check_ms":2900,"check_tokens":510,"jev_line":"do"}`},
+			{"reply", `{"step":2,"text":"","tools":["propose_plan"]}`},
+			{"end", `{"state":"waiting","reason":"","offers":[]}`},
+		}},
+	}
+	var results []tryResult
+	for i, try := range tries {
+		var outcome tryOutcome
+		for _, frame := range try.frames {
+			outcome.readFrame(frame[0], []byte(frame[1]))
+		}
+		results = append(results, tryResult{Task: try.task, Try: i + 1, Outcome: outcome})
+	}
+	var report strings.Builder
+	writeReport(&report, reportInput{options: runOptions{tries: 2, parallel: 1}, all: tasks, tasks: tasks, results: results})
+	text := report.String()
+	for _, held := range []string{
+		"| kind | turns | turns checked | check calls | turns skipped | turns with no line from Jev | median ms | p99 ms |\n",
+		"| answer | 2 | 1 | 1 | 1 | 1 | 3400 | 3400 |\n",
+		"| status | 2 | 1 | 1 | 1 | 1 | 3200 | 3200 |\n",
+		"| change | 1 | 1 | 1 | 0 | 0 | 2900 | 2900 |\n",
+		"| all | 5 | 3 | 3 | 2 | 2 | 3200 | 3400 |\n",
+		"The run made 3 check calls, which spent 1490 tokens, and skipped the check of 2 turns. " +
+			"2 turns had no line from Jev when the guard decided, 1 of them with the line call still out.",
+	} {
+		if !strings.Contains(text, held) {
+			t.Errorf("the report holds no %q:\n%s", held, text)
 		}
 	}
 }

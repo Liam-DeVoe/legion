@@ -204,6 +204,55 @@ test("History offers Undo only while the run holds a write Undo can still take b
   }
 });
 
+// A row whose newest run the model's provider stopped, refusing part of what it found, says so
+// under it, by its reason's code, whether or not the run offered Continue: the record holds no
+// offers, and no row offers Continue; the conversation it opens does, from the run's end frame.
+test("a row whose run the model's provider refused says so under it, and offers no Continue", async () => {
+  const read = listConversations([
+    {
+      id: "c-8",
+      newest_at: new Date(now).toISOString(),
+      runs: [
+        run("r-8", "read every alert and sum them up", now, {
+          conversation: "c-8",
+          state: "stopped",
+          stop_reason:
+            "MODEL_CONTENT_FILTER: the chat model's provider refused to read part of what this run found, also with the 4 results it could not vouch for withheld (jailbreak); Continue starts a follow-up with a new budget, or ask in other words",
+        }),
+      ],
+    },
+    {
+      id: "c-9",
+      newest_at: new Date(now - 60_000).toISOString(),
+      runs: [
+        run("r-9", "watch the comet", now - 60_000, {
+          conversation: "c-9",
+          state: "stopped",
+          stop_reason: "STOPPED: its person stopped it",
+        }),
+      ],
+    },
+  ]);
+  try {
+    renderHistory();
+    await waitFor(() =>
+      expect(screen.getAllByTestId("going-history-conversation")).toHaveLength(2)
+    );
+    const [refused, stopped] = screen.getAllByTestId("going-history-conversation");
+    expect(within(refused as HTMLElement).getByTestId("going-history-state").textContent).toBe(
+      "Stopped"
+    );
+    expect(within(refused as HTMLElement).getByTestId("going-history-refused").textContent).toBe(
+      "The model's provider refused to read part of what this run found"
+    );
+    expect(within(stopped as HTMLElement).queryByTestId("going-history-refused")).toBeNull();
+    expect(screen.queryByText(/Continue/u)).toBeNull();
+    expect(screen.getByTestId("going-history").textContent ?? "").not.toMatch(/MODEL_/u);
+  } finally {
+    read.mockRestore();
+  }
+});
+
 test("Undo in History undoes that run and names a value another person changed, and a message sent, not undone", async () => {
   const user = userEvent.setup();
   const read = listConversations();
