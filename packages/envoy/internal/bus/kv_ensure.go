@@ -162,7 +162,7 @@ const (
 	// its metadata included (nats.go@v1.55.0 kv.go:534-543). nats-server 2.15.1, the hubs'
 	// version, answers every stream with metadata of its own (_nats.ver, _nats.level,
 	// _nats.req.level), which that configuration never carries, so there the update is never sent
-	// (infra/buckets, TestBreakGlassLeavesABucketMadeAfterItsReadAsItIs).
+	// (infra/buckets, TestCreateLeavesABucketMadeAfterItsReadAsItIs).
 	createOnly
 )
 
