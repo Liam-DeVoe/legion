@@ -13,12 +13,13 @@ import (
 // A failed CI job reaches the implementer while the tester or the reviewer works, and moves
 // nothing: k1 and k2 are checks that no CI job runs, and k3 is one a CI job runs, whose state names
 // its job's case. The CI result of #42 that settles while the tester works is told to the
-// implementer at once (tellChecks), before any state of k3 arrives, and the tester's completion then
-// moves the issue to reviewing on k1 and k2 alone, whatever k3 reads. A state of k3 that says its
-// job ended at the head of the pull request without a pass is told to the implementer alone, at
-// once, in any phase: one message naming the check, the head and the job's case, and no start of
-// the implementer. A state at a head the pull request has left, and a second state that says the
-// same failure, tell nobody.
+// implementer at once (tellChecks), before any state of k3 arrives, and starts no implementer; the
+// tester's completion then moves the issue by every check, k3 among them, as the testing move
+// reads them today (TestTheTestingMoveStillReadsEveryCheck). A state of k3 that says its job ended
+// at the head of the pull request without a pass is told to the implementer alone, at once, in any
+// phase: one message naming the check, the head and the job's case, and no start of the
+// implementer. A state at a head the pull request has left, and a second state that says the same
+// failure, tell nobody.
 func TestAFailedCIJobReachesTheImplementerWhileTheReviewerWorks(t *testing.T) {
 	k3Failed := ofSet(inCI(stateOf("k3", "no", "fail", "ci"), "failure"), "k1", "k2", "k3")
 
@@ -34,10 +35,7 @@ func TestAFailedCIJobReachesTheImplementerWhileTheReviewerWorks(t *testing.T) {
 
 		r.states(headOne, 3, k3Failed)
 		r.complete(headOne, 3)
-		assertPhase(t, r.pool, phase.Reviewing)
-		if task := startTask(t, r.pool, claim.RoleReviewer); task == "" {
-			t.Fatal("the tester's completion started no reviewer")
-		}
+		r.movedBackNaming([]string{"k3: no (fail)"}, "k1:", "k2:")
 	})
 
 	t.Run("a state of k3 arrives while the tester works", func(t *testing.T) {
