@@ -681,7 +681,7 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 // the kinds the caller named leave any to read, and none otherwise, with, on an inbound read, the
 // excerpts stored on the document mentions among them (documentMentionExcerpts), all read in a
 // read transaction of its own whose first statement sets jit off (inJITOffRead). A read with no
-// edges to read and no excerpts to read sends nothing.
+// edges to read sends nothing: the stored excerpts replace only an edge's own.
 //
 // JIT is off because compiling the read's statement over graph_edges (readEdgeRows) costs more
 // than running it: with JIT on, which compiled 451 functions for each call, it took 136.5 ms a
@@ -693,15 +693,13 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 // jit = on.
 func (s *server) inReferencesListRead(ctx context.Context, who model.Actor, query refs.Query, readEdges bool) ([]model.GraphEdge, error) {
 	edges := []model.GraphEdge{}
-	if !readEdges && query.Direction != "in" {
+	if !readEdges {
 		return edges, nil
 	}
 	err := s.inJITOffRead(ctx, "", func(tx pgx.Tx) error {
-		if readEdges {
-			var err error
-			if edges, err = refs.Edges(ctx, tx, who, query); err != nil {
-				return err
-			}
+		var err error
+		if edges, err = refs.Edges(ctx, tx, who, query); err != nil {
+			return err
 		}
 		if query.Direction == "in" {
 			return documentMentionExcerpts(ctx, tx, who, query, edges)

@@ -703,17 +703,21 @@ func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
 	var failed []error
 reads:
 	for _, read := range []struct {
+		name      string
 		statement string
 		stated    *int
-	}{{goingRunsPastTheHour, &runsStated}, {goingRowlessRuns, &rowlessStated}} {
+	}{
+		{"read the runs past the hour", goingRunsPastTheHour, &runsStated},
+		{"read the runs past the hour whose rows are gone", goingRowlessRuns, &rowlessStated},
+	} {
 		rows, err := pool.Query(ctx, read.statement, contracts.GoingRequestTTL.Seconds(), goingGoneBatch)
 		if err != nil {
-			failed = append(failed, fmt.Errorf("read the runs past the hour: %w", err))
+			failed = append(failed, fmt.Errorf("%s: %w", read.name, err))
 			continue
 		}
 		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 		if err != nil {
-			failed = append(failed, fmt.Errorf("read the runs past the hour: %w", err))
+			failed = append(failed, fmt.Errorf("%s: %w", read.name, err))
 			continue
 		}
 		for _, id := range ids {
@@ -796,11 +800,13 @@ func goRunGone(ctx context.Context, pool *store.Pool, id string) (goingRunGone, 
 	if err != nil {
 		return goingRunGone{}, err
 	}
-	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindInteraction, id)
+	// lockGoingRun answers nil only where this transaction holds the node's row, so the read below
+	// finds it.
+	node, _, err := graphstore.ReadNode(ctx, tx, graphstore.KindInteraction, id)
 	if err != nil {
 		return goingRunGone{}, err
 	}
-	if !held || node.Attributes[graphstore.AttributeSource] != graphstore.SourceGoingRequests {
+	if node.Attributes[graphstore.AttributeSource] != graphstore.SourceGoingRequests {
 		return goingRunGone{}, nil
 	}
 	var done goingRunGone
@@ -810,7 +816,9 @@ func goRunGone(ctx context.Context, pool *store.Pool, id string) (goingRunGone, 
 		}
 		done.stated = true
 	}
-	removed, err := tx.Exec(ctx, `delete from going_requests where id = $1::uuid`, id)
+	// A node id of any shape but the one Postgres writes a uuid in names no row (goingRowlessRuns),
+	// and is read as none rather than cast, so the node is still stated gone.
+	removed, err := tx.Exec(ctx, `delete from going_requests where id = `+store.CanonicalUUID("$1::text"), id)
 	if err != nil {
 		return goingRunGone{}, fmt.Errorf("remove the rows of run %s: %w", id, err)
 	}
