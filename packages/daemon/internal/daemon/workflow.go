@@ -1808,12 +1808,52 @@ const (
 
 // Each retry of a fact about a launch its issue's pod refused — the refusal's report
 // (workflowRuntime.podRefused) and the end of a start row of a refused claim (outbox's
-// startRowEnded) — waits twice the last, from refusalRetryFirst to at most refusalRetryMost, so a
-// fact the store keeps refusing is logged at ERROR at least hourly for as long as it fails.
+// startRowEnded) — waits twice the last, from refusalRetryFirst to at most refusalRetryMost
+// (applyRefusalFact), so a fact the store keeps refusing is logged at ERROR at least hourly for as
+// long as it fails, and the claim's machine shows it as not recorded meanwhile.
 const (
 	refusalRetryFirst = time.Second
 	refusalRetryMost  = time.Hour
 )
+
+// applyRefusalFact applies a fact about a launch of machine's claim that the issue pod pod refused
+// — the refusal's report (workflowRuntime.podRefused) or its re-check at the end of a start row
+// (outbox's startRowEnded) — by apply, trying it again on a backoff (retryUntilApplied, from
+// refusalRetryFirst doubling to refusalRetryMost) until it is applied, the machine no longer
+// reports the refusal, or ctx ends. line is the ERROR line each failed try logs, with attrs.
+//
+// Each try first reads the claim's machine (supervise.Machine.RefusedPod). A fact applied after the
+// claim launched on the pod that replaced pod would tell the issue and the controller that it
+// cannot be started, which is no longer true, and its owed entry, resent, would hand a running
+// worker its task twice; so where the machine no longer reports pod's refusal the fact is not
+// applied, and a line at INFO says so. A refusal of another pod since has a report of its own.
+//
+// The tries go on, at least one an hour, for as long as the store refuses the fact, since the fact
+// is what queues the claim's start, and a cap would leave nothing to bring the claim back but a
+// restart, which recovers nothing a try does not. So while a try fails, the machine carries the
+// fact as not recorded (supervise.Machine.RefusalNotRecorded), which the operator's listing shows
+// (`legion claims list` prints `refusal-unrecorded`); a try taken, or a fact dropped, clears it. A
+// nil machine — the claim's machine could not be found — reads nothing and marks nothing, and the
+// fact is tried as it was reported.
+func applyRefusalFact(ctx context.Context, log *slog.Logger, machine *supervise.Machine, pod, line string, apply func(context.Context) error, attrs ...any) {
+	retryUntilApplied(ctx, log, line, refusalRetryFirst, refusalRetryMost, func(ctx context.Context) error {
+		if machine == nil {
+			return apply(ctx)
+		}
+		if refused := machine.RefusedPod(); refused != pod {
+			log.Info("a fact of a refused launch is not applied: the claim's machine no longer reports that refusal",
+				append(attrs[:len(attrs):len(attrs)], "pod", pod, "refusedPod", refused)...)
+			machine.RefusalRecorded()
+			return nil
+		}
+		if err := apply(ctx); err != nil {
+			machine.RefusalNotRecorded(err)
+			return err
+		}
+		machine.RefusalRecorded()
+		return nil
+	}, attrs...)
+}
 
 // runBooted applies this boot's fact (booted) beside the serving API, retrying every failure — a
 // timeout included — on a backoff, each logged at ERROR, until it lands or the daemon stops. The
@@ -2498,16 +2538,16 @@ func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 // The fact is the one thing that queues that start, so it is never only logged: it is applied on
 // a goroutine of its own, since the machine calls this inside its own decision, each try with no
 // deadline, so a queue of facts ahead of it on the serializer is waited out rather than lost, and
-// a try that fails is logged at ERROR and tried again on a backoff (retryUntilApplied, from
-// refusalRetryFirst doubling to refusalRetryMost) until it is applied or the daemon stops
-// (untilStop), as the end of a start row of a refused claim is (outbox's startRowEnded). The
-// event id is kept across the tries, so a try after a commit whose answer was lost is a
-// duplicate. It does not stop the daemon, as a terminal fact does (failed): the restart would
-// recover nothing a try does not, since the boot's resume by rule brings back only a claim that
-// owns its issue's step, launches it into the same pod and is refused and reported again, while
-// every other claim of the deployment would be stopped and started for it; and an hourly report,
-// which finds the start the first one queued, would restart the daemon for a fact that queues
-// nothing.
+// a try that fails is logged at ERROR and tried again on a backoff until it is applied, the
+// claim's machine no longer reports pod's refusal, or the daemon stops (applyRefusalFact,
+// untilStop), as the end of a start row of a refused claim is (outbox's startRowEnded). While a try
+// fails the claim shows the fact as not recorded. The event id is kept across the tries, so a try
+// after a commit whose answer was lost is a duplicate. It does not stop the daemon, as a terminal
+// fact does (failed): the restart would recover nothing a try does not, since the boot's resume by
+// rule brings back only a claim that owns its issue's step, launches it into the same pod and is
+// refused and reported again, while every other claim of the deployment would be stopped and
+// started for it; and an hourly report, which finds the start the first one queued, would restart
+// the daemon for a fact that queues nothing.
 func (w *workflowRuntime) podRefused(c supervise.Claim, pod, detail string) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return
@@ -2518,7 +2558,7 @@ func (w *workflowRuntime) podRefused(c supervise.Claim, pod, detail string) {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
 		// hold mark of its own (store.ForConcurrentWorker).
 		ctx := store.ForConcurrentWorker(w.untilStop())
-		retryUntilApplied(ctx, w.log, "apply a launch its issue's pod refused", refusalRetryFirst, refusalRetryMost, func(ctx context.Context) error {
+		applyRefusalFact(ctx, w.log, w.machineOf(c.Token), pod, "apply a launch its issue's pod refused", func(ctx context.Context) error {
 			_, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...)
 			return err
 		}, "claim", c.Token, "issue", c.Issue, "role", c.Role)
@@ -2532,6 +2572,17 @@ func (w *workflowRuntime) untilStop() context.Context {
 		return context.Background()
 	}
 	return w.stopped
+}
+
+// machineOf is the machine of token's claim, read through the outbox attach stored (outboxWake),
+// as stepAgent reads it; nil before attach, and for a claim no machine supervises.
+func (w *workflowRuntime) machineOf(token claim.Token) *supervise.Machine {
+	r := w.outboxWake.Load()
+	if r == nil || r.supervisor == nil {
+		return nil
+	}
+	machine, _ := r.supervisor.Machine(token)
+	return machine
 }
 
 // applySessionFact applies one of the two session facts, a lost session and a session store

@@ -1587,6 +1587,13 @@ type Machine struct {
 	// writes the claim once and records the pod again.
 	refusedPod     string
 	podRefusedTold time.Time
+	// unrecorded is the refused launch's fact the store has not taken (Claim.UnrecordedRefusal),
+	// nil while none fails. It is guarded by unrecordedMu and not by mu: the tries that mark and
+	// clear it run on goroutines of their own beside the decisions (internal/daemon's
+	// applyRefusalFact), one of which can hold mu through a Sandbox relaunch for minutes, and the
+	// operator's listing reads it through View, which never waits on a decision.
+	unrecordedMu sync.Mutex
+	unrecorded   *UnrecordedRefusal
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
@@ -2303,13 +2310,52 @@ type UnrecordedRefusal struct {
 	Error    string
 }
 
+// RefusalNotRecorded marks the claim as carrying a refused launch's fact the store did not take
+// (Claim.UnrecordedRefusal), err being the failed try's error: the first failed try since the mark
+// was last cleared sets when, and each failed try counts one more attempt. Both of the claim's
+// facts mark it, the refusal's report and its re-check at the end of a start row, so a try of either
+// that is taken clears it, and the next failure of the other marks it again from one. It takes no
+// decision lock and publishes nothing: the claim reads the mark where it is reported (current,
+// View).
+func (m *Machine) RefusalNotRecorded(err error) {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	next := UnrecordedRefusal{Since: m.deps.Clock.Now(), Attempts: 1, Error: storetext.FarSideError(err.Error())}
+	if held := m.unrecorded; held != nil {
+		next.Since, next.Attempts = held.Since, held.Attempts+1
+	}
+	m.unrecorded = &next
+}
+
+// RefusalRecorded clears the mark RefusalNotRecorded sets: a try of the fact was taken, or the fact
+// was dropped because the machine no longer reports the refusal it names.
+func (m *Machine) RefusalRecorded() {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	m.unrecorded = nil
+}
+
+// unrecordedRefusal is a copy of the mark RefusalNotRecorded sets, nil while none stands.
+func (m *Machine) unrecordedRefusal() *UnrecordedRefusal {
+	m.unrecordedMu.Lock()
+	defer m.unrecordedMu.Unlock()
+	if m.unrecorded == nil {
+		return nil
+	}
+	held := *m.unrecorded
+	return &held
+}
+
 // View is a copy of the claim as the machine last published it: as its latest decision left it, or
 // as the decision in flight last tried to write it to the store. It never waits, where Claim waits
 // out a decision that holds the machine through its runtime call — a Sandbox relaunch waits minutes
-// for its pods — so a reader of every claim, like the operator's listing, reads View.
+// for its pods — so a reader of every claim, like the operator's listing, reads View. The refused
+// launch's fact the store has not taken is read as it stands now (Claim.UnrecordedRefusal): it is
+// marked on no decision, so nothing publishes it.
 func (m *Machine) View() ClaimView {
 	v := *m.view.Load()
 	v.Claim = copyClaim(v.Claim)
+	v.UnrecordedRefusal = m.unrecordedRefusal()
 	return v
 }
 
@@ -2363,6 +2409,7 @@ func (m *Machine) current() Claim {
 	}
 	c.Compacting = m.compacting != nil
 	c.ProcessGone = m.processGone
+	c.UnrecordedRefusal = m.unrecordedRefusal()
 	return c
 }
 
@@ -4642,5 +4689,9 @@ func copyClaim(c Claim) Claim {
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
+	if c.UnrecordedRefusal != nil {
+		held := *c.UnrecordedRefusal
+		c.UnrecordedRefusal = &held
+	}
 	return c
 }

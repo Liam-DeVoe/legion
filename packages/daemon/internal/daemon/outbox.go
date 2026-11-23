@@ -476,10 +476,11 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 //
 // It runs on a goroutine of its own, since the read waits out the decision in flight on the
 // claim's machine, which can hold a Sandbox relaunch for minutes, and the lane goes on meanwhile.
-// A fact it cannot apply is logged at ERROR and tried again on a backoff (retryUntilApplied, from
-// refusalRetryFirst doubling to refusalRetryMost) until it is applied or ctx, the lane's, ends
-// with the outbox's stop, as the refusal's own report is (workflowRuntime.podRefused): the fact is
-// the one thing that brings such a claim back short of a boot.
+// A fact it cannot apply is logged at ERROR and tried again on a backoff until it is applied, the
+// machine no longer reports the refusal it names, or ctx, the lane's, ends with the outbox's stop,
+// as the refusal's own report is (applyRefusalFact, workflowRuntime.podRefused): the fact is the
+// one thing that brings such a claim back short of a boot. While a try fails the claim shows the
+// fact as not recorded (supervise.Machine.RefusalNotRecorded).
 func (r *outbox) startRowEnded(ctx context.Context, row record.OutboxRow) {
 	if row.Kind != record.OutboxKindSupervise || r.supervisor == nil || len(r.handlers) == 0 {
 		return
@@ -511,7 +512,7 @@ func (r *outbox) startRowEnded(ctx context.Context, row record.OutboxRow) {
 		held := machine.Claim()
 		fact := intake.RefusedStartEnded{Issue: held.Issue, Role: held.Role, Claim: token, Pod: pod}
 		id := fmt.Sprintf("refused-start-ended:%s:%d", token, row.ID)
-		retryUntilApplied(ctx, r.log, "apply the end of a start row of a claim its pod refused", refusalRetryFirst, refusalRetryMost, func(ctx context.Context) error {
+		applyRefusalFact(ctx, r.log, machine, pod, "apply the end of a start row of a claim its pod refused", func(ctx context.Context) error {
 			_, err := intake.ApplyFact(ctx, r.pool, "outbox", id, fact, r.handlers...)
 			return err
 		}, "row", row.ID, "claim", token)

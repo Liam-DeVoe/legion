@@ -343,6 +343,9 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 		Failure:          FailureViewOf(c),
 		LeakCheckCause:   c.LeakCheckCause,
 	}
+	if u := c.UnrecordedRefusal; u != nil {
+		view.UnrecordedRefusal = &UnrecordedRefusalView{Since: u.Since, Attempts: u.Attempts, Error: u.Error}
+	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{
 			ID: p.ID, Task: p.Task, Phase: p.Phase, QueuedAt: p.QueuedAt,
