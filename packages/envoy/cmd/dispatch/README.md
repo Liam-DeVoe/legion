@@ -4976,8 +4976,7 @@ The line is one synchronous write to stderr per request, so a log pipe that bloc
 
 The access log (`login_hash`, and a `credential` or `path` that names a person, above) and the sign-in and membership lines name a person by `login_hash`: the first 16 hex digits of the SHA-256 of their canonical login (`model.LoginHash`), never their address.
 Those are the lines `internal/dispatch/identity` and `internal/dispatch/routes` write, of a sign-in, a dev sign-in, a sign-out, a refused sign-in or IAP assertion, the hourly confirmation and the end of a sign-in (a passkey's among them), the membership pass, a Workspace Directory check under IAP identity, and a passkey sign-in or ceremony refused; and the API's line of a decision, mint or scope change refused because whether Dispatch holds its caller could not be read.
-The people store's lines of a sign-in name the address by `login_hash` too: the account binding's catch-up, ended sessions and revoked tokens, a plain refresh token the pool did not revoke, and a stored refresh token that does not open.
-The passkey store's lines of an enrollment and an end still name `email`.
+The people store's lines of a sign-in name the address by `login_hash` too: the account binding's catch-up, ended sessions and revoked tokens, a plain refresh token the pool did not revoke, and a stored refresh token that does not open; and so do the passkey store's lines of an enrollment and of the hourly confirmation's ends.
 A refusal's or an end's `reason` gives the refusal's words, and names the address a refreshed sign-in carried by its `login_hash`.
 One login has one value in every process and every build.
 To find a person's lines, the requests they made among them, hash their canonical login: their address with its ASCII capitals lowered and no white space around it, as `tr` does here:

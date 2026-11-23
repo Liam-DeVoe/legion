@@ -242,13 +242,26 @@ func (r *passkeyRig) agePasskeyConfirmation(t *testing.T, email string) {
 // address outside the domain that the access list names directly, which then signs in as a
 // restricted member at the outside origin; the owner gets no link for an address the list does
 // not name, nor for one only a group on the list holds; and a link whose email the list stopped
-// naming (here by a write that is no removal) enrolls nothing, 403 INVITATION_NOT_LISTED.
+// naming (here by a write that is no removal) enrolls nothing, 403 INVITATION_NOT_LISTED. The
+// enrollment logs one INFO line naming the person by their login's hash and the project, and no
+// line of the enrollment holds the address.
 //
 // Control: answer namedPerson's check as named for every address, and the stranger's link is made
-// and enrolls, and the row fails naming stranger@other.example.
+// and enrolls, and the row fails naming stranger@other.example. Log "email", login on the passkey
+// store's enrollment line again, and the row fails on the address.
 func TestPasskeyEnrollsOnlyAListedOutsideAddress(t *testing.T) {
 	r := newPasskeyRig(t, nil)
-	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), r.invite(t, outsiderEmail), outsiderEmail)
+	link := r.invite(t, outsiderEmail)
+	logged := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logged, nil))
+	cookie := r.enrolled(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), link, outsiderEmail)
+	enrollment := logged.Lines("a restricted member enrolled a passkey with an owner's invitation")
+	if strings.Count(enrollment, "\n") != 1 || !strings.Contains(enrollment, "login_hash="+model.LoginHash(outsiderEmail)) || !strings.Contains(enrollment, "project=PRIV") {
+		t.Errorf("the enrollment's line = %q, want one line naming login_hash=%s and project=PRIV", enrollment, model.LoginHash(outsiderEmail))
+	}
+	if strings.Contains(strings.ToLower(logged.String()), strings.ToLower(outsiderEmail)) {
+		t.Errorf("the enrollment's lines hold the address %s:\n%s", outsiderEmail, logged.String())
+	}
 	signedInRestricted(t, r.handler, cookie, outsiderEmail)
 	if kind := r.memberKind(t, outsiderEmail); kind != string(model.MemberRestricted) {
 		t.Fatalf("people.member_kind of %s = %q, want restricted", outsiderEmail, kind)
