@@ -12,4 +12,4 @@ jobs:
       - name: Record the third row
         run: |
           dispatch result --issue ACME-1 --check c3 --verdict pass \
-            --commit "$GITHUB_SHA" --observed-file rows.txt
+            --role tester --commit 1111111111111111111111111111111111111111 --observed-file rows.txt

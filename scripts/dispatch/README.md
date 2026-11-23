@@ -165,11 +165,15 @@ UNKNOWN too.
 
 A check is left out of a round, and named with the reason, where its `when` is not `before_merge`,
 or where a workflow step at the head records it: the search for `dispatch result` under
-`.github/` finds a step whose script is one `dispatch result` command alone, naming the check as
-its one `--check`, with no `--dry-run`, `--retract` or `--help`, in a step that meets the proof
-rule's other terms. Any other step that holds `dispatch result` and names the check, and a search
-line outside a workflow file that names it, is one the run cannot judge, never a reason to leave
-the check out. Then it is read against the jobs (`v-open-work` step 2): a check with no
+`.github/` finds a step whose script is one simple command, read as the proof rule reads one, and
+that `dispatch`'s own parser reads as `dispatch result` recording the check on the round's issue:
+`--check` naming the check's id and `--issue` naming the issue, each as a whole argument (so a
+`--check c3` inside a quoted `--observed` names nothing), no `--dry-run`, `--retract` or `--help`,
+and the arguments the tool's schema asks of a record. A step whose commit is `"$GITHUB_SHA"` is
+therefore one the run cannot judge. The step must also meet the proof rule's other terms. Any
+other step that holds `dispatch result` and names the check, and a search line outside a workflow
+file that names it, is one the run cannot judge, never a reason to leave the check out. Then it is
+read against the jobs (`v-open-work` step 2): a check with no
 `ci_check` that a step proves is listed, and is CI's; a `ci_check` whose named job holds no step
 that names the check's command is listed; and a result a role recorded during the round on a
 check that carries `ci_check` now is listed, for the check carried none then. A check a step of

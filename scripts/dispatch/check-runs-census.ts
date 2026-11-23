@@ -17,6 +17,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { z } from "zod";
 import type {
   Artifact,
   ArtifactText,
@@ -31,7 +32,13 @@ import type {
   IssueSummary,
 } from "../../packages/contracts/src/dispatch-api";
 import { MAX_ISSUE_PAGE_LIMIT } from "../../packages/contracts/src/dispatch-api";
-import { ISSUE_STATUSES } from "../../packages/contracts/src/dispatch-tools";
+import {
+  dispatchToolSchema,
+  dispatchToolSpecs,
+  ISSUE_STATUSES,
+} from "../../packages/contracts/src/dispatch-tools";
+import { zodSchemaApi } from "../../packages/contracts/src/tool-schema";
+import { parseCommand } from "../../packages/envoy-client/src/dispatch-command";
 import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
 import { DISPATCH_TOOL_DEADLINE_MS } from "../../packages/envoy-client/src/dispatch-http";
 import { parseDispatchRef } from "../../packages/envoy-client/src/dispatch-owner";
@@ -1365,56 +1372,55 @@ function readWorkflows(repo: string, head: string): WorkflowReads {
   return reads;
 }
 
-/** A script that is one simple command, as one line: line continuations joined, and no second
- *  line, shell operator, redirection, grouping, comment, command substitution or `${{ }}`
- *  expression outside or inside its quotes. Any other script is nothing. */
-function simpleCommand(script: string): string | undefined {
-  const joined = script.replace(/\\\r?\n/g, " ").trim();
-  if (/\$\{\{|\$\(|`/.test(joined)) return undefined;
-  let quote: string | null = null;
-  let previous = " ";
-  for (const character of joined) {
-    if (quote !== null) {
-      if (character === quote) quote = null;
-    } else if (character === "'" || character === '"') {
-      quote = character;
-    } else if (/[\n;&|<>()]/.test(character) || (character === "#" && /\s/.test(previous))) {
-      return undefined;
-    }
-    previous = character;
-  }
-  return quote === null ? command(joined) : undefined;
-}
+/** The arguments `dispatch result` sends, under the tool's own rule on which go together: a call
+ *  this schema refuses records nothing. */
+const RESULT_TOOL = dispatchToolSpecs.find((spec) => spec.name === "dispatch_result");
+if (RESULT_TOOL === undefined) throw new Error("the Dispatch contracts hold no dispatch_result");
+const RESULT_ARGUMENTS = dispatchToolSchema(RESULT_TOOL, zodSchemaApi(z), { strict: true });
 
-/** The flags with which `dispatch result` records no result: a dry run, a retraction, help. */
-const RECORDS_NOTHING: Record<string, true> = {
-  "--dry-run": true,
-  "--retract": true,
-  "--help": true,
-  "-h": true,
-};
-
-/** Why a step's script may record no result of check `id`, or nothing where it is one
- *  `dispatch result` command alone that names the check as its one `--check` (its id, or a
- *  reference that ends in `#b-<id>`) with none of the flags that record nothing. */
-function recordDoubts(script: string, id: string): string[] {
-  const alone = simpleCommand(script);
-  if (alone === undefined || !alone.startsWith("dispatch result ")) {
+/**
+ * Why a step's script may record no result of check `id` on `issue`, or nothing where it surely
+ * records one. The script must be one simple command (`simpleCommandOf`), `dispatch result`, whose
+ * arguments `dispatch`'s own parser (`parseCommand`) reads as a call, not a dry run, help or a
+ * retraction, naming the check by its id as `--check` and the round's issue as `--issue`, and
+ * holding what the tool's schema asks of a record. A flag's value is one whole argument, so
+ * `--check c3` inside a quoted `--observed` is no `--check`.
+ */
+function recordDoubts(script: string, id: string, issue: string): string[] {
+  const shown = JSON.stringify(scriptLines(script));
+  const parsed = simpleCommandOf(script);
+  if ("cannot" in parsed) {
     return [
-      `its run is not one dispatch result command alone: ${JSON.stringify(scriptLines(script))}`,
+      `its run is not one dispatch result command alone (it holds ${parsed.cannot}): ${shown}`,
     ];
   }
-  const words = alone.split(" ").map((word) => word.replace(/^(["'])(.*)\1$/, "$2"));
-  const checks = words.flatMap((word, at) =>
-    word === "--check" ? [words[at + 1] ?? ""] : word.startsWith("--check=") ? [word.slice(8)] : []
-  );
-  const doubts: string[] = [];
-  const [check] = checks;
-  if (checks.length !== 1 || check === undefined || (check !== id && !check.endsWith(`#b-${id}`))) {
-    doubts.push(`its dispatch result does not name it as its one --check: ${alone}`);
+  const [program, name, ...rest] = parsed.words;
+  if (program !== "dispatch" || name !== "result") {
+    return [`its run is not one dispatch result command alone: ${shown}`];
   }
-  const idle = words.filter((word) => RECORDS_NOTHING[word.split("=")[0] ?? ""] === true);
-  if (idle.length > 0) doubts.push(`its dispatch result records nothing with ${idle.join(", ")}`);
+  // The census does not hold a file a `-file` flag names, so its text is a mark that no check id
+  // or issue key equals.
+  const call = parseCommand([name, ...rest], { readText: (path) => `\u0000the file ${path}` });
+  if (call.kind === "help") return ["its dispatch result records nothing with --help"];
+  if (call.kind === "refused") {
+    return [`dispatch refuses its dispatch result: ${call.problems.join("; ")}`];
+  }
+  const doubts: string[] = [];
+  if (call.dryRun) doubts.push("its dispatch result records nothing with --dry-run");
+  if (call.args.retract !== undefined) {
+    doubts.push("its dispatch result records nothing with --retract");
+  }
+  if (call.args.check !== id) {
+    doubts.push(`its dispatch result does not name it as its one --check: ${shown}`);
+  }
+  if (call.args.issue !== undefined && call.args.issue !== issue) {
+    doubts.push(`its dispatch result records on ${String(call.args.issue)}, not ${issue}`);
+  }
+  const valid = RESULT_ARGUMENTS.safeParse(call.args);
+  if (!valid.success) {
+    const problems = valid.error.issues.map((problem) => problem.message);
+    doubts.push(`dispatch refuses its arguments: ${problems.join("; ")}`);
+  }
   return doubts;
 }
 
@@ -1430,13 +1436,13 @@ interface Recording {
 /**
  * How a workflow step records a check itself, as the reading's search finds it: a step that holds
  * `dispatch result` and names the check. It leaves the check out of the round only where its
- * script is one `dispatch result` command alone that records the check (`recordDoubts`), and it,
- * its job, what its job needs, its caller job and its workflow meet the proof rule's other terms
+ * script surely records the check on the round's issue (`recordDoubts`), and it, its job, what its
+ * job needs, its caller job and its workflow meet the proof rule's other terms
  * (`Execution.doubts`). Any other such step, and a search line outside a workflow file that names
  * the check, is one the census cannot judge, never a reason to leave the check out. A search line
  * in a step the census decides never runs on an ordinary pull request records nothing there.
  */
-function recorderOf(reads: WorkflowReads, id: string): Recording {
+function recorderOf(reads: WorkflowReads, id: string, issue: string): Recording {
   const named = new Set([id]);
   const cannotJudge: string[] = [];
   const judged = new Set<Execution>();
@@ -1457,7 +1463,7 @@ function recorderOf(reads: WorkflowReads, id: string): Recording {
       if (step.file !== hit.file || !step.script.includes(line) || judged.has(step)) continue;
       judged.add(step);
       if (!namesCheck(step.script, named)) continue;
-      const doubts = [...recordDoubts(step.script, id), ...step.doubts];
+      const doubts = [...recordDoubts(step.script, id, issue), ...step.doubts];
       if (doubts.length > 0) {
         cannotJudge.push(`cannot judge whether ${step.step} records it: ${doubts.join("; ")}`);
       } else {
@@ -1748,7 +1754,7 @@ async function judgeCheck(input: {
     verdict.excluded = { ...place, reason: `its when is ${check.when}` };
     return verdict;
   }
-  const recording = recorderOf(workflows, id);
+  const recording = recorderOf(workflows, id, issue);
   for (const reason of recording.cannotJudge) verdict.unknown.push({ issue, what, reason });
   if (recording.records !== undefined) {
     verdict.excluded = {

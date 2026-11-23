@@ -1430,6 +1430,13 @@ describe("the rounds census", () => {
 
   // A recording step is of the same class: it leaves c3 out only as one dispatch result alone.
   const RECORDS = ".github/workflows/record-rows.yaml";
+  const ISSUE = roundScene().issue;
+  /** A `dispatch result` that records a pass of the round's issue at a commit, with `flags`. */
+  const recording = (flags: string): string =>
+    `dispatch result --issue ${ISSUE} --role tester --commit ${"1".repeat(40)} ${flags}`;
+  /** A workflow whose one step's run is `script`, as a scalar. */
+  const recordingStep = (script: string): string =>
+    pullRequestWorkflow(workflowJob("rows", "", `      - run: ${script}\n`));
   for (const [title, workflow, reason] of [
     [
       "a step that runs c3 and records it in one script",
@@ -1471,10 +1478,39 @@ describe("the rounds census", () => {
           workflowJob(
             "rows",
             "    needs: changes\n",
-            "      - run: |\n          dispatch result --check c3 --verdict pass\n"
+            `      - run: ${recording("--check c3 --verdict pass")}\n`
           )
       ),
       `${RECORDS}, job rows, step 1 records it: job rows needs changes, which never runs: false`,
+    ],
+    [
+      "a record whose --check is only words of its observation",
+      recordingStep(recording('--verdict pass --observed "mentions --check c3 here"')),
+      `${RECORDS}, job rows, step 1 records it: its dispatch result does not name it as its one --check`,
+    ],
+    [
+      "a record whose commit is a shell variable",
+      recordingStep(
+        `dispatch result --issue ${ISSUE} --check c3 --role tester --verdict pass --commit "$GITHUB_SHA"`
+      ),
+      `${RECORDS}, job rows, step 1 records it: its run is not one dispatch result command alone (it holds a $ expansion, "$")`,
+    ],
+    [
+      "a record whose observation is a glob",
+      recordingStep(recording("--check c3 --verdict pass --observed-file rows*.txt")),
+      `${RECORDS}, job rows, step 1 records it: its run is not one dispatch result command alone (it holds a glob, "*")`,
+    ],
+    [
+      "a record of c3 on another issue",
+      recordingStep(
+        `dispatch result --issue 'example/other#2' --check c3 --role tester --verdict pass --commit ${"1".repeat(40)}`
+      ),
+      `${RECORDS}, job rows, step 1 records it: its dispatch result records on example/other#2, not ${ISSUE}`,
+    ],
+    [
+      "a record that dispatch refuses",
+      recordingStep(`dispatch result --issue ${ISSUE} --check c3 --verdict pass`),
+      `${RECORDS}, job rows, step 1 records it: dispatch refuses its arguments: recording a result needs role, commit`,
     ],
   ] as const) {
     test(
@@ -1491,21 +1527,41 @@ describe("the rounds census", () => {
     );
   }
 
+  for (const [title, script] of [
+    ["a scalar run that is one dispatch result alone", recording("--check c3 --verdict pass")],
+    ["a record whose --check is written --check=c3", recording("--check=c3 --verdict pass")],
+    [
+      "a record whose quoted observation comes before its --check",
+      recording("--observed 'one pass, two words' --check c3 --verdict pass"),
+    ],
+  ] as const) {
+    test(
+      `${title} leaves c3 out`,
+      async () => {
+        const { report, exitCode } = await rounds(roundScene(), {
+          repository: { [RECORDS]: recordingStep(script) },
+        });
+        const excluded = report.excluded?.find((row) => row.check === "c3");
+        expect(excluded?.reason).toBe("a workflow step records it");
+        expect(excluded?.detail).toContain(`${RECORDS}, job rows, step 1`);
+        expect(report.unknown).toEqual([]);
+        expect(report.rows).toEqual([]);
+        expect(exitCode).toBe(0);
+      },
+      SLOW
+    );
+  }
+
   test(
-    "a scalar run that is one dispatch result alone leaves c3 out",
+    "a record that names no check leaves c3 in the round, and the census lists it",
     async () => {
-      const workflow = pullRequestWorkflow(
-        workflowJob("rows", "", "      - run: dispatch result --check c3 --verdict pass\n")
-      );
       const { report, exitCode } = await rounds(roundScene(), {
-        repository: { [RECORDS]: workflow },
+        repository: { [RECORDS]: recordingStep("dispatch result --verdict pass --observed note") },
       });
-      const excluded = report.excluded?.find((row) => row.check === "c3");
-      expect(excluded?.reason).toBe("a workflow step records it");
-      expect(excluded?.detail).toContain(`${RECORDS}, job rows, step 1`);
+      expect(report.excluded?.map((row) => row.check)).not.toContain("c3");
       expect(report.unknown).toEqual([]);
-      expect(report.rows).toEqual([]);
-      expect(exitCode).toBe(0);
+      expect(roundRows(report)).toEqual(["c3 no result of the round's session at the head"]);
+      expect(exitCode).toBe(1);
     },
     SLOW
   );
