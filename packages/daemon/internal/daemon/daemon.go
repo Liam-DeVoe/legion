@@ -1310,10 +1310,12 @@ func launchVariants(st *store.Store, declared []config.Experiment, stateDir stri
 // directory, and the listener's address is the `--connect` every pane's shim is started with;
 // providerEnvDir, when set, is the `--provider-env-dir` beside it. The workflow's App tokens, when
 // the daemon has them, are every tree pane's gh bundle (appauth.GitHubCredential, minted as the
-// App the pane's role acts as, a role the deployment defines acting as the App its github_app
-// names: deploymentApps) and the controller pane's own (appauth.ControllerCredential), which its
-// refresh asks by the default owner its launch recorded, both built over the owner accounts each
-// App is installed on, which the bundle reads at every build (appauth.Manager.InstalledOwners:
+// App of the role runtime.SlotRole answers for the pane: its own role's, a role the deployment
+// defines acting as the App its github_app names (deploymentApps), and, while the pane's architect
+// does a step of its own issue's task, that step's role's (ownerActsAs)) and the controller pane's
+// own (appauth.ControllerCredential), which its refresh asks by the default owner its launch
+// recorded, both built over the owner accounts each App is installed on, which the bundle reads at
+// every build (appauth.Manager.InstalledOwners:
 // from GitHub each time under the App's JWT; in token mode the App's token_command's release of
 // every installation, which may be that of a run that finished up to appauth's finishedRunKeep
 // before) and no repository list bounds, and over served, the rename rule's answer of whether a

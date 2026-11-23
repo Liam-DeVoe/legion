@@ -720,12 +720,12 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	}
 
 	// The two claims the child's run launched register, as their plugins do once their agents
-	// boot: its planner, and its own architect, which every child's first phase start starts beside
-	// the planner. The close of the tree they ran in, below, suspends every claim of that tree's
-	// issues, and a suspend reaching an agent still booting is held until the agent is ready; this
-	// harness boots no agent, so either claim left unregistered would stay launching under that
-	// tree once the child is handed over as a root of its own, and the cleanup of that tree, which
-	// step 9's re-admission waits on, would wait on it in turn.
+	// boot: its planner, and its own architect, which every child's first phase start starts, here
+	// beside the planner. The close of the tree they ran in, below, suspends every claim of that
+	// tree's issues, and a suspend reaching an agent still booting is held until the agent is
+	// ready; this harness boots no agent, so either claim left unregistered would stay launching
+	// under that tree once the child is handed over as a root of its own, and the cleanup of that
+	// tree, which step 9's re-admission waits on, would wait on it in turn.
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleArchitect} {
 		token, err := claim.NewToken(project, child, role)
 		if err != nil {
