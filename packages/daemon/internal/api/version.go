@@ -3429,13 +3429,17 @@ package api
 // #4960, 225 by #3712 and #4580, 226 by #4175, 227 by #4065 and 228 by #4590, and nothing at 229,
 // so 229 was then the lowest number above main's 213 that neither main nor any other open pull
 // request declared. It kept 229 at the forward merge that brought main in at 8f332682, where main
-// carried 217 (#4273), the entry right above, because a census of every open pull request at
-// 2026-11-23T01:13Z, read the same way, found 218 declared by #3831, 219 by #4611, 220 by #4930,
-// 221 by #3993, #4049, #4392, #4432, #4771 and #4940, 222 by #4661, 223 by #4805, 224 by #4960, 225
-// by #3712, 226 by #4175, 227 by #4065 and 228 by #4590, and nothing at 229, so 229 is the lowest
-// number above main's 217 that neither main nor any other open pull request declares. main held 217
-// at the forward merge that last read this number, main's 8f332682; read main's own number and
-// every open pull request's again at the next merge rather than from this line. A renumber moves
-// `questionsForControllerContract` in shaping.go with it, the last number of answers.go's
-// SupportedContracts.)
+// carried 217 (#4273), because a census of every open pull request at 2026-11-23T01:13Z, read the
+// same way, found 218 declared by #3831, 219 by #4611, 220 by #4930, 221 by #3993, #4049, #4392,
+// #4432, #4771 and #4940, 222 by #4661, 223 by #4805, 224 by #4960, 225 by #3712, 226 by #4175,
+// 227 by #4065 and 228 by #4590, and nothing at 229. It kept 229 when #4611's 219 came in as the
+// entry right above, because a census of every open pull request at 2026-11-23T08:10Z, read the
+// same way, found 218 declared by #3831 and #5168, 219 by #4611 and #5161, 220 by #4930, 221 by
+// #4049, #4392, #4432, #4940 and #5164, 222 by #5156, #5158 and #5160, 223 by #3993 and #4661, 224
+// by #4960 and #5165, 225 by #3712, 226 by #4175, 227 by #5162 and 228 by #4590, and nothing at
+// 229, so 229 is the lowest number above #4611's 219 that no other open pull request declares.
+// main held 217 at the forward merge that last read this number, main's 8f332682; read main's own
+// number and every open pull request's again at the next merge rather than from this line. A
+// renumber moves `questionsForControllerContract` in shaping.go with it, the last number of
+// answers.go's SupportedContracts.)
 const DaemonAPIVersion = 229
