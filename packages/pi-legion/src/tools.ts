@@ -517,8 +517,9 @@ export function createLegionTool(deps: {
     // after that contract the shared sentences on request_backward_move (an architect's names
     // the issue it returns from accepting) and read_build, then the architect's
     // retry_or_escalate, its register_plan and stop_task, its sign_off and the controller's
-    // operations: the text tools.test.ts pins, stop_task's and sign_off's by their terms and the
-    // rest exactly, so a change to the shared template cannot reach an Oh My Pi agent unnoticed.
+    // operations. tools.test.ts holds the shared sentences before handoff_complete's contract
+    // in their place, stop_task's and sign_off's text by their terms and the text after sign_off
+    // exactly.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
