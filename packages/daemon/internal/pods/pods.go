@@ -118,6 +118,13 @@ func (c IdleClaim) OperatorSuspended() bool {
 	return c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator
 }
 
+// IdlePhase is one role's phases row as the idle view reads it: the claim the row names and the
+// task of the plan's step the row runs, "" for none (record.PhaseRow.Claim and StepTask).
+type IdlePhase struct {
+	Claim    claim.Token
+	StepTask string
+}
+
 // IdleRoot is the tree root of the issue the idle rule is deciding, read with it.
 type IdleRoot struct {
 	Phase       phase.Phase
@@ -150,7 +157,10 @@ const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
 // (workflow.IdleRelease) and the store is what fills it, so neither of the two imports the other
 // for it.
 type IdleView struct {
-	Issue       string
+	Issue string
+	// Project is the project token the view was read under (claim.ProjectToken), which the claims
+	// of the pod are spelled with.
+	Project     string
 	Tree        string
 	Found       bool
 	Phase       phase.Phase
@@ -160,13 +170,14 @@ type IdleView struct {
 	LingerUntil *time.Time
 	Root        IdleRoot
 	Claims      []IdleClaim
-	// Workers is the claim each role's phases row names on the step it runs (record.WorkerClaim),
-	// for the roles whose row runs one: two claims of one issue can hold one role — the agent of a
-	// key on a step of another role, beside that role's own claim of an earlier version of the
-	// plan — and only the one the row names works the role's phase (workflow's idlePhaseOpen). A
-	// role with no entry here works its phase in each claim of its role, as before plans named a
-	// claim.
-	Workers map[claim.Role]claim.Token
+	// Phases is each role's phases row of the issue as the record holds it, keyed by the row's
+	// role: the claim the row names and the task of the plan's step it runs. The worker of the open
+	// phase is read from it as every reader of a role's worker reads it, through record.WorkerClaim
+	// (workflow's idlePhaseOpen): two claims of one issue can hold one role — the agent of a key on
+	// a step of another role, beside that role's own claim of an earlier version of the plan — and
+	// only one of them works the role's phase. This package sits below record, so the view carries
+	// the row's fields rather than the rule.
+	Phases map[claim.Role]IdlePhase
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
 	// role of its pod. The rule reads only whether there is one, so the store reads only that. A
 	// start that waits because the pod lacks the slot of its claim or the role of its step

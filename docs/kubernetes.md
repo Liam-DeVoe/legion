@@ -7000,6 +7000,7 @@ That daemon does not read the annotations `legion.dev/volume-reset` and `legion.
 An issue pod that no role is using is released: the daemon ends it and starts another at the next wake for one of its roles.
 A pod qualifies once it has had no turn in progress and no turn due for the idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default).
 A turn is due when the next phase reminder of a phase worker whose phase is open falls inside the idle period.
+That phase worker is the claim the record gives the open phase's step (`record.WorkerClaim`): the claim the role's phases row names while the row runs a step of the plan, and else the role's own claim, so the reminder of another claim of the role, such as a keyed agent that holds the role while no row names it on a step, holds no pod.
 A phase worker whose phase is open is reminded five minutes after a turn that did not complete it, and fifteen minutes after one whose reply opened with a `WAITING` line or that ended with background work of its own still running (`reminderMs` and `waitingMs`, `packages/pi-shared/src/stall-limits.ts`), so of the workers in an open phase only one that said what it waits on is released.
 Each live claim of the pod must also have reported to the daemon, after its last turn, that it runs no background work, and the pod must run the image the daemon's configuration names with every live claim on the daemon's current contract.
 The pod of a root that waits on a person's answer in `awaiting_person` is kept until that answer comes; its children are not.
@@ -7288,7 +7289,7 @@ A handoff, a review, a CI result or a merge moves its issue's phase as it does w
 **How each role stops.**
 The pause's transaction asks for the stop of each live role of the project but the controller: one stop record (`project_pause_stops`) and one `pause_stop` row in the outbox for each.
 A live role is one whose claim is not `suspended`, `failed` or `retired`.
-Each `pause_stop` row names the claim it stops by its token (`pause.StopRow`), because two claims of one issue can hold one role, an agent's on another role's step beside that role's own claim; a row that the release before wrote names none and stops its role's own claim.
+Each `pause_stop` row names the claim it stops by its token (`pause.StopRow`), because two claims of one issue can hold one role, an agent's on another role's step beside that role's own claim; a row that the release before wrote names none and stops the worker on its role's step, which the role's phases row names while it runs a step of the plan, as every other row that names a role alone does (the outbox's `workerToken`).
 A claim of another project's issue, which `legion claims spawn` makes under this daemon's own project, is part of the pause as every other claim is: the gates hold it, the pause stops it, and the resume launches it only for work that the pause held for it.
 Its `pause_stop` row is keyed by the project rather than by the claim's issue, because the daemon's outbox serves only the rows of its own project's keys, and the row names the claim's issue in its payload (`pause.StopKey`, `internal/pause/pause.go`).
 Once the transaction has committed, the daemon asks the stop of each live role that the transaction did not name, such as a launch that had passed the gate a moment before.

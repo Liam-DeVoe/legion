@@ -3611,19 +3611,20 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 }
 
 // roleRunWorker is the claim a supervise row of role on issue that names no claim reaches when it
-// runs, as WorkerClaim reads it over entries: the claim role's phases row names while that row
-// runs a step of the issue's plan, and the role's own token otherwise. The role's own token is
-// spelled from the issue's part of key, the token of a claim of that issue, so no project token is
-// needed here; a key that names no issue's part reaches nothing.
+// runs (WorkerClaimOf over entries): the claim role's phases row names while that row runs a step
+// of the issue's plan, and the role's own token otherwise. The project token WorkerClaimOf builds
+// that token with is read from key, the token of a claim of that issue (claim.Token.Project); a key
+// that names no agent of an issue, and a role that is no role, reach nothing.
 func roleRunWorker(key claim.Token, issue string, role claim.Role, entries map[PhaseRole]PhaseEntry) claim.Token {
-	if entry := entries[PhaseRole{Issue: issue, Role: role}]; entry.StepTask != "" && entry.Claim != "" {
-		return entry.Claim
-	}
-	prefix, _, ok := key.Cut()
+	project, ok := key.Project()
 	if !ok {
 		return ""
 	}
-	return claim.Token(prefix + "-" + string(role))
+	token, err := WorkerClaimOf(project, issue, role, entries)
+	if err != nil {
+		return ""
+	}
+	return token
 }
 
 // RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second

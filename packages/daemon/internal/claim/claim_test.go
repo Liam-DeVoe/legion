@@ -401,6 +401,25 @@ func TestATokenEndsInItsAgent(t *testing.T) {
 	}
 }
 
+// A claim token gives back the project token it was built from, so the token of another claim of
+// its issue can be built with NewToken's checks, and a token that names no agent of an issue gives
+// none.
+func TestATokenGivesItsProject(t *testing.T) {
+	for token, want := range map[Token]string{
+		"legion-legion-infra-12-implementer-2": "legion",
+		"legion-acme-acme-1-checker":           "acme",
+	} {
+		if project, ok := token.Project(); !ok || project != want {
+			t.Errorf("%s.Project() = %q, %t; want %q", token, project, ok, want)
+		}
+	}
+	for _, token := range []Token{ControllerToken("legion"), "legion-acme-acme-1-controller", "legion-acme-acme-1", ""} {
+		if project, ok := token.Project(); ok {
+			t.Errorf("%s.Project() = %q, want none: it names no agent of an issue", token, project)
+		}
+	}
+}
+
 // NewToken is the token of a role's agent, and it still refuses a name that is no role: its callers
 // read that refusal as "no claim of this key". A deployment's role can be any name of the role
 // grammar, an agent's name such as `implementer-2` among them, so the controller's name is the one

@@ -126,6 +126,19 @@ func (t Token) Cut() (issue string, agent Agent, ok bool) {
 	return match[1], Agent(match[2]), true
 }
 
+// Project is the project token t was built from (ProjectToken), its part after `legion-` and
+// before the issue's, so a reader holding one claim of an issue can build the token of another
+// claim of it with NewToken or AgentToken, which check what they build. ok is false for a token
+// that is no claim of an issue's agent (Cut).
+func (t Token) Project() (project string, ok bool) {
+	issue, _, ok := t.Cut()
+	if !ok {
+		return "", false
+	}
+	project, _, _ = strings.Cut(strings.TrimPrefix(issue, "legion-"), "-")
+	return project, true
+}
+
 // ControllerToken is the project controller's role token, `legion-<project>-controller`
 // (legion-roles.ts:66-69). project is already a ProjectToken.
 func ControllerToken(project string) Token { return Token("legion-" + project + "-controller") }

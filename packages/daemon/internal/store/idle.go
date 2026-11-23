@@ -677,7 +677,7 @@ func deleteIssueRelease(ctx context.Context, db execer, project, issue string) e
 // task of the issue's generation stands at, "" where its plan rows hold none or the task stands
 // at no step.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
-	view := pods.IdleView{Issue: issue}
+	view := pods.IdleView{Issue: issue, Project: project}
 	var issueGeneration, rootGeneration int64
 	var issuePhase, rootPhase, stepRole string
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
@@ -732,24 +732,24 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	if err := claims.Err(); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 	}
-	workers, err := tx.Query(ctx, `select role, claim from phases where issue = $1 and step_task <> '' and claim <> ''`, issue)
+	phases, err := tx.Query(ctx, `select role, claim, step_task from phases where issue = $1`, issue)
 	if err != nil {
-		return pods.IdleView{}, fmt.Errorf("read the step workers of %s for its idle view: %w", issue, err)
+		return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
 	}
-	for workers.Next() {
-		var role, token string
-		if err := workers.Scan(&role, &token); err != nil {
-			workers.Close()
-			return pods.IdleView{}, fmt.Errorf("read the step workers of %s for its idle view: %w", issue, err)
+	for phases.Next() {
+		var role, token, stepTask string
+		if err := phases.Scan(&role, &token, &stepTask); err != nil {
+			phases.Close()
+			return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
 		}
-		if view.Workers == nil {
-			view.Workers = map[claim.Role]claim.Token{}
+		if view.Phases == nil {
+			view.Phases = map[claim.Role]pods.IdlePhase{}
 		}
-		view.Workers[claim.Role(role)] = claim.Token(token)
+		view.Phases[claim.Role(role)] = pods.IdlePhase{Claim: claim.Token(token), StepTask: stepTask}
 	}
-	workers.Close()
-	if err := workers.Err(); err != nil {
-		return pods.IdleView{}, fmt.Errorf("read the step workers of %s for its idle view: %w", issue, err)
+	phases.Close()
+	if err := phases.Err(); err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
 	}
 
 	if err := tx.QueryRow(ctx, fmt.Sprintf(`select exists (

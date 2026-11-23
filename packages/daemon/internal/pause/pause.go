@@ -347,7 +347,7 @@ func (s *Service) tellsController(ctx context.Context, by store.PauseActor) (boo
 // (store.Store.AskPauseStops, AskLivePauseStops), so every stop of a pause is one row of one
 // shape. A row keyed by the project names the claim's issue in its payload
 // (record.SuperviseRequest.Issue), which the executor's lines name, and from which it reads the
-// role's own claim of a row the release before wrote, which names no claim.
+// claim of the worker on the role's step for a row the release before wrote, which names no claim.
 func StopRow(pause store.Pause, stop store.PauseStopClaim) (store.PauseRow, error) {
 	request := record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role, Claim: stop.Claim,
 		Generation: stop.Generation, Pause: pause.ID,

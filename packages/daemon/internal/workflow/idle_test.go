@@ -30,18 +30,18 @@ var (
 // either. Each row of the table below changes exactly one thing about it.
 func idleChild() pods.IdleView {
 	return pods.IdleView{
-		Issue: "LEGION-209", Tree: "LEGION-208", Found: true,
+		Issue: "LEGION-209", Project: "legion", Tree: "LEGION-208", Found: true,
 		Phase: phase.Implementing, Status: "in_progress", Generation: 3,
 		Root: pods.IdleRoot{Phase: phase.Admitted, Status: "in_progress", Generation: 2},
 		Claims: []pods.IdleClaim{
 			{
-				Role:  claim.RoleImplementer,
+				Token: "legion-legion-legion-209-implementer", Role: claim.RoleImplementer,
 				State: supervise.StateIdle, PluginContract: idleContract, ServingGeneration: 3,
 				LastTurnAt: idleNow.Add(-20 * time.Minute),
 				ActivityAt: idleNow.Add(-15 * time.Minute), UpdatedAt: idleNow.Add(-15 * time.Minute),
 			},
 			{
-				Role: claim.RoleTester, State: supervise.StateSuspended,
+				Token: "legion-legion-legion-209-tester", Role: claim.RoleTester, State: supervise.StateSuspended,
 				PluginContract: 11, UpdatedAt: idleNow.Add(-40 * time.Minute),
 			},
 		},
@@ -55,7 +55,7 @@ func idleRoot() pods.IdleView {
 	view.Issue, view.Tree, view.Phase = "LEGION-208", "LEGION-208", phase.Admitted
 	view.Generation = 2
 	view.Claims = view.Claims[:1]
-	view.Claims[0].Role = claim.RoleArchitect
+	view.Claims[0].Token, view.Claims[0].Role = "legion-legion-legion-208-architect", claim.RoleArchitect
 	view.Claims[0].ServingGeneration = 2
 	return view
 }

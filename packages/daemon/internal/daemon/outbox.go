@@ -2129,7 +2129,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	if r.notices == nil {
 		return errors.New("hook prompt executor has no Envoy publisher")
 	}
-	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
+	token, err := r.workerToken(ctx, row.Issue, payload.Role, payload.Claim)
 	if err != nil {
 		return err
 	}
@@ -2204,7 +2204,7 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	if r.supervisor == nil {
 		return errors.New("update ask executor has no claim supervisor")
 	}
-	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
+	token, err := r.workerToken(ctx, row.Issue, payload.Role, payload.Claim)
 	if err != nil {
 		return err
 	}
@@ -2247,30 +2247,31 @@ func (r *outbox) updateAskLeftRound(row record.OutboxRow, payload record.UpdateA
 		"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "current", current, "claim", string(token), "role", payload.Role)
 }
 
-// workerToken is the claim a row of role on the row's issue acts on, and whose Envoy topic a role
-// message of the row is published to (publishToRole and publishKeptToRole, under
-// notify.RoleTopicPrefix): held, the claim the row's producer named, where it names one; otherwise
-// the claim of the worker on role's step (record.WorkerClaim) over the issue's phases rows as the
-// record holds them when the row runs. A step's agent can be the agent of a key, which works the
-// step in the claim it started on an earlier step of another role, so the role's own token would
-// reach no agent or the wrong one.
-func (r *outbox) workerToken(ctx context.Context, row record.OutboxRow, role claim.Role, held claim.Token) (claim.Token, error) {
+// workerToken is the claim a row of role on issue acts on, and whose Envoy topic a role message of
+// the row is published to (publishToRole and publishKeptToRole, under notify.RoleTopicPrefix):
+// held, the claim the row's producer named, where it names one; otherwise the claim of the worker
+// on role's step (record.WorkerClaim) over the issue's phases rows as the record holds them when
+// the row runs. A step's agent can be the agent of a key, which works the step in the claim it
+// started on an earlier step of another role, so the role's own token would reach no agent or the
+// wrong one. issue is the row's own (record.OutboxRow.Issue), or for a pause's stop keyed by the
+// project the issue its payload names (pauseStop).
+func (r *outbox) workerToken(ctx context.Context, issue string, role claim.Role, held claim.Token) (claim.Token, error) {
 	if held != "" {
 		return held, nil
 	}
-	rows, err := r.phaseRows(ctx, row.Issue)
+	rows, err := r.phaseRows(ctx, issue)
 	if err != nil {
 		return "", err
 	}
-	return r.workerOf(row, role, rows)
+	return r.workerOf(issue, role, rows)
 }
 
-// workerOf is the claim of the worker on role's step of the row's issue among rows, the issue's
-// phases rows (record.WorkerClaim).
-func (r *outbox) workerOf(row record.OutboxRow, role claim.Role, rows []record.PhaseRow) (claim.Token, error) {
-	token, err := record.WorkerClaim(r.project, row.Issue, role, rows)
+// workerOf is the claim of the worker on role's step of issue among rows, the issue's phases rows
+// (record.WorkerClaim).
+func (r *outbox) workerOf(issue string, role claim.Role, rows []record.PhaseRow) (claim.Token, error) {
+	token, err := record.WorkerClaim(r.project, issue, role, rows)
 	if err != nil {
-		return "", fmt.Errorf("the %s of %s: %w", role, row.Issue, err)
+		return "", fmt.Errorf("the %s of %s: %w", role, issue, err)
 	}
 	return token, nil
 }
@@ -2473,7 +2474,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 		}
-		if token, err = r.workerOf(row, payload.Role, rows); err != nil {
+		if token, err = r.workerOf(row.Issue, payload.Role, rows); err != nil {
 			return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
 		}
 	}
@@ -3141,7 +3142,7 @@ func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, is
 // re-pointed between this check and the suspension. A stop this call completes wakes the old
 // tree's close rows; this row releases no tree resources itself.
 func (r *outbox) stopInLeftTree(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
-	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
+	token, err := r.workerToken(ctx, row.Issue, payload.Role, payload.Claim)
 	if err != nil {
 		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
 	}
@@ -3295,7 +3296,7 @@ func (r *outbox) reservedTreeClose(ctx context.Context, row record.OutboxRow, pa
 	if !reserved {
 		return false, nil
 	}
-	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
+	token, err := r.workerToken(ctx, row.Issue, payload.Role, payload.Claim)
 	if err != nil {
 		return true, fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
 	}
@@ -3527,7 +3528,7 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	}
 	// The save names the claim whose shim it asks (record.IssueBundle.Claim); a save the release
 	// before wrote names none and asks the claim of the worker on its role's step.
-	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
+	token, err := r.workerToken(ctx, row.Issue, payload.Role, payload.Claim)
 	if err != nil {
 		return err
 	}
@@ -4269,7 +4270,7 @@ func (r *outbox) lookBoundAfterPause(ctx context.Context, row record.OutboxRow, 
 		if err != nil {
 			return err
 		}
-		token, err := r.workerOf(row, check.Role, rows)
+		token, err := r.workerOf(row.Issue, check.Role, rows)
 		if err != nil {
 			return err
 		}
