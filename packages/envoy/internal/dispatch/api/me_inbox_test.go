@@ -36,8 +36,9 @@ const (
 )
 
 // meInboxRig is a test server whose store is traced for the one read's own statements: a request
-// marked countedRead is the one whose statements meInboxStatements records, and the caller's
-// identity is resolved on the untraced pool, so a sign-in lookup is no statement of the read.
+// marked countedRead is the one whose statements meInboxStatements records, each statement a batch
+// sends on its own, and the caller's identity is resolved on the untraced pool, so a sign-in lookup
+// is no statement of the read.
 type meInboxRig struct {
 	database   *store.Store
 	traced     *store.Store
@@ -48,7 +49,7 @@ type meInboxRig struct {
 func newMeInboxRig(t *testing.T) *meInboxRig {
 	t.Helper()
 	database := storetest.Open(t)
-	statements := &meInboxStatements{}
+	statements := &meInboxStatements{eachOfABatch: true}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
 	handler, _, _ := newTestServer(t, testServerOptions{
 		store:    traced,
@@ -61,15 +62,18 @@ func newMeInboxRig(t *testing.T) *meInboxRig {
 }
 
 // meInboxStatements records every statement and batch a traced pool runs for a request marked
-// countedRead, through a storetest.StatementRecorder, each beside the connection that ran it: a
-// batch is one round trip whatever it holds, so a read that sent four statements as one batch is
-// recorded as the batch it is and is not one statement. The horizon's observation runs on its own
-// pool (events.Horizon, store.Pool.Horizon), which is traced too since it is opened from this
-// pool's configuration; ownStatements leaves that pool's connections out.
+// countedRead, through a storetest.StatementRecorder, each beside the connection that ran it. A
+// batch is one round trip whatever it holds, so by default it is recorded as the one batch it is,
+// which is what c-p99's statement rule counts (oneInboxHere); with eachOfABatch it is recorded as
+// each statement it sends, in the order it queued them (pgx.TraceBatchStartData's batch), so a read
+// that sent four statements as one batch is four statements and not one. The horizon's observation
+// runs on its own pool (events.Horizon, store.Pool.Horizon), which is traced too since it is opened
+// from this pool's configuration; ownStatements leaves that pool's connections out.
 type meInboxStatements struct {
-	recorder storetest.StatementRecorder
-	mu       sync.Mutex
-	conns    []*pgx.Conn
+	recorder     storetest.StatementRecorder
+	eachOfABatch bool
+	mu           sync.Mutex
+	conns        []*pgx.Conn
 	// taken is how many of the recorded statements ownStatements has answered already.
 	taken int
 }
@@ -92,7 +96,13 @@ func (s *meInboxStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn,
 func (s *meInboxStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 func (s *meInboxStatements) TraceBatchStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
-	s.record(ctx, conn, fmt.Sprintf("a batch of %d statements", data.Batch.Len()))
+	if !s.eachOfABatch {
+		s.record(ctx, conn, fmt.Sprintf("a batch of %d statements", data.Batch.Len()))
+		return ctx
+	}
+	for _, queued := range data.Batch.QueuedQueries {
+		s.record(ctx, conn, queued.SQL)
+	}
 	return ctx
 }
 
@@ -123,6 +133,20 @@ func (s *meInboxStatements) ownStatements(t *testing.T, traced *store.Store) []s
 	}
 	s.taken = len(recorded)
 	return own
+}
+
+// meInboxReadStatements is statements less the four that frame the read's statement in its
+// batch and read nothing (readMeInbox): the read-only transaction's begin, each of
+// meInboxSettings and its commit.
+func meInboxReadStatements(statements []string) []string {
+	framing := append([]string{`begin transaction read only`, `commit`}, meInboxSettings...)
+	reads := make([]string, 0, len(statements))
+	for _, statement := range statements {
+		if !slices.Contains(framing, statement) {
+			reads = append(reads, statement)
+		}
+	}
+	return reads
 }
 
 // horizonConnections is every connection the horizon pool holds, each acquired idle and released,
@@ -245,10 +269,11 @@ func meInboxKinds(entry meInboxEntry) []string {
 }
 
 // c-one-relation: the read takes the person's node and answers the nodes with a relation to it,
-// of any kind, in one statement a reader can observe. Four nodes each tie the person by one of
-// the four arms - a delivery, their own writing, their taking part, a mention of them - and a
-// fifth ties them by nothing; a second person is reached by all five, a sixth node by a kind no
-// writer of this build appends, and a placement moves under one of them.
+// of any kind, in one statement a reader can observe, each statement of its batch counted. Four
+// nodes each tie the person by one of the four arms - a delivery, their own writing, their taking
+// part, a mention of them - and a fifth ties them by nothing; a second person is reached by all
+// five, a sixth node by a kind no writer of this build appends, and a placement moves under one of
+// them. Last, the read answers at the horizon notifications read at (meInboxAtTheHorizon).
 func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 	rig := newMeInboxRig(t)
 	seed := meInboxSeed{t: t, database: rig.database}
@@ -291,8 +316,11 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 		rig.statements.ownStatements(t, rig.traced)
 		marked := context.WithValue(context.Background(), countedRead{}, true)
 		answer := decodeMeInbox(t, meInboxRequestAs(t, rig.handler, marked, alice, nil))
-		if own := rig.statements.ownStatements(t, rig.traced); len(own) != 1 {
-			t.Fatalf("the read ran %d statements, want 1:\n%s", len(own), strings.Join(own, "\n---\n"))
+		// Every statement the request sent counts, each of a batch on its own, but for the four
+		// that frame the read's statement in its read-only transaction and read nothing.
+		own := rig.statements.ownStatements(t, rig.traced)
+		if reads := meInboxReadStatements(own); len(reads) != 1 {
+			t.Fatalf("the read ran %d statements, want 1; every statement it sent:\n%s", len(reads), strings.Join(own, "\n---\n"))
 		}
 		want := []struct {
 			node      seeded
@@ -371,9 +399,20 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 			t.Fatalf("read me_inbox.go: %v", err)
 		}
 		text := string(source)
-		for _, kind := range []string{meInboxDelivered, meInboxAuthored, meInboxParticipates, meInboxNamed} {
-			if strings.Contains(text, kind) {
-				t.Errorf("me_inbox.go names the relation kind %q: the read takes its kinds from the store", kind)
+		// A kind is named by its literal or by the graphstore constant that spells it. The file
+		// names one of the four, the delivery kind, once and for an index's sake, in the predicate
+		// the reads out of the person's nodes state beside the kind they bind (meInboxOutOfPerson),
+		// which puts no kind in the answer; that declaration is taken out before the search.
+		text = strings.Replace(text, "const meInboxOutOfPerson = `t.kind <> '` + graphstore.TupleDeliveredTo + `'`", "", 1)
+		for _, kind := range []struct{ literal, constant string }{
+			{meInboxDelivered, "TupleDeliveredTo"}, {meInboxAuthored, "TupleAuthoredBy"},
+			{meInboxParticipates, "TupleParticipatesIn"}, {meInboxNamed, "TupleMentions"},
+		} {
+			if strings.Contains(text, kind.literal) {
+				t.Errorf("me_inbox.go names the relation kind %q: the read takes its kinds from the store", kind.literal)
+			}
+			if strings.Contains(text, "graphstore."+kind.constant) {
+				t.Errorf("me_inbox.go names the relation kind %q as graphstore.%s: the read takes its kinds from the store", kind.literal, kind.constant)
 			}
 		}
 	})
@@ -438,6 +477,144 @@ func TestOneReadAnswersEveryRelationToThePersonsNode(t *testing.T) {
 			t.Errorf("the ask alice no longer takes part in is still an entry of her read")
 		}
 	})
+
+	t.Run("the read answers at the safe horizon notifications read at", meInboxAtTheHorizon)
+}
+
+// meInboxAtTheHorizon is the horizon of the one read: it reads at the event horizon notifications
+// read at (sinceHorizon), as the event read of GET /api/v1/events does, and answers that horizon.
+// Six writes through the routes each reach the person, one of each kind that does, the person
+// named by a login a person address takes (mentionedPerson) so a comment can mention them; every
+// tuple into or out of their node that an event at or below the answered horizon appended puts its
+// node among the read's entries, whatever that event's type and issue. A comment of theirs written
+// while no other transaction is open is an entry of the next read. A comment written to them while
+// a transaction that took an id stays open on the cluster (holdClusterTransactionID) is above the
+// horizon the read answers then and no entry of it, and is an entry once that transaction ends.
+func meInboxAtTheHorizon(t *testing.T) {
+	live := true
+	sent := []map[string]any{}
+	listener := sessionListener(t, &live, &sent)
+	t.Cleanup(listener.Close)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
+	ctx := context.Background()
+	const person = mentionedPerson
+	// reaches runs write, which the case names what, and requires it to append a tuple under an
+	// event into or out of the person's node.
+	reaches := func(what string, write func()) {
+		t.Helper()
+		var before int64
+		if err := database.Pool.QueryRow(ctx, `select coalesce(max(seq), 0) from graph_tuples`).Scan(&before); err != nil {
+			t.Fatalf("read the store's last tuple before %s: %v", what, err)
+		}
+		write()
+		var appended int
+		if err := database.Pool.QueryRow(ctx, `
+			select count(*) from graph_tuples
+			where seq > $1 and source_event <> 0
+			  and ((to_kind = $2 and to_id = $3) or (from_kind = $2 and from_id = $3))
+		`, before, graphstore.KindPerson, person).Scan(&appended); err != nil {
+			t.Fatalf("count the tuples %s appended to %s: %v", what, person, err)
+		}
+		if appended == 0 {
+			t.Fatalf("%s appended no tuple into or out of %s's node, so it does not reach her", what, person)
+		}
+	}
+	issue := createInteractionIssue(t, handler, "HORZ", "The one read's horizon", "A spec")
+	thread := createThreadComment(t, handler, issue.Key, map[string]any{"body": "The person starts a thread."}, person)
+	reaches("a comment in a thread the person started", func() {
+		createThreadComment(t, handler, issue.Key, map[string]any{"body": "Bob replies in it.", "reply_to": thread.ID}, "bob")
+	})
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "The person writes a message."}, person)
+	reaches("a reply to the person's issue message", func() {
+		createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Bob answers it.", "in_reply_to": message.ID}, "bob")
+	})
+	assigned := createInteractionIssue(t, handler, "HORA", "An issue assigned to the person", "A spec")
+	assignIssue(t, handler, assigned.Key, person)
+	reaches("an ask on an issue assigned to the person", func() { createIssueAsk(t, handler, assigned.Key, "Is it ready?") })
+	asked := createPersonAsk(t, handler, issue.Key, person, "The person asks: ship it?")
+	reaches("an answer to an ask the person asked", func() {
+		if answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+asked.ID+"/answer", map[string]any{
+			"selected": []string{"Ship"},
+		}, "bob"); answered.Code != http.StatusOK {
+			t.Fatalf("bob's answer to the person's ask: status=%d body=%s", answered.Code, answered.Body.String())
+		}
+	})
+	direct := postAgentMessage(t, handler, "s1", map[string]any{"body": "Can you look at the deploy?", "delivery": "aside"}, person)
+	if direct.Code != http.StatusCreated {
+		t.Fatalf("the person's direct message: status=%d body=%s", direct.Code, direct.Body.String())
+	}
+	root := decodeBody[model.Message](t, direct)
+	reaches("a session's reply to the person's direct message", func() {
+		if replied := replyTo(t, handler, root.ID, "Looking."); replied.Code != http.StatusCreated {
+			t.Fatalf("s1's reply to the person's direct message: status=%d body=%s", replied.Code, replied.Body.String())
+		}
+	})
+	reaches("a comment that mentions the person", func() {
+		createThreadComment(t, handler, issue.Key, map[string]any{"body": "Over to dispatch://person/" + person + " for the copy."}, "bob")
+	})
+
+	// Each node an event at or below the answered horizon tied to the person, by the newest tuple
+	// of that relation the horizon reads, where that tuple asserts it: the identity tuple and a
+	// value are no entry of the read, which leaves both out.
+	answer := readMeInboxAs(t, handler, person, nil)
+	tied, err := readStrings(ctx, database.Pool, `
+		select distinct newest.node from (
+			select distinct on (t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id)
+			       case when t.to_kind = $1 and t.to_id = $2 then t.from_kind || ':' || t.from_id
+			            else t.to_kind || ':' || t.to_id end as node,
+			       t.asserted, t.source_event
+			from graph_tuples t
+			where ((t.to_kind = $1 and t.to_id = $2) or (t.from_kind = $1 and t.from_id = $2))
+			  and t.source_event <= $3 and t.kind <> $4 and t.to_kind <> $5
+			order by t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.seq desc
+		) newest
+		where newest.asserted and newest.source_event <> 0
+	`, graphstore.KindPerson, person, answer.Horizon, graphstore.TupleAliasOf, graphstore.KindValue)
+	if err != nil {
+		t.Fatalf("read the nodes the events at or below horizon %d tied to %s: %v", answer.Horizon, person, err)
+	}
+	if len(tied) == 0 {
+		t.Fatalf("no event at or below horizon %d tied a node to %s, so the case reads nothing", answer.Horizon, person)
+	}
+	for _, node := range tied {
+		kind, id, _ := strings.Cut(node, ":")
+		if _, held := meInboxEntryOfNode(answer, kind, id); !held {
+			t.Errorf("an event at or below horizon %d tied %s to %s, and their read answers no entry for it: %v", answer.Horizon, node, person, meInboxNodes(answer))
+		}
+	}
+
+	// Their own comment, written while no other transaction is open, is an entry of the next read.
+	own := createThreadComment(t, handler, issue.Key, map[string]any{"body": "The person writes while nothing else is open."}, person)
+	if next := readMeInboxAs(t, handler, person, nil); !meInboxHolds(next, graphstore.KindComment, own.ID) {
+		t.Errorf("the read after the person's comment %s (event %d) answers horizon %d and no entry for it",
+			own.ID, writeEventOf(t, database, "comment.created", own.ID), next.Horizon)
+	}
+
+	// A comment written to them while a transaction holding an id is open is above the horizon
+	// the read answers, until that transaction ends.
+	release := holdClusterTransactionID(t, 30*time.Second)
+	held := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Bob writes while a transaction is open.", "reply_to": thread.ID}, "bob")
+	event := writeEventOf(t, database, "comment.created", held.ID)
+	during := readMeInboxAs(t, handler, person, nil)
+	if during.Horizon >= event {
+		t.Errorf("while a transaction holding an id is open the read answers horizon %d, at or above the event %d of the comment %s written to the person meanwhile",
+			during.Horizon, event, held.ID)
+	}
+	if meInboxHolds(during, graphstore.KindComment, held.ID) {
+		t.Errorf("the read whose horizon is %d answers the comment %s written to the person while a transaction held the horizon, whose event %d is above it",
+			during.Horizon, held.ID, event)
+	}
+	release()
+	if after := readMeInboxAs(t, handler, person, nil); !meInboxHolds(after, graphstore.KindComment, held.ID) {
+		t.Errorf("once the open transaction ended the read answers horizon %d and no entry for the comment %s, whose event is %d",
+			after.Horizon, held.ID, event)
+	}
+}
+
+// meInboxHolds is whether answer holds an entry whose node is kind/id.
+func meInboxHolds(answer meInboxResponse, kind, id string) bool {
+	_, held := meInboxEntryOfNode(answer, kind, id)
+	return held
 }
 
 // The identity rule of the read (person_nodes in meInboxBuild): a session the server proved the

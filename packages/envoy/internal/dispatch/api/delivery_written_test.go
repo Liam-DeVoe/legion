@@ -3,14 +3,19 @@ package api
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestDeliveryToAPersonIsWrittenByTheWriteThatDelivers is c-delivery-written (R2): a delivery to a
@@ -31,8 +36,9 @@ import (
 // user_threads row deleted, the one read answers the rows it answered before. The direct
 // conversation's arm is a case of its own after it. Last, the record stands as written: an ask's
 // delivery stands past its issue's close, a change of assignee appends the new person's delivery
-// and the old one's retraction under its one event, a change whose append fails leaves neither and
-// the assignee as it was, and no tuple is ever updated.
+// and the old one's retraction under its one event, a change whose append fails - at its first
+// append, or after it with the first appended - leaves neither and the assignee as it was, and no
+// tuple is ever updated.
 func TestDeliveryToAPersonIsWrittenByTheWriteThatDelivers(t *testing.T) {
 	t.Run("the outbox's destinations name no person", deliveryGapNamesNoPerson)
 	t.Run("each arm appends the deliveries its write reaches, as written out by hand", deliveryArmsByHand)
@@ -171,6 +177,8 @@ func deliveryDirectReplyArm(t *testing.T) {
 // The change of assignee runs on an open issue: a closed issue's asks are withdrawn, and a change
 // of its assignee moves none of them until its reopen (TestTheAssigneeArmFollowsWhoAnAskWaitsOn).
 func deliveryAssigneeRecord(t *testing.T) {
+	log := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(log, nil))
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	seedPeople(t, database, "carol", "dana")
@@ -203,15 +211,118 @@ func deliveryAssigneeRecord(t *testing.T) {
 	if response.Code < http.StatusInternalServerError {
 		t.Fatalf("the change of assignee whose append failed answered %d %s, want a 5xx", response.Code, response.Body.String())
 	}
-	var assignee *string
-	if err := database.Pool.QueryRow(ctx, `select assignee from issues where key = $1`, issue.Key).Scan(&assignee); err != nil {
-		t.Fatalf("read %s's assignee: %v", issue.Key, err)
+	// assigneeOf is the login key's issue is assigned to, "" for nobody.
+	assigneeOf := func(key string) string {
+		t.Helper()
+		var assignee string
+		if err := database.Pool.QueryRow(ctx, `select coalesce(assignee, '') from issues where key = $1`, key).Scan(&assignee); err != nil {
+			t.Fatalf("read %s's assignee: %v", key, err)
+		}
+		return assignee
 	}
-	if assignee == nil || *assignee != "dana" {
-		t.Errorf("after the failed change %s is assigned to %v, want dana still", issue.Key, assignee)
+	if assignee := assigneeOf(issue.Key); assignee != "dana" {
+		t.Errorf("after the failed change %s is assigned to %q, want dana still", issue.Key, assignee)
 	}
 	requireRelationTuples(t, database, graphstore.TupleDeliveredTo, thread,
 		fmt.Sprintf("%s > person:bob @%d", thread, opened),
 		fmt.Sprintf("%s > person:bob @%d retracted", thread, moved),
 		fmt.Sprintf("%s > person:dana @%d", thread, moved))
+
+	// A failure after the first of the move's appends leaves neither. On an ask of its own, the
+	// test refuses the new assignee's delivery alone, and only once the old assignee's retraction
+	// stands earlier in the same statement (refuseSecondAppend): the move's one statement appends
+	// each retraction before each new tuple (inboxwrite.QueueMoveWaiting), so it fails at its
+	// second append with its first appended. The answer is a 5xx, the refusal is the one that
+	// ended it, the assignee stays dana, and every tuple of the ask stands as it did before.
+	later := createInteractionIssue(t, handler, "RECS", "A move that fails at its second append", "A spec")
+	assignIssue(t, handler, later.Key, "bob")
+	laterAsk := createIssueAsk(t, handler, later.Key, "Is it final?")
+	laterOpened := writeEventOf(t, database, "ask.opened", laterAsk)
+	laterThread := "ask:" + laterAsk
+	assignIssue(t, handler, later.Key, "dana")
+	laterMoved := latestEventOf(t, database, "issue.updated")
+	standing := []string{
+		fmt.Sprintf("%s > person:bob @%d", laterThread, laterOpened),
+		fmt.Sprintf("%s > person:bob @%d retracted", laterThread, laterMoved),
+		fmt.Sprintf("%s > person:dana @%d", laterThread, laterMoved),
+	}
+	requireRelationTuples(t, database, graphstore.TupleDeliveredTo, laterThread, standing...)
+	before := askTuplesOf(t, database, laterAsk)
+	refuseSecondAppend(t, database, laterAsk)
+	response = dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+later.Key, map[string]any{"assignee": "carol"}, "alice")
+	if response.Code < http.StatusInternalServerError {
+		t.Fatalf("the change of assignee whose second append was refused answered %d %s, want a 5xx: the refusal fires only "+
+			"once the old assignee's retraction stands, so a change that succeeds appended the delivery before it, or no retraction",
+			response.Code, response.Body.String())
+	}
+	if refused := log.Lines(secondAppendRefused); refused == "" {
+		t.Errorf("the change of assignee failed, and not at the refusal of its second append; the server logged:\n%s", log.String())
+	}
+	if assignee := assigneeOf(later.Key); assignee != "dana" {
+		t.Errorf("after the change whose second append failed %s is assigned to %q, want dana still", later.Key, assignee)
+	}
+	requireRelationTuples(t, database, graphstore.TupleDeliveredTo, laterThread, standing...)
+	if after := askTuplesOf(t, database, laterAsk); !slices.Equal(after, before) {
+		t.Errorf("after the change whose second append failed the ask's tuples are\n  %s\nwant them as they stood before it\n  %s",
+			strings.Join(after, "\n  "), strings.Join(before, "\n  "))
+	}
+}
+
+// secondAppendRefused is what refuseSecondAppend's trigger raises, and so what the server logs of
+// the write it ends.
+const secondAppendRefused = "the test refuses the second append"
+
+// refuseSecondAppend makes the append of an asserted delivered_to from ask fail where a retraction
+// of a delivered_to from that ask stands under the same event, for the rest of t: a trigger the
+// test installs and its cleanup drops. A row trigger's own read sees the rows its statement
+// appended before the row it fires for, so a move, which appends the old person's retraction and
+// then the new person's delivery in one statement, fails at that second append with its first
+// appended; a delivery appended before any retraction passes.
+func refuseSecondAppend(t *testing.T, database *store.Store, ask string) {
+	t.Helper()
+	ctx := context.Background()
+	name := "refuse_second_" + strings.ReplaceAll(uuid.NewString(), "-", "_")
+	if _, err := database.Pool.Exec(ctx, `
+		create function `+name+`() returns trigger language plpgsql as $$
+		begin
+			if exists (
+				select 1 from graph_tuples t
+				where t.from_kind = new.from_kind and t.from_id = new.from_id and t.kind = new.kind
+				  and not t.asserted and t.source_event = new.source_event
+			) then
+				raise exception '`+secondAppendRefused+`, % to %/% under event %', new.kind, new.to_kind, new.to_id, new.source_event;
+			end if;
+			return new;
+		end $$`); err != nil {
+		t.Fatalf("create the function refusing the second append: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		create trigger `+name+` before insert on graph_tuples for each row
+		when (new.from_kind = `+quoteLiteral(graphstore.KindAsk)+` and new.from_id = `+quoteLiteral(ask)+`
+		  and new.kind = `+quoteLiteral(graphstore.TupleDeliveredTo)+` and new.asserted)
+		execute function `+name+`()`); err != nil {
+		t.Fatalf("create the trigger refusing the second append: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := database.Pool.Exec(context.Background(), `drop trigger `+name+` on graph_tuples; drop function `+name+`()`); err != nil {
+			t.Errorf("drop the trigger refusing the second append: %v", err)
+		}
+	})
+}
+
+// askTuplesOf is every tuple with ask at either end, as `from kind to @event`, a retraction marked,
+// sorted as Go orders bytes.
+func askTuplesOf(t *testing.T, database *store.Store, ask string) []string {
+	t.Helper()
+	held, err := readStrings(context.Background(), database.Pool, `
+		select from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id || ' @' || source_event::text
+		       || case when asserted then '' else ' retracted' end
+		from graph_tuples
+		where (from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2)
+	`, graphstore.KindAsk, ask)
+	if err != nil {
+		t.Fatalf("read the tuples of ask %s: %v", ask, err)
+	}
+	slices.Sort(held)
+	return held
 }
