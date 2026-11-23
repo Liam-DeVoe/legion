@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -104,5 +105,71 @@ func TestAHookPromptOfTheImplementerReachesTheAgentOfTheImplementationStep(t *te
 		if prompt.claim != string(want[prompt.role]) {
 			t.Errorf("the %s's prompt names the claim %q, want %q, the claim of the agent of that work's step", prompt.role, prompt.claim, want[prompt.role])
 		}
+	}
+}
+
+// A hook's roles tester and reviewer name the agent of the task's step that does that role's work
+// as the role implementer does: a step of the role's type whose role is the role itself or a role
+// the deployment or the plan defines, whatever it is called. In `coder auditor checker
+// acceptance:owner`, auditor a role of the plan of the type review and checker one of the type
+// testing, the checker's fail sends the work back to the coder's step, and the hook prompts the
+// coder, the checker and the auditor, each on the claim the start of its step names: never the
+// roles' own claims `…-tester` and `…-reviewer`, which no step of the task runs, and never the
+// owner for the reviewer, though the owner's acceptance is of the type review too. In `coder
+// checker` no step does a reviewer's work, so the firing prompts nobody for the reviewer and says
+// so.
+func TestAHookPromptOfATesterOrAReviewerReachesTheAgentOfThatWorksStep(t *testing.T) {
+	defined := map[string]plan.Type{"coder": plan.TypeImplementation, "auditor": plan.TypeReview, "checker": plan.TypeTesting}
+	for _, tc := range []struct {
+		name  string
+		steps []string
+		// passes is the number of steps that pass before the checker's, the last of them.
+		passes int
+		// want names, for each role the firing prompts, the role whose step's claim its prompt names.
+		want     map[claim.Role]claim.Role
+		prompted string
+	}{
+		{name: "coder auditor checker acceptance:owner", steps: []string{"coder", "auditor", "checker", "acceptance:owner"}, passes: 2,
+			want:     map[claim.Role]claim.Role{claim.RoleImplementer: "coder", claim.RoleTester: "checker", claim.RoleReviewer: "auditor"},
+			prompted: "implementer, tester, reviewer"},
+		{name: "coder checker", steps: []string{"coder", "checker"}, passes: 1,
+			want:     map[claim.Role]claim.Role{claim.RoleImplementer: "coder", claim.RoleTester: "checker"},
+			prompted: "implementer, tester"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := stepEngine(nil)
+			engine.cfg.Hooks = []Hook{{Name: "work-back", On: HookEventWorkBack, Every: 1,
+				Roles: []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer}, Prompt: saySoFar}}
+			root := stepRoot(t, pool, phase.Admitted)
+			seedStepsPlanDefining(t, pool, root.Key, root.Generation, defined, tc.steps...)
+			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+			for range tc.passes {
+				move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
+			}
+
+			move(t, pool, engine, root.Key, TriggerStepFailed, record.TaskPlace{}, record.PhaseRow{})
+
+			prompts := roleRowClaims(t, pool, root.Key, string(record.OutboxKindHookPrompt))
+			if len(prompts) != len(tc.want) {
+				t.Fatalf("the firing wrote the prompts %+v, want one for each of %v", prompts, tc.want)
+			}
+			for _, prompt := range prompts {
+				worker, ok := tc.want[claim.Role(prompt.role)]
+				if !ok {
+					t.Fatalf("the firing prompted the %s on %q, want no prompt of it: no step of %s does its work", prompt.role, prompt.claim, tc.name)
+				}
+				want := roleRowOf(t, pool, engine, root.Key, worker).Claim
+				if want == "" || want == claim.Token(token(t, root.Key, claim.Role(prompt.role))) {
+					t.Fatalf("the %s's phases row names %q, want the claim of its own step: the case's premise", worker, want)
+				}
+				if prompt.claim != string(want) {
+					t.Errorf("the %s's prompt names the claim %q, want %q, the claim of the %s's step", prompt.role, prompt.claim, want, worker)
+				}
+			}
+			if posted := firingMessages(t, pool); len(posted) != 1 || !strings.HasSuffix(posted[0], " Prompted: "+tc.prompted+".") {
+				t.Errorf("the firing posted %q, want one message that ends Prompted: %s.", posted, tc.prompted)
+			}
+		})
 	}
 }
