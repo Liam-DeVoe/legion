@@ -69,8 +69,10 @@ func assertFailureText(t *testing.T, recorder *httptest.ResponseRecorder, status
 // names no handoff record: the checker at step with pass and a commit is taken, as one
 // HandoffComplete; with no verdict it is refused STEP_VERDICT_REQUIRED, with no commit
 // MISSING_FIELD, and with a handoff record HANDOFF_RECORD_MISMATCH; with fail and returnTo 1 it is
-// taken. A verdict of one of Legion's roles but the tester is refused VERDICT_ROLE_FORBIDDEN: the
-// reviewer's here, whose issue has an open pull request, so a review on GitHub settles its round.
+// taken. A verdict of one of Legion's roles that reports none is refused VERDICT_ROLE_FORBIDDEN:
+// the reviewer's here, whose issue has an open pull request, so a review on GitHub settles its
+// round (a reviewer of an issue with no pull request record reports one, as the tester and the
+// role acceptance do).
 func TestADeploymentRoleReportsWithAVerdictAndACommit(t *testing.T) {
 	const key = "LEGION-208"
 	one := 1

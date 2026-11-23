@@ -31,13 +31,17 @@ import (
 // completion is of: for the planner, the implementer's implementing round, the tester and the
 // reviewer the head the handoff record names, the commit their work was done against, which the
 // `legion` tool reads out of the record's body and, for the implementer, holds to be its pushed
-// @- on legion/<issue>@origin; the commit the implementer stands on for retro; and the commit the
+// @- on legion/<issue>@origin; the commit the retro's agent stands on for the retro; the commit
+// each other step that reports a verdict stands on or read, the tester's aside; and the commit the
 // merger's own completion stands on. The entry fence reads it against the head the record holds
 // (intake.BehindEntryClause). The workflow refuses a record the role already named for its previous
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
 // pull request on its branch, or a merged one recorded (implementationPullRequest:
 // HANDOFF_NO_PULL_REQUEST). A check report carries no commit and no record (nothing was pushed or
-// written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail.
+// written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail,
+// and so does the completion of each other step that reports one (stepReportRefusal: a role the
+// deployment or the plan defines, the role acceptance, and a reviewer of an issue with no pull
+// request record).
 // WakeAt is the check report's alone: on a pending it is when the checking agent asks to be woken
 // for its next look, which no other verdict and no phase completion carries (checkReport). It is a
 // pointer so that a report naming no time is told from one naming a time at all: with the field
@@ -56,7 +60,8 @@ import (
 // (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
 // plugin sends one. ReturnTo is the step of the issue's running task that a failed
 // step names as the one its task returns to, by its place in the task, 1 for its first: only
-// a tester's completion with the verdict fail names one (returnToRefusal), and it is a pointer for
+// a completion with the verdict fail names one, of a step that reports a verdict (returnToRefusal,
+// stepReportRefusal), and it is a pointer for
 // the reason PlanRating is, so a completion naming 0 is refused rather than read as naming none.
 // Which step it may name is the workflow's to judge against the task's steps (RETURN_REFUSED).
 type HandoffCompleteRequest struct {
@@ -327,10 +332,12 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		return
 	}
 	// The phase this completion is of is the issue's where the role works it (record.Issue.RoleAt:
-	// at step, the role of the running step, so a role the deployment defines is current only at
-	// its own step), the phase the role left otherwise (phase.LeftBy), and the issue's for the
-	// architect, which leaves none. The record a phase with a handoff ends with is read back and
-	// held to the completion before anything is recorded: always when the role works the issue's
+	// the role of the claim that works the task's place, so a role the deployment or the plan
+	// defines is current only at its own step, and at a step or a retro the owner does no worker's
+	// completion is, since that role is the architect), the phase the role left otherwise
+	// (phase.LeftBy), and the issue's for the architect, which leaves none. The record a phase with
+	// a handoff ends with is read back and held to the completion before anything is recorded:
+	// always when the role works the issue's
 	// phase, and for a phase it left only when the completion names one. A completion of a left
 	// phase that names none is the engine's to decide (workflow's leftItsPhase), which answers
 	// HANDOFF_NOT_CURRENT_PHASE when the role's completion of that phase already stands or no role
@@ -373,7 +380,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// file-backed phase names, or the commit every other phase reports, and the verdict. A
 	// retried call for the same phase is the same fact, and so is one naming the same record at
 	// another commit (the record is the phase's handoff); the next phase's completion at the same
-	// commit (the implementer's retro, standing on its implementing pass's last push) is a
+	// commit (the retro, in the default steps the implementer's, standing on its implementing
+	// pass's last push) is a
 	// different one, since the phase and the role are in the key; and so is a second report of the
 	// same phase naming another verdict — the tester's corrected pass or fail, the only field a
 	// role may report differently of one handoff — since a refusal the workflow commits is
