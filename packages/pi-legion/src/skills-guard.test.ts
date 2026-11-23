@@ -692,7 +692,7 @@ test("an implementer and owner task is accepted on the evidence its steps give",
   const missing = lacks("legion-architect/references/acceptance.md", [
     /`acceptance:owner` enters `accepting`/,
     /has a tester step before yours[^.;]*--phase test/,
-    /`dispatch results --issue <issue>`[^.;]*the head the steps before yours passed/,
+    /`dispatch results --issue <issue>[^`]*`[^.;]*the head the steps before yours passed/,
     /has a reviewer step before yours[^.;]*approval/,
     /no tester step[^.;]*the implementation step's evidence/,
   ]);
@@ -937,6 +937,45 @@ test("the controller restarts a tree only for a root's architect", () => {
       /## `worker-died` \(architect\) On a root, [^#]*restart the tree: `set_status` the root[^#]*A child's own architect whose restarts[^#]*`fresh_session` with the child's key/,
     ])
   ).toEqual([]);
+});
+
+// A task with no pull request, and the owner's own review step, as the code has them: a plain
+// `dispatch results` read stands no pass for an issue with no pull request (Dispatch's
+// results_comparison.go), a `ci_check` there reads `no_head` (results_ci.go), the `legion` tool
+// sends the review record's head as the commit (pi-shared's findHandoffReport), and an
+// `owner-step` goes to the issue's own architect alone.
+test("the skills say what Dispatch and the tool do with no pull request and at the owner's review step", () => {
+  expect([
+    ...lacks("legion-worker/references/results.md", [
+      /An issue with no pull request has no such head, so a plain `dispatch results --issue <issue>` shows no pass standing there\./,
+      /Read it with `--at <head>`, which compares every check with that one commit\./,
+    ]),
+    ...lacks("legion-worker/references/ci-checks.md", [
+      /On an issue with no pull request each such check reads `no_head`[^.]*\. No role waits for it or fails a round for it\./,
+    ]),
+    ...lacks("legion-retro/SKILL.md", [
+      /`dispatch results --issue <issue> --at <the head the last step passed>`/,
+      /Send a name that no run answers \(`absent`\), or `no_head`, to the architect as a finding/,
+    ]),
+    ...lacks("legion-worker/SKILL.md", [
+      /Then read each handoff your task's `Step <j> \(<role>\) reported:` lines name/,
+      /Commit nothing in the copy\./,
+    ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /A `ci_check` that reads `absent` or `no_head` moves nothing back either/,
+    ]),
+    ...lacks("legion-architect/references/acceptance.md", [
+      /or its verdict with no pull request or at `reviewer:owner`/,
+    ]),
+    ...lacks("legion-architect/references/own-steps.md", [
+      /The tool sends that record's `head` as the commit you read, so you pass no commit\./,
+      /A merger that enters `merging` while that approval is owed waits for it\./,
+      /While an `owner-step` of that run is still on its way to you, the retry tells you nothing more\./,
+    ]),
+    ...lacks("legion-architect/references/wake-routing.md", [
+      /An `owner-step` goes to the issue's own architect alone, never to one above it\./,
+    ]),
+  ]).toEqual([]);
 });
 
 // A duty moved out of a skill body into a reference must still ship in that reference: these are

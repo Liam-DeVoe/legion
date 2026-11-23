@@ -32,11 +32,12 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 | `planner` | planning | `planning` | No implementation plan and no plan review: the steps work from your task's text and the spec. |
 | `implementer` | implementation | `implementing` | With no other step of the type implementation: no pull request, so no merge; you do the retro; and a failed step that names no earlier one stops the task; with one, the agent of the task's last such step works the retro, and a failed step returns to the first one before it unless it names an earlier step. |
 | `tester` | testing | `testing` | Only the steps that record results against the checks (the implementer's, where the task has one) record them, and nobody runs them again. |
-| `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you; a reviewer of an issue with no pull request ends its step by its verdict. |
+| `reviewer` | review | `reviewing` | No review: on a base whose rules require an approving review, the merger waits and tells you. With it, on an issue with no pull request, the reviewer ends its step by its verdict. |
 | `acceptance:owner` | review | `accepting` | Your step. Without it the last step's pass starts the retro, and nothing waits for your acceptance. |
 | `acceptance` | review | `accepting` | No fresh reading of the whole work: with it, a fresh agent of the role acceptance reads the evidence and ends the step by its own verdict, and you sign nothing off for it. |
 
 Without `acceptance:owner`, a reviewer step, where the task has one, approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
+A `ci_check` that reads `absent` or `no_head` moves nothing back either: the retro sends it to you as a finding.
 So on a task with no reviewer step and no `acceptance:owner` or `acceptance` step, such a check holds the merge only where it is among the checks the base branch requires.
 
 ## What Legion refuses

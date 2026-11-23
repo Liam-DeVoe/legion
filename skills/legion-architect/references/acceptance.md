@@ -10,9 +10,9 @@ Read, against the goal, every check and every requirement:
 
 1. where the task has a tester step before yours, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
 
-2. `dispatch results --issue <issue>`: whether a pass stands for each check at the head the steps before yours passed;
+2. `dispatch results --issue <issue> --at <head>`: whether a pass stands for each check at the head the steps before yours passed;
 
-3. where the task has a reviewer step before yours, its approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), or, with no pull request, its verdict, and each claim of its prose against the code at that head;
+3. where the task has a reviewer step before yours, its approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), or its verdict with no pull request or at `reviewer:owner`, and each claim of its prose against the code at that head;
 
 4. where the issue has a pull request, `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI (*A conflicting head*, below).
 

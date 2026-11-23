@@ -32,7 +32,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 ## Steps
 
-1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request where there is one, and the implementer's handoff where it has an implementer step.
+1. **Read the evidence**: the issue, `dispatch results --issue <issue> --at <the head the last step passed>`, the pull request where there is one, and the implementer's handoff where it has an implementer step.
    Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step, and the review at the version your task's `Handoff:` line names (`--phase review --version <n>`) where it has a reviewer step.
    A pass must stand at the head the last step passed for every `before_merge` check, and, with a pull request, the body's `Checks` block carries each.
 
@@ -42,7 +42,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
      never wait for, watch or poll it.
      Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on;
      when CI settles, the daemon tells the architect and any worker of the phase the issue then stands in.
-     Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
+     Send a name that no run answers (`absent`), or `no_head`, to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
      Neither that run nor that finding moves the issue back.
 
    - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite:

@@ -537,8 +537,8 @@ export function createLegionTool(deps: {
         "steps its task runs, in any order and with no role required: Legion's roles planner, implementer, tester, reviewer and acceptance, " +
         "and the roles of the deployment and of the plan, each with an optional key after a colon that names its agent (`implementer:owner` " +
         "is a step you do yourself, and `acceptance` with no key is a fresh agent of the role acceptance); a task that names none runs the " +
-        "project's default steps. Legion adds the retro, done by the agent of the task's last step of the type implementation or by you " +
-        "where it has none, and the merge where the issue has a pull request. Give it before the issue's " +
+        "project's default steps. Legion adds the retro, and the merge where the issue has a pull request. The agent of the task's last " +
+        "step of the type implementation does the retro, or you where it has none or that step is yours. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
         "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
@@ -560,18 +560,19 @@ export function createLegionTool(deps: {
         "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
         "applied it: read the issue again (TASK_STALE_GENERATION). " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to the task's next step, or to its retro where the " +
-        "acceptance is the task's last step. The daemon refuses, changing nothing, a " +
+        "acceptance is the task's last step. It is an architect's operation: this tool refuses it in a phase worker's session, the fresh " +
+        "agent of acceptance's among them. The daemon refuses, changing nothing, a " +
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
-        "its evidence again), one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING) and one of an acceptance whose agent is not you, " +
-        "such as a step acceptance with no key, whose fresh agent ends it with its own verdict (SIGNOFF_NOT_THE_OWNERS); it also " +
+        "its evidence again), one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING) and one of an acceptance step that is not yours, " +
+        "such as a step acceptance with no key, whose agent ends it with its own verdict (SIGNOFF_NOT_THE_OWNERS); it also " +
         "refuses it while an issue beneath it is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's " +
         "head proves its children's merged work: run each one to done, and sign off again. " +
         "complete_step (issue, step, summary, and the verdict, return_to, plan_rating and plan_reason that step's completion would carry) " +
         "is your report of a step of your own issue's task whose key is owner, or of the task's retro where the retro is yours, once " +
-        "Legion's owner-step notice gave it to you: step is its place in the task, 1 for the first step, 0 for the retro. It carries what " +
-        "handoff_complete carries for that step's role: the verdict pass or fail of a step that reports one, return_to with a fail, and " +
-        "the rating of the plan on the retro; it reads the handoff record of a planning, implementing, testing or reviewing step, which " +
+        "Legion's owner-step notice gave it to you: step is its place in the task, 1 for the first step, 0 for the retro. It carries " +
+        "the verdict pass or fail of a step that reports one, a review step of yours among them on an issue with a pull request too, " +
+        "return_to with a fail, and the rating of the plan on the retro; it reads the handoff record of a planning, implementing, testing or reviewing step, which " +
         "you write first with dispatch handoff-write, and the commit, as handoff_complete reads them. Your acceptance step's pass is " +
         "your sign-off, and its fail sends the task back, to return_to or to the first implementation step before it; a fail that " +
         "names no return_to where no implementation step stands before it stops the task, and Legion tells you (task-stopped). The daemon " +

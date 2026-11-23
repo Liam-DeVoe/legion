@@ -12,7 +12,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 1. Read the issue, then its `open-items.md` where one exists (`dispatch doc-read --issue <issue> --artifact open-items-md`):
    the architect records decisions there that it does not message.
-   Then read each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`).
+   Then read each handoff your task's `Step <j> (<role>) reported:` lines name, as those lines say.
    A record beats your memory.
 
 2. Before the turn's first `jj new`, list `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only` and `jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only`.
@@ -25,6 +25,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 5. Every role writes the one workspace, so a file can change under your check.
    Run checks from a copy of the head (`git archive`, or a clone under `$TMPDIR`) unless the check needs the workspace itself, and run `git diff --quiet <head> -- <files the check reads>` before you record a result.
+   Commit nothing in the copy.
    A script that fails in the workspace is a finding only when it fails again with `sha256sum <script>` unchanged just before and after.
    A run whose output you did not capture can be neither confirmed nor cleared.
 

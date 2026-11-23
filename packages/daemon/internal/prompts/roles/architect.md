@@ -141,11 +141,11 @@ claim has failed, it is told that step again when it runs again
 Where this child's task holds your step `acceptance:owner`, the pass of the step before it, or the
 start of the task where the acceptance is its first step, moves the child to `accepting`, where no
 worker runs and the acceptance is yours (`skill://legion-architect`, section 6), and Legion tells you
-with an `owner-step` notice: read `dispatch results --issue <issue>` at the head the step before
-yours passed, or at the work's current head where your acceptance is the task's first step, the
-tester's handoff where a tester step stands before yours, and, where a reviewer
+with an `owner-step` notice: read `dispatch results --issue <issue> --at <head>` at the head the
+step before yours passed, or at the work's current head where your acceptance is the task's first
+step, the tester's handoff where a tester step stands before yours, and, where a reviewer
 step stands before yours, the reviewer's approval of the head by SHA, or its verdict where the issue
-has no pull request
+has no pull request or that step was your own
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4). A task with no step `acceptance` has no
@@ -166,12 +166,13 @@ acceptance is its last step, or send it back with `request_backward_move` (`issu
 an earlier step of the task runs as, such as `implementing`, and `reason`).
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
-`dispatch results --issue <issue>` shows. A result one of its children recorded against one of
+`dispatch results --issue <issue> --at <head>` shows. A result one of its children recorded against one of
 its checks proves nothing for it, and a child that carries part of its requirement proves that
 part with a check on the child's own Verification document whose `serves` names the requirement.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
-that a tester step and a reviewer step name and neither refuses, so your acceptance is the only
-gate on it: give such an issue the step `acceptance:owner`, and
+that a tester step and a reviewer step name and neither refuses. Where its task holds your step
+`acceptance:owner`, your acceptance is the only gate on it. A task with no acceptance step
+has no gate on it at all. So give such an issue the step `acceptance:owner`, and
 name that gap in your acceptance comment and decide there how each delivered item is proven at
 this head; none may stay unmet, since a requirement is in the approved spec or it is not one:
 write the request into this child's spec, and have the architect above you review that version as
