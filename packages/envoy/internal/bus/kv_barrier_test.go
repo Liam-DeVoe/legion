@@ -85,13 +85,21 @@ func TestEveryKeyValueCallRefusesTheBarrierKey(t *testing.T) {
 		"Update":      second(kv.Update(BarrierKey, []byte("1"), 1)),
 		"Delete":      kv.Delete(BarrierKey),
 		"DeleteAtRead": func() error {
-			_, err := kv.DeleteAtRead(BarrierKey)
+			_, err := kv.DeleteAtRead(context.Background(), BarrierKey, nil)
+			return err
+		}(),
+		"DeleteAt": func() error {
+			_, err := kv.DeleteAt(context.Background(), BarrierKey, 1)
 			return err
 		}(),
 		"Purge":             kv.Purge(BarrierKey),
 		"WatchKeys":         second(kv.WatchKeys(context.Background(), BarrierKey)),
 		"WatchFilteredKeys": second(kv.WatchFilteredKeys(context.Background(), []string{"other", BarrierKey})),
 		"GetFromLeader":     second(kv.GetFromLeader(context.Background(), BarrierKey)),
+		"NewestFromLeader":  second(kv.NewestFromLeader(context.Background(), BarrierKey)),
+		"ReadFromLeader":    second(kv.ReadFromLeader(context.Background(), BarrierKey)),
+		"ReadStored":        second(kv.ReadStored(context.Background(), BarrierKey, nil)),
+		"RefusesWrite":      kv.RefusesWrite(BarrierKey),
 		"ReadHistory":       second(kv.ReadHistory(context.Background(), BarrierKey)),
 	}
 	for call, err := range refusals {

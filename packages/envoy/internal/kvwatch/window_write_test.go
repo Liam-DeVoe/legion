@@ -440,7 +440,7 @@ func TestACompleteReadReclaimsTheFencesOfDeletesOfAbsentKeys(t *testing.T) {
 	eventually(t, "the first read's completion", func() bool { return len(into.completions()) == 1 })
 
 	for _, key := range absent {
-		revision, err := kv.DeleteAtRead(key)
+		revision, err := kv.DeleteAtRead(context.Background(), key, nil)
 		if err != nil || revision != 0 {
 			t.Fatalf("delete absent %s: revision %d, %v; want 0 and no error", key, revision, err)
 		}
