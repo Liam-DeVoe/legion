@@ -1,3 +1,4 @@
+import { outage } from "@legion/contracts/http-status";
 import {
   type LegionActivityRequest,
   LegionChildRequest,
@@ -304,9 +305,11 @@ function isNetworkOrTimeoutError(error: unknown): boolean {
   );
 }
 
-/** Runs a ready request, retrying only one that can pass on its own: a 5xx or a network failure.
- * Each Legion host's claim (pi-legion's claim session, claude-envoy's Legion claim) sends its
- * `claims/ready` through it, at boot and after each role regain. */
+/** Runs a ready request, retrying only one that can pass on its own: an outage (`outage`: a 5xx, a
+ * 408 or a 429) or a network failure. The daemon answers no 408 and no 429 itself, so either is a
+ * proxy between the session and the daemon. Each Legion host's claim (pi-legion's claim session,
+ * claude-envoy's Legion claim) sends its `claims/ready` through it, at boot and after each role
+ * regain. */
 export async function callReadyWithRetry(label: string, call: () => Promise<void>): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -315,7 +318,7 @@ export async function callReadyWithRetry(label: string, call: () => Promise<void
     } catch (error) {
       const retryable =
         error instanceof LegionDaemonApiError
-          ? error.status >= 500 && error.status < 600
+          ? outage(error.status)
           : isNetworkOrTimeoutError(error);
       if (!retryable) throw error;
       if (attempt === READY_RETRY_ATTEMPTS) {
