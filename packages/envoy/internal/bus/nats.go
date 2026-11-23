@@ -2700,7 +2700,7 @@ func (c *Client) PublishCoreContext(ctx context.Context, subject string, item co
 		return err
 	}
 	conn := c.Conn
-	return c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: data}, conn.PublishMsg)
+	return c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: data}, conn.PublishMsg, false)
 }
 
 // ForwardMsgID is the Nats-Msg-Id of an envelope whose dedupe key is dedupeKey
@@ -2792,7 +2792,7 @@ func (c *Client) StartRequestStoredTo(ctx context.Context, subject string, item 
 		Data:    data,
 		Header:  nats.Header{nats.MsgIdHdr: []string{msgID}},
 	}
-	err = c.publishConfirmed(window, conn, forward, conn.PublishMsg)
+	err = c.publishConfirmed(window, conn, forward, conn.PublishMsg, true)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		cancel()
 		_ = replies.Unsubscribe()
@@ -2834,15 +2834,18 @@ type PendingForward struct {
 // is stored is acknowledged as its duplicate (cmd/listener's publishPastInProcess). The duplicate
 // that names no sequence wraps ErrDuplicateWithoutSequence, which says the stream answered and no
 // later reply comes, so a caller that answers for the forward can say so at once rather than wait
-// out its window. Any other reply is not the stream's acknowledgement and is passed over.
+// out its window. Any other reply is not the stream's acknowledgement and is passed over. A reply
+// that arrived before the window ended or the caller's context was cancelled is read before that
+// end is answered (next), so the stream's acknowledgement settles the forward whichever came first
+// to the wait.
 func (f *PendingForward) Wait() (StoredAck, error) {
 	defer f.cancel()
 	defer f.replies.Unsubscribe()
 	for {
-		response, err := f.replies.NextMsgWithContext(f.window)
-		if err != nil && f.stopped.Err() != nil {
-			// The caller's context ended: the forward ends now, whatever its window has left. A
-			// reply that came before is read first, above, since it settles the forward.
+		response, err := f.next()
+		if err != nil && f.stopped.Err() != nil && errors.Is(err, f.window.Err()) {
+			// The caller's context ended, and no reply is left to read: the forward ends now,
+			// whatever its window has left.
 			if f.unconfirmed != nil {
 				return StoredAck{}, fmt.Errorf("%w: %w: %w", ErrForwardNotStored, f.stopped.Err(), f.unconfirmed)
 			}
@@ -2881,6 +2884,25 @@ func (f *PendingForward) Wait() (StoredAck, error) {
 		return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, f.unconfirmed)
 	}
 	return StoredAck{}, ErrForwardNotStored
+}
+
+// next is the forward's next reply: one already delivered at once, else the first that arrives
+// before its window ends or its caller's context is cancelled. nats.go answers a context that has
+// ended before it reads a reply already delivered, and picks either when both are ready
+// (Subscription.NextMsgWithContext), so once the window has ended next reads the replies that came
+// before without waiting, and answers the window's error only when none is left.
+func (f *PendingForward) next() (*nats.Msg, error) {
+	if f.window.Err() == nil {
+		response, err := f.replies.NextMsgWithContext(f.window)
+		if err == nil || f.window.Err() == nil {
+			return response, err
+		}
+	}
+	response, err := f.replies.NextMsg(0)
+	if errors.Is(err, nats.ErrTimeout) {
+		return nil, f.window.Err()
+	}
+	return response, err
 }
 
 // ErrDuplicateWithoutSequence is wrapped by a forward's Wait when the stream answered it as a

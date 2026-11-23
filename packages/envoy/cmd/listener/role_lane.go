@@ -556,7 +556,10 @@ func roleForwardEnded(ctx context.Context, client *bus.Client, subject string, e
 // slot if it holds none (roleHeld.slot) and keeps it until its delivery ends, so
 // envoy_role_forwards_outstanding counts it while it waits. It publishes no delivery exception,
 // since the message is not given up, and logs roleHeldLine, naming holder when one was resolved:
-// at ERROR on the message's first hold and at DEBUG on every later one. After a wait that starts
+// at ERROR on the message's first hold and at DEBUG on every later one. A cause whose window ended
+// before its publish was made (bus.ErrWindowEndedBeforePublish) says so on the line,
+// "window_ended_before_publish":true: nothing was sent, and the window runs on this process's own
+// wall clock, which a loaded machine spends without the listener running. After a wait that starts
 // at roleHoldFirst and doubles to roleHoldMax, the delivery runs again (deliverRoleMessage). A
 // message no forward of which has been made resolves its holder again, so a holder that changed
 // gets it and a role that lost its holder keeps it on its kept lane. A message a forward of which
@@ -595,10 +598,15 @@ func (f *roleForwarder) hold(item contracts.Envelope, holder string, held roleHe
 	if held.attempts == 1 {
 		level = slog.LevelError
 	}
-	f.cfg.logger.DeliveryLog(level, roleHeldLine, holder, item.Topic, item.EventID, roleHeldDeliveryStatus,
+	attrs := []slog.Attr{
 		slog.Int("attempt", held.attempts),
 		slog.Duration("next_attempt_in", delay),
-		slog.String("error", cause.Error()))
+		slog.String("error", cause.Error()),
+	}
+	if errors.Is(cause, bus.ErrWindowEndedBeforePublish) {
+		attrs = append(attrs, slog.Bool("window_ended_before_publish", true))
+	}
+	f.cfg.logger.DeliveryLog(level, roleHeldLine, holder, item.Topic, item.EventID, roleHeldDeliveryStatus, attrs...)
 	go func() {
 		timer := time.NewTimer(delay)
 		defer timer.Stop()

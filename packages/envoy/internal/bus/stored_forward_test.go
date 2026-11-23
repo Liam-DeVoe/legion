@@ -199,9 +199,11 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 	}
 	// The publish was made and buffered; only its flush ran out of the window, so the error is not
 	// marked ErrNotSent, which tells the listener the forward never left this process: the server
-	// may have stored it, and the listener sends it again to the same holder.
-	if errors.Is(err, bus.ErrNotSent) {
-		t.Fatalf("StartRequestStoredTo error = %v, which is ErrNotSent, but the publish was made and only its flush timed out", err)
+	// may have stored it, and the listener sends it again to the same holder. Nor is it the one for
+	// a window that ended before the publish (bus.ErrWindowEndedBeforePublish), which the listener
+	// marks on the line of the message it holds.
+	if errors.Is(err, bus.ErrNotSent) || errors.Is(err, bus.ErrWindowEndedBeforePublish) {
+		t.Fatalf("StartRequestStoredTo error = %v, which is ErrNotSent or ErrWindowEndedBeforePublish, but the publish was made and only its flush timed out", err)
 	}
 	if elapsed < window || elapsed > 2*time.Second {
 		t.Fatalf("StartRequestStoredTo returned after %s; the flush must be bounded by the %s window, not the client's 10s default", elapsed, window)

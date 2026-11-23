@@ -107,6 +107,80 @@ func TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt(t *testing.T) 
 	}
 }
 
+// A forward whose wait ends with no acknowledgement before the stop has finish read the deployed
+// stream, for its own window, to learn whether the stream captures the subject (roleForwardEnded).
+// A stop that comes while that read is in flight cuts it: the message, pinned to its holder since
+// the forward may be stored, parks at once with all of the stop's share for its end, and is
+// forwarded once more to that holder before the drain's wait ends. The read goes through a proxy
+// whose server replies are frozen, so only a cancel ends it before its window; the row stops the
+// listener once the server has the read's request, which a subscriber of the stream's info
+// subject on the server's side sees under the reply prefix of the connection through the proxy. A
+// read deaf to the stop runs its whole window, as long as the stop's own wait, so its message
+// parks too late for a forward once more and is kept or not, but not forwarded.
+func TestAStopDuringTheDeployedStreamReadEndsTheReadAtTheStop(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role = "stop-during-the-stream-read"
+	claimFor(t, harness, role, "ses_stop_during_read")
+	proxy := testnats.StartProxy(t, harness.client.Conn.ConnectedUrl())
+	// No periodic read of the stream's subjects runs on this connection while the row does, so
+	// the one request the row waits for is finish's.
+	slow, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithStreamSubjectsRefresh(time.Hour))
+	if err != nil {
+		t.Fatalf("connect through the proxy: %v", err)
+	}
+	t.Cleanup(slow.Close)
+	inbox := slow.Conn.NewRespInbox()
+	replyPrefix := inbox[:strings.LastIndexByte(inbox, '.')+1]
+	reading := make(chan struct{})
+	var readOnce sync.Once
+	monitor, err := harness.client.Conn.Subscribe("$JS.API.STREAM.INFO."+bus.Stream, func(request *natsgo.Msg) {
+		if strings.HasPrefix(request.Reply, replyPrefix) {
+			readOnce.Do(func() { close(reading) })
+		}
+	})
+	if err != nil {
+		t.Fatalf("subscribe to the stream's info requests: %v", err)
+	}
+	t.Cleanup(func() { _ = monitor.Unsubscribe() })
+	if err := harness.client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the info subscription: %v", err)
+	}
+	var forwards atomic.Int32
+	cfg := harness.config
+	cfg.client = slow
+	cfg.keepPublish = keepThatNeverAnswers
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() (bus.StoredAck, error), error) {
+		if forwards.Add(1) > 1 {
+			return func() (bus.StoredAck, error) { return bus.StoredAck{}, nil }, nil
+		}
+		return func() (bus.StoredAck, error) {
+			proxy.FreezeServerReplies()
+			return bus.StoredAck{}, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, natsgo.ErrTimeout)
+		}, nil
+	}
+	cfg = wireTestRoleForwarder(t, cfg)
+	forwarder := cfg.roleForwards
+	item, msg := laneMessage(t, role, "stop-during-the-stream-read")
+
+	coreNATSDeliveryHandler(cfg)(msg)
+	testwait.Receive(t, "finish's read of the deployed stream to reach the server", reading)
+	forwarder.stopHolding()
+	waitEnds := forwarder.keepHeldNow()
+	forwarder.settled(t)
+	ended := time.Now()
+
+	logs := harness.logs.String()
+	if got := countLogged(logs, "listener role forward failed", item.EventID); got != 0 {
+		t.Fatalf("the message was given up as a failed forward %d times, want it held:\n%s", got, logs)
+	}
+	if got := countLogged(logs, "listener role forwarded", item.EventID); got != 1 || endsOf(logs, item.EventID) != 0 {
+		t.Fatalf("the message was forwarded once more %d times and kept or not %d times, want forwarded once: the read the stop should cut ran on past the stop's share:\n%s", got, endsOf(logs, item.EventID), logs)
+	}
+	if ended.After(waitEnds) {
+		t.Fatalf("the message ended %s after the drain's wait ended, want before it:\n%s", ended.Sub(waitEnds), logs)
+	}
+}
+
 // claimReadThatStopsAnswering is a claim store (roles.ClaimStore) that answers from claims until
 // stopAnswering is set, and from then on signals entered as a read starts and answers nothing:
 // the read waits for its context to end, as a read over a connection whose replies are lost does.

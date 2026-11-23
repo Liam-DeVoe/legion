@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // denyThenDrop serves a NATS client: it answers the handshake, then answers the first publish's
@@ -261,7 +262,7 @@ func TestPublishConfirmedReadsTheStateBeforeThePublish(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered)
+	err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, answered, false)
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a publish the server denied while it ran returned %v, want ErrPublishDenied", err)
 	}
@@ -337,5 +338,43 @@ func TestAForwardsWaitReturnsTheStreamsVerdict(t *testing.T) {
 	got, _, err = forward(t, `{"stream":"","seq":7,"duplicate":true}`+"\n"+`{"seq":0,"duplicate":true}`+"\n"+`{"stream":"ENVOY_NOTIFICATIONS","seq":7,"duplicate":true}`)
 	if err != nil || got != (StoredAck{Sequence: 7, Duplicate: true}) {
 		t.Fatalf("a duplicate forward's wait behind a reply that names no stream = %+v (%v), want the stream's sequence 7 and Duplicate", got, err)
+	}
+}
+
+// The stream's acknowledgement settles a forward whose wait begins after its caller's context was
+// cancelled, when the acknowledgement was delivered before: nats.go answers a context that has
+// ended before it reads a reply already delivered (Subscription.NextMsgWithContext), and a wait
+// that read only that answer would call a stored forward not stored, which the role lane's stop
+// then holds and parks. The row waits until the acknowledgement is delivered to the forward's
+// reply subscription, a count nats.go keeps (Subscription.Pending), then cancels, then waits. The
+// control is a forward no acknowledgement answers, whose wait after the same cancel is
+// ErrForwardNotStored wrapping the cancel.
+func TestAForwardsAcknowledgementDeliveredBeforeItsCancelSettlesIt(t *testing.T) {
+	start := func(t *testing.T, ack string) (*PendingForward, context.CancelFunc) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		client := &Client{Conn: answeringServer(t, "", ack)}
+		pending, err := client.StartRequestStoredTo(ctx, "notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 30*time.Second)
+		if err != nil {
+			t.Fatalf("the forward was refused outright: %v", err)
+		}
+		return pending, cancel
+	}
+
+	acknowledged, cancel := start(t, storedAck)
+	testwait.Eventually(t, "the stream's acknowledgement to reach the forward's reply subscription", func() bool {
+		delivered, _, err := acknowledged.replies.Pending()
+		return err == nil && delivered > 0
+	})
+	cancel()
+	if got, err := acknowledged.Wait(); err != nil || got != (StoredAck{Sequence: 1}) {
+		t.Fatalf("a forward whose acknowledgement was delivered before its caller's cancel = %+v (%v), want the stream's sequence 1", got, err)
+	}
+
+	unanswered, cancel := start(t, "")
+	cancel()
+	if got, err := unanswered.Wait(); !errors.Is(err, ErrForwardNotStored) || !errors.Is(err, context.Canceled) || got != (StoredAck{}) {
+		t.Fatalf("a forward no acknowledgement answered, after its caller's cancel = %+v (%v), want ErrForwardNotStored wrapping context.Canceled", got, err)
 	}
 }

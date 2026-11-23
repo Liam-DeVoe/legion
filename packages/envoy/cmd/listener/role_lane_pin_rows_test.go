@@ -126,6 +126,37 @@ func TestAForwardThatLeftNothingOnTheWireReachesTheNewHolderWhenTheFirstIsGone(t
 	}
 }
 
+// The hold of a forward whose window was spent before its publish says so on its line, at ERROR
+// on the message's first hold: "window_ended_before_publish":true, since nothing was sent and the
+// window runs on the listener's own clock, which a loaded machine spends without the listener
+// running (TestListenerSIGTERMIsAnOrderedShutdown leaves that line uncounted by the mark). The
+// control is the hold of a forward whose acknowledgement was lost: it was published, so its line
+// carries no mark.
+func TestTheHoldOfAForwardWhoseWindowEndedBeforeItsPublishSaysSo(t *testing.T) {
+	held := func(t *testing.T, r pinRig, item contracts.Envelope) map[string]any {
+		t.Helper()
+		lines := linesIn(r.harness.logs.String(), roleHeldLine, map[string]any{"event_id": item.EventID})
+		if len(lines) != 1 || lines[0]["level"] != "ERROR" {
+			t.Fatalf("held lines %v, want one at ERROR:\n%s", lines, r.harness.logs.String())
+		}
+		return lines[0]
+	}
+
+	notSent := newPinRig(t, "pin-window-mark", "ses_pin_window_mark")
+	var notSentForwards atomic.Int32
+	item := notSent.deliver(t, "pin-window-mark", forwardNotSentFirst(notSent.harness.client, &notSentForwards, func() {}))
+	if line := held(t, notSent, item); line["window_ended_before_publish"] != true {
+		t.Fatalf("the hold of a forward whose window ended before its publish = %v, want \"window_ended_before_publish\":true", line)
+	}
+
+	published := newPinRig(t, "pin-window-unmarked", "ses_pin_window_unmarked")
+	var publishedForwards atomic.Int32
+	item = published.deliver(t, "pin-window-unmarked", forwardLosingTheFirstAcknowledgement(published.harness.client, &publishedForwards, func() {}))
+	if line := held(t, published, item); line["window_ended_before_publish"] != nil {
+		t.Fatalf("the hold of a published forward whose acknowledgement was lost = %v, want no window mark", line)
+	}
+}
+
 // A forward the stream stored while its acknowledgement was lost may have been stored, so the
 // message is pinned to that holder; but the holder's session record is deleted and a second
 // session claims the role before the next attempt. A session with no record has no consumer, so

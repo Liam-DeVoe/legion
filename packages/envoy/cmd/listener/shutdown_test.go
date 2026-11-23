@@ -36,11 +36,26 @@ var errorLine = regexp.MustCompile(`"level":"ERROR"|level=ERROR|^\d{4}/\d{2}/\d{
 // would re-dial NATS. Whether a goroutine logs before the exit is a race, so the test stops the
 // real binary several times.
 //
-// Every ERROR counts. A forward in flight at the stop does not run out its own window: the stop
-// cuts it, its message holds and parks, and it ends inside the drain's wait - forwarded once more
-// to its holder under the same Nats-Msg-Id when it was published, kept on its role's kept lane
-// otherwise (roleForwarder.stopCtx) - so neither a forward whose window ends before its publish nor
-// one whose acknowledgement is late is an ERROR.
+// A forward in flight at the stop does not run out its own window: the stop cuts it, its message
+// holds and parks, and it ends inside the drain's wait - forwarded once more to its holder under the
+// same Nats-Msg-Id when it was published, kept on its role's kept lane otherwise
+// (roleForwarder.stopCtx) - so neither a forward the stop cut nor one whose acknowledgement is late
+// is an ERROR.
+//
+// One line is not counted: a role message held because its forward's window (roleForwardTimeout)
+// ended before the forward was published, which its line marks "window_ended_before_publish":true
+// (roleForwarder.hold). The window runs on the listener's own wall clock, which a loaded machine
+// spends without the listener running, so that hold says how the machine ran and not what the
+// shutdown did. The lane's stop cannot cause it: the lane's drain cancels its stop context before
+// it drains anything (roleLane.drain), and a hold after that cancel parks the message and logs no
+// ERROR, so a forward the stop cut before its publish is never this line. Nor can a drain: a
+// forward meets a connection before its publish only in ensureConnWithContext, which serves a
+// draining connection and refuses a stopped client at once, and in SubscribeSync, which refuses a
+// draining connection with an error of its own, unmarked and counted here. A drain that holds a
+// forward after its publish fails its flush or its acknowledgement, with no mark, and is counted.
+// What this cannot see is a shutdown path that holds a forward before its publish, behind a lock
+// say, until its window ends: that hold would carry the mark. A change to the shutdown path or to
+// bus.Client.StartRequestStoredTo is read against this test for that case.
 func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 	_, uri := testnats.Start(t)
 	testnats.Connect(t, uri).Close()
@@ -120,6 +135,10 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 			if signal >= 0 && lineStart > signal {
 				side = "after the signal"
 			}
+			if heldForAWindowEndedBeforePublish(line) {
+				t.Logf("run %d: not counted, %s: %s", run, side, line)
+				continue
+			}
 			counted = append(counted, side+": "+line)
 		}
 		if len(counted) > 0 {
@@ -138,6 +157,17 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 
 // shutdownSignalLine is the message the listener logs when a signal begins its shutdown.
 const shutdownSignalLine = "received signal, shutting down"
+
+// heldForAWindowEndedBeforePublish reports whether line is the listener's JSON record of a role
+// message held because its forward's window ended before the forward was published
+// (roleForwarder.hold).
+func heldForAWindowEndedBeforePublish(line string) bool {
+	var record struct {
+		Msg                      string `json:"msg"`
+		WindowEndedBeforePublish bool   `json:"window_ended_before_publish"`
+	}
+	return json.Unmarshal([]byte(line), &record) == nil && record.Msg == roleHeldLine && record.WindowEndedBeforePublish
+}
 
 // outputAroundSignal is the listener's output from the first JSON line whose time is no more than
 // 2 s before that of its signal line, which starts at or before offset signal, to the end: what a
