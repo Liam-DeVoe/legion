@@ -1,6 +1,9 @@
 package leakguard
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // objectLinks is what one object's header says beside its records: the object a tag points to,
 // which can be a tag the push sends too, and whether a commit names an encoding other than UTF-8,
@@ -221,14 +224,16 @@ var signatureStarts = []string{
 }
 
 // unsigned is text without the bytes of its signature. The signature is what git reads as one:
-// from the last line that starts one (signatureStarts) to the end of text. From that line to the
-// first line after it that starts "-----END ", that first line, the END line and each line of
-// base64 alone, a blank one included, are left out; any other line there (an armour header such
-// as "Comment: …", or text a hand-made object put there) is kept and read. Every line after that
-// END line is read whole, whatever its characters, a second END line among them: git counts it in
-// the signature, but `git show` prints it, and no signature's base64 stands after its end.
-// Everything before the signature is read too, an earlier block of the same shape included. Text
-// with no signature comes back as it was, uncopied.
+// from the last line that starts one (signatureStarts) to the end of text. Between that line and
+// the first line after it that starts "-----END ", only three kinds of line are left out: the
+// start line where it is exactly one of signatureStarts, the END line where it is exactly the one
+// that pairs with that start (its text with BEGIN for END), and the lines of base64 alone, a blank
+// one included. Every other line is kept and read: a start or END line with anything else on it,
+// an armour header such as "Comment: …", or text a hand-made object put there. Every line after
+// that first END line is read whole, whatever its characters, a second END line among them: git
+// counts it in the signature, but `git show` prints it, and no signature's base64 stands after its
+// end. Everything before the signature is read too, an earlier block of the same shape included.
+// Text with no signature comes back as it was, uncopied.
 func unsigned(text string) string {
 	start := -1
 	for at := 0; at < len(text); {
@@ -252,10 +257,16 @@ func unsigned(text string) string {
 			break
 		}
 	}
+	// The armour's own END line, where its start line is one of signatureStarts exactly.
+	pairedEnd := ""
+	if slices.Contains(signatureStarts, lines[0]) {
+		pairedEnd = strings.Replace(lines[0], "-----BEGIN ", "-----END ", 1)
+	}
 	var kept strings.Builder
 	kept.WriteString(text[:start])
 	for k, line := range lines {
-		if k <= end && (startsSignature(line) || strings.HasPrefix(line, "-----END ") || base64Line(line)) {
+		armour := (k == 0 && pairedEnd != "") || (k == end && pairedEnd != "" && line == pairedEnd)
+		if k <= end && (armour || (k != 0 && k != end && base64Line(line))) {
 			continue
 		}
 		if k == len(lines)-1 && line == "" {

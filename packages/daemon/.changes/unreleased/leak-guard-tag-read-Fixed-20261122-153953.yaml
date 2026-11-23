@@ -13,9 +13,12 @@ body: |-
   and a field of git's own names out of git's place, such as a second committer or a parent after
   the committer, is read whole as text. A commit stored in another encoding than UTF-8 is read as
   git shows it too, whichever encoding field comes first. A signature's base64 is not read, in a
-  commit or at the end of a tag's message, since it can hold a short name by chance: only the
-  base64 lines up to the signature's first `-----END` line are skipped; every line after it is
-  read, and so are a line of the signature that is not base64 and an armoured block before it.
+  commit or at the end of a tag's message, since it can hold a short name by chance. Only three
+  kinds of line are skipped: the signature's start line where it is exactly one git writes, the
+  lines of base64 alone up to the signature's first `-----END` line, and that line where it is
+  exactly the one that pairs with the start. Everything else is read: a start or END line with
+  anything else on it, any other line of the signature, every line after its first END line, and
+  an armoured block before it.
 
   Any text the rules read that is not UTF-8, such as a commit in an encoding git cannot convert or
   a line of a Windows-1252 file, is read a second time as Windows-1252, so a name joined by a

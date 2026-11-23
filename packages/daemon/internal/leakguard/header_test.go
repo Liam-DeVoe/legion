@@ -198,6 +198,30 @@ func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 			},
 		},
 		{
+			name: "the signature's END line with text after it names a host",
+			build: func(t *testing.T) (Update, []string) {
+				sha := madeTag(t, "end-text", "a message of no interest\n-----BEGIN PGP SIGNATURE-----\n\nRk9vYmFy\n-----END moved the run to "+theHost+"\n")
+				return newRef("refs/tags/end-text", sha), []string{"tag " + short(sha) + " message: " + theClass}
+			},
+		},
+		{
+			name: "the signature's start line with text after it names a host",
+			build: func(t *testing.T) (Update, []string) {
+				sha := madeTag(t, "begin-text", "a message of no interest\n-----BEGIN PGP SIGNATURE----- moved the run to "+theHost+"\n\nRk9vYmFy\n-----END PGP SIGNATURE-----\n")
+				return newRef("refs/tags/begin-text", sha), []string{"tag " + short(sha) + " message: " + theClass}
+			},
+		},
+		{
+			// A capitalised name is all an END line's own shape allows, so only the END line that
+			// pairs with the signature's start is skipped. Built out of two pieces for the reason
+			// theHost is.
+			name: "the signature's END line names the company in capitals",
+			build: func(t *testing.T) (Update, []string) {
+				sha := madeTag(t, "end-caps", "a message of no interest\n-----BEGIN PGP SIGNATURE-----\n\nRk9vYmFy\n-----END TRAJEC"+"TORY-----\n")
+				return newRef("refs/tags/end-caps", sha), []string{"tag " + short(sha) + " message: names the company"}
+			},
+		},
+		{
 			// The destination holds the tag at that ref already, so the push moves nothing.
 			name: "a tag the destination holds at that ref",
 			build: func(t *testing.T) (Update, []string) {
@@ -354,6 +378,20 @@ func TestACommitsWholeHeaderIsRead(t *testing.T) {
 			name: "a commit's signature bytes that read as a name",
 			build: func(t *testing.T) (Update, []string) {
 				return onMain(made(t, "gpgsig "+continued(signature(namedBase64)))), nil
+			},
+		},
+		{
+			name: "a commit's gpgsig END line with text after it names a host",
+			build: func(t *testing.T) (Update, []string) {
+				head := made(t, "gpgsig "+continued("-----BEGIN PGP SIGNATURE-----\n\nRk9vYmFy\n-----END moved the run to "+theHost+"\n"))
+				return refused(head, "header", theClass)
+			},
+		},
+		{
+			name: "a commit's gpgsig start line with text after it names a host",
+			build: func(t *testing.T) (Update, []string) {
+				head := made(t, "gpgsig "+continued("-----BEGIN PGP SIGNATURE----- moved the run to "+theHost+"\n\nRk9vYmFy\n-----END PGP SIGNATURE-----\n"))
+				return refused(head, "header", theClass)
 			},
 		},
 		{
