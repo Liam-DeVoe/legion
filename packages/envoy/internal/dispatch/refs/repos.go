@@ -189,12 +189,20 @@ func (r Renames) URLSpellings(url string) []string {
 // rewrite of a URL that names neither name of a pair is url again, which changes nothing about
 // a comparison with the array. The spellings are in lower case for a comparison
 // `lower(column) = any(…)`, which an index on lower(column) serves, as
-// issue_external_links_url_lower serves delivery's attributionCandidates.
+// issue_external_links_url_lower serves delivery's attribution statement (attributedTerms).
 func URLSpellingsSQL(renames Renames, url string) string {
+	return URLSpellingsFoldedSQL(renames, url, func(spelling string) string { return `lower(` + spelling + `)` })
+}
+
+// URLSpellingsFoldedSQL is URLSpellingsSQL with each spelling folded by fold, which gives the SQL
+// expression of one spelling folded, in place of lower(): delivery's attribution statement
+// compares a link with a cited URL in the fold its reading gives a cited URL, ASCII lower case
+// under the collation "C", which lower() under the database's collation is not.
+func URLSpellingsFoldedSQL(renames Renames, url string, fold func(spelling string) string) string {
 	var b strings.Builder
-	b.WriteString(`array[lower(` + url + `)`)
+	b.WriteString(`array[` + fold(url))
 	for _, pair := range renames.pairs {
-		b.WriteString(`, lower(` + pair.toNew.RewriteSQL(url) + `), lower(` + pair.toOld.RewriteSQL(url) + `)`)
+		b.WriteString(`, ` + fold(pair.toNew.RewriteSQL(url)) + `, ` + fold(pair.toOld.RewriteSQL(url)))
 	}
 	b.WriteString(`]`)
 	return b.String()

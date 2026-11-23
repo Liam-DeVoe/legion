@@ -382,11 +382,13 @@ func (readers linkReaders) disagreements() []string {
 // under the database's collation on the link alone by issue and on both sides by key, give
 // pairs that differ between the two readers in each database whose lower() folds İ. A cited list
 // folded with lower() under the database's collation gives #23 two answers, one in C and another
-// in en_US.utf8.
+// in en_US.utf8. The statements hold no rename pair, so each URL is its one spelling
+// (citedSpellings, refs.URLSpellingsSQL).
 func TestALinkAndACitationMatchByKeyAndByIssueAlikeInEveryLocale(t *testing.T) {
 	planText := func(t *testing.T, statements *attributionStatements) *attributionStatements {
 		t.Helper()
-		byKey, byIssue := " and "+linkURLAsCited+" = u.url", "array(select "+linkURLAsCited+" from issue_external_links"
+		byKey := " and " + linkURLAsCited + " = any(" + citedSpellings(refs.Renames{}, "u.url") + ")"
+		byIssue := "unnest(" + citedSpellings(refs.Renames{}, "l.url") + ")"
 		for _, text := range []struct {
 			statement, term string
 		}{{statements.pullRequestIssues, byKey}, {statements.headsAttributedTo, byIssue}} {
@@ -396,7 +398,7 @@ func TestALinkAndACitationMatchByKeyAndByIssueAlikeInEveryLocale(t *testing.T) {
 		}
 		return &attributionStatements{
 			pullRequestIssues: strings.Replace(statements.pullRequestIssues, byKey, "", 1),
-			headsAttributedTo: strings.Replace(statements.headsAttributedTo, byIssue, "array(select lower(l.url) from issue_external_links", 1),
+			headsAttributedTo: strings.Replace(statements.headsAttributedTo, byIssue, "unnest("+refs.URLSpellingsSQL(refs.Renames{}, "l.url")+")", 1),
 		}
 	}
 	answers := make([]linkReaders, len(admittedLocales))

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -230,13 +231,14 @@ func TestEveryReadByIssueUsesAnIndex(t *testing.T) {
 		}
 	}
 
-	// The arm by key of a cited URL reads issue_external_links_url_lower by its first term, and
-	// takes the fold of the reading as a filter.
+	// The arm by key of a cited URL reads issue_external_links_url_lower by its first term, each
+	// spelling of the cited URL a probe of the index (refs.URLSpellingsSQL), whether the planner
+	// makes that an index scan or a bitmap of it, and takes the fold of the reading as a filter.
 	byKey, _ := planOf(t, ctx, pool, statements.pullRequestIssues, []string{"acme/widgets"}, []int{50})
 	citedArm := false
 	for i, line := range byKey {
-		if strings.Contains(line, "Index Scan using issue_external_links_url_lower") && i+1 < len(byKey) &&
-			strings.Contains(byKey[i+1], "lower(u.url)") {
+		if (strings.Contains(line, "Index Scan using issue_external_links_url_lower") || strings.Contains(line, "Bitmap Index Scan on issue_external_links_url_lower")) &&
+			i+1 < len(byKey) && strings.Contains(byKey[i+1], "lower(u.url)") {
 			citedArm = true
 			t.Logf("the arm by key of a cited URL: %s", strings.TrimSpace(strings.Join(byKey[i:min(i+3, len(byKey))], " | ")))
 		}
@@ -245,11 +247,12 @@ func TestEveryReadByIssueUsesAnIndex(t *testing.T) {
 		t.Errorf("the arm by key of a cited URL reads no issue_external_links_url_lower:\n%s", strings.Join(byKey, "\n"))
 	}
 	// The arm by issue of a cited URL reads the cited lists by their index, with the links of the
-	// issue read by its key, in the fold of the reading as in the plan's text, which folds the link
-	// with lower() alone. Its overlap is the index condition of pull_request_texts_keys: an overlap
-	// of the list with an array under another collation than the list's reads no index.
-	fold := "array(select " + linkURLAsCited + " from issue_external_links"
-	planText := strings.Replace(statements.headsAttributedTo, fold, "array(select lower(l.url) from issue_external_links", 1)
+	// issue read by its key, in the fold of the reading as in the plan's text, which folds each
+	// spelling of the link with lower() alone. Its overlap is the index condition of
+	// pull_request_texts_keys: an overlap of the list with an array under another collation than
+	// the list's reads no index.
+	fold := "unnest(" + citedSpellings(renames, "l.url") + ")"
+	planText := strings.Replace(statements.headsAttributedTo, fold, "unnest("+refs.URLSpellingsSQL(renames, "l.url")+")", 1)
 	if planText == statements.headsAttributedTo {
 		t.Fatalf("the statement by issue holds no %q", fold)
 	}

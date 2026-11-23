@@ -231,15 +231,31 @@ func citedPullRequest(renames refs.Renames, url string) string {
 // The text names the schema of the reading's two functions, which only the database knows, so it
 // is built once at start (PrepareAttribution) and never per read.
 
-// linkURLAsCited is a link's URL folded the way the reading folds a cited URL: ASCII lower case,
-// under the collation "C", whatever the database's own collation folds besides. The cited list
-// is in that fold, so an arm that compares a link with it compares in that fold too, by key and by
-// issue alike, and the answer is the same in every database the guard of migration 20261117111040
-// admits. A pair equal in that fold is equal under lower() too, so the arm by key keeps lower() as
-// its first term, which issue_external_links_url_lower serves. The folded text takes the
-// database's collation again, the collation of the cited list and of its index
+// foldAsCited is the expression text folded the way the reading folds a cited URL: ASCII lower
+// case, under the collation "C", whatever the database's own collation folds besides. The cited
+// list is in that fold, so an arm that compares a link with it compares in that fold too, by key
+// and by issue alike, and the answer is the same in every database the guard of migration
+// 20261117111040 admits. A pair equal in that fold is equal under lower() too, so the arm by key
+// keeps lower() as its first term, which issue_external_links_url_lower serves. The folded text
+// takes the database's collation again, the collation of the cited list and of its index
 // (pull_request_texts_keys): an overlap of the list with an array under "C" reads no index.
-const linkURLAsCited = `(lower(l.url collate "C") collate "default")`
+func foldAsCited(text string) string {
+	return `(lower(` + text + ` collate "C") collate "default")`
+}
+
+// linkURLAsCited is a link's URL in the fold of a cited URL (foldAsCited).
+var linkURLAsCited = foldAsCited("l.url")
+
+// citedSpellings is every spelling of url, an expression naming a URL, under each name of each
+// rename pair that names it (refs.URLSpellingsFoldedSQL), each in the fold of a cited URL
+// (foldAsCited), as a SQL text[]. The arm by key compares a link in that fold with the spellings
+// of a cited URL, and the arm by issue overlaps the cited lists with the spellings of each link
+// of the issue, so one relation of a link and a cited URL decides both: a link stored under a
+// repository's new name matches a citation under its old name, and the other way round, by key
+// and by issue alike. A cited URL is in that fold already, so its own spelling is itself.
+func citedSpellings(renames refs.Renames, url string) string {
+	return refs.URLSpellingsFoldedSQL(renames, url, foldAsCited)
+}
 
 // attributedTerms is the statement's terms over judged, a query of (repo, number) under any
 // stored name, for the schema that holds the reading. A caller adds its own select over
@@ -301,7 +317,7 @@ func attributedTermsOver(schema string, renames refs.Renames, judged, texts stri
 	hasFacts := `b.texts_current and (b.messages_read or p.key is not null)`
 	heldAs := `lower(` + canonicalOver("pr_own", "k.repo") + `)`
 	held := attributionHeldAs(canonicalOver("issue_rename", refs.IssueRepoResolved), "c.pr_held_as")
-	citedSpellings := refs.URLSpellingsSQL(renames, "u.url")
+	urlSpellings := refs.URLSpellingsSQL(renames, "u.url")
 	return `with recursive now_reading as materialized (
 		select r.id, coalesce((select pg_catalog.min(x.reading) from pull_request_texts x), r.id) <> r.id
 			or coalesce((select pg_catalog.max(x.reading) from pull_request_texts x), r.id) <> r.id as other
@@ -362,7 +378,7 @@ func attributedTermsOver(schema string, renames refs.Renames, judged, texts stri
 		select src.repo, src.number, src.held_as, l.issue_key, '` + string(sourceGitHubIssueLink) + `', 1, u.n
 		from batch src cross join lateral unnest(src.cited_issues) with ordinality u(url, n)
 			cross join lateral (select l.issue_key from issue_external_links l
-				where lower(l.url) = any(` + citedSpellings + `) and ` + linkURLAsCited + ` = any(` + citedSpellings + `) offset 0) l
+				where lower(l.url) = any(` + urlSpellings + `) and ` + linkURLAsCited + ` = any(` + citedSpellings(renames, "u.url") + `) offset 0) l
 		where src.texts_current and src.own_head and not ` + citedPullRequest(renames, "u.url") + `
 		union all
 		select src.repo, src.number, src.held_as, u.key, '` + string(sourceBranch) + `', 2, u.n
@@ -405,25 +421,29 @@ func attributedTermsOver(schema string, renames refs.Renames, judged, texts stri
 // 20261117111040 or of the tables it reads: the results rows and the timeline rows that store
 // $1; the texts rows whose stored keys name it; the pull request each link of $1 names, under
 // the name the link gives (LinkedPullRequestSQL), which judged reads under its canonical name;
-// the texts rows that cite a URL a link of $1 names, folded as the reading folds it
-// (linkURLAsCited); and, only while some texts row is on another
-// reading, every such row, whose stored keys say nothing. The last is a one-time filter, so it
-// reads no row outside that window. A row an arm takes that the statement answers for another
-// issue is dropped by the reader's own `issue_key = $1`.
-var headsByIssue = byIssueJudged(
-	func(column string) string { return column + ` = $1` },
-	func(keys string) string { return keys + ` @> array[$1::text]` })
+// the texts rows that cite a URL a link of $1 names, under either name of each rename pair of
+// renames, folded as the reading folds it (citedSpellings); and, only while some texts row is on
+// another reading, every such row, whose stored keys say nothing. The last is a one-time filter,
+// so it reads no row outside that window. A row an arm takes that the statement answers for
+// another issue is dropped by the reader's own `issue_key = $1`.
+func headsByIssue(renames refs.Renames) string {
+	return byIssueJudged(renames,
+		func(column string) string { return column + ` = $1` },
+		func(keys string) string { return keys + ` @> array[$1::text]` })
+}
 
 // timelineByIssues is the judged rows of a read by the issues of the array $1: the arms of
 // headsByIssue for each of them (ListPullRequestsOfIssues).
-var timelineByIssues = byIssueJudged(
-	func(column string) string { return column + ` = any($1::text[])` },
-	func(keys string) string { return keys + ` && $1::text[]` })
+func timelineByIssues(renames refs.Renames) string {
+	return byIssueJudged(renames,
+		func(column string) string { return column + ` = any($1::text[])` },
+		func(keys string) string { return keys + ` && $1::text[]` })
+}
 
 // byIssueJudged is the arms of a read by issue, in the order headsByIssue gives them: is(column)
 // matches a column that holds one issue, and names(keys) a key array of pull_request_texts that
 // names the issue. One function writes both reads, so their arms cannot drift apart.
-func byIssueJudged(is, names func(string) string) string {
+func byIssueJudged(renames refs.Renames, is, names func(string) string) string {
 	return `select repo, number from pull_request_heads where ` + is("issue_key") + `
 	union select repo, number from delivery_pull_requests where ` + is("issue_key") + `
 	union select repo, number from pull_request_texts
@@ -431,7 +451,8 @@ func byIssueJudged(is, names func(string) string) string {
 	union select lp.repo, lp.number from issue_external_links l cross join lateral ` + LinkedPullRequestSQL("l.url") + ` lp
 		where ` + is("l.issue_key") + `
 	union select repo, number from pull_request_texts
-		where cited_issues && array(select ` + linkURLAsCited + ` from issue_external_links l where ` + is("l.issue_key") + `)
+		where cited_issues && array(select s from issue_external_links l cross join lateral unnest(` + citedSpellings(renames, "l.url") + `) s
+			where ` + is("l.issue_key") + `)
 	union select t.repo, t.number from pull_request_texts t
 		where (select r.other from now_reading r) and t.reading <> (select r.id from now_reading r)`
 }
@@ -481,7 +502,7 @@ type attributionStatements struct {
 }
 
 func attributionStatementsFor(schema string, renames refs.Renames) *attributionStatements {
-	byIssue := attributedTerms(schema, renames, headsByIssue)
+	byIssue := attributedTerms(schema, renames, headsByIssue(renames))
 	return &attributionStatements{
 		pullRequestIssues:     pullRequestIssuesStatement(schema, renames),
 		headsAttributedTo:     byIssue + headsAttributedToSelect,
@@ -490,7 +511,7 @@ func attributionStatementsFor(schema string, renames refs.Renames) *attributionS
 		baseBranchMergedFor:   byIssue + baseBranchMergedForSelect,
 		baseBranchMergedIn:    byIssue + baseBranchMergedInSelect,
 		pullRequestsNotKnown:  attributedTerms(schema, renames, notKnownJudged(renames)) + notKnownSelect,
-		pullRequestsOfIssues:  attributedTerms(schema, renames, timelineByIssues) + pullRequestsOfIssuesSelect,
+		pullRequestsOfIssues:  attributedTerms(schema, renames, timelineByIssues(renames)) + pullRequestsOfIssuesSelect,
 		syncAttributions:      syncAttributionsStatement(schema, renames),
 		attributionCounts:     attributedTerms(schema, renames, factsLineJudged) + attributionCountsSelect,
 		factsLine:             attributedTerms(schema, renames, factsLineJudged) + factsLineSelect,
