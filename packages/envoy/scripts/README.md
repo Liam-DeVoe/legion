@@ -721,7 +721,10 @@ in that package. A `requests-*.patch` needs the Postgres `BROKER_TEST_DATABASE_U
 one it is not run: it prints `UNKNOWN:`, the summary names it, and the run exits 3, so a check that
 reads the exit never takes a mutant nobody ran for a caught one. `--skip-database-mutants` leaves
 those mutants out on purpose: each prints `SKIPPED:`, the summary lists them, and they alone do not
-make the run exit 3. A mutant nothing catches fails the run.
+make the run exit 3. Each `proxy-*`, `policy-*` and `requests-*` mutant's named tests run first on
+an unpatched copy and must pass there: one that fails there (a database that refuses connections,
+a test broken on the head) is reported `UNKNOWN:` and not run, since its failure would read as a
+catch. A run in which no mutant ran exits 3. A mutant nothing catches fails the run.
 
 ```bash
 AIRLOCK_MODEL=<the built airlock-model> BROKER_TEST_DATABASE_URL=<a Postgres server> \
@@ -730,7 +733,7 @@ AIRLOCK_MODEL=<the built airlock-model> BROKER_TEST_DATABASE_URL=<a Postgres ser
 
 With no name it runs every mutant; a name is a patch's file name with or without
 `.patch`. It prints one `PASS:`, `FAIL:`, `UNKNOWN:` or `SKIPPED:` line per mutant. It
-exits 1 when any was not caught, else 3 when any was not run, else 0, and 2 when the
+exits 1 when any was not caught, else 3 when any was not run or none ran, else 0, and 2 when the
 model mutants need `lake` and it is not installed. `airlock-check.sh k15` passes it
 `BROKER_TEST_DATABASE_URL`, else `DEV_BROKER_POSTGRES_URL`. No patch ever touches this
 repository.

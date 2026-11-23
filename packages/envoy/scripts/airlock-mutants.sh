@@ -35,6 +35,11 @@
 #     check that reads this script must not take the run for a pass. --skip-database-mutants
 #     makes that a choice: each such mutant's line says SKIPPED, the run lists them at its end,
 #     and they alone no longer make it exit 3.
+#   - every proxy, policy and requests mutant's named tests are run first on an unpatched copy of
+#     the tree and must pass there. One that fails there - a database that refuses connections,
+#     a test already broken on the head - would read as a catch once the mutant is applied, so
+#     the mutant is not run: its line says UNKNOWN ("its named tests fail without the mutant"),
+#     and the run exits 3. A run in which no mutant ran at all exits 3 too.
 #
 # A mutant nothing catches is a hole in the tests or in the proofs, and this script fails on
 # it. The patches are never applied to this repository: every one is applied inside the copy,
@@ -73,9 +78,10 @@ requires that copy to fail: a go-*.patch must fail the comparison fuzz test over
 seed corpus, a lean-*.patch must fail `lake build`, because a proof no longer holds, or that
 same comparison against the mutated model, and a proxy-*.patch, policy-*.patch or
 requests-*.patch must fail every test of its package its own `# must fail: <Test>` lines name,
-and is counted by those tests alone. A requests-*.patch needs the Postgres
-BROKER_TEST_DATABASE_URL names; without one it is not run, reported UNKNOWN, and the run
-exits 3.
+and is counted by those tests alone, after those tests pass on an unpatched copy; a mutant whose
+tests fail there is not run, is reported UNKNOWN, and the run exits 3. A requests-*.patch needs
+the Postgres BROKER_TEST_DATABASE_URL names; without one it is not run, reported UNKNOWN, and
+the run exits 3.
 
   --skip-database-mutants   choose not to run the requests-* mutants when
                             BROKER_TEST_DATABASE_URL names no database: each is reported
@@ -87,8 +93,8 @@ exits 3.
 
 No patch is ever applied to this repository. It prints one PASS:, FAIL:, UNKNOWN: or SKIPPED:
 line per mutant and a summary naming each mutant that was not run. It exits 1 when a mutant
-was not caught, else 3 when a mutant was not run, else 0, and 2 when go, lake or both patch
-and git are missing.
+was not caught, else 3 when a mutant was not run or when no mutant ran at all, else 0, and 2
+when go, lake or both patch and git are missing.
 EOF
 }
 
@@ -251,6 +257,27 @@ named_tests() {
 	return "$verdict"
 }
 
+# baseline_passes runs <tests> in <package> of the unpatched copy, made once for the whole run,
+# and answers 0 when every one of them ran and passed there. A named test that fails without the
+# mutant - a database that refuses connections, a test broken on the head - would count as a
+# catch once the mutant is applied, so a mutant is counted only after its tests pass here. BROKEN
+# is set to the ones that failed or did not run.
+baseline_passes() {
+	local tests="$1" package="$2" log="$3" test passes=0
+	if [[ ! -d "$WORK_DIR/.unpatched" ]]; then
+		copy_envoy "$WORK_DIR/.unpatched" false
+	fi
+	(cd "$WORK_DIR/.unpatched/packages/envoy" && GOWORK=off go test -count=1 -v -run "^($(paste -sd '|' <<<"$tests"))\$" "$package") >"$log" 2>&1
+	BROKEN=""
+	while read -r test; do
+		if ! grep -q "^--- PASS: $test " "$log" || grep -q "^--- FAIL: $test " "$log"; then
+			BROKEN="$BROKEN $test"
+			passes=1
+		fi
+	done <<<"$tests"
+	return "$passes"
+}
+
 failures=0
 unrun=()
 skipped=()
@@ -269,16 +296,6 @@ for name in "${mutants[@]}"; do
 	started=$SECONDS
 	copy="$WORK_DIR/$name"
 	log="$WORK_DIR/$name.log"
-	case "$name" in
-	lean-*) copy_envoy "$copy" true ;;
-	*) copy_envoy "$copy" false ;;
-	esac
-	if ! apply_patch "$copy" "$(mutant_file "$name")" "$log"; then
-		echo "FAIL: $name — the patch does not apply: $(head -n 3 "$log" | tr '\n' ' ')"
-		failures=$((failures + 1))
-		continue
-	fi
-
 	if [[ "$name" == proxy-* || "$name" == policy-* || "$name" == requests-* ]]; then
 		case "$name" in
 		policy-*) package=./internal/cipher/policy/ ;;
@@ -291,6 +308,23 @@ for name in "${mutants[@]}"; do
 			failures=$((failures + 1))
 			continue
 		fi
+		if ! baseline_passes "$tests" "$package" "$WORK_DIR/$name.unpatched.log"; then
+			echo "UNKNOWN: $name — its named tests fail without the mutant:$BROKEN; $(grep -m1 -E 'connect|Error|error' "$WORK_DIR/$name.unpatched.log" | cut -c1-160)"
+			unrun+=("$name")
+			continue
+		fi
+	fi
+	case "$name" in
+	lean-*) copy_envoy "$copy" true ;;
+	*) copy_envoy "$copy" false ;;
+	esac
+	if ! apply_patch "$copy" "$(mutant_file "$name")" "$log"; then
+		echo "FAIL: $name — the patch does not apply: $(head -n 3 "$log" | tr '\n' ' ')"
+		failures=$((failures + 1))
+		continue
+	fi
+
+	if [[ "$name" == proxy-* || "$name" == policy-* || "$name" == requests-* ]]; then
 		set +e
 		named_tests "$copy" "$log" "$tests" "$package"
 		verdict=$?
@@ -338,16 +372,22 @@ for name in "${mutants[@]}"; do
 done
 
 echo
+ran=$((${#mutants[@]} - ${#unrun[@]} - ${#skipped[@]}))
 if [[ $failures -gt 0 ]]; then
 	echo "$failures of ${#mutants[@]} mutants were not caught"
 else
-	echo "$((${#mutants[@]} - ${#unrun[@]} - ${#skipped[@]})) mutants, each caught"
+	echo "$ran mutants, each caught"
 fi
 if [[ ${#skipped[@]} -gt 0 ]]; then
 	echo "skipped by --skip-database-mutants, so neither caught nor missed: ${skipped[*]}"
 fi
 if [[ ${#unrun[@]} -gt 0 ]]; then
-	echo "UNKNOWN: ${#unrun[@]} mutant(s) not run, so neither caught nor missed: ${unrun[*]}; set BROKER_TEST_DATABASE_URL to a Postgres server to run them, or pass --skip-database-mutants to leave them out on purpose"
+	echo "UNKNOWN: ${#unrun[@]} mutant(s) not run, so neither caught nor missed: ${unrun[*]}; a requests-* mutant needs BROKER_TEST_DATABASE_URL to name a Postgres server that answers (or --skip-database-mutants to leave it out on purpose), and a mutant whose named tests fail without it needs those tests fixed first"
+fi
+# A run that left every mutant out, by --skip-database-mutants or for any other reason, caught
+# nothing at all, which is no pass either.
+if [[ $ran -eq 0 ]]; then
+	echo "UNKNOWN: no mutant ran, so the run caught nothing"
 fi
 
 # Last, the assurance that this run changed nothing here: every patch was applied inside
@@ -367,6 +407,6 @@ fi
 if [[ $failures -gt 0 ]]; then
 	exit 1
 fi
-if [[ ${#unrun[@]} -gt 0 ]]; then
+if [[ ${#unrun[@]} -gt 0 || $ran -eq 0 ]]; then
 	exit 3
 fi

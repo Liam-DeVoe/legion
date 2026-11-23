@@ -6,9 +6,9 @@
 
 --- a/packages/envoy/internal/cipher/requests/machine_read.go
 +++ b/packages/envoy/internal/cipher/requests/machine_read.go
-@@ -343,9 +343,7 @@
- 	recordID, err := m.verifyChain(ctx, grantID)
- 	if errors.Is(err, ErrGrantChainInvalid) {
+@@ -353,9 +353,7 @@
+ 			return recordID, noLongerServed(name)
+ 		}
  		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
 -		if ended := m.endJudgedGrant(ctx, grantID, err); ended != nil {
 -			return recordID, ended
