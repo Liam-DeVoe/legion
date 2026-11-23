@@ -132,7 +132,7 @@ func TestTheComposedPromptsNameAMissingProductionCheckAsAGap(t *testing.T) {
 // composed prompt carries the two answers, written once in the part every phase worker shares: a
 // move back with a reason naming the version and the change when the work is stale, with the
 // implementer alone pushing first, or a comment naming the version when it is current. The planner
-// carries its own answer, since planning has no earlier phase to move back to. The merger carries
+// carries its own answer, since a stale plan is its own work wherever its step stands. The merger carries
 // the opening a news task can bring in place of the opened message, and the WAITING line that
 // lets a task reach it between turns. Every architect carries the answers in `accepting` (a
 // sign-off, or a move back to planning, implementing or testing), the root architect's summary
@@ -162,7 +162,10 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 	})
 	t.Run("planner", func(t *testing.T) {
 		const revise = "Revise `plan.md` in place to match the new version of the design"
-		ruleIn(t, "go/planner.md", revise, "news task", "Planning has no earlier phase", "run the plan review again")
+		ruleIn(t, "go/planner.md", revise, "news task", "A stale plan is your own work wherever your task places your step", "run the plan review again")
+		if strings.Contains(goPart(t, "planner.md"), "Planning has no earlier phase") {
+			t.Error("go/planner.md still says planning has no earlier phase, false for a planner after the implementer")
+		}
 		composedSays(t, composer, claim.RolePlanner, false, revise)
 	})
 	t.Run("merger", func(t *testing.T) {
