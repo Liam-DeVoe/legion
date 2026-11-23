@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A program the daemon writes and then runs, or hands to a program that runs it, no longer fails
+  at random with "text file busy". Linux refuses to run a file some process holds open for
+  writing, and a child the daemon starts from another goroutine holds every file the daemon has
+  open until it runs its own program, so a clone's one-shot git credential helper (tmux daemon),
+  the leak check a pod's launcher installs and runs, and the launcher scripts on a pane's PATH
+  could each be refused: beside eight goroutines that start processes, 13 to 28 runs in 300 to 450
+  were. Every such file, and a role's copy of the pod's config home, is now written while every
+  fork of the process waits for the write to close it.
+time: 2026-11-23T18:03:03.978895424Z
+custom:
+    Issue: pr5265
