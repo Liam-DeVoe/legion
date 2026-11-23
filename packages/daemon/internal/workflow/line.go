@@ -401,24 +401,29 @@ func returnStep(issue record.Issue, w Walk, from stepSite, n int, act returnAct)
 	return record.TaskPlace{Kind: record.PlaceStep, Position: n}, ""
 }
 
-// lostAt says whether place is a step of w's task whose role d does not define: a role the
-// deployment lost, whose step no role may start (stopLostRole). Legion's own roles are in every
-// deployment (config.Config.Deployment, and New's default), so only a role of a deployment's own
-// can be lost.
+// lostAt says whether the work of place on w's task is lost to d: a step whose role d does not
+// define, a role the deployment lost, whose step no role may start (stopLostRole); or a step, or
+// the retro, whose agent's name is such a role (lostAgent). An agent runs in the slot of its name
+// (claim.Token.Slot), the role of its first step (record.NameAgents), whatever role its step has
+// now, so an agent named for a role the deployment lost has no slot in a pod the deployment builds,
+// and its launch waits for a pod that never comes. Legion's own roles are in every deployment
+// (config.Config.Deployment, and New's default), so only a role of a deployment's own can be lost.
 func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (record.TaskPlace, bool) {
-	step, ok := w.planStepAt(place)
-	if !w.Stored || !ok {
+	if !w.Stored {
 		return record.TaskPlace{}, false
 	}
-	if d.Defines(step.Role) {
-		return record.TaskPlace{}, false
+	if step, ok := w.planStepAt(place); ok && !d.Defines(step.Role) {
+		return place, true
 	}
-	return place, true
+	if step, ok := w.stepAt(place); ok && lostAgent(step.AgentName(), d) {
+		return place, true
+	}
+	return record.TaskPlace{}, false
 }
 
-// lostStep is the first step w's task still has to run whose role d does not define (lostAt): the
-// step it stands at and each after it, or every step of a task at no act; none for a task at its
-// retro or its merge, done, left or stopped.
+// lostStep is the first work w's task still has to do that d lost (lostAt): the step it stands at
+// and each after it, then the retro, or all of them for a task at no act; the retro alone for a
+// task at its retro; none for a task at its merge, done, left or stopped.
 func (w Walk) lostStep(d plan.Deployment) (record.TaskPlace, bool) {
 	if !w.Stored || w.State != record.TaskRunning && w.State != record.TaskWaiting {
 		return record.TaskPlace{}, false
@@ -427,15 +432,17 @@ func (w Walk) lostStep(d plan.Deployment) (record.TaskPlace, bool) {
 	switch w.Place.Kind {
 	case record.PlaceStep:
 		first = w.Place.Position
-	case record.PlaceRetro, record.PlaceMerge:
+	case record.PlaceRetro:
+		return w.lostAt(w.Place, d)
+	case record.PlaceMerge:
 		return record.TaskPlace{}, false
 	}
 	return w.lostFrom(first, d)
 }
 
-// lostFrom is the first step of w's task from step first on whose role d does not define
-// (lostAt). lostStep reads it from where a task that runs stands; a stopped task's end of its stop
-// reads it from step 1, since every step of the task is still to run once it goes on
+// lostFrom is the first work of w's task from step first on that d lost (lostAt): a step, or after
+// the last step the retro. lostStep reads it from where a task that runs stands; a stopped task's
+// end of its stop reads it from step 1, since all of the task's work is still to do once it goes on
 // (keepLostStop).
 func (w Walk) lostFrom(first int, d plan.Deployment) (record.TaskPlace, bool) {
 	for n := first; n <= len(w.Steps); n++ {
@@ -443,7 +450,7 @@ func (w Walk) lostFrom(first int, d plan.Deployment) (record.TaskPlace, bool) {
 			return lost, true
 		}
 	}
-	return record.TaskPlace{}, false
+	return w.lostAt(record.TaskPlace{Kind: record.PlaceRetro}, d)
 }
 
 // reviewFails says whether the step at w.Place, whose fail is the move, counts a review round

@@ -65,6 +65,12 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return err
 	}
 	for _, to := range addressed {
+		// The claim of a keyed agent runs in the slot of its name, which can be a role the
+		// deployment lost while its step's role is not (lostSlot): its task is stopped as the
+		// lost role's is, and a hold to it would wake a claim no pod can launch.
+		if lostSlot(to.token, e.cfg.Deployment) {
+			continue
+		}
 		role := to.role
 		step := record.MergeForwardHold
 		if role == claim.RoleImplementer {
@@ -206,6 +212,10 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 		return err
 	}
 	for _, to := range addressed {
+		// As in mergeForward: no message to a claim whose slot is a role the deployment lost.
+		if lostSlot(to.token, e.cfg.Deployment) {
+			continue
+		}
 		role := to.role
 		step := record.MergeForwardLanded
 		if review && role == claim.RoleReviewer {
@@ -250,8 +260,25 @@ func lostRole(role claim.Role, deployment plan.Deployment) bool {
 	return !claim.IsBuiltin(role) && !deployment.Defines(string(role))
 }
 
+// lostAgent says whether name, the name of a step's agent (record.PlanStep.AgentName), is a role
+// deployment lost (lostRole): the agent runs in the slot of its name, the role of its first step
+// (record.NameAgents), so a pod of the deployment has no slot for it, whatever role its step has
+// now. A step of the key owner has no name, and is never lost this way.
+func lostAgent(name claim.Agent, deployment plan.Deployment) bool {
+	return name != "" && lostRole(claim.Role(name), deployment)
+}
+
+// lostSlot says whether token's claim runs in a slot (claim.Token.Slot) that is a role deployment
+// lost (lostAgent): its launch waits for a pod with that slot, which the deployment builds none of.
+// A token that names no slot is not lost this way.
+func lostSlot(token claim.Token, deployment plan.Deployment) bool {
+	slot, ok := token.Slot()
+	return ok && lostAgent(slot, deployment)
+}
+
 // MergeForwardAt reads in tx what a merge-forward message (record.MergeForwardMessage) of issue
-// key to role is judged by: the issue, whether its tree lingers (record.TreeLingers) and the pull
+// key to role, for the claim token where the row names one, is judged by: the issue, whether its
+// tree lingers (record.TreeLingers) and the pull
 // request the record holds for it. It returns the issue and that pull request, with why a message
 // of step about the merge forward asked of head is no longer to be delivered (leftMergeForwardAt),
 // "" while it is; deployment is the roles of a step the reading daemon's settings define, which
@@ -264,7 +291,7 @@ func lostRole(role claim.Role, deployment plan.Deployment) bool {
 // mergeForwardWorker, which picks the role they tell, and clearMergeForward, which drops the ask
 // they are about, since it restates their states for a row already queued. It is exported for that
 // executor.
-func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, deployment plan.Deployment, key string, role claim.Role, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
+func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, deployment plan.Deployment, key string, role claim.Role, token claim.Token, step record.MergeForwardStep, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return nil, nil, "", err
@@ -277,19 +304,22 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, deployme
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return issue, pr, leftMergeForwardAt(*issue, lingers, pr, deployment, role, step, head), nil
+	return issue, pr, leftMergeForwardAt(*issue, lingers, pr, deployment, role, token, step, head), nil
 }
 
-// leftMergeForwardAt says why a merge-forward message of step to role about the merge forward
-// asked of head is no longer to be delivered, or "" while it is: the issue is in the workflow, its
-// tree does not linger (lingers, record.TreeLingers), role is not a role of the deployment that
-// deployment no longer defines (lostRole), and the pull request the record holds for it (pr, nil
+// leftMergeForwardAt says why a merge-forward message of step to role, for the claim token, about
+// the merge forward asked of head is no longer to be delivered, or "" while it is: the issue is in
+// the workflow, its tree does not linger (lingers, record.TreeLingers), neither role nor the slot
+// token runs in (lostSlot) is a role of the deployment that deployment no longer defines
+// (lostRole), and the pull request the record holds for it (pr, nil
 // for none) is open and holds a merge forward of head (record.PullRequest.MergeForward) that, for
 // an ask or a hold, has not landed. In each other state the message would tell its role of work
 // nobody wants any more. The roles of a tree that lingers are suspended. A role the deployment no
 // longer defines is one a restart dropped after the row was queued: mergeForwardWorker writes no
 // row to it, the boot stopped its task (stopLostRoles), and a delivery would wake its released
-// claim, whose launch then fails for want of the role. The workflow drops the ask on a move into
+// claim, whose launch then fails for want of the role; a claim whose slot is such a role is one a
+// keyed agent named for it runs in, whatever its step's role, whose launch waits for a pod with
+// that slot, which the deployment builds none of. The workflow drops the ask on a move into
 // implementing and when the issue leaves the workflow (clearMergeForward), and a merge forward of
 // another head is a newer ask, which has its own messages. A pull request that is not open ends
 // every step: mergeForward asks nothing for one, and once it closed or merged nothing is left to
@@ -298,7 +328,7 @@ func MergeForwardAt(ctx context.Context, store record.Store, tx pgx.Tx, deployme
 // queued would reach the worker after its landed and tell it to wait for a head that already came,
 // and an ask would ask for a merge already pushed. The landed and the review are the landing's own
 // messages, and they still go after it.
-func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest, deployment plan.Deployment, role claim.Role, step record.MergeForwardStep, head string) string {
+func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest, deployment plan.Deployment, role claim.Role, token claim.Token, step record.MergeForwardStep, head string) string {
 	switch {
 	case !record.InWorkflow(issue):
 		return fmt.Sprintf("the issue has left the workflow, at status %s in %s", issue.Status, issue.Phase)
@@ -306,6 +336,9 @@ func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest
 		return "the issue's tree lingers or has closed"
 	case lostRole(role, deployment):
 		return fmt.Sprintf("the deployment no longer defines the role %s", role)
+	case lostSlot(token, deployment):
+		slot, _ := token.Slot()
+		return fmt.Sprintf("the deployment no longer defines the role %s, the slot of the claim %s", slot, token)
 	case pr == nil:
 		return "the record holds no pull request for the issue"
 	case pr.State != record.PullRequestOpen:

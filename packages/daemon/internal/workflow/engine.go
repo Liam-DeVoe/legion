@@ -1940,9 +1940,16 @@ func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.Po
 // so the claim, which was given it, is given it again. Any other is a start naming the claim, of
 // no phase, which resumes it with whatever it holds. The outbox runs either as a wait for the pod
 // while that pod stands (supervise's podStillRefuses) and resumes the claim once another stands or
-// none.
+// none. A claim of a role the deployment lost, or one that runs in the slot of such a role
+// (lostSlot), is queued nothing: its task is stopped (stopLostRoles), no pod the deployment builds
+// has its slot, and its start would wait for one for ever; the skip is logged.
 func (e *Engine) queueRefusedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.PodRefusedLaunch) error {
 	if record.OutOfWorkflow(issue.Status) {
+		return nil
+	}
+	if lostRole(fact.Role, e.cfg.Deployment) || lostSlot(fact.Claim, e.cfg.Deployment) {
+		e.logOnCommit(ctx, "workflow: no start is queued for a refused launch of a claim whose role or slot the deployment no longer defines",
+			"issue", issue.Key, "role", fact.Role, "claim", fact.Claim)
 		return nil
 	}
 	if role := OpenRoleOf(issue); role != "" && role == fact.Role {
@@ -2958,7 +2965,7 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 // todo, starts the task again. It answers stopTask's refusal of a stop that cannot stand where the
 // issue stands now (a root that waits on a person before its first step), and writes nothing then.
 func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, lost record.TaskPlace, end StepEnd) (*intake.Refusal, error) {
-	why, told := lostStop(issue, w, lost)
+	why, told := lostStop(issue, w, lost, e.cfg.Deployment)
 	if refusal, err := e.stopTask(ctx, tx, issue, w, why, told.Reason, end); err != nil || refusal != nil {
 		return refusal, err
 	}
@@ -2976,7 +2983,7 @@ func (e *Engine) stopLostRole(ctx context.Context, tx pgx.Tx, issue record.Issue
 // owner is told again, in the task-stopped notice that names the role. Nothing moved, so no
 // movement is marked and no process is stopped: the stop that held the issue stopped it.
 func (e *Engine) keepLostStop(ctx context.Context, tx pgx.Tx, released record.Issue, w Walk, lost record.TaskPlace, fact intake.DispatchIssue) error {
-	why, told := lostStop(released, w, lost)
+	why, told := lostStop(released, w, lost, e.cfg.Deployment)
 	if err := e.store.StopTask(ctx, tx, released.Key, released.Generation, w.Task, why); err != nil {
 		return err
 	}
@@ -2991,13 +2998,24 @@ func (e *Engine) keepLostStop(ctx context.Context, tx pgx.Tx, released record.Is
 	return e.notice(ctx, tx, released.Key, told)
 }
 
-// lostStop is the stop of w's task of issue for its step at lost, whose role the engine's
-// deployment no longer defines: the task's reason, which names the step and the role, and the
-// task-stopped notice that tells the task's owner, which names the role, the place the issue stands
-// and that reason.
-func lostStop(issue record.Issue, w Walk, lost record.TaskPlace) (string, record.Notice) {
-	role := w.Steps[lost.Position-1].Role
+// lostStop is the stop of w's task of issue for its work at lost, which d lost (Walk.lostAt): the
+// task's reason, which names the step and the role, and the task-stopped notice that tells the
+// task's owner, which names the role, the place the issue stands and that reason. Where the step's
+// role is lost the reason names it. Where the work's agent is named for a role d lost (lostAgent),
+// a step of a role d defines or the retro, the reason names that agent and its name's role, the
+// slot it runs in: a later version of the plan gives that work an agent of another name.
+func lostStop(issue record.Issue, w Walk, lost record.TaskPlace, d plan.Deployment) (string, record.Notice) {
+	step, _ := w.stepAt(lost)
+	role := step.Role
 	why := fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", lost.Position, role)
+	if lost.Kind != record.PlaceStep || d.Defines(step.Role) {
+		role = string(step.AgentName())
+		work := fmt.Sprintf("step %d", lost.Position)
+		if lost.Kind == record.PlaceRetro {
+			work = "the retro"
+		}
+		why = fmt.Sprintf("%s is the work of the agent %s, which runs in the slot of the role %s, which the deployment no longer defines", work, role, role)
+	}
 	return why, record.Notice{Kind: "task-stopped", Role: claim.Role(role), Phase: record.StandsAt(issue),
 		Reason: fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, why)}
 }
