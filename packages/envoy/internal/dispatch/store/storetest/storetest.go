@@ -42,6 +42,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // DatabaseURLEnv names the Postgres server the tests run against. Its database path is ignored:
@@ -87,7 +88,9 @@ func migrateWithThisTree(databaseURL string) error {
 
 // ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is
 // unset, and opens the admin pool, once. It makes no template: each is made by the first test that
-// asks for it (OpenFrom).
+// asks for it (OpenFrom). Every connect it, clone and Empty make waits until the test binary's
+// deadline (testdb.WithConnectDeadline), not pgx's two minutes, so a Postgres that a loaded
+// machine slows only slows a test.
 func ready(t testing.TB) {
 	t.Helper()
 	if !shared.main {
@@ -97,7 +100,7 @@ func ready(t testing.TB) {
 	if raw == "" {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
-	shared.once.Do(func() { shared.err = openAdmin(raw) })
+	shared.once.Do(func() { shared.err = openAdmin(testdb.WithConnectDeadline(t, raw)) })
 	if shared.err != nil {
 		t.Fatalf("open the admin pool: %v", shared.err)
 	}
@@ -112,7 +115,7 @@ func clone(t testing.TB, template string) *store.Store {
 		t.Fatalf("clone isolated database from template %s: %v", template, err)
 	}
 	t.Cleanup(func() { dropDatabase(name) })
-	database, err := store.Open(ctx, databaseURL(shared.server, name))
+	database, err := store.Open(ctx, testdb.WithConnectDeadline(t, databaseURL(shared.server, name)))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -131,7 +134,7 @@ func Empty(t testing.TB) string {
 		t.Fatalf("create empty database: %v", err)
 	}
 	t.Cleanup(func() { dropDatabase(name) })
-	return databaseURL(shared.server, name)
+	return testdb.WithConnectDeadline(t, databaseURL(shared.server, name))
 }
 
 // templates are the templates this test binary made, by key, each once: Open's (openKey) and each
