@@ -48,6 +48,11 @@
       "types": "./src/log-text.ts",
       "bun": "./src/log-text.ts",
       "default": "./dist/log-text.js"
+    },
+    "./http-status": {
+      "types": "./src/http-status.ts",
+      "bun": "./src/http-status.ts",
+      "default": "./dist/http-status.js"
     }
   },
   "main": "dist/index.js",
@@ -57,7 +62,7 @@
     "check:go": "bun run scripts/gen-go.ts --check",
     "gen:api": "bun run scripts/gen-api.ts",
     "check:api": "bun run scripts/gen-api.ts --check",
-    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/log-text.ts src/held-secrets.ts --root src --outdir dist --target bun --format esm",
+    "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/log-text.ts src/held-secrets.ts src/http-status.ts --root src --outdir dist --target bun --format esm",
     "build:dispatch": "bun build src/index.ts src/dispatch-snippet.ts src/dispatch-tools.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",

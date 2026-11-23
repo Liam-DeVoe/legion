@@ -98,6 +98,7 @@ import {
   sleep,
 } from "@legion/contracts";
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
+import { outage } from "@legion/contracts/http-status";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { credentialDeadline, type RequestCredential } from "./bearer";
@@ -896,11 +897,12 @@ function gatewayClears(status: number): boolean {
 }
 
 /**
- * Whether a status that did not come from Dispatch can clear on its own: a gateway's 5xx, a
- * timeout or a rate limit can; any other status answers the same request the same way.
+ * Whether a status that did not come from Dispatch can clear on its own: an outage (`outage`: a
+ * gateway's 5xx, a timeout or a rate limit) can; any other status answers the same request the
+ * same way.
  */
 export function transientStatus(status: number): boolean {
-  return status >= 500 || status === 408 || status === 429;
+  return outage(status);
 }
 
 /**
