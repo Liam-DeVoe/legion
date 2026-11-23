@@ -136,7 +136,7 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		return
 	}
 	w.log.Info("idle release: releasing an issue's pod, which has had no turn in progress and no turn due for the idle period",
-		"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Roles))
+		"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Claims))
 	w.wakeOutbox(issue, record.OutboxKindSupervise)
 }
 
@@ -513,8 +513,9 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 //     records the release with the size the save stored. A Sandbox that owns the issue's kept
 //     volume stays, Suspended, with that volume: its pod and its Secrets go (runtime.IssueReleaser).
 func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
-	mark := store.IdleReleaseMark{Generation: view.Generation, Role: decision.Roles[0]}
-	rows := make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)
+	first := decision.Claims[0]
+	mark := store.IdleReleaseMark{Generation: view.Generation, Role: first.Role}
+	rows := make([]store.IdleReleaseRow, 0, len(decision.Claims)+2)
 	add := func(payload record.OutboxPayload, boundary bool) error {
 		row, err := record.NewOutboxRow(view.Issue, payload, now)
 		if err != nil {
@@ -524,11 +525,11 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 		return nil
 	}
 	if err := add(record.IssueBundle{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation, Role: mark.Role, Claim: decision.Claims[0]}, false); err != nil {
+		TreeGeneration: view.Root.Generation, Role: first.Role, Claim: first.Token}, false); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
-	for i, role := range decision.Roles {
-		if err := add(record.SuperviseRequest{Op: "release", Tree: view.Tree, Role: role, Claim: decision.Claims[i],
+	for i, c := range decision.Claims {
+		if err := add(record.SuperviseRequest{Op: "release", Tree: view.Tree, Role: c.Role, Claim: c.Token,
 			Generation: view.Generation, Reason: "the issue's pod has been idle for the release period"}, i == 0); err != nil {
 			return store.IdleReleaseMark{}, err
 		}

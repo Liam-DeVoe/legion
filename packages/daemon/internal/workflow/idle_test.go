@@ -289,12 +289,12 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			if want := tc.want == IdleHoldNone; got.Release != want {
 				t.Fatalf("release = %v, want %v (hold %s)", got.Release, want, got.Hold)
 			}
-			if len(got.Roles) != len(tc.roles) {
-				t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
+			if len(got.Claims) != len(tc.roles) {
+				t.Fatalf("claims = %v, want the roles %v", got.Claims, tc.roles)
 			}
 			for i, role := range tc.roles {
-				if got.Roles[i] != role {
-					t.Fatalf("roles = %v, want %v", got.Roles, tc.roles)
+				if got.Claims[i].Role != role {
+					t.Fatalf("claims = %v, want the roles %v", got.Claims, tc.roles)
 				}
 			}
 		})
@@ -482,8 +482,8 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 			if want := tc.want == IdleHoldNone; got.Release != want {
 				t.Fatalf("release = %v, want %v (hold %s)", got.Release, want, got.Hold)
 			}
-			if len(got.Roles) != 0 {
-				t.Fatalf("roles = %v, want none: this release suspends no role", got.Roles)
+			if len(got.Claims) != 0 {
+				t.Fatalf("claims = %v, want none: this release suspends no claim", got.Claims)
 			}
 		})
 	}
@@ -531,7 +531,7 @@ func TestTheIdleRuleReleasesNoPodOfAnIssueAnotherProjectRecords(t *testing.T) {
 		if !decided.Release {
 			return store.IdleReleaseMark{}, nil
 		}
-		return store.IdleReleaseMark{Generation: view.Generation, Role: decided.Roles[0], Rows: []store.IdleReleaseRow{
+		return store.IdleReleaseMark{Generation: view.Generation, Role: decided.Claims[0].Role, Rows: []store.IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(`{"tree":"OTHER-8","generation":1,"treeGeneration":1,"role":"architect"}`)},
 			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"OTHER-8","role":"architect","generation":1}`), Boundary: true},
 			{Kind: "issue_release", Payload: []byte(`{"tree":"OTHER-8","generation":1,"treeGeneration":1}`)},
