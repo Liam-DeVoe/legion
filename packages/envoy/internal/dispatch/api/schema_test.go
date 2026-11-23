@@ -11,6 +11,7 @@ import (
 )
 
 func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	Register(mux, t.Context(), Deps{})
 
@@ -42,5 +43,8 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	}
 	if parents := schema.Types[6].Parents; !slices.Equal(parents, []string{"decision", "ask"}) {
 		t.Fatalf("reading parents = %v, want decision and ask", parents)
+	}
+	if steps, declared := schema.Types[3].Attributes.Lookup("steps"); !declared || steps.Kind != pmdoc.BlockAttributeString || steps.Since != 5 || steps.CreatableSince != 5 {
+		t.Fatalf("plan_task attribute steps = %+v (declared %v), want a string read and created from version 5", steps, declared)
 	}
 }

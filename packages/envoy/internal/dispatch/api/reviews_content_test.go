@@ -28,6 +28,7 @@ func contentReviews(t *testing.T, handler http.Handler, id string) []model.Artif
 
 // Dropping the pin from any review/approval/version/event surface breaks this test.
 func TestEveryApprovalReadNamesTheApprovedBytes(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "HASH", "Approve bytes", "Approve me ☕\n")
 	id := issue.PrimaryArtifactID

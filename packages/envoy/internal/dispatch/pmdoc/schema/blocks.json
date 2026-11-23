@@ -130,6 +130,11 @@
           "kind": "block[]",
           "targets": ["plan_task"],
           "scope": "document"
+        },
+        "steps": {
+          "kind": "string",
+          "since": 5,
+          "creatable_since": 5
         }
       },
       "since": 3,

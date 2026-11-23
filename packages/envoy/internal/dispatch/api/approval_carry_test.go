@@ -145,6 +145,7 @@ func requireCarriedApproval(t *testing.T, ask carriedAsk, review model.ArtifactR
 // A request on a document a human approved at an earlier version names that approval: the version
 // he approved, when, and that it was him.
 func TestARequestOnAnApprovedDocumentCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Approve me again", "A spec")
 	review := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
@@ -164,6 +165,7 @@ func TestARequestOnAnApprovedDocumentCarriesTheApproval(t *testing.T) {
 // A first request, on a document nobody has approved, carries no approved key: not a null value,
 // no key at all.
 func TestAFirstRequestCarriesNoEarlierApproval(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Approve me", "A spec")
 	requested := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{"actor": sessionActor()})
@@ -186,6 +188,7 @@ func TestAFirstRequestCarriesNoEarlierApproval(t *testing.T) {
 // Two humans approved at different versions: the request names the newest approval, whoever gave
 // it, and a later request for changes, which approves nothing, does not displace it.
 func TestARequestCarriesTheNewestApprovalWhoeverGaveIt(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Approved twice", "A spec")
 	alices := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
@@ -211,6 +214,7 @@ func TestARequestCarriesTheNewestApprovalWhoeverGaveIt(t *testing.T) {
 // A version that moves the open request rewords it to the new version and re-encodes its whole
 // approval, so the earlier approval it carries survives the move unchanged.
 func TestAVersionMoveKeepsTheCarriedApproval(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Moving carried approval", "A spec")
 	review := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
@@ -668,6 +672,7 @@ func TestARewordOfAnAnsweredBlockDoesNotCarryAndTheDecidedWordingWrittenBackDoes
 // `invalid`, which no rendering writes and no version write takes off, settlement's repair changes
 // no markdown and versions nothing, so the approval stays stale.
 func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		attribute string
 		forged    any
@@ -969,6 +974,7 @@ func TestAnAnswerThroughACopysSourceWritesOneStateVersionOfEachDocumentAndCarrie
 // agent's undo of its own edit, which holds the approved text (docs.restoresApprovedText); the
 // document holds no ask block, so no answer's version carries here.
 func TestTheCarrysAnswerAndTheRequestsMoveTakeARevisionEach(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	issue := createInteractionIssue(t, handler, "TEST", "Request moved and answered at once", "Context\n")
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
@@ -1017,6 +1023,7 @@ func requestApprovalWithVerification(t *testing.T, handler http.Handler, artifac
 // review in the human's name and leaves the request open, because nobody has approved the
 // Verification document; his approval of that document then answers the request, reviewing both.
 func TestACarryOnOneDocumentOfATwoDocumentRequestLeavesItOpen(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carry one of two", "Context\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")
@@ -1059,6 +1066,7 @@ func TestACarryOnOneDocumentOfATwoDocumentRequestLeavesItOpen(t *testing.T) {
 // approved - answers that request in the same transaction, as a carry on a one-document request
 // does.
 func TestACarryOnTheVerificationDocumentAnswersTheRequestWhenTheSpecStandsApproved(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Carry the verification", "Context\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")

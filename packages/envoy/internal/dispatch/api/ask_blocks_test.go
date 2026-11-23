@@ -54,6 +54,7 @@ func TestAnAnsweredBlockAskReadsAnsweredInTheAsksOfItsDocumentsText(t *testing.T
 }
 
 func TestSearchAskBlockOptionDescription(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -112,6 +113,7 @@ func TestSearchAskBlockOptionDescription(t *testing.T) {
 }
 
 func TestAskBlockWithoutOptionsSettles(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -144,6 +146,7 @@ func TestAskBlockWithoutOptionsSettles(t *testing.T) {
 }
 
 func TestDocumentRetypeRejectsUnknownTypeAndInvalidAttributes(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Retype validation", "Question\n")
 	blocks := decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/blocks", nil, "alice"))
@@ -174,6 +177,7 @@ func TestDocumentRetypeRejectsUnknownTypeAndInvalidAttributes(t *testing.T) {
 // the rule allows is taken, including an option without a label or a question that is only an
 // image, which settlement flags `invalid` and the dashboard shows as a malformed decision.
 func TestUploadsHoldAskBlocksToTheirContentRule(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	ask := func(body string) string {
 		return "Intro.\n\n:::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\n" + body + "\n:::\n\nAfter.\n"
@@ -233,6 +237,7 @@ func TestUploadsHoldAskBlocksToTheirContentRule(t *testing.T) {
 }
 
 func TestDocumentEditRejectsInvalidAskBlockAtomically(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -309,6 +314,7 @@ func TestDocumentEditRejectsInvalidAskBlockAtomically(t *testing.T) {
 }
 
 func TestDocumentEditExplainsRenderedQuoteMiss(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Rendered quote miss", "Use `config` with care.\n")
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
@@ -365,6 +371,7 @@ func awaitIndexedAskBlock(t *testing.T, handler http.Handler, artifactID, blockI
 // A spec written at issue creation never passes through a live edit; its ask blocks must still
 // become asks, or an agent that opens an issue with decisions in the spec gets no inbox rows.
 func TestAskBlocksInCreatedSpecAreIndexed(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -379,6 +386,7 @@ func TestAskBlocksInCreatedSpecAreIndexed(t *testing.T) {
 // Uploading a new document version through the artifacts API replaces the text inside the
 // upload's own transaction, which suppresses live settlement; the closer must still run.
 func TestAskBlocksInUploadedSpecVersionAreIndexed(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -403,6 +411,7 @@ func TestAskBlocksInUploadedSpecVersionAreIndexed(t *testing.T) {
 // blocks under their ids. It opens no ask in anyone's Inbox: each copied block shows the state and
 // answer of the ask it was copied from (LEGION-651).
 func TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -624,6 +633,7 @@ func contains(parts ...string) func(string) bool {
 // alone, so no stored version of the copy holds it. The routes settle
 // the copies of the ask they close, so the copy owes nothing after them and holds no ask of its own.
 func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -691,6 +701,7 @@ func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
 // copy (SettleCopiesOf), and that settlement opens the copy's own ask for its block rather than
 // writing the answer to a question the copy does not ask into the record.
 func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -756,6 +767,7 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 // gets back the wording the answer was given on. A copy then uploaded with the reworded text holds
 // a question no decision answered and opens its own ask.
 func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -811,6 +823,7 @@ func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t
 // event and on the ask row - never JSON null: the SPA's Conversation tab reads options.length
 // and a null there takes the page down.
 func TestOptionlessAskBlockCarriesEmptyOptionsNotNull(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -881,6 +894,7 @@ func awaitAskBlockEvent(t *testing.T, handler http.Handler, issueKey, eventType,
 // it indexes must still be attributed to the session that wrote the block, or the asker can
 // never edit its own ask and nobody can tell who is asking.
 func TestBlockAskIndexedAfterEditKeepsTheWritingActor(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
@@ -971,6 +985,7 @@ func TestChangingBlockAskReplacesTheAnswerItsTextAnswers(t *testing.T) {
 // refuse as markdown. A question that writes bytes is a question, thin as it is: an image, a
 // U+00A0, or words.
 func TestUploadsRefuseAnAskWrittenWithOptionsAndNoQuestion(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "AQ", "Asks with no question", "Intro.\n")
 	ask := func(body string) string {

@@ -25,6 +25,7 @@ import (
 // request answers in sequence - 201 for the first, 200 for a repeat - is reviews_test.go's
 // (TestApprovalRequestOpensAnAskWhoseAnswerPinsAReviewToTheDocumentVersion).
 func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testing.T) {
+	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documents := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })

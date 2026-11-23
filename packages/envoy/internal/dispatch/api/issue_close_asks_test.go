@@ -174,6 +174,7 @@ func sessionCloser(name, id string) closer {
 // write before it left it. The reopen is sent against a read taken after the closed issue's
 // settlement, as a client that reads the issue before it writes sends it.
 func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T) {
+	t.Parallel()
 	for _, closer := range closers {
 		t.Run(closer.name, func(t *testing.T) {
 			f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
@@ -553,6 +554,7 @@ const pastedCloseDecision = ":::ask{#close-decision urgency=\"med\" multiple=\"f
 // attributes, which the close's sweep writes only while another build serves
 // (docs.WriteIssueAskStates), so the test registers a process of each of two builds.
 func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.T) {
+	t.Parallel()
 	for _, settlementFails := range []bool{false, true} {
 		name := "settled by the close"
 		if settlementFails {
@@ -705,6 +707,7 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 // block would only be marked resolved by the close's sweep, with no ask and no record of who
 // closed it.
 func TestClosingAnIssueWithdrawsADecisionBlockWhoseRoomAnotherProcessLeftBehind(t *testing.T) {
+	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
@@ -774,6 +777,7 @@ func (d *peerInsertDocs) WriteIssueAskStates(ctx context.Context, issueKey strin
 // writes that state only while another build serves (docs.WriteIssueAskStates), so the test
 // registers a process of each of two builds.
 func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	wrapper := &peerInsertDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -813,6 +817,7 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 
 // Every close withdraws the asks open at that close, and every reopen restores them, once each.
 func TestEachCloseAndReopenWithdrawsAndRestoresOnce(t *testing.T) {
+	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
 		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
@@ -1132,6 +1137,7 @@ func (c *countedAskStateWrites) WriteIssueAskStates(ctx context.Context, issueKe
 // reopen while the sweep waits; a sweep that read the issue before the lock would write the
 // closed issue's ask states into the documents of an issue that is open again.
 func TestACloseSweepThatWaitedOutAReopenWritesNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Swept after a reopen", "Context\n")
 	ctx := context.Background()
