@@ -50,13 +50,14 @@ func rowAbove(row, than PhaseRow) bool {
 	return row.StepPlace > than.StepPlace
 }
 
-// OtherStepsEntry is the highest entry a row of row's role holds other than row, the row of
-// another step of that role, and 0 where the role has no other row: a role at one step, and every
-// role of an issue with no plan rows. A step's start raises its entry above every row of its role
-// (workflow's enter), so an entry at or below this one is of another step's run, or of an earlier
-// run of row's own step that the task has since left for another step of the role. The entry fence
-// of a completion reads it (intake.EntryFence), so the same head is never taken as the same work
-// across two steps that ask for different work.
+// OtherStepsEntry is the highest entry a row of row's role holds other than row: the row of
+// another step of that role, or the implementer's retro row (place 0), which stands once its retro
+// is entered; and 0 where the role has no other row: a role at one step with no retro row, and
+// every role of an issue with no plan rows. A step's start raises its entry above every row of its
+// role (workflow's enter), so an entry at or below this one is of another step's run or the
+// retro's, or of an earlier run of row's own step that the task has since left for one of them.
+// The entry fence of a completion reads it (intake.EntryFence), so the same head is never taken as
+// the same work across two runs that ask for different work.
 func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
 	var entry int64
 	for _, other := range rows {
